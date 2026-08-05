@@ -31,10 +31,6 @@ System packages required on the host Raspberry Pi (Debian/Raspberry Pi OS):
 sudo apt update
 sudo apt install -y python3 python3-pip dc3dd smartctl smbclient showmount curlftpfs cifs-utils nfs-common
 
-## Screenshots
-<img width="1873" height="722" alt="AFS-1" src="https://github.com/user-attachments/assets/d1882c4a-7d46-43bb-8726-4fa79d6e8843" />
-<img width="1836" height="692" alt="ASF-2" src="https://github.com/user-attachments/assets/1f530610-f140-4398-905e-0e645e372ad5" />
-<img width="1861" height="731" alt="ASF-3" src="https://github.com/user-attachments/assets/8cb612ed-a99b-4a22-b778-82eae0db22ae" />
 
 
 
