@@ -51,7 +51,7 @@ System packages required on the host Raspberry Pi (Debian/Raspberry Pi OS):
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-pip dc3dd smartctl smbclient showmount curlftpfs cifs-utils nfs-common
+sudo apt install -y python3-flask python3-flask-httpauth python3-psutil smartmontools dc3dd smbclient nfs-common curlftpfs cifs-utils
 
 
 
