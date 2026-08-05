@@ -5,13 +5,13 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/pi-forensics
+WorkingDirectory=/opt/arm-forensic-station
 
 # Basic Auth Credentials for Remote Web Access
 Environment="FORENSIC_USER=admin"
 Environment="FORENSIC_PASS=forensics"
 
-ExecStart=/usr/bin/python3 /opt/pi-forensics/app.py
+ExecStart=/usr/bin/python3 /opt/arm-forensic-station/app.py
 Restart=always
 RestartSec=3s
 
