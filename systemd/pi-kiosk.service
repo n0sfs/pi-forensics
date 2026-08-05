@@ -1,0 +1,15 @@
+[Unit]
+Description=ARM Forensic Station Touchscreen Kiosk UI
+After=pi-forensics.service display-manager.service
+Wants=pi-forensics.service
+
+[Service]
+User=pi
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+ExecStart=/opt/pi-forensics/kiosk.sh
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=graphical.target

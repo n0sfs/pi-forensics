@@ -1,0 +1,14 @@
+[Unit]
+Description=ARM Forensic Acquisition Engine & Web Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/pi-forensics
+ExecStart=/usr/bin/python3 /opt/pi-forensics/app.py
+Restart=always
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

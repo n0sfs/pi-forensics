@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Evidence & Data Files (DO NOT PUSH EVIDENCE TO GITHUB)
+*.dd
+*.raw
+*.img
+*.log
+*_manifest.json
+*_manifest.txt
+/mnt/*
+*.bkp
+
+# Local Storage / IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
