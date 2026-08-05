@@ -3,7 +3,8 @@ Low Budget Forensic Drive Imaging Using Arm Based Single Board Computers
 
 # 🛡️ Raspberry Pi ARM Forensic Acquisition Station
 
-An open-source, web-based digital forensic imaging appliance built for Raspberry Pi and ARM single-board computers. Designed for field kit deployment, evidence collection, and network-streamed disk imaging.
+An open-source, web-based digital forensic imaging appliance built for Raspberry Pi and ARM single-board computers. Designed for field kit deployment, evidence collection, and network-streamed disk imaging. Based on my original research "Low Budget Forensics using ARM Based Single Board Computers"
+https://commons.erau.edu/jdfsl/vol11/iss1/3/
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)
