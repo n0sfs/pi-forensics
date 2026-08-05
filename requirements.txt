@@ -1,2 +1,3 @@
 Flask>=2.0.0
+Flask-HTTPAuth>=4.5.0
 psutil>=5.8.0
