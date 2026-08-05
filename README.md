@@ -1,0 +1,31 @@
+# arm-forensic-station
+Low Budget Forensic Drive Imaging Using Arm Based Single Board Computers
+
+# 🛡️ Raspberry Pi ARM Forensic Acquisition Station
+
+An open-source, web-based digital forensic imaging appliance built for Raspberry Pi and ARM single-board computers. Designed for field kit deployment, evidence collection, and network-streamed disk imaging.
+
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)
+
+---
+
+## 🌟 Key Features
+
+- **Bit-Stream Acquisition:** Leverages `dc3dd` for raw image acquisition (`.dd`) with hash verification (MD5, SHA-1, SHA-256).
+- **ARM Memory-Safe Architecture:** Built with non-blocking process pipelines and active memory buffer syncing (`os.sync()`) to eliminate Out-Of-Memory kernel panics on embedded hardware.
+- **Integrated Network Mounting:** Auto-discovers, authenticates, and mounts remote SMB/CIFS, NFS, and FTP shares natively in the UI with protocol fallback support.
+- **SMART Health Diagnostics:** Instant drive health checks (`smartctl`) inspecting reallocated sectors, temperature, power-on hours, and bad block flags prior to imaging.
+- **Software Write-Blocker Toggle:** Quick toggle for `udev` read-only rule enforcement (`ATTR{ro}="1"`) to preserve chain of custody.
+- **Automated Evidence Manifests:** Generates structured `evidence_manifest.json` and human-readable `.txt` reports capturing case numbers, evidence IDs, examiner notes, drive serials, and timestamps.
+- **Touchscreen & Remote Friendly:** Responsive dark-mode UI designed for onboard Pi touchscreen displays or headless browser control over Wi-Fi/Ethernet.
+
+---
+
+## 📋 Prerequisites
+
+System packages required on the host Raspberry Pi (Debian/Raspberry Pi OS):
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip dc3dd smartctl smbclient showmount curlftpfs cifs-utils nfs-common
