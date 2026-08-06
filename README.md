@@ -1,4 +1,4 @@
-# arm-forensic-station
+# pi-forensics, arm-forensic-station
 Low Budget Forensic Drive Imaging Using Arm Based Single Board Computers
 
 # 🛡️ Raspberry Pi ARM Forensic Acquisition Station
@@ -61,7 +61,7 @@ Modern Raspberry Pi OS releases enforce PEP 668 to protect system Python package
 
 cd /opt
 
-sudo git clone https://github.com/n0sfs/arm-forensic-station.git
+sudo git clone https://github.com/n0sfs/pi-forensics.git
 
 cd pi-forensics
 
@@ -70,7 +70,7 @@ sudo pip install -r requirements.txt --break-system-packages
 Copy Systemd Units & Enable Services
 To register the service with systemd and launch the engine automatically on boot:
 
-sudo cp ~/arm-forensic-station/systemd/pi-forensics.service /etc/systemd/system/
+sudo cp ~/pi-forensics/systemd/pi-forensics.service /etc/systemd/system/
 
 sudo systemctl daemon-reload
 
