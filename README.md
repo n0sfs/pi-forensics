@@ -51,14 +51,19 @@ System packages and services required on the host Raspberry Pi (Debian/Raspberry
 
 ```bash
 sudo apt update
-sudo apt install -y python3-flask python3-flask-httpauth python3-psutil smartmontools dc3dd smbclient nfs-common curlftpfs cifs-utils
+sudo apt install -y python3-full python3-pip python3-openssl python3-flask python3-flask-httpauth python3-psutil smartmontools dc3dd smbclient nfs-common curlftpfs cifs-utils
 sudo apt upgrade -y
 
 #Clone Repository & Install Python Requirements
-#Modern Raspberry Pi OS releases enforce PEP 668 to protect system Python packages. If installing Python requirements via pip, pass --break-system-packages (or rely on the APT packages installed above):
+#Modern Raspberry Pi OS releases enforce PEP 668 to protect system Python packages. Modern Raspberry Pi OS releases enforce PEP 668 to protect system Python packages. Setting up a dedicated virtual environment (venv) ensures isolated and reliable package installation: If installing Python requirements via pip, pass --break-system-packages (or rely on the APT packages installed above):
 cd /opt
 sudo git clone https://github.com/n0sfs/pi-forensics.git
-sudo pip install -r requirements.txt --break-system-packages
+cd pi-forensics
+# Create virtual environment
+python3 -m venv venv
+# Install dependencies into virtual environment
+./venv/bin/pip install --upgrade pip
+./venv/bin/pip install -r requirements.txt pyOpenSSL
 
 #Copy Systemd Units & Enable Services
 sudo cp /opt/pi-forensics/systemd/pi-forensics.service /etc/systemd/system/
