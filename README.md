@@ -51,7 +51,7 @@ System packages and services required on the host Raspberry Pi (Debian/Raspberry
 
 ```bash
 sudo apt update
-sudo apt install -y python3-full python3-pip python3-openssl python3-flask python3-flask-httpauth python3-psutil smartmontools dc3dd smbclient nfs-common curlftpfs cifs-utils
+sudo apt install -y python3-full python3-pip python3-openssl python3-flask python3-flask-httpauth python3-psutil smartmontools dc3dd smbclient nfs-common curlftpfs cifs-utils ewf-tools afflib-tools
 sudo apt upgrade -y
 
 #Clone Repository & Install Python Requirements
