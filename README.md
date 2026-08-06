@@ -26,21 +26,21 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 ## 📸 Interface Screenshots
 
 <p align="center">
-  <img src="docs/images/AFS-1.JPG" width="100%" alt="ARM Forensic Station Header & Local Setup" />
+  <img src="docs/images/PIF1.JPG" width="100%" alt="ARM Forensic Station Header & Local Setup" />
   <br>
-  <em>Figure 1: Telemetry Dashboard, Write Blocker Control, SMART Check, and Local Destination Browser.</em>
+  <em>Figure 1: Overall Dashboard and UI.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/ASF-2.JPG" width="100%" alt="Network Target Mapping Setup" />
+  <img src="docs/images/PIF2.JPG" width="100%" alt="Network Target Mapping Setup" />
   <br>
   <em>Figure 2: Native Network Share Discovery, History Dropdown, and Protocol Mapper (SMB/NFS/FTP).</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/ASF-3.JPG" width="100%" alt="Hash Controls, Case Manifest, & Acquisition Controls" />
+  <img src="docs/images/PIF3.JPG" width="100%" alt="Drive Check & Details" />
   <br>
-  <em>Figure 3: Forensic Verification Hash Toggles, Case Metadata Manifest Form, and Live Execution Console.</em>
+  <em>Figure 3: Drive Check and Details.</em>
 </p>
 
 ---
