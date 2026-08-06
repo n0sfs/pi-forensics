@@ -286,10 +286,24 @@ def smart_check():
         data = json.loads(res.stdout)
         
         healthy = data.get('smart_status', {}).get('passed', True)
-        model = data.get('model_name') or data.get('family_name') or 'Generic Media'
+        
+        family = data.get('model_family') or data.get('family_name')
+        model = data.get('model_name') or data.get('device', {}).get('name')
+        
+        if family and model and family.lower() not in model.lower():
+            vendor_model_str = f"{family} ({model})"
+        elif family:
+            vendor_model_str = family
+        else:
+            vendor_model_str = model or "Generic Media"
+
         serial = data.get('serial_number', 'N/A')
         temp = data.get('temperature', {}).get('current')
         
+        dev_type = data.get('device', {}).get('type', '')
+        protocol = data.get('device', {}).get('protocol', '')
+        media_type = f"{protocol.upper()} / {dev_type.upper()} Storage" if protocol else "USB / ATA Storage"
+
         reallocated = 0
         pending = 0
         power_on = None
@@ -306,7 +320,8 @@ def smart_check():
         return jsonify({
             "success": True,
             "healthy": healthy,
-            "model": model,
+            "vendor_model": vendor_model_str,
+            "media_type": media_type,
             "serial": serial,
             "temperature": temp,
             "reallocated_sectors": reallocated,
@@ -318,7 +333,7 @@ def smart_check():
         return jsonify({
             "success": False,
             "error": "SMART telemetry unsupported on this media",
-            "model": "Flash Media / Generic Drive"
+            "vendor_model": "Generic External Drive / Flash Media"
         })
 
 @app.route('/api/list_server_shares', methods=['POST'])
@@ -429,16 +444,12 @@ def toggle_write_block():
     action_flag = '--setro' if enable else '--setrw'
     
     try:
-        # Unmount active partitions first to prevent "device or resource busy" lockouts
         subprocess.run(f"sudo udevil unmount -b {drive}* 2>/dev/null || sudo umount {drive}* 2>/dev/null", shell=True)
-        
-        # Apply read-only or read-write flag via blockdev
         res = subprocess.run(['sudo', 'blockdev', action_flag, drive], capture_output=True, text=True)
         
         if res.returncode != 0:
             return jsonify({"success": False, "error": res.stderr.strip() or "blockdev execution failed"}), 500
 
-        # Query read-only state directly from kernel
         chk = subprocess.run(['sudo', 'blockdev', '--getro', drive], capture_output=True, text=True)
         is_ro = (chk.returncode == 0 and chk.stdout.strip() == '1')
 
