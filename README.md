@@ -28,15 +28,8 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 <p align="center">
   <img src="docs/images/PIF1.JPG" width="100%" alt="ARM Forensic Station Header & Local Setup" />
   <br>
-  <em>Figure 1: Overall Dashboard, Drive Check, Write Blocker Toggle and UI.</em>
+  <em>Figure 1: Overall Dashboard with Drive Check, Write Blocker Toggle, AFF/WEF/DD Output, MD5/SHA1/SHA256 Hashes and Native Network Discovery, Drive Mapping and Telemetry.</em>
 </p>
-
-<p align="center">
-  <img src="docs/images/PIF2.JPG" width="100%" alt="Network Target Mapping Setup" />
-  <br>
-  <em>Figure 2: Native Network Share Discovery, Drive Mapping, and DD/AFF/EWF Output.</em>
-</p>
-
 
 ---
 

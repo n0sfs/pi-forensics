@@ -470,6 +470,7 @@ def start_imaging():
     source = req.get('source')
     dest_path = req.get('destination', '/mnt').strip()
     fmt = req.get('format', 'dd')
+    hashes = req.get('hashes', ['sha256'])
     metadata = req.get('metadata', {})
     
     if not source or not os.path.exists(source):
@@ -496,6 +497,15 @@ def start_imaging():
     base_name = f"{case_num}_{evidence_id}"
 
     if fmt == 'e01':
+        # ewfacquire hashing flag mapping (-d md5, -d sha1, -d sha256)
+        ewf_hash_type = "sha256"
+        if "sha256" in hashes:
+            ewf_hash_type = "sha256"
+        elif "sha1" in hashes:
+            ewf_hash_type = "sha1"
+        elif "md5" in hashes:
+            ewf_hash_type = "md5"
+
         cmd = [
             "ewfacquire", "-u",
             "-t", f"{dest_path}/{base_name}",
@@ -504,6 +514,7 @@ def start_imaging():
             "-e", examiner,
             "-N", notes,
             "-f", "encase6",
+            "-d", ewf_hash_type,
             "-S", "2000M",
             source
         ]
@@ -514,13 +525,15 @@ def start_imaging():
             source
         ]
     else:
+        # dc3dd supports multiple simultaneous hash parameters (hash=md5 hash=sha256)
         cmd = [
             "dc3dd",
             f"if={source}",
             f"of={dest_path}/{base_name}.dd",
-            "hash=sha256",
             f"log={dest_path}/{base_name}_dc3dd.log"
         ]
+        for h in hashes:
+            cmd.append(f"hash={h}")
 
     current_job["active"] = True
     current_job["format"] = fmt
@@ -529,7 +542,7 @@ def start_imaging():
     current_job["transferred_bytes"] = 0
     current_job["total_bytes"] = total_bytes
     current_job["status"] = "Initializing..."
-    current_job["log"] = f"[*] Initializing {fmt.upper()} acquisition for {source} -> {dest_path}..."
+    current_job["log"] = f"[*] Initializing {fmt.upper()} acquisition ({', '.join(hashes).upper()}) for {source} -> {dest_path}..."
 
     report_file = os.path.join(dest_path, f"{base_name}_report.json")
     try:
@@ -540,6 +553,7 @@ def start_imaging():
                 "source_device": source,
                 "output_destination": dest_path,
                 "output_format": fmt,
+                "hash_algorithms": hashes,
                 "total_bytes": total_bytes
             }, f, indent=2)
     except Exception as e:
@@ -553,6 +567,7 @@ def start_imaging():
     thread.start()
 
     return jsonify({"success": True, "message": "Acquisition started."})
+
 
 @app.route('/api/stop_imaging', methods=['POST'])
 @requires_auth
