@@ -104,6 +104,8 @@ async function fetchSystemInfo() {
 }
 
 // --- Drives & Detailed SMART Enumeration ---
+
+// --- Drives & Detailed SMART Enumeration ---
 async function refreshDrives() {
     try {
         const res = await fetch('/api/drives');
@@ -111,6 +113,7 @@ async function refreshDrives() {
         const driveSelect = document.getElementById("driveSelect");
         
         if (!driveSelect) return;
+        const previousSelection = driveSelect.value;
         driveSelect.innerHTML = '<option value="">-- Choose Target Source Drive --</option>';
 
         currentDrivesList.forEach(dev => {
@@ -120,6 +123,17 @@ async function refreshDrives() {
             opt.innerText = `${dev.device} - [${tranType}] ${dev.model} (${dev.size}) [SN: ${dev.serial}]`;
             driveSelect.appendChild(opt);
         });
+
+        // Re-select previous drive if it still exists, otherwise default to first available
+        if (previousSelection && currentDrivesList.some(d => d.device === previousSelection)) {
+            driveSelect.value = previousSelection;
+        } else if (currentDrivesList.length > 0) {
+            driveSelect.value = currentDrivesList[0].device;
+        }
+
+        // Trigger telemetry check immediately for selected drive
+        checkSmartTelemetry();
+
     } catch (err) {
         console.error("Error fetching drives:", err);
     }
@@ -129,29 +143,38 @@ async function checkSmartTelemetry() {
     const driveSelect = document.getElementById("driveSelect");
     const targetDrive = driveSelect ? driveSelect.value : "";
 
-    // Reset Labels
+    const healthBadge = document.getElementById("lblHealthBadge");
+
+    // Reset All Fields First
     document.getElementById("lblDevicePath").innerText = targetDrive || "--";
     document.getElementById("lblMediaType").innerText = "--";
     document.getElementById("lblModel").innerText = "--";
     document.getElementById("lblSerial").innerText = "--";
     document.getElementById("lblCapacity").innerText = "--";
-    document.getElementById("lblHealth").innerHTML = "--";
-    document.getElementById("lblTemp").innerText = "--";
-    document.getElementById("lblReallocated").innerText = "--";
-    document.getElementById("lblPending").innerText = "--";
-    document.getElementById("lblPowerHours").innerText = "--";
+    document.getElementById("lblTemp").innerText = "N/A";
+    document.getElementById("lblReallocated").innerText = "N/A";
+    document.getElementById("lblPending").innerText = "N/A";
+    document.getElementById("lblPowerHours").innerText = "N/A";
 
-    if (!targetDrive) return;
+    if (!targetDrive) {
+        if (healthBadge) {
+            healthBadge.className = "badge bg-secondary";
+            healthBadge.innerText = "UNCHECKED";
+        }
+        return;
+    }
 
-    // Populate basic lsblk metadata first
-    const driveObj = currentDrivesList.find(d => d.device === targetDrive);
+    // Step 1: Always populate basic hardware metadata from lsblk array first
+    const driveObj = currentDrivesList.find(d => d.device === targetDrive || d.name === targetDrive.replace('/dev/', ''));
     if (driveObj) {
-        document.getElementById("lblMediaType").innerText = (driveObj.transport || 'usb').toUpperCase() + " / ATA Storage";
-        document.getElementById("lblModel").innerText = driveObj.model || "Generic Media";
+        const transportUpper = (driveObj.transport || 'USB').toUpperCase();
+        document.getElementById("lblMediaType").innerText = `${transportUpper} Storage`;
+        document.getElementById("lblModel").innerText = driveObj.model || "Generic Storage Media";
         document.getElementById("lblSerial").innerText = driveObj.serial || "N/A";
         document.getElementById("lblCapacity").innerText = driveObj.size || "Unknown";
     }
 
+    // Step 2: Query smartctl backend for health and SMART attributes
     try {
         const res = await fetch('/api/smart_check', {
             method: 'POST',
@@ -161,21 +184,37 @@ async function checkSmartTelemetry() {
         const data = await res.json();
 
         if (data.success) {
-            document.getElementById("lblModel").innerText = data.vendor_model || (driveObj ? driveObj.model : "Generic Disk");
+            if (data.vendor_model) document.getElementById("lblModel").innerText = data.vendor_model;
             if (data.media_type) document.getElementById("lblMediaType").innerText = data.media_type;
-            document.getElementById("lblSerial").innerText = data.serial || (driveObj ? driveObj.serial : "N/A");
+            if (data.serial && data.serial !== 'N/A') document.getElementById("lblSerial").innerText = data.serial;
             
-            const healthHtml = data.healthy ? '<span class="text-success fw-bold"><i class="bi bi-check-circle-fill me-1"></i>PASSED (GOOD DRIVE)</span>' : '<span class="text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>FAILING</span>';
-            document.getElementById("lblHealth").innerHTML = healthHtml;
+            if (healthBadge) {
+                if (data.healthy) {
+                    healthBadge.className = "badge bg-success";
+                    healthBadge.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i>PASSED (GOOD DRIVE)';
+                } else {
+                    healthBadge.className = "badge bg-danger";
+                    healthBadge.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>FAILING';
+                }
+            }
+
             document.getElementById("lblTemp").innerText = data.temperature ? `${data.temperature} °C` : "N/A";
             document.getElementById("lblReallocated").innerText = data.reallocated_sectors !== undefined ? data.reallocated_sectors : "0";
             document.getElementById("lblPending").innerText = data.pending_sectors !== undefined ? data.pending_sectors : "0";
             document.getElementById("lblPowerHours").innerText = data.power_on_hours ? `${data.power_on_hours} hrs` : "N/A";
         } else {
-            document.getElementById("lblHealth").innerHTML = '<span class="text-warning fw-bold">UNSUPPORTED / FLASH</span>';
+            // Flash media / USB controllers without SMART reporting
+            if (healthBadge) {
+                healthBadge.className = "badge bg-warning text-dark";
+                healthBadge.innerText = "FLASH / NO SMART";
+            }
         }
     } catch (err) {
         console.error("Error checking SMART telemetry:", err);
+        if (healthBadge) {
+            healthBadge.className = "badge bg-warning text-dark";
+            healthBadge.innerText = "TELEMETRY ERROR";
+        }
     }
 }
 
@@ -382,6 +421,17 @@ async function startAcquisition() {
         return;
     }
 
+    // Collect selected hashing algorithms
+    const selectedHashes = [];
+    if (document.getElementById("hashMd5").checked) selectedHashes.push("md5");
+    if (document.getElementById("hashSha1").checked) selectedHashes.push("sha1");
+    if (document.getElementById("hashSha256").checked) selectedHashes.push("sha256");
+
+    if (selectedHashes.length === 0) {
+        alert("Select at least one verification hash algorithm (MD5, SHA1, or SHA256).");
+        return;
+    }
+
     const metadata = {
         case_number: document.getElementById("caseNum").value || "2026-UNASSIGNED",
         evidence_id: document.getElementById("evidenceId").value || "ITEM-01",
@@ -393,7 +443,13 @@ async function startAcquisition() {
         const res = await fetch('/api/start_imaging', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source, destination: dest, format: fmt, metadata })
+            body: JSON.stringify({ 
+                source, 
+                destination: dest, 
+                format: fmt, 
+                hashes: selectedHashes, 
+                metadata 
+            })
         });
         const data = await res.json();
 
