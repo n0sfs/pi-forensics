@@ -51,29 +51,20 @@ System packages and services required on the host Raspberry Pi (Debian/Raspberry
 
 ```bash
 sudo apt update
-
 sudo apt install -y python3-flask python3-flask-httpauth python3-psutil smartmontools dc3dd smbclient nfs-common curlftpfs cifs-utils
-
 sudo apt upgrade -y
 
-Clone Repository & Install Python Requirements
-Modern Raspberry Pi OS releases enforce PEP 668 to protect system Python packages. If installing Python requirements via pip, pass --break-system-packages (or rely on the APT packages installed above):
-
+#Clone Repository & Install Python Requirements
+#Modern Raspberry Pi OS releases enforce PEP 668 to protect system Python packages. If installing Python requirements via pip, pass --break-system-packages (or rely on the APT packages installed above):
 cd /opt
-
 sudo git clone https://github.com/n0sfs/pi-forensics.git
-
-cd pi-forensics
-
 sudo pip install -r requirements.txt --break-system-packages
 
-Copy Systemd Units & Enable Services
-To register the service with systemd and launch the engine automatically on boot:
-
+#Copy Systemd Units & Enable Services
 sudo cp /opt/pi-forensics/systemd/pi-forensics.service /etc/systemd/system/
 
+#To register the service with systemd and launch the engine automatically on boot:
 sudo systemctl daemon-reload
-
 sudo systemctl enable --now pi-forensics.service
 
 
