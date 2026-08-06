@@ -70,7 +70,7 @@ sudo pip install -r requirements.txt --break-system-packages
 Copy Systemd Units & Enable Services
 To register the service with systemd and launch the engine automatically on boot:
 
-sudo cp ~/pi-forensics/systemd/pi-forensics.service /etc/systemd/system/
+sudo cp /opt/pi-forensics/systemd/pi-forensics.service /etc/systemd/system/
 
 sudo systemctl daemon-reload
 
