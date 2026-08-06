@@ -12,6 +12,7 @@ Environment="FORENSIC_USER=admin"
 Environment="FORENSIC_PASS=forensics"
 
 #ExecStart=/usr/bin/python3 /opt/pi-forensics/app.py
+#Changed to using venv
 ExecStart=/opt/pi-forensics/venv/bin/python /opt/pi-forensics/app.py
 Restart=always
 RestartSec=3s
