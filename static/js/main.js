@@ -116,7 +116,8 @@ async function refreshDrives() {
         currentDrivesList.forEach(dev => {
             const opt = document.createElement("option");
             opt.value = dev.device;
-            opt.innerText = `${dev.device} - ${dev.model} (${dev.size}) [SN: ${dev.serial}]`;
+            const tranType = (dev.transport || 'usb').toUpperCase();
+            opt.innerText = `${dev.device} - [${tranType}] ${dev.model} (${dev.size}) [SN: ${dev.serial}]`;
             driveSelect.appendChild(opt);
         });
     } catch (err) {
@@ -130,6 +131,7 @@ async function checkSmartTelemetry() {
 
     // Reset Labels
     document.getElementById("lblDevicePath").innerText = targetDrive || "--";
+    document.getElementById("lblMediaType").innerText = "--";
     document.getElementById("lblModel").innerText = "--";
     document.getElementById("lblSerial").innerText = "--";
     document.getElementById("lblCapacity").innerText = "--";
@@ -144,6 +146,7 @@ async function checkSmartTelemetry() {
     // Populate basic lsblk metadata first
     const driveObj = currentDrivesList.find(d => d.device === targetDrive);
     if (driveObj) {
+        document.getElementById("lblMediaType").innerText = (driveObj.transport || 'usb').toUpperCase() + " / ATA Storage";
         document.getElementById("lblModel").innerText = driveObj.model || "Generic Media";
         document.getElementById("lblSerial").innerText = driveObj.serial || "N/A";
         document.getElementById("lblCapacity").innerText = driveObj.size || "Unknown";
@@ -158,10 +161,11 @@ async function checkSmartTelemetry() {
         const data = await res.json();
 
         if (data.success) {
-            document.getElementById("lblModel").innerText = data.model || (driveObj ? driveObj.model : "Generic Disk");
+            document.getElementById("lblModel").innerText = data.vendor_model || (driveObj ? driveObj.model : "Generic Disk");
+            if (data.media_type) document.getElementById("lblMediaType").innerText = data.media_type;
             document.getElementById("lblSerial").innerText = data.serial || (driveObj ? driveObj.serial : "N/A");
             
-            const healthHtml = data.healthy ? '<span class="text-success fw-bold"><i class="bi bi-check-circle-fill me-1"></i>PASSED</span>' : '<span class="text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>FAILING</span>';
+            const healthHtml = data.healthy ? '<span class="text-success fw-bold"><i class="bi bi-check-circle-fill me-1"></i>PASSED (GOOD DRIVE)</span>' : '<span class="text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>FAILING</span>';
             document.getElementById("lblHealth").innerHTML = healthHtml;
             document.getElementById("lblTemp").innerText = data.temperature ? `${data.temperature} °C` : "N/A";
             document.getElementById("lblReallocated").innerText = data.reallocated_sectors !== undefined ? data.reallocated_sectors : "0";
@@ -321,8 +325,7 @@ async function mountNetworkDrive() {
             const destPath = document.getElementById("destPath");
             if (destPath) destPath.value = data.mount_point;
             
-            alert(`Share Mounted!
-Destination Target Path updated to: ${data.mount_point}`);
+            alert(`Share Mounted!\nDestination Target Path updated to: ${data.mount_point}`);
         } else {
             if (mountStatus) mountStatus.innerText = `Mount Error: ${data.error}`;
             alert(`Mount Failed: ${data.error}`);

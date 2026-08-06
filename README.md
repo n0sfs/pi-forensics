@@ -28,20 +28,15 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 <p align="center">
   <img src="docs/images/PIF1.JPG" width="100%" alt="ARM Forensic Station Header & Local Setup" />
   <br>
-  <em>Figure 1: Overall Dashboard and UI.</em>
+  <em>Figure 1: Overall Dashboard, Drive Check, Write Blocker Toggle and UI.</em>
 </p>
 
 <p align="center">
   <img src="docs/images/PIF2.JPG" width="100%" alt="Network Target Mapping Setup" />
   <br>
-  <em>Figure 2: Native Network Share Discovery, History Dropdown, and Protocol Mapper (SMB/NFS/FTP).</em>
+  <em>Figure 2: Native Network Share Discovery, Drive Mapping, and DD/AFF/EWF Output.</em>
 </p>
 
-<p align="center">
-  <img src="docs/images/PIF3.JPG" width="100%" alt="Drive Check & Details" />
-  <br>
-  <em>Figure 3: Drive Check and Details.</em>
-</p>
 
 ---
 
