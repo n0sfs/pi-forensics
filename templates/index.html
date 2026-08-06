@@ -1,339 +1,447 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ARM Forensic Acquisition Station</title>
+    
+    <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
     <style>
-        body { background-color: #0f111a; color: #e1e3ed; user-select: none; font-family: system-ui, -apple-system, sans-serif; }
-        .card { background-color: #1a1d2d; border: 1px solid #2a2e45; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
-        .form-check-input:checked { background-color: #0d6efd; border-color: #0d6efd; }
-        #writeBlockToggle:checked { background-color: #dc3545; border-color: #dc3545; }
-        .progress { height: 28px; background-color: #121420; border-radius: 8px; }
-        .metric-card { text-align: center; padding: 18px 12px; }
-        .metric-value { font-size: 1.6rem; font-weight: 700; margin-top: 4px; }
-        .terminal-log {
-            background-color: #090a10;
-            color: #00ff66;
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 0.85rem;
-            padding: 14px;
-            border-radius: 8px;
-            max-height: 180px;
-            overflow-y: auto;
-            border: 1px solid #222638;
-            white-space: pre-wrap;
+        body {
+            background-color: #0d1117;
+            color: #f0f6fc;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
         }
-        .btn-touch { padding: 12px 18px; font-size: 1.05rem; font-weight: 600; border-radius: 8px; }
+
+        /* High-contrast Cards */
+        .card {
+            background-color: #161b22 !important;
+            border: 1px solid #30363d !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        }
+
+        .card-header {
+            background-color: #21262d !important;
+            border-bottom: 1px solid #30363d !important;
+            color: #ffffff !important;
+        }
+
+        /* Labels and Text High Contrast Overrides */
+        label, .form-label, .text-muted, .text-secondary {
+            color: #ffffff !important;
+            font-weight: 600;
+        }
+
+        .metric-label {
+            color: #d0d7de !important;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+        }
+
+        /* High-contrast Input Fields */
+        .form-control, .form-select {
+            background-color: #0d1117 !important;
+            border: 1px solid #484f58 !important;
+            color: #ffffff !important;
+            font-weight: 500;
+        }
+
+        .form-control:focus, .form-select:focus {
+            border-color: #58a6ff !important;
+            box-shadow: 0 0 0 0.25rem rgba(56, 139, 253, 0.25) !important;
+            color: #ffffff !important;
+        }
+
+        .form-control::placeholder {
+            color: #8b949e !important;
+        }
+
+        /* Terminal Console Display */
+        #terminalLog {
+            background-color: #040d21 !important;
+            color: #58a6ff !important;
+            border: 1px solid #30363d;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 0.85rem;
+        }
+
+        /* Folder Browser List */
         .folder-list-item {
-            padding: 14px 18px;
-            font-size: 1.1rem;
-            background-color: #222638;
-            color: #fff;
-            border: 1px solid #323752;
-            margin-bottom: 8px;
-            border-radius: 8px;
+            background-color: #21262d;
+            border: 1px solid #30363d;
+            color: #ffffff;
+            padding: 10px 15px;
+            margin-bottom: 6px;
+            border-radius: 6px;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            cursor: pointer;
         }
-        .folder-list-item:active { background-color: #0d6efd; }
-        .nav-pills .nav-link { color: #a0a5c0; font-weight: 600; padding: 12px 20px; }
-        .nav-pills .nav-link.active { background-color: #0d6efd; color: #fff; }
+        
+        .folder-list-item:hover {
+            background-color: #30363d;
+        }
     </style>
 </head>
-<body>
-<div class="container-fluid px-4 py-3">
-    <!-- Header & Write Blocker Toggle -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <div>
-            <h3 class="m-0 fw-bold text-white">ARM Forensic Station</h3>
-            <small class="text-muted">Bit-Stream Acquisition & Evidence Imager</small>
-        </div>
-        <div class="form-check form-switch fs-4">
-            <input class="form-check-input" type="checkbox" id="writeBlockToggle" style="transform: scale(1.3);">
-            <label class="form-check-label fw-bold ms-2 text-danger" for="writeBlockToggle" id="wbLabel">Write Blocker: OFF</label>
-        </div>
-    </div>
+<body class="p-3 p-md-4">
 
-    <!-- Metrics Row -->
-    <div class="row g-3 mb-4">
-        <div class="col-md-2">
-            <div class="card metric-card">
-                <span class="text-secondary fw-semibold">CPU Usage</span>
-                <div class="metric-value text-warning" id="cpuUsage">0%</div>
-                <div class="progress mt-2">
-                    <div id="cpuBar" class="progress-bar bg-warning" role="progressbar" style="width: 0%"></div>
+    <div class="container-fluid">
+        <!-- Header Bar -->
+        <header class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom border-secondary">
+            <div class="d-flex align-items-center gap-3">
+                <i class="bi bi-shield-lock-fill text-primary fs-1"></i>
+                <div>
+                    <h1 class="h3 m-0 text-white fw-bold">ARM Forensic Station</h1>
+                    <span class="text-white fw-medium">Hardware Write-Blocker & Disk Acquisition Engine</span>
                 </div>
             </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card metric-card">
-                <span class="text-secondary fw-semibold">Local Storage</span>
-                <div class="metric-value text-info" id="storageUsage">-- / -- GB</div>
-                <div class="progress mt-2">
-                    <div id="storageBar" class="progress-bar bg-info" role="progressbar" style="width: 0%"></div>
+            
+            <div class="d-flex align-items-center gap-3">
+                <div class="form-check form-switch fs-5">
+                    <input class="form-check-input" type="checkbox" id="writeBlockToggle">
+                    <label class="form-check-label ms-2 text-white fw-bold" id="wbLabel" for="writeBlockToggle">Write Blocker: OFF</label>
                 </div>
             </div>
-        </div>
-        <div class="col-md-2">
-            <div class="card metric-card">
-                <span class="text-secondary fw-semibold">Transfer Speed</span>
-                <div class="metric-value text-primary" id="transferSpeed">0.0 MB/s</div>
-                <small class="text-muted">Real-time throughput</small>
-            </div>
-        </div>
-        <div class="col-md-2">
-            <div class="card metric-card">
-                <span class="text-secondary fw-semibold">Estimated ETA</span>
-                <div class="metric-value text-light" id="etaDisplay">--:--:--</div>
-                <small class="text-muted">Time remaining</small>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card metric-card">
-                <span class="text-secondary fw-semibold">Acquisition Status</span>
-                <div class="metric-value text-success" id="imagingStatus">Idle</div>
-                <small class="text-muted" id="bytesTransferred">0 MB / 0 MB</small>
-            </div>
-        </div>
-    </div>
+        </header>
 
-    <!-- Main Acquisition Setup Card -->
-    <div class="card p-4 mb-3">
-        <h4 class="card-title mb-3 fw-bold text-white">Acquisition Setup</h4>
-        
-        <!-- Step 1: Source & SMART -->
-        <div class="row g-3 align-items-end mb-4">
-            <div class="col-md-8">
-                <label for="driveSelect" class="form-label fw-bold text-secondary fs-5">1. Target Source Drive</label>
-                <select id="driveSelect" class="form-select bg-dark text-light border-secondary p-3 fs-5">
-                    <option value="">Scanning for attached drives...</option>
-                </select>
-            </div>
-            <div class="col-md-4 d-grid">
-                <button id="checkSmartBtn" class="btn btn-outline-warning btn-touch fs-5">Check SMART Health</button>
-            </div>
-        </div>
+        <!-- Main Dashboard Grid -->
+        <div class="row g-4">
 
-        <!-- Step 2: Destination Selection -->
-        <div class="mb-4">
-            <label class="form-label fw-bold text-secondary fs-5">2. Destination Storage Target</label>
-            <ul class="nav nav-pills card-header-pills bg-dark p-1 rounded border border-secondary mb-3" id="destTypeTabs" role="tablist">
-                <li class="nav-item flex-fill text-center" role="presentation">
-                    <button class="nav-link active w-100 fs-5" id="local-tab" data-bs-toggle="pill" data-bs-target="#local-dest" type="button">Local Folder</button>
-                </li>
-                <li class="nav-item flex-fill text-center" role="presentation">
-                    <button class="nav-link w-100 fs-5" id="network-tab" data-bs-toggle="pill" data-bs-target="#network-dest" type="button">Network Share</button>
-                </li>
-            </ul>
+            <!-- Left Panel: System Telemetry & Media Telemetry -->
+            <div class="col-lg-4">
+                
+                <!-- System Hardware Status Card -->
+                <div class="card mb-4">
+                    <div class="card-header fw-bold text-white fs-6">
+                        <i class="bi bi-cpu text-info me-2"></i>System Resource Telemetry
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between mb-1">
+                                <span class="metric-label">CPU Utilization</span>
+                                <span id="cpuUsage" class="fw-bold text-white">0%</span>
+                            </div>
+                            <div class="progress bg-secondary" style="height: 10px;">
+                                <div id="cpuBar" class="progress-bar bg-info" style="width: 0%"></div>
+                            </div>
+                        </div>
 
-            <div class="tab-content" id="destTabContent">
-                <!-- Local Path -->
-                <div class="tab-pane fade show active" id="local-dest" role="tabpanel">
-                    <div class="input-group">
-                        <input type="text" id="destPath" class="form-control bg-dark text-light border-secondary fs-5 p-3" value="/mnt" readonly>
-                        <button class="btn btn-primary btn-touch" type="button" data-bs-toggle="modal" data-bs-target="#folderBrowserModal">Browse Folders</button>
+                        <div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span class="metric-label">Storage Capacity</span>
+                                <span id="storageUsage" class="fw-bold text-white">0 / 0 GB</span>
+                            </div>
+                            <div class="progress bg-secondary" style="height: 10px;">
+                                <div id="storageBar" class="progress-bar bg-warning" style="width: 0%"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Network Connect Flow -->
-                <div class="tab-pane fade" id="network-dest" role="tabpanel">
-                    <div class="card p-3 bg-dark border-secondary">
-                        <div class="row g-3 align-items-center mb-3">
-                            <div class="col-md-9">
-                                <label class="form-label text-info fw-bold fs-5">Recent / Saved Network Drives</label>
-                                <select id="savedDrivesSelect" class="form-select bg-dark text-light border-info p-3 fs-5">
-                                    <option value="">-- Choose a previously used network share --</option>
-                                </select>
-                            </div>
-                            <div class="col-md-3 d-grid align-self-end">
-                                <button id="clearHistoryBtn" class="btn btn-outline-danger btn-touch">Clear History</button>
-                            </div>
+                <!-- Source Selection & Live Media Telemetry Card -->
+                <div class="card mb-4">
+                    <div class="card-header fw-bold text-white fs-6 d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-disc text-primary me-2"></i>Target Source Selection</span>
+                        <span id="smartStatusBadge" class="badge bg-secondary text-uppercase fs-6">No Drive Selected</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="driveSelect" class="form-label text-white">Evidence Drive / Media</label>
+                            <select id="driveSelect" class="form-select">
+                                <option value="">-- Choose Target Source Drive --</option>
+                            </select>
                         </div>
 
-                        <hr class="border-secondary my-3">
-
-                        <div class="row g-3 align-items-center mb-3">
-                            <div class="col-md-3">
-                                <label class="form-label text-secondary fw-bold fs-5">Protocol</label>
-                                <select id="netProtocol" class="form-select bg-dark text-light border-secondary p-3 fs-5">
-                                    <option value="cifs">Samba / Windows SMB</option>
-                                    <option value="nfs">NFS Server</option>
-                                    <option value="curlftpfs">FTP Server</option>
-                                </select>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label text-secondary fw-bold fs-5">Server IP Address</label>
-                                <input type="text" id="netHost" class="form-control bg-dark text-light border-secondary p-3 fs-5" placeholder="e.g., 192.168.1.100">
-                            </div>
-                            <div class="col-md-3 d-grid align-self-end">
-                                <button id="connectServerBtn" class="btn btn-outline-info btn-touch">Connect & List Shares</button>
-                            </div>
-                        </div>
-
-                        <div class="row g-3 align-items-center mb-3">
-                            <div class="col-md-8">
-                                <label class="form-label text-secondary fw-bold fs-5">Select Available Share / Folder</label>
-                                <select id="serverShareSelect" class="form-select bg-dark text-light border-secondary p-3 fs-5" disabled>
-                                    <option value="">Connect to server first...</option>
-                                </select>
-                            </div>
-                            <div class="col-md-4 d-grid align-self-end">
-                                <button id="mountNetBtn" class="btn btn-primary btn-touch" disabled>Map & Mount Selected Share</button>
-                            </div>
-                        </div>
-
-                        <div class="d-flex justify-content-between align-items-center mt-2">
-                            <span id="mountStatus" class="fs-5 fw-bold text-warning">Status: Unmounted</span>
+                        <!-- Inline Live Telemetry Box -->
+                        <div class="p-3 rounded border border-secondary" style="background-color: #0d1117;">
+                            <h6 class="text-info fw-bold border-bottom border-secondary pb-2 mb-2">
+                                <i class="bi bi-cpu-fill me-2"></i>Media & Hardware Telemetry
+                            </h6>
+                            
+                            <table class="table table-dark table-borderless table-sm m-0 text-white" style="font-size: 0.85rem;">
+                                <tbody>
+                                    <tr>
+                                        <td class="text-white-50 fw-semibold" style="width: 45%;">Device Path:</td>
+                                        <td id="telemetryDevice" class="fw-bold font-monospace">--</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-white-50 fw-semibold">Media Type:</td>
+                                        <td id="telemetryType" class="fw-bold text-info">--</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-white-50 fw-semibold">Model / Vendor:</td>
+                                        <td id="telemetryModel" class="fw-bold">--</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-white-50 fw-semibold">Serial Number:</td>
+                                        <td id="telemetrySerial" class="font-monospace text-warning">--</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-white-50 fw-semibold">Capacity Size:</td>
+                                        <td id="telemetrySize" class="fw-bold">--</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-white-50 fw-semibold">Health State:</td>
+                                        <td id="telemetryState" class="fw-bold">--</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-white-50 fw-semibold">Temperature:</td>
+                                        <td id="telemetryTemp">--</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-white-50 fw-semibold">Reallocated Sectors:</td>
+                                        <td id="telemetryReallocated">--</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-white-50 fw-semibold">Pending Bad Sectors:</td>
+                                        <td id="telemetryPending">--</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-white-50 fw-semibold">Power On Hours:</td>
+                                        <td id="telemetryPowerOn">--</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
 
-        <!-- Step 3: Forensic Verification Hash Algorithms (Moved below Drive Mapping) -->
-        <div class="p-4 mb-4 rounded bg-dark border border-secondary">
-            <label class="form-label fw-bold text-info mb-3 fs-4">3. Verification Hash Algorithms</label>
-            <div class="d-flex flex-wrap gap-4 align-items-center">
-                <div class="form-check form-check-inline fs-4 me-4">
-                    <input class="form-check-input" type="checkbox" id="hashMd5" checked style="transform: scale(1.4); cursor: pointer;">
-                    <label class="form-check-label fw-bold ms-2 text-white" for="hashMd5" style="cursor: pointer;">MD5</label>
+                <!-- Live Chart Telemetry Card -->
+                <div class="card">
+                    <div class="card-header fw-bold text-white fs-6 d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-speedometer2 text-success me-2"></i>Live Throughput</span>
+                        <span id="transferSpeed" class="badge bg-primary fs-6">0.0 MB/s</span>
+                    </div>
+                    <div class="card-body p-3" style="height: 200px; position: relative;">
+                        <canvas id="throughputChart"></canvas>
+                    </div>
                 </div>
-                <div class="form-check form-check-inline fs-4 me-4">
-                    <input class="form-check-input" type="checkbox" id="hashSha1" style="transform: scale(1.4); cursor: pointer;">
-                    <label class="form-check-label fw-bold ms-2 text-white" for="hashSha1" style="cursor: pointer;">SHA-1 <span class="badge bg-secondary text-light fs-6 ms-1">Slower on Pi</span></label>
-                </div>
-                <div class="form-check form-check-inline fs-4">
-                    <input class="form-check-input" type="checkbox" id="hashSha256" style="transform: scale(1.4); cursor: pointer;">
-                    <label class="form-check-label fw-bold ms-2 text-white" for="hashSha256" style="cursor: pointer;">SHA-256 <span class="badge bg-danger text-white fs-6 ms-1">CPU Heavy</span></label>
-                </div>
-            </div>
-        </div>
-
-        <!-- Step 4: Case & Evidence Metadata Manifest -->
-        <div class="p-4 mb-4 rounded bg-dark border border-secondary">
-            <label class="form-label fw-bold text-warning mb-3 fs-4">4. Case & Evidence Metadata Manifest</label>
-            <div class="row g-3 mb-3">
-                <div class="col-md-4">
-                    <label class="form-label text-secondary fw-bold fs-6">Case Number</label>
-                    <input type="text" id="caseNum" class="form-control bg-dark text-light border-secondary p-3 fs-5" placeholder="e.g., CASE-2026-001">
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label text-secondary fw-bold fs-6">Evidence Item ID</label>
-                    <input type="text" id="evidenceId" class="form-control bg-dark text-light border-secondary p-3 fs-5" placeholder="e.g., ITEM-01A">
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label text-secondary fw-bold fs-6">Examiner Name</label>
-                    <input type="text" id="examinerName" class="form-control bg-dark text-light border-secondary p-3 fs-5" placeholder="e.g., Inv. Smith">
-                </div>
-            </div>
-            <div>
-                <label class="form-label text-secondary fw-bold fs-6">Case Notes / Description</label>
-                <textarea id="caseNotes" class="form-control bg-dark text-light border-secondary p-3 fs-6" rows="2" placeholder="Optional notes regarding drive condition, physical serials, or scene details..."></textarea>
-            </div>
-        </div>
-
-        <!-- Actions -->
-        <div class="row g-2 mb-3">
-            <div class="col-md-6 d-grid">
-                <button id="startBtn" class="btn btn-success btn-touch fs-4">Start Acquisition</button>
-            </div>
-            <div class="col-md-6 d-grid">
-                <button id="stopBtn" class="btn btn-danger btn-touch fs-4" disabled>Stop Acquisition</button>
-            </div>
-        </div>
-
-        <!-- Log & Progress -->
-        <div class="mt-3">
-            <label class="form-label fw-bold text-secondary fs-5">Acquisition Progress</label>
-            <div class="progress mb-3">
-                <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success fs-5 fw-bold" role="progressbar" style="width: 0%">0%</div>
             </div>
 
-            <label class="form-label text-secondary fw-bold fs-5">Live Execution Log</label>
-            <div id="terminalLog" class="terminal-log">[INFO] System ready for drive acquisition.</div>
+            <!-- Right Panel: Acquisition Config & Terminal Monitor -->
+            <div class="col-lg-8">
+                
+                <!-- Destination Configuration Tabs & Panel -->
+                <div class="card mb-4">
+                    <div class="card-header fw-bold text-white fs-6">
+                        <i class="bi bi-folder-symlink text-warning me-2"></i>Destination & Case Details
+                    </div>
+                    <div class="card-body">
+                        
+                        <!-- Destination Storage Tabs -->
+                        <ul class="nav nav-tabs border-secondary mb-3" id="destTabs" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-item nav-link active fw-bold text-white" id="local-tab" data-bs-toggle="tab" data-bs-target="#local-panel" type="button">Local Storage</button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-item nav-link fw-bold text-white" id="network-tab" data-bs-toggle="tab" data-bs-target="#network-panel" type="button">Network Share (SMB/NFS)</button>
+                            </li>
+                        </ul>
+
+                        <div class="tab-content" id="destTabsContent">
+                            <!-- Local Storage Tab -->
+                            <div class="tab-pane fade show active" id="local-panel">
+                                <div class="mb-3">
+                                    <label class="form-label text-white">Destination Target Path</label>
+                                    <div class="input-group">
+                                        <input type="text" id="destPath" class="form-control" value="/mnt" placeholder="/mnt/external_drive">
+                                        <button class="btn btn-outline-light fw-bold" type="button" data-bs-toggle="modal" data-bs-target="#folderBrowserModal">
+                                            <i class="bi bi-folder2-open me-1"></i>Browse
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Network Share Tab -->
+                            <div class="tab-pane fade" id="network-panel">
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-3">
+                                        <label class="form-label text-white">Protocol</label>
+                                        <select id="netProtocol" class="form-select">
+                                            <option value="smb">SMB / CIFS</option>
+                                            <option value="nfs">NFS</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label text-white">Server IP Address</label>
+                                        <input type="text" id="netHost" class="form-control" placeholder="192.168.1.100">
+                                    </div>
+                                    <div class="col-md-3 d-flex align-items-end">
+                                        <button id="connectServerBtn" class="btn btn-primary w-100 fw-bold">Query Shares</button>
+                                    </div>
+                                </div>
+
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-8">
+                                        <label class="form-label text-white">Discovered Server Shares</label>
+                                        <select id="serverShareSelect" class="form-select" disabled>
+                                            <option value="">Query server first...</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4 d-flex align-items-end">
+                                        <button id="mountNetBtn" class="btn btn-success w-100 fw-bold" disabled>Mount Share</button>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label class="form-label text-white">Saved Shares History</label>
+                                    <div class="d-flex gap-2">
+                                        <select id="savedDrivesSelect" class="form-select">
+                                            <option value="">-- Choose saved network drive --</option>
+                                        </select>
+                                        <button id="clearHistoryBtn" class="btn btn-outline-danger text-nowrap fw-bold">Clear History</button>
+                                    </div>
+                                </div>
+                                <div id="mountStatus" class="fs-6 fw-bold text-info mt-2"></div>
+                            </div>
+                        </div>
+
+                        <hr class="border-secondary my-4">
+
+                        <!-- Case Metadata Configuration -->
+                        <div class="row g-3">
+                            <div class="col-md-4">
+                                <label for="caseNum" class="form-label text-white">Case Number</label>
+                                <input type="text" id="caseNum" class="form-control" placeholder="2026-CASE-001">
+                            </div>
+                            <div class="col-md-4">
+                                <label for="evidenceId" class="form-label text-white">Evidence ID</label>
+                                <input type="text" id="evidenceId" class="form-control" placeholder="ITEM-01">
+                            </div>
+                            <div class="col-md-4">
+                                <label for="examinerName" class="form-label text-white">Examiner Name</label>
+                                <input type="text" id="examinerName" class="form-control" placeholder="Det. Olson">
+                            </div>
+                            <div class="col-12">
+                                <label for="caseNotes" class="form-label text-white">Case Notes</label>
+                                <input type="text" id="caseNotes" class="form-control" placeholder="Drive acquisition via ARM Forensic Unit">
+                            </div>
+                        </div>
+
+                        <!-- Hash Algorithms Checkboxes -->
+                        <div class="mt-4">
+                            <label class="form-label text-white d-block mb-2">Cryptographic Hash Verification</label>
+                            <div class="d-flex gap-4">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="hashMd5" checked>
+                                    <label class="form-check-label text-white fw-bold" for="hashMd5">MD5</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="hashSha1" checked>
+                                    <label class="form-check-label text-white fw-bold" for="hashSha1">SHA-1</label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="hashSha256" checked>
+                                    <label class="form-check-label text-white fw-bold" for="hashSha256">SHA-256</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Action Control Buttons -->
+                        <div class="d-flex gap-3 mt-4">
+                            <button id="startBtn" class="btn btn-success btn-lg flex-fill fw-bold fs-5">
+                                <i class="bi bi-play-circle me-2"></i>Start Acquisition
+                            </button>
+                            <button id="stopBtn" class="btn btn-danger btn-lg flex-fill fw-bold fs-5" disabled>
+                                <i class="bi bi-stop-circle me-2"></i>Stop Acquisition
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Live Progress & Console Log Card -->
+                <div class="card">
+                    <div class="card-header fw-bold text-white fs-6 d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-terminal text-info me-2"></i>Acquisition Progress & Audit Console</span>
+                        <span id="imagingStatus" class="fw-bold text-warning">IDLE</span>
+                    </div>
+                    <div class="card-body">
+                        <!-- Progress Bar Container -->
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-white fw-bold">Acquisition Status</span>
+                                <span class="text-white fw-bold">ETA: <span id="etaDisplay" class="text-info">--:--:--</span></span>
+                            </div>
+                            <div class="progress bg-secondary" style="height: 25px;">
+                                <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success fs-6 fw-bold" style="width: 0%;">0%</div>
+                            </div>
+                            <div class="d-flex justify-content-between mt-1 fs-6">
+                                <span id="bytesTransferred" class="text-white fw-bold">0 MB / 0 MB</span>
+                            </div>
+                        </div>
+
+                        <!-- Live Terminal Output Area -->
+                        <pre id="terminalLog" class="p-3 rounded overflow-auto" style="height: 200px;">[System initialized and idle. Ready for disk acquisition job.]</pre>
+                    </div>
+                </div>
+
+            </div>
         </div>
     </div>
-</div>
 
-<!-- Modal: SMART Diagnostics Report -->
-<div class="modal fade" id="smartModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content bg-dark text-light border-secondary">
-            <div class="modal-header border-secondary">
-                <h5 class="modal-title fs-4 fw-bold">SMART Health Diagnostic Report</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body p-4">
-                <div id="smartStatusHeader" class="mb-3 p-3 rounded text-center fw-bold fs-4">Checking drive...</div>
-                <div class="table-responsive">
-                    <table class="table table-dark table-striped border-secondary">
-                        <tbody id="smartTableBody">
-                            <tr><td colspan="2" class="text-center">Loading SMART attributes...</td></tr>
-                        </tbody>
-                    </table>
+    <!-- Directory Browser Modal -->
+    <div class="modal fade" id="folderBrowserModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-white border-secondary">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title fw-bold text-white"><i class="bi bi-folder2-open me-2 text-warning"></i>Select Destination Directory</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
-            </div>
-            <div class="modal-footer border-secondary">
-                <button type="button" class="btn btn-secondary btn-touch" data-bs-dismiss="modal">Close</button>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <span id="currentPathDisplay" class="fw-bold text-info fs-6">/mnt</span>
+                        <button id="navUpBtn" class="btn btn-sm btn-outline-light fw-bold"><i class="bi bi-arrow-up me-1"></i>Up Level</button>
+                    </div>
+                    <div id="folderContainer" style="max-height: 300px; overflow-y: auto;">
+                        <div class="text-center text-white py-3">Loading subdirectories...</div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary fw-bold" data-bs-dismiss="modal">Cancel</button>
+                    <button id="confirmFolderBtn" type="button" class="btn btn-primary fw-bold" data-bs-dismiss="modal">Confirm Selected Folder</button>
+                </div>
             </div>
         </div>
     </div>
-</div>
 
-<!-- Modal: Dynamic User Authentication Prompt -->
-<div class="modal fade" id="authModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content bg-dark text-light border-secondary">
-            <div class="modal-header border-secondary">
-                <h5 class="modal-title">Network Authentication Required</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body p-4">
-                <p class="text-secondary">This server requires valid credentials to display and access shares:</p>
-                <div class="mb-3">
-                    <label class="form-label fw-bold">Username</label>
-                    <input type="text" id="modalNetUser" class="form-control bg-dark text-light border-secondary p-3 fs-5">
+    <!-- Network Credentials Modal -->
+    <div class="modal fade" id="authModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-white border-secondary">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title fw-bold text-white"><i class="bi bi-key me-2 text-warning"></i>Network Authentication Required</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
-                <div class="mb-3">
-                    <label class="form-label fw-bold">Password</label>
-                    <input type="password" id="modalNetPass" class="form-control bg-dark text-light border-secondary p-3 fs-5">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="modalNetUser" class="form-label text-white">Username</label>
+                        <input type="text" id="modalNetUser" class="form-control" placeholder="domain\user or username">
+                    </div>
+                    <div class="mb-3">
+                        <label for="modalNetPass" class="form-label text-white">Password</label>
+                        <input type="password" id="modalNetPass" class="form-control">
+                    </div>
                 </div>
-            </div>
-            <div class="modal-footer border-secondary">
-                <button type="button" class="btn btn-secondary btn-touch" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" id="submitAuthBtn" class="btn btn-primary btn-touch" data-bs-dismiss="modal">Authenticate</button>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary fw-bold" data-bs-dismiss="modal">Cancel</button>
+                    <button id="submitAuthBtn" type="button" class="btn btn-primary fw-bold" data-bs-dismiss="modal">Authenticate & Query</button>
+                </div>
             </div>
         </div>
     </div>
-</div>
 
-<!-- Folder Selector Modal -->
-<div class="modal fade" id="folderBrowserModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content bg-dark text-light border-secondary">
-            <div class="modal-header border-secondary">
-                <h5 class="modal-title">Select Storage Directory</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body p-3">
-                <div class="d-flex align-items-center mb-3">
-                    <button id="navUpBtn" class="btn btn-outline-light btn-touch me-2">[..] Parent Directory</button>
-                    <span id="currentPathDisplay" class="fs-5 text-warning fw-bold text-break">/mnt</span>
-                </div>
-                <div id="folderContainer" class="d-flex flex-column"></div>
-            </div>
-            <div class="modal-footer border-secondary">
-                <button type="button" class="btn btn-secondary btn-touch" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" id="confirmFolderBtn" class="btn btn-success btn-touch" data-bs-dismiss="modal">Select Folder</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script src="/static/js/main.js"></script>
+    <!-- Bootstrap 5 JavaScript Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Core Controller & Chart JS -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>
 </html>

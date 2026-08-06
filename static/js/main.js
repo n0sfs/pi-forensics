@@ -2,19 +2,30 @@ let currentBrowserPath = "/mnt";
 let activeDestType = "local";
 let savedNetUser = "";
 let savedNetPass = "";
+let throughputChart = null;
+
+// Track connected drive signatures to detect hot-plugging
+let knownDriveSignature = "";
+
+// Store last queried telemetry for report metadata
+let currentDriveTelemetry = {};
 
 document.addEventListener("DOMContentLoaded", () => {
+    initThroughputChart();
+    
     fetchSystemInfo();
-    fetchDrives();
+    fetchDrives(); // Initial fetch
     loadSavedNetworkDrives();
     
+    // Background polling loops
     setInterval(fetchSystemInfo, 2000);
     setInterval(pollProgress, 1000);
+    setInterval(fetchDrives, 2000); // Auto-detect USB / SD / HDD insertions
 
+    document.getElementById("driveSelect").addEventListener("change", inspectDriveTelemetry);
     document.getElementById("writeBlockToggle").addEventListener("change", toggleWriteBlock);
     document.getElementById("startBtn").addEventListener("click", startImaging);
     document.getElementById("stopBtn").addEventListener("click", stopImaging);
-    document.getElementById("checkSmartBtn").addEventListener("click", checkSmartHealth);
     
     document.getElementById("connectServerBtn").addEventListener("click", connectAndQueryShares);
     document.getElementById("submitAuthBtn").addEventListener("click", () => {
@@ -39,21 +50,170 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 });
 
-async function checkSmartHealth() {
+// --- Chart.js Telemetry Initialization ---
+function initThroughputChart() {
+    const canvas = document.getElementById('throughputChart');
+    if (!canvas) return;
+
+    Chart.defaults.color = '#ffffff';
+    Chart.defaults.font.family = 'system-ui, -apple-system, sans-serif';
+
+    const ctx = canvas.getContext('2d');
+    
+    if (throughputChart) {
+        throughputChart.destroy();
+    }
+
+    throughputChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: Array(20).fill(''),
+            datasets: [{
+                label: 'Speed (MB/s)',
+                data: Array(20).fill(0),
+                borderColor: '#60a5fa',
+                backgroundColor: 'rgba(96, 165, 250, 0.35)',
+                borderWidth: 2.5,
+                tension: 0.35,
+                fill: true,
+                pointRadius: 0,
+                pointHoverRadius: 5
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#0f172a',
+                    titleColor: '#ffffff',
+                    bodyColor: '#38bdf8',
+                    borderColor: '#334155',
+                    borderWidth: 1,
+                    padding: 10,
+                    callbacks: {
+                        label: (context) => ` Speed: ${context.raw} MB/s`
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { display: false },
+                    ticks: {
+                        color: '#ffffff',
+                        font: { size: 10, weight: 'bold' }
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    grid: { 
+                        color: 'rgba(255, 255, 255, 0.15)',
+                        lineWidth: 1
+                    },
+                    ticks: {
+                        color: '#ffffff',
+                        font: { size: 11, weight: 'bold' },
+                        callback: (value) => `${value} MB/s`
+                    }
+                }
+            }
+        }
+    });
+}
+
+function pushThroughputData(speedMBps) {
+    if (!throughputChart) return;
+
+    const timeLabel = new Date().toLocaleTimeString([], { 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit' 
+    });
+
+    throughputChart.data.labels.shift();
+    throughputChart.data.datasets[0].data.shift();
+
+    throughputChart.data.labels.push(timeLabel);
+    throughputChart.data.datasets[0].data.push(speedMBps);
+
+    throughputChart.update('none');
+}
+
+// --- Auto-Detect Hot-Plugged USB / SD / Drives ---
+async function fetchDrives() {
+    try {
+        const res = await fetch('/api/drives');
+        const drives = await res.json();
+        
+        // Generate a unique fingerprint of connected drives
+        const newSignature = drives.map(d => `${d.name}-${d.size}-${d.model}`).join('|');
+        
+        // If no change in drive topology, exit without disrupting UI
+        if (newSignature === knownDriveSignature) return;
+        
+        knownDriveSignature = newSignature;
+        const select = document.getElementById("driveSelect");
+        const currentSelection = select.value;
+        
+        select.innerHTML = '<option value="">-- Choose Target Source Drive --</option>';
+        
+        drives.forEach(drive => {
+            const opt = document.createElement("option");
+            opt.value = `/dev/${drive.name}`;
+            opt.innerText = `/dev/${drive.name} - ${drive.model || 'Generic Device'} (${drive.size})`;
+            select.appendChild(opt);
+        });
+
+        // Restore previous selection if drive is still attached
+        if (currentSelection && drives.some(d => `/dev/${d.name}` === currentSelection)) {
+            select.value = currentSelection;
+        } else {
+            inspectDriveTelemetry(); // Reset panel if selected drive was unplugged
+        }
+
+    } catch (err) {
+        console.error("Error polling drive topology:", err);
+    }
+}
+
+// --- Dynamic Inline Drive Telemetry & SMART Inspector ---
+async function inspectDriveTelemetry() {
     const drive = document.getElementById("driveSelect").value;
+    
+    const badge = document.getElementById("smartStatusBadge");
+    const deviceEl = document.getElementById("telemetryDevice");
+    const typeEl = document.getElementById("telemetryType");
+    const modelEl = document.getElementById("telemetryModel");
+    const serialEl = document.getElementById("telemetrySerial");
+    const sizeEl = document.getElementById("telemetrySize");
+    const stateEl = document.getElementById("telemetryState");
+    const tempEl = document.getElementById("telemetryTemp");
+    const reallocatedEl = document.getElementById("telemetryReallocated");
+    const pendingEl = document.getElementById("telemetryPending");
+    const powerOnEl = document.getElementById("telemetryPowerOn");
+
     if (!drive) {
-        alert("Please select a target source drive first.");
+        badge.className = "badge bg-secondary text-uppercase fs-6";
+        badge.innerText = "No Drive Selected";
+        deviceEl.innerText = "--";
+        typeEl.innerText = "--";
+        modelEl.innerText = "--";
+        serialEl.innerText = "--";
+        sizeEl.innerText = "--";
+        stateEl.innerText = "--";
+        tempEl.innerText = "--";
+        reallocatedEl.innerText = "--";
+        pendingEl.innerText = "--";
+        powerOnEl.innerText = "--";
+        currentDriveTelemetry = {};
         return;
     }
 
-    const smartModal = new bootstrap.Modal(document.getElementById('smartModal'));
-    const statusHeader = document.getElementById('smartStatusHeader');
-    const tableBody = document.getElementById('smartTableBody');
-
-    statusHeader.className = "mb-3 p-3 rounded text-center fw-bold fs-4 bg-secondary text-white";
-    statusHeader.innerText = "Querying SMART Health Telemetry...";
-    tableBody.innerHTML = '<tr><td colspan="2" class="text-center">Communicating with disk controller...</td></tr>';
-    smartModal.show();
+    badge.className = "badge bg-warning text-dark text-uppercase fs-6";
+    badge.innerText = "Querying...";
+    stateEl.innerText = "Reading Disk Telemetry...";
 
     try {
         const res = await fetch('/api/smart_check', {
@@ -63,33 +223,125 @@ async function checkSmartHealth() {
         });
         const data = await res.json();
 
+        deviceEl.innerText = drive;
+        modelEl.innerText = data.model || 'Generic / Flash Device';
+        serialEl.innerText = data.serial || 'N/A';
+        sizeEl.innerText = data.size || 'N/A';
+
+        // Detect Media Type
+        let mediaType = "SATA / ATA Storage";
+        if (drive.includes('mmcblk')) {
+            mediaType = 'SD / MicroSD Card';
+        } else if (data.transport === 'usb' || data.is_usb) {
+            mediaType = 'USB Flash / Thumb Drive';
+        } else if (drive.includes('nvme')) {
+            mediaType = 'NVMe SSD';
+        }
+        typeEl.innerText = mediaType;
+
+        let healthStatus = "UNKNOWN";
         if (!data.success) {
-            statusHeader.className = "mb-3 p-3 rounded text-center fw-bold fs-4 bg-danger text-white";
-            statusHeader.innerText = "SMART Check Failed or Unsupported Device";
-            tableBody.innerHTML = `<tr><td colspan="2" class="text-danger">${data.error}</td></tr>`;
-            return;
-        }
-
-        if (data.healthy) {
-            statusHeader.className = "mb-3 p-3 rounded text-center fw-bold fs-4 bg-success text-white";
-            statusHeader.innerText = "OVERALL HEALTH: PASSED (GOOD DRIVE)";
+            badge.className = "badge bg-info text-dark text-uppercase fs-6";
+            badge.innerText = "READY (FLASH MEDIA)";
+            stateEl.className = "fw-bold text-info";
+            stateEl.innerText = "PASSED (Flash Media / No SMART)";
+            tempEl.innerText = "N/A";
+            reallocatedEl.innerText = "N/A";
+            pendingEl.innerText = "N/A";
+            powerOnEl.innerText = "N/A";
+            healthStatus = "PASSED (Flash Media)";
+        } else if (data.healthy) {
+            badge.className = "badge bg-success text-uppercase fs-6";
+            badge.innerText = "HEALTHY";
+            stateEl.className = "fw-bold text-success";
+            stateEl.innerText = "PASSED (GOOD DRIVE)";
+            tempEl.innerText = data.temperature ? `${data.temperature} °C` : 'N/A';
+            reallocatedEl.innerText = data.reallocated_sectors !== undefined ? data.reallocated_sectors : '0';
+            reallocatedEl.className = data.reallocated_sectors > 0 ? "text-danger fw-bold" : "text-white";
+            pendingEl.innerText = data.pending_sectors !== undefined ? data.pending_sectors : '0';
+            pendingEl.className = data.pending_sectors > 0 ? "text-danger fw-bold" : "text-white";
+            powerOnEl.innerText = data.power_on_hours ? `${data.power_on_hours} hrs` : 'N/A';
+            healthStatus = "PASSED (HEALTHY)";
         } else {
-            statusHeader.className = "mb-3 p-3 rounded text-center fw-bold fs-4 bg-danger text-white";
-            statusHeader.innerText = "WARNING: DRIVE HEALTH FAILING / BAD SECTORS";
+            badge.className = "badge bg-danger text-uppercase fs-6";
+            badge.innerText = "FAILING";
+            stateEl.className = "fw-bold text-danger";
+            stateEl.innerText = "WARNING: BAD SECTORS / FAILING";
+            tempEl.innerText = data.temperature ? `${data.temperature} °C` : 'N/A';
+            reallocatedEl.innerText = data.reallocated_sectors || 'N/A';
+            pendingEl.innerText = data.pending_sectors || 'N/A';
+            powerOnEl.innerText = data.power_on_hours ? `${data.power_on_hours} hrs` : 'N/A';
+            healthStatus = "FAILING (BAD SECTORS)";
         }
 
-        tableBody.innerHTML = `
-            <tr><th style="width: 40%;">Model / Family</th><td>${data.model || 'Unknown'}</td></tr>
-            <tr><th>Serial Number</th><td><code>${data.serial || 'N/A'}</code></td></tr>
-            <tr><th>Temperature</th><td>${data.temperature ? data.temperature + ' °C' : 'N/A'}</td></tr>
-            <tr><th>Reallocated Sectors</th><td class="${data.reallocated_sectors > 0 ? 'text-danger fw-bold' : ''}">${data.reallocated_sectors}</td></tr>
-            <tr><th>Pending Bad Sectors</th><td class="${data.pending_sectors > 0 ? 'text-danger fw-bold' : ''}">${data.pending_sectors}</td></tr>
-            <tr><th>Power On Hours</th><td>${data.power_on_hours ? data.power_on_hours + ' hrs' : 'N/A'}</td></tr>
-        `;
+        // Store telemetry for forensic report injection
+        currentDriveTelemetry = {
+            device: drive,
+            media_type: mediaType,
+            model: data.model || 'Generic / Flash Device',
+            serial: data.serial || 'N/A',
+            size: data.size || 'N/A',
+            health_status: healthStatus,
+            temperature: data.temperature || 'N/A',
+            reallocated_sectors: data.reallocated_sectors || 0,
+            pending_sectors: data.pending_sectors || 0,
+            power_on_hours: data.power_on_hours || 'N/A'
+        };
+
     } catch (err) {
-        console.error("Error querying SMART status:", err);
-        statusHeader.className = "mb-3 p-3 rounded text-center fw-bold fs-4 bg-danger text-white";
-        statusHeader.innerText = "Communication Error";
+        console.error("Error inspecting drive:", err);
+        badge.className = "badge bg-danger text-uppercase fs-6";
+        badge.innerText = "ERROR";
+        stateEl.className = "fw-bold text-danger";
+        stateEl.innerText = "Communication Error";
+    }
+}
+
+// --- Acquisition Execution & Reporting ---
+async function startImaging() {
+    const source = document.getElementById("driveSelect").value;
+    if (!source) {
+        alert("Please select a target source drive first.");
+        return;
+    }
+
+    const payload = {
+        source: source,
+        dest_type: activeDestType,
+        destination: document.getElementById("destPath").value,
+        hashes: {
+            md5: document.getElementById("hashMd5").checked,
+            sha1: document.getElementById("hashSha1").checked,
+            sha256: document.getElementById("hashSha256").checked
+        },
+        metadata: {
+            case_number: document.getElementById("caseNum").value.trim() || "UNASSIGNED",
+            evidence_id: document.getElementById("evidenceId").value.trim() || "ITEM-01",
+            examiner: document.getElementById("examinerName").value.trim() || "UNSPECIFIED",
+            notes: document.getElementById("caseNotes").value.trim() || "None",
+            telemetry: currentDriveTelemetry // Direct inclusion into case report
+        }
+    };
+
+    try {
+        const res = await fetch('/api/start_imaging', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.error) alert(data.error);
+    } catch (err) {
+        console.error("Error starting acquisition:", err);
+    }
+}
+
+async function stopImaging() {
+    if (!confirm("Are you sure you want to stop the imaging process?")) return;
+    try {
+        await fetch('/api/stop_imaging', { method: 'POST' });
+    } catch (err) {
+        console.error("Error stopping acquisition:", err);
     }
 }
 
@@ -262,7 +514,7 @@ async function fetchSystemInfo() {
         const wbLabel = document.getElementById("wbLabel");
         wbToggle.checked = data.write_blocker_active;
         wbLabel.innerText = `Write Blocker: ${data.write_blocker_active ? 'ON' : 'OFF'}`;
-        wbLabel.className = `form-check-label fw-bold ms-2 ${data.write_blocker_active ? 'text-danger' : 'text-secondary'}`;
+        wbLabel.className = `form-check-label fw-bold ms-2 ${data.write_blocker_active ? 'text-danger' : 'text-white'}`;
     } catch (err) {
         console.error("Error fetching system info:", err);
     }
@@ -285,14 +537,14 @@ async function browseFolder(path) {
         container.innerHTML = "";
 
         if (data.folders.length === 0) {
-            container.innerHTML = '<div class="text-muted fs-5 text-center p-3">No subdirectories found</div>';
+            container.innerHTML = '<div class="text-white fs-5 text-center p-3">No subdirectories found</div>';
             return;
         }
 
         data.folders.forEach(folder => {
             const item = document.createElement("div");
             item.className = "folder-list-item";
-            item.innerHTML = `<span>[Folder] <strong>${folder}</strong></span> <button class="btn btn-sm btn-outline-primary">Open</button>`;
+            item.innerHTML = `<span>[Folder] <strong>${folder}</strong></span> <button class="btn btn-sm btn-outline-primary fw-bold">Open</button>`;
             item.onclick = () => browseFolder(`${currentBrowserPath}/${folder}`);
             container.appendChild(item);
         });
@@ -307,24 +559,6 @@ function navigateUp() {
     browseFolder('/' + parts.join('/'));
 }
 
-async function fetchDrives() {
-    try {
-        const res = await fetch('/api/drives');
-        const drives = await res.json();
-        const select = document.getElementById("driveSelect");
-        select.innerHTML = '<option value="">-- Choose Target Source Drive --</option>';
-        
-        drives.forEach(drive => {
-            const opt = document.createElement("option");
-            opt.value = `/dev/${drive.name}`;
-            opt.innerText = `/dev/${drive.name} - ${drive.model || 'Generic Device'} (${drive.size})`;
-            select.appendChild(opt);
-        });
-    } catch (err) {
-        console.error("Error fetching drives:", err);
-    }
-}
-
 async function toggleWriteBlock(e) {
     try {
         await fetch('/api/toggle_write_block', {
@@ -335,52 +569,6 @@ async function toggleWriteBlock(e) {
         fetchSystemInfo();
     } catch (err) {
         console.error("Failed to set write blocker status:", err);
-    }
-}
-
-async function startImaging() {
-    const source = document.getElementById("driveSelect").value;
-    if (!source) {
-        alert("Please select a target source drive first.");
-        return;
-    }
-
-    const payload = {
-        source: source,
-        dest_type: activeDestType,
-        destination: document.getElementById("destPath").value,
-        hashes: {
-            md5: document.getElementById("hashMd5").checked,
-            sha1: document.getElementById("hashSha1").checked,
-            sha256: document.getElementById("hashSha256").checked
-        },
-        metadata: {
-            case_number: document.getElementById("caseNum").value.trim() || "UNASSIGNED",
-            evidence_id: document.getElementById("evidenceId").value.trim() || "ITEM-01",
-            examiner: document.getElementById("examinerName").value.trim() || "UNSPECIFIED",
-            notes: document.getElementById("caseNotes").value.trim() || "None"
-        }
-    };
-
-    try {
-        const res = await fetch('/api/start_imaging', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const data = await res.json();
-        if (data.error) alert(data.error);
-    } catch (err) {
-        console.error("Error starting acquisition:", err);
-    }
-}
-
-async function stopImaging() {
-    if (!confirm("Are you sure you want to stop the imaging process?")) return;
-    try {
-        await fetch('/api/stop_imaging', { method: 'POST' });
-    } catch (err) {
-        console.error("Error stopping acquisition:", err);
     }
 }
 
@@ -399,6 +587,9 @@ async function pollProgress() {
 
         const bar = document.getElementById("progressBar");
         bar.style.width = `${data.progress_percent}%`;
+
+        const speed = parseFloat(data.speed_mbps || 0);
+        pushThroughputData(speed);
 
         if (data.status === "Verifying Hashes...") {
             bar.innerText = "99% (Verifying Hashes...)";
@@ -433,9 +624,9 @@ async function pollProgress() {
         
         const statusElem = document.getElementById("imagingStatus");
         statusElem.innerText = data.status;
-        statusElem.className = data.status === "Failed" ? "metric-value text-danger" : 
-                              (data.status === "Completed Successfully" ? "metric-value text-success" : 
-                              (data.status.includes("Verifying") || data.status.includes("Flushing") ? "metric-value text-info" : "metric-value text-warning"));
+        statusElem.className = data.status === "Failed" ? "fw-bold text-danger" : 
+                              (data.status === "Completed Successfully" ? "fw-bold text-success" : 
+                              (data.status.includes("Verifying") || data.status.includes("Flushing") ? "fw-bold text-info" : "fw-bold text-warning"));
 
         const mbTransferred = (data.transferred_bytes / (1024 * 1024)).toFixed(1);
         const mbTotal = (data.total_bytes / (1024 * 1024)).toFixed(1);
