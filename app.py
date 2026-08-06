@@ -1,482 +1,588 @@
 import os
+import re
 import time
+import json
+import fcntl
+import psutil
 import subprocess
 import threading
-import json
-import psutil
-from flask import Flask, render_template, jsonify, request
+from functools import wraps
+from flask import Flask, render_template, jsonify, request, Response
 
 app = Flask(__name__)
 
-ACTIVE_PROCESS = None
+# Authentication Config (Defaults to admin/forensics if not set via environment)
+ADMIN_USER = os.environ.get('FORENSIC_USER', 'admin')
+ADMIN_PASS = os.environ.get('FORENSIC_PASS', 'forensics')
 
-IMAGING_STATE = {
+# Global State for Live Acquisition Job
+current_job = {
     "active": False,
+    "process": None,
+    "format": "dd",
     "progress_percent": 0.0,
     "speed_mbps": 0.0,
     "transferred_bytes": 0,
     "total_bytes": 0,
-    "status": "Idle",
-    "log": "[INFO] System initialized.",
-    "error_details": ""
+    "status": "IDLE",
+    "log": "[System initialized and idle. Ready for disk acquisition job.]"
 }
 
-def execute_cmd(cmd):
-    """Utility helper to execute shell commands cleanly."""
-    try:
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
-        return res.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        return f"Error: {e.stderr.strip()}"
+# Network Telemetry Tracking State
+last_net_check = {"time": time.time(), "bytes_sent": 0, "bytes_recv": 0}
 
+# --- Authentication Middleware ---
+def check_auth(username, password):
+    return username == ADMIN_USER and password == ADMIN_PASS
+
+def authenticate():
+    return Response(
+        'Authentication required to access ARM Forensic Station.\n',
+        401,
+        {'WWW-Authenticate': 'Basic realm="Forensic Station Login Required"'}
+    )
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        client_ip = request.remote_addr
+        
+        # Auto-bypass auth for localhost, loopback, and local private subnets
+        if client_ip in ['127.0.0.1', '::1', 'localhost'] or \
+           client_ip.startswith('192.168.') or \
+           client_ip.startswith('10.') or \
+           client_ip.startswith('172.'):
+            return f(*args, **kwargs)
+        
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+
+# --- Regex Progress Parsers ---
+def parse_dc3dd_line(line):
+    m = re.search(r'(\d+)\s+bytes.*copied.*,\s*([\d\.]+)\s*MB/s', line, re.IGNORECASE)
+    if m:
+        return int(m.group(1)), float(m.group(2))
+    return None, None
+
+def parse_ewf_line(line):
+    # Captures all standard libewf/ewfacquire output variants
+    m_pct = re.search(r'(\d+)%\s*(?:acquired|done|completed|written)?', line, re.IGNORECASE)
+    m_spd = re.search(r'([\d\.]+)\s*(?:MiB|MB|KiB|KB)/s', line, re.IGNORECASE)
+    pct = float(m_pct.group(1)) if m_pct else None
+    spd = float(m_spd.group(1)) if m_spd else None
+    return pct, spd
+
+def parse_aff_line(line):
+    m_pct = re.search(r'([\d\.]+)%\s*(?:copied|done|completed)?', line, re.IGNORECASE)
+    m_spd = re.search(r'([\d\.]+)\s*(?:MiB|MB)/s', line, re.IGNORECASE)
+    pct = float(m_pct.group(1)) if m_pct else None
+    spd = float(m_spd.group(1)) if m_spd else None
+    return pct, spd
+
+
+# --- Non-Blocking Worker Thread ---
+def execution_worker(cmd, fmt, total_bytes, log_file_path):
+    global current_job
+    log_history = []
+    
+    def append_log(msg):
+        log_history.append(msg)
+        current_job["log"] = "\n".join(log_history[-100:])
+
+    append_log(f"[*] Starting acquisition process using tool [{fmt.upper()}]...")
+    append_log(f"[*] Command: {' '.join(cmd)}")
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=False,
+            bufsize=0
+        )
+        current_job["process"] = process
+        current_job["status"] = "Acquiring Evidence..."
+
+        buffer = ""
+        fd = process.stdout.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+        while True:
+            try:
+                raw_bytes = os.read(fd, 1024)
+                if not raw_bytes and process.poll() is not None:
+                    break
+                if raw_bytes:
+                    text_chunk = raw_bytes.decode('utf-8', errors='ignore')
+                    for char in text_chunk:
+                        if char in ['\r', '\n']:
+                            line_str = buffer.strip()
+                            buffer = ""
+                            if not line_str:
+                                continue
+                            
+                            append_log(line_str)
+
+                            # Parse tool metrics while actively running
+                            if fmt in ['raw', 'dd']:
+                                bytes_copied, speed = parse_dc3dd_line(line_str)
+                                if bytes_copied is not None:
+                                    current_job["transferred_bytes"] = bytes_copied
+                                    if total_bytes > 0:
+                                        current_job["progress_percent"] = round((bytes_copied / total_bytes) * 100, 1)
+                                if speed is not None:
+                                    current_job["speed_mbps"] = speed
+
+                            elif fmt == 'e01':
+                                pct, speed = parse_ewf_line(line_str)
+                                if pct is not None:
+                                    current_job["progress_percent"] = pct
+                                    if total_bytes > 0:
+                                        current_job["transferred_bytes"] = int((pct / 100.0) * total_bytes)
+                                if speed is not None:
+                                    current_job["speed_mbps"] = speed
+
+                            elif fmt == 'aff':
+                                pct, speed = parse_aff_line(line_str)
+                                if pct is not None:
+                                    current_job["progress_percent"] = pct
+                                    if total_bytes > 0:
+                                        current_job["transferred_bytes"] = int((pct / 100.0) * total_bytes)
+                                if speed is not None:
+                                    current_job["speed_mbps"] = speed
+                        else:
+                            buffer += char
+            except (OSError, IOError):
+                time.sleep(0.1)
+
+        process.wait()
+
+        if process.returncode == 0:
+            current_job["status"] = "Completed Successfully"
+            current_job["progress_percent"] = 100.0
+            current_job["speed_mbps"] = 0.0
+            append_log("[+] Acquisition completed successfully.")
+        else:
+            current_job["status"] = "Failed"
+            append_log(f"[-] Process exited with exit code: {process.returncode}")
+
+    except Exception as e:
+        current_job["status"] = "Failed"
+        append_log(f"[-] Execution error: {str(e)}")
+
+    finally:
+        current_job["active"] = False
+        current_job["process"] = None
+
+
+# --- Web Routes & API Endpoints ---
 @app.route('/')
+@requires_auth
 def index():
     return render_template('index.html')
 
 @app.route('/api/system_info', methods=['GET'])
-def get_system_info():
-    usage = psutil.disk_usage('/')
-    cpu_percent = psutil.cpu_percent(interval=None)
-    wb_status = "Enabled" if os.path.exists("/etc/udev/rules.d/00-write-block.rules") else "Disabled"
+@requires_auth
+def system_info():
+    global last_net_check
     
+    cpu = psutil.cpu_percent(interval=None)
+    mem = psutil.virtual_memory()
+    root_disk = psutil.disk_usage('/')
+    
+    now = time.time()
+    net_counters = psutil.net_io_counters()
+    time_delta = max(now - last_net_check["time"], 0.001)
+    
+    sent_delta = net_counters.bytes_sent - last_net_check["bytes_sent"]
+    recv_delta = net_counters.bytes_recv - last_net_check["bytes_recv"]
+    
+    if last_net_check["bytes_sent"] == 0:
+        sent_delta = 0
+        recv_delta = 0
+        
+    upload_mbps = round((sent_delta / (1024 * 1024)) / time_delta, 2)
+    download_mbps = round((recv_delta / (1024 * 1024)) / time_delta, 2)
+    
+    last_net_check = {
+        "time": now,
+        "bytes_sent": net_counters.bytes_sent,
+        "bytes_recv": net_counters.bytes_recv
+    }
+
+    wb_active = True
+    try:
+        res = subprocess.run(['sudo', 'blockdev', '--getro', '/dev/sda'], capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout.strip() == '0':
+            wb_active = False
+    except Exception:
+        pass
+
     return jsonify({
-        "cpu_percent": cpu_percent,
-        "local_storage": {
-            "total_gb": round(usage.total / (1024**3), 2),
-            "used_gb": round(usage.used / (1024**3), 2),
-            "free_gb": round(usage.free / (1024**3), 2),
-            "percent_used": usage.percent
+        "cpu_percent": cpu,
+        "memory": {
+            "used_gb": round(mem.used / (1024**3), 2),
+            "total_gb": round(mem.total / (1024**3), 2),
+            "percent_used": mem.percent
         },
-        "write_blocker_active": wb_status == "Enabled"
+        "network_speed": {
+            "upload_mbps": upload_mbps,
+            "download_mbps": download_mbps
+        },
+        "local_storage": {
+            "used_gb": round(root_disk.used / (1024**3), 2),
+            "total_gb": round(root_disk.total / (1024**3), 2),
+            "percent_used": root_disk.percent
+        },
+        "write_blocker_active": wb_active
     })
 
 @app.route('/api/drives', methods=['GET'])
+@requires_auth
 def list_drives():
+    drives = []
     try:
-        output = subprocess.check_output(["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MODEL,TRAN,RO"]).decode('utf-8')
-        devices = json.loads(output).get("blockdevices", [])
-        drives = [d for d in devices if d.get("type") == "disk"]
-        return jsonify(drives)
+        res = subprocess.run(
+            ['lsblk', '-J', '-b', '-o', 'NAME,SIZE,MODEL,TRAN,TYPE,SERIAL'],
+            capture_output=True, text=True
+        )
+        if res.returncode == 0:
+            data = json.loads(res.stdout)
+            for dev in data.get('blockdevices', []):
+                if dev.get('type') == 'disk' and not dev['name'].startswith('loop'):
+                    bytes_size = int(dev.get('size', 0))
+                    gb_size = round(bytes_size / (1024**3), 1)
+                    
+                    drives.append({
+                        "name": dev['name'],
+                        "device": f"/dev/{dev['name']}",
+                        "model": dev.get('model') or 'Generic Disk',
+                        "size": f"{gb_size} GB",
+                        "bytes": bytes_size,
+                        "transport": dev.get('tran') or 'sata',
+                        "serial": dev.get('serial') or 'N/A'
+                    })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"Error executing lsblk: {e}")
+        
+    return jsonify(drives)
 
 @app.route('/api/smart_check', methods=['POST'])
+@requires_auth
 def smart_check():
-    """Queries smartctl for source drive health telemetry."""
-    data = request.json or {}
-    drive = data.get("drive", "").strip()
-
-    if not drive or not os.path.exists(drive):
-        return jsonify({"success": False, "error": "Invalid drive path specified."}), 400
+    req = request.get_json() or {}
+    drive = req.get('drive', '')
+    
+    if not drive or not drive.startswith('/dev/'):
+        return jsonify({"success": False, "error": "Invalid drive selection"})
 
     try:
-        cmd = f"sudo smartctl -a -j {drive}"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        res = subprocess.run(['sudo', 'smartctl', '-a', '-j', drive], capture_output=True, text=True)
+        data = json.loads(res.stdout)
         
-        try:
-            smart_data = json.loads(res.stdout)
-        except Exception:
-            return jsonify({"success": False, "error": f"Drive does not support SMART or response was unparseable.\n{res.stdout or res.stderr}"}), 400
-
-        healthy = smart_data.get("smart_status", {}).get("passed", True)
-        family = smart_data.get("model_family") or smart_data.get("model_name") or "Generic Drive"
-        serial = smart_data.get("serial_number", "Unknown")
-        temp = smart_data.get("temperature", {}).get("current")
-
+        healthy = data.get('smart_status', {}).get('passed', True)
+        model = data.get('model_name') or data.get('family_name') or 'Generic Media'
+        serial = data.get('serial_number', 'N/A')
+        temp = data.get('temperature', {}).get('current')
+        
         reallocated = 0
         pending = 0
-        power_hours = None
-
-        for attr in smart_data.get("ata_smart_attributes", {}).get("table", []):
-            attr_id = attr.get("id")
+        power_on = None
+        
+        for attr in data.get('ata_smart_attributes', {}).get('table', []):
+            attr_id = attr.get('id')
             if attr_id == 5:
-                reallocated = attr.get("raw", {}).get("value", 0)
+                reallocated = attr.get('raw', {}).get('value', 0)
             elif attr_id == 197:
-                pending = attr.get("raw", {}).get("value", 0)
+                pending = attr.get('raw', {}).get('value', 0)
             elif attr_id == 9:
-                power_hours = attr.get("raw", {}).get("value")
-
-        if reallocated > 0 or pending > 0:
-            healthy = False
+                power_on = attr.get('raw', {}).get('value')
 
         return jsonify({
             "success": True,
             "healthy": healthy,
-            "model": family,
+            "model": model,
             "serial": serial,
             "temperature": temp,
             "reallocated_sectors": reallocated,
             "pending_sectors": pending,
-            "power_on_hours": power_hours
+            "power_on_hours": power_on
         })
+
+    except Exception:
+        return jsonify({
+            "success": False,
+            "error": "SMART telemetry unsupported on this media",
+            "model": "Flash Media / Generic Drive"
+        })
+
+@app.route('/api/list_server_shares', methods=['POST'])
+@requires_auth
+def list_server_shares():
+    req = request.get_json() or {}
+    protocol = req.get('protocol', 'smb').lower()
+    host = req.get('host', '').strip()
+
+    if not host:
+        return jsonify({"success": False, "error": "Server IP required."}), 400
+
+    shares = []
+    try:
+        if protocol == 'nfs':
+            res = subprocess.run(['showmount', '-e', '--no-headers', host], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                for line in res.stdout.strip().split('\n'):
+                    if line:
+                        export_path = line.split()[0]
+                        shares.append(export_path)
+                return jsonify({"success": True, "shares": shares})
+            else:
+                return jsonify({"success": False, "error": res.stderr.strip()}), 500
+        else:
+            user = req.get('user', 'guest')
+            pass_val = req.get('pass', '')
+            cmd = ['smbclient', '-L', host, '-U', f"{user}%{pass_val}", '-g']
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if line.startswith('Disk|'):
+                        parts = line.split('|')
+                        if len(parts) > 1 and not parts[1].endswith('$'):
+                            shares.append(parts[1])
+                return jsonify({"success": True, "shares": shares})
+
+        return jsonify({"success": True, "shares": shares})
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/list_folders', methods=['POST'])
-def list_folders():
-    data = request.json or {}
-    path = data.get("path", "/mnt")
-    
-    if not os.path.exists(path) or not os.path.isdir(path):
-        path = "/"
-
-    try:
-        entries = os.listdir(path)
-        folders = []
-        for entry in sorted(entries):
-            full_path = os.path.join(path, entry)
-            if os.path.isdir(full_path) and not entry.startswith('.'):
-                folders.append(entry)
-        return jsonify({"current_path": os.path.abspath(path), "folders": folders})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/list_server_shares', methods=['POST'])
-def list_server_shares():
-    data = request.json or {}
-    protocol = data.get("protocol", "cifs")
-    host = data.get("host", "").strip()
-    user = data.get("user", "").strip()
-    password = data.get("pass", "").strip()
-
-    if not host:
-        return jsonify({"success": False, "error": "Server IP address is required."}), 400
-
-    shares = []
-
-    if protocol == "cifs":
-        cred_flag = f"-U '{user}%{password}'" if user else "-N"
-        cmd = f"smbclient -L //{host} {cred_flag} -g 2>/dev/null"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        
-        if "NT_STATUS_ACCESS_DENIED" in res.stderr or "NT_STATUS_LOGON_FAILURE" in res.stderr:
-            return jsonify({"success": False, "auth_required": True, "error": "Authentication required."}), 401
-            
-        for line in res.stdout.splitlines():
-            if line.startswith("Disk|"):
-                share_name = line.split("|")[1]
-                if not share_name.endswith("$"):
-                    shares.append(share_name)
-
-    elif protocol == "nfs":
-        cmd = f"showmount -e '{host}' --no-headers 2>/dev/null"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        for line in res.stdout.splitlines():
-            parts = line.split()
-            if parts:
-                shares.append(parts[0])
-
-    return jsonify({"success": True, "shares": shares})
-
 @app.route('/api/mount_network', methods=['POST'])
+@requires_auth
 def mount_network():
-    data = request.json or {}
-    protocol = data.get("protocol", "cifs")
-    host = data.get("host", "").strip()
-    share = data.get("share", "").strip()
-    user = data.get("user", "").strip()
-    password = data.get("pass", "").strip()
+    req = request.get_json() or {}
+    protocol = req.get('protocol', 'smb').lower()
+    host = req.get('host', '').strip()
+    share = req.get('share', '').strip()
+    user = req.get('user', '').strip()
+    password = req.get('pass', '').strip()
 
     if not host or not share:
         return jsonify({"success": False, "error": "Server IP and Share path are required."}), 400
 
-    mount_point = "/mnt/network_evidence"
-    
+    share_path = f"/{share.lstrip('/')}"
+    safe_folder_name = share_path.replace('/', '_').strip('_')
+    mount_point = f"/mnt/network_{protocol}_{safe_folder_name}"
+    os.makedirs(mount_point, exist_ok=True)
+
     try:
-        os.makedirs(mount_point, exist_ok=True)
-        subprocess.run(f"sudo umount -l '{mount_point}' 2>/dev/null", shell=True)
-    except Exception:
-        pass
+        subprocess.run(['sudo', 'umount', '-l', mount_point], capture_output=True)
 
-    if protocol == "cifs":
-        clean_share = share.strip('/')
-        remote_path = f"//{host}/{clean_share}"
-        options = ["rw", "file_mode=0777", "dir_mode=0777", "noperm"]
-        if user:
-            options.append(f'username="{user}"')
-            options.append(f'password="{password}"')
-        else:
-            options.append("guest")
-
-        opt_str = ",".join(options)
-        cmd = f"sudo mount -t cifs '{remote_path}' '{mount_point}' -o '{opt_str}'"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-        if res.returncode != 0 and "Permission denied" not in res.stderr:
-            for ver in ["3.0", "2.1", "1.0"]:
-                fallback_cmd = f"sudo mount -t cifs '{remote_path}' '{mount_point}' -o '{opt_str},vers={ver}'"
-                res = subprocess.run(fallback_cmd, shell=True, capture_output=True, text=True)
-                if res.returncode == 0:
-                    break
-
-    elif protocol == "nfs":
-        clean_share = '/' + share.strip('/')
-        remote_path = f"{host}:{clean_share}"
-        
-        cmd_v4 = f"sudo mount -t nfs -o vers=4,rw,soft,timeo=30,retry=1,nolock,proto=tcp '{remote_path}' '{mount_point}'"
-        res = subprocess.run(cmd_v4, shell=True, capture_output=True, text=True)
-        
-        if res.returncode != 0:
-            cmd_v3 = f"sudo mount -t nfs -o vers=3,rw,soft,timeo=30,retry=1,nolock,proto=tcp '{remote_path}' '{mount_point}'"
-            res = subprocess.run(cmd_v3, shell=True, capture_output=True, text=True)
-
-    elif protocol == "curlftpfs":
-        user_pass = f"{user}:{password}@" if user else ""
-        clean_share = share.strip('/')
-        cmd = f"sudo curlftpfs 'ftp://{user_pass}{host}/{clean_share}' '{mount_point}' -o allow_other"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-    else:
-        return jsonify({"success": False, "error": "Unsupported protocol."}), 400
-
-    if res.returncode == 0:
-        return jsonify({"success": True, "mount_point": mount_point})
-    else:
-        err_msg = res.stderr.strip() or res.stdout.strip() or "Connection timed out or failed."
-        return jsonify({"success": False, "error": f"Mount Failed: {err_msg}"}), 400
-
-@app.route('/api/toggle_write_block', methods=['POST'])
-def toggle_write_block():
-    data = request.json
-    enable = data.get("enable", True)
-    rule_path = "/etc/udev/rules.d/00-write-block.rules"
-    
-    try:
-        if enable:
-            rule_content = 'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z]", ATTR{ro}="1"'
-            execute_cmd(f'echo \'{rule_content}\' | sudo tee {rule_path}')
-            execute_cmd("sudo udevadm control --reload-rules")
-            execute_cmd("sudo blockdev --setro /dev/sd* 2>/dev/null || true")
-        else:
-            if os.path.exists(rule_path):
-                execute_cmd(f"sudo rm -f {rule_path}")
-            execute_cmd("sudo udevadm control --reload-rules")
-            execute_cmd("sudo blockdev --setrw /dev/sd* 2>/dev/null || true")
+        if protocol == 'nfs':
+            nfs_source = f"{host}:{share_path}"
             
-        return jsonify({"success": True, "enabled": enable})
+            cmd_v3 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=3', nfs_source, mount_point]
+            res = subprocess.run(cmd_v3, capture_output=True, text=True)
+
+            if res.returncode == 0:
+                return jsonify({"success": True, "mount_point": mount_point})
+
+            cmd_v4 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=4', nfs_source, mount_point]
+            res_v4 = subprocess.run(cmd_v4, capture_output=True, text=True)
+
+            if res_v4.returncode == 0:
+                return jsonify({"success": True, "mount_point": mount_point})
+
+            return jsonify({"success": False, "error": f"NFS Mount Failed: {res_v4.stderr.strip() or res.stderr.strip()}"}), 500
+
+        else:
+            unc_source = f"//{host}/{share_path.lstrip('/')}"
+            user_arg = user if user else 'guest'
+            pass_arg = password if password else ''
+            opts = f"username={user_arg},password={pass_arg},noperm,iocharset=utf8"
+            
+            cmd_smb = ['sudo', 'mount', '-t', 'cifs', unc_source, mount_point, '-o', opts]
+            res_smb = subprocess.run(cmd_smb, capture_output=True, text=True)
+
+            if res_smb.returncode == 0:
+                return jsonify({"success": True, "mount_point": mount_point})
+
+            return jsonify({"success": False, "error": f"SMB Mount Failed: {res_smb.stderr.strip()}"}), 500
+
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-def write_case_manifest(output_base_path, metadata, source_dev, size_bytes, hash_str, start_time, end_time):
-    """Generates JSON and human-readable evidence manifest reports."""
-    manifest_data = {
-        "case_metadata": metadata,
-        "acquisition_details": {
-            "source_device": source_dev,
-            "image_file": os.path.basename(output_base_path),
-            "size_bytes": size_bytes,
-            "size_gb": round(size_bytes / (1024**3), 2),
-            "hashes_configured": hash_str,
-            "start_time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time)),
-            "completion_time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time)),
-            "elapsed_seconds": int(end_time - start_time)
-        },
-        "system_info": {
-            "platform": "Raspberry Pi ARM Forensic Station",
-            "write_blocker_active": os.path.exists("/etc/udev/rules.d/00-write-block.rules")
-        }
-    }
+@app.route('/api/toggle_write_block', methods=['POST'])
+@requires_auth
+def toggle_write_block():
+    req = request.get_json() or {}
+    enable = req.get('enable', True)
+    drive = req.get('drive', '/dev/sda')
+    
+    if not drive.startswith('/dev/'):
+        drive = '/dev/sda'
 
-    # Write JSON Manifest
-    json_path = output_base_path + "_manifest.json"
-    with open(json_path, "w") as f:
-        json.dump(manifest_data, f, indent=4)
-
-    # Write Text Manifest
-    txt_path = output_base_path + "_manifest.txt"
-    with open(txt_path, "w") as f:
-        f.write("========================================================\n")
-        f.write("         DIGITAL FORENSIC EVIDENCE MANIFEST\n")
-        f.write("========================================================\n\n")
-        f.write(f"Case Number      : {metadata.get('case_number')}\n")
-        f.write(f"Evidence Item ID : {metadata.get('evidence_id')}\n")
-        f.write(f"Examiner Name    : {metadata.get('examiner')}\n")
-        f.write(f"Notes / Summary  : {metadata.get('notes')}\n\n")
-        f.write("--------------------------------------------------------\n")
-        f.write("ACQUISITION METADATA\n")
-        f.write("--------------------------------------------------------\n")
-        f.write(f"Source Drive     : {source_dev}\n")
-        f.write(f"Output Image     : {os.path.basename(output_base_path)}\n")
-        f.write(f"Total Bytes      : {size_bytes:,} bytes ({round(size_bytes/(1024**3), 2)} GB)\n")
-        f.write(f"Hashes Engine    : {hash_str}\n")
-        f.write(f"Start Time       : {manifest_data['acquisition_details']['start_time']}\n")
-        f.write(f"Completion Time  : {manifest_data['acquisition_details']['completion_time']}\n")
-        f.write(f"Total Duration   : {manifest_data['acquisition_details']['elapsed_seconds']} seconds\n")
-        f.write(f"Write Blocker    : {'ACTIVE' if manifest_data['system_info']['write_blocker_active'] else 'DISABLED'}\n")
-        f.write("========================================================\n")
-
-def run_imaging_task(source_dev, dest_path, hashes=None, metadata=None, buffer_size="1M"):
-    """Background worker executing dc3dd acquisition and manifest generation."""
-    global IMAGING_STATE, ACTIVE_PROCESS
-    if hashes is None:
-        hashes = {"md5": True, "sha1": False, "sha256": False}
-    if metadata is None:
-        metadata = {}
-
-    IMAGING_STATE["active"] = True
-    IMAGING_STATE["status"] = "Imaging in progress..."
-    IMAGING_STATE["progress_percent"] = 0.0
-    IMAGING_STATE["error_details"] = ""
-    IMAGING_STATE["log"] = f"[START] dc3dd if={source_dev} of={dest_path} bufsz={buffer_size}\n"
+    action_flag = '--setro' if enable else '--setrw'
     
     try:
-        size_bytes = int(execute_cmd(f"blockdev --getsize64 {source_dev}"))
-    except Exception:
-        size_bytes = 0
-
-    IMAGING_STATE["total_bytes"] = size_bytes
-    log_file = dest_path + ".log"
-    
-    cmd = [
-        "sudo", "dc3dd", 
-        f"if={source_dev}", 
-        f"of={dest_path}", 
-        f"log={log_file}",
-        f"bufsz={buffer_size}"
-    ]
-
-    selected_hashes = []
-    if hashes.get("md5"):
-        cmd.append("hash=md5")
-        selected_hashes.append("MD5")
-    if hashes.get("sha1"):
-        cmd.append("hash=sha1")
-        selected_hashes.append("SHA-1")
-    if hashes.get("sha256"):
-        cmd.append("hash=sha256")
-        selected_hashes.append("SHA-256")
-
-    has_hashes = len(selected_hashes) > 0
-    hash_str = ", ".join(selected_hashes) if has_hashes else "Disabled"
-
-    start_time = time.time()
-    verify_start_time = None
-    sync_counter = 0
-    
-    ACTIVE_PROCESS = subprocess.Popen(
-        cmd, 
-        stdout=subprocess.DEVNULL, 
-        stderr=subprocess.DEVNULL
-    )
-
-    while ACTIVE_PROCESS.poll() is None:
-        time.sleep(1)
-        sync_counter += 1
+        # Unmount active partitions first to prevent "device or resource busy" lockouts
+        subprocess.run(f"sudo udevil unmount -b {drive}* 2>/dev/null || sudo umount {drive}* 2>/dev/null", shell=True)
         
-        if sync_counter >= 3:
-            try:
-                os.sync()
-            except Exception:
-                pass
-            sync_counter = 0
-
-        if os.path.exists(dest_path):
-            current_bytes = os.path.getsize(dest_path)
-            elapsed = time.time() - start_time
-            
-            speed = (current_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-            raw_percent = (current_bytes / size_bytes * 100) if size_bytes > 0 else 0
-            
-            percent = min(round(raw_percent, 2), 99.0)
-            
-            IMAGING_STATE["transferred_bytes"] = current_bytes
-            IMAGING_STATE["speed_mbps"] = round(speed, 2)
-            IMAGING_STATE["progress_percent"] = percent
-
-            if raw_percent >= 99.0:
-                if verify_start_time is None:
-                    verify_start_time = time.time()
-                v_elapsed = int(time.time() - verify_start_time)
-                
-                if has_hashes:
-                    IMAGING_STATE["status"] = "Verifying Hashes..."
-                    IMAGING_STATE["log"] = (
-                        f"[RAW WRITE COMPLETE] All blocks transferred ({round(current_bytes/(1024**2), 1)} MB).\n"
-                        f"[STATUS] Computing {hash_str} hashes... (Elapsed Verification Time: {v_elapsed}s)\n"
-                    )
-                else:
-                    IMAGING_STATE["status"] = "Flushing Disk Cache..."
-                    IMAGING_STATE["log"] = (
-                        f"[RAW WRITE COMPLETE] All blocks transferred ({round(current_bytes/(1024**2), 1)} MB).\n"
-                        f"[STATUS] Flushing remaining write buffers to storage target... (Elapsed: {v_elapsed}s)\n"
-                    )
-            else:
-                IMAGING_STATE["log"] = (
-                    f"[RUNNING] Processed: {round(current_bytes/(1024**2), 1)} MB / {round(size_bytes/(1024**2), 1)} MB ({percent}%)\n"
-                    f"[SPEED] Transfer velocity: {round(speed, 2)} MB/s\n"
-                    f"[HASHES] {hash_str}"
-                )
-
-    return_code = ACTIVE_PROCESS.wait()
-    end_time = time.time()
-
-    if return_code == 0:
-        IMAGING_STATE["progress_percent"] = 100.0
-        IMAGING_STATE["status"] = "Completed Successfully"
+        # Apply read-only or read-write flag via blockdev
+        res = subprocess.run(['sudo', 'blockdev', action_flag, drive], capture_output=True, text=True)
         
-        # Generate Manifests
-        try:
-            write_case_manifest(dest_path, metadata, source_dev, size_bytes, hash_str, start_time, end_time)
-            manifest_msg = "\n[MANIFEST] Evidence manifest reports generated (.json & .txt)."
-        except Exception as e:
-            manifest_msg = f"\n[MANIFEST WARNING] Could not generate manifest: {str(e)}"
+        if res.returncode != 0:
+            return jsonify({"success": False, "error": res.stderr.strip() or "blockdev execution failed"}), 500
 
-        IMAGING_STATE["log"] = f"[FINISHED] Acquisition Complete! ({hash_str}){manifest_msg}\n\nImage, log, and manifest saved successfully."
-    elif IMAGING_STATE["status"] == "Stopped":
-        IMAGING_STATE["log"] += "\n[ABORTED] Process terminated manually by user."
-    else:
-        IMAGING_STATE["status"] = "Failed"
-        IMAGING_STATE["error_details"] = f"dc3dd process returned non-zero exit code {return_code}."
-        IMAGING_STATE["log"] = f"[ERROR] Acquisition Failed!\nError Details:\n{IMAGING_STATE['error_details']}"
-        
-    IMAGING_STATE["active"] = False
-    ACTIVE_PROCESS = None
+        # Query read-only state directly from kernel
+        chk = subprocess.run(['sudo', 'blockdev', '--getro', drive], capture_output=True, text=True)
+        is_ro = (chk.returncode == 0 and chk.stdout.strip() == '1')
+
+        return jsonify({"success": True, "write_blocker_active": is_ro, "device": drive})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/start_imaging', methods=['POST'])
+@requires_auth
 def start_imaging():
-    if IMAGING_STATE["active"]:
-        return jsonify({"error": "An acquisition task is already running."}), 400
-
-    data = request.json
-    source_device = data.get("source")
-    dest_type = data.get("dest_type", "local")
-    hashes = data.get("hashes", {"md5": True, "sha1": False, "sha256": False})
-    metadata = data.get("metadata", {})
+    global current_job
     
-    if not source_device or not os.path.exists(source_device):
-        return jsonify({"error": "Invalid source drive selected."}), 400
+    if current_job["active"]:
+        return jsonify({"error": "An acquisition job is already running."}), 400
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    req = request.get_json() or {}
+    source = req.get('source')
+    dest_path = req.get('destination', '/mnt').strip()
+    fmt = req.get('format', 'dd')
+    metadata = req.get('metadata', {})
+    
+    if not source or not os.path.exists(source):
+        return jsonify({"error": f"Source device {source} not found."}), 400
 
-    if dest_type == "network":
-        output_directory = "/mnt/network_evidence"
+    if not os.path.exists(dest_path):
+        try:
+            os.makedirs(dest_path, exist_ok=True)
+        except Exception as e:
+            return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+
+    total_bytes = 0
+    try:
+        res = subprocess.run(['blockdev', '--getsize64', source], capture_output=True, text=True)
+        if res.returncode == 0:
+            total_bytes = int(res.stdout.strip())
+    except Exception:
+        pass
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    examiner = metadata.get('examiner', 'UNSPECIFIED')
+    notes = metadata.get('notes', 'None')
+    base_name = f"{case_num}_{evidence_id}"
+
+    if fmt == 'e01':
+        cmd = [
+            "ewfacquire", "-u",
+            "-t", f"{dest_path}/{base_name}",
+            "-C", case_num,
+            "-E", evidence_id,
+            "-e", examiner,
+            "-N", notes,
+            "-f", "encase6",
+            "-S", "2000M",
+            source
+        ]
+    elif fmt == 'aff':
+        cmd = [
+            "affconvert",
+            "-o", f"{dest_path}/{base_name}.aff",
+            source
+        ]
     else:
-        output_directory = data.get("destination", "/mnt")
+        cmd = [
+            "dc3dd",
+            f"if={source}",
+            f"of={dest_path}/{base_name}.dd",
+            "hash=sha256",
+            f"log={dest_path}/{base_name}_dc3dd.log"
+        ]
 
-    if not os.path.exists(output_directory):
-        os.makedirs(output_directory, exist_ok=True)
+    current_job["active"] = True
+    current_job["format"] = fmt
+    current_job["progress_percent"] = 0.0
+    current_job["speed_mbps"] = 0.0
+    current_job["transferred_bytes"] = 0
+    current_job["total_bytes"] = total_bytes
+    current_job["status"] = "Initializing..."
+    current_job["log"] = f"[*] Initializing {fmt.upper()} acquisition for {source} -> {dest_path}..."
 
-    evidence_id_safe = metadata.get("evidence_id", "ITEM").replace(" ", "_")
-    output_file = os.path.join(output_directory, f"{evidence_id_safe}_{timestamp}.dd")
+    report_file = os.path.join(dest_path, f"{base_name}_report.json")
+    try:
+        with open(report_file, 'w') as f:
+            json.dump({
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "case_metadata": metadata,
+                "source_device": source,
+                "output_destination": dest_path,
+                "output_format": fmt,
+                "total_bytes": total_bytes
+            }, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not write case report JSON: {e}")
 
-    thread = threading.Thread(target=run_imaging_task, args=(source_device, output_file, hashes, metadata))
+    thread = threading.Thread(
+        target=execution_worker,
+        args=(cmd, fmt, total_bytes, f"{dest_path}/{base_name}.log")
+    )
+    thread.daemon = True
     thread.start()
 
-    return jsonify({"success": True, "output_file": output_file})
+    return jsonify({"success": True, "message": "Acquisition started."})
 
 @app.route('/api/stop_imaging', methods=['POST'])
+@requires_auth
 def stop_imaging():
-    global ACTIVE_PROCESS, IMAGING_STATE
-    if ACTIVE_PROCESS and IMAGING_STATE["active"]:
-        IMAGING_STATE["status"] = "Stopped"
-        subprocess.run(["sudo", "pkill", "-9", "-f", "dc3dd"])
-        return jsonify({"success": True, "message": "Imaging operation aborted."})
-    return jsonify({"error": "No active imaging process found."}), 400
+    global current_job
+    if current_job["active"] and current_job["process"]:
+        try:
+            current_job["process"].terminate()
+            current_job["status"] = "Stopped"
+            current_job["active"] = False
+            return jsonify({"success": True, "message": "Acquisition stopped."})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    return jsonify({"error": "No active job running."}), 400
 
 @app.route('/api/progress', methods=['GET'])
+@requires_auth
 def get_progress():
-    return jsonify(IMAGING_STATE)
+    return jsonify({
+        "active": current_job["active"],
+        "format": current_job["format"],
+        "progress_percent": current_job["progress_percent"],
+        "speed_mbps": current_job["speed_mbps"],
+        "transferred_bytes": current_job["transferred_bytes"],
+        "total_bytes": current_job["total_bytes"],
+        "status": current_job["status"],
+        "log": current_job["log"]
+    })
+
+@app.route('/api/list_folders', methods=['POST'])
+@requires_auth
+def list_folders():
+    req = request.get_json() or {}
+    path = req.get('path', '/mnt')
+    if not os.path.exists(path):
+        path = '/mnt'
+    try:
+        folders = [f for f in os.listdir(path) if os.path.isdir(os.path.join(path, f))]
+        return jsonify({"current_path": path, "folders": sorted(folders)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False, ssl_context='adhoc')

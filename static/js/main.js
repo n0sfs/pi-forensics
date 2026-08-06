@@ -1,526 +1,200 @@
-let currentBrowserPath = "/mnt";
-let activeDestType = "local";
-let savedNetUser = "";
-let savedNetPass = "";
 let throughputChart = null;
+const maxGraphPoints = 30;
+const graphData = Array(maxGraphPoints).fill(0);
+const graphLabels = Array(maxGraphPoints).fill('');
 
-// Track connected drive signatures to detect hot-plugging
-let knownDriveSignature = "";
+let savedNetUser = '';
+let savedNetPass = '';
+let currentDrivesList = [];
 
-// Store last queried telemetry for report metadata
-let currentDriveTelemetry = {};
+let currentBrowsePath = '/mnt';
+let folderModalInstance = null;
 
-document.addEventListener("DOMContentLoaded", () => {
-    initThroughputChart();
-    
-    fetchSystemInfo();
-    fetchDrives(); // Initial fetch
-    loadSavedNetworkDrives();
-    
-    // Background polling loops
-    setInterval(fetchSystemInfo, 2000);
-    setInterval(pollProgress, 1000);
-    setInterval(fetchDrives, 2000); // Auto-detect USB / SD / HDD insertions
-
-    document.getElementById("driveSelect").addEventListener("change", inspectDriveTelemetry);
-    document.getElementById("writeBlockToggle").addEventListener("change", toggleWriteBlock);
-    document.getElementById("startBtn").addEventListener("click", startImaging);
-    document.getElementById("stopBtn").addEventListener("click", stopImaging);
-    
-    document.getElementById("connectServerBtn").addEventListener("click", connectAndQueryShares);
-    document.getElementById("submitAuthBtn").addEventListener("click", () => {
-        savedNetUser = document.getElementById("modalNetUser").value;
-        savedNetPass = document.getElementById("modalNetPass").value;
-        connectAndQueryShares();
-    });
-    
-    document.getElementById("mountNetBtn").addEventListener("click", mountNetworkDrive);
-    document.getElementById("savedDrivesSelect").addEventListener("change", selectSavedDrive);
-    document.getElementById("clearHistoryBtn").addEventListener("click", clearSavedHistory);
-
-    // Tab toggle
-    document.getElementById("local-tab").addEventListener("click", () => activeDestType = "local");
-    document.getElementById("network-tab").addEventListener("click", () => activeDestType = "network");
-
-    // Modal Folder Navigation
-    document.getElementById("folderBrowserModal").addEventListener("show.bs.modal", () => browseFolder(currentBrowserPath));
-    document.getElementById("navUpBtn").addEventListener("click", navigateUp);
-    document.getElementById("confirmFolderBtn").addEventListener("click", () => {
-        document.getElementById("destPath").value = currentBrowserPath;
-    });
-});
-
-// --- Chart.js Telemetry Initialization ---
-function initThroughputChart() {
+// --- Initialize Chart.js Live Graph ---
+function initThroughputGraph() {
     const canvas = document.getElementById('throughputChart');
     if (!canvas) return;
 
-    Chart.defaults.color = '#ffffff';
-    Chart.defaults.font.family = 'system-ui, -apple-system, sans-serif';
-
     const ctx = canvas.getContext('2d');
-    
-    if (throughputChart) {
-        throughputChart.destroy();
-    }
-
     throughputChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: Array(20).fill(''),
+            labels: graphLabels,
             datasets: [{
-                label: 'Speed (MB/s)',
-                data: Array(20).fill(0),
-                borderColor: '#60a5fa',
-                backgroundColor: 'rgba(96, 165, 250, 0.35)',
-                borderWidth: 2.5,
-                tension: 0.35,
+                label: 'Throughput (MB/s)',
+                data: graphData,
+                borderColor: '#00f2fe',
+                backgroundColor: 'rgba(0, 242, 254, 0.1)',
+                borderWidth: 2,
                 fill: true,
-                pointRadius: 0,
-                pointHoverRadius: 5
+                tension: 0.3,
+                pointRadius: 0
             }]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             animation: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    backgroundColor: '#0f172a',
-                    titleColor: '#ffffff',
-                    bodyColor: '#38bdf8',
-                    borderColor: '#334155',
-                    borderWidth: 1,
-                    padding: 10,
-                    callbacks: {
-                        label: (context) => ` Speed: ${context.raw} MB/s`
-                    }
-                }
-            },
             scales: {
-                x: {
-                    grid: { display: false },
-                    ticks: {
-                        color: '#ffffff',
-                        font: { size: 10, weight: 'bold' }
-                    }
-                },
+                x: { display: false },
                 y: {
                     beginAtZero: true,
-                    grid: { 
-                        color: 'rgba(255, 255, 255, 0.15)',
-                        lineWidth: 1
-                    },
-                    ticks: {
-                        color: '#ffffff',
-                        font: { size: 11, weight: 'bold' },
-                        callback: (value) => `${value} MB/s`
-                    }
+                    grid: { color: '#2a2f45' },
+                    ticks: { color: '#94a3b8', font: { size: 10 } }
                 }
-            }
+            },
+            plugins: { legend: { display: false } }
         }
     });
 }
 
-function pushThroughputData(speedMBps) {
-    if (!throughputChart) return;
-
-    const timeLabel = new Date().toLocaleTimeString([], { 
-        hour: '2-digit', 
-        minute: '2-digit', 
-        second: '2-digit' 
-    });
-
-    throughputChart.data.labels.shift();
-    throughputChart.data.datasets[0].data.shift();
-
-    throughputChart.data.labels.push(timeLabel);
-    throughputChart.data.datasets[0].data.push(speedMBps);
-
-    throughputChart.update('none');
-}
-
-// --- Auto-Detect Hot-Plugged USB / SD / Drives ---
-async function fetchDrives() {
-    try {
-        const res = await fetch('/api/drives');
-        const drives = await res.json();
-        
-        // Generate a unique fingerprint of connected drives
-        const newSignature = drives.map(d => `${d.name}-${d.size}-${d.model}`).join('|');
-        
-        // If no change in drive topology, exit without disrupting UI
-        if (newSignature === knownDriveSignature) return;
-        
-        knownDriveSignature = newSignature;
-        const select = document.getElementById("driveSelect");
-        const currentSelection = select.value;
-        
-        select.innerHTML = '<option value="">-- Choose Target Source Drive --</option>';
-        
-        drives.forEach(drive => {
-            const opt = document.createElement("option");
-            opt.value = `/dev/${drive.name}`;
-            opt.innerText = `/dev/${drive.name} - ${drive.model || 'Generic Device'} (${drive.size})`;
-            select.appendChild(opt);
-        });
-
-        // Restore previous selection if drive is still attached
-        if (currentSelection && drives.some(d => `/dev/${d.name}` === currentSelection)) {
-            select.value = currentSelection;
-        } else {
-            inspectDriveTelemetry(); // Reset panel if selected drive was unplugged
-        }
-
-    } catch (err) {
-        console.error("Error polling drive topology:", err);
-    }
-}
-
-// --- Dynamic Inline Drive Telemetry & SMART Inspector ---
-async function inspectDriveTelemetry() {
-    const drive = document.getElementById("driveSelect").value;
-    
-    const badge = document.getElementById("smartStatusBadge");
-    const deviceEl = document.getElementById("telemetryDevice");
-    const typeEl = document.getElementById("telemetryType");
-    const modelEl = document.getElementById("telemetryModel");
-    const serialEl = document.getElementById("telemetrySerial");
-    const sizeEl = document.getElementById("telemetrySize");
-    const stateEl = document.getElementById("telemetryState");
-    const tempEl = document.getElementById("telemetryTemp");
-    const reallocatedEl = document.getElementById("telemetryReallocated");
-    const pendingEl = document.getElementById("telemetryPending");
-    const powerOnEl = document.getElementById("telemetryPowerOn");
-
-    if (!drive) {
-        badge.className = "badge bg-secondary text-uppercase fs-6";
-        badge.innerText = "No Drive Selected";
-        deviceEl.innerText = "--";
-        typeEl.innerText = "--";
-        modelEl.innerText = "--";
-        serialEl.innerText = "--";
-        sizeEl.innerText = "--";
-        stateEl.innerText = "--";
-        tempEl.innerText = "--";
-        reallocatedEl.innerText = "--";
-        pendingEl.innerText = "--";
-        powerOnEl.innerText = "--";
-        currentDriveTelemetry = {};
-        return;
-    }
-
-    badge.className = "badge bg-warning text-dark text-uppercase fs-6";
-    badge.innerText = "Querying...";
-    stateEl.innerText = "Reading Disk Telemetry...";
-
-    try {
-        const res = await fetch('/api/smart_check', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ drive })
-        });
-        const data = await res.json();
-
-        deviceEl.innerText = drive;
-        modelEl.innerText = data.model || 'Generic / Flash Device';
-        serialEl.innerText = data.serial || 'N/A';
-        sizeEl.innerText = data.size || 'N/A';
-
-        // Detect Media Type
-        let mediaType = "SATA / ATA Storage";
-        if (drive.includes('mmcblk')) {
-            mediaType = 'SD / MicroSD Card';
-        } else if (data.transport === 'usb' || data.is_usb) {
-            mediaType = 'USB Flash / Thumb Drive';
-        } else if (drive.includes('nvme')) {
-            mediaType = 'NVMe SSD';
-        }
-        typeEl.innerText = mediaType;
-
-        let healthStatus = "UNKNOWN";
-        if (!data.success) {
-            badge.className = "badge bg-info text-dark text-uppercase fs-6";
-            badge.innerText = "READY (FLASH MEDIA)";
-            stateEl.className = "fw-bold text-info";
-            stateEl.innerText = "PASSED (Flash Media / No SMART)";
-            tempEl.innerText = "N/A";
-            reallocatedEl.innerText = "N/A";
-            pendingEl.innerText = "N/A";
-            powerOnEl.innerText = "N/A";
-            healthStatus = "PASSED (Flash Media)";
-        } else if (data.healthy) {
-            badge.className = "badge bg-success text-uppercase fs-6";
-            badge.innerText = "HEALTHY";
-            stateEl.className = "fw-bold text-success";
-            stateEl.innerText = "PASSED (GOOD DRIVE)";
-            tempEl.innerText = data.temperature ? `${data.temperature} °C` : 'N/A';
-            reallocatedEl.innerText = data.reallocated_sectors !== undefined ? data.reallocated_sectors : '0';
-            reallocatedEl.className = data.reallocated_sectors > 0 ? "text-danger fw-bold" : "text-white";
-            pendingEl.innerText = data.pending_sectors !== undefined ? data.pending_sectors : '0';
-            pendingEl.className = data.pending_sectors > 0 ? "text-danger fw-bold" : "text-white";
-            powerOnEl.innerText = data.power_on_hours ? `${data.power_on_hours} hrs` : 'N/A';
-            healthStatus = "PASSED (HEALTHY)";
-        } else {
-            badge.className = "badge bg-danger text-uppercase fs-6";
-            badge.innerText = "FAILING";
-            stateEl.className = "fw-bold text-danger";
-            stateEl.innerText = "WARNING: BAD SECTORS / FAILING";
-            tempEl.innerText = data.temperature ? `${data.temperature} °C` : 'N/A';
-            reallocatedEl.innerText = data.reallocated_sectors || 'N/A';
-            pendingEl.innerText = data.pending_sectors || 'N/A';
-            powerOnEl.innerText = data.power_on_hours ? `${data.power_on_hours} hrs` : 'N/A';
-            healthStatus = "FAILING (BAD SECTORS)";
-        }
-
-        // Store telemetry for forensic report injection
-        currentDriveTelemetry = {
-            device: drive,
-            media_type: mediaType,
-            model: data.model || 'Generic / Flash Device',
-            serial: data.serial || 'N/A',
-            size: data.size || 'N/A',
-            health_status: healthStatus,
-            temperature: data.temperature || 'N/A',
-            reallocated_sectors: data.reallocated_sectors || 0,
-            pending_sectors: data.pending_sectors || 0,
-            power_on_hours: data.power_on_hours || 'N/A'
-        };
-
-    } catch (err) {
-        console.error("Error inspecting drive:", err);
-        badge.className = "badge bg-danger text-uppercase fs-6";
-        badge.innerText = "ERROR";
-        stateEl.className = "fw-bold text-danger";
-        stateEl.innerText = "Communication Error";
-    }
-}
-
-// --- Acquisition Execution & Reporting ---
-async function startImaging() {
-    const source = document.getElementById("driveSelect").value;
-    if (!source) {
-        alert("Please select a target source drive first.");
-        return;
-    }
-
-    const payload = {
-        source: source,
-        dest_type: activeDestType,
-        destination: document.getElementById("destPath").value,
-        hashes: {
-            md5: document.getElementById("hashMd5").checked,
-            sha1: document.getElementById("hashSha1").checked,
-            sha256: document.getElementById("hashSha256").checked
-        },
-        metadata: {
-            case_number: document.getElementById("caseNum").value.trim() || "UNASSIGNED",
-            evidence_id: document.getElementById("evidenceId").value.trim() || "ITEM-01",
-            examiner: document.getElementById("examinerName").value.trim() || "UNSPECIFIED",
-            notes: document.getElementById("caseNotes").value.trim() || "None",
-            telemetry: currentDriveTelemetry // Direct inclusion into case report
-        }
-    };
-
-    try {
-        const res = await fetch('/api/start_imaging', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const data = await res.json();
-        if (data.error) alert(data.error);
-    } catch (err) {
-        console.error("Error starting acquisition:", err);
-    }
-}
-
-async function stopImaging() {
-    if (!confirm("Are you sure you want to stop the imaging process?")) return;
-    try {
-        await fetch('/api/stop_imaging', { method: 'POST' });
-    } catch (err) {
-        console.error("Error stopping acquisition:", err);
-    }
-}
-
-function loadSavedNetworkDrives() {
-    const select = document.getElementById("savedDrivesSelect");
-    const history = JSON.parse(localStorage.getItem("net_drive_history") || "[]");
-    
-    select.innerHTML = '<option value="">-- Choose a previously used network share --</option>';
-    if (history.length === 0) {
-        select.innerHTML = '<option value="">No saved network drives yet</option>';
-        return;
-    }
-
-    history.forEach((item, index) => {
-        const opt = document.createElement("option");
-        opt.value = index;
-        opt.innerText = `[${item.protocol.toUpperCase()}] //${item.host}/${item.share} ${item.user ? '(' + item.user + ')' : ''}`;
-        select.appendChild(opt);
-    });
-}
-
-function selectSavedDrive(e) {
-    const index = e.target.value;
-    if (index === "") return;
-
-    const history = JSON.parse(localStorage.getItem("net_drive_history") || "[]");
-    const item = history[index];
-    if (!item) return;
-
-    document.getElementById("netProtocol").value = item.protocol;
-    document.getElementById("netHost").value = item.host;
-    savedNetUser = item.user || "";
-    savedNetPass = item.pass || "";
-
-    const shareSelect = document.getElementById("serverShareSelect");
-    shareSelect.innerHTML = `<option value="${item.share}" selected>${item.share}</option>`;
-    shareSelect.disabled = false;
-    document.getElementById("mountNetBtn").disabled = false;
-}
-
-function saveDriveToHistory(protocol, host, share, user, pass) {
-    let history = JSON.parse(localStorage.getItem("net_drive_history") || "[]");
-    history = history.filter(item => !(item.host === host && item.share === share && item.protocol === protocol));
-    history.unshift({ protocol, host, share, user, pass });
-    if (history.length > 10) history.pop();
-    localStorage.setItem("net_drive_history", JSON.stringify(history));
-    loadSavedNetworkDrives();
-}
-
-function clearSavedHistory() {
-    if (confirm("Clear all saved network drives from history?")) {
-        localStorage.removeItem("net_drive_history");
-        loadSavedNetworkDrives();
-    }
-}
-
-async function connectAndQueryShares() {
-    const host = document.getElementById("netHost").value.trim();
-    const protocol = document.getElementById("netProtocol").value;
-    const shareSelect = document.getElementById("serverShareSelect");
-    const mountBtn = document.getElementById("mountNetBtn");
-    
-    if (!host) {
-        alert("Please enter a valid Server IP Address.");
-        return;
-    }
-
-    shareSelect.disabled = true;
-    mountBtn.disabled = true;
-    shareSelect.innerHTML = '<option value="">Querying server shares...</option>';
-
-    try {
-        const res = await fetch('/api/list_server_shares', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ protocol, host, user: savedNetUser, pass: savedNetPass })
-        });
-        
-        if (res.status === 401) {
-            const authModal = new bootstrap.Modal(document.getElementById('authModal'));
-            authModal.show();
-            shareSelect.innerHTML = '<option value="">Authentication required...</option>';
-            return;
-        }
-
-        const data = await res.json();
-        
-        if (data.success && data.shares.length > 0) {
-            shareSelect.innerHTML = '<option value="">-- Select Discovered Share --</option>';
-            data.shares.forEach(share => {
-                const opt = document.createElement("option");
-                opt.value = share;
-                opt.innerText = share;
-                shareSelect.appendChild(opt);
-            });
-            shareSelect.disabled = false;
-            mountBtn.disabled = false;
-        } else {
-            const manualPath = prompt("No public share list broadcasted by server.\nPlease enter the exact share path:");
-            if (manualPath) {
-                shareSelect.innerHTML = `<option value="${manualPath}" selected>${manualPath}</option>`;
-                shareSelect.disabled = false;
-                mountBtn.disabled = false;
-            } else {
-                shareSelect.innerHTML = '<option value="">No shares found</option>';
-            }
-        }
-    } catch (err) {
-        console.error("Error querying server:", err);
-        alert("Failed to reach network server.");
-    }
-}
-
-async function mountNetworkDrive() {
-    const host = document.getElementById("netHost").value.trim();
-    const protocol = document.getElementById("netProtocol").value;
-    const share = document.getElementById("serverShareSelect").value;
-
-    if (!share) {
-        alert("Please select a share from the dropdown first.");
-        return;
-    }
-
-    const mountStatus = document.getElementById("mountStatus");
-    mountStatus.className = "fs-5 fw-bold text-warning";
-    mountStatus.innerText = "Connecting & Mounting...";
-
-    try {
-        const res = await fetch('/api/mount_network', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                protocol: protocol,
-                host: host,
-                share: share,
-                user: savedNetUser,
-                pass: savedNetPass
-            })
-        });
-        const data = await res.json();
-
-        if (data.success) {
-            mountStatus.className = "fs-5 fw-bold text-success";
-            mountStatus.innerText = `Status: Connected to //${host}/${share}`;
-            saveDriveToHistory(protocol, host, share, savedNetUser, savedNetPass);
-            alert(`Share Mounted Successfully to ${data.mount_point}`);
-        } else {
-            mountStatus.className = "fs-5 fw-bold text-danger";
-            mountStatus.innerText = "Status: Mount Failed";
-            alert(data.error);
-        }
-    } catch (err) {
-        console.error("Error mounting drive:", err);
-    }
-}
-
+// --- Telemetry Fetching ---
 async function fetchSystemInfo() {
     try {
         const res = await fetch('/api/system_info');
         const data = await res.json();
-        
-        document.getElementById("cpuUsage").innerText = `${data.cpu_percent}%`;
-        document.getElementById("cpuBar").style.width = `${data.cpu_percent}%`;
 
-        const storage = data.local_storage;
-        document.getElementById("storageUsage").innerText = `${storage.used_gb} / ${storage.total_gb} GB`;
-        document.getElementById("storageBar").style.width = `${storage.percent_used}%`;
+        // 1. CPU
+        const cpuVal = document.getElementById("cpuVal");
+        const cpuBar = document.getElementById("cpuBar");
+        if (cpuVal) cpuVal.innerText = `${data.cpu_percent}%`;
+        if (cpuBar) cpuBar.style.width = `${data.cpu_percent}%`;
 
-        const wbToggle = document.getElementById("writeBlockToggle");
-        const wbLabel = document.getElementById("wbLabel");
-        wbToggle.checked = data.write_blocker_active;
-        wbLabel.innerText = `Write Blocker: ${data.write_blocker_active ? 'ON' : 'OFF'}`;
-        wbLabel.className = `form-check-label fw-bold ms-2 ${data.write_blocker_active ? 'text-danger' : 'text-white'}`;
+        // 2. Storage Capacity
+        if (data.local_storage) {
+            const storageVal = document.getElementById("storageVal");
+            const storageBar = document.getElementById("storageBar");
+            if (storageVal) storageVal.innerText = `${data.local_storage.used_gb} / ${data.local_storage.total_gb} GB`;
+            if (storageBar) storageBar.style.width = `${data.local_storage.percent_used}%`;
+        }
+
+        // 3. RAM Memory
+        if (data.memory) {
+            const memVal = document.getElementById("memVal");
+            const memBar = document.getElementById("memBar");
+            if (memVal) memVal.innerText = `${data.memory.used_gb} / ${data.memory.total_gb} GB (${data.memory.percent_used}%)`;
+            if (memBar) memBar.style.width = `${data.memory.percent_used}%`;
+        }
+
+        // 4. Live Network Speed
+        if (data.network_speed) {
+            const netDlVal = document.getElementById("netDlVal");
+            const netUlVal = document.getElementById("netUlVal");
+            if (netDlVal) netDlVal.innerText = `${data.network_speed.download_mbps} MB/s`;
+            if (netUlVal) netUlVal.innerText = `${data.network_speed.upload_mbps} MB/s`;
+        }
+
+        // 5. Hardware Write Blocker Status
+        const wbBadge = document.getElementById("wbBadge");
+        const wbToggle = document.getElementById("wbToggle");
+        if (wbBadge && wbToggle) {
+            if (data.write_blocker_active) {
+                wbBadge.className = "badge bg-danger fs-6 px-3 py-2";
+                wbBadge.innerHTML = '<i class="bi bi-lock-fill me-1"></i>Hardware Write Blocker: ACTIVE';
+                wbToggle.checked = true;
+            } else {
+                wbBadge.className = "badge bg-warning text-dark fs-6 px-3 py-2";
+                wbBadge.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Write Blocker: DISABLED (Read-Write)';
+                wbToggle.checked = false;
+            }
+        }
     } catch (err) {
         console.error("Error fetching system info:", err);
     }
 }
 
-async function browseFolder(path) {
+// --- Drives & Detailed SMART Enumeration ---
+async function refreshDrives() {
+    try {
+        const res = await fetch('/api/drives');
+        currentDrivesList = await res.json();
+        const driveSelect = document.getElementById("driveSelect");
+        
+        if (!driveSelect) return;
+        driveSelect.innerHTML = '<option value="">-- Choose Target Source Drive --</option>';
+
+        currentDrivesList.forEach(dev => {
+            const opt = document.createElement("option");
+            opt.value = dev.device;
+            opt.innerText = `${dev.device} - ${dev.model} (${dev.size}) [SN: ${dev.serial}]`;
+            driveSelect.appendChild(opt);
+        });
+    } catch (err) {
+        console.error("Error fetching drives:", err);
+    }
+}
+
+async function checkSmartTelemetry() {
+    const driveSelect = document.getElementById("driveSelect");
+    const targetDrive = driveSelect ? driveSelect.value : "";
+
+    // Reset Labels
+    document.getElementById("lblDevicePath").innerText = targetDrive || "--";
+    document.getElementById("lblModel").innerText = "--";
+    document.getElementById("lblSerial").innerText = "--";
+    document.getElementById("lblCapacity").innerText = "--";
+    document.getElementById("lblHealth").innerHTML = "--";
+    document.getElementById("lblTemp").innerText = "--";
+    document.getElementById("lblReallocated").innerText = "--";
+    document.getElementById("lblPending").innerText = "--";
+    document.getElementById("lblPowerHours").innerText = "--";
+
+    if (!targetDrive) return;
+
+    // Populate basic lsblk metadata first
+    const driveObj = currentDrivesList.find(d => d.device === targetDrive);
+    if (driveObj) {
+        document.getElementById("lblModel").innerText = driveObj.model || "Generic Media";
+        document.getElementById("lblSerial").innerText = driveObj.serial || "N/A";
+        document.getElementById("lblCapacity").innerText = driveObj.size || "Unknown";
+    }
+
+    try {
+        const res = await fetch('/api/smart_check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ drive: targetDrive })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            document.getElementById("lblModel").innerText = data.model || (driveObj ? driveObj.model : "Generic Disk");
+            document.getElementById("lblSerial").innerText = data.serial || (driveObj ? driveObj.serial : "N/A");
+            
+            const healthHtml = data.healthy ? '<span class="text-success fw-bold"><i class="bi bi-check-circle-fill me-1"></i>PASSED</span>' : '<span class="text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>FAILING</span>';
+            document.getElementById("lblHealth").innerHTML = healthHtml;
+            document.getElementById("lblTemp").innerText = data.temperature ? `${data.temperature} °C` : "N/A";
+            document.getElementById("lblReallocated").innerText = data.reallocated_sectors !== undefined ? data.reallocated_sectors : "0";
+            document.getElementById("lblPending").innerText = data.pending_sectors !== undefined ? data.pending_sectors : "0";
+            document.getElementById("lblPowerHours").innerText = data.power_on_hours ? `${data.power_on_hours} hrs` : "N/A";
+        } else {
+            document.getElementById("lblHealth").innerHTML = '<span class="text-warning fw-bold">UNSUPPORTED / FLASH</span>';
+        }
+    } catch (err) {
+        console.error("Error checking SMART telemetry:", err);
+    }
+}
+
+// --- Local Folder Browser Functions ---
+function openFolderModal() {
+    const currentDest = document.getElementById("destPath").value.trim() || '/mnt';
+    currentBrowsePath = currentDest;
+    
+    if (!folderModalInstance) {
+        folderModalInstance = new bootstrap.Modal(document.getElementById('folderBrowserModal'));
+    }
+    
+    loadFolderList(currentBrowsePath);
+    folderModalInstance.show();
+}
+
+async function loadFolderList(path) {
+    const folderListEl = document.getElementById("folderList");
+    const pathInputEl = document.getElementById("modalCurrentPath");
+    
+    if (!folderListEl) return;
+    folderListEl.innerHTML = '<div class="p-3 text-muted text-center"><i class="bi bi-hourglass-split me-2"></i>Loading directories...</div>';
+    
     try {
         const res = await fetch('/api/list_folders', {
             method: 'POST',
@@ -528,115 +202,279 @@ async function browseFolder(path) {
             body: JSON.stringify({ path: path })
         });
         const data = await res.json();
-        if (data.error) return;
-
-        currentBrowserPath = data.current_path;
-        document.getElementById("currentPathDisplay").innerText = currentBrowserPath;
-
-        const container = document.getElementById("folderContainer");
-        container.innerHTML = "";
-
-        if (data.folders.length === 0) {
-            container.innerHTML = '<div class="text-white fs-5 text-center p-3">No subdirectories found</div>';
+        
+        if (data.error) {
+            folderListEl.innerHTML = `<div class="p-3 text-danger text-center">Error: ${data.error}</div>`;
             return;
         }
-
+        
+        currentBrowsePath = data.current_path;
+        if (pathInputEl) pathInputEl.value = currentBrowsePath;
+        
+        folderListEl.innerHTML = '';
+        
+        if (data.folders.length === 0) {
+            folderListEl.innerHTML = '<div class="p-3 text-muted text-center"><i class="bi bi-folder-x me-2"></i>No subdirectories found in this location.</div>';
+            return;
+        }
+        
         data.folders.forEach(folder => {
-            const item = document.createElement("div");
-            item.className = "folder-list-item";
-            item.innerHTML = `<span>[Folder] <strong>${folder}</strong></span> <button class="btn btn-sm btn-outline-primary fw-bold">Open</button>`;
-            item.onclick = () => browseFolder(`${currentBrowserPath}/${folder}`);
-            container.appendChild(item);
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "list-group-item list-group-item-action bg-dark text-light border-secondary d-flex align-items-center py-2";
+            btn.innerHTML = `<i class="bi bi-folder-fill text-warning me-2 fs-5"></i><span>${folder}</span>`;
+            btn.onclick = () => {
+                const newPath = currentBrowsePath.endsWith('/') ? `${currentBrowsePath}${folder}` : `${currentBrowsePath}/${folder}`;
+                loadFolderList(newPath);
+            };
+            folderListEl.appendChild(btn);
         });
+        
     } catch (err) {
-        console.error("Error browsing directory:", err);
+        folderListEl.innerHTML = `<div class="p-3 text-danger text-center">Failed to load directories.</div>`;
     }
 }
 
-function navigateUp() {
-    const parts = currentBrowserPath.split('/').filter(Boolean);
+function navigateFolderUp() {
+    if (currentBrowsePath === '/' || currentBrowsePath === '') return;
+    const parts = currentBrowsePath.split('/').filter(p => p.length > 0);
     parts.pop();
-    browseFolder('/' + parts.join('/'));
+    const parentPath = '/' + parts.join('/');
+    loadFolderList(parentPath || '/');
 }
 
-async function toggleWriteBlock(e) {
+function selectCurrentFolder() {
+    const destPathInput = document.getElementById("destPath");
+    if (destPathInput) {
+        destPathInput.value = currentBrowsePath;
+    }
+    if (folderModalInstance) {
+        folderModalInstance.hide();
+    }
+}
+
+// --- Network Share Operations ---
+async function queryNetworkShares() {
+    const host = document.getElementById("netHost").value.trim();
+    const protocol = document.getElementById("netProtocol").value;
+    const shareSelect = document.getElementById("serverShareSelect");
+    const mountStatus = document.getElementById("mountStatus");
+
+    if (!host) {
+        alert("Please enter a server IP address.");
+        return;
+    }
+
+    if (mountStatus) mountStatus.innerText = "Querying available exports...";
+    shareSelect.innerHTML = '<option value="">Querying...</option>';
+
     try {
-        await fetch('/api/toggle_write_block', {
+        const res = await fetch('/api/list_server_shares', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enable: e.target.checked })
+            body: JSON.stringify({ protocol, host, user: savedNetUser, pass: savedNetPass })
         });
-        fetchSystemInfo();
+        const data = await res.json();
+
+        if (data.success) {
+            shareSelect.innerHTML = '<option value="">Select Exported Share...</option>';
+            data.shares.forEach(share => {
+                const opt = document.createElement("option");
+                opt.value = share;
+                opt.innerText = share;
+                shareSelect.appendChild(opt);
+            });
+            if (mountStatus) mountStatus.innerText = `Found ${data.shares.length} exported share(s).`;
+        } else {
+            shareSelect.innerHTML = '<option value="">Query Failed</option>';
+            if (mountStatus) mountStatus.innerText = `Query Error: ${data.error}`;
+        }
     } catch (err) {
-        console.error("Failed to set write blocker status:", err);
+        console.error("Error querying shares:", err);
     }
 }
 
-function formatETA(seconds) {
-    if (!seconds || seconds <= 0 || !isFinite(seconds)) return "--:--:--";
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+async function mountNetworkDrive() {
+    const host = document.getElementById("netHost").value.trim();
+    const protocol = document.getElementById("netProtocol").value;
+    const share = document.getElementById("serverShareSelect").value;
+    const mountStatus = document.getElementById("mountStatus");
+
+    if (!share) {
+        alert("Please select an exported share first.");
+        return;
+    }
+
+    if (mountStatus) mountStatus.innerText = "Mounting share...";
+
+    try {
+        const res = await fetch('/api/mount_network', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ protocol, host, share, user: savedNetUser, pass: savedNetPass })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            if (mountStatus) mountStatus.innerText = `Successfully mounted to: ${data.mount_point}`;
+            
+            const destPath = document.getElementById("destPath");
+            if (destPath) destPath.value = data.mount_point;
+            
+            alert(`Share Mounted!
+Destination Target Path updated to: ${data.mount_point}`);
+        } else {
+            if (mountStatus) mountStatus.innerText = `Mount Error: ${data.error}`;
+            alert(`Mount Failed: ${data.error}`);
+        }
+    } catch (err) {
+        console.error("Error mounting share:", err);
+    }
 }
 
-async function pollProgress() {
+// --- Write Blocker Toggle ---
+async function toggleWriteBlock(e) {
+    const enable = e.target.checked;
+    const driveSelect = document.getElementById("driveSelect");
+    const drive = (driveSelect && driveSelect.value) ? driveSelect.value : "/dev/sda";
+
+    try {
+        const res = await fetch('/api/toggle_write_block', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enable, drive })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            const wbBadge = document.getElementById("wbBadge");
+            if (wbBadge) {
+                if (data.write_blocker_active) {
+                    wbBadge.className = "badge bg-danger fs-6 px-3 py-2";
+                    wbBadge.innerHTML = '<i class="bi bi-lock-fill me-1"></i>Hardware Write Blocker: ACTIVE';
+                } else {
+                    wbBadge.className = "badge bg-warning text-dark fs-6 px-3 py-2";
+                    wbBadge.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Write Blocker: DISABLED (Read-Write)';
+                }
+            }
+            fetchSystemInfo();
+        } else {
+            alert(`Failed setting write blocker on ${drive}: ${data.error}`);
+            e.target.checked = !enable;
+        }
+    } catch (err) {
+        console.error("Error toggling write blocker:", err);
+        e.target.checked = !enable;
+    }
+}
+
+// --- Acquisition Execution Controls ---
+async function startAcquisition() {
+    const source = document.getElementById("driveSelect").value;
+    const dest = document.getElementById("destPath").value;
+    const fmt = document.querySelector('input[name="imageFormat"]:checked').value;
+
+    if (!source) {
+        alert("Select a target evidence drive first.");
+        return;
+    }
+
+    const metadata = {
+        case_number: document.getElementById("caseNum").value || "2026-UNASSIGNED",
+        evidence_id: document.getElementById("evidenceId").value || "ITEM-01",
+        examiner: document.getElementById("examiner").value || "UNSPECIFIED",
+        notes: document.getElementById("notes").value || "None"
+    };
+
+    try {
+        const res = await fetch('/api/start_imaging', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source, destination: dest, format: fmt, metadata })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            document.getElementById("startBtn").disabled = true;
+            document.getElementById("stopBtn").disabled = false;
+        } else {
+            alert(`Acquisition Start Failed: ${data.error}`);
+        }
+    } catch (err) {
+        console.error("Error starting acquisition:", err);
+    }
+}
+
+async function stopAcquisition() {
+    if (!confirm("Are you sure you want to terminate the active acquisition?")) return;
+
+    try {
+        const res = await fetch('/api/stop_imaging', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById("startBtn").disabled = false;
+            document.getElementById("stopBtn").disabled = true;
+        }
+    } catch (err) {
+        console.error("Error stopping acquisition:", err);
+    }
+}
+
+// --- Polling Progress ---
+async function fetchProgress() {
     try {
         const res = await fetch('/api/progress');
         const data = await res.json();
 
-        const bar = document.getElementById("progressBar");
-        bar.style.width = `${data.progress_percent}%`;
+        const currentSpeed = data.speed_mbps || 0;
+        
+        const speedVal = document.getElementById("speedVal");
+        if (speedVal) speedVal.innerText = `${currentSpeed.toFixed(1)} MB/s`;
 
-        const speed = parseFloat(data.speed_mbps || 0);
-        pushThroughputData(speed);
-
-        if (data.status === "Verifying Hashes...") {
-            bar.innerText = "99% (Verifying Hashes...)";
-            bar.className = "progress-bar progress-bar-striped progress-bar-animated bg-info fs-5 fw-bold";
-            document.getElementById("etaDisplay").innerText = "Hashing...";
-        } else if (data.status === "Flushing Disk Cache...") {
-            bar.innerText = "99% (Flushing Storage Cache...)";
-            bar.className = "progress-bar progress-bar-striped progress-bar-animated bg-warning fs-5 fw-bold";
-            document.getElementById("etaDisplay").innerText = "Finishing...";
-        } else if (data.status === "Completed Successfully") {
-            bar.innerText = "100% Complete";
-            bar.className = "progress-bar bg-success fs-5 fw-bold";
-            document.getElementById("etaDisplay").innerText = "00:00:00";
-        } else if (data.status === "Failed") {
-            bar.innerText = `${data.progress_percent}% (Failed)`;
-            bar.className = "progress-bar bg-danger fs-5 fw-bold";
-            document.getElementById("etaDisplay").innerText = "Error";
-        } else if (data.active) {
-            bar.innerText = `${data.progress_percent}%`;
-            bar.className = "progress-bar progress-bar-striped progress-bar-animated bg-success fs-5 fw-bold";
-            
-            const remainingBytes = data.total_bytes - data.transferred_bytes;
-            const speedBytesPerSec = data.speed_mbps * 1024 * 1024;
-            const etaSeconds = speedBytesPerSec > 0 ? (remainingBytes / speedBytesPerSec) : 0;
-            document.getElementById("etaDisplay").innerText = formatETA(etaSeconds);
-        } else {
-            bar.innerText = "0%";
-            document.getElementById("etaDisplay").innerText = "--:--:--";
+        const bytesVal = document.getElementById("bytesVal");
+        if (bytesVal && data.total_bytes > 0) {
+            const xferGb = (data.transferred_bytes / (1024**3)).toFixed(2);
+            const totalGb = (data.total_bytes / (1024**3)).toFixed(2);
+            bytesVal.innerText = `${xferGb} / ${totalGb} GB`;
         }
 
-        document.getElementById("transferSpeed").innerText = `${data.speed_mbps} MB/s`;
-        
-        const statusElem = document.getElementById("imagingStatus");
-        statusElem.innerText = data.status;
-        statusElem.className = data.status === "Failed" ? "fw-bold text-danger" : 
-                              (data.status === "Completed Successfully" ? "fw-bold text-success" : 
-                              (data.status.includes("Verifying") || data.status.includes("Flushing") ? "fw-bold text-info" : "fw-bold text-warning"));
+        const progressBar = document.getElementById("progressBar");
+        const progressPct = document.getElementById("progressPct");
+        if (progressBar) progressBar.style.width = `${data.progress_percent}%`;
+        if (progressPct) progressPct.innerText = `${data.progress_percent.toFixed(1)}%`;
 
-        const mbTransferred = (data.transferred_bytes / (1024 * 1024)).toFixed(1);
-        const mbTotal = (data.total_bytes / (1024 * 1024)).toFixed(1);
-        document.getElementById("bytesTransferred").innerText = `${mbTransferred} MB / ${mbTotal} MB`;
+        const jobStatus = document.getElementById("jobStatus");
+        if (jobStatus) jobStatus.innerText = `Status: ${data.status}`;
 
-        document.getElementById("terminalLog").innerText = data.log;
+        const logOutput = document.getElementById("logOutput");
+        if (logOutput && data.log) {
+            logOutput.innerText = data.log;
+            logOutput.scrollTop = logOutput.scrollHeight;
+        }
 
-        document.getElementById("startBtn").disabled = data.active;
-        document.getElementById("stopBtn").disabled = !data.active;
+        if (throughputChart) {
+            graphData.push(currentSpeed);
+            graphData.shift();
+            throughputChart.update('none');
+        }
+
+        const startBtn = document.getElementById("startBtn");
+        const stopBtn = document.getElementById("stopBtn");
+        if (startBtn && stopBtn) {
+            startBtn.disabled = data.active;
+            stopBtn.disabled = !data.active;
+        }
+
     } catch (err) {
-        console.error("Error fetching progress:", err);
+        console.error("Error polling progress:", err);
     }
 }
+
+// --- DOM Initialization ---
+document.addEventListener("DOMContentLoaded", () => {
+    initThroughputGraph();
+    refreshDrives();
+    
+    setInterval(fetchSystemInfo, 2000);
+    setInterval(fetchProgress, 1000);
+});
