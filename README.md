@@ -3,7 +3,7 @@ Low Budget Forensic Drive Imaging Using Arm Based Single Board Computers
 
 # 🛡️ Raspberry Pi ARM Forensic Acquisition Station
 
-An open-source, web-based digital forensic imaging appliance built for Raspberry Pi and ARM single-board computers. Designed for field kit deployment, evidence collection, and network-streamed disk imaging. Based on my original research "Low Budget Forensics using ARM Based Single Board Computers"
+An open-source, web-based digital forensic imaging appliance built for Raspberry Pi and ARM single-board computers. Designed for field kit deployment, evidence collection, and network-streamed disk imaging. Based on original research "Low Budget Forensics using ARM Based Single Board Computers"
 https://commons.erau.edu/jdfsl/vol11/iss1/3/
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
@@ -13,7 +13,8 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 
 ## 🌟 Key Features
 
-- **Bit-Stream Acquisition:** Leverages `dc3dd` for raw image acquisition (`.dd`) with hash verification (MD5, SHA-1, SHA-256).
+- **Works on Pi or ARM SBC** Install on Raspberry Pi or ARM SBC with Debia
+- **Bit-Stream Acquisition:** Leverages `dc3dd` for raw image acquisition (`.dd`) and 'ewfacquire' for E01 acquisition with hash verification (MD5, SHA-1, SHA-256).
 - **ARM Memory-Safe Architecture:** Built with non-blocking process pipelines and active memory buffer syncing (`os.sync()`) to eliminate Out-Of-Memory kernel panics on embedded hardware.
 - **Integrated Network Mounting:** Auto-discovers, authenticates, and mounts remote SMB/CIFS, NFS, and FTP shares natively in the UI with protocol fallback support.
 - **SMART Health Diagnostics:** Instant drive health checks (`smartctl`) inspecting reallocated sectors, temperature, power-on hours, and bad block flags prior to imaging.
@@ -23,7 +24,7 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 
 ---
 
-## 📸 Interface Screenshots
+## 📸 Screenshot
 
 <p align="center">
   <img src="docs/images/PIF1.JPG" width="100%" alt="ARM Forensic Station Header & Local Setup" />
@@ -33,9 +34,12 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 
 ---
 
-## 📋 Prerequisites
+## 📋 Prerequisites, Setup & Usage
 
-System packages and services required on the host Raspberry Pi (Debian/Raspberry Pi OS):
+#Pi and bootmedia with Pi OS or other Debian based OS configured
+#https://www.raspberrypi.com/documentation/computers/getting-started.html
+
+#System packages and services required on the host Raspberry Pi (Debian/Raspberry Pi OS):
 
 ```bash
 sudo apt update
@@ -60,4 +64,13 @@ sudo cp /opt/pi-forensics/systemd/pi-forensics.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now pi-forensics.service
 
+#To access via touchscreen and directly on Pi, enable the kiosk mode
+sudo systemctl daemon-reload
+sudo systemctl enable --now pi-kiosk.service
 
+## Contributors
+Contributions welcome! Submit pull requests or open issues for improvements or bug reports.
+
+## Disclamier and License
+Provided as-is, without any warranty. Its methodology has been vetted to be forensically sound, but always verify the integrity of your images using appropriate forensic tools and procedures.
+See prior research here: "Low Budget Forensics using ARM Based Single Board Computers" - https://commons.erau.edu/jdfsl/vol11/iss1/3/
