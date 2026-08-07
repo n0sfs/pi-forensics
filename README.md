@@ -34,6 +34,17 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 
 ---
 
+## Contributors
+Contributions welcome! Submit pull requests or open issues for improvements or bug reports.
+
+---
+
+## Disclamier and License
+Provided as-is, without any warranty. Its methodology has been vetted to be forensically sound, but always verify the integrity of your images using appropriate forensic tools and procedures.
+See prior research here: "Low Budget Forensics using ARM Based Single Board Computers" - https://commons.erau.edu/jdfsl/vol11/iss1/3/
+
+---
+
 ## 📋 Prerequisites, Setup & Usage
 
 #Pi and bootmedia with Pi OS or other Debian based OS configured
@@ -69,13 +80,3 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now pi-kiosk.service
 
 
----
-
-## Contributors
-Contributions welcome! Submit pull requests or open issues for improvements or bug reports.
-
----
-
-## Disclamier and License
-Provided as-is, without any warranty. Its methodology has been vetted to be forensically sound, but always verify the integrity of your images using appropriate forensic tools and procedures.
-See prior research here: "Low Budget Forensics using ARM Based Single Board Computers" - https://commons.erau.edu/jdfsl/vol11/iss1/3/
