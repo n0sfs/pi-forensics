@@ -91,7 +91,6 @@ def parse_dc3dd_hashes(log_path):
         try:
             with open(log_path, 'r') as f:
                 content = f.read()
-                # Captures standard dc3dd log format (case-insensitive): "md5: [hash]" or "sha256 hash: [hash]"
                 matches = re.findall(r'(\b(?:md5|sha1|sha256)\b)[^\n:]*:\s*([a-fA-F0-9]{32,64})', content, re.IGNORECASE)
                 for algo, val in matches:
                     hashes[algo.lower()] = val
@@ -102,7 +101,6 @@ def parse_dc3dd_hashes(log_path):
 def parse_ewf_hashes(console_log_text):
     hashes = {}
     try:
-        # Captures ewfacquire console output format
         matches = re.findall(r'(\b(?:MD5|SHA1|SHA256)\b)\s*(?:hash|hash stored in file)?:?\s*([a-fA-F0-9]{32,64})', console_log_text, re.IGNORECASE)
         for algo, val in matches:
             hashes[algo.lower()] = val
@@ -147,7 +145,7 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
             stderr=subprocess.STDOUT,
             text=False,
             bufsize=0,
-            preexec_fn=os.setsid  # Creates process group ID for easy group killing
+            preexec_fn=os.setsid
         )
         current_job["status"] = "Acquiring Evidence..."
 
@@ -157,11 +155,10 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
         fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
         while True:
-            time.sleep(0.2)  # Fast poll loop prevents buffer delay and UI stream freezes
+            time.sleep(0.2)
             now = time.time()
             elapsed = now - last_check
 
-            # Direct disk size telemetry check
             if os.path.exists(out_file):
                 try:
                     curr_size = os.path.getsize(out_file)
@@ -184,7 +181,6 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
                 if raw_bytes:
                     text_chunk = raw_bytes.decode('utf-8', errors='ignore')
                     for char in text_chunk:
-                        # Flush buffer on carriage returns (\r) OR newlines (\n)
                         if char in ['\r', '\n']:
                             line_str = buffer.strip()
                             buffer = ""
@@ -226,10 +222,8 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
             current_job["speed_mbps"] = 0.0
             append_log("[+] Acquisition completed successfully.")
 
-            # Short delay allows network drive buffers to completely flush the log file
             time.sleep(1.0)
 
-            # Parse computed hashes based on selected format engine
             if fmt == 'e01':
                 computed_hashes = parse_ewf_hashes(current_job["log"])
             else:

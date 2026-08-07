@@ -1,3 +1,4 @@
+let grid = null;
 let throughputChart = null;
 const maxGraphPoints = 30;
 const graphData = Array(maxGraphPoints).fill(0);
@@ -9,6 +10,46 @@ let currentDrivesList = [];
 
 let currentBrowsePath = '/mnt';
 let folderModalInstance = null;
+
+// --- Initialize Gridstack Dynamic Dashboard ---
+function initGridstack() {
+    grid = GridStack.init({
+        cellHeight: 90,
+        margin: 8,
+        handle: '.card-header',
+        animate: true,
+        resizable: {
+            handles: 'e, se, s, sw, w'
+        }
+    });
+
+    // Load saved layout from localStorage if present
+    const savedLayout = localStorage.getItem('pi_forensics_layout');
+    if (savedLayout) {
+        try {
+            const layoutData = JSON.parse(savedLayout);
+            grid.load(layoutData);
+        } catch (e) {
+            console.error("Failed loading saved layout:", e);
+        }
+    }
+
+    // Save positions automatically on drag or resize
+    grid.on('change', () => {
+        saveDashboardLayout();
+    });
+}
+
+function saveDashboardLayout() {
+    if (!grid) return;
+    const layout = grid.save(false);
+    localStorage.setItem('pi_forensics_layout', JSON.stringify(layout));
+}
+
+function resetDashboardLayout() {
+    localStorage.removeItem('pi_forensics_layout');
+    location.reload();
+}
 
 // --- Initialize Chart.js Live Graph ---
 function initThroughputGraph() {
@@ -54,13 +95,11 @@ async function fetchSystemInfo() {
         const res = await fetch('/api/system_info');
         const data = await res.json();
 
-        // 1. CPU
         const cpuVal = document.getElementById("cpuVal");
         const cpuBar = document.getElementById("cpuBar");
         if (cpuVal) cpuVal.innerText = `${data.cpu_percent}%`;
         if (cpuBar) cpuBar.style.width = `${data.cpu_percent}%`;
 
-        // 2. Storage Capacity
         if (data.local_storage) {
             const storageVal = document.getElementById("storageVal");
             const storageBar = document.getElementById("storageBar");
@@ -68,7 +107,6 @@ async function fetchSystemInfo() {
             if (storageBar) storageBar.style.width = `${data.local_storage.percent_used}%`;
         }
 
-        // 3. RAM Memory
         if (data.memory) {
             const memVal = document.getElementById("memVal");
             const memBar = document.getElementById("memBar");
@@ -76,7 +114,6 @@ async function fetchSystemInfo() {
             if (memBar) memBar.style.width = `${data.memory.percent_used}%`;
         }
 
-        // 4. Live Network Speed
         if (data.network_speed) {
             const netDlVal = document.getElementById("netDlVal");
             const netUlVal = document.getElementById("netUlVal");
@@ -84,7 +121,6 @@ async function fetchSystemInfo() {
             if (netUlVal) netUlVal.innerText = `${data.network_speed.upload_mbps} MB/s`;
         }
 
-        // 5. Hardware Write Blocker Status
         const wbBadge = document.getElementById("wbBadge");
         const wbToggle = document.getElementById("wbToggle");
         if (wbBadge && wbToggle) {
@@ -556,6 +592,7 @@ async function fetchProgress() {
 
 // --- DOM Initialization ---
 document.addEventListener("DOMContentLoaded", () => {
+    initGridstack();
     initThroughputGraph();
     refreshDrives();
     loadNetworkHistory();
