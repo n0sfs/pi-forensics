@@ -79,4 +79,7 @@ sudo systemctl enable --now pi-forensics.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now pi-kiosk.service
 
+#Login via a web browser for headless deployment: http://<your Pi or ARM IP>:5000
+#Use via Kiosk mode directly via a touch screen or monitor attached to the Pi or ARM SBC
+
 
