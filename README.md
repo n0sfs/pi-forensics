@@ -68,8 +68,13 @@ sudo systemctl enable --now pi-forensics.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now pi-kiosk.service
 
+
+---
+
 ## Contributors
 Contributions welcome! Submit pull requests or open issues for improvements or bug reports.
+
+---
 
 ## Disclamier and License
 Provided as-is, without any warranty. Its methodology has been vetted to be forensically sound, but always verify the integrity of your images using appropriate forensic tools and procedures.
