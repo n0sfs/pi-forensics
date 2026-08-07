@@ -19,7 +19,7 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 - **SMART Health Diagnostics:** Instant drive health checks (`smartctl`) inspecting reallocated sectors, temperature, power-on hours, and bad block flags prior to imaging.
 - **Software Write-Blocker Toggle:** Quick toggle for `udev` read-only rule enforcement (`ATTR{ro}="1"`) to preserve chain of custody.
 - **Automated Evidence Manifests:** Generates structured `evidence_manifest.json` and human-readable `.txt` reports capturing case numbers, evidence IDs, examiner notes, drive serials, and timestamps.
-- **Touchscreen & Remote Friendly:** Responsive dark-mode UI designed for onboard Pi touchscreen displays or headless browser control over Wi-Fi/Ethernet.
+- **Touchscreen & Remote Friendly:** Responsive dark-mode UI with drag and drop interface designed for onboard Pi touchscreen displays or headless browser control over Wi-Fi/Ethernet.
 
 ---
 

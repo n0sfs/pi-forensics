@@ -7,6 +7,9 @@
     <!-- Bootstrap 5 CSS & Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <!-- Gridstack.js CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/gridstack@9.2.0/dist/gridstack.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/gridstack@9.2.0/dist/gridstack-extra.min.css" rel="stylesheet">
     <!-- Chart.js for Live Graph -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -34,6 +37,7 @@
             border: 1px solid var(--border-color); 
             border-radius: 8px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            height: 100%;
         }
 
         .card-header {
@@ -41,6 +45,10 @@
             border-bottom: 1px solid var(--border-color);
             font-weight: 600;
             letter-spacing: 0.5px;
+            cursor: grab;
+        }
+        .card-header:active {
+            cursor: grabbing;
         }
 
         /* High-Contrast Inputs & Selects */
@@ -78,6 +86,14 @@
 
         .telemetry-grid-label { color: #94a3b8; font-size: 0.78rem; font-weight: 500; text-transform: uppercase; }
         .telemetry-grid-val { color: #ffffff; font-size: 0.88rem; font-weight: 600; }
+
+        /* Gridstack Custom Handles */
+        .grid-stack-item-content {
+            overflow: hidden !important;
+        }
+        .ui-resizable-handle {
+            filter: invert(100%);
+        }
     </style>
 </head>
 <body>
@@ -86,7 +102,10 @@
         <span class="navbar-brand fw-bold text-info fs-4 d-flex align-items-center">
             <i class="bi bi-shield-check text-cyan me-2 fs-3"></i>ARM Forensic Acquisition Station
         </span>
-        <div class="d-flex align-items-center">
+        <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-sm btn-outline-secondary text-light fw-bold" onclick="resetDashboardLayout()">
+                <i class="bi bi-arrow-counterclockwise me-1"></i>Reset Layout
+            </button>
             <span class="badge bg-danger fs-6 px-3 py-2" id="wbBadge">
                 <i class="bi bi-lock-fill me-1"></i>Hardware Write Blocker: ACTIVE
             </span>
@@ -94,264 +113,281 @@
     </nav>
 
     <div class="container-fluid px-4">
-        <div class="row g-3">
-            <!-- Left Column: Source Selection, Hardware Telemetry & Setup -->
-            <div class="col-lg-7">
-                <!-- Target Source Selection & Compact Grid Telemetry -->
-                <div class="card mb-3">
-                    <div class="card-header d-flex justify-content-between align-items-center text-info py-2">
-                        <span><i class="bi bi-hdd-network me-2"></i>Target Source Selection</span>
-                        <div class="form-check form-switch mb-0">
-                            <input class="form-check-input" type="checkbox" id="wbToggle" checked onchange="toggleWriteBlock(event)">
-                            <label class="form-check-label text-warning small fw-bold" for="wbToggle">Write Blocker Lock</label>
-                        </div>
-                    </div>
-                    <div class="card-body py-2">
-                        <div class="row g-2 align-items-center mb-2">
-                            <div class="col-md-8">
-                                <select id="driveSelect" class="form-select form-select-sm" onchange="checkSmartTelemetry()">
-                                    <option value="">-- Choose Target Source Drive --</option>
-                                </select>
-                            </div>
-                            <div class="col-md-4">
-                                <button class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="refreshDrives()"><i class="bi bi-arrow-clockwise me-1"></i>Scan Drives</button>
+        <!-- Gridstack Dynamic Workspace -->
+        <div class="grid-stack">
+            
+            <!-- Target Source Selection & Compact Grid Telemetry -->
+            <div class="grid-stack-item" gs-id="card-source" gs-x="0" gs-y="0" gs-w="7" gs-h="4">
+                <div class="grid-stack-item-content">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center text-info py-2">
+                            <span><i class="bi bi-hdd-network me-2"></i>Target Source Selection</span>
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" id="wbToggle" checked onchange="toggleWriteBlock(event)">
+                                <label class="form-check-label text-warning small fw-bold" for="wbToggle">Write Blocker Lock</label>
                             </div>
                         </div>
+                        <div class="card-body py-2">
+                            <div class="row g-2 align-items-center mb-2">
+                                <div class="col-md-8">
+                                    <select id="driveSelect" class="form-select form-select-sm" onchange="checkSmartTelemetry()">
+                                        <option value="">-- Choose Target Source Drive --</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <button class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="refreshDrives()"><i class="bi bi-arrow-clockwise me-1"></i>Scan Drives</button>
+                                </div>
+                            </div>
 
-                        <!-- High-Density 3-Column Telemetry Box -->
-                        <div class="p-2 bg-dark border border-secondary rounded-2">
-                            <div class="d-flex justify-content-between align-items-center border-bottom border-secondary pb-1 mb-2">
-                                <span class="fw-bold text-info small"><i class="bi bi-cpu-fill me-1"></i>Media & Hardware Telemetry</span>
-                                <span id="lblHealthBadge" class="badge bg-secondary">UNCHECKED</span>
-                            </div>
-                            
-                            <div class="row g-2">
-                                <div class="col-4">
-                                    <span class="telemetry-grid-label d-block">Device Path</span>
-                                    <span id="lblDevicePath" class="telemetry-grid-val text-truncate d-block">--</span>
+                            <div class="p-2 bg-dark border border-secondary rounded-2">
+                                <div class="d-flex justify-content-between align-items-center border-bottom border-secondary pb-1 mb-2">
+                                    <span class="fw-bold text-info small"><i class="bi bi-cpu-fill me-1"></i>Media & Hardware Telemetry</span>
+                                    <span id="lblHealthBadge" class="badge bg-secondary">UNCHECKED</span>
                                 </div>
-                                <div class="col-4">
-                                    <span class="telemetry-grid-label d-block">Media Type</span>
-                                    <span id="lblMediaType" class="telemetry-grid-val text-truncate d-block">--</span>
-                                </div>
-                                <div class="col-4">
-                                    <span class="telemetry-grid-label d-block">Capacity Size</span>
-                                    <span id="lblCapacity" class="telemetry-grid-val text-truncate d-block">--</span>
-                                </div>
+                                
+                                <div class="row g-2">
+                                    <div class="col-4">
+                                        <span class="telemetry-grid-label d-block">Device Path</span>
+                                        <span id="lblDevicePath" class="telemetry-grid-val text-truncate d-block">--</span>
+                                    </div>
+                                    <div class="col-4">
+                                        <span class="telemetry-grid-label d-block">Media Type</span>
+                                        <span id="lblMediaType" class="telemetry-grid-val text-truncate d-block">--</span>
+                                    </div>
+                                    <div class="col-4">
+                                        <span class="telemetry-grid-label d-block">Capacity Size</span>
+                                        <span id="lblCapacity" class="telemetry-grid-val text-truncate d-block">--</span>
+                                    </div>
 
-                                <div class="col-4">
-                                    <span class="telemetry-grid-label d-block">Model / Vendor</span>
-                                    <span id="lblModel" class="telemetry-grid-val text-truncate d-block">--</span>
-                                </div>
-                                <div class="col-4">
-                                    <span class="telemetry-grid-label d-block">Serial Number</span>
-                                    <span id="lblSerial" class="telemetry-grid-val text-warning font-monospace text-truncate d-block">--</span>
-                                </div>
-                                <div class="col-4">
-                                    <span class="telemetry-grid-label d-block">Temperature</span>
-                                    <span id="lblTemp" class="telemetry-grid-val d-block">--</span>
-                                </div>
+                                    <div class="col-4">
+                                        <span class="telemetry-grid-label d-block">Model / Vendor</span>
+                                        <span id="lblModel" class="telemetry-grid-val text-truncate d-block">--</span>
+                                    </div>
+                                    <div class="col-4">
+                                        <span class="telemetry-grid-label d-block">Serial Number</span>
+                                        <span id="lblSerial" class="telemetry-grid-val text-warning font-monospace text-truncate d-block">--</span>
+                                    </div>
+                                    <div class="col-4">
+                                        <span class="telemetry-grid-label d-block">Temperature</span>
+                                        <span id="lblTemp" class="telemetry-grid-val d-block">--</span>
+                                    </div>
 
-                                <div class="col-4">
-                                    <span class="telemetry-grid-label d-block">Reallocated Sectors</span>
-                                    <span id="lblReallocated" class="telemetry-grid-val d-block">--</span>
-                                </div>
-                                <div class="col-4">
-                                    <span class="telemetry-grid-label d-block">Pending Bad Sectors</span>
-                                    <span id="lblPending" class="telemetry-grid-val d-block">--</span>
-                                </div>
-                                <div class="col-4">
-                                    <span class="telemetry-grid-label d-block">Power-On Hours</span>
-                                    <span id="lblPowerHours" class="telemetry-grid-val d-block">--</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Case & Metadata -->
-                <div class="card mb-3">
-                    <div class="card-header text-info py-2"><i class="bi bi-folder-symlink me-2"></i>Case & Evidence Metadata</div>
-                    <div class="card-body py-2">
-                        <div class="row g-2 mb-2">
-                            <div class="col-md-4"><input type="text" id="caseNum" class="form-control form-control-sm" placeholder="Case Number (e.g. 2026-CASE-001)"></div>
-                            <div class="col-md-4"><input type="text" id="evidenceId" class="form-control form-control-sm" placeholder="Evidence ID (e.g. ITEM-01)"></div>
-                            <div class="col-md-4"><input type="text" id="examiner" class="form-control form-control-sm" placeholder="Examiner Name"></div>
-                        </div>
-                        <input type="text" id="notes" class="form-control form-control-sm" placeholder="Notes / Chain of Custody Remarks">
-                    </div>
-                </div>
-
-                <!-- Network Share Panel (NFS / SMB) -->
-                <div class="card mb-3">
-                    <div class="card-header text-info py-2"><i class="bi bi-diagram-3 me-2"></i>Destination & Network Share Setup</div>
-                    <div class="card-body py-2">
-                        <div class="row g-2 mb-2">
-                            <div class="col-md-3">
-                                <select id="netProtocol" class="form-select form-select-sm">
-                                    <option value="nfs">NFS Share</option>
-                                    <option value="smb">SMB / CIFS</option>
-                                </select>
-                            </div>
-                            <div class="col-md-5">
-                                <input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)">
-                            </div>
-                            <div class="col-md-4">
-                                <button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares()"><i class="bi bi-search me-1"></i>Query Shares</button>
-                            </div>
-                        </div>
-                        <div class="row g-2 align-items-center mb-2">
-                            <div class="col-md-8">
-                                <select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select>
-                            </div>
-                            <div class="col-md-4">
-                                <button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive()"><i class="bi bi-plug me-1"></i>Mount Share</button>
-                            </div>
-                        </div>
-                        <div id="mountStatus" class="small mb-2 text-light"></div>
-
-                        <div class="border-top border-secondary pt-2">
-                            <label class="form-label fw-bold text-light small mb-1">Destination Target Path:</label>
-                            <div class="input-group input-group-sm">
-                                <input type="text" id="destPath" class="form-control" value="/mnt">
-                                <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal()"><i class="bi bi-folder2-open me-1"></i>Browse</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Format & Hashing Selection Bar -->
-                <div class="card mb-3">
-                    <div class="card-body py-2">
-                        <div class="row align-items-center g-2 mb-2 border-bottom border-secondary pb-2">
-                            <!-- Image Format Selection -->
-                            <div class="col-md-6">
-                                <span class="telemetry-grid-label d-inline me-2">Format:</span>
-                                <div class="form-check form-check-inline mb-0">
-                                    <input class="form-check-input" type="radio" name="imageFormat" id="fmtDd" value="dd" checked>
-                                    <label class="form-check-label small" for="fmtDd">Raw (.dd)</label>
-                                </div>
-                                <div class="form-check form-check-inline mb-0">
-                                    <input class="form-check-input" type="radio" name="imageFormat" id="fmtE01" value="e01">
-                                    <label class="form-check-label small" for="fmtE01">EWF (.E01)</label>
+                                    <div class="col-4">
+                                        <span class="telemetry-grid-label d-block">Reallocated Sectors</span>
+                                        <span id="lblReallocated" class="telemetry-grid-val d-block">--</span>
+                                    </div>
+                                    <div class="col-4">
+                                        <span class="telemetry-grid-label d-block">Pending Bad Sectors</span>
+                                        <span id="lblPending" class="telemetry-grid-val d-block">--</span>
+                                    </div>
+                                    <div class="col-4">
+                                        <span class="telemetry-grid-label d-block">Power-On Hours</span>
+                                        <span id="lblPowerHours" class="telemetry-grid-val d-block">--</span>
+                                    </div>
                                 </div>
                             </div>
-                            <!-- Hashing Algorithms Checkboxes -->
-                            <div class="col-md-6">
-                                <span class="telemetry-grid-label d-inline me-2">Verification Hashes:</span>
-                                <div class="form-check form-check-inline mb-0">
-                                    <input class="form-check-input" type="checkbox" id="hashMd5" value="md5">
-                                    <label class="form-check-label small" for="hashMd5">MD5</label>
-                                </div>
-                                <div class="form-check form-check-inline mb-0">
-                                    <input class="form-check-input" type="checkbox" id="hashSha1" value="sha1">
-                                    <label class="form-check-label small" for="hashSha1">SHA1</label>
-                                </div>
-                                <div class="form-check form-check-inline mb-0">
-                                    <input class="form-check-input" type="checkbox" id="hashSha256" value="sha256" checked>
-                                    <label class="form-check-label small" for="hashSha256">SHA256</label>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Action Controls -->
-                        <div class="d-flex gap-2">
-                            <button id="startBtn" class="btn btn-primary flex-fill fw-bold py-2" onclick="startAcquisition()"><i class="bi bi-play-circle me-1"></i>Start Acquisition</button>
-                            <button id="stopBtn" class="btn btn-danger flex-fill fw-bold py-2" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop Acquisition</button>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Right Column: Live Acquisition Status & System Telemetry -->
-            <div class="col-lg-5">
-                <!-- Live Progress Card -->
-                <div class="card mb-3">
-                    <div class="card-header text-info py-2"><i class="bi bi-speedometer2 me-2"></i>Live Acquisition Status</div>
-                    <div class="card-body py-2">
-                        <div class="d-flex justify-content-between align-items-center mb-1">
-                            <span id="jobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
-                            <span id="progressPct" class="fw-bold fs-5 text-light">0.0%</span>
-                        </div>
-                        <div class="progress bg-secondary mb-2" style="height: 16px;">
-                            <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
-                        </div>
-                        <div class="row text-center mb-2">
-                            <div class="col-6">
-                                <small class="telemetry-label d-block">Transfer Speed</small>
-                                <span id="speedVal" class="fs-5 fw-bold text-warning">0.0 MB/s</span>
+            <!-- Case & Metadata -->
+            <div class="grid-stack-item" gs-id="card-metadata" gs-x="0" gs-y="4" gs-w="7" gs-h="2">
+                <div class="grid-stack-item-content">
+                    <div class="card">
+                        <div class="card-header text-info py-2"><i class="bi bi-folder-symlink me-2"></i>Case & Evidence Metadata</div>
+                        <div class="card-body py-2">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-4"><input type="text" id="caseNum" class="form-control form-control-sm" placeholder="Case Number (e.g. 2026-CASE-001)"></div>
+                                <div class="col-md-4"><input type="text" id="evidenceId" class="form-control form-control-sm" placeholder="Evidence ID (e.g. ITEM-01)"></div>
+                                <div class="col-md-4"><input type="text" id="examiner" class="form-control form-control-sm" placeholder="Examiner Name"></div>
                             </div>
-                            <div class="col-6">
-                                <small class="telemetry-label d-block">Transferred Bytes</small>
-                                <span id="bytesVal" class="fs-5 fw-bold text-light">0 / 0 GB</span>
-                            </div>
-                        </div>
-                        <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
-                        <pre id="logOutput" class="log-window">[System initialized and idle. Ready for disk acquisition job.]</pre>
-                    </div>
-                </div>
-
-                <!-- Live Throughput Graph Card -->
-                <div class="card mb-3">
-                    <div class="card-header text-info py-2"><i class="bi bi-graph-up-arrow me-2"></i>Live Throughput Monitor</div>
-                    <div class="card-body py-2">
-                        <div class="chart-container">
-                            <canvas id="throughputChart"></canvas>
+                            <input type="text" id="notes" class="form-control form-control-sm" placeholder="Notes / Chain of Custody Remarks">
                         </div>
                     </div>
                 </div>
+            </div>
 
-                <!-- System Resource Telemetry -->
-                <div class="card mb-3">
-                    <div class="card-header text-info py-2"><i class="bi bi-cpu me-2"></i>System Resource Telemetry</div>
-                    <div class="card-body py-2">
-                        <!-- CPU Usage -->
-                        <div class="mb-2">
-                            <div class="d-flex justify-content-between mb-1">
-                                <span class="telemetry-label">CPU Utilization</span>
-                                <span id="cpuVal" class="telemetry-val">0%</span>
+            <!-- Network Share Panel (NFS / SMB) -->
+            <div class="grid-stack-item" gs-id="card-network" gs-x="0" gs-y="6" gs-w="7" gs-h="3">
+                <div class="grid-stack-item-content">
+                    <div class="card">
+                        <div class="card-header text-info py-2"><i class="bi bi-diagram-3 me-2"></i>Destination & Network Share Setup</div>
+                        <div class="card-body py-2">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3">
+                                    <select id="netProtocol" class="form-select form-select-sm">
+                                        <option value="nfs">NFS Share</option>
+                                        <option value="smb">SMB / CIFS</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-5">
+                                    <input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)">
+                                </div>
+                                <div class="col-md-4">
+                                    <button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares()"><i class="bi bi-search me-1"></i>Query Shares</button>
+                                </div>
                             </div>
-                            <div class="progress bg-secondary" style="height: 6px;">
-                                <div id="cpuBar" class="progress-bar bg-info" role="progressbar" style="width: 0%"></div>
+                            <div class="row g-2 align-items-center mb-2">
+                                <div class="col-md-8">
+                                    <select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select>
+                                </div>
+                                <div class="col-md-4">
+                                    <button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive()"><i class="bi bi-plug me-1"></i>Mount Share</button>
+                                </div>
                             </div>
-                        </div>
+                            <div id="mountStatus" class="small mb-2 text-light"></div>
 
-                        <!-- Storage Capacity -->
-                        <div class="mb-2">
-                            <div class="d-flex justify-content-between mb-1">
-                                <span class="telemetry-label">Storage Capacity</span>
-                                <span id="storageVal" class="telemetry-val">0 / 0 GB</span>
-                            </div>
-                            <div class="progress bg-secondary" style="height: 6px;">
-                                <div id="storageBar" class="progress-bar bg-warning" role="progressbar" style="width: 0%"></div>
-                            </div>
-                        </div>
-
-                        <!-- RAM Memory -->
-                        <div class="mb-2">
-                            <div class="d-flex justify-content-between mb-1">
-                                <span class="telemetry-label">RAM Memory</span>
-                                <span id="memVal" class="telemetry-val">0 / 0 GB (0%)</span>
-                            </div>
-                            <div class="progress bg-secondary" style="height: 6px;">
-                                <div id="memBar" class="progress-bar bg-primary" role="progressbar" style="width: 0%"></div>
-                            </div>
-                        </div>
-
-                        <!-- Network Rates -->
-                        <div class="mt-2 pt-1 border-top border-secondary d-flex justify-content-around text-center">
-                            <div>
-                                <small class="telemetry-label d-block">NET READ / DL</small>
-                                <span id="netDlVal" class="fs-6 fw-bold text-success">0.0 MB/s</span>
-                            </div>
-                            <div>
-                                <small class="telemetry-label d-block">NET WRITE / UL</small>
-                                <span id="netUlVal" class="fs-6 fw-bold text-warning">0.0 MB/s</span>
+                            <div class="border-top border-secondary pt-2">
+                                <label class="form-label fw-bold text-light small mb-1">Destination Target Path:</label>
+                                <div class="input-group input-group-sm">
+                                    <input type="text" id="destPath" class="form-control" value="/mnt">
+                                    <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal()"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
+
+            <!-- Format & Hashing Selection Bar -->
+            <div class="grid-stack-item" gs-id="card-controls" gs-x="0" gs-y="9" gs-w="7" gs-h="2">
+                <div class="grid-stack-item-content">
+                    <div class="card">
+                        <div class="card-body py-2">
+                            <div class="row align-items-center g-2 mb-2 border-bottom border-secondary pb-2">
+                                <div class="col-md-6">
+                                    <span class="telemetry-grid-label d-inline me-2">Format:</span>
+                                    <div class="form-check form-check-inline mb-0">
+                                        <input class="form-check-input" type="radio" name="imageFormat" id="fmtDd" value="dd" checked>
+                                        <label class="form-check-label small" for="fmtDd">Raw (.dd)</label>
+                                    </div>
+                                    <div class="form-check form-check-inline mb-0">
+                                        <input class="form-check-input" type="radio" name="imageFormat" id="fmtE01" value="e01">
+                                        <label class="form-check-label small" for="fmtE01">EWF (.E01)</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <span class="telemetry-grid-label d-inline me-2">Verification Hashes:</span>
+                                    <div class="form-check form-check-inline mb-0">
+                                        <input class="form-check-input" type="checkbox" id="hashMd5" value="md5">
+                                        <label class="form-check-label small" for="hashMd5">MD5</label>
+                                    </div>
+                                    <div class="form-check form-check-inline mb-0">
+                                        <input class="form-check-input" type="checkbox" id="hashSha1" value="sha1">
+                                        <label class="form-check-label small" for="hashSha1">SHA1</label>
+                                    </div>
+                                    <div class="form-check form-check-inline mb-0">
+                                        <input class="form-check-input" type="checkbox" id="hashSha256" value="sha256" checked>
+                                        <label class="form-check-label small" for="hashSha256">SHA256</label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="d-flex gap-2">
+                                <button id="startBtn" class="btn btn-primary flex-fill fw-bold py-2" onclick="startAcquisition()"><i class="bi bi-play-circle me-1"></i>Start Acquisition</button>
+                                <button id="stopBtn" class="btn btn-danger flex-fill fw-bold py-2" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop Acquisition</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Progress Card -->
+            <div class="grid-stack-item" gs-id="card-status" gs-x="7" gs-y="0" gs-w="5" gs-h="4">
+                <div class="grid-stack-item-content">
+                    <div class="card">
+                        <div class="card-header text-info py-2"><i class="bi bi-speedometer2 me-2"></i>Live Acquisition Status</div>
+                        <div class="card-body py-2">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span id="jobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
+                                <span id="progressPct" class="fw-bold fs-5 text-light">0.0%</span>
+                            </div>
+                            <div class="progress bg-secondary mb-2" style="height: 16px;">
+                                <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
+                            </div>
+                            <div class="row text-center mb-2">
+                                <div class="col-6">
+                                    <small class="telemetry-label d-block">Transfer Speed</small>
+                                    <span id="speedVal" class="fs-5 fw-bold text-warning">0.0 MB/s</span>
+                                </div>
+                                <div class="col-6">
+                                    <small class="telemetry-label d-block">Transferred Bytes</small>
+                                    <span id="bytesVal" class="fs-5 fw-bold text-light">0 / 0 GB</span>
+                                </div>
+                            </div>
+                            <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
+                            <pre id="logOutput" class="log-window">[System initialized and idle. Ready for disk acquisition job.]</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Throughput Graph Card -->
+            <div class="grid-stack-item" gs-id="card-graph" gs-x="7" gs-y="4" gs-w="5" gs-h="3">
+                <div class="grid-stack-item-content">
+                    <div class="card">
+                        <div class="card-header text-info py-2"><i class="bi bi-graph-up-arrow me-2"></i>Live Throughput Monitor</div>
+                        <div class="card-body py-2">
+                            <div class="chart-container">
+                                <canvas id="throughputChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- System Resource Telemetry -->
+            <div class="grid-stack-item" gs-id="card-telemetry" gs-x="7" gs-y="7" gs-w="5" gs-h="4">
+                <div class="grid-stack-item-content">
+                    <div class="card">
+                        <div class="card-header text-info py-2"><i class="bi bi-cpu me-2"></i>System Resource Telemetry</div>
+                        <div class="card-body py-2">
+                            <div class="mb-2">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span class="telemetry-label">CPU Utilization</span>
+                                    <span id="cpuVal" class="telemetry-val">0%</span>
+                                </div>
+                                <div class="progress bg-secondary" style="height: 6px;">
+                                    <div id="cpuBar" class="progress-bar bg-info" role="progressbar" style="width: 0%"></div>
+                                </div>
+                            </div>
+
+                            <div class="mb-2">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span class="telemetry-label">Storage Capacity</span>
+                                    <span id="storageVal" class="telemetry-val">0 / 0 GB</span>
+                                </div>
+                                <div class="progress bg-secondary" style="height: 6px;">
+                                    <div id="storageBar" class="progress-bar bg-warning" role="progressbar" style="width: 0%"></div>
+                                </div>
+                            </div>
+
+                            <div class="mb-2">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span class="telemetry-label">RAM Memory</span>
+                                    <span id="memVal" class="telemetry-val">0 / 0 GB (0%)</span>
+                                </div>
+                                <div class="progress bg-secondary" style="height: 6px;">
+                                    <div id="memBar" class="progress-bar bg-primary" role="progressbar" style="width: 0%"></div>
+                                </div>
+                            </div>
+
+                            <div class="mt-2 pt-1 border-top border-secondary d-flex justify-content-around text-center">
+                                <div>
+                                    <small class="telemetry-label d-block">NET READ / DL</small>
+                                    <span id="netDlVal" class="fs-6 fw-bold text-success">0.0 MB/s</span>
+                                </div>
+                                <div>
+                                    <small class="telemetry-label d-block">NET WRITE / UL</small>
+                                    <span id="netUlVal" class="fs-6 fw-bold text-warning">0.0 MB/s</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 
@@ -369,9 +405,7 @@
                         <input type="text" id="modalCurrentPath" class="form-control form-control-sm font-monospace" value="/mnt" readonly>
                         <button class="btn btn-sm btn-outline-secondary ms-2 text-nowrap" onclick="navigateFolderUp()"><i class="bi bi-arrow-up me-1"></i>Up Level</button>
                     </div>
-                    <div class="list-group list-group-flush border border-secondary rounded-2" id="folderList" style="max-height: 250px; overflow-y: auto; background-color: #0f111a;">
-                        <!-- Folders populated via API -->
-                    </div>
+                    <div class="list-group list-group-flush border border-secondary rounded-2" id="folderList" style="max-height: 250px; overflow-y: auto; background-color: #0f111a;"></div>
                 </div>
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -381,7 +415,9 @@
         </div>
     </div>
 
+    <!-- Bootstrap & Gridstack Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gridstack@9.2.0/dist/gridstack-all.js"></script>
     <script src="/static/js/main.js"></script>
 </body>
 </html>
