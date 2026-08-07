@@ -3,6 +3,7 @@ import re
 import time
 import json
 import fcntl
+import signal
 import psutil
 import subprocess
 import threading
@@ -15,10 +16,11 @@ app = Flask(__name__)
 ADMIN_USER = os.environ.get('FORENSIC_USER', 'admin')
 ADMIN_PASS = os.environ.get('FORENSIC_PASS', 'forensics')
 
+HISTORY_FILE = "/opt/pi-forensics/mount_history.json"
+
 # Global State for Live Acquisition Job
 current_job = {
     "active": False,
-    "process": None,
     "format": "dd",
     "progress_percent": 0.0,
     "speed_mbps": 0.0,
@@ -28,8 +30,30 @@ current_job = {
     "log": "[System initialized and idle. Ready for disk acquisition job.]"
 }
 
-# Network Telemetry Tracking State
+active_proc = None
 last_net_check = {"time": time.time(), "bytes_sent": 0, "bytes_recv": 0}
+
+# --- Persistence Helpers ---
+def load_mount_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_mount_history(entry):
+    history = load_mount_history()
+    # Deduplicate entries by host and share path
+    history = [h for h in history if not (h.get("host") == entry.get("host") and h.get("share") == entry.get("share"))]
+    history.insert(0, entry)
+    history = history[:10]  # Store top 10 most recent mounts
+    try:
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+    except Exception as e:
+        print(f"Error saving mount history: {e}")
 
 # --- Authentication Middleware ---
 def check_auth(username, password):
@@ -60,7 +84,6 @@ def requires_auth(f):
         return f(*args, **kwargs)
     return decorated
 
-
 # --- Regex Progress Parsers ---
 def parse_dc3dd_line(line):
     m = re.search(r'(\d+)\s+bytes.*copied.*,\s*([\d\.]+)\s*MB/s', line, re.IGNORECASE)
@@ -69,24 +92,15 @@ def parse_dc3dd_line(line):
     return None, None
 
 def parse_ewf_line(line):
-    # Captures all standard libewf/ewfacquire output variants
     m_pct = re.search(r'(\d+)%\s*(?:acquired|done|completed|written)?', line, re.IGNORECASE)
     m_spd = re.search(r'([\d\.]+)\s*(?:MiB|MB|KiB|KB)/s', line, re.IGNORECASE)
     pct = float(m_pct.group(1)) if m_pct else None
     spd = float(m_spd.group(1)) if m_spd else None
     return pct, spd
 
-def parse_aff_line(line):
-    m_pct = re.search(r'([\d\.]+)%\s*(?:copied|done|completed)?', line, re.IGNORECASE)
-    m_spd = re.search(r'([\d\.]+)\s*(?:MiB|MB)/s', line, re.IGNORECASE)
-    pct = float(m_pct.group(1)) if m_pct else None
-    spd = float(m_spd.group(1)) if m_spd else None
-    return pct, spd
-
-
 # --- Non-Blocking Worker Thread ---
-def execution_worker(cmd, fmt, total_bytes, log_file_path):
-    global current_job
+def execution_worker(cmd, fmt, total_bytes, out_file):
+    global current_job, active_proc
     log_history = []
     
     def append_log(msg):
@@ -96,26 +110,49 @@ def execution_worker(cmd, fmt, total_bytes, log_file_path):
     append_log(f"[*] Starting acquisition process using tool [{fmt.upper()}]...")
     append_log(f"[*] Command: {' '.join(cmd)}")
 
+    start_time = time.time()
+    last_check = start_time
+    last_bytes = 0
+
     try:
-        process = subprocess.Popen(
+        active_proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=False,
-            bufsize=0
+            bufsize=0,
+            preexec_fn=os.setsid  # Creates process group ID for easy group killing
         )
-        current_job["process"] = process
         current_job["status"] = "Acquiring Evidence..."
 
         buffer = ""
-        fd = process.stdout.fileno()
+        fd = active_proc.stdout.fileno()
         fl = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
         while True:
+            time.sleep(0.5)
+            now = time.time()
+            elapsed = now - last_check
+
+            # Direct disk size telemetry check
+            if os.path.exists(out_file):
+                try:
+                    curr_size = os.path.getsize(out_file)
+                    delta = curr_size - last_bytes
+                    if elapsed > 0 and current_job["speed_mbps"] == 0:
+                        current_job["speed_mbps"] = round((delta / (1024 * 1024)) / elapsed, 2)
+                        current_job["transferred_bytes"] = curr_size
+                        if total_bytes > 0:
+                            current_job["progress_percent"] = min(round((curr_size / total_bytes) * 100, 1), 99.9)
+                    last_bytes = curr_size
+                    last_check = now
+                except Exception:
+                    pass
+
             try:
                 raw_bytes = os.read(fd, 1024)
-                if not raw_bytes and process.poll() is not None:
+                if not raw_bytes and active_proc.poll() is not None:
                     break
                 if raw_bytes:
                     text_chunk = raw_bytes.decode('utf-8', errors='ignore')
@@ -128,7 +165,6 @@ def execution_worker(cmd, fmt, total_bytes, log_file_path):
                             
                             append_log(line_str)
 
-                            # Parse tool metrics while actively running
                             if fmt in ['raw', 'dd']:
                                 bytes_copied, speed = parse_dc3dd_line(line_str)
                                 if bytes_copied is not None:
@@ -146,30 +182,21 @@ def execution_worker(cmd, fmt, total_bytes, log_file_path):
                                         current_job["transferred_bytes"] = int((pct / 100.0) * total_bytes)
                                 if speed is not None:
                                     current_job["speed_mbps"] = speed
-
-                            elif fmt == 'aff':
-                                pct, speed = parse_aff_line(line_str)
-                                if pct is not None:
-                                    current_job["progress_percent"] = pct
-                                    if total_bytes > 0:
-                                        current_job["transferred_bytes"] = int((pct / 100.0) * total_bytes)
-                                if speed is not None:
-                                    current_job["speed_mbps"] = speed
                         else:
                             buffer += char
             except (OSError, IOError):
-                time.sleep(0.1)
+                pass
 
-        process.wait()
+        active_proc.wait()
 
-        if process.returncode == 0:
+        if active_proc.returncode == 0:
             current_job["status"] = "Completed Successfully"
             current_job["progress_percent"] = 100.0
             current_job["speed_mbps"] = 0.0
             append_log("[+] Acquisition completed successfully.")
-        else:
+        elif current_job["status"] != "Stopped":
             current_job["status"] = "Failed"
-            append_log(f"[-] Process exited with exit code: {process.returncode}")
+            append_log(f"[-] Process exited with exit code: {active_proc.returncode}")
 
     except Exception as e:
         current_job["status"] = "Failed"
@@ -177,8 +204,7 @@ def execution_worker(cmd, fmt, total_bytes, log_file_path):
 
     finally:
         current_job["active"] = False
-        current_job["process"] = None
-
+        active_proc = None
 
 # --- Web Routes & API Endpoints ---
 @app.route('/')
@@ -336,6 +362,11 @@ def smart_check():
             "vendor_model": "Generic External Drive / Flash Media"
         })
 
+@app.route('/api/mount_history', methods=['GET'])
+@requires_auth
+def get_mount_history():
+    return jsonify(load_mount_history())
+
 @app.route('/api/list_server_shares', methods=['POST'])
 @requires_auth
 def list_server_shares():
@@ -404,12 +435,14 @@ def mount_network():
             res = subprocess.run(cmd_v3, capture_output=True, text=True)
 
             if res.returncode == 0:
+                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
                 return jsonify({"success": True, "mount_point": mount_point})
 
             cmd_v4 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=4', nfs_source, mount_point]
             res_v4 = subprocess.run(cmd_v4, capture_output=True, text=True)
 
             if res_v4.returncode == 0:
+                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
                 return jsonify({"success": True, "mount_point": mount_point})
 
             return jsonify({"success": False, "error": f"NFS Mount Failed: {res_v4.stderr.strip() or res.stderr.strip()}"}), 500
@@ -424,6 +457,7 @@ def mount_network():
             res_smb = subprocess.run(cmd_smb, capture_output=True, text=True)
 
             if res_smb.returncode == 0:
+                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
                 return jsonify({"success": True, "mount_point": mount_point})
 
             return jsonify({"success": False, "error": f"SMB Mount Failed: {res_smb.stderr.strip()}"}), 500
@@ -497,7 +531,6 @@ def start_imaging():
     base_name = f"{case_num}_{evidence_id}"
 
     if fmt == 'e01':
-        # ewfacquire hashing flag mapping (-d md5, -d sha1, -d sha256)
         ewf_hash_type = "sha256"
         if "sha256" in hashes:
             ewf_hash_type = "sha256"
@@ -506,6 +539,7 @@ def start_imaging():
         elif "md5" in hashes:
             ewf_hash_type = "md5"
 
+        out_file = f"{dest_path}/{base_name}.E01"
         cmd = [
             "ewfacquire", "-u",
             "-t", f"{dest_path}/{base_name}",
@@ -518,18 +552,12 @@ def start_imaging():
             "-S", "2000M",
             source
         ]
-    elif fmt == 'aff':
-        cmd = [
-            "affconvert",
-            "-o", f"{dest_path}/{base_name}.aff",
-            source
-        ]
     else:
-        # dc3dd supports multiple simultaneous hash parameters (hash=md5 hash=sha256)
+        out_file = f"{dest_path}/{base_name}.dd"
         cmd = [
             "dc3dd",
             f"if={source}",
-            f"of={dest_path}/{base_name}.dd",
+            f"of={out_file}",
             f"log={dest_path}/{base_name}_dc3dd.log"
         ]
         for h in hashes:
@@ -561,26 +589,35 @@ def start_imaging():
 
     thread = threading.Thread(
         target=execution_worker,
-        args=(cmd, fmt, total_bytes, f"{dest_path}/{base_name}.log")
+        args=(cmd, fmt, total_bytes, out_file)
     )
     thread.daemon = True
     thread.start()
 
     return jsonify({"success": True, "message": "Acquisition started."})
 
-
 @app.route('/api/stop_imaging', methods=['POST'])
 @requires_auth
 def stop_imaging():
-    global current_job
-    if current_job["active"] and current_job["process"]:
+    global current_job, active_proc
+    if current_job["active"]:
         try:
-            current_job["process"].terminate()
-            current_job["status"] = "Stopped"
-            current_job["active"] = False
-            return jsonify({"success": True, "message": "Acquisition stopped."})
+            if active_proc and active_proc.poll() is None:
+                os.killpg(os.getpgid(active_proc.pid), signal.SIGKILL)
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            print(f"Error killing process group: {e}")
+
+        for tool in ["dc3dd", "ewfacquire"]:
+            try:
+                subprocess.run(["pkill", "-9", tool], capture_output=True)
+            except Exception:
+                pass
+
+        current_job["status"] = "Stopped"
+        current_job["active"] = False
+        current_job["log"] += "\n[!] Acquisition manually terminated by user."
+        return jsonify({"success": True, "message": "Acquisition stopped."})
+        
     return jsonify({"error": "No active job running."}), 400
 
 @app.route('/api/progress', methods=['GET'])
@@ -611,4 +648,4 @@ def list_folders():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False, ssl_context='adhoc')
+    app.run(host='0.0.0.0', port=5000, debug=False)

@@ -104,8 +104,6 @@ async function fetchSystemInfo() {
 }
 
 // --- Drives & Detailed SMART Enumeration ---
-
-// --- Drives & Detailed SMART Enumeration ---
 async function refreshDrives() {
     try {
         const res = await fetch('/api/drives');
@@ -124,14 +122,12 @@ async function refreshDrives() {
             driveSelect.appendChild(opt);
         });
 
-        // Re-select previous drive if it still exists, otherwise default to first available
         if (previousSelection && currentDrivesList.some(d => d.device === previousSelection)) {
             driveSelect.value = previousSelection;
         } else if (currentDrivesList.length > 0) {
             driveSelect.value = currentDrivesList[0].device;
         }
 
-        // Trigger telemetry check immediately for selected drive
         checkSmartTelemetry();
 
     } catch (err) {
@@ -142,10 +138,8 @@ async function refreshDrives() {
 async function checkSmartTelemetry() {
     const driveSelect = document.getElementById("driveSelect");
     const targetDrive = driveSelect ? driveSelect.value : "";
-
     const healthBadge = document.getElementById("lblHealthBadge");
 
-    // Reset All Fields First
     document.getElementById("lblDevicePath").innerText = targetDrive || "--";
     document.getElementById("lblMediaType").innerText = "--";
     document.getElementById("lblModel").innerText = "--";
@@ -164,7 +158,6 @@ async function checkSmartTelemetry() {
         return;
     }
 
-    // Step 1: Always populate basic hardware metadata from lsblk array first
     const driveObj = currentDrivesList.find(d => d.device === targetDrive || d.name === targetDrive.replace('/dev/', ''));
     if (driveObj) {
         const transportUpper = (driveObj.transport || 'USB').toUpperCase();
@@ -174,7 +167,6 @@ async function checkSmartTelemetry() {
         document.getElementById("lblCapacity").innerText = driveObj.size || "Unknown";
     }
 
-    // Step 2: Query smartctl backend for health and SMART attributes
     try {
         const res = await fetch('/api/smart_check', {
             method: 'POST',
@@ -203,7 +195,6 @@ async function checkSmartTelemetry() {
             document.getElementById("lblPending").innerText = data.pending_sectors !== undefined ? data.pending_sectors : "0";
             document.getElementById("lblPowerHours").innerText = data.power_on_hours ? `${data.power_on_hours} hrs` : "N/A";
         } else {
-            // Flash media / USB controllers without SMART reporting
             if (healthBadge) {
                 healthBadge.className = "badge bg-warning text-dark";
                 healthBadge.innerText = "FLASH / NO SMART";
@@ -296,7 +287,41 @@ function selectCurrentFolder() {
     }
 }
 
-// --- Network Share Operations ---
+// --- Network Share Operations & History Persistence ---
+async function loadNetworkHistory() {
+    try {
+        const res = await fetch('/api/mount_history');
+        const history = await res.json();
+        const shareSelect = document.getElementById("serverShareSelect");
+        
+        if (!shareSelect || history.length === 0) return;
+
+        shareSelect.innerHTML = '<option value="">-- Recent Mount History --</option>';
+        history.forEach(item => {
+            const opt = document.createElement("option");
+            opt.value = item.share;
+            opt.dataset.host = item.host;
+            opt.dataset.protocol = item.protocol;
+            opt.dataset.mountPoint = item.mount_point;
+            opt.innerText = `[${item.protocol.toUpperCase()}] ${item.host}:${item.share} -> ${item.mount_point}`;
+            shareSelect.appendChild(opt);
+        });
+    } catch (err) {
+        console.error("Error loading mount history:", err);
+    }
+}
+
+document.getElementById("serverShareSelect")?.addEventListener("change", (e) => {
+    const selectedOpt = e.target.options[e.target.selectedIndex];
+    if (selectedOpt && selectedOpt.dataset.host) {
+        document.getElementById("netHost").value = selectedOpt.dataset.host;
+        document.getElementById("netProtocol").value = selectedOpt.dataset.protocol;
+        if (selectedOpt.dataset.mountPoint) {
+            document.getElementById("destPath").value = selectedOpt.dataset.mountPoint;
+        }
+    }
+});
+
 async function queryNetworkShares() {
     const host = document.getElementById("netHost").value.trim();
     const protocol = document.getElementById("netProtocol").value;
@@ -364,6 +389,7 @@ async function mountNetworkDrive() {
             const destPath = document.getElementById("destPath");
             if (destPath) destPath.value = data.mount_point;
             
+            loadNetworkHistory();
             alert(`Share Mounted!\nDestination Target Path updated to: ${data.mount_point}`);
         } else {
             if (mountStatus) mountStatus.innerText = `Mount Error: ${data.error}`;
@@ -421,7 +447,6 @@ async function startAcquisition() {
         return;
     }
 
-    // Collect selected hashing algorithms
     const selectedHashes = [];
     if (document.getElementById("hashMd5").checked) selectedHashes.push("md5");
     if (document.getElementById("hashSha1").checked) selectedHashes.push("sha1");
@@ -533,6 +558,7 @@ async function fetchProgress() {
 document.addEventListener("DOMContentLoaded", () => {
     initThroughputGraph();
     refreshDrives();
+    loadNetworkHistory();
     
     setInterval(fetchSystemInfo, 2000);
     setInterval(fetchProgress, 1000);
