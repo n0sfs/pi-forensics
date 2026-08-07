@@ -84,6 +84,32 @@ def requires_auth(f):
         return f(*args, **kwargs)
     return decorated
 
+# --- Hash Output Parsers ---
+def parse_dc3dd_hashes(log_path):
+    hashes = {}
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r') as f:
+                content = f.read()
+                # Captures standard dc3dd log format (case-insensitive): "md5: [hash]" or "sha256 hash: [hash]"
+                matches = re.findall(r'(\b(?:md5|sha1|sha256)\b)[^\n:]*:\s*([a-fA-F0-9]{32,64})', content, re.IGNORECASE)
+                for algo, val in matches:
+                    hashes[algo.lower()] = val
+        except Exception as e:
+            print(f"Error parsing dc3dd hash log: {e}")
+    return hashes
+
+def parse_ewf_hashes(console_log_text):
+    hashes = {}
+    try:
+        # Captures ewfacquire console output format
+        matches = re.findall(r'(\b(?:MD5|SHA1|SHA256)\b)\s*(?:hash|hash stored in file)?:?\s*([a-fA-F0-9]{32,64})', console_log_text, re.IGNORECASE)
+        for algo, val in matches:
+            hashes[algo.lower()] = val
+    except Exception as e:
+        print(f"Error parsing ewf hashes: {e}")
+    return hashes
+
 # --- Regex Progress Parsers ---
 def parse_dc3dd_line(line):
     m = re.search(r'(\d+)\s+bytes.*copied.*,\s*([\d\.]+)\s*MB/s', line, re.IGNORECASE)
@@ -92,14 +118,14 @@ def parse_dc3dd_line(line):
     return None, None
 
 def parse_ewf_line(line):
-    m_pct = re.search(r'(\d+)%\s*(?:acquired|done|completed|written)?', line, re.IGNORECASE)
+    m_pct = re.search(r'(\d+)%\s*(?:acquired|done|completed|written|verified)?', line, re.IGNORECASE)
     m_spd = re.search(r'([\d\.]+)\s*(?:MiB|MB|KiB|KB)/s', line, re.IGNORECASE)
     pct = float(m_pct.group(1)) if m_pct else None
     spd = float(m_spd.group(1)) if m_spd else None
     return pct, spd
 
 # --- Non-Blocking Worker Thread ---
-def execution_worker(cmd, fmt, total_bytes, out_file):
+def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data):
     global current_job, active_proc
     log_history = []
     
@@ -131,7 +157,7 @@ def execution_worker(cmd, fmt, total_bytes, out_file):
         fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
         while True:
-            time.sleep(0.5)
+            time.sleep(0.2)  # Fast poll loop prevents buffer delay and UI stream freezes
             now = time.time()
             elapsed = now - last_check
 
@@ -140,8 +166,9 @@ def execution_worker(cmd, fmt, total_bytes, out_file):
                 try:
                     curr_size = os.path.getsize(out_file)
                     delta = curr_size - last_bytes
-                    if elapsed > 0 and current_job["speed_mbps"] == 0:
-                        current_job["speed_mbps"] = round((delta / (1024 * 1024)) / elapsed, 2)
+                    if elapsed > 0:
+                        speed_calc = round((delta / (1024 * 1024)) / elapsed, 2)
+                        current_job["speed_mbps"] = speed_calc
                         current_job["transferred_bytes"] = curr_size
                         if total_bytes > 0:
                             current_job["progress_percent"] = min(round((curr_size / total_bytes) * 100, 1), 99.9)
@@ -157,6 +184,7 @@ def execution_worker(cmd, fmt, total_bytes, out_file):
                 if raw_bytes:
                     text_chunk = raw_bytes.decode('utf-8', errors='ignore')
                     for char in text_chunk:
+                        # Flush buffer on carriage returns (\r) OR newlines (\n)
                         if char in ['\r', '\n']:
                             line_str = buffer.strip()
                             buffer = ""
@@ -176,6 +204,9 @@ def execution_worker(cmd, fmt, total_bytes, out_file):
 
                             elif fmt == 'e01':
                                 pct, speed = parse_ewf_line(line_str)
+                                if "verify" in line_str.lower() or "verifying" in line_str.lower():
+                                    current_job["status"] = "Verifying Image Integrity..."
+                                
                                 if pct is not None:
                                     current_job["progress_percent"] = pct
                                     if total_bytes > 0:
@@ -194,9 +225,37 @@ def execution_worker(cmd, fmt, total_bytes, out_file):
             current_job["progress_percent"] = 100.0
             current_job["speed_mbps"] = 0.0
             append_log("[+] Acquisition completed successfully.")
+
+            # Short delay allows network drive buffers to completely flush the log file
+            time.sleep(1.0)
+
+            # Parse computed hashes based on selected format engine
+            if fmt == 'e01':
+                computed_hashes = parse_ewf_hashes(current_job["log"])
+            else:
+                dc3dd_log = out_file.replace('.dd', '_dc3dd.log')
+                computed_hashes = parse_dc3dd_hashes(dc3dd_log)
+
+            report_data["acquisition_status"] = "COMPLETED"
+            report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+            report_data["computed_verification_hashes"] = computed_hashes
+
+            try:
+                with open(report_file_path, 'w') as f:
+                    json.dump(report_data, f, indent=2)
+                append_log(f"[+] Forensic case report updated: {report_file_path}")
+            except Exception as e:
+                append_log(f"[-] Warning: Failed updating report JSON: {e}")
+
         elif current_job["status"] != "Stopped":
             current_job["status"] = "Failed"
             append_log(f"[-] Process exited with exit code: {active_proc.returncode}")
+            report_data["acquisition_status"] = "FAILED"
+            try:
+                with open(report_file_path, 'w') as f:
+                    json.dump(report_data, f, indent=2)
+            except Exception:
+                pass
 
     except Exception as e:
         current_job["status"] = "Failed"
@@ -516,6 +575,14 @@ def start_imaging():
         except Exception as e:
             return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
 
+    smart_data = {}
+    try:
+        res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True)
+        if res_smart.stdout:
+            smart_data = json.loads(res_smart.stdout)
+    except Exception:
+        pass
+
     total_bytes = 0
     try:
         res = subprocess.run(['blockdev', '--getsize64', source], capture_output=True, text=True)
@@ -523,6 +590,40 @@ def start_imaging():
             total_bytes = int(res.stdout.strip())
     except Exception:
         pass
+
+    model = smart_data.get('model_name') or smart_data.get('device', {}).get('name') or "Generic Storage Media"
+    family = smart_data.get('model_family') or smart_data.get('family_name')
+    if family and family.lower() not in model.lower():
+        vendor_model = f"{family} ({model})"
+    else:
+        vendor_model = model
+
+    serial = smart_data.get('serial_number', 'N/A')
+    healthy = smart_data.get('smart_status', {}).get('passed', True)
+    temp = smart_data.get('temperature', {}).get('current')
+    power_hours = smart_data.get('power_on_time', {}).get('hours')
+    
+    reallocated = 0
+    pending = 0
+    for attr in smart_data.get('ata_smart_attributes', {}).get('table', []):
+        attr_id = attr.get('id')
+        if attr_id == 5:
+            reallocated = attr.get('raw', {}).get('value', 0)
+        elif attr_id == 197:
+            pending = attr.get('raw', {}).get('value', 0)
+
+    drive_telemetry = {
+        "device_path": source,
+        "vendor_model": vendor_model,
+        "serial_number": serial,
+        "capacity_bytes": total_bytes,
+        "capacity_gb": round(total_bytes / (1024**3), 2),
+        "smart_healthy": healthy,
+        "temperature_celsius": temp,
+        "power_on_hours": power_hours,
+        "reallocated_sectors": reallocated,
+        "pending_sectors": pending
+    }
 
     case_num = metadata.get('case_number', 'UNASSIGNED')
     evidence_id = metadata.get('evidence_id', 'ITEM-01')
@@ -573,23 +674,29 @@ def start_imaging():
     current_job["log"] = f"[*] Initializing {fmt.upper()} acquisition ({', '.join(hashes).upper()}) for {source} -> {dest_path}..."
 
     report_file = os.path.join(dest_path, f"{base_name}_report.json")
+    report_data = {
+        "case_metadata": metadata,
+        "source_drive_telemetry": drive_telemetry,
+        "acquisition_parameters": {
+            "output_destination": dest_path,
+            "output_format": fmt,
+            "requested_hashes": hashes,
+            "execution_command": " ".join(cmd)
+        },
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "computed_verification_hashes": {}
+    }
+
     try:
         with open(report_file, 'w') as f:
-            json.dump({
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "case_metadata": metadata,
-                "source_device": source,
-                "output_destination": dest_path,
-                "output_format": fmt,
-                "hash_algorithms": hashes,
-                "total_bytes": total_bytes
-            }, f, indent=2)
+            json.dump(report_data, f, indent=2)
     except Exception as e:
         print(f"Warning: Could not write case report JSON: {e}")
 
     thread = threading.Thread(
         target=execution_worker,
-        args=(cmd, fmt, total_bytes, out_file)
+        args=(cmd, fmt, total_bytes, out_file, report_file, report_data)
     )
     thread.daemon = True
     thread.start()
