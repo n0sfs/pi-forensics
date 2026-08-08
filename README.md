@@ -1,5 +1,5 @@
 # pi-forensics, arm-forensic-station
-Low Budget Forensic Drive Imaging Using Arm Based Single Board Computers
+Low Budget Forensic Drive Imaging Using Arm Based Single Board Computers such as the Raspberry Pi
 
 # 🛡️ Raspberry Pi ARM Forensic Acquisition Station
 
@@ -12,7 +12,7 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 
 ## 🌟 Key Features
 
-- **Works on Pi or ARM SBC:** Install on Raspberry Pi or ARM SBC with Debia
+- **Works on Pi or ARM SBC:** Install on Raspberry Pi or ARM SBC with Debian.
 - **Bit-Stream Acquisition:** Leverages `dc3dd` for raw image acquisition (`.dd`) and 'ewfacquire' for E01 acquisition with hash verification (MD5, SHA-1, SHA-256).
 - **ARM Memory-Safe Architecture:** Built with non-blocking process pipelines and active memory buffer syncing (`os.sync()`) to eliminate Out-Of-Memory kernel panics on embedded hardware.
 - **Integrated Network Mounting:** Auto-discovers, authenticates, and mounts remote SMB/CIFS, NFS, and FTP shares natively in the UI with protocol fallback support.
