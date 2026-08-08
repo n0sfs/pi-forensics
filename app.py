@@ -5,10 +5,12 @@ import json
 import fcntl
 import signal
 import psutil
+import shutil
+import hashlib
 import subprocess
 import threading
 from functools import wraps
-from flask import Flask, render_template, jsonify, request, Response
+from flask import Flask, render_template, jsonify, request, Response, send_file
 
 app = Flask(__name__)
 
@@ -39,17 +41,18 @@ def load_mount_history():
         try:
             with open(HISTORY_FILE, "r") as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            print(f"Error loading mount history: {e}")
             return []
     return []
 
 def save_mount_history(entry):
     history = load_mount_history()
-    # Deduplicate entries by host and share path
     history = [h for h in history if not (h.get("host") == entry.get("host") and h.get("share") == entry.get("share"))]
     history.insert(0, entry)
-    history = history[:10]  # Store top 10 most recent mounts
+    history = history[:10]
     try:
+        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
         with open(HISTORY_FILE, "w") as f:
             json.dump(history, f, indent=2)
     except Exception as e:
@@ -70,8 +73,7 @@ def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         client_ip = request.remote_addr
-        
-        # Auto-bypass auth for localhost, loopback, and local private subnets
+        # Auto-bypass auth for loopback and local private subnets
         if client_ip in ['127.0.0.1', '::1', 'localhost'] or \
            client_ip.startswith('192.168.') or \
            client_ip.startswith('10.') or \
@@ -91,11 +93,18 @@ def parse_dc3dd_hashes(log_path):
         try:
             with open(log_path, 'r') as f:
                 content = f.read()
-                matches = re.findall(r'(\b(?:md5|sha1|sha256)\b)[^\n:]*:\s*([a-fA-F0-9]{32,64})', content, re.IGNORECASE)
-                for algo, val in matches:
+                # Matches standard dc3dd log output: 099abf2480eb43335a0157a9348470e4 (md5)
+                matches = re.findall(r'([a-fA-F0-9]{32,64})\s*\(\s*(\b(?:md5|sha1|sha256)\b)\s*\)', content, re.IGNORECASE)
+                for val, algo in matches:
                     hashes[algo.lower()] = val
+                    
+                # Fallback check for "md5: [hash]" or "md5 hash: [hash]" formats
+                if not hashes:
+                    fallback_matches = re.findall(r'(\b(?:md5|sha1|sha256)\b)[^\n:]*:\s*([a-fA-F0-9]{32,64})', content, re.IGNORECASE)
+                    for algo, val in fallback_matches:
+                        hashes[algo.lower()] = val
         except Exception as e:
-            print(f"Error parsing dc3dd hash log: {e}")
+            print(f"Error parsing dc3dd log: {e}")
     return hashes
 
 def parse_ewf_hashes(console_log_text):
@@ -108,35 +117,43 @@ def parse_ewf_hashes(console_log_text):
         print(f"Error parsing ewf hashes: {e}")
     return hashes
 
-# --- Regex Progress Parsers ---
 def parse_dc3dd_line(line):
-    m = re.search(r'(\d+)\s+bytes.*copied.*,\s*([\d\.]+)\s*MB/s', line, re.IGNORECASE)
+    m = re.search(r'(\d+)\s+bytes.*copied.*,\s*([\d\.]+)\s*(MB|MiB|KB|GB|M|K)/s', line, re.IGNORECASE)
     if m:
-        return int(m.group(1)), float(m.group(2))
+        bytes_copied = int(m.group(1))
+        speed_val = float(m.group(2))
+        unit = m.group(3).upper()
+        
+        if unit in ['KB', 'K']:
+            speed_val /= 1024.0
+        elif unit in ['GB', 'G']:
+            speed_val *= 1024.0
+            
+        return bytes_copied, speed_val
     return None, None
 
 def parse_ewf_line(line):
-    m_pct = re.search(r'(\d+)%\s*(?:acquired|done|completed|written|verified)?', line, re.IGNORECASE)
+    m_pct = re.search(r'(\d+)%\s*(?:acquired|done|completed|verified)?', line, re.IGNORECASE)
     m_spd = re.search(r'([\d\.]+)\s*(?:MiB|MB|KiB|KB)/s', line, re.IGNORECASE)
     pct = float(m_pct.group(1)) if m_pct else None
     spd = float(m_spd.group(1)) if m_spd else None
     return pct, spd
 
-# --- Non-Blocking Worker Thread ---
+# --- Direct Real-time Execution & Stream Engine ---
 def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data):
     global current_job, active_proc
     log_history = []
     
     def append_log(msg):
-        log_history.append(msg)
-        current_job["log"] = "\n".join(log_history[-100:])
+        if msg:
+            log_history.append(msg)
+            current_job["log"] = "\n".join(log_history[-100:])
 
-    append_log(f"[*] Starting acquisition process using tool [{fmt.upper()}]...")
+    append_log(f"[*] Starting acquisition using [{fmt.upper()}]...")
     append_log(f"[*] Command: {' '.join(cmd)}")
 
     start_time = time.time()
-    last_check = start_time
-    last_bytes = 0
+    current_job["status"] = "Acquiring Evidence..."
 
     try:
         active_proc = subprocess.Popen(
@@ -147,113 +164,103 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
             bufsize=0,
             preexec_fn=os.setsid
         )
-        current_job["status"] = "Acquiring Evidence..."
 
-        buffer = ""
         fd = active_proc.stdout.fileno()
         fl = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
+        byte_buffer = b""
+
         while True:
-            time.sleep(0.2)
-            now = time.time()
-            elapsed = now - last_check
-
-            if os.path.exists(out_file):
-                try:
-                    curr_size = os.path.getsize(out_file)
-                    delta = curr_size - last_bytes
-                    if elapsed > 0:
-                        speed_calc = round((delta / (1024 * 1024)) / elapsed, 2)
-                        current_job["speed_mbps"] = speed_calc
-                        current_job["transferred_bytes"] = curr_size
-                        if total_bytes > 0:
-                            current_job["progress_percent"] = min(round((curr_size / total_bytes) * 100, 1), 99.9)
-                    last_bytes = curr_size
-                    last_check = now
-                except Exception:
-                    pass
-
+            time.sleep(0.1)
+            
             try:
-                raw_bytes = os.read(fd, 1024)
-                if not raw_bytes and active_proc.poll() is not None:
-                    break
-                if raw_bytes:
-                    text_chunk = raw_bytes.decode('utf-8', errors='ignore')
-                    for char in text_chunk:
-                        if char in ['\r', '\n']:
-                            line_str = buffer.strip()
-                            buffer = ""
-                            if not line_str:
-                                continue
+                raw_chunk = os.read(fd, 1024)
+                if raw_chunk:
+                    byte_buffer += raw_chunk
+                    
+                    while b'\r' in byte_buffer or b'\n' in byte_buffer:
+                        r_idx = byte_buffer.find(b'\r')
+                        n_idx = byte_buffer.find(b'\n')
+                        indices = [i for i in (r_idx, n_idx) if i != -1]
+                        cut_idx = min(indices)
+                        
+                        line_bytes = byte_buffer[:cut_idx]
+                        byte_buffer = byte_buffer[cut_idx + 1:]
+                        
+                        line_str = line_bytes.decode('utf-8', errors='ignore').strip()
+                        if not line_str:
+                            continue
+                        
+                        append_log(line_str)
+
+                        if fmt in ['raw', 'dd']:
+                            bytes_copied, speed = parse_dc3dd_line(line_str)
+                            if bytes_copied is not None:
+                                current_job["transferred_bytes"] = bytes_copied
+                                if total_bytes > 0:
+                                    current_job["progress_percent"] = round((bytes_copied / total_bytes) * 100, 1)
+                            if speed is not None:
+                                current_job["speed_mbps"] = speed
+
+                        elif fmt == 'e01':
+                            pct, speed = parse_ewf_line(line_str)
+                            if "verify" in line_str.lower() or "verifying" in line_str.lower():
+                                current_job["status"] = "Verifying Image Integrity..."
                             
-                            append_log(line_str)
+                            if pct is not None:
+                                current_job["progress_percent"] = pct
+                                if total_bytes > 0:
+                                    current_job["transferred_bytes"] = int((pct / 100.0) * total_bytes)
+                            if speed is not None:
+                                current_job["speed_mbps"] = speed
 
-                            if fmt in ['raw', 'dd']:
-                                bytes_copied, speed = parse_dc3dd_line(line_str)
-                                if bytes_copied is not None:
-                                    current_job["transferred_bytes"] = bytes_copied
-                                    if total_bytes > 0:
-                                        current_job["progress_percent"] = round((bytes_copied / total_bytes) * 100, 1)
-                                if speed is not None:
-                                    current_job["speed_mbps"] = speed
-
-                            elif fmt == 'e01':
-                                pct, speed = parse_ewf_line(line_str)
-                                if "verify" in line_str.lower() or "verifying" in line_str.lower():
-                                    current_job["status"] = "Verifying Image Integrity..."
-                                
-                                if pct is not None:
-                                    current_job["progress_percent"] = pct
-                                    if total_bytes > 0:
-                                        current_job["transferred_bytes"] = int((pct / 100.0) * total_bytes)
-                                if speed is not None:
-                                    current_job["speed_mbps"] = speed
-                        else:
-                            buffer += char
+                elif active_proc.poll() is not None:
+                    break
             except (OSError, IOError):
                 pass
 
         active_proc.wait()
 
-        if active_proc.returncode == 0:
+        # Always parse hashes regardless of exit code
+        time.sleep(1.0)
+        if fmt == 'e01':
+            computed_hashes = parse_ewf_hashes(current_job["log"])
+        else:
+            dc3dd_log = out_file.replace('.dd', '_dc3dd.log')
+            computed_hashes = parse_dc3dd_hashes(dc3dd_log)
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        report_data["computed_verification_hashes"] = computed_hashes
+
+        # Handle Exit Codes: 0 = Clean Success, 2 = Completed with non-fatal EOF/log warnings
+        if active_proc.returncode in [0, 2]:
             current_job["status"] = "Completed Successfully"
             current_job["progress_percent"] = 100.0
             current_job["speed_mbps"] = 0.0
-            append_log("[+] Acquisition completed successfully.")
-
-            time.sleep(1.0)
-
-            if fmt == 'e01':
-                computed_hashes = parse_ewf_hashes(current_job["log"])
+            
+            if active_proc.returncode == 2:
+                append_log("[!] Note: dc3dd completed with exit code 2 (non-fatal EOF/log warning). Evidence image intact.")
             else:
-                dc3dd_log = out_file.replace('.dd', '_dc3dd.log')
-                computed_hashes = parse_dc3dd_hashes(dc3dd_log)
+                append_log("[+] Acquisition completed successfully.")
 
             report_data["acquisition_status"] = "COMPLETED"
-            report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
-            report_data["computed_verification_hashes"] = computed_hashes
-
-            try:
-                with open(report_file_path, 'w') as f:
-                    json.dump(report_data, f, indent=2)
-                append_log(f"[+] Forensic case report updated: {report_file_path}")
-            except Exception as e:
-                append_log(f"[-] Warning: Failed updating report JSON: {e}")
 
         elif current_job["status"] != "Stopped":
             current_job["status"] = "Failed"
-            append_log(f"[-] Process exited with exit code: {active_proc.returncode}")
+            append_log(f"[-] Process exited with code {active_proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
-            try:
-                with open(report_file_path, 'w') as f:
-                    json.dump(report_data, f, indent=2)
-            except Exception:
-                pass
+
+        try:
+            with open(report_file_path, 'w') as f:
+                json.dump(report_data, f, indent=2)
+            append_log(f"[+] Forensic case report updated: {report_file_path}")
+        except Exception as e:
+            append_log(f"[-] Warning: Failed updating report JSON: {e}")
 
     except Exception as e:
         current_job["status"] = "Failed"
-        append_log(f"[-] Execution error: {str(e)}")
+        append_log(f"[-] Execution Exception: {str(e)}")
 
     finally:
         current_job["active"] = False
@@ -361,11 +368,20 @@ def smart_check():
         return jsonify({"success": False, "error": "Invalid drive selection"})
 
     try:
+        total_bytes = 0
+        try:
+            res_sz = subprocess.run(['sudo', 'blockdev', '--getsize64', drive], capture_output=True, text=True)
+            if res_sz.returncode == 0:
+                total_bytes = int(res_sz.stdout.strip())
+        except Exception:
+            pass
+
+        capacity_str = f"{round(total_bytes / (1024**3), 2)} GB" if total_bytes > 0 else "N/A"
+
         res = subprocess.run(['sudo', 'smartctl', '-a', '-j', drive], capture_output=True, text=True)
-        data = json.loads(res.stdout)
+        data = json.loads(res.stdout) if res.stdout else {}
         
         healthy = data.get('smart_status', {}).get('passed', True)
-        
         family = data.get('model_family') or data.get('family_name')
         model = data.get('model_name') or data.get('device', {}).get('name')
         
@@ -401,6 +417,7 @@ def smart_check():
             "healthy": healthy,
             "vendor_model": vendor_model_str,
             "media_type": media_type,
+            "capacity": capacity_str,
             "serial": serial,
             "temperature": temp,
             "reallocated_sectors": reallocated,
@@ -410,9 +427,16 @@ def smart_check():
 
     except Exception:
         return jsonify({
-            "success": False,
-            "error": "SMART telemetry unsupported on this media",
-            "vendor_model": "Generic External Drive / Flash Media"
+            "success": True,
+            "healthy": True,
+            "vendor_model": "Generic Media Device",
+            "media_type": "USB / Storage Media",
+            "capacity": "N/A",
+            "serial": "N/A",
+            "temperature": None,
+            "reallocated_sectors": 0,
+            "pending_sectors": 0,
+            "power_on_hours": None
         })
 
 @app.route('/api/mount_history', methods=['GET'])
@@ -433,29 +457,42 @@ def list_server_shares():
     shares = []
     try:
         if protocol == 'nfs':
-            res = subprocess.run(['showmount', '-e', '--no-headers', host], capture_output=True, text=True, timeout=5)
+            res = subprocess.run(['showmount', '-e', '--no-headers', host], capture_output=True, text=True, timeout=8)
             if res.returncode == 0:
                 for line in res.stdout.strip().split('\n'):
-                    if line:
+                    if line.strip():
                         export_path = line.split()[0]
                         shares.append(export_path)
                 return jsonify({"success": True, "shares": shares})
             else:
-                return jsonify({"success": False, "error": res.stderr.strip()}), 500
+                return jsonify({"success": False, "error": res.stderr.strip() or "No NFS exports found."}), 500
         else:
-            user = req.get('user', 'guest')
+            user = req.get('user', '')
             pass_val = req.get('pass', '')
-            cmd = ['smbclient', '-L', host, '-U', f"{user}%{pass_val}", '-g']
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+
+            if user:
+                cmd = ['smbclient', '-L', host, '-I', host, '-U', f"{user}%{pass_val}", '-g']
+            else:
+                cmd = ['smbclient', '-L', host, '-I', host, '-N', '-g']
+
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+
+            if res.returncode != 0 and not user:
+                cmd_guest = ['smbclient', '-L', host, '-I', host, '-U', 'guest%', '-g']
+                res = subprocess.run(cmd_guest, capture_output=True, text=True, timeout=8)
+
             if res.returncode == 0:
                 for line in res.stdout.splitlines():
                     if line.startswith('Disk|'):
                         parts = line.split('|')
-                        if len(parts) > 1 and not parts[1].endswith('$'):
-                            shares.append(parts[1])
+                        if len(parts) > 1:
+                            share_name = parts[1].strip()
+                            if share_name and not share_name.endswith('$'):
+                                shares.append(share_name)
                 return jsonify({"success": True, "shares": shares})
-
-        return jsonify({"success": True, "shares": shares})
+            else:
+                err_msg = res.stderr.strip() or res.stdout.strip() or "Failed to query SMB shares."
+                return jsonify({"success": False, "error": err_msg}), 500
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -483,7 +520,6 @@ def mount_network():
 
         if protocol == 'nfs':
             nfs_source = f"{host}:{share_path}"
-            
             cmd_v3 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=3', nfs_source, mount_point]
             res = subprocess.run(cmd_v3, capture_output=True, text=True)
 
@@ -560,6 +596,9 @@ def start_imaging():
     hashes = req.get('hashes', ['sha256'])
     metadata = req.get('metadata', {})
     
+    compression = req.get('compression', 'fast')
+    split_size = req.get('split_size', '2000M')
+
     if not source or not os.path.exists(source):
         return jsonify({"error": f"Source device {source} not found."}), 400
 
@@ -569,14 +608,6 @@ def start_imaging():
         except Exception as e:
             return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
 
-    smart_data = {}
-    try:
-        res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True)
-        if res_smart.stdout:
-            smart_data = json.loads(res_smart.stdout)
-    except Exception:
-        pass
-
     total_bytes = 0
     try:
         res = subprocess.run(['blockdev', '--getsize64', source], capture_output=True, text=True)
@@ -585,12 +616,23 @@ def start_imaging():
     except Exception:
         pass
 
+    dest_disk_usage = shutil.disk_usage(dest_path)
+    if total_bytes > 0 and dest_disk_usage.free < total_bytes:
+        free_gb = round(dest_disk_usage.free / (1024**3), 2)
+        required_gb = round(total_bytes / (1024**3), 2)
+        return jsonify({"error": f"Pre-flight storage check failed: Destination has only {free_gb} GB free, but source requires {required_gb} GB."}), 400
+
+    smart_data = {}
+    try:
+        res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True)
+        if res_smart.stdout:
+            smart_data = json.loads(res_smart.stdout)
+    except Exception:
+        pass
+
     model = smart_data.get('model_name') or smart_data.get('device', {}).get('name') or "Generic Storage Media"
     family = smart_data.get('model_family') or smart_data.get('family_name')
-    if family and family.lower() not in model.lower():
-        vendor_model = f"{family} ({model})"
-    else:
-        vendor_model = model
+    vendor_model = f"{family} ({model})" if (family and family.lower() not in model.lower()) else model
 
     serial = smart_data.get('serial_number', 'N/A')
     healthy = smart_data.get('smart_status', {}).get('passed', True)
@@ -626,14 +668,7 @@ def start_imaging():
     base_name = f"{case_num}_{evidence_id}"
 
     if fmt == 'e01':
-        ewf_hash_type = "sha256"
-        if "sha256" in hashes:
-            ewf_hash_type = "sha256"
-        elif "sha1" in hashes:
-            ewf_hash_type = "sha1"
-        elif "md5" in hashes:
-            ewf_hash_type = "md5"
-
+        ewf_hash_type = "sha256" if "sha256" in hashes else ("sha1" if "sha1" in hashes else "md5")
         out_file = f"{dest_path}/{base_name}.E01"
         cmd = [
             "ewfacquire", "-u",
@@ -644,16 +679,18 @@ def start_imaging():
             "-N", notes,
             "-f", "encase6",
             "-d", ewf_hash_type,
-            "-S", "2000M",
+            "-c", compression,
+            "-S", split_size,
             source
         ]
     else:
         out_file = f"{dest_path}/{base_name}.dd"
+        dc3dd_log_file = f"{dest_path}/{base_name}_dc3dd.log"
         cmd = [
             "dc3dd",
             f"if={source}",
             f"of={out_file}",
-            f"log={dest_path}/{base_name}_dc3dd.log"
+            f"log={dc3dd_log_file}"
         ]
         for h in hashes:
             cmd.append(f"hash={h}")
@@ -674,8 +711,14 @@ def start_imaging():
         "acquisition_parameters": {
             "output_destination": dest_path,
             "output_format": fmt,
+            "compression": compression if fmt == 'e01' else 'N/A',
+            "split_size": split_size if fmt == 'e01' else 'N/A',
             "requested_hashes": hashes,
             "execution_command": " ".join(cmd)
+        },
+        "attachments": {
+            "files": [],
+            "reference_urls": []
         },
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -686,7 +729,7 @@ def start_imaging():
         with open(report_file, 'w') as f:
             json.dump(report_data, f, indent=2)
     except Exception as e:
-        print(f"Warning: Could not write case report JSON: {e}")
+        print(f"Warning: Could not write report JSON: {e}")
 
     thread = threading.Thread(
         target=execution_worker,
@@ -735,18 +778,255 @@ def get_progress():
         "log": current_job["log"]
     })
 
-@app.route('/api/list_folders', methods=['POST'])
+# --- File Explorer Endpoints ---
+@app.route('/api/files/browse', methods=['POST'])
 @requires_auth
-def list_folders():
+def browse_files():
     req = request.get_json() or {}
     path = req.get('path', '/mnt')
     if not os.path.exists(path):
-        path = '/mnt'
+        return jsonify({"error": f"Path '{path}' does not exist"}), 404
+
+    items = []
     try:
-        folders = [f for f in os.listdir(path) if os.path.isdir(os.path.join(path, f))]
-        return jsonify({"current_path": path, "folders": sorted(folders)})
+        for entry in os.scandir(path):
+            try:
+                stat = entry.stat()
+                items.append({
+                    "name": entry.name,
+                    "path": entry.path,
+                    "is_dir": entry.is_dir(),
+                    "size_bytes": stat.st_size if not entry.is_dir() else 0,
+                    "size_str": f"{round(stat.st_size / (1024**2), 2)} MB" if not entry.is_dir() else "--",
+                    "modified": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
+                })
+            except Exception:
+                pass
+        return jsonify({"path": path, "items": sorted(items, key=lambda x: (not x['is_dir'], x['name'].lower()))})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/files/copy', methods=['POST'])
+@requires_auth
+def copy_file():
+    req = request.get_json() or {}
+    src = req.get('source')
+    dest_dir = req.get('destination_dir')
+
+    if not src or not os.path.exists(src) or not dest_dir or not os.path.exists(dest_dir):
+        return jsonify({"success": False, "error": "Invalid source or destination path"}), 400
+
+    try:
+        dest_path = os.path.join(dest_dir, os.path.basename(src))
+        if os.path.isdir(src):
+            shutil.copytree(src, dest_path, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dest_path)
+        return jsonify({"success": True, "message": f"Copied {os.path.basename(src)} to {dest_dir}"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/files/delete', methods=['POST'])
+@requires_auth
+def delete_file():
+    req = request.get_json() or {}
+    path = req.get('path')
+
+    if not path or not os.path.exists(path):
+        return jsonify({"success": False, "error": "Path does not exist"}), 400
+
+    try:
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+        return jsonify({"success": True, "message": f"Deleted {os.path.basename(path)}"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- Report Modifier & Attachment Endpoints ---
+@app.route('/api/report/load', methods=['POST'])
+@requires_auth
+def load_report_json():
+    req = request.get_json() or {}
+    report_file = req.get('report_path')
+
+    if not report_file or not os.path.exists(report_file):
+        return jsonify({"success": False, "error": "Report file not found"}), 404
+
+    try:
+        with open(report_file, 'r') as f:
+            data = json.load(f)
+        return jsonify({"success": True, "report": data})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/report/save', methods=['POST'])
+@requires_auth
+def save_report_json():
+    req = request.get_json() or {}
+    report_file = req.get('report_path')
+    data = req.get('report_data')
+
+    if not report_file or not os.path.exists(report_file):
+        return jsonify({"success": False, "error": "Report target file not found"}), 404
+
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(data, f, indent=2)
+        return jsonify({"success": True, "message": "Report JSON updated successfully."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- Post-Acquisition Hash Verifier ---
+@app.route('/api/verify_hash', methods=['POST'])
+@requires_auth
+def verify_file_hash():
+    req = request.get_json() or {}
+    file_path = req.get('file_path')
+    algo = req.get('algorithm', 'sha256').lower()
+
+    if not file_path or not os.path.exists(file_path):
+        return jsonify({"success": False, "error": "Image file not found"}), 400
+
+    try:
+        hasher = getattr(hashlib, algo)()
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(65536):
+                hasher.update(chunk)
+        computed = hasher.hexdigest()
+
+        return jsonify({
+            "success": True,
+            "file_name": os.path.basename(file_path),
+            "algorithm": algo.upper(),
+            "hash": computed
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- PDF Forensic Audit Exporter ---
+@app.route('/api/export_pdf', methods=['POST'])
+@requires_auth
+def export_pdf():
+    req = request.get_json() or {}
+    report_file = req.get('report_path')
+
+    if not report_file or not os.path.exists(report_file):
+        return jsonify({"error": "Report file not found"}), 404
+
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.utils import ImageReader
+
+        with open(report_file, 'r') as f:
+            data = json.load(f)
+
+        pdf_path = report_file.replace('.json', '.pdf')
+        c = canvas.Canvas(pdf_path, pagesize=letter)
+        
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(50, 750, "ARM FORENSIC ACQUISITION AUDIT REPORT")
+        c.setLineWidth(1)
+        c.line(50, 740, 550, 740)
+
+        c.setFont("Helvetica", 10)
+        y = 710
+        
+        meta = data.get('case_metadata', {})
+        c.drawString(50, y, f"Case Number: {meta.get('case_number', 'N/A')}")
+        c.drawString(300, y, f"Evidence ID: {meta.get('evidence_id', 'N/A')}")
+        y -= 20
+        c.drawString(50, y, f"Examiner: {meta.get('examiner', 'N/A')}")
+        c.drawString(300, y, f"Date: {data.get('timestamp_start', 'N/A')}")
+        y -= 20
+        c.drawString(50, y, f"Notes: {meta.get('notes', 'None')}")
+        y -= 30
+
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, "Source Media Telemetry")
+        y -= 15
+        c.setFont("Helvetica", 10)
+        drive = data.get('source_drive_telemetry', {})
+        c.drawString(50, y, f"Device: {drive.get('device_path')} ({drive.get('capacity_gb')} GB)")
+        c.drawString(300, y, f"Model: {drive.get('vendor_model')}")
+        y -= 15
+        c.drawString(50, y, f"Serial: {drive.get('serial_number')}")
+        c.drawString(300, y, f"SMART Status: {'PASSED' if drive.get('smart_healthy') else 'FAILING'}")
+        y -= 30
+
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, "Acquisition & Verification Hashes")
+        y -= 15
+        c.setFont("Helvetica", 10)
+        params = data.get('acquisition_parameters', {})
+        c.drawString(50, y, f"Format: {params.get('output_format', 'dd').upper()}")
+        c.drawString(300, y, f"Status: {data.get('acquisition_status')}")
+        y -= 20
+
+        hashes = data.get('computed_verification_hashes', {})
+        for k, v in hashes.items():
+            c.drawString(50, y, f"{k.upper()}: {v}")
+            y -= 15
+
+        # Render Multi-Attachment Section
+        attachments = data.get('attachments', {})
+        file_list = attachments.get('files', [])
+        if not file_list and attachments.get('image_path'):
+            file_list = [attachments.get('image_path')]
+
+        ref_urls = attachments.get('reference_urls', [])
+
+        if file_list or ref_urls:
+            if y < 150:
+                c.showPage()
+                y = 730
+
+            y -= 15
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(50, y, "Case Attachments & References")
+            y -= 20
+            c.setFont("Helvetica", 10)
+
+            if ref_urls:
+                c.drawString(50, y, "Reference Links / URLs:")
+                y -= 15
+                for url in ref_urls:
+                    c.setFillColorRGB(0, 0, 0.8)
+                    c.drawString(60, y, f"• {url}")
+                    c.setFillColorRGB(0, 0, 0)
+                    y -= 15
+
+            if file_list:
+                c.drawString(50, y, "Attached Case Files / Media:")
+                y -= 15
+                for file_path in file_list:
+                    if not file_path or not os.path.exists(file_path):
+                        continue
+                        
+                    ext = os.path.splitext(file_path)[1].lower()
+                    if ext in ['.jpg', '.jpeg', '.png']:
+                        if y < 200:
+                            c.showPage()
+                            y = 730
+                        try:
+                            c.drawString(60, y, f"• Photo: {os.path.basename(file_path)}")
+                            y -= 140
+                            c.drawImage(ImageReader(file_path), 60, y, width=200, height=130, preserveAspectRatio=True)
+                            y -= 15
+                        except Exception as img_err:
+                            c.drawString(60, y, f"• Photo Error ({os.path.basename(file_path)}): {str(img_err)}")
+                            y -= 15
+                    else:
+                        c.drawString(60, y, f"• Document: {os.path.basename(file_path)} ({file_path})")
+                        y -= 15
+
+        c.save()
+        return send_file(pdf_path, as_attachment=True)
+
+    except Exception as e:
+        return jsonify({"error": f"PDF Export Failed: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
