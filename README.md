@@ -20,15 +20,29 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 - **Software Write-Blocker Toggle:** Quick toggle for `udev` read-only rule enforcement (`ATTR{ro}="1"`) to preserve chain of custody.
 - **Automated Evidence Manifests:** Generates structured `evidence_manifest.json` and human-readable `.txt` reports capturing case numbers, evidence IDs, examiner notes, drive serials, and timestamps.
 - **Touchscreen & Remote Friendly:** Responsive dark-mode UI with drag and drop interface designed for onboard Pi touchscreen displays or headless browser control over Wi-Fi/Ethernet.
+- **FIle Explorer:** Dual Pane File Explorer Tab with copy to or from Device.
+- **Reporting & Hash Verification:** Reporting, Case & URL attachments, JSON file raw viewer & PDF File export, and Image Integrity Verification with hash matching.
 
 ---
 
 ## 📸 Screenshot
 
 <p align="center">
-  <img src="docs/images/PIF1.JPG" width="100%" alt="ARM Forensic Station Header & Local Setup" />
+  <img src="docs/images/PIF1.JPG" width="100%" alt="Forensic Acquisition" />
   <br>
-  <em>Figure 1: Overall Dashboard with Drive Check, Write Blocker Toggle, Raw/EWF Output, MD5/SHA1/SHA256 Hashes and Native Network Discovery, Drive Mapping and Telemetry.</em>
+  <em>Figure 1: Forensic Acquisition Dashboard with Drive Check, Write Blocker Toggle, Raw/EWF Output, MD5/SHA1/SHA256 Hashes and Native Network Discovery, Drive Mapping and Telemetry.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF2.JPG" width="100%" alt="File Explorer" />
+  <br>
+  <em>Figure 2: Dual Pane File Explorer Tab with copy to or from Device.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF3.JPG" width="100%" alt="Reporting" />
+  <br>
+  <em>Figure 3: Reporting, Case & URL attachments, JSON file raw viewer & PDF File export, and Image Integrity Verification with hash matching.</em>
 </p>
 
 ---
