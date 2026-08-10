@@ -57,32 +57,30 @@ Provided as-is, without any warranty and distributed under the GNU General Publi
 See prior research here: "Low Budget Forensics using ARM Based Single Board Computers" - https://commons.erau.edu/jdfsl/vol11/iss1/3/
 
 ---
-
 ## 📋 Prerequisites, Setup & Usage
 
-#Pi and bootmedia with Pi OS or other Debian based OS configured
-#https://www.raspberrypi.com/documentation/computers/getting-started.html
-
-# Quick Installation (One-Line Automated Setup)
 Pi and bootmedia with Pi OS or other Debian based OS configured
-1. Flash a fresh **Raspberry Pi OS (64-bit)** image to your device and connect to the internet. (https://www.raspberrypi.com/documentation/computers/getting-started.html)
-2. Open a terminal (or SSH) and run:
+Flash a fresh **Raspberry Pi OS (64-bit)** image to your device and connect to the internet. (https://www.raspberrypi.com/documentation/computers/getting-started.html)
+
+### Quick Installation (One-Line Automated Setup)
+Open a terminal (or SSH) and run:
 ```bash
-sudo git clone [https://github.com/YOUR_USER/pi-forensics.git](https://github.com/YOUR_USER/pi-forensics.git) /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone [https://github.com/nosfs/pi-forensics.git](https://github.com/n0sfs/pi-forensics.git) /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
-#Interactive Installer Options
+### Interactive Installer Options
 During execution, install.py will prompt you to specify the system account:
 
-Account Creation: If the specified username does not exist, the installer will offer to create the user, set their password, and assign the required display/hardware groups (video, render, input, plugdev, sudo).
+### Account Creation: 
+If the specified username does not exist, the installer will offer to create the user, set their password, and assign the required display/hardware groups (video, render, input, plugdev, sudo).
 
-Automated System Setup: Configures scoped /etc/sudoers.d/pi-forensics privileges, systemd WSGI production services, udev write-blocking rules, and labwc kiosk autostart.
+### Automated System Setup: 
+Configures scoped /etc/sudoers.d/pi-forensics privileges, systemd WSGI production services, udev write-blocking rules, and labwc kiosk autostart.
 
----
-
-##Accessing the Dashboard
+### Accessing the Dashboard
 Local Kiosk: Launches automatically at boot in full-screen touchscreen mode.
 
-Remote Web Interface: Navigate to http://<PI_IP_ADDRESS>:5000 in any web browser on your local subnet.
+### Remote Web Interface
+Navigate to http://<PI_IP_ADDRESS>:5000 in any web browser on your local subnet.
 
 ---
 
