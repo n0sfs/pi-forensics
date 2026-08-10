@@ -99,7 +99,6 @@
             background-color: #040508; color: #4ade80; height: 135px; overflow-y: auto; font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 0.82rem; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px;
         }
 
-        /* High-Contrast Telemetry Labels */
         .telemetry-label { color: #38bdf8 !important; font-size: 0.82rem; font-weight: 700; text-transform: uppercase; }
         .telemetry-val { color: #ffffff !important; font-weight: 700; }
         .chart-container { position: relative; height: 130px; width: 100%; }
@@ -120,7 +119,6 @@
     </style>
 </head>
 <body>
-    <!-- Top Main Header -->
     <nav class="navbar navbar-dark px-4 py-2">
         <span class="navbar-brand fw-bold text-info fs-4 d-flex align-items-center">
             <i class="bi bi-shield-check text-cyan me-2 fs-3"></i>ARM Forensic Acquisition Station
@@ -132,13 +130,13 @@
             <button class="btn btn-sm btn-outline-secondary text-light fw-bold" onclick="resetDashboardLayout()">
                 <i class="bi bi-arrow-counterclockwise me-1"></i>Reset Layout
             </button>
-            <span class="badge bg-danger fs-6 px-3 py-2" id="wbBadge">
-                <i class="bi bi-lock-fill me-1"></i>Hardware Write Blocker: ACTIVE
-            </span>
+            <!-- Interactive Software Write Blocker Toggle Button -->
+            <button id="wbBadgeBtn" class="btn btn-sm btn-danger fw-bold fs-6 px-3 py-1 shadow-sm" onclick="toggleWriteBlockGlobal()">
+                <i class="bi bi-lock-fill me-1"></i>Software Write Blocker: ACTIVE (Read-Only)
+            </button>
         </div>
     </nav>
 
-    <!-- Persistent Thin Top Telemetry Status Bar -->
     <div class="top-telemetry-bar d-flex flex-wrap align-items-center justify-content-between gap-3 text-nowrap">
         <div class="d-flex align-items-center gap-2">
             <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
@@ -179,8 +177,8 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="explorer-tab" data-bs-toggle="tab" data-bs-target="#explorer-app" type="button" role="tab">
-                    <i class="bi bi-folder-symlink me-1"></i>Forensic File Explorer
+                <button class="nav-link text-warning fw-bold" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab">
+                    <i class="bi bi-exclamation-triangle-fill me-1"></i>Damaged Drive Recovery & Explorer (ddrescue)
                 </button>
             </li>
             <li class="nav-item" role="presentation">
@@ -191,29 +189,24 @@
         </ul>
     </div>
 
-    <!-- Main Application Views Container -->
     <div class="container-fluid px-4">
         <div class="tab-content" id="forensicTabContent">
             
             <!-- APP 1: FORENSIC ACQUISITION DASHBOARD -->
             <div class="tab-pane fade show active" id="acquisition-app" role="tabpanel">
-                <div class="grid-stack">
+                <div class="grid-stack grid-stack-main">
                     
-                    <!-- Target Source Selection -->
                     <div class="grid-stack-item" gs-id="card-source" gs-x="0" gs-y="0" gs-w="7" gs-h="4">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center py-2">
                                     <span><i class="bi bi-hdd-network me-2"></i>Target Source Selection</span>
-                                    <div class="form-check form-switch mb-0">
-                                        <input class="form-check-input" type="checkbox" id="wbToggle" checked onchange="toggleWriteBlock(event)">
-                                        <label class="form-check-label text-warning small fw-bold" for="wbToggle">Write Blocker Lock</label>
-                                    </div>
+                                    <span class="badge bg-secondary font-monospace small">Direct I/O Target</span>
                                 </div>
                                 <div class="card-body py-2">
                                     <div class="row g-2 align-items-center mb-2">
                                         <div class="col-md-8">
-                                            <select id="driveSelect" class="form-select form-select-sm" onchange="checkSmartTelemetry()">
+                                            <select id="driveSelect" class="form-select form-select-sm drive-select" onchange="checkSmartTelemetry()">
                                                 <option value="">-- Choose Target Source Drive --</option>
                                             </select>
                                         </div>
@@ -222,7 +215,6 @@
                                         </div>
                                     </div>
 
-                                    <!-- Restored High-Contrast Telemetry Grid -->
                                     <div class="p-2 bg-dark border border-secondary rounded-2">
                                         <div class="d-flex justify-content-between align-items-center border-bottom border-secondary pb-1 mb-2">
                                             <span class="fw-bold text-info small"><i class="bi bi-cpu-fill me-1"></i>Media & Hardware Telemetry</span>
@@ -245,7 +237,6 @@
                         </div>
                     </div>
 
-                    <!-- Advanced Acquisition Controls -->
                     <div class="grid-stack-item" gs-id="card-controls" gs-x="0" gs-y="4" gs-w="7" gs-h="3">
                         <div class="grid-stack-item-content">
                             <div class="card">
@@ -294,7 +285,6 @@
                         </div>
                     </div>
 
-                    <!-- Case & Metadata -->
                     <div class="grid-stack-item" gs-id="card-metadata" gs-x="0" gs-y="7" gs-w="7" gs-h="2">
                         <div class="grid-stack-item-content">
                             <div class="card">
@@ -311,7 +301,6 @@
                         </div>
                     </div>
 
-                    <!-- Network Share Setup -->
                     <div class="grid-stack-item" gs-id="card-network" gs-x="0" gs-y="9" gs-w="7" gs-h="3">
                         <div class="grid-stack-item-content">
                             <div class="card">
@@ -325,18 +314,18 @@
                                             </select>
                                         </div>
                                         <div class="col-md-5"><input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)"></div>
-                                        <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares()"><i class="bi bi-search me-1"></i>Query Shares</button></div>
+                                        <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
                                     </div>
                                     <div class="row g-2 align-items-center mb-2">
                                         <div class="col-md-8"><select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select></div>
-                                        <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive()"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
+                                        <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'destPath', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
                                     </div>
                                     <div id="mountStatus" class="small mb-2 text-light"></div>
                                     <div class="border-top border-secondary pt-2">
                                         <label class="form-label fw-bold text-light small mb-1">Destination Target Path:</label>
                                         <div class="input-group input-group-sm">
                                             <input type="text" id="destPath" class="form-control" value="/mnt">
-                                            <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                                            <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'destPath')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                         </div>
                                     </div>
                                 </div>
@@ -344,7 +333,6 @@
                         </div>
                     </div>
 
-                    <!-- Live Status -->
                     <div class="grid-stack-item" gs-id="card-status" gs-x="7" gs-y="0" gs-w="5" gs-h="4">
                         <div class="grid-stack-item-content">
                             <div class="card">
@@ -368,7 +356,6 @@
                         </div>
                     </div>
 
-                    <!-- Graph -->
                     <div class="grid-stack-item" gs-id="card-graph" gs-x="7" gs-y="4" gs-w="5" gs-h="4">
                         <div class="grid-stack-item-content">
                             <div class="card">
@@ -383,41 +370,200 @@
                 </div>
             </div>
 
-            <!-- APP 2: DUAL-PANE FILE EXPLORER TAB -->
-            <div class="tab-pane fade" id="explorer-app" role="tabpanel">
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center py-2">
-                        <span><i class="bi bi-folder-check me-2"></i>Dual-Pane Forensic File Explorer</span>
-                        <span class="small text-subtle fw-normal">Tap item to select | Double-tap folder to enter</span>
-                    </div>
-                    <div class="card-body py-3">
-                        <div class="d-flex flex-wrap gap-2 p-2 mb-3 bg-dark border border-secondary rounded-2 align-items-center">
-                            <span class="telemetry-grid-label me-1"><i class="bi bi-tools me-1"></i>Actions:</span>
-                            <button class="btn btn-sm btn-outline-info fw-bold" onclick="copyPaneFile('A','B')"><i class="bi bi-arrow-right me-1"></i>Copy A &rarr; B</button>
-                            <button class="btn btn-sm btn-outline-info fw-bold" onclick="copyPaneFile('B','A')"><i class="bi bi-arrow-left me-1"></i>Copy B &rarr; A</button>
-                            <div class="vr bg-secondary"></div>
-                            <button id="btnPdfExport" class="btn btn-sm btn-danger fw-bold" onclick="exportSelectedPdf()" disabled><i class="bi bi-file-earmark-pdf-fill me-1"></i>Export PDF Audit Report</button>
-                            <button id="btnVerifyHash" class="btn btn-sm btn-warning text-dark fw-bold" onclick="verifySelectedHash()" disabled><i class="bi bi-hash me-1"></i>Verify Image Hash</button>
-                            <button id="btnDeleteFile" class="btn btn-sm btn-outline-danger fw-bold" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-1"></i>Delete</button>
-                        </div>
+            <!-- APP 2: SELF-CONTAINED DDRESCUE RECOVERY MODULE & DUAL-PANE FILE EXPLORER TAB -->
+            <div class="tab-pane fade" id="ddrescue-app" role="tabpanel">
+                <div class="grid-stack grid-stack-ddrescue">
+                    
+                    <!-- Card 1: Control & Execution Configuration -->
+                    <div class="grid-stack-item" gs-id="ddr-card-control" gs-x="0" gs-y="0" gs-w="7" gs-h="7">
+                        <div class="grid-stack-item-content">
+                            <div class="card border-warning">
+                                <div class="card-header bg-warning text-dark fw-bold py-2 d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-shield-slash-fill me-2"></i>GNU ddrescue Advanced Recovery Engine</span>
+                                    <button class="btn btn-sm btn-dark text-warning border-warning fw-bold py-0" onclick="refreshDrives()"><i class="bi bi-arrow-clockwise me-1"></i>Scan Drives</button>
+                                </div>
+                                <div class="card-body py-3">
+                                    
+                                    <div class="p-2 bg-dark border border-secondary rounded-2 mb-2">
+                                        <label class="telemetry-grid-label text-warning d-block mb-1"><i class="bi bi-hdd-network me-1"></i>Target Damaged Drive Selection & Telemetry</label>
+                                        <div class="row g-2 align-items-center mb-2">
+                                            <div class="col-md-8">
+                                                <select class="form-select form-select-sm drive-select" id="tabDdrescueSource" onchange="checkDdrescueSmartTelemetry()"></select>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <span id="lblDdrescueHealthBadge" class="badge bg-secondary w-100 py-2">UNCHECKED</span>
+                                            </div>
+                                        </div>
+                                        <div class="row g-2 small text-subtle">
+                                            <div class="col-4">Model: <span id="lblDdrescueModel" class="text-light fw-bold">--</span></div>
+                                            <div class="col-4">Serial: <span id="lblDdrescueSerial" class="text-warning font-monospace fw-bold">--</span></div>
+                                            <div class="col-4">Bad Sectors: <span id="lblDdrescuePending" class="text-danger fw-bold">--</span></div>
+                                        </div>
+                                    </div>
 
-                        <div class="row g-3">
-                            <div class="col-md-6">
-                                <div class="d-flex justify-content-between align-items-center mb-1">
-                                    <span class="telemetry-grid-label">Pane A (Local /mnt)</span>
-                                    <span id="paneAPath" class="font-monospace small text-info fw-bold">/mnt</span>
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-md-6">
+                                            <label class="telemetry-grid-label d-block mb-1">Pass Execution Strategy</label>
+                                            <select class="form-select form-select-sm" id="tabDdrescueStrategy">
+                                                <option value="stage1_fast" selected>1. Fast Copy (No-Scrape/No-Trim - Safest for Weak Heads)</option>
+                                                <option value="stage2_trim">2. Edge Trimming Pass (Isolate Bad Sectors)</option>
+                                                <option value="stage3_intensive">3. Intensive Bad Sector Scraping</option>
+                                                <option value="reverse">4. Reverse Direction Reading Pass (--reverse)</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="telemetry-grid-label d-block mb-1">Bad Sector Retries</label>
+                                            <input type="number" class="form-control form-control-sm" id="tabDdrescueRetries" value="3" min="0" max="10">
+                                        </div>
+                                        <div class="col-md-3 align-self-end">
+                                            <div class="form-check form-switch mb-2">
+                                                <input class="form-check-input" type="checkbox" id="tabDdrescueDirect" checked>
+                                                <label class="form-check-label small text-light fw-bold" for="tabDdrescueDirect">Direct I/O Mode</label>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="p-2 bg-dark border border-secondary rounded-2 mb-2">
+                                        <span class="telemetry-grid-label text-info d-block mb-1"><i class="bi bi-folder-symlink me-1"></i>Case Metadata & Destination Target Path</span>
+                                        <div class="row g-2 mb-2">
+                                            <div class="col-md-4"><input type="text" id="tabDdrescueCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-REC-01)"></div>
+                                            <div class="col-md-4"><input type="text" id="tabDdrescueEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
+                                            <div class="col-md-4"><input type="text" id="tabDdrescueExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
+                                        </div>
+                                        <div class="input-group input-group-sm">
+                                            <input type="text" id="tabDdrescueDest" class="form-control" value="/mnt">
+                                            <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'tabDdrescueDest')">
+                                                <i class="bi bi-folder2-open me-1"></i>Browse
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div class="p-2 bg-dark border border-secondary rounded-2 mb-2">
+                                        <span class="telemetry-grid-label text-success d-block mb-1"><i class="bi bi-diagram-3 me-1"></i>Mount Remote Network Recovery Destination</span>
+                                        <div class="row g-2 mb-2">
+                                            <div class="col-md-3">
+                                                <select id="tabDdrescueNetProtocol" class="form-select form-select-sm">
+                                                    <option value="nfs">NFS Share</option>
+                                                    <option value="smb">SMB / CIFS</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-5"><input type="text" id="tabDdrescueNetHost" class="form-control form-control-sm" placeholder="Server IP (192.168.1.100)"></div>
+                                            <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares('tabDdrescueNetHost', 'tabDdrescueNetProtocol', 'tabDdrescueServerShareSelect', 'tabDdrescueMountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
+                                        </div>
+                                        <div class="row g-2 align-items-center mb-1">
+                                            <div class="col-md-8"><select id="tabDdrescueServerShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select></div>
+                                            <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('tabDdrescueNetHost', 'tabDdrescueNetProtocol', 'tabDdrescueServerShareSelect', 'tabDdrescueDest', 'tabDdrescueMountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
+                                        </div>
+                                        <div id="tabDdrescueMountStatus" class="small text-light"></div>
+                                    </div>
+
+                                    <div class="d-flex gap-2">
+                                        <button id="btnTabDdrescueStart" class="btn btn-warning text-dark flex-fill fw-bold py-2" onclick="startTabDdrescueJob()">
+                                            <i class="bi bi-play-fill me-1"></i>Execute Selected ddrescue Pass
+                                        </button>
+                                        <button id="btnTabDdrescueStop" class="btn btn-danger flex-fill fw-bold py-2" onclick="stopAcquisition()" disabled>
+                                            <i class="bi bi-stop-circle me-1"></i>Stop Process
+                                        </button>
+                                    </div>
                                 </div>
-                                <div id="paneAContainer" class="file-pane"></div>
-                            </div>
-                            <div class="col-md-6">
-                                <div class="d-flex justify-content-between align-items-center mb-1">
-                                    <span class="telemetry-grid-label">Pane B (Network Mounts / Exports)</span>
-                                    <span id="paneBPath" class="font-monospace small text-info fw-bold">/mnt</span>
-                                </div>
-                                <div id="paneBContainer" class="file-pane"></div>
                             </div>
                         </div>
                     </div>
+
+                    <!-- Card 2: Output Monitor -->
+                    <div class="grid-stack-item" gs-id="ddr-card-output" gs-x="7" gs-y="0" gs-w="5" gs-h="4">
+                        <div class="grid-stack-item-content">
+                            <div class="card border-warning">
+                                <div class="card-header py-2 text-warning fw-bold"><i class="bi bi-speedometer2 me-2"></i>ddrescue Execution Status & Stream</div>
+                                <div class="card-body py-2">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span id="ddrescueJobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
+                                        <span id="ddrescueProgressPct" class="fw-bold fs-5 text-light">0.0%</span>
+                                    </div>
+                                    <div class="progress bg-secondary mb-2" style="height: 16px;">
+                                        <div id="ddrescueProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-warning text-dark fw-bold" role="progressbar" style="width: 0%"></div>
+                                    </div>
+                                    <div class="row text-center mb-2">
+                                        <div class="col-6"><small class="telemetry-label d-block">Current Rate</small><span id="ddrescueSpeedVal" class="fs-5 fw-bold text-warning">0.0 MB/s</span></div>
+                                        <div class="col-6"><small class="telemetry-label d-block">Rescued Size</small><span id="ddrescueBytesVal" class="fs-5 fw-bold text-light">0 / 0 GB</span></div>
+                                    </div>
+                                    <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
+                                    <pre id="ddrescueLogOutput" class="log-window" style="height: 140px;">[ddrescue module idle and ready.]</pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 3: Mapfile Inspector -->
+                    <div class="grid-stack-item" gs-id="ddr-card-map" gs-x="7" gs-y="4" gs-w="5" gs-h="3">
+                        <div class="grid-stack-item-content">
+                            <div class="card border-info">
+                                <div class="card-header py-2 text-info fw-bold"><i class="bi bi-search me-2"></i>Mapfile Audit Inspector</div>
+                                <div class="card-body py-2">
+                                    <div class="mb-2">
+                                        <div class="input-group input-group-sm">
+                                            <input type="text" id="tabMapfilePath" class="form-control font-monospace" placeholder="/mnt/CASE_ITEM-01_ddrescue.map">
+                                            <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('mapfile')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                                            <button class="btn btn-info text-dark fw-bold" onclick="inspectDdrescueMapfile()"><i class="bi bi-bar-chart-line me-1"></i>Inspect</button>
+                                        </div>
+                                    </div>
+                                    <div class="p-2 bg-black border border-secondary rounded-2">
+                                        <div class="d-flex justify-content-between align-items-center mb-1 border-bottom border-secondary pb-1">
+                                            <span class="telemetry-grid-label">Mapfile Summary:</span>
+                                            <span id="mapStatusBadge" class="badge bg-secondary">NO MAPFILE LOADED</span>
+                                        </div>
+                                        <div class="row g-2">
+                                            <div class="col-6"><span class="telemetry-grid-label d-block">Rescued Data</span><span id="mapRescuedVal" class="fs-6 fw-bold text-success">-- GB</span></div>
+                                            <div class="col-6"><span class="telemetry-grid-label d-block">Unattempted Data</span><span id="mapUnattemptedVal" class="fs-6 fw-bold text-info">-- MB</span></div>
+                                            <div class="col-6"><span class="telemetry-grid-label d-block">Bad Sectors Size</span><span id="mapBadSectorVal" class="fs-6 fw-bold text-danger">-- KB</span></div>
+                                            <div class="col-6"><span class="telemetry-grid-label d-block">Hard Error Blocks</span><span id="mapErrorBlocksVal" class="fs-6 fw-bold text-warning">--</span></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 4: INTEGRATED DUAL-PANE FORENSIC FILE EXPLORER -->
+                    <div class="grid-stack-item" gs-id="ddr-card-explorer" gs-x="0" gs-y="7" gs-w="12" gs-h="5">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                    <span><i class="bi bi-folder-check me-2"></i>Dual-Pane Forensic File Explorer</span>
+                                    <span class="small text-subtle fw-normal">Tap item to select | Double-tap folder to enter</span>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="d-flex flex-wrap gap-2 p-2 mb-2 bg-dark border border-secondary rounded-2 align-items-center">
+                                        <span class="telemetry-grid-label me-1"><i class="bi bi-tools me-1"></i>Actions:</span>
+                                        <button class="btn btn-sm btn-outline-info fw-bold" onclick="copyPaneFile('A','B')"><i class="bi bi-arrow-right me-1"></i>Copy A &rarr; B</button>
+                                        <button class="btn btn-sm btn-outline-info fw-bold" onclick="copyPaneFile('B','A')"><i class="bi bi-arrow-left me-1"></i>Copy B &rarr; A</button>
+                                        <div class="vr bg-secondary"></div>
+                                        <button id="btnPdfExport" class="btn btn-sm btn-danger fw-bold" onclick="exportSelectedPdf()" disabled><i class="bi bi-file-earmark-pdf-fill me-1"></i>Export PDF Audit Report</button>
+                                        <button id="btnVerifyHash" class="btn btn-sm btn-warning text-dark fw-bold" onclick="verifySelectedHash()" disabled><i class="bi bi-hash me-1"></i>Verify Image Hash</button>
+                                        <button id="btnDeleteFile" class="btn btn-sm btn-outline-danger fw-bold" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-1"></i>Delete</button>
+                                    </div>
+
+                                    <div class="row g-2">
+                                        <div class="col-md-6">
+                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                <span class="telemetry-grid-label">Pane A (Local /mnt)</span>
+                                                <span id="paneAPath" class="font-monospace small text-info fw-bold">/mnt</span>
+                                            </div>
+                                            <div id="paneAContainer" class="file-pane" style="height: 220px;"></div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                <span class="telemetry-grid-label">Pane B (Network Mounts / Exports)</span>
+                                                <span id="paneBPath" class="font-monospace small text-info fw-bold">/mnt</span>
+                                            </div>
+                                            <div id="paneBContainer" class="file-pane" style="height: 220px;"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -430,7 +576,6 @@
                     </div>
                     <div class="card-body py-3">
                         <div class="row g-3 mb-3">
-                            <!-- Left: Report Selection & Metadata Modifier Form -->
                             <div class="col-md-7">
                                 <div class="p-3 bg-dark border border-secondary rounded-2 h-100">
                                     <h6 class="text-info fw-bold mb-3"><i class="bi bi-pencil-square me-2"></i>Report Modifier & Metadata Editor</h6>
@@ -466,14 +611,12 @@
                                         <textarea id="editNotes" class="form-control form-control-sm" rows="3" placeholder="Additional findings, bad sector notes, or physical condition notes..."></textarea>
                                     </div>
 
-                                    <!-- Multi-Attachment Section -->
                                     <div class="border-top border-secondary pt-2 mb-3">
                                         <div class="d-flex justify-content-between align-items-center mb-2">
                                             <h6 class="text-warning fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Multiple Case Attachments</h6>
                                             <button class="btn btn-sm btn-outline-warning fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-plus-lg me-1"></i>Add File Attachment</button>
                                         </div>
                                         
-                                        <!-- Dynamic File Attachments List Container -->
                                         <div id="attachmentsContainer" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 120px; overflow-y: auto;">
                                             <span class="text-subtle small italic">No files attached yet. Click 'Add File Attachment' to browse.</span>
                                         </div>
@@ -491,7 +634,6 @@
                                 </div>
                             </div>
 
-                            <!-- Right: Independent Evidence Hash Verifier Suite -->
                             <div class="col-md-5">
                                 <div class="p-3 bg-dark border border-secondary rounded-2 h-100 d-flex flex-column">
                                     <h6 class="text-warning fw-bold mb-3"><i class="bi bi-hash me-2"></i>Evidence Image Integrity Verification</h6>
@@ -537,7 +679,6 @@
                             </div>
                         </div>
 
-                        <!-- Full-Width Live JSON Raw Data Preview Block -->
                         <div class="row g-3">
                             <div class="col-12">
                                 <div class="p-3 bg-dark border border-secondary rounded-2">
@@ -557,7 +698,6 @@
         </div>
     </div>
 
-    <!-- Folder/File Browser Modal -->
     <div class="modal fade" id="folderBrowserModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content bg-dark text-light border-secondary">
