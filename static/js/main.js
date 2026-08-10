@@ -1,5 +1,7 @@
-let grid = null;
+let gridMain = null;
+let gridDdrescue = null;
 let isLayoutLocked = true;
+let isWriteBlockActive = true;
 let throughputChart = null;
 const maxGraphPoints = 30;
 const graphData = Array(maxGraphPoints).fill(0);
@@ -11,7 +13,8 @@ let currentDrivesList = [];
 
 let currentBrowsePath = '/mnt';
 let folderModalInstance = null;
-let modalPickerMode = 'folder'; // Modes: 'folder', 'report', 'attachment', 'evidence'
+let modalPickerMode = 'folder';
+let targetInputIdForModal = 'destPath';
 
 let paneAPath = '/mnt';
 let paneBPath = '/mnt';
@@ -24,7 +27,7 @@ let currentLoadedReportData = null;
 let currentAttachedFilesList = [];
 
 function initGridstack() {
-    grid = GridStack.init({
+    gridMain = GridStack.init({
         cellHeight: 85,
         margin: 6,
         handle: '.card-header',
@@ -32,14 +35,31 @@ function initGridstack() {
         disableOneColumnMode: true,
         float: true,
         resizable: { handles: 'se, s, e' }
-    });
+    }, '.grid-stack-main');
 
-    const savedLayout = localStorage.getItem('pi_forensics_layout');
-    if (savedLayout) {
-        try { grid.load(JSON.parse(savedLayout)); } catch (e) {}
+    gridDdrescue = GridStack.init({
+        cellHeight: 85,
+        margin: 6,
+        handle: '.card-header',
+        animate: true,
+        disableOneColumnMode: true,
+        float: true,
+        resizable: { handles: 'se, s, e' }
+    }, '.grid-stack-ddrescue');
+
+    const savedMainLayout = localStorage.getItem('pi_forensics_layout_main');
+    if (savedMainLayout && gridMain) {
+        try { gridMain.load(JSON.parse(savedMainLayout)); } catch (e) {}
     }
 
-    grid.on('change', () => { saveDashboardLayout(); });
+    const savedDdrLayout = localStorage.getItem('pi_forensics_layout_ddr');
+    if (savedDdrLayout && gridDdrescue) {
+        try { gridDdrescue.load(JSON.parse(savedDdrLayout)); } catch (e) {}
+    }
+
+    if (gridMain) gridMain.on('change', () => { saveDashboardLayout(); });
+    if (gridDdrescue) gridDdrescue.on('change', () => { saveDashboardLayout(); });
+    
     applyLockState();
 }
 
@@ -50,34 +70,39 @@ function toggleLayoutLock() {
 
 function applyLockState() {
     const lockBtn = document.getElementById("layoutLockBtn");
-    if (!grid) return;
 
-    if (isLayoutLocked) {
-        grid.enableMove(false);
-        grid.enableResize(false);
-        if (lockBtn) {
+    [gridMain, gridDdrescue].forEach(g => {
+        if (!g) return;
+        if (isLayoutLocked) {
+            g.enableMove(false);
+            g.enableResize(false);
+        } else {
+            g.enableMove(true);
+            g.enableResize(true);
+        }
+    });
+
+    if (lockBtn) {
+        if (isLayoutLocked) {
             lockBtn.className = "btn btn-sm btn-outline-warning fw-bold";
             lockBtn.innerHTML = '<i class="bi bi-lock-fill me-1"></i>Layout Locked';
-        }
-        document.querySelectorAll('.card-header').forEach(el => el.style.cursor = 'default');
-    } else {
-        grid.enableMove(true);
-        grid.enableResize(true);
-        if (lockBtn) {
+            document.querySelectorAll('.card-header').forEach(el => el.style.cursor = 'default');
+        } else {
             lockBtn.className = "btn btn-sm btn-success fw-bold";
             lockBtn.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Layout Unlocked';
+            document.querySelectorAll('.card-header').forEach(el => el.style.cursor = 'grab');
         }
-        document.querySelectorAll('.card-header').forEach(el => el.style.cursor = 'grab');
     }
 }
 
 function saveDashboardLayout() {
-    if (!grid) return;
-    localStorage.setItem('pi_forensics_layout', JSON.stringify(grid.save(false)));
+    if (gridMain) localStorage.setItem('pi_forensics_layout_main', JSON.stringify(gridMain.save(false)));
+    if (gridDdrescue) localStorage.setItem('pi_forensics_layout_ddr', JSON.stringify(gridDdrescue.save(false)));
 }
 
 function resetDashboardLayout() {
-    localStorage.removeItem('pi_forensics_layout');
+    localStorage.removeItem('pi_forensics_layout_main');
+    localStorage.removeItem('pi_forensics_layout_ddr');
     location.reload();
 }
 
@@ -326,7 +351,7 @@ function openReportPickerModal() {
 }
 
 function openFilePickerModal(mode) {
-    modalPickerMode = mode; // 'attachment', 'report', or 'evidence'
+    modalPickerMode = mode;
     openFolderModal(modalPickerMode);
 }
 
@@ -367,7 +392,6 @@ async function loadReportForEditing() {
             const editUrls = document.getElementById("editUrls");
             if (editUrls) editUrls.value = (attach.reference_urls || []).join(", ");
 
-            // Update JSON Raw Live Preview Box
             const previewEl = document.getElementById("jsonPreview");
             if (previewEl) {
                 previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
@@ -533,11 +557,12 @@ async function runStandaloneHashVerification() {
     }
 }
 
-// --- Folder & File Modals ---
-function openFolderModal(mode = 'folder') {
+// --- Modular Folder & File Modals ---
+function openFolderModal(mode = 'folder', targetInputId = 'destPath') {
     modalPickerMode = mode;
+    targetInputIdForModal = targetInputId;
     
-    const destPathEl = document.getElementById("destPath");
+    const destPathEl = document.getElementById(targetInputIdForModal);
     currentBrowsePath = destPathEl ? (destPathEl.value.trim() || '/mnt') : '/mnt';
     
     const titleEl = document.getElementById("modalTitle");
@@ -551,6 +576,9 @@ function openFolderModal(mode = 'folder') {
         if (selectBtn) selectBtn.style.display = 'none';
     } else if (modalPickerMode === 'evidence') {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-hdd-fill me-2"></i>Select Target Evidence Image (.dd / .E01)';
+        if (selectBtn) selectBtn.style.display = 'none';
+    } else if (modalPickerMode === 'mapfile') {
+        if (titleEl) titleEl.innerHTML = '<i class="bi bi-bar-chart-line me-2"></i>Select ddrescue Mapfile (.map)';
         if (selectBtn) selectBtn.style.display = 'none';
     } else {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-folder2-open me-2"></i>Select Destination Directory';
@@ -591,6 +619,8 @@ async function loadFolderList(path) {
                 isSelectableFile = true;
             } else if (modalPickerMode === 'evidence' && !item.is_dir && (item.name.toLowerCase().endsWith('.dd') || item.name.toLowerCase().endsWith('.e01') || item.name.toLowerCase().endsWith('.raw'))) {
                 isSelectableFile = true;
+            } else if (modalPickerMode === 'mapfile' && !item.is_dir && item.name.toLowerCase().endsWith('.map')) {
+                isSelectableFile = true;
             }
 
             if (item.is_dir || isSelectableFile) {
@@ -602,6 +632,7 @@ async function loadFolderList(path) {
                     if (modalPickerMode === 'report') icon = '<i class="bi bi-filetype-json text-warning me-2 fs-5"></i>';
                     else if (modalPickerMode === 'attachment') icon = '<i class="bi bi-paperclip text-info me-2 fs-5"></i>';
                     else if (modalPickerMode === 'evidence') icon = '<i class="bi bi-disc text-primary me-2 fs-5"></i>';
+                    else if (modalPickerMode === 'mapfile') icon = '<i class="bi bi-map text-warning me-2 fs-5"></i>';
                 }
 
                 btn.innerHTML = `<span>${icon}<span class="${item.is_dir ? 'folder-text' : 'text-light'}">${item.name}</span></span><small class="text-subtle font-monospace">${item.size_str}</small>`;
@@ -621,6 +652,11 @@ async function loadFolderList(path) {
                         const verifyImagePath = document.getElementById("verifyImagePath");
                         if (verifyImagePath) verifyImagePath.value = item.path;
                         if (folderModalInstance) folderModalInstance.hide();
+                    } else if (modalPickerMode === 'mapfile') {
+                        const mapPathEl = document.getElementById("tabMapfilePath");
+                        if (mapPathEl) mapPathEl.value = item.path;
+                        if (folderModalInstance) folderModalInstance.hide();
+                        inspectDdrescueMapfile();
                     }
                 };
                 folderListEl.appendChild(btn);
@@ -636,15 +672,22 @@ function navigateFolderUp() {
 }
 
 function selectCurrentFolder() {
-    const destPathEl = document.getElementById("destPath");
-    if (destPathEl) destPathEl.value = currentBrowsePath;
+    const targetEl = document.getElementById(targetInputIdForModal);
+    if (targetEl) targetEl.value = currentBrowsePath;
     if (folderModalInstance) folderModalInstance.hide();
 }
 
 // --- Telemetry & Drives ---
+function getActiveTargetDrive() {
+    const mainDrive = document.getElementById("driveSelect")?.value;
+    const ddrDrive = document.getElementById("tabDdrescueSource")?.value;
+    return mainDrive || ddrDrive || "/dev/sda";
+}
+
 async function fetchSystemInfo() {
+    const activeDrive = getActiveTargetDrive();
     try {
-        const res = await fetch('/api/system_info');
+        const res = await fetch(`/api/system_info?drive=${encodeURIComponent(activeDrive)}`);
         const data = await res.json();
 
         if (document.getElementById("cpuVal")) document.getElementById("cpuVal").innerText = `${data.cpu_percent}%`;
@@ -665,37 +708,59 @@ async function fetchSystemInfo() {
             if (document.getElementById("netUlVal")) document.getElementById("netUlVal").innerText = `${data.network_speed.upload_mbps} MB/s`;
         }
 
-        const wbBadge = document.getElementById("wbBadge");
-        const wbToggle = document.getElementById("wbToggle");
-        if (wbBadge && wbToggle) {
-            if (data.write_blocker_active) {
-                wbBadge.className = "badge bg-danger fs-6 px-3 py-2";
-                wbBadge.innerHTML = '<i class="bi bi-lock-fill me-1"></i>Hardware Write Blocker: ACTIVE';
-                wbToggle.checked = true;
+        isWriteBlockActive = data.write_blocker_active;
+        const wbBadgeBtn = document.getElementById("wbBadgeBtn");
+        if (wbBadgeBtn) {
+            if (isWriteBlockActive) {
+                wbBadgeBtn.className = "btn btn-sm btn-danger fw-bold fs-6 px-3 py-1 shadow-sm";
+                wbBadgeBtn.innerHTML = `<i class="bi bi-lock-fill me-1"></i>Software Write Blocker: PROTECTED (${activeDrive})`;
             } else {
-                wbBadge.className = "badge bg-warning text-dark fs-6 px-3 py-2";
-                wbBadge.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Write Blocker: DISABLED (Read-Write)';
-                wbToggle.checked = false;
+                wbBadgeBtn.className = "btn btn-sm btn-warning text-dark fw-bold fs-6 px-3 py-1 shadow-sm";
+                wbBadgeBtn.innerHTML = `<i class="bi bi-unlock-fill me-1"></i>Software Write Blocker: UNLOCKED (${activeDrive})`;
             }
         }
     } catch (err) {}
+}
+
+async function toggleWriteBlockGlobal() {
+    const activeDrive = getActiveTargetDrive();
+    const newEnableState = !isWriteBlockActive;
+
+    try {
+        const res = await fetch('/api/toggle_write_block', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enable: newEnableState, drive: activeDrive })
+        });
+        const data = await res.json();
+        if (data.success) {
+            await fetchSystemInfo();
+            alert(`Drive ${activeDrive} Write-Blocker status set to: ${newEnableState ? 'PROTECTED (Read-Only)' : 'UNLOCKED (Read-Write)'}`);
+        } else {
+            alert(`Write Blocker Toggle Failed: ${data.error}`);
+        }
+    } catch (err) {
+        console.error("Write blocker toggle error:", err);
+    }
 }
 
 async function refreshDrives() {
     try {
         const res = await fetch('/api/drives');
         currentDrivesList = await res.json();
-        const driveSelect = document.getElementById("driveSelect");
-        if (!driveSelect) return;
-
-        driveSelect.innerHTML = '<option value="">-- Choose Target Source Drive --</option>';
-        currentDrivesList.forEach(dev => {
-            const opt = document.createElement("option");
-            opt.value = dev.device;
-            opt.innerText = `${dev.device} - [${(dev.transport||'usb').toUpperCase()}] ${dev.model} (${dev.size})`;
-            driveSelect.appendChild(opt);
+        
+        const driveSelects = document.querySelectorAll(".drive-select");
+        driveSelects.forEach(selectEl => {
+            selectEl.innerHTML = '<option value="">-- Choose Target Source Drive --</option>';
+            currentDrivesList.forEach(dev => {
+                const opt = document.createElement("option");
+                opt.value = dev.device;
+                opt.innerText = `${dev.device} - [${(dev.transport||'usb').toUpperCase()}] ${dev.model} (${dev.size})`;
+                selectEl.appendChild(opt);
+            });
         });
         checkSmartTelemetry();
+        checkDdrescueSmartTelemetry();
     } catch (err) {}
 }
 
@@ -731,58 +796,74 @@ async function checkSmartTelemetry() {
             if (document.getElementById("lblPending")) document.getElementById("lblPending").innerText = data.pending_sectors !== undefined ? data.pending_sectors : "0";
             if (document.getElementById("lblPowerHours")) document.getElementById("lblPowerHours").innerText = data.power_on_hours ? `${data.power_on_hours} hrs` : "N/A";
         }
+        fetchSystemInfo();
     } catch (err) {}
 }
 
-// --- Network Shares & History ---
+async function checkDdrescueSmartTelemetry() {
+    const driveSelect = document.getElementById("tabDdrescueSource");
+    const targetDrive = driveSelect ? driveSelect.value : "";
+    const healthBadge = document.getElementById("lblDdrescueHealthBadge");
+
+    if (!targetDrive) return;
+
+    try {
+        const res = await fetch('/api/smart_check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ drive: targetDrive })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            if (document.getElementById("lblDdrescueModel")) document.getElementById("lblDdrescueModel").innerText = data.vendor_model || "--";
+            if (document.getElementById("lblDdrescueSerial")) document.getElementById("lblDdrescueSerial").innerText = data.serial || "--";
+            if (document.getElementById("lblDdrescuePending")) document.getElementById("lblDdrescuePending").innerText = data.pending_sectors !== undefined ? data.pending_sectors : "0";
+            
+            if (healthBadge) {
+                healthBadge.className = data.healthy ? "badge bg-success w-100 py-2" : "badge bg-danger w-100 py-2";
+                healthBadge.innerHTML = data.healthy ? 'PASSED (GOOD)' : 'FAILING MEDIA';
+            }
+        }
+        fetchSystemInfo();
+    } catch (err) {}
+}
+
+// --- Parameterized Network Shares Engine ---
 async function loadNetworkHistory() {
     try {
         const res = await fetch('/api/mount_history');
         const history = await res.json();
-        const shareSelect = document.getElementById("serverShareSelect");
+        const shareSelects = [document.getElementById("serverShareSelect"), document.getElementById("tabDdrescueServerShareSelect")];
         
-        if (!shareSelect) return;
-        shareSelect.innerHTML = '<option value="">Select Exported Share...</option>';
+        shareSelects.forEach(shareSelect => {
+            if (!shareSelect) return;
+            shareSelect.innerHTML = '<option value="">Select Exported Share...</option>';
 
-        if (history.length > 0) {
-            const grp = document.createElement("optgroup");
-            grp.label = "Recent Mount History";
-            history.forEach(item => {
-                const opt = document.createElement("option");
-                opt.value = item.share;
-                opt.dataset.host = item.host;
-                opt.dataset.protocol = item.protocol;
-                opt.dataset.mountPoint = item.mount_point;
-                opt.innerText = `[${item.protocol.toUpperCase()}] ${item.host}:${item.share} -> ${item.mount_point}`;
-                grp.appendChild(opt);
-            });
-            shareSelect.appendChild(grp);
-        }
+            if (history.length > 0) {
+                const grp = document.createElement("optgroup");
+                grp.label = "Recent Mount History";
+                history.forEach(item => {
+                    const opt = document.createElement("option");
+                    opt.value = item.share;
+                    opt.dataset.host = item.host;
+                    opt.dataset.protocol = item.protocol;
+                    opt.dataset.mountPoint = item.mount_point;
+                    opt.innerText = `[${item.protocol.toUpperCase()}] ${item.host}:${item.share} -> ${item.mount_point}`;
+                    grp.appendChild(opt);
+                });
+                shareSelect.appendChild(grp);
+            }
+        });
     } catch (err) {}
 }
 
-document.getElementById("serverShareSelect")?.addEventListener("change", (e) => {
-    const selectedOpt = e.target.options[e.target.selectedIndex];
-    if (selectedOpt && selectedOpt.dataset.host) {
-        const netHost = document.getElementById("netHost");
-        const netProtocol = document.getElementById("netProtocol");
-        const destPath = document.getElementById("destPath");
-
-        if (netHost) netHost.value = selectedOpt.dataset.host;
-        if (netProtocol) netProtocol.value = selectedOpt.dataset.protocol;
-        if (selectedOpt.dataset.mountPoint && destPath) {
-            destPath.value = selectedOpt.dataset.mountPoint;
-            loadPane('B', selectedOpt.dataset.mountPoint);
-        }
-    }
-});
-
-async function queryNetworkShares() {
-    const hostEl = document.getElementById("netHost");
+async function queryNetworkShares(hostId, protocolId, shareSelectId, mountStatusId) {
+    const hostEl = document.getElementById(hostId);
     const host = hostEl ? hostEl.value.trim() : "";
-    const protocol = document.getElementById("netProtocol")?.value || "smb";
-    const shareSelect = document.getElementById("serverShareSelect");
-    const mountStatus = document.getElementById("mountStatus");
+    const protocol = document.getElementById(protocolId)?.value || "smb";
+    const shareSelect = document.getElementById(shareSelectId);
+    const mountStatus = document.getElementById(mountStatusId);
 
     if (!host) return alert("Please enter a server IP address.");
 
@@ -817,12 +898,12 @@ async function queryNetworkShares() {
     }
 }
 
-async function mountNetworkDrive() {
-    const host = document.getElementById("netHost")?.value.trim() || "";
-    const protocol = document.getElementById("netProtocol")?.value || "smb";
-    const shareSelect = document.getElementById("serverShareSelect");
+async function mountNetworkDrive(hostId, protocolId, shareSelectId, destPathId, mountStatusId) {
+    const host = document.getElementById(hostId)?.value.trim() || "";
+    const protocol = document.getElementById(protocolId)?.value || "smb";
+    const shareSelect = document.getElementById(shareSelectId);
     const share = shareSelect ? shareSelect.value : "";
-    const mountStatus = document.getElementById("mountStatus");
+    const mountStatus = document.getElementById(mountStatusId);
 
     if (!share) return alert("Please select or enter an exported share name first.");
 
@@ -838,11 +919,17 @@ async function mountNetworkDrive() {
 
         if (data.success) {
             if (mountStatus) mountStatus.innerText = `Successfully mounted: ${data.mount_point}`;
-            const destPath = document.getElementById("destPath");
-            if (destPath) destPath.value = data.mount_point;
+            
+            // Auto-update ALL destination input fields across standard and ddrescue tabs
+            const destPathMain = document.getElementById("destPath");
+            const destPathDdr = document.getElementById("tabDdrescueDest");
+            
+            if (destPathMain) destPathMain.value = data.mount_point;
+            if (destPathDdr) destPathDdr.value = data.mount_point;
+
             loadPane('B', data.mount_point);
             loadNetworkHistory();
-            alert(`Share Mounted to ${data.mount_point}!`);
+            alert(`Share Mounted to ${data.mount_point}! Destination paths updated.`);
         } else {
             if (mountStatus) mountStatus.innerText = `Mount Error: ${data.error}`;
             alert(`Mount Failed: ${data.error}`);
@@ -850,20 +937,6 @@ async function mountNetworkDrive() {
     } catch (err) {
         if (mountStatus) mountStatus.innerText = `Mount Failed: ${err.message}`;
     }
-}
-
-async function toggleWriteBlock(e) {
-    const enable = e.target.checked;
-    const drive = document.getElementById("driveSelect")?.value || "/dev/sda";
-    try {
-        const res = await fetch('/api/toggle_write_block', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enable, drive })
-        });
-        const data = await res.json();
-        if (data.success) fetchSystemInfo();
-    } catch (err) {}
 }
 
 async function startAcquisition() {
@@ -897,19 +970,108 @@ async function startAcquisition() {
 
         if (data.success) {
             if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = true;
+            if (document.getElementById("btnTabDdrescueStart")) document.getElementById("btnTabDdrescueStart").disabled = true;
             if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = false;
+            if (document.getElementById("btnTabDdrescueStop")) document.getElementById("btnTabDdrescueStop").disabled = false;
         } else alert(`Start Failed: ${data.error}`);
     } catch (err) {}
 }
 
+async function startTabDdrescueJob() {
+    const sourceSelect = document.getElementById("tabDdrescueSource");
+    const source = sourceSelect ? sourceSelect.value : "";
+    const dest = document.getElementById("tabDdrescueDest")?.value || "/mnt";
+    const strategy = document.getElementById("tabDdrescueStrategy")?.value || "stage1_fast";
+    const retries = document.getElementById("tabDdrescueRetries")?.value || "3";
+    const directMode = document.getElementById("tabDdrescueDirect")?.checked ?? true;
+
+    if (!source) {
+        alert("Please select a target damaged source drive first.");
+        return;
+    }
+
+    const metadata = {
+        case_number: document.getElementById("tabDdrescueCaseNum")?.value || "RECOVERY",
+        evidence_id: document.getElementById("tabDdrescueEvidenceId")?.value || "ITEM-01",
+        examiner: document.getElementById("tabDdrescueExaminer")?.value || "UNSPECIFIED",
+        notes: `ddrescue ${strategy} execution pass`
+    };
+
+    try {
+        const res = await fetch('/api/start_ddrescue', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                source: source,
+                destination: dest,
+                strategy: strategy,
+                retry_passes: retries,
+                direct_mode: directMode,
+                metadata: metadata
+            })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = true;
+            if (document.getElementById("btnTabDdrescueStart")) document.getElementById("btnTabDdrescueStart").disabled = true;
+            if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = false;
+            if (document.getElementById("btnTabDdrescueStop")) document.getElementById("btnTabDdrescueStop").disabled = false;
+            alert(`ddrescue (${strategy}) pass started cleanly!`);
+        } else {
+            alert(`ddrescue Start Failed: ${data.error}`);
+        }
+    } catch (err) {
+        console.error("Error starting ddrescue:", err);
+    }
+}
+
+async function inspectDdrescueMapfile() {
+    const mapPathEl = document.getElementById("tabMapfilePath");
+    const mapPath = mapPathEl ? mapPathEl.value.trim() : "";
+
+    if (!mapPath) {
+        alert("Please enter or select a .map file path first.");
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/ddrescue/inspect_map', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ map_path: mapPath })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            document.getElementById("mapRescuedVal").innerText = `${data.rescued_gb} GB`;
+            document.getElementById("mapUnattemptedVal").innerText = `${data.non_tried_mb} MB`;
+            document.getElementById("mapBadSectorVal").innerText = `${data.bad_sector_kb} KB`;
+            document.getElementById("mapErrorBlocksVal").innerText = data.bad_blocks_count;
+            
+            const badge = document.getElementById("mapStatusBadge");
+            if (badge) {
+                badge.className = "badge bg-success";
+                badge.innerText = "PARSED";
+            }
+        } else {
+            alert(`Map Inspection Error: ${data.error}`);
+        }
+    } catch (err) {
+        console.error("Map inspection error:", err);
+    }
+}
+
 async function stopAcquisition() {
-    if (!confirm("Terminate acquisition?")) return;
+    if (!confirm("Terminate current process?")) return;
     try {
         const res = await fetch('/api/stop_imaging', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
             if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = false;
+            if (document.getElementById("btnTabDdrescueStart")) document.getElementById("btnTabDdrescueStart").disabled = false;
             if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = true;
+            if (document.getElementById("btnTabDdrescueStop")) document.getElementById("btnTabDdrescueStop").disabled = true;
         }
     } catch (err) {}
 }
@@ -920,20 +1082,39 @@ async function fetchProgress() {
         const data = await res.json();
 
         const currentSpeed = data.speed_mbps || 0;
+        
+        // Update Standard Tab Status
         if (document.getElementById("speedVal")) document.getElementById("speedVal").innerText = `${currentSpeed.toFixed(1)} MB/s`;
-
         if (document.getElementById("bytesVal") && data.total_bytes > 0) {
             document.getElementById("bytesVal").innerText = `${(data.transferred_bytes / (1024**3)).toFixed(2)} / ${(data.total_bytes / (1024**3)).toFixed(2)} GB`;
         }
+        
+        // Update Dedicated ddrescue Tab Status Simultaneously
+        if (document.getElementById("ddrescueSpeedVal")) document.getElementById("ddrescueSpeedVal").innerText = `${currentSpeed.toFixed(1)} MB/s`;
+        if (document.getElementById("ddrescueBytesVal") && data.total_bytes > 0) {
+            document.getElementById("ddrescueBytesVal").innerText = `${(data.transferred_bytes / (1024**3)).toFixed(2)} / ${(data.total_bytes / (1024**3)).toFixed(2)} GB`;
+        }
 
-        if (document.getElementById("progressBar")) document.getElementById("progressBar").style.width = `${data.progress_percent}%`;
-        if (document.getElementById("progressPct")) document.getElementById("progressPct").innerText = `${data.progress_percent.toFixed(1)}%`;
-        if (document.getElementById("jobStatus")) document.getElementById("jobStatus").innerText = `Status: ${data.status}`;
+        if (data.active) {
+            if (document.getElementById("progressBar")) document.getElementById("progressBar").style.width = `${data.progress_percent}%`;
+            if (document.getElementById("progressPct")) document.getElementById("progressPct").innerText = `${data.progress_percent.toFixed(1)}%`;
+            if (document.getElementById("jobStatus")) document.getElementById("jobStatus").innerText = `Status: ${data.status}`;
+            
+            const logOutput = document.getElementById("logOutput");
+            if (logOutput && data.log) {
+                logOutput.innerText = data.log;
+                logOutput.scrollTop = logOutput.scrollHeight;
+            }
 
-        const logOutput = document.getElementById("logOutput");
-        if (logOutput && data.log) {
-            logOutput.innerText = data.log;
-            logOutput.scrollTop = logOutput.scrollHeight;
+            if (document.getElementById("ddrescueProgressBar")) document.getElementById("ddrescueProgressBar").style.width = `${data.progress_percent}%`;
+            if (document.getElementById("ddrescueProgressPct")) document.getElementById("ddrescueProgressPct").innerText = `${data.progress_percent.toFixed(1)}%`;
+            if (document.getElementById("ddrescueJobStatus")) document.getElementById("ddrescueJobStatus").innerText = `Status: ${data.status}`;
+
+            const ddrescueLogOutput = document.getElementById("ddrescueLogOutput");
+            if (ddrescueLogOutput && data.log) {
+                ddrescueLogOutput.innerText = data.log;
+                ddrescueLogOutput.scrollTop = ddrescueLogOutput.scrollHeight;
+            }
         }
 
         if (throughputChart) {
@@ -943,7 +1124,9 @@ async function fetchProgress() {
         }
 
         if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = data.active;
+        if (document.getElementById("btnTabDdrescueStart")) document.getElementById("btnTabDdrescueStart").disabled = data.active;
         if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = !data.active;
+        if (document.getElementById("btnTabDdrescueStop")) document.getElementById("btnTabDdrescueStop").disabled = !data.active;
 
     } catch (err) {}
 }
