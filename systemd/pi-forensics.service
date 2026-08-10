@@ -1,21 +1,17 @@
 [Unit]
-Description=ARM Forensic Acquisition Engine & Web Service
-After=network.target
+Description=ARM Forensic Acquisition Station (Production WSGI)
+After=network.target network-online.target
 
 [Service]
 Type=simple
-User=root
+User=nospi
+Group=nospi
 WorkingDirectory=/opt/pi-forensics
-
-# Basic Auth Credentials for Remote Web Access
 Environment="FORENSIC_USER=admin"
 Environment="FORENSIC_PASS=forensics"
-
-#ExecStart=/usr/bin/python3 /opt/pi-forensics/app.py
-#Changed to using venv
-ExecStart=/opt/pi-forensics/venv/bin/python /opt/pi-forensics/app.py
+ExecStart=/opt/pi-forensics/venv/bin/python3 -m gunicorn --workers 2 --timeout 300 --bind 127.0.0.1:5000 app:app
 Restart=always
-RestartSec=3s
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target

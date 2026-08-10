@@ -14,11 +14,11 @@ from flask import Flask, render_template, jsonify, request, Response, send_file
 
 app = Flask(__name__)
 
-# Authentication Config (Defaults to admin/forensics if not set via environment)
+# Authentication Config
 ADMIN_USER = os.environ.get('FORENSIC_USER', 'admin')
 ADMIN_PASS = os.environ.get('FORENSIC_PASS', 'forensics')
 
-HISTORY_FILE = "/opt/pi-forensics/mount_history.json"
+HISTORY_FILE = "/home/nospi/pi-forensics/mount_history.json"
 
 # Global State for Live Acquisition Job
 current_job = {
@@ -86,19 +86,17 @@ def requires_auth(f):
         return f(*args, **kwargs)
     return decorated
 
-# --- Hash Output Parsers ---
+# --- Hash & Recovery Output Parsers ---
 def parse_dc3dd_hashes(log_path):
     hashes = {}
     if os.path.exists(log_path):
         try:
             with open(log_path, 'r') as f:
                 content = f.read()
-                # Matches standard dc3dd log output: 099abf2480eb43335a0157a9348470e4 (md5)
                 matches = re.findall(r'([a-fA-F0-9]{32,64})\s*\(\s*(\b(?:md5|sha1|sha256)\b)\s*\)', content, re.IGNORECASE)
                 for val, algo in matches:
                     hashes[algo.lower()] = val
                     
-                # Fallback check for "md5: [hash]" or "md5 hash: [hash]" formats
                 if not hashes:
                     fallback_matches = re.findall(r'(\b(?:md5|sha1|sha256)\b)[^\n:]*:\s*([a-fA-F0-9]{32,64})', content, re.IGNORECASE)
                     for algo, val in fallback_matches:
@@ -139,7 +137,67 @@ def parse_ewf_line(line):
     spd = float(m_spd.group(1)) if m_spd else None
     return pct, spd
 
-# --- Direct Real-time Execution & Stream Engine ---
+def parse_ddrescue_line(line):
+    rescued_bytes = None
+    pct = None
+    spd = None
+    
+    m_rescued = re.search(r'rescued:\s*([\d\.]+)\s*([KMGT]?B)', line, re.IGNORECASE)
+    m_spd = re.search(r'current_rate:\s*([\d\.]+)\s*([KMGT]?B/s)', line, re.IGNORECASE)
+    m_pct = re.search(r'pct_rescued:\s*([\d\.]+)\%', line, re.IGNORECASE)
+
+    def to_bytes(val, unit):
+        u = unit.upper()
+        v = float(val)
+        if 'K' in u: return int(v * 1024)
+        if 'M' in u: return int(v * 1024**2)
+        if 'G' in u: return int(v * 1024**3)
+        if 'T' in u: return int(v * 1024**4)
+        return int(v)
+
+    if m_rescued:
+        rescued_bytes = to_bytes(m_rescued.group(1), m_rescued.group(2))
+    if m_pct:
+        pct = float(m_pct.group(1))
+    if m_spd:
+        spd = to_bytes(m_spd.group(1), m_spd.group(2)) / (1024**2)
+
+    return rescued_bytes, pct, spd
+
+def parse_ddrescue_mapfile(map_path):
+    summary = {
+        "rescued_bytes": 0,
+        "non_tried_bytes": 0,
+        "bad_sector_bytes": 0,
+        "bad_blocks_count": 0
+    }
+    if os.path.exists(map_path):
+        try:
+            with open(map_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        try:
+                            size = int(parts[1], 16)
+                            status = parts[2]
+                            
+                            if status == '+':
+                                summary["rescued_bytes"] += size
+                            elif status in ['?', '*', '/']:
+                                summary["non_tried_bytes"] += size
+                            elif status == '-':
+                                summary["bad_sector_bytes"] += size
+                                summary["bad_blocks_count"] += 1
+                        except ValueError:
+                            pass
+        except Exception as e:
+            print(f"Error reading mapfile: {e}")
+    return summary
+
+# --- Direct Real-time Asynchronous Execution Engine ---
 def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data):
     global current_job, active_proc
     log_history = []
@@ -149,11 +207,11 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
             log_history.append(msg)
             current_job["log"] = "\n".join(log_history[-100:])
 
-    append_log(f"[*] Starting acquisition using [{fmt.upper()}]...")
+    append_log(f"[*] Starting execution using [{fmt.upper()}] engine...")
     append_log(f"[*] Command: {' '.join(cmd)}")
 
     start_time = time.time()
-    current_job["status"] = "Acquiring Evidence..."
+    current_job["status"] = "Processing Media..."
 
     try:
         active_proc = subprocess.Popen(
@@ -188,14 +246,17 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
                         line_bytes = byte_buffer[:cut_idx]
                         byte_buffer = byte_buffer[cut_idx + 1:]
                         
-                        line_str = line_bytes.decode('utf-8', errors='ignore').strip()
-                        if not line_str:
+                        line_str = line_bytes.decode('utf-8', errors='ignore')
+                        
+                        # Strip ANSI escape sequences and carriage return codes
+                        clean_line = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line_str).replace('\r', '').strip()
+                        if not clean_line:
                             continue
                         
-                        append_log(line_str)
+                        append_log(clean_line)
 
                         if fmt in ['raw', 'dd']:
-                            bytes_copied, speed = parse_dc3dd_line(line_str)
+                            bytes_copied, speed = parse_dc3dd_line(clean_line)
                             if bytes_copied is not None:
                                 current_job["transferred_bytes"] = bytes_copied
                                 if total_bytes > 0:
@@ -204,14 +265,25 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
                                 current_job["speed_mbps"] = speed
 
                         elif fmt == 'e01':
-                            pct, speed = parse_ewf_line(line_str)
-                            if "verify" in line_str.lower() or "verifying" in line_str.lower():
+                            pct, speed = parse_ewf_line(clean_line)
+                            if "verify" in clean_line.lower() or "verifying" in clean_line.lower():
                                 current_job["status"] = "Verifying Image Integrity..."
                             
                             if pct is not None:
                                 current_job["progress_percent"] = pct
                                 if total_bytes > 0:
                                     current_job["transferred_bytes"] = int((pct / 100.0) * total_bytes)
+                            if speed is not None:
+                                current_job["speed_mbps"] = speed
+
+                        elif fmt == 'ddrescue':
+                            rescued_bytes, pct, speed = parse_ddrescue_line(clean_line)
+                            if rescued_bytes is not None:
+                                current_job["transferred_bytes"] = rescued_bytes
+                            if pct is not None:
+                                current_job["progress_percent"] = pct
+                            elif rescued_bytes is not None and total_bytes > 0:
+                                current_job["progress_percent"] = round((rescued_bytes / total_bytes) * 100, 1)
                             if speed is not None:
                                 current_job["speed_mbps"] = speed
 
@@ -222,28 +294,22 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
 
         active_proc.wait()
 
-        # Always parse hashes regardless of exit code
         time.sleep(1.0)
+        computed_hashes = {}
         if fmt == 'e01':
             computed_hashes = parse_ewf_hashes(current_job["log"])
-        else:
+        elif fmt in ['raw', 'dd']:
             dc3dd_log = out_file.replace('.dd', '_dc3dd.log')
             computed_hashes = parse_dc3dd_hashes(dc3dd_log)
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["computed_verification_hashes"] = computed_hashes
 
-        # Handle Exit Codes: 0 = Clean Success, 2 = Completed with non-fatal EOF/log warnings
         if active_proc.returncode in [0, 2]:
             current_job["status"] = "Completed Successfully"
             current_job["progress_percent"] = 100.0
             current_job["speed_mbps"] = 0.0
-            
-            if active_proc.returncode == 2:
-                append_log("[!] Note: dc3dd completed with exit code 2 (non-fatal EOF/log warning). Evidence image intact.")
-            else:
-                append_log("[+] Acquisition completed successfully.")
-
+            append_log("[+] Recovery/acquisition completed successfully.")
             report_data["acquisition_status"] = "COMPLETED"
 
         elif current_job["status"] != "Stopped":
@@ -301,13 +367,18 @@ def system_info():
         "bytes_recv": net_counters.bytes_recv
     }
 
+    target_drive = request.args.get('drive', '/dev/sda')
+    if not target_drive or not target_drive.startswith('/dev/'):
+        target_drive = '/dev/sda'
+
     wb_active = True
-    try:
-        res = subprocess.run(['sudo', 'blockdev', '--getro', '/dev/sda'], capture_output=True, text=True)
-        if res.returncode == 0 and res.stdout.strip() == '0':
-            wb_active = False
-    except Exception:
-        pass
+    if os.path.exists(target_drive):
+        try:
+            res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getro', target_drive], capture_output=True, text=True)
+            if res.returncode == 0 and res.stdout.strip() == '0':
+                wb_active = False
+        except Exception:
+            pass
 
     return jsonify({
         "cpu_percent": cpu,
@@ -325,7 +396,8 @@ def system_info():
             "total_gb": round(root_disk.total / (1024**3), 2),
             "percent_used": root_disk.percent
         },
-        "write_blocker_active": wb_active
+        "write_blocker_active": wb_active,
+        "monitored_device": target_drive
     })
 
 @app.route('/api/drives', methods=['GET'])
@@ -334,7 +406,7 @@ def list_drives():
     drives = []
     try:
         res = subprocess.run(
-            ['lsblk', '-J', '-b', '-o', 'NAME,SIZE,MODEL,TRAN,TYPE,SERIAL'],
+            ['lsblk', '-J', '-b', '-o', 'NAME,SIZE,MODEL,TRAN,TYPE,SERIAL,RO'],
             capture_output=True, text=True
         )
         if res.returncode == 0:
@@ -343,15 +415,23 @@ def list_drives():
                 if dev.get('type') == 'disk' and not dev['name'].startswith('loop'):
                     bytes_size = int(dev.get('size', 0))
                     gb_size = round(bytes_size / (1024**3), 1)
+                    dev_path = f"/dev/{dev['name']}"
                     
+                    # Force read-only lock upon discovery
+                    try:
+                        subprocess.run(['sudo', '/usr/sbin/blockdev', '--setro', dev_path], capture_output=True)
+                    except Exception:
+                        pass
+
                     drives.append({
                         "name": dev['name'],
-                        "device": f"/dev/{dev['name']}",
+                        "device": dev_path,
                         "model": dev.get('model') or 'Generic Disk',
                         "size": f"{gb_size} GB",
                         "bytes": bytes_size,
-                        "transport": dev.get('tran') or 'sata',
-                        "serial": dev.get('serial') or 'N/A'
+                        "transport": dev.get('tran') or 'usb',
+                        "serial": dev.get('serial') or 'N/A',
+                        "read_only": True
                     })
     except Exception as e:
         print(f"Error executing lsblk: {e}")
@@ -370,7 +450,7 @@ def smart_check():
     try:
         total_bytes = 0
         try:
-            res_sz = subprocess.run(['sudo', 'blockdev', '--getsize64', drive], capture_output=True, text=True)
+            res_sz = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', drive], capture_output=True, text=True)
             if res_sz.returncode == 0:
                 total_bytes = int(res_sz.stdout.strip())
         except Exception:
@@ -561,19 +641,19 @@ def toggle_write_block():
     enable = req.get('enable', True)
     drive = req.get('drive', '/dev/sda')
     
-    if not drive.startswith('/dev/'):
+    if not drive or not drive.startswith('/dev/'):
         drive = '/dev/sda'
 
     action_flag = '--setro' if enable else '--setrw'
     
     try:
         subprocess.run(f"sudo udevil unmount -b {drive}* 2>/dev/null || sudo umount {drive}* 2>/dev/null", shell=True)
-        res = subprocess.run(['sudo', 'blockdev', action_flag, drive], capture_output=True, text=True)
+        res = subprocess.run(['sudo', '/usr/sbin/blockdev', action_flag, drive], capture_output=True, text=True)
         
         if res.returncode != 0:
             return jsonify({"success": False, "error": res.stderr.strip() or "blockdev execution failed"}), 500
 
-        chk = subprocess.run(['sudo', 'blockdev', '--getro', drive], capture_output=True, text=True)
+        chk = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getro', drive], capture_output=True, text=True)
         is_ro = (chk.returncode == 0 and chk.stdout.strip() == '1')
 
         return jsonify({"success": True, "write_blocker_active": is_ro, "device": drive})
@@ -610,7 +690,7 @@ def start_imaging():
 
     total_bytes = 0
     try:
-        res = subprocess.run(['blockdev', '--getsize64', source], capture_output=True, text=True)
+        res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
         if res.returncode == 0:
             total_bytes = int(res.stdout.strip())
     except Exception:
@@ -690,7 +770,9 @@ def start_imaging():
             "dc3dd",
             f"if={source}",
             f"of={out_file}",
-            f"log={dc3dd_log_file}"
+            f"log={dc3dd_log_file}",
+            "iflag=direct",
+            "oflag=direct"
         ]
         for h in hashes:
             cmd.append(f"hash={h}")
@@ -740,6 +822,120 @@ def start_imaging():
 
     return jsonify({"success": True, "message": "Acquisition started."})
 
+@app.route('/api/ddrescue/inspect_map', methods=['POST'])
+@requires_auth
+def inspect_ddrescue_map():
+    req = request.get_json() or {}
+    map_path = req.get('map_path', '')
+    if not map_path or not os.path.exists(map_path):
+        return jsonify({"success": False, "error": "Mapfile not found"}), 404
+
+    summary = parse_ddrescue_mapfile(map_path)
+    return jsonify({
+        "success": True,
+        "map_path": map_path,
+        "rescued_gb": round(summary["rescued_bytes"] / (1024**3), 3),
+        "non_tried_mb": round(summary["non_tried_bytes"] / (1024**2), 2),
+        "bad_sector_kb": round(summary["bad_sector_bytes"] / 1024, 2),
+        "bad_blocks_count": summary["bad_blocks_count"]
+    })
+
+@app.route('/api/start_ddrescue', methods=['POST'])
+@requires_auth
+def start_ddrescue():
+    global current_job
+    if current_job["active"]:
+        return jsonify({"error": "An acquisition job is already running."}), 400
+
+    req = request.get_json() or {}
+    source = req.get('source')
+    dest_path = req.get('destination', '/mnt').strip()
+    strategy = req.get('strategy', 'stage1_fast')
+    retry_passes = req.get('retry_passes', '3')
+    direct_mode = req.get('direct_mode', True)
+    input_pos = req.get('input_position', '')
+    max_size = req.get('max_size', '')
+    metadata = req.get('metadata', {})
+
+    if not source or not os.path.exists(source):
+        return jsonify({"error": f"Source device {source} not found."}), 400
+
+    if not os.path.exists(dest_path):
+        try:
+            os.makedirs(dest_path, exist_ok=True)
+        except Exception as e:
+            return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+
+    case_num = metadata.get('case_number', 'RECOVERY')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_ddrescue"
+    
+    out_file = os.path.join(dest_path, f"{base_name}.dd")
+    map_file = os.path.join(dest_path, f"{base_name}.map")
+
+    cmd = ["sudo", "/usr/bin/ddrescue", "--force"]
+
+    if strategy == 'stage1_fast':
+        cmd.extend(["--no-scrape", "--no-trim"])
+    elif strategy == 'stage2_trim':
+        cmd.append("--no-scrape")
+    elif strategy == 'stage3_intensive':
+        cmd.append(f"--retry-passes={retry_passes}")
+    elif strategy == 'reverse':
+        cmd.extend(["--reverse", f"--retry-passes={retry_passes}"])
+
+    if direct_mode:
+        cmd.append("-d")
+
+    if input_pos:
+        cmd.append(f"--input-position={input_pos}")
+    if max_size:
+        cmd.append(f"--max-size={max_size}")
+
+    cmd.extend([source, out_file, map_file])
+
+    total_bytes = 0
+    try:
+        res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
+        if res.returncode == 0:
+            total_bytes = int(res.stdout.strip())
+    except Exception:
+        pass
+
+    current_job["active"] = True
+    current_job["format"] = "ddrescue"
+    current_job["progress_percent"] = 0.0
+    current_job["speed_mbps"] = 0.0
+    current_job["transferred_bytes"] = 0
+    current_job["total_bytes"] = total_bytes
+    current_job["status"] = f"ddrescue [{strategy.upper()}]..."
+    current_job["log"] = f"[*] Initializing ddrescue ({strategy}) pass for {source} -> {out_file}\n[*] Mapfile: {map_file}..."
+
+    report_file = os.path.join(dest_path, f"{base_name}_report.json")
+    report_data = {
+        "case_metadata": metadata,
+        "acquisition_parameters": {
+            "output_destination": dest_path,
+            "output_format": "ddrescue_raw",
+            "mapfile": map_file,
+            "strategy": strategy,
+            "retry_passes": retry_passes,
+            "direct_mode": direct_mode,
+            "execution_command": " ".join(cmd)
+        },
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+    thread = threading.Thread(
+        target=execution_worker,
+        args=(cmd, "ddrescue", total_bytes, out_file, report_file, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    return jsonify({"success": True, "message": f"ddrescue ({strategy}) started."})
+
 @app.route('/api/stop_imaging', methods=['POST'])
 @requires_auth
 def stop_imaging():
@@ -751,7 +947,7 @@ def stop_imaging():
         except Exception as e:
             print(f"Error killing process group: {e}")
 
-        for tool in ["dc3dd", "ewfacquire"]:
+        for tool in ["dc3dd", "ewfacquire", "ddrescue"]:
             try:
                 subprocess.run(["pkill", "-9", tool], capture_output=True)
             except Exception:
@@ -970,7 +1166,6 @@ def export_pdf():
             c.drawString(50, y, f"{k.upper()}: {v}")
             y -= 15
 
-        # Render Multi-Attachment Section
         attachments = data.get('attachments', {})
         file_list = attachments.get('files', [])
         if not file_list and attachments.get('image_path'):
@@ -1029,4 +1224,4 @@ def export_pdf():
         return jsonify({"error": f"PDF Export Failed: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='127.0.0.1', port=5000, debug=False)
