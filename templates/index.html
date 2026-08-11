@@ -182,8 +182,18 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
+                <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()">
+                    <i class="bi bi-phone me-1"></i>Mobile Forensics
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
                 <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports-app" type="button" role="tab">
                     <i class="bi bi-file-earmark-pdf me-1"></i>Reports & Verification
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-app" type="button" role="tab" onclick="fetchNetworkInterfaces()">
+                    <i class="bi bi-gear-wide-connected me-1"></i>Advanced Settings
                 </button>
             </li>
         </ul>
@@ -246,8 +256,11 @@
                                         <div class="col-md-4">
                                             <label class="telemetry-grid-label d-block">Format</label>
                                             <select id="imageFormatSelect" class="form-select form-select-sm" onchange="toggleFormatControls()">
-                                                <option value="dd" selected>Raw (.dd)</option>
+                                                <option value="dd" selected>Raw / dc3dd (.dd)</option>
+                                                <option value="dcfldd">Raw / dcfldd (.dd)</option>
+                                                <option value="plain_dd">Raw / GNU dd (.dd)</option>
                                                 <option value="e01">EWF (.E01)</option>
+                                                <option value="aff">AFF (.aff)</option>
                                             </select>
                                         </div>
                                         <div class="col-md-4">
@@ -266,6 +279,19 @@
                                                 <option value="4000M">4 GB (FAT32)</option>
                                                 <option value="8000M">8 GB</option>
                                             </select>
+                                        </div>
+                                    </div>
+
+                                    <div id="affRawOptionRow" class="mb-2" style="display:none;">
+                                        <div class="form-check form-check-inline mb-0">
+                                            <input class="form-check-input" type="checkbox" id="affKeepRaw" checked>
+                                            <label class="form-check-label small text-light" for="affKeepRaw">
+                                                Keep intermediate .raw image after AFF conversion
+                                            </label>
+                                        </div>
+                                        <div class="small text-subtle">
+                                            AFF is produced in two steps: a hashed raw acquisition (dc3dd), then conversion to .aff.
+                                            The acquisition hashes come from the raw step. Uncheck to delete the .raw once the .aff is verified written, saving disk space.
                                         </div>
                                     </div>
 
@@ -567,6 +593,150 @@
                 </div>
             </div>
 
+            <!-- APP 3: MOBILE FORENSICS -->
+            <div class="tab-pane fade" id="mobile-app" role="tabpanel">
+                <div class="grid-stack grid-stack-mobile">
+
+                    <!-- Card 1: Device Discovery -->
+                    <div class="grid-stack-item" gs-id="mob-card-devices" gs-x="0" gs-y="0" gs-w="12" gs-h="3">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-phone me-2"></i>Connected Mobile Devices</span>
+                                    <button class="btn btn-sm btn-outline-info fw-bold" onclick="refreshMobileDevices()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="small text-subtle mb-2">
+                                        Only devices already unlocked and trusted (iOS "Trust This Computer?") or USB-debugging-authorized (Android RSA prompt) will show as usable. This tool does not bypass lockscreens, pairing, or debugging authorization - approve the prompt on the device itself first.
+                                    </div>
+                                    <div class="row g-2">
+                                        <div class="col-md-6">
+                                            <label class="telemetry-grid-label d-block mb-1"><i class="bi bi-apple me-1"></i>iOS Devices</label>
+                                            <select class="form-select form-select-sm" id="mobileIosSelect" onchange="onMobileIosSelect()">
+                                                <option value="">No devices found - tap Refresh</option>
+                                            </select>
+                                            <div id="mobileIosStatus" class="small text-warning mt-1"></div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label class="telemetry-grid-label d-block mb-1"><i class="bi bi-android2 me-1"></i>Android Devices</label>
+                                            <select class="form-select form-select-sm" id="mobileAndroidSelect" onchange="onMobileAndroidSelect()">
+                                                <option value="">No devices found - tap Refresh</option>
+                                            </select>
+                                            <div id="mobileAndroidStatus" class="small text-warning mt-1"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 2: iOS Backup -->
+                    <div class="grid-stack-item" gs-id="mob-card-ios" gs-x="0" gs-y="3" gs-w="6" gs-h="6">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header py-2"><i class="bi bi-apple me-2"></i>iOS Full Backup (idevicebackup2)</div>
+                                <div class="card-body py-2">
+                                    <div class="row g-2 mb-2 small text-subtle">
+                                        <div class="col-6">Model: <span id="mobileIosModel" class="text-light fw-bold">--</span></div>
+                                        <div class="col-6">iOS: <span id="mobileIosVersion" class="text-light fw-bold">--</span></div>
+                                        <div class="col-12">Serial: <span id="mobileIosSerial" class="text-info font-monospace fw-bold">--</span></div>
+                                    </div>
+
+                                    <div class="form-check form-switch mb-2">
+                                        <input class="form-check-input" type="checkbox" id="mobileIosEncryptToggle" onchange="toggleIosEncryptField()">
+                                        <label class="form-check-label small text-light fw-bold" for="mobileIosEncryptToggle">Enable encrypted backup (captures Keychain/saved passwords)</label>
+                                    </div>
+                                    <div id="mobileIosEncryptRow" class="mb-2" style="display:none;">
+                                        <input type="password" id="mobileIosEncryptPassword" class="form-control form-control-sm" placeholder="Backup encryption password">
+                                        <div class="small text-subtle mt-1">
+                                            Sets a new backup password on the device if one isn't already configured. If backup encryption is already on with a different password, this will fail - disable it on-device first (Settings &gt; General &gt; Transfer or Reset iPhone) or enter that existing password here.
+                                        </div>
+                                    </div>
+
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-md-4"><input type="text" id="mobileIosCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
+                                        <div class="col-md-4"><input type="text" id="mobileIosEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
+                                        <div class="col-md-4"><input type="text" id="mobileIosExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
+                                    </div>
+                                    <div class="input-group input-group-sm mb-2">
+                                        <input type="text" id="mobileIosDest" class="form-control" value="/mnt">
+                                        <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'mobileIosDest')">
+                                            <i class="bi bi-folder2-open me-1"></i>Browse
+                                        </button>
+                                    </div>
+
+                                    <button id="btnMobileIosStart" class="btn btn-primary w-100 fw-bold py-2" onclick="startIosBackup()" disabled>
+                                        <i class="bi bi-play-fill me-1"></i>Start iOS Backup
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 3: Android Acquisition -->
+                    <div class="grid-stack-item" gs-id="mob-card-android" gs-x="6" gs-y="3" gs-w="6" gs-h="6">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header py-2"><i class="bi bi-android2 me-2"></i>Android Acquisition (adb)</div>
+                                <div class="card-body py-2">
+                                    <div class="row g-2 mb-2 small text-subtle">
+                                        <div class="col-6">Model: <span id="mobileAndroidModel" class="text-light fw-bold">--</span></div>
+                                        <div class="col-6">State: <span id="mobileAndroidState" class="text-light fw-bold">--</span></div>
+                                        <div class="col-12">Serial: <span id="mobileAndroidSerial" class="text-info font-monospace fw-bold">--</span></div>
+                                    </div>
+
+                                    <label class="telemetry-grid-label d-block mb-1">Acquisition Mode</label>
+                                    <select id="mobileAndroidMode" class="form-select form-select-sm mb-2">
+                                        <option value="pull" selected>Pull Accessible Storage (adb pull /sdcard - more reliable)</option>
+                                        <option value="backup">Full Backup (adb backup - app data, requires on-device confirmation, unreliable on Android 12+)</option>
+                                    </select>
+
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-md-4"><input type="text" id="mobileAndroidCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
+                                        <div class="col-md-4"><input type="text" id="mobileAndroidEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
+                                        <div class="col-md-4"><input type="text" id="mobileAndroidExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
+                                    </div>
+                                    <div class="input-group input-group-sm mb-2">
+                                        <input type="text" id="mobileAndroidDest" class="form-control" value="/mnt">
+                                        <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'mobileAndroidDest')">
+                                            <i class="bi bi-folder2-open me-1"></i>Browse
+                                        </button>
+                                    </div>
+
+                                    <button id="btnMobileAndroidStart" class="btn btn-primary w-100 fw-bold py-2" onclick="startAndroidAcquisition()" disabled>
+                                        <i class="bi bi-play-fill me-1"></i>Start Android Acquisition
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 4: Mobile Job Status -->
+                    <div class="grid-stack-item" gs-id="mob-card-status" gs-x="0" gs-y="9" gs-w="12" gs-h="4">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-speedometer2 me-2"></i>Mobile Acquisition Status</span>
+                                    <button id="btnMobileStop" class="btn btn-sm btn-danger fw-bold" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop</button>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <span id="mobileJobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
+                                        <span class="small text-subtle">Data transferred: <span id="mobileBytesVal" class="text-light fw-bold">0 MB</span></span>
+                                    </div>
+                                    <div class="small text-subtle mb-1">
+                                        Mobile acquisition tools don't report a reliable global percentage, so this shows live bytes-on-disk and the tool's own log instead of a progress bar.
+                                    </div>
+                                    <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
+                                    <pre id="mobileLogOutput" class="log-window" style="height: 140px;">[Mobile forensics module idle and ready.]</pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
             <!-- APP 3: REPORTS & VERIFICATION TAB -->
             <div class="tab-pane fade" id="reports-app" role="tabpanel">
                 <div class="card mb-3">
@@ -692,6 +862,139 @@
                         </div>
 
                     </div>
+                </div>
+            </div>
+
+            <!-- APP 5: ADVANCED SETTINGS -->
+            <div class="tab-pane fade" id="settings-app" role="tabpanel">
+                <div class="grid-stack grid-stack-settings">
+
+                    <!-- Section 1: Security & Credentials -->
+                    <div class="grid-stack-item" gs-id="set-card-auth" gs-x="0" gs-y="0" gs-w="6" gs-h="4">
+                        <div class="grid-stack-item-content">
+                            <div class="card border-info">
+                                <div class="card-header bg-dark text-info fw-bold py-2"><i class="bi bi-key-fill me-2"></i>Security & Account Password</div>
+                                <div class="card-body py-3">
+                                    <div class="mb-2">
+                                        <label class="telemetry-grid-label d-block mb-1">Current Password</label>
+                                        <input type="password" id="cfgCurrentPass" class="form-control form-control-sm" placeholder="Enter active password">
+                                    </div>
+                                    <div class="row g-2 mb-3">
+                                        <div class="col-6">
+                                            <label class="telemetry-grid-label d-block mb-1">New Password</label>
+                                            <input type="password" id="cfgNewPass" class="form-control form-control-sm" placeholder="New password (min 8 chars)">
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="telemetry-grid-label d-block mb-1">Confirm New Password</label>
+                                            <input type="password" id="cfgConfirmPass" class="form-control form-control-sm" placeholder="Confirm new password">
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="changeAdminPassword()">
+                                        <i class="bi bi-shield-lock-fill me-1"></i>Update Station Password
+                                    </button>
+                                    <div id="cfgPassStatus" class="small mt-2"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section 2: Hardware Eject & Buffer Purge -->
+                    <div class="grid-stack-item" gs-id="set-card-eject" gs-x="6" gs-y="0" gs-w="6" gs-h="4">
+                        <div class="grid-stack-item-content">
+                            <div class="card border-info">
+                                <div class="card-header bg-dark text-info fw-bold py-2"><i class="bi bi-usb-drive-fill me-2"></i>Safe Hardware Detach & Drive Eject</div>
+                                <div class="card-body py-3">
+                                    <label class="telemetry-grid-label d-block mb-1">Select Connected Target Drive to Detach:</label>
+                                    <div class="row g-2 align-items-center mb-3">
+                                        <div class="col-8">
+                                            <select id="ejectDriveSelect" class="form-select form-select-sm drive-select">
+                                                <option value="">-- Choose Connected Drive --</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-4">
+                                            <button class="btn btn-danger btn-sm w-100 fw-bold" onclick="ejectTargetDrive()"><i class="bi bi-eject-fill me-1"></i>Safe Detach</button>
+                                        </div>
+                                    </div>
+                                    <hr class="border-secondary my-2">
+                                    <h6 class="text-info fw-bold mb-2"><i class="bi bi-eraser-fill me-2"></i>Buffer Maintenance</h6>
+                                    <button class="btn btn-sm btn-outline-warning w-100 fw-bold" onclick="purgeConsoleLogs()"><i class="bi bi-trash3 me-1"></i>Purge Active Terminal Log Buffer</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section 3: Service Controls & Updates -->
+                    <div class="grid-stack-item" gs-id="set-card-updates" gs-x="0" gs-y="4" gs-w="6" gs-h="5">
+                        <div class="grid-stack-item-content">
+                            <div class="card border-info">
+                                <div class="card-header bg-dark text-info fw-bold py-2"><i class="bi bi-gear-fill me-2"></i>Appliance Service & Updates</div>
+                                <div class="card-body py-3">
+                                    <div class="row g-2 mb-3">
+                                        <div class="col-6"><button class="btn btn-outline-info w-100 fw-bold py-2" onclick="restartForensicService()"><i class="bi bi-arrow-repeat me-1"></i>Restart Service</button></div>
+                                        <div class="col-6"><button class="btn btn-outline-warning w-100 fw-bold py-2" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button></div>
+                                    </div>
+                                    <div class="row g-2 mb-3">
+                                        <div class="col-6"><button class="btn btn-success w-100 fw-bold py-2" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button></div>
+                                        <div class="col-6"><button class="btn btn-primary w-100 fw-bold py-2" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button></div>
+                                    </div>
+                                    <div class="small text-subtle mb-2">Git/OS updates pull code or packages from configured remotes - only run these on a station whose update sources you trust.</div>
+                                    <hr class="border-secondary my-2">
+                                    <h6 class="text-danger fw-bold mb-2"><i class="bi bi-power me-2"></i>Hardware Power Controls</h6>
+                                    <div class="d-flex gap-2">
+                                        <button class="btn btn-warning text-dark flex-fill fw-bold py-2" onclick="triggerSystemPower('reboot')"><i class="bi bi-arrow-clockwise me-1"></i>Reboot Appliance</button>
+                                        <button class="btn btn-danger flex-fill fw-bold py-2" onclick="triggerSystemPower('poweroff')"><i class="bi bi-power me-1"></i>Power Off Station</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section 4: Hardware Interface Diagnostics -->
+                    <div class="grid-stack-item" gs-id="set-card-interfaces" gs-x="6" gs-y="4" gs-w="6" gs-h="5">
+                        <div class="grid-stack-item-content">
+                            <div class="card border-info">
+                                <div class="card-header bg-dark text-info fw-bold py-2 d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-ethernet me-2"></i>Network Interfaces & Binding Telemetry</span>
+                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="fetchNetworkInterfaces()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div id="interfacesContainer" class="list-group list-group-flush border border-secondary rounded-2" style="background-color: #090b10; max-height: 180px; overflow-y: auto;">
+                                        <span class="text-subtle small p-2">Tap Refresh to query local network interfaces.</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section 5: Safe Fixed-Command Diagnostics (no free-text shell exec) -->
+                    <div class="grid-stack-item" gs-id="set-card-diag" gs-x="0" gs-y="9" gs-w="12" gs-h="5">
+                        <div class="grid-stack-item-content">
+                            <div class="card border-info">
+                                <div class="card-header bg-dark text-info fw-bold py-2 d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-terminal-fill me-2"></i>Read-Only System Diagnostics</span>
+                                    <div class="d-flex gap-1 flex-wrap">
+                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('dmesg')">dmesg</button>
+                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('lsusb')">lsusb</button>
+                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('df')">df -h</button>
+                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('ip_a')">ip a</button>
+                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('uptime')">uptime</button>
+                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('lsblk')">lsblk</button>
+                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('free')">free -h</button>
+                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('mounts')">mount</button>
+                                    </div>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="small text-subtle mb-2">
+                                        This runs a fixed, read-only diagnostic command via a strict allowlist - not a general shell.
+                                        There is intentionally no free-text command box here: a web-exposed "run anything" terminal is a full remote
+                                        code execution hole, and that trade-off isn't worth the convenience on a device that images evidence. SSH in for anything not listed above.
+                                    </div>
+                                    <pre id="diagOutput" class="log-window mb-0" style="height: 160px;">[Select a diagnostic above to run it.]</pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </div>
 

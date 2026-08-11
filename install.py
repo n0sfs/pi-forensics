@@ -1,242 +1,228 @@
 #!/usr/bin/env python3
-"""
-ARM Forensic Acquisition Station – production installer.
-
-Installs system packages, creates a dedicated service user, configures
-scoped sudoers, udev write-blocker rules, Python venv, gunicorn service,
-nginx reverse-proxy with TLS (self-signed by default), and optional kiosk
-autostart.
-
-Usage:
-  sudo python3 install.py
-"""
-
 import os
 import sys
 import pwd
-import secrets
+import getpass
 import subprocess
-from pathlib import Path
 
 if os.geteuid() != 0:
-    print("[!] This installer must be run as root:  sudo python3 install.py")
+    print("[!] Error: This installation script must be run with root privileges (sudo python3 install.py).")
     sys.exit(1)
 
-INSTALL_DIR = Path("/opt/pi-forensics")
-SSL_DIR = Path("/etc/ssl/pi-forensics")
-NGINX_SITE = Path("/etc/nginx/sites-available/pi-forensics")
-NGINX_ENABLED = Path("/etc/nginx/sites-enabled/pi-forensics")
+INSTALL_DIR = "/opt/pi-forensics"
 
-print("=" * 56)
-print("  ARM Forensic Acquisition Station – Installer")
-print("=" * 56)
-
-# ---------------------------------------------------------------------------
-# Service user
-# ---------------------------------------------------------------------------
-default_user = os.environ.get("SUDO_USER") or "pi"
-if default_user == "root":
+# Detect non-root sudo invoker as default candidate
+default_user = os.environ.get("SUDO_USER")
+if not default_user or default_user == "root":
     default_user = "pi"
 
-user_input = input(f"\n[?] Service username [{default_user}]: ").strip()
-SERVICE_USER = user_input or default_user
+print("====================================================")
+print("  ARM Forensic Acquisition Station Auto-Installer   ")
+print("====================================================")
 
+# Interactive Prompt for System Username
+print("\n[?] Service Account Setup")
+user_input = input(f"Enter system username for the service [default: '{default_user}']: ").strip()
+SERVICE_USER = user_input if user_input else default_user
+
+# Check if user exists; offer creation if missing
 try:
     user_info = pwd.getpwnam(SERVICE_USER)
 except KeyError:
-    create = input(f"[!] User '{SERVICE_USER}' does not exist. Create it? [Y/n]: ").strip().lower()
-    if create in ("", "y", "yes"):
-        subprocess.run(["useradd", "-m", "-s", "/bin/bash", SERVICE_USER], check=True)
-        print(f"[*] Set password for {SERVICE_USER}:")
-        subprocess.run(["passwd", SERVICE_USER], check=True)
-        for group in ("sudo", "video", "render", "input", "plugdev", "disk"):
-            subprocess.run(["usermod", "-aG", group, SERVICE_USER], capture_output=True)
-        user_info = pwd.getpwnam(SERVICE_USER)
-        print(f"[+] Created user {SERVICE_USER}")
+    print(f"\n[!] User '{SERVICE_USER}' does not exist on this system.")
+    create_choice = input(f"Would you like to create user '{SERVICE_USER}' now? [Y/n]: ").strip().lower()
+    
+    if create_choice in ['', 'y', 'yes']:
+        try:
+            print(f"[*] Creating system user '{SERVICE_USER}'...")
+            subprocess.run(["useradd", "-m", "-s", "/bin/bash", SERVICE_USER], check=True)
+            
+            # Set account password interactively
+            subprocess.run(["passwd", SERVICE_USER], check=True)
+            
+            # Add user to standard kiosk/hardware access groups.
+            # Deliberately NOT adding 'sudo' here - the scoped
+            # /etc/sudoers.d/pi-forensics file (below) already grants
+            # exactly the privileged commands the app needs. Blanket sudo
+            # group membership would defeat the point of that scoping.
+            for group in ["video", "render", "input", "plugdev", "disk"]:
+                subprocess.run(["usermod", "-aG", group, SERVICE_USER], capture_output=True)
+                
+            user_info = pwd.getpwnam(SERVICE_USER)
+            print(f"[+] User '{SERVICE_USER}' created successfully!")
+        except subprocess.CalledProcessError as e:
+            print(f"[!] Failed to create user '{SERVICE_USER}': {e}")
+            sys.exit(1)
     else:
-        print("[!] Aborted.")
+        print("[!] Installation aborted. Rerun with a valid system user.")
         sys.exit(1)
 
-USER_HOME = Path(user_info.pw_dir)
-print(f"[+] Service user: {SERVICE_USER} (home {USER_HOME})")
+USER_HOME = user_info.pw_dir
+print(f"[+] Service target user set to: '{SERVICE_USER}' (Home: {USER_HOME})")
 
-# ---------------------------------------------------------------------------
-# Credentials
-# ---------------------------------------------------------------------------
-print("\n[?] Web UI credentials (Basic Auth)")
-web_user = input("    Username [admin]: ").strip() or "admin"
-WEAK = {'', 'forensics', 'password', 'admin', 'changeme', '123456', 'pi'}
+# 0b. Web Dashboard Login Credentials
+# This is separate from SERVICE_USER above - SERVICE_USER is the Linux
+# account the process runs as; this is the HTTP Basic Auth login for the
+# dashboard itself. Both default to something ('admin'/'forensics') if you
+# just hit Enter, but leaving the password at its default is exactly the
+# kind of thing that gets a forensic station compromised on a shared
+# network - don't skip this if you can avoid it.
+print("\n[?] Web Dashboard Login")
+web_user_input = input("Enter dashboard username [default: 'admin']: ").strip()
+FORENSIC_USER = web_user_input if web_user_input else "admin"
+
+FORENSIC_PASS = "forensics"
 while True:
-    web_pass = input("    Password (leave blank to generate a strong random one): ").strip()
-    if not web_pass:
-        web_pass = secrets.token_urlsafe(18)
-        print(f"    Generated password: {web_pass}")
-        print("    *** SAVE THIS PASSWORD – it will not be shown again ***")
+    pw1 = getpass.getpass("Enter dashboard password (min 8 chars, hidden) "
+                           "[leave blank to keep the default 'forensics' - NOT recommended]: ")
+    if not pw1:
+        print("[!] Keeping default password 'forensics'. Change this immediately after "
+              "install via the Advanced Settings tab, or by re-running this installer.")
         break
-    if web_pass.lower() in WEAK or len(web_pass) < 10:
-        print("    [!] Password too weak (min 10 chars, not a common default). Try again.")
+    if len(pw1) < 8:
+        print("[!] Password must be at least 8 characters. Try again.")
         continue
+    pw2 = getpass.getpass("Confirm dashboard password: ")
+    if pw1 != pw2:
+        print("[!] Passwords did not match. Try again.")
+        continue
+    FORENSIC_PASS = pw1
+    print(f"[+] Dashboard login set to '{FORENSIC_USER}' with the password you entered.")
     break
 
-# ---------------------------------------------------------------------------
-# APT packages
-# ---------------------------------------------------------------------------
-print("\n[*] Installing system packages...")
+# 1. Install Required APT Packages (Including gddrescue & ReportLab dependencies)
+print("\n[*] Installing system dependencies via APT...")
 apt_packages = [
-    "python3-venv", "python3-pip", "python3-dev", "python3-psutil",
-    "dc3dd", "ewf-tools", "gddrescue", "smartmontools",
-    "util-linux", "udevil", "cifs-utils", "nfs-common", "smbclient",
-    "nginx", "openssl",
-    "chromium-browser", "curl", "git",
+    "python3-venv", "python3-pip", "python3-psutil", "python3-dev",
+    "dc3dd", "dcfldd", "ewf-tools", "gddrescue", "afflib-tools", "smartmontools",
+    "util-linux", "udevil", "cifs-utils", "nfs-common",
+    "smbclient", "chromium-browser", "curl", "git",
     "libopenjp2-7", "libtiff6",
+    "libimobiledevice-utils", "usbmuxd",  # iOS device backup (idevice_id, ideviceinfo, idevicebackup2)
+    "adb", "android-sdk-platform-tools-common",  # Android device backup/pull (udev rules let plugdev group access USB without root)
+    "nginx", "openssl",  # optional TLS reverse proxy (examiner is prompted below)
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
 
+# Disable background udisks2 auto-mounter to prevent desktop race conditions
 subprocess.run(["systemctl", "stop", "udisks2.service"], capture_output=True)
 subprocess.run(["systemctl", "disable", "udisks2.service"], capture_output=True)
 
-# ---------------------------------------------------------------------------
-# Application tree
-# ---------------------------------------------------------------------------
-print(f"\n[*] Preparing {INSTALL_DIR}...")
-INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+# 2. Configure Virtual Environment & Python Dependencies
+print("\n[*] Setting up Python virtual environment...")
+venv_dir = os.path.join(INSTALL_DIR, "venv")
+if not os.path.exists(venv_dir):
+    subprocess.run(["python3", "-m", "venv", venv_dir], check=True)
 
-src_root = Path(__file__).resolve().parent
-already_in_place = src_root.resolve() == INSTALL_DIR.resolve()
-if already_in_place:
-    print(f"    Source is already {INSTALL_DIR} – skipping file copy.")
+pip_bin = os.path.join(venv_dir, "bin", "pip")
+subprocess.run([pip_bin, "install", "--upgrade", "pip"], check=True)
+
+req_file = os.path.join(INSTALL_DIR, "requirements.txt")
+if os.path.exists(req_file):
+    subprocess.run([pip_bin, "install", "-r", req_file], check=True)
 else:
-    for item in ("app.py", "requirements.txt", "templates", "static",
-                 "kiosk.sh", "uninstall.py", "nginx"):
-        src = src_root / item
-        dst = INSTALL_DIR / item
-        if not src.exists():
-            continue
-        if src.resolve() == dst.resolve():
-            continue
-        if src.is_dir():
-            import shutil
-            if dst.exists():
-                shutil.rmtree(dst)
-            subprocess.run(["cp", "-a", str(src), str(dst)], check=True)
-        else:
-            subprocess.run(["cp", "-a", str(src), str(dst)], check=True)
-        print(f"    copied {item}")
+    subprocess.run([pip_bin, "install", "flask", "gunicorn", "psutil", "reportlab"], check=True)
 
-(INSTALL_DIR / "templates").mkdir(exist_ok=True)
-(INSTALL_DIR / "static" / "js").mkdir(parents=True, exist_ok=True)
+# 3. Directory Ownership Setup
+print(f"\n[*] Setting directory permissions on {INSTALL_DIR} for '{SERVICE_USER}'...")
+subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", INSTALL_DIR], check=True)
 
-# ---------------------------------------------------------------------------
-# Python venv
-# ---------------------------------------------------------------------------
-print("\n[*] Setting up virtual environment...")
-venv_dir = INSTALL_DIR / "venv"
-if not venv_dir.exists():
-    subprocess.run(["python3", "-m", "venv", str(venv_dir)], check=True)
+# 4. Scoped Sudoers Configuration
+print("\n[*] Installing scoped sudoers configuration...")
+sudoers_path = "/etc/sudoers.d/pi-forensics"
+# NOPASSWD is limited to exactly the binaries/invocations app.py uses via
+# sudo. Where a command could otherwise do more than intended (systemctl,
+# apt-get), the sudoers line pins the exact arguments rather than granting
+# the whole binary - e.g. "systemctl restart pi-forensics.service" is
+# allowed, but "systemctl restart anything-else" is not.
+sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
+/usr/sbin/blockdev, /sbin/blockdev, \\
+/usr/sbin/smartctl, \\
+/bin/mount, /bin/umount, /bin/mkdir, \\
+/usr/bin/udevil, /usr/bin/pkill, \\
+/usr/bin/smbclient, /usr/sbin/showmount, \\
+/usr/bin/dcfldd, /usr/bin/dc3dd, /usr/bin/ddrescue, \\
+/sbin/reboot, /sbin/poweroff, \\
+/bin/systemctl restart pi-forensics.service, \\
+/usr/bin/apt-get update, \\
+/usr/bin/apt-get upgrade -y
+"""
 
-pip = str(venv_dir / "bin" / "pip")
-subprocess.run([pip, "install", "--upgrade", "pip"], check=True)
+with open(sudoers_path, "w") as f:
+    f.write(sudoers_content)
+os.chmod(sudoers_path, 0o440)
 
-req = INSTALL_DIR / "requirements.txt"
-if req.exists():
-    subprocess.run([pip, "install", "-r", str(req)], check=True)
-else:
-    subprocess.run([pip, "install", "flask", "gunicorn", "psutil", "reportlab"], check=True)
-
-# Ephemeral credential directory for SMB mounts (mode 0700)
-cred_dir = INSTALL_DIR / "run"
-cred_dir.mkdir(parents=True, exist_ok=True)
-os.chmod(cred_dir, 0o700)
-
-kiosk_script = INSTALL_DIR / "kiosk.sh"
-if kiosk_script.exists():
-    kiosk_script.chmod(0o755)
-
-print(f"\n[*] Setting ownership of {INSTALL_DIR} to {SERVICE_USER}...")
-subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", str(INSTALL_DIR)], check=True)
-
-# ---------------------------------------------------------------------------
-# Sudoers
-# ---------------------------------------------------------------------------
-print("\n[*] Installing scoped sudoers...")
-sudoers = Path("/etc/sudoers.d/pi-forensics")
-sudoers.write_text(
-    f"{SERVICE_USER} ALL=(ALL) NOPASSWD: "
-    "/usr/sbin/blockdev, /sbin/blockdev, "
-    "/usr/sbin/smartctl, "
-    "/bin/mount, /bin/umount, "
-    "/usr/bin/udevil, "
-    "/usr/bin/pkill, "
-    "/usr/bin/smbclient, /usr/sbin/showmount, "
-    "/usr/bin/dc3dd, /usr/bin/ddrescue, "
-    "/sbin/poweroff, /sbin/reboot\n"
+# 5. Global Udev USB Read-Only Rule
+print("\n[*] Configuring global USB read-only udev rules...")
+udev_path = "/etc/udev/rules.d/99-usb-read-only.rules"
+udev_content = (
+    'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z]", RUN+="/usr/sbin/blockdev --setro /dev/%k"\n'
+    'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", RUN+="/usr/sbin/blockdev --setro /dev/%k"\n'
 )
-sudoers.chmod(0o440)
-r = subprocess.run(["visudo", "-c", "-f", str(sudoers)], capture_output=True, text=True)
-if r.returncode != 0:
-    print(f"[!] sudoers validation failed: {r.stderr}")
-    sys.exit(1)
-
-# ---------------------------------------------------------------------------
-# USB read-only udev rule
-# ---------------------------------------------------------------------------
-print("\n[*] Installing USB read-only udev rules...")
-udev = Path("/etc/udev/rules.d/99-usb-read-only.rules")
-udev.write_text(
-    'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z]", '
-    'RUN+="/usr/sbin/blockdev --setro /dev/%k"\n'
-    'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", '
-    'RUN+="/usr/sbin/blockdev --setro /dev/%k"\n'
-)
+with open(udev_path, "w") as f:
+    f.write(udev_content)
 subprocess.run(["udevadm", "control", "--reload-rules"], check=True)
 subprocess.run(["udevadm", "trigger"], check=True)
 
-# ---------------------------------------------------------------------------
-# TLS certificate
-# ---------------------------------------------------------------------------
-print("\n[*] Generating self-signed TLS certificate...")
-SSL_DIR.mkdir(parents=True, exist_ok=True)
-key = SSL_DIR / "pi-forensics.key"
-crt = SSL_DIR / "pi-forensics.crt"
-if not key.exists() or not crt.exists():
-    subprocess.run([
-        "openssl", "req", "-x509", "-nodes", "-days", "3650",
-        "-newkey", "rsa:2048",
-        "-keyout", str(key),
-        "-out", str(crt),
-        "-subj", "/CN=pi-forensics.local/O=ARM Forensic Station"
-    ], check=True)
-    key.chmod(0o600)
-print(f"[+] Certificate: {crt}")
+# 5b. Optional: nginx + self-signed TLS reverse proxy
+# Without this, gunicorn is reachable directly over plain HTTP - Basic Auth
+# credentials go over the wire unencrypted. With it, nginx terminates TLS
+# and gunicorn only listens on loopback, where nginx proxies to it.
+print("\n[?] TLS Reverse Proxy Setup")
+print("    Without TLS, login credentials are sent over plain HTTP on your network.")
+tls_choice = input("    Set up nginx + a self-signed TLS certificate now? [Y/n]: ").strip().lower()
+USE_TLS = tls_choice in ('', 'y', 'yes')
 
-# ---------------------------------------------------------------------------
-# nginx
-# ---------------------------------------------------------------------------
-print("\n[*] Configuring nginx...")
-# Auth stays in the Python app (loopback kiosk bypass). Nginx only terminates TLS.
-nginx_conf = f"""# ARM Forensic Acquisition Station – TLS reverse proxy
+SSL_DIR = "/etc/ssl/pi-forensics"
+NGINX_SITE = "/etc/nginx/sites-available/pi-forensics"
+NGINX_ENABLED = "/etc/nginx/sites-enabled/pi-forensics"
+NGINX_DEFAULT_ENABLED = "/etc/nginx/sites-enabled/default"
+
+if USE_TLS:
+    print("\n[*] Generating self-signed TLS certificate...")
+    os.makedirs(SSL_DIR, exist_ok=True)
+    cert_path = os.path.join(SSL_DIR, "pi-forensics.crt")
+    key_path = os.path.join(SSL_DIR, "pi-forensics.key")
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
+        "-keyout", key_path, "-out", cert_path,
+        "-days", "825", "-subj", "/CN=pi-forensics.local"
+    ], check=True)
+    os.chmod(key_path, 0o600)
+    print(f"[+] Certificate written to {cert_path} / {key_path}")
+    print("    Self-signed - browsers will warn on first visit; accept/pin it per client device,")
+    print("    or replace these files with a properly trusted certificate later.")
+
+    print("\n[*] Installing nginx site configuration...")
+    # Matches pi-forensics.conf shipped in this repo - kept inline here so
+    # install.py doesn't depend on a companion file existing at a specific
+    # relative path when cloned.
+    nginx_conf = """# ARM Forensic Acquisition Station - TLS reverse proxy
 # Authentication is enforced by app.py (not nginx) so the local kiosk and
 # health checks on 127.0.0.1 work without an extra Basic-Auth prompt.
 
-server {{
+# HTTP -> HTTPS
+server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
     return 301 https://$host$request_uri;
-}}
+}
 
-server {{
+# HTTPS - SSL termination & reverse proxy to gunicorn
+server {
     listen 443 ssl http2 default_server;
     listen [::]:443 ssl http2 default_server;
     server_name _;
 
-    ssl_certificate     {crt};
-    ssl_certificate_key {key};
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_certificate     /etc/ssl/pi-forensics/pi-forensics.crt;
+    ssl_certificate_key /etc/ssl/pi-forensics/pi-forensics.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
-    ssl_session_cache   shared:SSL:10m;
+    ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
 
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
@@ -248,7 +234,7 @@ server {{
     # Local forensic appliance: allow large evidence attachments / JSON reports
     client_max_body_size 0;
 
-    location / {{
+    location / {
         proxy_pass http://127.0.0.1:5000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -262,102 +248,111 @@ server {{
         proxy_buffering off;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
-    }}
-}}
+    }
+}
 """
-NGINX_SITE.write_text(nginx_conf)
+    with open(NGINX_SITE, "w") as f:
+        f.write(nginx_conf)
 
-if NGINX_ENABLED.is_symlink() or NGINX_ENABLED.exists():
-    NGINX_ENABLED.unlink()
-NGINX_ENABLED.symlink_to(NGINX_SITE)
+    if os.path.exists(NGINX_DEFAULT_ENABLED) or os.path.islink(NGINX_DEFAULT_ENABLED):
+        os.remove(NGINX_DEFAULT_ENABLED)
+    if os.path.exists(NGINX_ENABLED) or os.path.islink(NGINX_ENABLED):
+        os.remove(NGINX_ENABLED)
+    os.symlink(NGINX_SITE, NGINX_ENABLED)
 
-default_enabled = Path("/etc/nginx/sites-enabled/default")
-if default_enabled.exists():
-    default_enabled.unlink()
+    test_res = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+    if test_res.returncode != 0:
+        print(f"[!] nginx config test failed, TLS proxy NOT enabled:\n{test_res.stderr}")
+        USE_TLS = False
+    else:
+        subprocess.run(["systemctl", "enable", "--now", "nginx"], check=True)
+        subprocess.run(["systemctl", "reload", "nginx"], check=True)
+        print("[+] nginx TLS reverse proxy enabled.")
+else:
+    print("    Skipping TLS setup. gunicorn will be reachable directly over plain HTTP.")
+    print("    You can run this installer again later, or set up TLS manually - see README.md.")
 
-subprocess.run(["nginx", "-t"], check=True)
-subprocess.run(["systemctl", "enable", "--now", "nginx"], check=True)
-subprocess.run(["systemctl", "reload", "nginx"], check=True)
+# gunicorn only needs to be reachable from outside this host if nginx isn't
+# fronting it; with nginx handling TLS on 80/443, gunicorn should stay on
+# loopback only.
+GUNICORN_BIND = "127.0.0.1:5000" if USE_TLS else "0.0.0.0:5000"
 
-# ---------------------------------------------------------------------------
-# systemd service
-# ---------------------------------------------------------------------------
-print("\n[*] Installing systemd service...")
-service = Path("/etc/systemd/system/pi-forensics.service")
-service.write_text(f"""[Unit]
-Description=ARM Forensic Acquisition Station (gunicorn)
-After=network-online.target
-Wants=network-online.target
+# 6. Install Systemd Service Unit
+print("\n[*] Installing systemd WSGI production service...")
+service_path = "/etc/systemd/system/pi-forensics.service"
+service_content = f"""[Unit]
+Description=ARM Forensic Acquisition Station (Production WSGI)
+After=network.target network-online.target
 
 [Service]
 Type=simple
 User={SERVICE_USER}
 Group={SERVICE_USER}
 WorkingDirectory={INSTALL_DIR}
-Environment="FORENSIC_USER={web_user}"
-Environment="FORENSIC_PASS={web_pass}"
-Environment="FORENSIC_AUTH_BYPASS=0"
-ExecStart={INSTALL_DIR}/venv/bin/python3 -m gunicorn --workers 2 --timeout 300 --bind 127.0.0.1:5000 app:app
+
+# Set interactively above. If you need to change these later, either edit
+# this file directly or use the Advanced Settings tab in the dashboard
+# (password only - the username isn't changeable from the UI).
+Environment="FORENSIC_USER={FORENSIC_USER}"
+Environment="FORENSIC_PASS={FORENSIC_PASS}"
+
+# Restricts the file-explorer/report/attachment/imaging-destination API
+# to this directory tree. Defaults to /mnt if unset.
+Environment="FORENSIC_ROOT=/mnt"
+
+# Bind address depends on whether nginx+TLS was set up above:
+#   - With TLS: gunicorn stays on loopback (127.0.0.1) and nginx is the
+#     only thing listening on the network, terminating TLS on 80/443.
+#   - Without TLS: gunicorn binds 0.0.0.0 directly so the documented
+#     "Remote Web Interface" (LAN access to http://<PI_IP_ADDRESS>:5000)
+#     still works. Every request still requires HTTP Basic Auth (see
+#     app.py) regardless of which mode is active - just note that without
+#     TLS, those credentials go out in the clear.
+# Single worker process is required here: current_job/job_lock live in
+# Python process memory, not a shared store (Redis, DB, etc.), so multiple
+# gunicorn *worker processes* would each get their own independent copy -
+# a progress-poll request routed to a different worker than the one
+# running the acquisition would show stale/default state. --threads
+# still lets gunicorn handle concurrent requests (e.g. polling progress
+# while a job runs) within that single process, where the shared state
+# actually is shared.
+ExecStart={INSTALL_DIR}/venv/bin/python3 -m gunicorn --workers 1 --worker-class gthread --threads 4 --timeout 300 --bind {GUNICORN_BIND} app:app
 Restart=always
 RestartSec=3
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
-""")
+"""
+with open(service_path, "w") as f:
+    f.write(service_content)
+# This file now contains a real plaintext password (FORENSIC_PASS above),
+# not just the old harmless default - restrict it to root, matching every
+# other secret this installer writes (sudoers file, TLS key).
+os.chmod(service_path, 0o600)
 
 subprocess.run(["systemctl", "daemon-reload"], check=True)
 subprocess.run(["systemctl", "enable", "--now", "pi-forensics.service"], check=True)
 
-# Optional systemd kiosk unit (works when a display manager / graphical target is active)
-print(f"\n[*] Installing pi-kiosk.service for {SERVICE_USER}...")
-try:
-    uid = pwd.getpwnam(SERVICE_USER).pw_uid
-except KeyError:
-    uid = 1000
-kiosk_unit = Path("/etc/systemd/system/pi-kiosk.service")
-kiosk_unit.write_text(f"""[Unit]
-Description=ARM Forensic Station Touchscreen Kiosk UI
-After=pi-forensics.service nginx.service graphical.target
-Wants=pi-forensics.service
+# 7. Configure Touchscreen Kiosk Autostart (Labwc)
+print(f"\n[*] Configuring Wayland kiosk autostart for '{SERVICE_USER}' in {USER_HOME}...")
+kiosk_dir = os.path.join(USER_HOME, ".config", "labwc")
+os.makedirs(kiosk_dir, exist_ok=True)
+autostart_path = os.path.join(kiosk_dir, "autostart")
 
-[Service]
-Type=simple
-User={SERVICE_USER}
-Group={SERVICE_USER}
-Environment=DISPLAY=:0
-Environment=WAYLAND_DISPLAY=wayland-0
-Environment=XDG_RUNTIME_DIR=/run/user/{uid}
-ExecStart={INSTALL_DIR}/kiosk.sh
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=graphical.target
-""")
-subprocess.run(["systemctl", "daemon-reload"], check=True)
-# Enable but do not force-start here (needs a graphical session)
-subprocess.run(["systemctl", "enable", "pi-kiosk.service"], capture_output=True)
-print("    enabled pi-kiosk.service (starts on graphical.target)")
-
-# ---------------------------------------------------------------------------
-# Kiosk autostart (labwc – used on Raspberry Pi OS Wayland desktop)
-# ---------------------------------------------------------------------------
-print(f"\n[*] Configuring labwc kiosk autostart for {SERVICE_USER}...")
-kiosk_dir = USER_HOME / ".config" / "labwc"
-kiosk_dir.mkdir(parents=True, exist_ok=True)
-autostart = kiosk_dir / "autostart"
-autostart.write_text(f"""#!/bin/bash
+autostart_content = f"""#!/bin/bash
 export DISPLAY=:0
 export WAYLAND_DISPLAY=wayland-0
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 
 wlr-randr --output ALL --on 2>/dev/null || true
-killall -9 chromium chromium-browser 2>/dev/null || true
-rm -rf {USER_HOME}/.config/chromium/Singleton* 2>/dev/null || true
 
-for i in $(seq 1 45); do
-    if curl -sk -o /dev/null -w "%{{http_code}}" https://127.0.0.1/ | grep -qE '200|401'; then
+killall -9 chromium chromium-browser 2>/dev/null || true
+rm -rf {USER_HOME}/.config/chromium/Singleton*
+rm -rf {USER_HOME}/.config/chromium/Default/LOCK*
+rm -rf {USER_HOME}/.config/chromium/Default/Preferences.lock
+
+for i in {{1..30}}; do
+    if curl -s -I http://127.0.0.1:5000 | grep -q "200 OK"; then
         break
     fi
     sleep 1
@@ -371,30 +366,49 @@ chromium \\
   --use-mock-keychain \\
   --no-default-browser-check \\
   --no-first-run \\
-  --ignore-certificate-errors \\
-  --allow-insecure-localhost \\
+  --gpu-subsystem-startup-dialog=0 \\
+  --ignore-gpu-blocklist \\
   --noerrdialogs \\
   --disable-infobars \\
   --disable-session-crashed-bubble \\
   --disable-component-update \\
   --check-for-update-interval=31536000 \\
-  https://127.0.0.1/ &
-""")
-autostart.chmod(0o755)
-subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", str(USER_HOME / ".config")], check=True)
+  http://127.0.0.1:5000 &
+"""
+with open(autostart_path, "w") as f:
+    f.write(autostart_content)
+os.chmod(autostart_path, 0o755)
+subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", os.path.join(USER_HOME, ".config")], check=True)
 
-print("\n" + "=" * 56)
-print("  INSTALLATION COMPLETE")
-print("=" * 56)
-print(f"  Service user : {SERVICE_USER}")
-print(f"  Web user     : {web_user}")
-print(f"  Web password : {web_pass}")
-print(f"  App bind     : 127.0.0.1:5000 (gunicorn)")
-print(f"  Public URL   : https://<pi-ip>/   (nginx TLS)")
-print()
-print("  IMPORTANT:")
-print("  - Change the web password if you used the generated one.")
-print("  - Browser will warn about the self-signed certificate – expected.")
-print("  - Software write-blocker is active via udev; prefer hardware blockers for court.")
-print("  - Reboot to enter touchscreen kiosk mode (labwc).")
-print("=" * 56)
+print("\n====================================================")
+print("   [+] INSTALLATION COMPLETE!                       ")
+print(f"   Service running under account: '{SERVICE_USER}'")
+print(f"   Dashboard login username: '{FORENSIC_USER}'")
+if USE_TLS:
+    print("   The Forensic Station is running at https://127.0.0.1 (self-signed cert)")
+    print(f"   ...and on your LAN at https://<this Pi's IP address>")
+    print("   gunicorn itself is only reachable on loopback - nginx handles TLS.")
+else:
+    print("   The Forensic Station is running at http://127.0.0.1:5000")
+    print(f"   ...and on your LAN at http://<this Pi's IP address>:5000")
+    print("   NOTE: this is plain HTTP - credentials are not encrypted in transit.")
+print("   Reboot your Pi to launch into touch kiosk mode.  ")
+print("====================================================")
+
+remaining_steps = []
+if FORENSIC_PASS == "forensics":
+    remaining_steps.append(
+        "Change the dashboard password - it's still the default 'forensics'. "
+        "Use the Advanced Settings tab, or re-run this installer."
+    )
+if not USE_TLS:
+    remaining_steps.append("Consider re-running this installer to add TLS, or set it up manually.")
+
+if remaining_steps:
+    print("\n[SECURITY] Before using this on any network you don't fully control:")
+    for i, step in enumerate(remaining_steps, 1):
+        print(f"  {i}) {step}")
+    print("====================================================")
+
+print("\nTo remove this installation later, run: sudo python3 uninstall.py")
+print("====================================================")
