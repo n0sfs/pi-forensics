@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import sys
 import pwd
 import getpass
@@ -331,7 +332,13 @@ with open(service_path, "w") as f:
 os.chmod(service_path, 0o600)
 
 subprocess.run(["systemctl", "daemon-reload"], check=True)
-subprocess.run(["systemctl", "enable", "--now", "pi-forensics.service"], check=True)
+subprocess.run(["systemctl", "enable", "pi-forensics.service"], check=True)
+# Always restart (not just "enable --now"): if this is a re-run of the
+# installer and the service was already active, --now would leave the OLD
+# process (with the OLD FORENSIC_USER/FORENSIC_PASS still in memory)
+# running, even though the unit file on disk now has new credentials.
+# restart works correctly whether the service was stopped or running.
+subprocess.run(["systemctl", "restart", "pi-forensics.service"], check=True)
 
 # 7. Configure Touchscreen Kiosk Autostart (Labwc)
 print(f"\n[*] Configuring Wayland kiosk autostart for '{SERVICE_USER}' in {USER_HOME}...")
@@ -346,39 +353,98 @@ export XDG_RUNTIME_DIR=/run/user/$(id -u)
 
 wlr-randr --output ALL --on 2>/dev/null || true
 
-killall -9 chromium chromium-browser 2>/dev/null || true
-rm -rf {USER_HOME}/.config/chromium/Singleton*
-rm -rf {USER_HOME}/.config/chromium/Default/LOCK*
-rm -rf {USER_HOME}/.config/chromium/Default/Preferences.lock
+# Respawn loop: if chromium crashes or is closed, relaunch it rather than
+# leaving a blank screen until the next reboot. This is the equivalent of
+# the old pi-kiosk.service's "Restart=on-failure", implemented here instead
+# since that unit depended on an X11 session (DISPLAY/XAUTHORITY) this
+# Wayland/labwc setup doesn't use. The 3s sleep between attempts avoids a
+# tight crash loop if something (e.g. a GPU driver issue) makes chromium
+# fail immediately every time.
+while true; do
+    # Clean up any stale lock/singleton files a crashed chromium left behind
+    # - without this, a respawn after a crash can fail to start at all.
+    killall -9 chromium chromium-browser 2>/dev/null || true
+    rm -rf {USER_HOME}/.config/chromium/Singleton*
+    rm -rf {USER_HOME}/.config/chromium/Default/LOCK*
+    rm -rf {USER_HOME}/.config/chromium/Default/Preferences.lock
 
-for i in {{1..30}}; do
-    if curl -s -I http://127.0.0.1:5000 | grep -q "200 OK"; then
-        break
-    fi
-    sleep 1
-done
+    # Re-check the backend is actually up before each (re)launch - avoids
+    # respawning against a dead service if pi-forensics.service is restarting.
+    for i in {{1..30}}; do
+        if curl -s -I http://127.0.0.1:5000 | grep -q "200 OK"; then
+            break
+        fi
+        sleep 1
+    done
 
-chromium \\
-  --kiosk \\
-  --ozone-platform=wayland \\
-  --enable-features=UseOzonePlatform \\
-  --password-store=basic \\
-  --use-mock-keychain \\
-  --no-default-browser-check \\
-  --no-first-run \\
-  --gpu-subsystem-startup-dialog=0 \\
-  --ignore-gpu-blocklist \\
-  --noerrdialogs \\
-  --disable-infobars \\
-  --disable-session-crashed-bubble \\
-  --disable-component-update \\
-  --check-for-update-interval=31536000 \\
-  http://127.0.0.1:5000 &
+    chromium \\
+      --kiosk \\
+      --ozone-platform=wayland \\
+      --enable-features=UseOzonePlatform \\
+      --password-store=basic \\
+      --use-mock-keychain \\
+      --no-default-browser-check \\
+      --no-first-run \\
+      --gpu-subsystem-startup-dialog=0 \\
+      --ignore-gpu-blocklist \\
+      --noerrdialogs \\
+      --disable-infobars \\
+      --disable-session-crashed-bubble \\
+      --disable-component-update \\
+      --check-for-update-interval=31536000 \\
+      http://127.0.0.1:5000
+
+    echo "[kiosk] chromium exited, restarting in 3s..." >&2
+    sleep 3
+done &
 """
 with open(autostart_path, "w") as f:
     f.write(autostart_content)
 os.chmod(autostart_path, 0o755)
 subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", os.path.join(USER_HOME, ".config")], check=True)
+
+# 7b. Enable Desktop Autologin for SERVICE_USER
+# labwc only runs ~/.config/labwc/autostart when SERVICE_USER's graphical
+# desktop session actually starts. On a stock image that requires desktop
+# autologin to be explicitly enabled - without it, the Pi boots to a login
+# prompt, no desktop session ever starts, and kiosk mode never launches,
+# even though everything above was configured correctly.
+print(f"\n[*] Enabling desktop autologin for '{SERVICE_USER}'...")
+AUTOLOGIN_OK = False
+raspi_config_check = subprocess.run(["which", "raspi-config"], capture_output=True, text=True)
+
+if raspi_config_check.returncode == 0:
+    # do_boot_behaviour B4 reads $USER from ITS OWN process environment to
+    # decide who to autologin (it literally does `autologin-user=$USER`
+    # internally) - since this installer runs as root, $USER would resolve
+    # to "root" unless we override it here. Getting this wrong silently
+    # autologins the wrong account.
+    autologin_env = dict(os.environ)
+    autologin_env["USER"] = SERVICE_USER
+    autologin_res = subprocess.run(
+        ["raspi-config", "nonint", "do_boot_behaviour", "B4"],
+        capture_output=True, text=True, env=autologin_env
+    )
+    # Verify rather than trust the exit code - read back what was actually written.
+    lightdm_conf = "/etc/lightdm/lightdm.conf"
+    if autologin_res.returncode == 0 and os.path.exists(lightdm_conf):
+        with open(lightdm_conf) as f:
+            conf_text = f.read()
+        if re.search(rf"^autologin-user={re.escape(SERVICE_USER)}\s*$", conf_text, re.MULTILINE):
+            AUTOLOGIN_OK = True
+            print(f"[+] Desktop autologin enabled and verified for '{SERVICE_USER}'.")
+
+    if not AUTOLOGIN_OK:
+        print(f"[!] Could not confirm autologin was set correctly for '{SERVICE_USER}'.")
+        if autologin_res.stderr.strip():
+            print(f"    raspi-config said: {autologin_res.stderr.strip()}")
+else:
+    print("[!] raspi-config not found (not Raspberry Pi OS, or a Lite/headless image).")
+
+if not AUTOLOGIN_OK:
+    print(f"    Kiosk mode will NOT start on boot until this is fixed. Set it manually:")
+    print(f"      sudo raspi-config  ->  1 System Options  ->  S5 Boot / Auto Login  ->  B4 Desktop Autologin")
+    print(f"    Make sure '{SERVICE_USER}' is the account selected, then reboot.")
 
 print("\n====================================================")
 print("   [+] INSTALLATION COMPLETE!                       ")
@@ -392,10 +458,19 @@ else:
     print("   The Forensic Station is running at http://127.0.0.1:5000")
     print(f"   ...and on your LAN at http://<this Pi's IP address>:5000")
     print("   NOTE: this is plain HTTP - credentials are not encrypted in transit.")
-print("   Reboot your Pi to launch into touch kiosk mode.  ")
+if AUTOLOGIN_OK:
+    print("   Reboot your Pi to launch into touch kiosk mode.  ")
+else:
+    print("   Kiosk mode will NOT start on reboot yet - see below.")
 print("====================================================")
 
 remaining_steps = []
+if not AUTOLOGIN_OK:
+    remaining_steps.append(
+        f"Fix desktop autologin for kiosk mode (see [!] messages above) - "
+        f"sudo raspi-config -> System Options -> Boot / Auto Login -> Desktop Autologin, "
+        f"account '{SERVICE_USER}'."
+    )
 if FORENSIC_PASS == "forensics":
     remaining_steps.append(
         "Change the dashboard password - it's still the default 'forensics'. "
@@ -405,7 +480,7 @@ if not USE_TLS:
     remaining_steps.append("Consider re-running this installer to add TLS, or set it up manually.")
 
 if remaining_steps:
-    print("\n[SECURITY] Before using this on any network you don't fully control:")
+    print("\n[ACTION NEEDED]")
     for i, step in enumerate(remaining_steps, 1):
         print(f"  {i}) {step}")
     print("====================================================")

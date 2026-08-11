@@ -64,7 +64,12 @@ See prior research here: "Low Budget Forensics using ARM Based Single Board Comp
 ## 📋 Prerequisites, Setup & Usage
 
 Pi and bootmedia with Pi OS or other Debian based OS configured
-Flash a fresh **Raspberry Pi OS (64-bit)** image to your device and connect to the internet. (https://www.raspberrypi.com/documentation/computers/getting-started.html)
+Flash a fresh **Raspberry Pi OS (64-bit) with Desktop** image to your device and connect to the internet. (https://www.raspberrypi.com/documentation/computers/getting-started.html)
+
+> **Kiosk mode requires the Desktop image, not Lite.** The installer's autologin step
+> (`raspi-config nonint do_boot_behaviour B4`) and the kiosk browser itself both depend on a
+> desktop session (labwc + lightdm) being present. If you flashed the Lite/headless image, the
+> web dashboard will still work fine remotely, but there's no desktop for kiosk mode to run in.
 
 ### Quick Installation (One-Line Automated Setup)
 Open a terminal (or SSH) and run:
@@ -89,7 +94,13 @@ re-running the installer.
 Configures scoped /etc/sudoers.d/pi-forensics privileges, systemd WSGI production services, udev write-blocking rules, labwc kiosk autostart, and - if you accept the prompt - an nginx + self-signed TLS reverse proxy (see [Security](#-security) below).
 
 ### Accessing the Dashboard
-Local Kiosk: Launches automatically at boot in full-screen touchscreen mode.
+Local Kiosk: Launches automatically at boot in full-screen touchscreen mode - the installer
+enables desktop autologin for the service account so this can happen without a manual login. If
+Chromium crashes or is closed, the kiosk autostart script relaunches it automatically after a
+short delay rather than leaving a blank screen until the next reboot.
+If kiosk doesn't appear after a reboot, check the installer's `[ACTION NEEDED]` summary from your
+install run, or verify manually: `sudo raspi-config` → System Options → Boot / Auto Login →
+Desktop Autologin, and confirm the account shown matches your service user.
 
 ### Remote Web Interface
 If you set up TLS during install, navigate to `https://<PI_IP_ADDRESS>` (self-signed cert - your
@@ -166,6 +177,51 @@ sudo journalctl -u nginx -f          # nginx logs
 > a progress-poll request could land on a different worker than the one running the acquisition and
 > show stale/default data. Threads (within the single process) don't have this problem. If you ever
 > need more request concurrency, raise `--threads`, not `--workers`.
+
+---
+
+## Troubleshooting
+
+### Kiosk mode doesn't start on boot
+This almost always means desktop autologin isn't set up for the service account - labwc (the
+kiosk compositor) only runs `~/.config/labwc/autostart` when that account's graphical session
+actually starts, which requires autologin on a stock image.
+
+1. Check what the installer reported: it prints `[ACTION NEEDED]` at the end of the run if it
+   couldn't confirm autologin was configured.
+2. Verify/fix manually: `sudo raspi-config` → **System Options** → **Boot / Auto Login** →
+   **B4 Desktop Autologin**, confirm the account selected matches your service user, reboot.
+3. Confirm you flashed **Raspberry Pi OS with Desktop**, not the Lite/headless image - kiosk mode
+   can't work without a desktop session to autologin into.
+4. If autologin is confirmed correct and kiosk still doesn't appear, check
+   `~/.config/labwc/autostart` exists and is executable (`ls -la`) for the service account's home
+   directory, and that it's owned by that account, not root.
+
+### Web dashboard isn't reachable over the LAN/WiFi
+Nothing in this project touches WiFi, network interfaces, or firewall rules - if it was reachable
+before and now isn't, check these in order:
+
+1. **Is the service actually running?** `sudo systemctl status pi-forensics.service` - if it's not
+   active, check `sudo journalctl -u pi-forensics.service -e` for the actual startup error.
+2. **If you set up TLS**, nginx is what's actually listening on the network (gunicorn moves to
+   loopback-only). Check `sudo systemctl status nginx` too - if nginx isn't running, the service
+   being fine doesn't help you from another device.
+3. **Did the Pi's IP address change?** A DHCP lease renewal after reboot is a common, totally
+   unrelated cause of "it stopped working" - check `hostname -I` or your router's client list for
+   the current address rather than assuming it's the same as last time.
+4. **Client isolation on the WiFi network.** Some routers (especially guest networks or mesh
+   systems) block device-to-device traffic by design - try from a device on the same network
+   segment, or check your router's AP isolation setting.
+5. Once you've confirmed the service is up and you have the right IP, use the diagnostics in
+   Advanced Settings (`ip a`) from a device that *can* reach it (e.g. the kiosk itself, which talks
+   to gunicorn over loopback regardless of LAN status) to see what address it's actually on.
+
+### Login fails even with the right password
+Check for the brute-force lockout (5 failed attempts = 5 minute lockout, returns HTTP 429) before
+assuming the credentials are wrong - repeated attempts while troubleshooting something else is a
+common way to trigger this. See `sudo cat /etc/systemd/system/pi-forensics.service | grep FORENSIC`
+to confirm what's actually configured, then `sudo systemctl restart pi-forensics.service` if you
+changed it and aren't sure the running process picked it up.
 
 ---
 
