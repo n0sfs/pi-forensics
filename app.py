@@ -9,18 +9,49 @@ import shutil
 import hashlib
 import subprocess
 import threading
+import secrets
 from functools import wraps
+from pathlib import Path
 from flask import Flask, render_template, jsonify, request, Response, send_file
 
 app = Flask(__name__)
 
-# Authentication Config
+# Authentication Config – MUST be set via environment (install.py does this)
 ADMIN_USER = os.environ.get('FORENSIC_USER', 'admin')
-ADMIN_PASS = os.environ.get('FORENSIC_PASS', 'forensics')
+ADMIN_PASS = os.environ.get('FORENSIC_PASS', '')
+# Private-network auth bypass is OFF by default. Set FORENSIC_AUTH_BYPASS=1 only for legacy labs.
+AUTH_BYPASS_PRIVATE = os.environ.get('FORENSIC_AUTH_BYPASS', '0') == '1'
+# Refuse known-weak default password at runtime
+_WEAK_PASSWORDS = {'', 'forensics', 'password', 'admin', 'changeme', '123456', 'pi'}
 
-HISTORY_FILE = "/home/nospi/pi-forensics/mount_history.json"
+HISTORY_FILE = "/opt/pi-forensics/mount_history.json"
+CRED_DIR = Path("/opt/pi-forensics/run")  # ephemeral credential files for mounts
 
-# Global State for Live Acquisition Job
+# Allowed roots for file browser / copy / delete / report operations
+ALLOWED_ROOTS = [
+    Path("/mnt"),
+    Path("/media"),
+    Path("/opt/pi-forensics"),
+    Path("/tmp/forensic"),
+]
+
+# Absolute paths matching sudoers
+BIN_BLOCKDEV = "/usr/sbin/blockdev"
+BIN_SMARTCTL = "/usr/sbin/smartctl"
+BIN_MOUNT = "/bin/mount"
+BIN_UMOUNT = "/bin/umount"
+BIN_UDEVIL = "/usr/bin/udevil"
+BIN_PKILL = "/usr/bin/pkill"
+BIN_SMBCLIENT = "/usr/bin/smbclient"
+BIN_SHOWMOUNT = "/usr/sbin/showmount"
+BIN_DC3DD = "/usr/bin/dc3dd"
+BIN_DDRESCUE = "/usr/bin/ddrescue"
+BIN_EWFACQUIRE = "/usr/bin/ewfacquire"
+BIN_LSBLK = "/usr/bin/lsblk"
+
+
+# Global State for Live Acquisition Job (protected by lock)
+job_lock = threading.RLock()
 current_job = {
     "active": False,
     "format": "dd",
@@ -58,11 +89,112 @@ def save_mount_history(entry):
     except Exception as e:
         print(f"Error saving mount history: {e}")
 
+# --- Path / device sanitization helpers ---
+def safe_path(user_path: str, must_exist: bool = True) -> Path:
+    """Resolve and validate a user-supplied path against ALLOWED_ROOTS."""
+    if not user_path or not isinstance(user_path, str):
+        raise ValueError("Path is required")
+    if '\0' in user_path:
+        raise ValueError("Invalid characters in path")
+    try:
+        p = Path(user_path).resolve(strict=False)
+    except Exception as e:
+        raise ValueError(f"Cannot resolve path: {e}")
+    allowed = False
+    for root in ALLOWED_ROOTS:
+        try:
+            root_res = root.resolve()
+            if p == root_res or root_res in p.parents:
+                allowed = True
+                break
+        except Exception:
+            continue
+    if not allowed:
+        raise ValueError(f"Path '{user_path}' is outside allowed directories")
+    if must_exist and not p.exists():
+        raise ValueError(f"Path does not exist: {user_path}")
+    return p
+
+
+def sanitize_device(dev: str) -> str:
+    """Allow only legitimate block device paths."""
+    if not dev or not isinstance(dev, str):
+        raise ValueError("Device path required")
+    dev = dev.strip()
+    if not re.match(r'^/dev/(sd[a-z]+|nvme\d+n\d+|mmcblk\d+|vd[a-z]+|xvd[a-z]+)(\d+p?\d*)?$', dev):
+        raise ValueError(f"Invalid or disallowed device: {dev}")
+    if not os.path.exists(dev):
+        raise ValueError(f"Device does not exist: {dev}")
+    return dev
+
+
+def sanitize_name(name: str, max_len: int = 64) -> str:
+    if not name:
+        return "UNASSIGNED"
+    cleaned = re.sub(r'[^A-Za-z0-9_\-\.]', '_', str(name))[:max_len]
+    return cleaned or "UNASSIGNED"
+
+
+def sanitize_host(host: str) -> str:
+    host = (host or '').strip()
+    if not host or not re.match(r'^[A-Za-z0-9][A-Za-z0-9.\-]{0,253}$', host):
+        raise ValueError("Invalid server hostname or IP")
+    if '..' in host:
+        raise ValueError("Invalid server hostname or IP")
+    return host
+
+
+def sanitize_share(share: str) -> str:
+    share = (share or '').strip()
+    if not share or re.search(r'[;&|`$<>\\n\\r]', share):
+        raise ValueError("Invalid share path")
+    # Keep path-ish characters only
+    if not re.match(r'^[A-Za-z0-9_/\.\- ]{1,256}$', share):
+        raise ValueError("Invalid share path characters")
+    return share
+
+
+def write_smb_credentials(username: str, password: str) -> Path:
+    """Write a temporary credentials file (mode 0600) for mount.cifs / smbclient."""
+    CRED_DIR.mkdir(parents=True, exist_ok=True)
+    # Restrict directory
+    try:
+        os.chmod(CRED_DIR, 0o700)
+    except Exception:
+        pass
+    path = CRED_DIR / f"smbcred_{secrets.token_hex(8)}.txt"
+    content = f"username={username or 'guest'}\npassword={password or ''}\n"
+    path.write_text(content)
+    os.chmod(path, 0o600)
+    return path
+
+
+def credentials_are_safe() -> bool:
+    """Return False if the configured web password is missing or known-weak."""
+    if not ADMIN_PASS:
+        return False
+    if ADMIN_PASS.lower() in _WEAK_PASSWORDS:
+        return False
+    if len(ADMIN_PASS) < 8:
+        return False
+    return True
+
+
 # --- Authentication Middleware ---
 def check_auth(username, password):
-    return username == ADMIN_USER and password == ADMIN_PASS
+    if not credentials_are_safe():
+        return False
+    return secrets.compare_digest(username or '', ADMIN_USER) and \
+           secrets.compare_digest(password or '', ADMIN_PASS)
 
 def authenticate():
+    if not credentials_are_safe():
+        return Response(
+            'Server misconfigured: weak or missing FORENSIC_PASS. '
+            'Set a strong password via the service environment and restart.\n',
+            503,
+            {'Content-Type': 'text/plain'}
+        )
     return Response(
         'Authentication required to access ARM Forensic Station.\n',
         401,
@@ -72,14 +204,19 @@ def authenticate():
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        client_ip = request.remote_addr
-        # Auto-bypass auth for loopback and local private subnets
-        if client_ip in ['127.0.0.1', '::1', 'localhost'] or \
-           client_ip.startswith('192.168.') or \
-           client_ip.startswith('10.') or \
-           client_ip.startswith('172.'):
+        client_ip = request.remote_addr or ''
+        # Optional legacy bypass (disabled by default)
+        if AUTH_BYPASS_PRIVATE:
+            if client_ip in ('127.0.0.1', '::1', 'localhost') or \
+               client_ip.startswith(('192.168.', '10.', '172.')):
+                return f(*args, **kwargs)
+        # Loopback (kiosk) always allowed unless FORENSIC_FORCE_LOCAL_AUTH=1
+        if client_ip in ('127.0.0.1', '::1'):
+            if os.environ.get('FORENSIC_FORCE_LOCAL_AUTH', '0') == '1':
+                auth = request.authorization
+                if not auth or not check_auth(auth.username, auth.password):
+                    return authenticate()
             return f(*args, **kwargs)
-        
         auth = request.authorization
         if not auth or not check_auth(auth.username, auth.password):
             return authenticate()
@@ -205,13 +342,16 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
     def append_log(msg):
         if msg:
             log_history.append(msg)
-            current_job["log"] = "\n".join(log_history[-100:])
+            with job_lock:
+                current_job["log"] = "\n".join(log_history[-100:])
 
     append_log(f"[*] Starting execution using [{fmt.upper()}] engine...")
-    append_log(f"[*] Command: {' '.join(cmd)}")
+    # Do not log full command if it might contain secrets (cmd is already sanitized)
+    append_log(f"[*] Engine: {fmt.upper()} | target bytes: {total_bytes}")
 
     start_time = time.time()
-    current_job["status"] = "Processing Media..."
+    with job_lock:
+        current_job["status"] = "Processing Media..."
 
     try:
         active_proc = subprocess.Popen(
@@ -257,35 +397,37 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
 
                         if fmt in ['raw', 'dd']:
                             bytes_copied, speed = parse_dc3dd_line(clean_line)
-                            if bytes_copied is not None:
-                                current_job["transferred_bytes"] = bytes_copied
-                                if total_bytes > 0:
-                                    current_job["progress_percent"] = round((bytes_copied / total_bytes) * 100, 1)
-                            if speed is not None:
-                                current_job["speed_mbps"] = speed
+                            with job_lock:
+                                if bytes_copied is not None:
+                                    current_job["transferred_bytes"] = bytes_copied
+                                    if total_bytes > 0:
+                                        current_job["progress_percent"] = round((bytes_copied / total_bytes) * 100, 1)
+                                if speed is not None:
+                                    current_job["speed_mbps"] = speed
 
                         elif fmt == 'e01':
                             pct, speed = parse_ewf_line(clean_line)
-                            if "verify" in clean_line.lower() or "verifying" in clean_line.lower():
-                                current_job["status"] = "Verifying Image Integrity..."
-                            
-                            if pct is not None:
-                                current_job["progress_percent"] = pct
-                                if total_bytes > 0:
-                                    current_job["transferred_bytes"] = int((pct / 100.0) * total_bytes)
-                            if speed is not None:
-                                current_job["speed_mbps"] = speed
+                            with job_lock:
+                                if "verify" in clean_line.lower() or "verifying" in clean_line.lower():
+                                    current_job["status"] = "Verifying Image Integrity..."
+                                if pct is not None:
+                                    current_job["progress_percent"] = pct
+                                    if total_bytes > 0:
+                                        current_job["transferred_bytes"] = int((pct / 100.0) * total_bytes)
+                                if speed is not None:
+                                    current_job["speed_mbps"] = speed
 
                         elif fmt == 'ddrescue':
                             rescued_bytes, pct, speed = parse_ddrescue_line(clean_line)
-                            if rescued_bytes is not None:
-                                current_job["transferred_bytes"] = rescued_bytes
-                            if pct is not None:
-                                current_job["progress_percent"] = pct
-                            elif rescued_bytes is not None and total_bytes > 0:
-                                current_job["progress_percent"] = round((rescued_bytes / total_bytes) * 100, 1)
-                            if speed is not None:
-                                current_job["speed_mbps"] = speed
+                            with job_lock:
+                                if rescued_bytes is not None:
+                                    current_job["transferred_bytes"] = rescued_bytes
+                                if pct is not None:
+                                    current_job["progress_percent"] = pct
+                                elif rescued_bytes is not None and total_bytes > 0:
+                                    current_job["progress_percent"] = round((rescued_bytes / total_bytes) * 100, 1)
+                                if speed is not None:
+                                    current_job["speed_mbps"] = speed
 
                 elif active_proc.poll() is not None:
                     break
@@ -293,6 +435,11 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
                 pass
 
         active_proc.wait()
+
+        try:
+            os.sync()
+        except Exception:
+            pass
 
         time.sleep(1.0)
         computed_hashes = {}
@@ -305,17 +452,19 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["computed_verification_hashes"] = computed_hashes
 
+        with job_lock:
+            if active_proc.returncode in [0, 2]:
+                current_job["status"] = "Completed Successfully"
+                current_job["progress_percent"] = 100.0
+                current_job["speed_mbps"] = 0.0
+                report_data["acquisition_status"] = "COMPLETED"
+            elif current_job["status"] != "Stopped":
+                current_job["status"] = "Failed"
+                report_data["acquisition_status"] = "FAILED"
         if active_proc.returncode in [0, 2]:
-            current_job["status"] = "Completed Successfully"
-            current_job["progress_percent"] = 100.0
-            current_job["speed_mbps"] = 0.0
             append_log("[+] Recovery/acquisition completed successfully.")
-            report_data["acquisition_status"] = "COMPLETED"
-
-        elif current_job["status"] != "Stopped":
-            current_job["status"] = "Failed"
+        elif report_data.get("acquisition_status") == "FAILED":
             append_log(f"[-] Process exited with code {active_proc.returncode}")
-            report_data["acquisition_status"] = "FAILED"
 
         try:
             with open(report_file_path, 'w') as f:
@@ -325,11 +474,13 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
             append_log(f"[-] Warning: Failed updating report JSON: {e}")
 
     except Exception as e:
-        current_job["status"] = "Failed"
+        with job_lock:
+            current_job["status"] = "Failed"
         append_log(f"[-] Execution Exception: {str(e)}")
 
     finally:
-        current_job["active"] = False
+        with job_lock:
+            current_job["active"] = False
         active_proc = None
 
 # --- Web Routes & API Endpoints ---
@@ -367,14 +518,17 @@ def system_info():
         "bytes_recv": net_counters.bytes_recv
     }
 
-    target_drive = request.args.get('drive', '/dev/sda')
-    if not target_drive or not target_drive.startswith('/dev/'):
+    try:
+        target_drive = sanitize_device(request.args.get('drive', '/dev/sda'))
+    except ValueError:
         target_drive = '/dev/sda'
 
     wb_active = True
     if os.path.exists(target_drive):
         try:
-            res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getro', target_drive], capture_output=True, text=True)
+            res = subprocess.run(
+                ['sudo', BIN_BLOCKDEV, '--getro', target_drive],
+                capture_output=True, text=True, timeout=5)
             if res.returncode == 0 and res.stdout.strip() == '0':
                 wb_active = False
         except Exception:
@@ -406,7 +560,7 @@ def list_drives():
     drives = []
     try:
         res = subprocess.run(
-            ['lsblk', '-J', '-b', '-o', 'NAME,SIZE,MODEL,TRAN,TYPE,SERIAL,RO'],
+            [BIN_LSBLK, '-J', '-b', '-o', 'NAME,SIZE,MODEL,TRAN,TYPE,SERIAL,RO'],
             capture_output=True, text=True
         )
         if res.returncode == 0:
@@ -417,9 +571,14 @@ def list_drives():
                     gb_size = round(bytes_size / (1024**3), 1)
                     dev_path = f"/dev/{dev['name']}"
                     
-                    # Force read-only lock upon discovery
+                    # Query current RO state only (do not force-set on discovery)
+                    is_ro = True
                     try:
-                        subprocess.run(['sudo', '/usr/sbin/blockdev', '--setro', dev_path], capture_output=True)
+                        ro = subprocess.run(
+                            ['sudo', BIN_BLOCKDEV, '--getro', dev_path],
+                            capture_output=True, text=True, timeout=5)
+                        if ro.returncode == 0 and ro.stdout.strip() == '0':
+                            is_ro = False
                     except Exception:
                         pass
 
@@ -431,7 +590,7 @@ def list_drives():
                         "bytes": bytes_size,
                         "transport": dev.get('tran') or 'usb',
                         "serial": dev.get('serial') or 'N/A',
-                        "read_only": True
+                        "read_only": is_ro
                     })
     except Exception as e:
         print(f"Error executing lsblk: {e}")
@@ -442,15 +601,15 @@ def list_drives():
 @requires_auth
 def smart_check():
     req = request.get_json() or {}
-    drive = req.get('drive', '')
-    
-    if not drive or not drive.startswith('/dev/'):
-        return jsonify({"success": False, "error": "Invalid drive selection"})
+    try:
+        drive = sanitize_device(req.get('drive', ''))
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
     try:
         total_bytes = 0
         try:
-            res_sz = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', drive], capture_output=True, text=True)
+            res_sz = subprocess.run(['sudo', BIN_BLOCKDEV, '--getsize64', drive], capture_output=True, text=True)
             if res_sz.returncode == 0:
                 total_bytes = int(res_sz.stdout.strip())
         except Exception:
@@ -458,7 +617,7 @@ def smart_check():
 
         capacity_str = f"{round(total_bytes / (1024**3), 2)} GB" if total_bytes > 0 else "N/A"
 
-        res = subprocess.run(['sudo', 'smartctl', '-a', '-j', drive], capture_output=True, text=True)
+        res = subprocess.run(['sudo', BIN_SMARTCTL, '-a', '-j', drive], capture_output=True, text=True)
         data = json.loads(res.stdout) if res.stdout else {}
         
         healthy = data.get('smart_status', {}).get('passed', True)
@@ -529,110 +688,133 @@ def get_mount_history():
 def list_server_shares():
     req = request.get_json() or {}
     protocol = req.get('protocol', 'smb').lower()
-    host = req.get('host', '').strip()
-
-    if not host:
-        return jsonify({"success": False, "error": "Server IP required."}), 400
+    try:
+        host = sanitize_host(req.get('host', ''))
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
     shares = []
     try:
         if protocol == 'nfs':
-            res = subprocess.run(['showmount', '-e', '--no-headers', host], capture_output=True, text=True, timeout=8)
+            res = subprocess.run(
+                [BIN_SHOWMOUNT, '-e', '--no-headers', host],
+                capture_output=True, text=True, timeout=8)
             if res.returncode == 0:
                 for line in res.stdout.strip().split('\n'):
                     if line.strip():
                         export_path = line.split()[0]
                         shares.append(export_path)
                 return jsonify({"success": True, "shares": shares})
-            else:
-                return jsonify({"success": False, "error": res.stderr.strip() or "No NFS exports found."}), 500
+            return jsonify({"success": False, "error": res.stderr.strip() or "No NFS exports found."}), 500
+
+        user = (req.get('user') or '').strip()
+        pass_val = (req.get('pass') or '').strip()
+        env = os.environ.copy()
+        if user:
+            # Avoid putting password on argv – use PASSWD env for smbclient
+            env['PASSWD'] = pass_val
+            cmd = [BIN_SMBCLIENT, '-L', host, '-I', host, '-U', user, '-g']
         else:
-            user = req.get('user', '')
-            pass_val = req.get('pass', '')
+            cmd = [BIN_SMBCLIENT, '-L', host, '-I', host, '-N', '-g']
 
-            if user:
-                cmd = ['smbclient', '-L', host, '-I', host, '-U', f"{user}%{pass_val}", '-g']
-            else:
-                cmd = ['smbclient', '-L', host, '-I', host, '-N', '-g']
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=8, env=env)
 
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        if res.returncode != 0 and not user:
+            env['PASSWD'] = ''
+            cmd_guest = [BIN_SMBCLIENT, '-L', host, '-I', host, '-U', 'guest', '-g']
+            res = subprocess.run(cmd_guest, capture_output=True, text=True, timeout=8, env=env)
 
-            if res.returncode != 0 and not user:
-                cmd_guest = ['smbclient', '-L', host, '-I', host, '-U', 'guest%', '-g']
-                res = subprocess.run(cmd_guest, capture_output=True, text=True, timeout=8)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                if line.startswith('Disk|'):
+                    parts = line.split('|')
+                    if len(parts) > 1:
+                        share_name = parts[1].strip()
+                        if share_name and not share_name.endswith('$'):
+                            shares.append(share_name)
+            return jsonify({"success": True, "shares": shares})
 
-            if res.returncode == 0:
-                for line in res.stdout.splitlines():
-                    if line.startswith('Disk|'):
-                        parts = line.split('|')
-                        if len(parts) > 1:
-                            share_name = parts[1].strip()
-                            if share_name and not share_name.endswith('$'):
-                                shares.append(share_name)
-                return jsonify({"success": True, "shares": shares})
-            else:
-                err_msg = res.stderr.strip() or res.stdout.strip() or "Failed to query SMB shares."
-                return jsonify({"success": False, "error": err_msg}), 500
+        err_msg = res.stderr.strip() or res.stdout.strip() or "Failed to query SMB shares."
+        return jsonify({"success": False, "error": err_msg}), 500
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
 
 @app.route('/api/mount_network', methods=['POST'])
 @requires_auth
 def mount_network():
     req = request.get_json() or {}
-    protocol = req.get('protocol', 'smb').lower()
-    host = req.get('host', '').strip()
-    share = req.get('share', '').strip()
-    user = req.get('user', '').strip()
-    password = req.get('pass', '').strip()
+    protocol = (req.get('protocol') or 'smb').lower()
+    try:
+        host = sanitize_host(req.get('host', ''))
+        share = sanitize_share(req.get('share', ''))
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
-    if not host or not share:
-        return jsonify({"success": False, "error": "Server IP and Share path are required."}), 400
+    user = (req.get('user') or '').strip()
+    password = (req.get('pass') or '').strip()
 
     share_path = f"/{share.lstrip('/')}"
-    safe_folder_name = share_path.replace('/', '_').strip('_')
+    safe_folder_name = re.sub(r'[^A-Za-z0-9_\-]', '_', share_path).strip('_')[:64]
     mount_point = f"/mnt/network_{protocol}_{safe_folder_name}"
     os.makedirs(mount_point, exist_ok=True)
 
+    cred_file = None
     try:
-        subprocess.run(['sudo', 'umount', '-l', mount_point], capture_output=True)
+        subprocess.run(['sudo', BIN_UMOUNT, '-l', mount_point],
+                       capture_output=True, timeout=10)
 
         if protocol == 'nfs':
             nfs_source = f"{host}:{share_path}"
-            cmd_v3 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=3', nfs_source, mount_point]
-            res = subprocess.run(cmd_v3, capture_output=True, text=True)
+            last_err = ""
+            for vers in ('3', '4'):
+                cmd = [
+                    'sudo', BIN_MOUNT, '-t', 'nfs',
+                    '-o', f'nolock,soft,timeo=30,retrans=2,vers={vers}',
+                    nfs_source, mount_point
+                ]
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                if res.returncode == 0:
+                    save_mount_history({
+                        "protocol": protocol, "host": host,
+                        "share": share_path, "mount_point": mount_point
+                    })
+                    return jsonify({"success": True, "mount_point": mount_point})
+                last_err = res.stderr.strip() or res.stdout.strip()
+            return jsonify({"success": False, "error": f"NFS Mount Failed: {last_err}"}), 500
 
-            if res.returncode == 0:
-                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
-                return jsonify({"success": True, "mount_point": mount_point})
+        # SMB / CIFS – use credentials file so password never appears on argv
+        unc_source = f"//{host}/{share_path.lstrip('/')}"
+        cred_file = write_smb_credentials(user or 'guest', password)
+        opts = f"credentials={cred_file},noperm,iocharset=utf8"
+        cmd_smb = [
+            'sudo', BIN_MOUNT, '-t', 'cifs',
+            unc_source, mount_point, '-o', opts
+        ]
+        res_smb = subprocess.run(cmd_smb, capture_output=True, text=True, timeout=15)
 
-            cmd_v4 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=4', nfs_source, mount_point]
-            res_v4 = subprocess.run(cmd_v4, capture_output=True, text=True)
+        if res_smb.returncode == 0:
+            save_mount_history({
+                "protocol": protocol, "host": host,
+                "share": share_path, "mount_point": mount_point
+            })
+            return jsonify({"success": True, "mount_point": mount_point})
 
-            if res_v4.returncode == 0:
-                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
-                return jsonify({"success": True, "mount_point": mount_point})
-
-            return jsonify({"success": False, "error": f"NFS Mount Failed: {res_v4.stderr.strip() or res.stderr.strip()}"}), 500
-
-        else:
-            unc_source = f"//{host}/{share_path.lstrip('/')}"
-            user_arg = user if user else 'guest'
-            pass_arg = password if password else ''
-            opts = f"username={user_arg},password={pass_arg},noperm,iocharset=utf8"
-            
-            cmd_smb = ['sudo', 'mount', '-t', 'cifs', unc_source, mount_point, '-o', opts]
-            res_smb = subprocess.run(cmd_smb, capture_output=True, text=True)
-
-            if res_smb.returncode == 0:
-                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
-                return jsonify({"success": True, "mount_point": mount_point})
-
-            return jsonify({"success": False, "error": f"SMB Mount Failed: {res_smb.stderr.strip()}"}), 500
+        return jsonify({
+            "success": False,
+            "error": f"SMB Mount Failed: {res_smb.stderr.strip()}"
+        }), 500
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cred_file is not None:
+            try:
+                cred_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
 
 @app.route('/api/toggle_write_block', methods=['POST'])
 @requires_auth
@@ -641,19 +823,28 @@ def toggle_write_block():
     enable = req.get('enable', True)
     drive = req.get('drive', '/dev/sda')
     
-    if not drive or not drive.startswith('/dev/'):
-        drive = '/dev/sda'
+    try:
+        drive = sanitize_device(drive)
+    except ValueError:
+        try:
+            drive = sanitize_device('/dev/sda')
+        except ValueError:
+            return jsonify({"success": False, "error": "No valid target drive"}), 400
 
     action_flag = '--setro' if enable else '--setrw'
     
     try:
-        subprocess.run(f"sudo udevil unmount -b {drive}* 2>/dev/null || sudo umount {drive}* 2>/dev/null", shell=True)
-        res = subprocess.run(['sudo', '/usr/sbin/blockdev', action_flag, drive], capture_output=True, text=True)
+        # Safe unmount without shell
+        for part in [drive] + [f"{drive}{i}" for i in range(1, 16)]:
+            if os.path.exists(part):
+                subprocess.run(['sudo', 'umount', '-l', part], capture_output=True, timeout=5)
+                subprocess.run(['sudo', 'udevil', 'unmount', '-b', part], capture_output=True, timeout=5)
+        res = subprocess.run(['sudo', BIN_BLOCKDEV, action_flag, drive], capture_output=True, text=True, timeout=5)
         
         if res.returncode != 0:
             return jsonify({"success": False, "error": res.stderr.strip() or "blockdev execution failed"}), 500
 
-        chk = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getro', drive], capture_output=True, text=True)
+        chk = subprocess.run(['sudo', BIN_BLOCKDEV, '--getro', drive], capture_output=True, text=True)
         is_ro = (chk.returncode == 0 and chk.stdout.strip() == '1')
 
         return jsonify({"success": True, "write_blocker_active": is_ro, "device": drive})
@@ -666,31 +857,36 @@ def toggle_write_block():
 def start_imaging():
     global current_job
     
-    if current_job["active"]:
-        return jsonify({"error": "An acquisition job is already running."}), 400
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
 
     req = request.get_json() or {}
     source = req.get('source')
     dest_path = req.get('destination', '/mnt').strip()
     fmt = req.get('format', 'dd')
     hashes = req.get('hashes', ['sha256'])
-    metadata = req.get('metadata', {})
+    metadata = req.get('metadata', {}) or {}
     
     compression = req.get('compression', 'fast')
     split_size = req.get('split_size', '2000M')
 
-    if not source or not os.path.exists(source):
-        return jsonify({"error": f"Source device {source} not found."}), 400
+    try:
+        source = sanitize_device(source)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
-    if not os.path.exists(dest_path):
-        try:
-            os.makedirs(dest_path, exist_ok=True)
-        except Exception as e:
-            return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+    try:
+        dest_p = safe_path(dest_path, must_exist=False)
+        dest_path = str(dest_p)
+        if not dest_p.exists():
+            dest_p.mkdir(parents=True, exist_ok=True)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     total_bytes = 0
     try:
-        res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
+        res = subprocess.run(['sudo', BIN_BLOCKDEV, '--getsize64', source], capture_output=True, text=True)
         if res.returncode == 0:
             total_bytes = int(res.stdout.strip())
     except Exception:
@@ -704,7 +900,7 @@ def start_imaging():
 
     smart_data = {}
     try:
-        res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True)
+        res_smart = subprocess.run(['sudo', BIN_SMARTCTL, '-a', '-j', source], capture_output=True, text=True)
         if res_smart.stdout:
             smart_data = json.loads(res_smart.stdout)
     except Exception:
@@ -741,10 +937,10 @@ def start_imaging():
         "pending_sectors": pending
     }
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
-    examiner = metadata.get('examiner', 'UNSPECIFIED')
-    notes = metadata.get('notes', 'None')
+    case_num = sanitize_name(metadata.get('case_number', 'UNASSIGNED'))
+    evidence_id = sanitize_name(metadata.get('evidence_id', 'ITEM-01'))
+    examiner = sanitize_name(metadata.get('examiner', 'UNSPECIFIED'), max_len=128)
+    notes = str(metadata.get('notes', 'None'))[:512]
     base_name = f"{case_num}_{evidence_id}"
 
     if fmt == 'e01':
@@ -777,14 +973,15 @@ def start_imaging():
         for h in hashes:
             cmd.append(f"hash={h}")
 
-    current_job["active"] = True
-    current_job["format"] = fmt
-    current_job["progress_percent"] = 0.0
-    current_job["speed_mbps"] = 0.0
-    current_job["transferred_bytes"] = 0
-    current_job["total_bytes"] = total_bytes
-    current_job["status"] = "Initializing..."
-    current_job["log"] = f"[*] Initializing {fmt.upper()} acquisition ({', '.join(hashes).upper()}) for {source} -> {dest_path}..."
+    with job_lock:
+        current_job["active"] = True
+        current_job["format"] = fmt
+        current_job["progress_percent"] = 0.0
+        current_job["speed_mbps"] = 0.0
+        current_job["transferred_bytes"] = 0
+        current_job["total_bytes"] = total_bytes
+        current_job["status"] = "Initializing..."
+        current_job["log"] = f"[*] Initializing {fmt.upper()} acquisition ({', '.join(hashes).upper()}) for {source} -> {dest_path}..."
 
     report_file = os.path.join(dest_path, f"{base_name}_report.json")
     report_data = {
@@ -827,10 +1024,12 @@ def start_imaging():
 def inspect_ddrescue_map():
     req = request.get_json() or {}
     map_path = req.get('map_path', '')
-    if not map_path or not os.path.exists(map_path):
-        return jsonify({"success": False, "error": "Mapfile not found"}), 404
+    try:
+        p = safe_path(map_path, must_exist=True)
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
-    summary = parse_ddrescue_mapfile(map_path)
+    summary = parse_ddrescue_mapfile(str(p))
     return jsonify({
         "success": True,
         "map_path": map_path,
@@ -844,36 +1043,49 @@ def inspect_ddrescue_map():
 @requires_auth
 def start_ddrescue():
     global current_job
-    if current_job["active"]:
-        return jsonify({"error": "An acquisition job is already running."}), 400
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
 
     req = request.get_json() or {}
     source = req.get('source')
     dest_path = req.get('destination', '/mnt').strip()
     strategy = req.get('strategy', 'stage1_fast')
-    retry_passes = req.get('retry_passes', '3')
+    retry_passes = str(req.get('retry_passes', '3'))
     direct_mode = req.get('direct_mode', True)
     input_pos = req.get('input_position', '')
     max_size = req.get('max_size', '')
-    metadata = req.get('metadata', {})
+    metadata = req.get('metadata', {}) or {}
 
-    if not source or not os.path.exists(source):
-        return jsonify({"error": f"Source device {source} not found."}), 400
+    try:
+        source = sanitize_device(source)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
-    if not os.path.exists(dest_path):
-        try:
-            os.makedirs(dest_path, exist_ok=True)
-        except Exception as e:
-            return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+    try:
+        dest_p = safe_path(dest_path, must_exist=False)
+        dest_path = str(dest_p)
+        if not dest_p.exists():
+            dest_p.mkdir(parents=True, exist_ok=True)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
-    case_num = metadata.get('case_number', 'RECOVERY')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    # Limit strategy to known values
+    if strategy not in ('stage1_fast', 'stage2_trim', 'stage3_intensive', 'reverse'):
+        strategy = 'stage1_fast'
+    try:
+        int(retry_passes)
+    except ValueError:
+        retry_passes = '3'
+
+    case_num = sanitize_name(metadata.get('case_number', 'RECOVERY'))
+    evidence_id = sanitize_name(metadata.get('evidence_id', 'ITEM-01'))
     base_name = f"{case_num}_{evidence_id}_ddrescue"
     
     out_file = os.path.join(dest_path, f"{base_name}.dd")
     map_file = os.path.join(dest_path, f"{base_name}.map")
 
-    cmd = ["sudo", "/usr/bin/ddrescue", "--force"]
+    cmd = ["sudo", BIN_DDRESCUE, "--force"]
 
     if strategy == 'stage1_fast':
         cmd.extend(["--no-scrape", "--no-trim"])
@@ -896,20 +1108,21 @@ def start_ddrescue():
 
     total_bytes = 0
     try:
-        res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
+        res = subprocess.run(['sudo', BIN_BLOCKDEV, '--getsize64', source], capture_output=True, text=True)
         if res.returncode == 0:
             total_bytes = int(res.stdout.strip())
     except Exception:
         pass
 
-    current_job["active"] = True
-    current_job["format"] = "ddrescue"
-    current_job["progress_percent"] = 0.0
-    current_job["speed_mbps"] = 0.0
-    current_job["transferred_bytes"] = 0
-    current_job["total_bytes"] = total_bytes
-    current_job["status"] = f"ddrescue [{strategy.upper()}]..."
-    current_job["log"] = f"[*] Initializing ddrescue ({strategy}) pass for {source} -> {out_file}\n[*] Mapfile: {map_file}..."
+    with job_lock:
+        current_job["active"] = True
+        current_job["format"] = "ddrescue"
+        current_job["progress_percent"] = 0.0
+        current_job["speed_mbps"] = 0.0
+        current_job["transferred_bytes"] = 0
+        current_job["total_bytes"] = total_bytes
+        current_job["status"] = f"ddrescue [{strategy.upper()}]..."
+        current_job["log"] = f"[*] Initializing ddrescue ({strategy}) pass for {source} -> {out_file}\n[*] Mapfile: {map_file}..."
 
     report_file = os.path.join(dest_path, f"{base_name}_report.json")
     report_data = {
@@ -940,7 +1153,9 @@ def start_ddrescue():
 @requires_auth
 def stop_imaging():
     global current_job, active_proc
-    if current_job["active"]:
+    with job_lock:
+        if not current_job["active"]:
+            return jsonify({"error": "No active job running."}), 400
         try:
             if active_proc and active_proc.poll() is None:
                 os.killpg(os.getpgid(active_proc.pid), signal.SIGKILL)
@@ -949,30 +1164,29 @@ def stop_imaging():
 
         for tool in ["dc3dd", "ewfacquire", "ddrescue"]:
             try:
-                subprocess.run(["pkill", "-9", tool], capture_output=True)
+                subprocess.run(["sudo", BIN_PKILL, "-9", tool], capture_output=True, timeout=5)
             except Exception:
                 pass
 
         current_job["status"] = "Stopped"
         current_job["active"] = False
         current_job["log"] += "\n[!] Acquisition manually terminated by user."
-        return jsonify({"success": True, "message": "Acquisition stopped."})
-        
-    return jsonify({"error": "No active job running."}), 400
+    return jsonify({"success": True, "message": "Acquisition stopped."})
 
 @app.route('/api/progress', methods=['GET'])
 @requires_auth
 def get_progress():
-    return jsonify({
-        "active": current_job["active"],
-        "format": current_job["format"],
-        "progress_percent": current_job["progress_percent"],
-        "speed_mbps": current_job["speed_mbps"],
-        "transferred_bytes": current_job["transferred_bytes"],
-        "total_bytes": current_job["total_bytes"],
-        "status": current_job["status"],
-        "log": current_job["log"]
-    })
+    with job_lock:
+        return jsonify({
+            "active": current_job["active"],
+            "format": current_job["format"],
+            "progress_percent": current_job["progress_percent"],
+            "speed_mbps": current_job["speed_mbps"],
+            "transferred_bytes": current_job["transferred_bytes"],
+            "total_bytes": current_job["total_bytes"],
+            "status": current_job["status"],
+            "log": current_job["log"]
+        })
 
 # --- File Explorer Endpoints ---
 @app.route('/api/files/browse', methods=['POST'])
@@ -980,12 +1194,14 @@ def get_progress():
 def browse_files():
     req = request.get_json() or {}
     path = req.get('path', '/mnt')
-    if not os.path.exists(path):
-        return jsonify({"error": f"Path '{path}' does not exist"}), 404
+    try:
+        p = safe_path(path, must_exist=True)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     items = []
     try:
-        for entry in os.scandir(path):
+        for entry in os.scandir(p):
             try:
                 stat = entry.stat()
                 items.append({
@@ -998,7 +1214,7 @@ def browse_files():
                 })
             except Exception:
                 pass
-        return jsonify({"path": path, "items": sorted(items, key=lambda x: (not x['is_dir'], x['name'].lower()))})
+        return jsonify({"path": str(p), "items": sorted(items, key=lambda x: (not x['is_dir'], x['name'].lower()))})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1008,17 +1224,18 @@ def copy_file():
     req = request.get_json() or {}
     src = req.get('source')
     dest_dir = req.get('destination_dir')
-
-    if not src or not os.path.exists(src) or not dest_dir or not os.path.exists(dest_dir):
-        return jsonify({"success": False, "error": "Invalid source or destination path"}), 400
-
     try:
-        dest_path = os.path.join(dest_dir, os.path.basename(src))
-        if os.path.isdir(src):
-            shutil.copytree(src, dest_path, dirs_exist_ok=True)
+        src_p = safe_path(src, must_exist=True)
+        dest_p = safe_path(dest_dir, must_exist=True)
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    try:
+        dest_path = dest_p / src_p.name
+        if src_p.is_dir():
+            shutil.copytree(src_p, dest_path, dirs_exist_ok=True)
         else:
-            shutil.copy2(src, dest_path)
-        return jsonify({"success": True, "message": f"Copied {os.path.basename(src)} to {dest_dir}"})
+            shutil.copy2(src_p, dest_path)
+        return jsonify({"success": True, "message": f"Copied {src_p.name} to {dest_p}"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -1027,16 +1244,22 @@ def copy_file():
 def delete_file():
     req = request.get_json() or {}
     path = req.get('path')
-
-    if not path or not os.path.exists(path):
-        return jsonify({"success": False, "error": "Path does not exist"}), 400
-
     try:
-        if os.path.isdir(path):
-            shutil.rmtree(path)
+        p = safe_path(path, must_exist=True)
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    for root in ALLOWED_ROOTS:
+        try:
+            if p.resolve() == root.resolve():
+                return jsonify({"success": False, "error": "Cannot delete root mount points"}), 400
+        except Exception:
+            pass
+    try:
+        if p.is_dir():
+            shutil.rmtree(p)
         else:
-            os.remove(path)
-        return jsonify({"success": True, "message": f"Deleted {os.path.basename(path)}"})
+            p.unlink()
+        return jsonify({"success": True, "message": f"Deleted {p.name}"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -1046,12 +1269,12 @@ def delete_file():
 def load_report_json():
     req = request.get_json() or {}
     report_file = req.get('report_path')
-
-    if not report_file or not os.path.exists(report_file):
-        return jsonify({"success": False, "error": "Report file not found"}), 404
-
     try:
-        with open(report_file, 'r') as f:
+        p = safe_path(report_file, must_exist=True)
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    try:
+        with open(p, 'r') as f:
             data = json.load(f)
         return jsonify({"success": True, "report": data})
     except Exception as e:
@@ -1063,12 +1286,12 @@ def save_report_json():
     req = request.get_json() or {}
     report_file = req.get('report_path')
     data = req.get('report_data')
-
-    if not report_file or not os.path.exists(report_file):
-        return jsonify({"success": False, "error": "Report target file not found"}), 404
-
     try:
-        with open(report_file, 'w') as f:
+        p = safe_path(report_file, must_exist=True)
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    try:
+        with open(p, 'w') as f:
             json.dump(data, f, indent=2)
         return jsonify({"success": True, "message": "Report JSON updated successfully."})
     except Exception as e:
@@ -1081,20 +1304,21 @@ def verify_file_hash():
     req = request.get_json() or {}
     file_path = req.get('file_path')
     algo = req.get('algorithm', 'sha256').lower()
-
-    if not file_path or not os.path.exists(file_path):
-        return jsonify({"success": False, "error": "Image file not found"}), 400
-
+    if algo not in ('md5', 'sha1', 'sha256'):
+        return jsonify({"success": False, "error": "Unsupported algorithm"}), 400
+    try:
+        p = safe_path(file_path, must_exist=True)
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     try:
         hasher = getattr(hashlib, algo)()
-        with open(file_path, 'rb') as f:
+        with open(p, 'rb') as f:
             while chunk := f.read(65536):
                 hasher.update(chunk)
         computed = hasher.hexdigest()
-
         return jsonify({
             "success": True,
-            "file_name": os.path.basename(file_path),
+            "file_name": p.name,
             "algorithm": algo.upper(),
             "hash": computed
         })
@@ -1108,18 +1332,23 @@ def export_pdf():
     req = request.get_json() or {}
     report_file = req.get('report_path')
 
-    if not report_file or not os.path.exists(report_file):
-        return jsonify({"error": "Report file not found"}), 404
+    try:
+        p = safe_path(report_file, must_exist=True)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
         from reportlab.lib.utils import ImageReader
 
-        with open(report_file, 'r') as f:
+        with open(p, 'r') as f:
             data = json.load(f)
 
-        pdf_path = report_file.replace('.json', '.pdf')
+        pdf_path = str(p).replace('.json', '.pdf')
+        if not pdf_path.endswith('.pdf'):
+            pdf_path += '.pdf'
+
         c = canvas.Canvas(pdf_path, pagesize=letter)
         
         c.setFont("Helvetica-Bold", 16)
