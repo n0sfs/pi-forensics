@@ -16,6 +16,7 @@ import sys
 import pwd
 import secrets
 import subprocess
+import shutil
 from pathlib import Path
 
 if os.geteuid() != 0:
@@ -103,14 +104,27 @@ print(f"\n[*] Preparing {INSTALL_DIR}...")
 INSTALL_DIR.mkdir(parents=True, exist_ok=True)
 
 src_root = Path(__file__).resolve().parent
-for item in ("app.py", "requirements.txt", "templates", "static", "kiosk.sh", "uninstall.py", "nginx"):
-    src = src_root / item
-    dst = INSTALL_DIR / item
-    if src.exists():
+# If install.py is already running from INSTALL_DIR (e.g. after git clone
+# into /opt/pi-forensics), source and destination are the same – skip copy.
+already_in_place = src_root.resolve() == INSTALL_DIR.resolve()
+if already_in_place:
+    print(f"    Source is already {INSTALL_DIR} – skipping file copy.")
+else:
+    for item in ("app.py", "requirements.txt", "templates", "static",
+                 "kiosk.sh", "uninstall.py", "nginx"):
+        src = src_root / item
+        dst = INSTALL_DIR / item
+        if not src.exists():
+            continue
+        if src.resolve() == dst.resolve():
+            continue
         if src.is_dir():
-            subprocess.run(["cp", "-a", str(src), str(dst.parent)], check=True)
+            if dst.exists():
+                shutil.rmtree(dst)
+            subprocess.run(["cp", "-a", str(src), str(dst)], check=True)
         else:
             subprocess.run(["cp", "-a", str(src), str(dst)], check=True)
+        print(f"    copied {item}")
 
 (INSTALL_DIR / "templates").mkdir(exist_ok=True)
 (INSTALL_DIR / "static" / "js").mkdir(parents=True, exist_ok=True)
