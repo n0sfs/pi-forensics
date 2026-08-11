@@ -65,7 +65,7 @@ Flash a fresh **Raspberry Pi OS (64-bit)** image to your device and connect to t
 ### Quick Installation (One-Line Automated Setup)
 Open a terminal (or SSH) and run:
 ```bash
-sudo git clone [https://github.com/nosfs/pi-forensics.git](https://github.com/n0sfs/pi-forensics.git) /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 ### Interactive Installer Options
 During execution, install.py will prompt you to specify the system account:
