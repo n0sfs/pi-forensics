@@ -1,20 +1,53 @@
+# ============================================================================
+# REFERENCE COPY - install.py generates this file dynamically at
+# /etc/systemd/system/pi-forensics.service and does NOT read this one.
+# This is here so you can see what a typical install produces without
+# running the installer, and as a manual-install fallback if you ever need
+# to write the unit by hand. Values below (User/Group, FORENSIC_USER/PASS,
+# --bind address) all come from install.py's interactive prompts - see
+# README.md for what each one means and how to change it after install.
+# ============================================================================
+
 [Unit]
-Description=ARM Forensic Acquisition Station (gunicorn)
-After=network-online.target
-Wants=network-online.target
+Description=ARM Forensic Acquisition Station (Production WSGI)
+After=network.target network-online.target
 
 [Service]
 Type=simple
 User=pi
 Group=pi
 WorkingDirectory=/opt/pi-forensics
+
+# Set interactively above. If you need to change these later, either edit
+# this file directly or use the Advanced Settings tab in the dashboard
+# (password only - the username isn't changeable from the UI).
 Environment="FORENSIC_USER=admin"
-Environment="FORENSIC_PASS=CHANGE_ME"
-Environment="FORENSIC_AUTH_BYPASS=0"
-ExecStart=/opt/pi-forensics/venv/bin/python3 -m gunicorn --workers 2 --timeout 300 --bind 127.0.0.1:5000 app:app
+Environment="FORENSIC_PASS=CHANGE_ME_DURING_INSTALL"
+
+# Restricts the file-explorer/report/attachment/imaging-destination API
+# to this directory tree. Defaults to /mnt if unset.
+Environment="FORENSIC_ROOT=/mnt"
+
+# Bind address depends on whether nginx+TLS was set up above:
+#   - With TLS: gunicorn stays on loopback (127.0.0.1) and nginx is the
+#     only thing listening on the network, terminating TLS on 80/443.
+#   - Without TLS: gunicorn binds 0.0.0.0 directly so the documented
+#     "Remote Web Interface" (LAN access to http://<PI_IP_ADDRESS>:5000)
+#     still works. Every request still requires HTTP Basic Auth (see
+#     app.py) regardless of which mode is active - just note that without
+#     TLS, those credentials go out in the clear.
+# Single worker process is required here: current_job/job_lock live in
+# Python process memory, not a shared store (Redis, DB, etc.), so multiple
+# gunicorn *worker processes* would each get their own independent copy -
+# a progress-poll request routed to a different worker than the one
+# running the acquisition would show stale/default state. --threads
+# still lets gunicorn handle concurrent requests (e.g. polling progress
+# while a job runs) within that single process, where the shared state
+# actually is shared.
+ExecStart=/opt/pi-forensics/venv/bin/python3 -m gunicorn --workers 1 --worker-class gthread --threads 4 --timeout 300 --bind 0.0.0.0:5000 app:app
 Restart=always
 RestartSec=3
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
+

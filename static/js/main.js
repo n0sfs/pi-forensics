@@ -1,5 +1,7 @@
 let gridMain = null;
 let gridDdrescue = null;
+let gridMobile = null;
+let gridSettings = null;
 let isLayoutLocked = true;
 let isWriteBlockActive = true;
 let throughputChart = null;
@@ -47,6 +49,26 @@ function initGridstack() {
         resizable: { handles: 'se, s, e' }
     }, '.grid-stack-ddrescue');
 
+    gridMobile = GridStack.init({
+        cellHeight: 85,
+        margin: 6,
+        handle: '.card-header',
+        animate: true,
+        disableOneColumnMode: true,
+        float: true,
+        resizable: { handles: 'se, s, e' }
+    }, '.grid-stack-mobile');
+
+    gridSettings = GridStack.init({
+        cellHeight: 85,
+        margin: 6,
+        handle: '.card-header',
+        animate: true,
+        disableOneColumnMode: true,
+        float: true,
+        resizable: { handles: 'se, s, e' }
+    }, '.grid-stack-settings');
+
     const savedMainLayout = localStorage.getItem('pi_forensics_layout_main');
     if (savedMainLayout && gridMain) {
         try { gridMain.load(JSON.parse(savedMainLayout)); } catch (e) {}
@@ -57,8 +79,20 @@ function initGridstack() {
         try { gridDdrescue.load(JSON.parse(savedDdrLayout)); } catch (e) {}
     }
 
+    const savedMobileLayout = localStorage.getItem('pi_forensics_layout_mobile');
+    if (savedMobileLayout && gridMobile) {
+        try { gridMobile.load(JSON.parse(savedMobileLayout)); } catch (e) {}
+    }
+
+    const savedSettingsLayout = localStorage.getItem('pi_forensics_layout_settings');
+    if (savedSettingsLayout && gridSettings) {
+        try { gridSettings.load(JSON.parse(savedSettingsLayout)); } catch (e) {}
+    }
+
     if (gridMain) gridMain.on('change', () => { saveDashboardLayout(); });
     if (gridDdrescue) gridDdrescue.on('change', () => { saveDashboardLayout(); });
+    if (gridMobile) gridMobile.on('change', () => { saveDashboardLayout(); });
+    if (gridSettings) gridSettings.on('change', () => { saveDashboardLayout(); });
     
     applyLockState();
 }
@@ -71,7 +105,7 @@ function toggleLayoutLock() {
 function applyLockState() {
     const lockBtn = document.getElementById("layoutLockBtn");
 
-    [gridMain, gridDdrescue].forEach(g => {
+    [gridMain, gridDdrescue, gridMobile, gridSettings].forEach(g => {
         if (!g) return;
         if (isLayoutLocked) {
             g.enableMove(false);
@@ -98,11 +132,15 @@ function applyLockState() {
 function saveDashboardLayout() {
     if (gridMain) localStorage.setItem('pi_forensics_layout_main', JSON.stringify(gridMain.save(false)));
     if (gridDdrescue) localStorage.setItem('pi_forensics_layout_ddr', JSON.stringify(gridDdrescue.save(false)));
+    if (gridMobile) localStorage.setItem('pi_forensics_layout_mobile', JSON.stringify(gridMobile.save(false)));
+    if (gridSettings) localStorage.setItem('pi_forensics_layout_settings', JSON.stringify(gridSettings.save(false)));
 }
 
 function resetDashboardLayout() {
     localStorage.removeItem('pi_forensics_layout_main');
     localStorage.removeItem('pi_forensics_layout_ddr');
+    localStorage.removeItem('pi_forensics_layout_mobile');
+    localStorage.removeItem('pi_forensics_layout_settings');
     location.reload();
 }
 
@@ -113,6 +151,7 @@ function toggleFormatControls() {
     const fmt = fmtSelect.value;
     const compSelect = document.getElementById("compressionSelect");
     const splitSelect = document.getElementById("splitSizeSelect");
+    const affRow = document.getElementById("affRawOptionRow");
 
     if (fmt === 'e01') {
         if (compSelect) compSelect.disabled = false;
@@ -121,6 +160,8 @@ function toggleFormatControls() {
         if (compSelect) compSelect.disabled = true;
         if (splitSelect) splitSelect.disabled = true;
     }
+
+    if (affRow) affRow.style.display = (fmt === 'aff') ? '' : 'none';
 }
 
 function initThroughputGraph() {
@@ -167,7 +208,11 @@ async function loadPane(pane, path) {
         const data = await res.json();
 
         if (data.error) {
-            container.innerHTML = `<div class="p-2 text-danger small">${data.error}</div>`;
+            container.innerHTML = '';
+            const errDiv = document.createElement('div');
+            errDiv.className = 'p-2 text-danger small';
+            errDiv.textContent = data.error;
+            container.appendChild(errDiv);
             return;
         }
 
@@ -197,8 +242,23 @@ async function loadPane(pane, path) {
             
             const labelClass = item.is_dir ? 'folder-text' : 'text-light';
 
-            itemDiv.innerHTML = `<span class="${labelClass}">${icon}${item.name}</span><small class="text-subtle font-monospace">${item.size_str}</small>`;
-            
+            // Filenames come from browsing evidence/suspect media, i.e. they
+            // are attacker-controlled data. Build the label from DOM nodes
+            // (item.name as a text node) instead of interpolating it into
+            // innerHTML, so a crafted filename can't inject markup/script
+            // into the examiner's authenticated session.
+            const labelSpan = document.createElement('span');
+            labelSpan.className = labelClass;
+            labelSpan.innerHTML = icon; // icon markup is static/trusted, not user data
+            labelSpan.appendChild(document.createTextNode(item.name));
+
+            const sizeEl = document.createElement('small');
+            sizeEl.className = 'text-subtle font-monospace';
+            sizeEl.textContent = item.size_str;
+
+            itemDiv.appendChild(labelSpan);
+            itemDiv.appendChild(sizeEl);
+
             itemDiv.onclick = () => {
                 document.querySelectorAll(`.file-pane .file-item`).forEach(el => el.classList.remove('active'));
                 itemDiv.classList.add('active');
@@ -324,10 +384,21 @@ function renderAttachmentsList() {
     currentAttachedFilesList.forEach((filePath, idx) => {
         const itemDiv = document.createElement("div");
         itemDiv.className = "d-flex justify-content-between align-items-center bg-dark text-light p-1 px-2 rounded mb-1 border border-secondary font-monospace small";
-        
+
         const fileName = filePath.split('/').pop();
-        itemDiv.innerHTML = `<span class="text-truncate me-2"><i class="bi bi-file-earmark-arrow-up text-info me-1"></i>${fileName}</span>
-                             <button class="btn btn-xs btn-outline-danger py-0 px-1" onclick="removeAttachment(${idx})"><i class="bi bi-x-lg"></i></button>`;
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'text-truncate me-2';
+        nameSpan.innerHTML = '<i class="bi bi-file-earmark-arrow-up text-info me-1"></i>'; // static/trusted markup
+        nameSpan.appendChild(document.createTextNode(fileName)); // untrusted, appended as text only
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'btn btn-xs btn-outline-danger py-0 px-1';
+        removeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+        removeBtn.addEventListener('click', () => removeAttachment(idx));
+
+        itemDiv.appendChild(nameSpan);
+        itemDiv.appendChild(removeBtn);
         container.appendChild(itemDiv);
     });
 }
@@ -635,8 +706,22 @@ async function loadFolderList(path) {
                     else if (modalPickerMode === 'mapfile') icon = '<i class="bi bi-map text-warning me-2 fs-5"></i>';
                 }
 
-                btn.innerHTML = `<span>${icon}<span class="${item.is_dir ? 'folder-text' : 'text-light'}">${item.name}</span></span><small class="text-subtle font-monospace">${item.size_str}</small>`;
-                
+                const outerSpan = document.createElement('span');
+                outerSpan.innerHTML = icon; // icon markup is static/trusted, not user data
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = item.is_dir ? 'folder-text' : 'text-light';
+                nameSpan.appendChild(document.createTextNode(item.name)); // untrusted evidence filename, text-only
+
+                outerSpan.appendChild(nameSpan);
+
+                const sizeEl = document.createElement('small');
+                sizeEl.className = 'text-subtle font-monospace';
+                sizeEl.textContent = item.size_str;
+
+                btn.appendChild(outerSpan);
+                btn.appendChild(sizeEl);
+
                 btn.onclick = () => {
                     if (item.is_dir) {
                         loadFolderList(item.path);
@@ -945,6 +1030,7 @@ async function startAcquisition() {
     const fmt = document.getElementById("imageFormatSelect")?.value;
     const compression = document.getElementById("compressionSelect")?.value;
     const split_size = document.getElementById("splitSizeSelect")?.value;
+    const keep_raw = document.getElementById("affKeepRaw")?.checked ?? true;
 
     if (!source) return alert("Select target evidence drive first.");
 
@@ -964,7 +1050,7 @@ async function startAcquisition() {
         const res = await fetch('/api/start_imaging', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source, destination: dest, format: fmt, compression, split_size, hashes: selectedHashes, metadata })
+            body: JSON.stringify({ source, destination: dest, format: fmt, compression, split_size, hashes: selectedHashes, metadata, keep_raw })
         });
         const data = await res.json();
 
@@ -1076,6 +1162,316 @@ async function stopAcquisition() {
     } catch (err) {}
 }
 
+// ===================== MOBILE FORENSICS =====================
+let mobileIosDevices = [];
+let mobileAndroidDevices = [];
+
+async function refreshMobileDevices() {
+    try {
+        const res = await fetch('/api/mobile/devices');
+        const data = await res.json();
+        mobileIosDevices = data.ios || [];
+        mobileAndroidDevices = data.android || [];
+
+        const iosSelect = document.getElementById("mobileIosSelect");
+        if (iosSelect) {
+            iosSelect.innerHTML = '';
+            if (mobileIosDevices.length === 0) {
+                iosSelect.innerHTML = '<option value="">No devices found - tap Refresh</option>';
+            } else {
+                mobileIosDevices.forEach(dev => {
+                    const opt = document.createElement('option');
+                    opt.value = dev.udid;
+                    opt.textContent = dev.trusted ? `${dev.name} (${dev.model})` : `${dev.udid} (NOT TRUSTED)`;
+                    iosSelect.appendChild(opt);
+                });
+            }
+            onMobileIosSelect();
+        }
+
+        const androidSelect = document.getElementById("mobileAndroidSelect");
+        if (androidSelect) {
+            androidSelect.innerHTML = '';
+            if (mobileAndroidDevices.length === 0) {
+                androidSelect.innerHTML = '<option value="">No devices found - tap Refresh</option>';
+            } else {
+                mobileAndroidDevices.forEach(dev => {
+                    const opt = document.createElement('option');
+                    opt.value = dev.serial;
+                    opt.textContent = dev.authorized ? `${dev.serial} (${dev.model})` : `${dev.serial} (${dev.state.toUpperCase()})`;
+                    androidSelect.appendChild(opt);
+                });
+            }
+            onMobileAndroidSelect();
+        }
+    } catch (err) {}
+}
+
+function onMobileIosSelect() {
+    const udid = document.getElementById("mobileIosSelect")?.value;
+    const dev = mobileIosDevices.find(d => d.udid === udid);
+    const startBtn = document.getElementById("btnMobileIosStart");
+
+    if (document.getElementById("mobileIosModel")) document.getElementById("mobileIosModel").innerText = dev?.model || '--';
+    if (document.getElementById("mobileIosVersion")) document.getElementById("mobileIosVersion").innerText = dev?.ios_version || '--';
+    if (document.getElementById("mobileIosSerial")) document.getElementById("mobileIosSerial").innerText = dev?.serial || '--';
+
+    const statusEl = document.getElementById("mobileIosStatus");
+    if (statusEl) {
+        statusEl.innerText = (dev && !dev.trusted) ? 'Device connected but not trusted yet - tap "Trust This Computer?" on the device, then Refresh.' : '';
+    }
+
+    if (startBtn) startBtn.disabled = !dev || !dev.trusted;
+}
+
+function onMobileAndroidSelect() {
+    const serial = document.getElementById("mobileAndroidSelect")?.value;
+    const dev = mobileAndroidDevices.find(d => d.serial === serial);
+    const startBtn = document.getElementById("btnMobileAndroidStart");
+
+    if (document.getElementById("mobileAndroidModel")) document.getElementById("mobileAndroidModel").innerText = dev?.model || '--';
+    if (document.getElementById("mobileAndroidState")) document.getElementById("mobileAndroidState").innerText = dev?.state || '--';
+    if (document.getElementById("mobileAndroidSerial")) document.getElementById("mobileAndroidSerial").innerText = dev?.serial || '--';
+
+    const statusEl = document.getElementById("mobileAndroidStatus");
+    if (statusEl) {
+        statusEl.innerText = (dev && !dev.authorized) ? 'Device connected but not authorized yet - approve the USB debugging prompt on the device, then Refresh.' : '';
+    }
+
+    if (startBtn) startBtn.disabled = !dev || !dev.authorized;
+}
+
+function toggleIosEncryptField() {
+    const checked = document.getElementById("mobileIosEncryptToggle")?.checked;
+    const row = document.getElementById("mobileIosEncryptRow");
+    if (row) row.style.display = checked ? '' : 'none';
+}
+
+async function startIosBackup() {
+    const udid = document.getElementById("mobileIosSelect")?.value;
+    if (!udid) return alert("Select a trusted iOS device first.");
+
+    const dest = document.getElementById("mobileIosDest")?.value || '/mnt';
+    const encryptEnabled = document.getElementById("mobileIosEncryptToggle")?.checked;
+    const encrypt_password = encryptEnabled ? (document.getElementById("mobileIosEncryptPassword")?.value || '') : '';
+
+    if (encryptEnabled && !encrypt_password) return alert("Enter an encryption password, or turn off the encrypted backup toggle.");
+
+    const metadata = {
+        case_number: document.getElementById("mobileIosCaseNum")?.value || "2026-UNASSIGNED",
+        evidence_id: document.getElementById("mobileIosEvidenceId")?.value || "ITEM-01",
+        examiner: document.getElementById("mobileIosExaminer")?.value || "UNSPECIFIED",
+        notes: "iOS full backup via idevicebackup2"
+    };
+
+    try {
+        const res = await fetch('/api/mobile/start_ios_backup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ udid, destination: dest, encrypt_password, metadata })
+        });
+        const data = await res.json();
+        if (!data.success) alert(`Start Failed: ${data.error}`);
+    } catch (err) {}
+}
+
+async function startAndroidAcquisition() {
+    const serial = document.getElementById("mobileAndroidSelect")?.value;
+    if (!serial) return alert("Select an authorized Android device first.");
+
+    const mode = document.getElementById("mobileAndroidMode")?.value || 'pull';
+    const dest = document.getElementById("mobileAndroidDest")?.value || '/mnt';
+
+    const metadata = {
+        case_number: document.getElementById("mobileAndroidCaseNum")?.value || "2026-UNASSIGNED",
+        evidence_id: document.getElementById("mobileAndroidEvidenceId")?.value || "ITEM-01",
+        examiner: document.getElementById("mobileAndroidExaminer")?.value || "UNSPECIFIED",
+        notes: `Android ${mode} via adb`
+    };
+
+    try {
+        const res = await fetch('/api/mobile/start_android', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial, mode, destination: dest, metadata })
+        });
+        const data = await res.json();
+        if (!data.success) alert(`Start Failed: ${data.error}`);
+    } catch (err) {}
+}
+
+// ===================== ADVANCED SETTINGS =====================
+
+async function changeAdminPassword() {
+    const current = document.getElementById("cfgCurrentPass")?.value || '';
+    const next = document.getElementById("cfgNewPass")?.value || '';
+    const confirm = document.getElementById("cfgConfirmPass")?.value || '';
+    const statusEl = document.getElementById("cfgPassStatus");
+
+    if (!current || !next) {
+        if (statusEl) { statusEl.className = 'small mt-2 text-danger'; statusEl.innerText = 'Enter your current and new password.'; }
+        return;
+    }
+    if (next !== confirm) {
+        if (statusEl) { statusEl.className = 'small mt-2 text-danger'; statusEl.innerText = 'New password and confirmation do not match.'; }
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/system/change_password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ current_password: current, new_password: next })
+        });
+        const data = await res.json();
+        if (statusEl) {
+            statusEl.className = data.success ? 'small mt-2 text-success' : 'small mt-2 text-danger';
+            statusEl.innerText = data.success ? data.message : data.error;
+        }
+        if (data.success) {
+            document.getElementById("cfgCurrentPass").value = '';
+            document.getElementById("cfgNewPass").value = '';
+            document.getElementById("cfgConfirmPass").value = '';
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.className = 'small mt-2 text-danger'; statusEl.innerText = 'Request failed.'; }
+    }
+}
+
+async function runDiagnostic(key) {
+    const out = document.getElementById("diagOutput");
+    if (out) out.innerText = `$ ${key}\nRunning...`;
+
+    try {
+        const res = await fetch('/api/system/diagnostics', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: key })
+        });
+        const data = await res.json();
+        if (out) out.innerText = data.success ? `$ ${data.command}\n\n${data.output}` : `[ERROR] ${data.error}`;
+    } catch (err) {
+        if (out) out.innerText = '[REQUEST FAILED]';
+    }
+}
+
+async function ejectTargetDrive() {
+    const drive = document.getElementById("ejectDriveSelect")?.value;
+    if (!drive) return alert("Select a drive to detach first.");
+    if (!confirm(`Safely unmount and flush ${drive}? Only do this once any acquisition using it has finished.`)) return;
+
+    try {
+        const res = await fetch('/api/system/eject_drive', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ drive })
+        });
+        const data = await res.json();
+        alert(data.success ? data.message : `Eject Failed: ${data.error}`);
+        if (data.success) refreshDrives();
+    } catch (err) {}
+}
+
+async function purgeConsoleLogs() {
+    try {
+        await fetch('/api/system/maintenance/purge_logs', { method: 'POST' });
+    } catch (err) {}
+}
+
+async function restartForensicService() {
+    if (!confirm("Restart the forensic web service now? Any running acquisition job state will be lost, and this page will disconnect briefly.")) return;
+    try {
+        const res = await fetch('/api/system/restart_service', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || data.error);
+    } catch (err) {}
+}
+
+async function restartKioskDisplay() {
+    try {
+        const res = await fetch('/api/system/restart_kiosk', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || data.error);
+    } catch (err) {}
+}
+
+async function gitUpdateApp() {
+    if (!confirm("Pull the latest code from the configured git remote and restart the service? Only do this if you trust that remote.")) return;
+    try {
+        const res = await fetch('/api/system/git_update', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || data.error);
+    } catch (err) {}
+}
+
+async function updateOperatingSystem() {
+    if (!confirm("Run apt-get update && upgrade -y in the background? This can take a while and should not be interrupted.")) return;
+    try {
+        const res = await fetch('/api/system/os_update', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || data.error);
+    } catch (err) {}
+}
+
+async function triggerSystemPower(action) {
+    const label = action === 'poweroff' ? 'power off' : 'reboot';
+    if (!confirm(`Are you sure you want to ${label} the station now? Any running acquisition will be interrupted.`)) return;
+    try {
+        const res = await fetch('/api/system/power', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action })
+        });
+        const data = await res.json();
+        alert(data.message || data.error);
+    } catch (err) {}
+}
+
+async function fetchNetworkInterfaces() {
+    const container = document.getElementById("interfacesContainer");
+    if (!container) return;
+
+    try {
+        const res = await fetch('/api/system/interfaces');
+        const data = await res.json();
+
+        if (data.success && data.interfaces) {
+            container.innerHTML = '';
+            data.interfaces.forEach(iface => {
+                const item = document.createElement("div");
+                item.className = "list-group-item bg-dark text-light border-secondary p-2 d-flex justify-content-between align-items-center";
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'fw-bold text-info me-1';
+                nameSpan.textContent = iface.interface;
+
+                const statusBadge = document.createElement('span');
+                statusBadge.className = iface.active ? 'badge bg-success' : 'badge bg-secondary';
+                statusBadge.textContent = iface.active ? 'UP' : 'DOWN';
+
+                const detailDiv = document.createElement('div');
+                detailDiv.className = 'font-monospace small text-subtle';
+                detailDiv.textContent = `IP: ${iface.ip} | MAC: ${iface.mac}`;
+
+                const leftDiv = document.createElement('div');
+                leftDiv.appendChild(nameSpan);
+                leftDiv.appendChild(statusBadge);
+                leftDiv.appendChild(detailDiv);
+
+                const speedSmall = document.createElement('small');
+                speedSmall.className = 'text-subtle font-monospace';
+                speedSmall.textContent = `${iface.speed_mbps} Mbps`;
+
+                item.appendChild(leftDiv);
+                item.appendChild(speedSmall);
+                container.appendChild(item);
+            });
+        }
+    } catch (err) {
+        if (container) container.innerHTML = '<span class="text-danger small p-2">Error querying interfaces.</span>';
+    }
+}
+
 async function fetchProgress() {
     try {
         const res = await fetch('/api/progress');
@@ -1115,6 +1511,18 @@ async function fetchProgress() {
                 ddrescueLogOutput.innerText = data.log;
                 ddrescueLogOutput.scrollTop = ddrescueLogOutput.scrollHeight;
             }
+
+            // Mobile forensics jobs (ios_backup / android_backup / android_pull) don't
+            // have a reliable global percentage - just show live bytes + status + log.
+            if (document.getElementById("mobileJobStatus")) document.getElementById("mobileJobStatus").innerText = `Status: ${data.status}`;
+            if (document.getElementById("mobileBytesVal")) {
+                document.getElementById("mobileBytesVal").innerText = `${(data.transferred_bytes / (1024**2)).toFixed(1)} MB`;
+            }
+            const mobileLogOutput = document.getElementById("mobileLogOutput");
+            if (mobileLogOutput && data.log) {
+                mobileLogOutput.innerText = data.log;
+                mobileLogOutput.scrollTop = mobileLogOutput.scrollHeight;
+            }
         }
 
         if (throughputChart) {
@@ -1127,6 +1535,14 @@ async function fetchProgress() {
         if (document.getElementById("btnTabDdrescueStart")) document.getElementById("btnTabDdrescueStart").disabled = data.active;
         if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = !data.active;
         if (document.getElementById("btnTabDdrescueStop")) document.getElementById("btnTabDdrescueStop").disabled = !data.active;
+        if (document.getElementById("btnMobileStop")) document.getElementById("btnMobileStop").disabled = !data.active;
+        if (data.active) {
+            if (document.getElementById("btnMobileIosStart")) document.getElementById("btnMobileIosStart").disabled = true;
+            if (document.getElementById("btnMobileAndroidStart")) document.getElementById("btnMobileAndroidStart").disabled = true;
+        } else {
+            onMobileIosSelect();     // re-derives disabled state from current device trust/selection
+            onMobileAndroidSelect();
+        }
 
     } catch (err) {}
 }
@@ -1139,6 +1555,7 @@ document.addEventListener("DOMContentLoaded", () => {
     loadPane('A', '/mnt');
     loadPane('B', '/mnt');
     toggleFormatControls();
+    refreshMobileDevices();
     
     setInterval(fetchSystemInfo, 2000);
     setInterval(fetchProgress, 1000);

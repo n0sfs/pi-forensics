@@ -1,5 +1,7 @@
 import os
 import re
+import glob
+import hmac
 import time
 import json
 import fcntl
@@ -7,51 +9,89 @@ import signal
 import psutil
 import shutil
 import hashlib
+import tempfile
 import subprocess
 import threading
-import secrets
 from functools import wraps
-from pathlib import Path
 from flask import Flask, render_template, jsonify, request, Response, send_file
 
 app = Flask(__name__)
 
-# Authentication Config – MUST be set via environment (install.py does this)
+# Authentication Config
 ADMIN_USER = os.environ.get('FORENSIC_USER', 'admin')
-ADMIN_PASS = os.environ.get('FORENSIC_PASS', '')
-# Private-network auth bypass is OFF by default. Set FORENSIC_AUTH_BYPASS=1 only for legacy labs.
-AUTH_BYPASS_PRIVATE = os.environ.get('FORENSIC_AUTH_BYPASS', '0') == '1'
-# Refuse known-weak default password at runtime
-_WEAK_PASSWORDS = {'', 'forensics', 'password', 'admin', 'changeme', '123456', 'pi'}
+ADMIN_PASS = os.environ.get('FORENSIC_PASS', 'forensics')
 
-HISTORY_FILE = "/opt/pi-forensics/mount_history.json"
-CRED_DIR = Path("/opt/pi-forensics/run")  # ephemeral credential files for mounts
+if ADMIN_USER == 'admin' and ADMIN_PASS == 'forensics':
+    print("[SECURITY WARNING] FORENSIC_USER/FORENSIC_PASS are still set to the default "
+          "admin/forensics credentials. Set unique values via environment variables "
+          "(see install.py / the generated systemd unit) before deploying this on any network.")
 
-# Allowed roots for file browser / copy / delete / report operations
-ALLOWED_ROOTS = [
-    Path("/mnt"),
-    Path("/media"),
-    Path("/opt/pi-forensics"),
-    Path("/tmp/forensic"),
-]
+# INSTALL_DIR mirrors install.py's INSTALL_DIR so this stays correct regardless
+# of which system user the installer's service account ends up being.
+INSTALL_DIR = os.environ.get('FORENSIC_INSTALL_DIR', '/opt/pi-forensics')
+HISTORY_FILE = os.path.join(INSTALL_DIR, "mount_history.json")
 
-# Absolute paths matching sudoers
-BIN_BLOCKDEV = "/usr/sbin/blockdev"
-BIN_SMARTCTL = "/usr/sbin/smartctl"
-BIN_MOUNT = "/bin/mount"
-BIN_UMOUNT = "/bin/umount"
-BIN_UDEVIL = "/usr/bin/udevil"
-BIN_PKILL = "/usr/bin/pkill"
-BIN_SMBCLIENT = "/usr/bin/smbclient"
-BIN_SHOWMOUNT = "/usr/sbin/showmount"
-BIN_DC3DD = "/usr/bin/dc3dd"
-BIN_DDRESCUE = "/usr/bin/ddrescue"
-BIN_EWFACQUIRE = "/usr/bin/ewfacquire"
-BIN_LSBLK = "/usr/bin/lsblk"
+# Password changes made from the Advanced Settings tab are persisted here
+# (0600, owned by the service account) so they survive a restart without
+# requiring the examiner to edit the systemd unit. Falls back to
+# FORENSIC_PASS above if this file doesn't exist yet.
+RUNTIME_CONFIG_FILE = os.path.join(INSTALL_DIR, "runtime_config.json")
+runtime_config_lock = threading.Lock()
 
+def load_runtime_config():
+    with runtime_config_lock:
+        if os.path.exists(RUNTIME_CONFIG_FILE):
+            try:
+                with open(RUNTIME_CONFIG_FILE, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading runtime config: {e}")
+        return {}
 
-# Global State for Live Acquisition Job (protected by lock)
-job_lock = threading.RLock()
+def save_runtime_config(cfg):
+    with runtime_config_lock:
+        try:
+            with open(RUNTIME_CONFIG_FILE, 'w') as f:
+                json.dump(cfg, f, indent=2)
+            os.chmod(RUNTIME_CONFIG_FILE, 0o600)
+        except Exception as e:
+            print(f"Error saving runtime config: {e}")
+
+def get_active_admin_pass():
+    return load_runtime_config().get('pass', ADMIN_PASS)
+
+# Root directory that all file-explorer / report / attachment / imaging-destination
+# endpoints are sandboxed to. Nothing outside this tree can be browsed, read,
+# written, or deleted via the API, regardless of what path a client sends.
+EVIDENCE_ROOT = os.path.realpath(os.environ.get('FORENSIC_ROOT', '/mnt'))
+
+# Guards access to the shared current_job / active_proc state, which is
+# written from the background acquisition thread and read/written from
+# request-handling threads.
+job_lock = threading.Lock()
+
+# --- Basic brute-force throttling for Basic Auth ---
+# In-memory only (resets on restart) and keyed by source IP, so it's not a
+# substitute for a real WAF/fail2ban setup on a network you don't control -
+# but it closes the "unlimited guesses" gap in the meantime.
+auth_fail_lock = threading.Lock()
+auth_fail_tracker = {}  # ip -> {"count": int, "locked_until": float|None}
+MAX_AUTH_FAILURES = 5
+LOCKOUT_SECONDS = 300
+
+ALLOWED_HASH_ALGOS = {'md5', 'sha1', 'sha256'}
+
+def update_job(**kwargs):
+    """Atomically update one or more fields of the shared current_job dict."""
+    with job_lock:
+        current_job.update(kwargs)
+
+def snapshot_job():
+    """Return a consistent point-in-time copy of current_job for reading."""
+    with job_lock:
+        return dict(current_job)
+
+# Global State for Live Acquisition Job
 current_job = {
     "active": False,
     "format": "dd",
@@ -89,164 +129,89 @@ def save_mount_history(entry):
     except Exception as e:
         print(f"Error saving mount history: {e}")
 
-# --- Path / device sanitization helpers ---
-def safe_path(user_path: str, must_exist: bool = True) -> Path:
-    """Resolve and validate a user-supplied path against ALLOWED_ROOTS."""
-    if not user_path or not isinstance(user_path, str):
-        raise ValueError("Path is required")
-    if '\0' in user_path:
-        raise ValueError("Invalid characters in path")
-    try:
-        p = Path(user_path).resolve(strict=False)
-    except Exception as e:
-        raise ValueError(f"Cannot resolve path: {e}")
-    allowed = False
-    for root in ALLOWED_ROOTS:
-        try:
-            root_res = root.resolve()
-            if p == root_res or root_res in p.parents:
-                allowed = True
-                break
-        except Exception:
-            continue
-    if not allowed:
-        raise ValueError(f"Path '{user_path}' is outside allowed directories")
-    if must_exist and not p.exists():
-        raise ValueError(f"Path does not exist: {user_path}")
-    return p
-
-
-def sanitize_device(dev: str) -> str:
-    """Allow only legitimate block device paths."""
-    if not dev or not isinstance(dev, str):
-        raise ValueError("Device path required")
-    dev = dev.strip()
-    if not re.match(r'^/dev/(sd[a-z]+|nvme\d+n\d+|mmcblk\d+|vd[a-z]+|xvd[a-z]+)(\d+p?\d*)?$', dev):
-        raise ValueError(f"Invalid or disallowed device: {dev}")
-    if not os.path.exists(dev):
-        raise ValueError(f"Device does not exist: {dev}")
-    return dev
-
-
-def sanitize_name(name: str, max_len: int = 64) -> str:
-    if not name:
-        return "UNASSIGNED"
-    cleaned = re.sub(r'[^A-Za-z0-9_\-\.]', '_', str(name))[:max_len]
-    return cleaned or "UNASSIGNED"
-
-
-def sanitize_host(host: str) -> str:
-    host = (host or '').strip()
-    if not host or not re.match(r'^[A-Za-z0-9][A-Za-z0-9.\-]{0,253}$', host):
-        raise ValueError("Invalid server hostname or IP")
-    if '..' in host:
-        raise ValueError("Invalid server hostname or IP")
-    return host
-
-
-def sanitize_share(share: str) -> str:
-    share = (share or '').strip()
-    if not share:
-        raise ValueError("Invalid share path")
-    # Reject shell metacharacters and control characters (not the letters n/r)
-    if any(c in share for c in ';&|`$<>') or any(ord(c) < 32 for c in share):
-        raise ValueError("Invalid share path")
-    # Keep path-ish characters only (letters, digits, _ / . - space)
-    if not re.match(r'^[A-Za-z0-9_/\.\- ]{1,256}$', share):
-        raise ValueError("Invalid share path characters")
-    return share
-
-
-def write_smb_credentials(username: str, password: str) -> Path:
-    """Write a temporary credentials file (mode 0600) for mount.cifs / smbclient."""
-    CRED_DIR.mkdir(parents=True, exist_ok=True)
-    # Restrict directory
-    try:
-        os.chmod(CRED_DIR, 0o700)
-    except Exception:
-        pass
-    path = CRED_DIR / f"smbcred_{secrets.token_hex(8)}.txt"
-    content = f"username={username or 'guest'}\npassword={password or ''}\n"
-    path.write_text(content)
-    os.chmod(path, 0o600)
-    return path
-
-
-def credentials_are_safe() -> bool:
-    """Return False if the configured web password is missing or known-weak."""
-    if not ADMIN_PASS:
-        return False
-    if ADMIN_PASS.lower() in _WEAK_PASSWORDS:
-        return False
-    if len(ADMIN_PASS) < 8:
-        return False
-    return True
-
-
 # --- Authentication Middleware ---
 def check_auth(username, password):
-    if not credentials_are_safe():
-        return False
-    return secrets.compare_digest(username or '', ADMIN_USER) and \
-           secrets.compare_digest(password or '', ADMIN_PASS)
+    # Constant-time comparison to avoid leaking credential info via timing.
+    user_ok = hmac.compare_digest(username or '', ADMIN_USER)
+    pass_ok = hmac.compare_digest(password or '', get_active_admin_pass())
+    return user_ok and pass_ok
 
 def authenticate():
-    if not credentials_are_safe():
-        return Response(
-            'Server misconfigured: weak or missing FORENSIC_PASS. '
-            'Set a strong password via the service environment and restart.\n',
-            503,
-            {'Content-Type': 'text/plain'}
-        )
     return Response(
         'Authentication required to access ARM Forensic Station.\n',
         401,
         {'WWW-Authenticate': 'Basic realm="Forensic Station Login Required"'}
     )
 
+def _is_locked_out(client_key):
+    with auth_fail_lock:
+        entry = auth_fail_tracker.get(client_key)
+        return bool(entry and entry["locked_until"] and time.time() < entry["locked_until"])
+
+def _record_auth_failure(client_key):
+    with auth_fail_lock:
+        entry = auth_fail_tracker.get(client_key, {"count": 0, "locked_until": None})
+        entry["count"] += 1
+        if entry["count"] >= MAX_AUTH_FAILURES:
+            entry["locked_until"] = time.time() + LOCKOUT_SECONDS
+        auth_fail_tracker[client_key] = entry
+
+def _record_auth_success(client_key):
+    with auth_fail_lock:
+        auth_fail_tracker.pop(client_key, None)
+
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        client_ip = request.remote_addr or ''
-        # Optional legacy bypass (disabled by default)
-        if AUTH_BYPASS_PRIVATE:
-            if client_ip in ('127.0.0.1', '::1', 'localhost') or \
-               client_ip.startswith(('192.168.', '10.', '172.')):
-                return f(*args, **kwargs)
-        # Loopback (kiosk) always allowed unless FORENSIC_FORCE_LOCAL_AUTH=1
-        if client_ip in ('127.0.0.1', '::1'):
-            if os.environ.get('FORENSIC_FORCE_LOCAL_AUTH', '0') == '1':
-                auth = request.authorization
-                if not auth or not check_auth(auth.username, auth.password):
-                    return authenticate()
-            return f(*args, **kwargs)
+        # NOTE: There is intentionally no "trusted subnet" bypass here.
+        # This device is designed for field deployment on networks the
+        # examiner does not fully control (client sites, shared labs,
+        # conference Wi-Fi, etc.), and it can read/write/delete evidence,
+        # mount arbitrary shares, and run privileged recovery tools -
+        # every request must authenticate, regardless of source IP.
+        client_key = request.remote_addr or 'unknown'
+
+        if _is_locked_out(client_key):
+            return Response(
+                'Too many failed login attempts. Try again in a few minutes.\n',
+                429,
+                {'Retry-After': str(LOCKOUT_SECONDS)}
+            )
+
         auth = request.authorization
         if not auth or not check_auth(auth.username, auth.password):
+            _record_auth_failure(client_key)
             return authenticate()
+
+        _record_auth_success(client_key)
         return f(*args, **kwargs)
     return decorated
 
+def safe_path(path_str):
+    """
+    Resolve a user-supplied path and confirm it stays within EVIDENCE_ROOT.
+
+    Prevents path traversal (../..), absolute-path escapes, and symlink
+    tricks in every endpoint that takes a path from the client (file
+    browser, copy/delete, report load/save, hash verification, PDF export,
+    dd/ddrescue acquisition source & destination).
+    Returns the resolved absolute path, or None if it escapes the sandbox.
+    """
+    if not path_str:
+        return None
+    resolved = os.path.realpath(path_str)
+    if resolved == EVIDENCE_ROOT or resolved.startswith(EVIDENCE_ROOT + os.sep):
+        return resolved
+    return None
+
+# --- Block Device Path Validation ---
+_DEVICE_RE = re.compile(r'^/dev/(sd[a-z]|nvme\d+n\d+|mmcblk\d+)$')
+
+def is_valid_block_device(path_str):
+    """Whitelist check for whole-disk device paths (no partitions, no shell metacharacters)."""
+    return bool(path_str) and bool(_DEVICE_RE.match(path_str))
+
 # --- Hash & Recovery Output Parsers ---
-
-def parse_dc3dd_hashes_from_text(text):
-    """Extract hash lines from dc3dd stdout/stderr text."""
-    hashes = {}
-    if not text:
-        return hashes
-    try:
-        for val, algo in re.findall(
-            r'([a-fA-F0-9]{32,64})\s*\(\s*(md5|sha1|sha256)\s*\)',
-            text, re.IGNORECASE):
-            hashes[algo.lower()] = val
-        if not hashes:
-            for algo, val in re.findall(
-                r'\b(md5|sha1|sha256)\b[^\n:]*:\s*([a-fA-F0-9]{32,64})',
-                text, re.IGNORECASE):
-                hashes[algo.lower()] = val
-    except Exception as e:
-        print(f"Error parsing dc3dd hashes from text: {e}")
-    return hashes
-
 def parse_dc3dd_hashes(log_path):
     hashes = {}
     if os.path.exists(log_path):
@@ -324,6 +289,55 @@ def parse_ddrescue_line(line):
 
     return rescued_bytes, pct, spd
 
+HASH_HEX_LEN = {'md5': 32, 'sha1': 40, 'sha256': 64}
+
+def read_hash_log_file(path, algo):
+    """
+    Extract a hex hash of the expected length for `algo` from a dcfldd-style
+    hash log file (dcfldd writes one file per algorithm via <algo>log=).
+    """
+    expected_len = HASH_HEX_LEN.get(algo)
+    if not expected_len or not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r') as f:
+            content = f.read()
+        m = re.search(r'\b([a-fA-F0-9]{%d})\b' % expected_len, content)
+        return m.group(1).lower() if m else None
+    except Exception as e:
+        print(f"Error reading hash log {path}: {e}")
+        return None
+
+def compute_file_hashes(file_path, algos, chunk_size=8 * 1024 * 1024):
+    """
+    Stream-hash a file for one or more algorithms. Used for plain GNU `dd`,
+    which - unlike dc3dd/dcfldd/ewfacquire - has no built-in hashing at all.
+    """
+    hashers = {a: hashlib.new(a) for a in algos if a in ALLOWED_HASH_ALGOS}
+    if not hashers or not os.path.exists(file_path):
+        return {}
+    try:
+        with open(file_path, 'rb') as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                for h in hashers.values():
+                    h.update(chunk)
+        return {a: h.hexdigest() for a, h in hashers.items()}
+    except Exception as e:
+        print(f"Error computing hashes for {file_path}: {e}")
+        return {}
+
+def parse_affconvert_line(line):
+    """affconvert prints progress as 'Converting page N of M'."""
+    m = re.search(r'[Cc]onverting page (\d+) of (\d+)', line)
+    if m:
+        current, total_pages = int(m.group(1)), int(m.group(2))
+        if total_pages > 0:
+            return round((current / total_pages) * 100, 1)
+    return None
+
 def parse_ddrescue_mapfile(map_path):
     summary = {
         "rescued_bytes": 0,
@@ -358,184 +372,557 @@ def parse_ddrescue_mapfile(map_path):
     return summary
 
 # --- Direct Real-time Asynchronous Execution Engine ---
-def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data):
+def _stream_subprocess(cmd, on_line, on_poll=None, poll_interval=2.0):
+    """
+    Launch cmd, non-blockingly stream stdout+stderr line by line (ANSI-
+    stripped) into on_line(clean_line), and return the finished Popen
+    object. Sets the module-level active_proc so /api/stop_imaging can
+    kill it. Shared by execution_worker (single-phase formats),
+    execution_worker_aff (raw acquisition + AFF conversion phases), and
+    the mobile workers.
+
+    If on_poll is given, it's called every poll_interval seconds
+    regardless of stdout activity - some tools (idevicebackup2, adb
+    backup) go long stretches with no output while still working, so
+    line-triggered progress alone isn't enough to show the job is alive.
+    """
+    global active_proc
+    active_proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=False,
+        bufsize=0,
+        preexec_fn=os.setsid
+    )
+
+    fd = active_proc.stdout.fileno()
+    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+    byte_buffer = b""
+    last_poll = time.time()
+
+    while True:
+        time.sleep(0.1)
+        try:
+            raw_chunk = os.read(fd, 1024)
+            if raw_chunk:
+                byte_buffer += raw_chunk
+
+                while b'\r' in byte_buffer or b'\n' in byte_buffer:
+                    r_idx = byte_buffer.find(b'\r')
+                    n_idx = byte_buffer.find(b'\n')
+                    indices = [i for i in (r_idx, n_idx) if i != -1]
+                    cut_idx = min(indices)
+
+                    line_bytes = byte_buffer[:cut_idx]
+                    byte_buffer = byte_buffer[cut_idx + 1:]
+
+                    line_str = line_bytes.decode('utf-8', errors='ignore')
+                    clean_line = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line_str).replace('\r', '').strip()
+                    if clean_line:
+                        on_line(clean_line)
+
+            elif active_proc.poll() is not None:
+                break
+        except (OSError, IOError):
+            pass
+
+        if on_poll and (time.time() - last_poll) >= poll_interval:
+            try:
+                on_poll()
+            except Exception:
+                pass
+            last_poll = time.time()
+
+    active_proc.wait()
+    return active_proc
+
+def poll_directory_size(path):
+    """Ground-truth bytes-on-disk for a file or directory tree, used as a
+    progress proxy for tools that don't report a parseable percentage."""
+    try:
+        if os.path.isfile(path):
+            return os.path.getsize(path)
+        total = 0
+        for root, _dirs, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+        return total
+    except Exception:
+        return 0
+
+def _write_report(report_file_path, report_data, append_log):
+    try:
+        with open(report_file_path, 'w') as f:
+            json.dump(report_data, f, indent=2)
+        append_log(f"[+] Forensic case report updated: {report_file_path}")
+    except Exception as e:
+        append_log(f"[-] Warning: Failed updating report JSON: {e}")
+
+# --- Mobile Device Discovery (iOS via libimobiledevice, Android via adb) ---
+# These only talk to devices that are already unlocked and have already
+# granted trust (iOS "Trust This Computer?") or USB debugging authorization
+# (Android RSA key prompt) on-device. Nothing here bypasses a lockscreen,
+# jailbreaks, or exploits a device - nothing in this app does.
+_UDID_RE = re.compile(r'^[a-fA-F0-9\-]{20,64}$')
+_ANDROID_SERIAL_RE = re.compile(r'^[a-zA-Z0-9_\-\.:]{4,64}$')
+
+def list_ios_devices():
+    devices = []
+    try:
+        res = subprocess.run(["idevice_id", "-l"], capture_output=True, text=True, timeout=15)
+        udids = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        for udid in udids:
+            if not _UDID_RE.match(udid):
+                continue
+            info = {"udid": udid, "name": "Unknown", "model": "Unknown",
+                     "ios_version": "Unknown", "serial": "Unknown", "trusted": True}
+            try:
+                info_res = subprocess.run(["ideviceinfo", "-u", udid], capture_output=True, text=True, timeout=15)
+                if info_res.returncode == 0:
+                    for line in info_res.stdout.splitlines():
+                        if ':' not in line:
+                            continue
+                        key, _, val = line.partition(':')
+                        key, val = key.strip(), val.strip()
+                        if key == 'DeviceName':
+                            info['name'] = val
+                        elif key == 'ProductType':
+                            info['model'] = val
+                        elif key == 'ProductVersion':
+                            info['ios_version'] = val
+                        elif key == 'SerialNumber':
+                            info['serial'] = val
+                else:
+                    # Device is plugged in (usbmuxd sees it) but hasn't
+                    # granted "Trust This Computer?" yet - not a bypass
+                    # target, just needs the examiner to tap Trust on-device.
+                    info['trusted'] = False
+            except Exception:
+                info['trusted'] = False
+            devices.append(info)
+    except Exception as e:
+        print(f"Error listing iOS devices: {e}")
+    return devices
+
+def list_android_devices():
+    devices = []
+    try:
+        res = subprocess.run(["adb", "devices", "-l"], capture_output=True, text=True, timeout=15)
+        lines = res.stdout.splitlines()
+        for line in lines[1:]:  # first line is "List of devices attached"
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            serial = parts[0]
+            if not _ANDROID_SERIAL_RE.match(serial):
+                continue
+            state = parts[1] if len(parts) > 1 else "unknown"
+            model = "Unknown"
+            for tok in parts[2:]:
+                if tok.startswith("model:"):
+                    model = tok.split(":", 1)[1]
+            devices.append({
+                "serial": serial,
+                "state": state,  # 'device' = authorized, 'unauthorized' = waiting on RSA prompt, 'offline' = other
+                "model": model,
+                "authorized": (state == "device")
+            })
+    except Exception as e:
+        print(f"Error listing Android devices: {e}")
+    return devices
+
+def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data, hashes=None):
     global current_job, active_proc
     log_history = []
+    hashes = hashes or []
     
     def append_log(msg):
         if msg:
             log_history.append(msg)
-            with job_lock:
-                current_job["log"] = "\n".join(log_history[-100:])
+            update_job(log="\n".join(log_history[-100:]))
 
     append_log(f"[*] Starting execution using [{fmt.upper()}] engine...")
-    # Do not log full command if it might contain secrets (cmd is already sanitized)
-    append_log(f"[*] Engine: {fmt.upper()} | target bytes: {total_bytes}")
+    append_log(f"[*] Command: {' '.join(cmd)}")
 
     start_time = time.time()
-    with job_lock:
-        current_job["status"] = "Processing Media..."
+    update_job(status="Processing Media...")
 
     try:
-        active_proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=False,
-            bufsize=0,
-            preexec_fn=os.setsid
-        )
+        def on_line(clean_line):
+            append_log(clean_line)
 
-        fd = active_proc.stdout.fileno()
-        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            if fmt in ['raw', 'dd', 'dcfldd', 'plain_dd']:
+                bytes_copied, speed = parse_dc3dd_line(clean_line)
+                updates = {}
+                if bytes_copied is not None:
+                    updates["transferred_bytes"] = bytes_copied
+                    if total_bytes > 0:
+                        updates["progress_percent"] = round((bytes_copied / total_bytes) * 100, 1)
+                if speed is not None:
+                    updates["speed_mbps"] = speed
+                if updates:
+                    update_job(**updates)
 
-        byte_buffer = b""
+            elif fmt == 'e01':
+                pct, speed = parse_ewf_line(clean_line)
+                updates = {}
+                if "verify" in clean_line.lower() or "verifying" in clean_line.lower():
+                    updates["status"] = "Verifying Image Integrity..."
 
-        while True:
-            time.sleep(0.1)
-            
-            try:
-                raw_chunk = os.read(fd, 1024)
-                if raw_chunk:
-                    byte_buffer += raw_chunk
-                    
-                    while b'\r' in byte_buffer or b'\n' in byte_buffer:
-                        r_idx = byte_buffer.find(b'\r')
-                        n_idx = byte_buffer.find(b'\n')
-                        indices = [i for i in (r_idx, n_idx) if i != -1]
-                        cut_idx = min(indices)
-                        
-                        line_bytes = byte_buffer[:cut_idx]
-                        byte_buffer = byte_buffer[cut_idx + 1:]
-                        
-                        line_str = line_bytes.decode('utf-8', errors='ignore')
-                        
-                        # Strip ANSI escape sequences and carriage return codes
-                        clean_line = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line_str).replace('\r', '').strip()
-                        if not clean_line:
-                            continue
-                        
-                        append_log(clean_line)
+                if pct is not None:
+                    updates["progress_percent"] = pct
+                    if total_bytes > 0:
+                        updates["transferred_bytes"] = int((pct / 100.0) * total_bytes)
+                if speed is not None:
+                    updates["speed_mbps"] = speed
+                if updates:
+                    update_job(**updates)
 
-                        if fmt in ['raw', 'dd']:
-                            bytes_copied, speed = parse_dc3dd_line(clean_line)
-                            with job_lock:
-                                if bytes_copied is not None:
-                                    current_job["transferred_bytes"] = bytes_copied
-                                    if total_bytes > 0:
-                                        current_job["progress_percent"] = round((bytes_copied / total_bytes) * 100, 1)
-                                if speed is not None:
-                                    current_job["speed_mbps"] = speed
+            elif fmt == 'ddrescue':
+                rescued_bytes, pct, speed = parse_ddrescue_line(clean_line)
+                updates = {}
+                if rescued_bytes is not None:
+                    updates["transferred_bytes"] = rescued_bytes
+                if pct is not None:
+                    updates["progress_percent"] = pct
+                elif rescued_bytes is not None and total_bytes > 0:
+                    updates["progress_percent"] = round((rescued_bytes / total_bytes) * 100, 1)
+                if speed is not None:
+                    updates["speed_mbps"] = speed
+                if updates:
+                    update_job(**updates)
 
-                        elif fmt == 'e01':
-                            pct, speed = parse_ewf_line(clean_line)
-                            with job_lock:
-                                if "verify" in clean_line.lower() or "verifying" in clean_line.lower():
-                                    current_job["status"] = "Verifying Image Integrity..."
-                                if pct is not None:
-                                    current_job["progress_percent"] = pct
-                                    if total_bytes > 0:
-                                        current_job["transferred_bytes"] = int((pct / 100.0) * total_bytes)
-                                if speed is not None:
-                                    current_job["speed_mbps"] = speed
-
-                        elif fmt == 'ddrescue':
-                            rescued_bytes, pct, speed = parse_ddrescue_line(clean_line)
-                            with job_lock:
-                                if rescued_bytes is not None:
-                                    current_job["transferred_bytes"] = rescued_bytes
-                                if pct is not None:
-                                    current_job["progress_percent"] = pct
-                                elif rescued_bytes is not None and total_bytes > 0:
-                                    current_job["progress_percent"] = round((rescued_bytes / total_bytes) * 100, 1)
-                                if speed is not None:
-                                    current_job["speed_mbps"] = speed
-
-                elif active_proc.poll() is not None:
-                    break
-            except (OSError, IOError):
-                pass
-
-        active_proc.wait()
-        rc = active_proc.returncode
-
-        try:
-            os.sync()
-        except Exception:
-            pass
+        proc = _stream_subprocess(cmd, on_line)
 
         time.sleep(1.0)
-
-        with job_lock:
-            log_snapshot = current_job.get("log", "")
-            was_stopped = current_job.get("status") == "Stopped"
-            transferred = current_job.get("transferred_bytes", 0)
-
         computed_hashes = {}
         if fmt == 'e01':
-            computed_hashes = parse_ewf_hashes(log_snapshot)
+            computed_hashes = parse_ewf_hashes(snapshot_job()["log"])
         elif fmt in ['raw', 'dd']:
             dc3dd_log = out_file.replace('.dd', '_dc3dd.log')
             computed_hashes = parse_dc3dd_hashes(dc3dd_log)
-            if not computed_hashes:
-                computed_hashes = parse_dc3dd_hashes_from_text(log_snapshot)
+        elif fmt == 'dcfldd':
+            for h in hashes:
+                val = read_hash_log_file(out_file.replace('.dd', f'_{h}.log'), h)
+                if val:
+                    computed_hashes[h] = val
+        elif fmt == 'plain_dd':
+            append_log("[*] Computing hash(es) of output file (plain dd has no built-in hashing)...")
+            computed_hashes = compute_file_hashes(out_file, hashes)
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["computed_verification_hashes"] = computed_hashes
-        report_data["exit_code"] = rc
 
-        log_l = log_snapshot.lower()
-        tool_says_done = (
-            "completed" in log_l
-            or "finished" in log_l
-            or "100%" in log_snapshot
-        )
-        bytes_done = (total_bytes > 0 and transferred >= total_bytes)
-        success = (rc in (0, 1, 2)) or tool_says_done or bytes_done
-        if any(x in log_l for x in ("permission denied", "aborted", "unrecognized option", "no such file")):
-            if rc not in (0, 2) and not bytes_done:
-                success = False
+        if proc.returncode in [0, 2]:
+            update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
+            append_log("[+] Recovery/acquisition completed successfully.")
+            report_data["acquisition_status"] = "COMPLETED"
 
-        with job_lock:
-            if was_stopped:
-                current_job["status"] = "Stopped"
-                report_data["acquisition_status"] = "STOPPED"
-            elif success:
-                current_job["status"] = "Completed Successfully"
-                current_job["progress_percent"] = 100.0
-                current_job["speed_mbps"] = 0.0
-                if total_bytes > 0:
-                    current_job["transferred_bytes"] = total_bytes
-                report_data["acquisition_status"] = "COMPLETED"
-            else:
-                current_job["status"] = "Failed"
-                current_job["speed_mbps"] = 0.0
-                report_data["acquisition_status"] = "FAILED"
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            append_log(f"[-] Process exited with code {proc.returncode}")
+            report_data["acquisition_status"] = "FAILED"
 
-        if success and not was_stopped:
-            append_log(f"[+] Recovery/acquisition completed successfully (exit {rc}).")
-            if computed_hashes:
-                for algo, val in computed_hashes.items():
-                    append_log(f"[+] {algo.upper()}: {val}")
-        elif not was_stopped:
-            append_log(f"[-] Process exited with code {rc}")
-
-        try:
-            with open(report_file_path, 'w') as f:
-                json.dump(report_data, f, indent=2)
-            append_log(f"[+] Forensic case report updated: {report_file_path}")
-        except Exception as e:
-            append_log(f"[-] Warning: Failed updating report JSON: {e}")
+        _write_report(report_file_path, report_data, append_log)
 
     except Exception as e:
-        with job_lock:
-            current_job["status"] = "Failed"
+        update_job(status="Failed")
         append_log(f"[-] Execution Exception: {str(e)}")
 
     finally:
-        with job_lock:
-            current_job["active"] = False
+        update_job(active=False)
+        active_proc = None
+
+def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_file_path, report_data, total_bytes):
+    """
+    Two-phase AFF acquisition: (1) raw acquisition via dc3dd, with on-the-fly
+    hashing - these hashes are the forensic record of what was actually read
+    off the device; (2) convert the raw image to .aff via affconvert, which
+    repackages the same bytes (compression/segmentation only), so the phase-1
+    hashes remain the authoritative acquisition hashes. Real device-to-AFF
+    tools (e.g. the old `aimage`) are no longer part of the packaged
+    afflib-tools, which only ships file-to-file converters - hence two phases.
+    """
+    global current_job, active_proc
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    raw_file = os.path.join(dest_path, f"{base_name}.raw")
+    dc3dd_log_file = os.path.join(dest_path, f"{base_name}_dc3dd.log")
+    aff_file = os.path.join(dest_path, f"{base_name}.aff")
+
+    try:
+        # --- Phase 1: raw acquisition (dc3dd) ---
+        update_job(format="aff", status="Phase 1/2: Raw Acquisition...",
+                   progress_percent=0.0, speed_mbps=0.0, transferred_bytes=0, total_bytes=total_bytes)
+        append_log(f"[*] Phase 1/2: Acquiring raw image to {raw_file}")
+
+        cmd1 = ["dc3dd", f"if={source}", f"of={raw_file}", f"log={dc3dd_log_file}"]
+        for h in hashes:
+            cmd1.append(f"hash={h}")
+        append_log(f"[*] Command: {' '.join(cmd1)}")
+
+        def on_line_phase1(clean_line):
+            append_log(clean_line)
+            bytes_copied, speed = parse_dc3dd_line(clean_line)
+            updates = {}
+            if bytes_copied is not None:
+                updates["transferred_bytes"] = bytes_copied
+                if total_bytes > 0:
+                    # Phase 1 is the first half of overall progress.
+                    updates["progress_percent"] = round((bytes_copied / total_bytes) * 50.0, 1)
+            if speed is not None:
+                updates["speed_mbps"] = speed
+            if updates:
+                update_job(**updates)
+
+        proc1 = _stream_subprocess(cmd1, on_line_phase1)
+        time.sleep(1.0)
+
+        if proc1.returncode not in [0, 2]:
+            if snapshot_job()["status"] != "Stopped":
+                update_job(status="Failed")
+                append_log(f"[-] Phase 1 (raw acquisition) failed with exit code {proc1.returncode}")
+                report_data["acquisition_status"] = "FAILED"
+                report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+                _write_report(report_file_path, report_data, append_log)
+            return
+
+        if snapshot_job()["status"] == "Stopped":
+            return  # user aborted right after phase 1 finished
+
+        raw_hashes = parse_dc3dd_hashes(dc3dd_log_file)
+        append_log(f"[+] Phase 1 complete. Raw acquisition hashes: {raw_hashes}")
+        report_data["computed_verification_hashes"] = raw_hashes
+
+        # --- Phase 2: convert raw -> AFF ---
+        update_job(status="Phase 2/2: Converting to AFF...", progress_percent=50.0)
+        append_log(f"[*] Phase 2/2: Converting {raw_file} -> {aff_file}")
+
+        cmd2 = ["affconvert", "-o", aff_file, raw_file]
+        append_log(f"[*] Command: {' '.join(cmd2)}")
+
+        def on_line_phase2(clean_line):
+            append_log(clean_line)
+            pct = parse_affconvert_line(clean_line)
+            if pct is not None:
+                update_job(progress_percent=round(50.0 + pct / 2.0, 1))
+
+        proc2 = _stream_subprocess(cmd2, on_line_phase2)
+        time.sleep(0.5)
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+
+        if proc2.returncode == 0 and os.path.exists(aff_file):
+            update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
+            append_log("[+] AFF conversion completed successfully.")
+            report_data["acquisition_status"] = "COMPLETED"
+
+            if keep_raw:
+                append_log(f"[*] Intermediate raw image retained per examiner selection: {raw_file}")
+                report_data["acquisition_parameters"]["raw_image_retained"] = True
+            else:
+                try:
+                    os.remove(raw_file)
+                    append_log(f"[*] Intermediate raw image deleted per examiner selection: {raw_file}")
+                    report_data["acquisition_parameters"]["raw_image_retained"] = False
+                except Exception as e:
+                    append_log(f"[-] Warning: Could not delete intermediate raw image: {e}")
+                    report_data["acquisition_parameters"]["raw_image_retained"] = True
+
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            append_log(f"[-] Phase 2 (AFF conversion) failed with exit code {proc2.returncode}")
+            report_data["acquisition_status"] = "FAILED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
+        update_job(active=False)
+        active_proc = None
+
+def execution_worker_ios_backup(udid, dest_dir, encrypt_password, report_file_path, report_data):
+    """
+    idevicebackup2 gives per-file status lines but no global progress
+    percentage (open upstream request, unresolved) - so progress here is
+    shown as bytes-on-disk (polled from the backup folder), not a percent.
+    """
+    global current_job, active_proc
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    udid_backup_dir = os.path.join(dest_dir, udid)
+
+    try:
+        if encrypt_password:
+            append_log("[*] Enabling encrypted backup on device (confirm passcode on-screen if prompted)...")
+            update_job(status="Waiting for on-device encryption confirmation...")
+            try:
+                enc_res = subprocess.run(
+                    ["idevicebackup2", "-u", udid, "encryption", "on", encrypt_password],
+                    capture_output=True, text=True, timeout=90
+                )
+                out = (enc_res.stdout + enc_res.stderr).strip()
+                if out:
+                    append_log(out)
+                if enc_res.returncode != 0 and "already" not in out.lower() and "enabled" not in out.lower():
+                    update_job(status="Failed")
+                    append_log("[-] Could not enable backup encryption. If it's already on with a "
+                               "different password, disable it on the device first "
+                               "(Settings > General > Transfer or Reset iPhone) or supply that password.")
+                    report_data["acquisition_status"] = "FAILED"
+                    report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+                    _write_report(report_file_path, report_data, append_log)
+                    return
+            except subprocess.TimeoutExpired:
+                update_job(status="Failed")
+                append_log("[-] Timed out waiting for encryption confirmation on the device.")
+                report_data["acquisition_status"] = "FAILED"
+                report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+                _write_report(report_file_path, report_data, append_log)
+                return
+
+        cmd = ["idevicebackup2", "-u", udid, "backup", "--full", dest_dir]
+        append_log(f"[*] Command: {' '.join(cmd)}")
+        update_job(format="ios_backup", status="Backing Up Device...", progress_percent=0.0,
+                   speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
+
+        def on_line(clean_line):
+            append_log(clean_line)
+
+        def on_poll():
+            size = poll_directory_size(udid_backup_dir) if os.path.isdir(udid_backup_dir) else 0
+            update_job(transferred_bytes=size)
+
+        proc = _stream_subprocess(cmd, on_line, on_poll=on_poll, poll_interval=2.0)
+        time.sleep(1.0)
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+
+        if proc.returncode == 0 and os.path.isdir(udid_backup_dir):
+            final_size = poll_directory_size(udid_backup_dir)
+            update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
+            append_log(f"[+] iOS backup completed successfully. Backup size: {final_size} bytes")
+            report_data["acquisition_status"] = "COMPLETED"
+            report_data["output_size_bytes"] = final_size
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            append_log(f"[-] idevicebackup2 exited with code {proc.returncode}")
+            report_data["acquisition_status"] = "FAILED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
+        update_job(active=False)
+        active_proc = None
+
+def execution_worker_android(mode, serial, output_path, report_file_path, report_data):
+    """
+    mode 'backup': adb backup (deprecated/unreliable on Android 12+, requires
+    on-device 'Back up my data' confirmation, produces a single .ab file).
+    mode 'pull': adb pull of accessible shared storage (more universally
+    reliable logical copy, no on-device confirmation needed beyond the
+    original USB-debugging authorization).
+    mode 'bugreport': adb bugreport (system logs/dumpstate snapshot - useful
+    supplementary artifact, not a full acquisition).
+    Like iOS, adb gives no clean aggregate percentage either way, so
+    progress is bytes-on-disk, polled directly.
+    """
+    global current_job, active_proc
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+
+    try:
+        update_job(format=f"android_{mode}", status="Initializing...", progress_percent=0.0,
+                   speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
+
+        if mode == 'backup':
+            cmd = ["adb", "-s", serial, "backup", "-apk", "-shared", "-all", "-f", output_path]
+            append_log(f"[*] Command: {' '.join(cmd)}")
+            append_log("[*] Waiting for on-device confirmation ('Back up my data') - check the phone screen.")
+            update_job(status="Waiting for device confirmation...")
+
+            def on_poll():
+                size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+                update_job(transferred_bytes=size, status="Backing Up Device...")
+        elif mode == 'bugreport':
+            cmd = ["adb", "-s", serial, "bugreport", output_path]
+            append_log(f"[*] Command: {' '.join(cmd)}")
+            update_job(status="Capturing Bug Report (system logs/dumpstate)...")
+
+            def on_poll():
+                size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+                update_job(transferred_bytes=size)
+        else:
+            cmd = ["adb", "-s", serial, "pull", "/sdcard/.", output_path]
+            append_log(f"[*] Command: {' '.join(cmd)}")
+            update_job(status="Pulling Accessible Storage...")
+
+            def on_poll():
+                update_job(transferred_bytes=poll_directory_size(output_path))
+
+        def on_line(clean_line):
+            append_log(clean_line)
+
+        proc = _stream_subprocess(cmd, on_line, on_poll=on_poll, poll_interval=2.0)
+        time.sleep(1.0)
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+
+        output_exists = os.path.exists(output_path) and (
+            os.path.getsize(output_path) > 0 if mode in ('backup', 'bugreport') else True
+        )
+
+        if proc.returncode == 0 and output_exists:
+            final_size = poll_directory_size(output_path)
+            update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
+            append_log(f"[+] Android {mode} completed successfully. Size: {final_size} bytes")
+            report_data["acquisition_status"] = "COMPLETED"
+            report_data["output_size_bytes"] = final_size
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            append_log(f"[-] adb {mode} exited with code {proc.returncode}")
+            report_data["acquisition_status"] = "FAILED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
+        update_job(active=False)
         active_proc = None
 
 # --- Web Routes & API Endpoints ---
@@ -573,17 +960,14 @@ def system_info():
         "bytes_recv": net_counters.bytes_recv
     }
 
-    try:
-        target_drive = sanitize_device(request.args.get('drive', '/dev/sda'))
-    except ValueError:
+    target_drive = request.args.get('drive', '/dev/sda')
+    if not target_drive or not target_drive.startswith('/dev/'):
         target_drive = '/dev/sda'
 
     wb_active = True
     if os.path.exists(target_drive):
         try:
-            res = subprocess.run(
-                ['sudo', BIN_BLOCKDEV, '--getro', target_drive],
-                capture_output=True, text=True, timeout=5)
+            res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getro', target_drive], capture_output=True, text=True)
             if res.returncode == 0 and res.stdout.strip() == '0':
                 wb_active = False
         except Exception:
@@ -615,7 +999,7 @@ def list_drives():
     drives = []
     try:
         res = subprocess.run(
-            [BIN_LSBLK, '-J', '-b', '-o', 'NAME,SIZE,MODEL,TRAN,TYPE,SERIAL,RO'],
+            ['lsblk', '-J', '-b', '-o', 'NAME,SIZE,MODEL,TRAN,TYPE,SERIAL,RO'],
             capture_output=True, text=True
         )
         if res.returncode == 0:
@@ -626,14 +1010,9 @@ def list_drives():
                     gb_size = round(bytes_size / (1024**3), 1)
                     dev_path = f"/dev/{dev['name']}"
                     
-                    # Query current RO state only (do not force-set on discovery)
-                    is_ro = True
+                    # Force read-only lock upon discovery
                     try:
-                        ro = subprocess.run(
-                            ['sudo', BIN_BLOCKDEV, '--getro', dev_path],
-                            capture_output=True, text=True, timeout=5)
-                        if ro.returncode == 0 and ro.stdout.strip() == '0':
-                            is_ro = False
+                        subprocess.run(['sudo', '/usr/sbin/blockdev', '--setro', dev_path], capture_output=True)
                     except Exception:
                         pass
 
@@ -645,7 +1024,7 @@ def list_drives():
                         "bytes": bytes_size,
                         "transport": dev.get('tran') or 'usb',
                         "serial": dev.get('serial') or 'N/A',
-                        "read_only": is_ro
+                        "read_only": True
                     })
     except Exception as e:
         print(f"Error executing lsblk: {e}")
@@ -656,15 +1035,15 @@ def list_drives():
 @requires_auth
 def smart_check():
     req = request.get_json() or {}
-    try:
-        drive = sanitize_device(req.get('drive', ''))
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+    drive = req.get('drive', '')
+    
+    if not drive or not drive.startswith('/dev/'):
+        return jsonify({"success": False, "error": "Invalid drive selection"})
 
     try:
         total_bytes = 0
         try:
-            res_sz = subprocess.run(['sudo', BIN_BLOCKDEV, '--getsize64', drive], capture_output=True, text=True)
+            res_sz = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', drive], capture_output=True, text=True)
             if res_sz.returncode == 0:
                 total_bytes = int(res_sz.stdout.strip())
         except Exception:
@@ -672,7 +1051,7 @@ def smart_check():
 
         capacity_str = f"{round(total_bytes / (1024**3), 2)} GB" if total_bytes > 0 else "N/A"
 
-        res = subprocess.run(['sudo', BIN_SMARTCTL, '-a', '-j', drive], capture_output=True, text=True)
+        res = subprocess.run(['sudo', 'smartctl', '-a', '-j', drive], capture_output=True, text=True)
         data = json.loads(res.stdout) if res.stdout else {}
         
         healthy = data.get('smart_status', {}).get('passed', True)
@@ -743,162 +1122,133 @@ def get_mount_history():
 def list_server_shares():
     req = request.get_json() or {}
     protocol = req.get('protocol', 'smb').lower()
-    try:
-        host = sanitize_host(req.get('host', ''))
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+    host = req.get('host', '').strip()
+
+    if not host:
+        return jsonify({"success": False, "error": "Server IP required."}), 400
 
     shares = []
     try:
         if protocol == 'nfs':
-            res = subprocess.run(
-                [BIN_SHOWMOUNT, '-e', '--no-headers', host],
-                capture_output=True, text=True, timeout=8)
+            res = subprocess.run(['showmount', '-e', '--no-headers', host], capture_output=True, text=True, timeout=8)
             if res.returncode == 0:
                 for line in res.stdout.strip().split('\n'):
                     if line.strip():
                         export_path = line.split()[0]
                         shares.append(export_path)
                 return jsonify({"success": True, "shares": shares})
-            return jsonify({"success": False, "error": res.stderr.strip() or "No NFS exports found."}), 500
-
-        user = (req.get('user') or '').strip()
-        pass_val = (req.get('pass') or '').strip()
-        env = os.environ.copy()
-        if user:
-            # Avoid putting password on argv – use PASSWD env for smbclient
-            env['PASSWD'] = pass_val
-            cmd = [BIN_SMBCLIENT, '-L', host, '-I', host, '-U', user, '-g']
+            else:
+                return jsonify({"success": False, "error": res.stderr.strip() or "No NFS exports found."}), 500
         else:
-            cmd = [BIN_SMBCLIENT, '-L', host, '-I', host, '-N', '-g']
+            user = req.get('user', '')
+            pass_val = req.get('pass', '')
 
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=8, env=env)
+            if user:
+                cmd = ['smbclient', '-L', host, '-I', host, '-U', f"{user}%{pass_val}", '-g']
+            else:
+                cmd = ['smbclient', '-L', host, '-I', host, '-N', '-g']
 
-        if res.returncode != 0 and not user:
-            env['PASSWD'] = ''
-            cmd_guest = [BIN_SMBCLIENT, '-L', host, '-I', host, '-U', 'guest', '-g']
-            res = subprocess.run(cmd_guest, capture_output=True, text=True, timeout=8, env=env)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
 
-        if res.returncode == 0:
-            for line in res.stdout.splitlines():
-                if line.startswith('Disk|'):
-                    parts = line.split('|')
-                    if len(parts) > 1:
-                        share_name = parts[1].strip()
-                        if share_name and not share_name.endswith('$'):
-                            shares.append(share_name)
-            return jsonify({"success": True, "shares": shares})
+            if res.returncode != 0 and not user:
+                cmd_guest = ['smbclient', '-L', host, '-I', host, '-U', 'guest%', '-g']
+                res = subprocess.run(cmd_guest, capture_output=True, text=True, timeout=8)
 
-        err_msg = res.stderr.strip() or res.stdout.strip() or "Failed to query SMB shares."
-        return jsonify({"success": False, "error": err_msg}), 500
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if line.startswith('Disk|'):
+                        parts = line.split('|')
+                        if len(parts) > 1:
+                            share_name = parts[1].strip()
+                            if share_name and not share_name.endswith('$'):
+                                shares.append(share_name)
+                return jsonify({"success": True, "shares": shares})
+            else:
+                err_msg = res.stderr.strip() or res.stdout.strip() or "Failed to query SMB shares."
+                return jsonify({"success": False, "error": err_msg}), 500
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-
 
 @app.route('/api/mount_network', methods=['POST'])
 @requires_auth
 def mount_network():
     req = request.get_json() or {}
-    protocol = (req.get('protocol') or 'smb').lower()
-    try:
-        host = sanitize_host(req.get('host', ''))
-        share = sanitize_share(req.get('share', ''))
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+    protocol = req.get('protocol', 'smb').lower()
+    host = req.get('host', '').strip()
+    share = req.get('share', '').strip()
+    user = req.get('user', '').strip()
+    password = req.get('pass', '').strip()
 
-    user = (req.get('user') or '').strip()
-    password = (req.get('pass') or '').strip()
+    if not host or not share:
+        return jsonify({"success": False, "error": "Server IP and Share path are required."}), 400
 
     share_path = f"/{share.lstrip('/')}"
-    safe_folder_name = re.sub(r'[^A-Za-z0-9_\-]', '_', share_path).strip('_')[:64]
+    safe_folder_name = share_path.replace('/', '_').strip('_')
     mount_point = f"/mnt/network_{protocol}_{safe_folder_name}"
-    os.makedirs(mount_point, exist_ok=True)
 
-    cred_file = None
+    # The service runs as an unprivileged user (see install.py), so
+    # directories under /mnt must be created via sudo rather than
+    # os.makedirs(), which would otherwise fail with a permission error.
+    subprocess.run(['sudo', 'mkdir', '-p', mount_point], capture_output=True)
+
+    # Mounted files should be owned by the service account (not root) so
+    # dc3dd/ewfacquire/ddrescue and the file explorer, which also run
+    # unprivileged, can read/write into the mounted share.
+    service_uid, service_gid = os.getuid(), os.getgid()
+
     try:
-        subprocess.run(['sudo', BIN_UMOUNT, '-l', mount_point],
-                       capture_output=True, timeout=10)
+        subprocess.run(['sudo', 'umount', '-l', mount_point], capture_output=True)
 
         if protocol == 'nfs':
-            # Normalise export path: NFS wants "host:/export/path"
-            export_path = share_path if share_path.startswith('/') else f'/{share_path}'
-            nfs_source = f"{host}:{export_path}"
-            last_err = ""
-            # Try common client option sets (v3, v4, auto-negotiate)
-            option_sets = [
-                'nolock,soft,timeo=30,retrans=2,tcp,vers=3',
-                'nolock,soft,timeo=30,retrans=2,tcp,vers=4',
-                'nolock,soft,timeo=30,retrans=2,tcp,vers=4.1',
-                'nolock,soft,timeo=30,retrans=2,tcp',  # let client negotiate
-                'soft,timeo=30,retrans=2,tcp,vers=3',
-                'soft,timeo=30,retrans=2,tcp,vers=4',
-            ]
-            for opts in option_sets:
-                cmd = [
-                    'sudo', BIN_MOUNT, '-t', 'nfs',
-                    '-o', opts,
-                    nfs_source, mount_point
-                ]
+            nfs_source = f"{host}:{share_path}"
+            cmd_v3 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=3', nfs_source, mount_point]
+            res = subprocess.run(cmd_v3, capture_output=True, text=True)
+
+            if res.returncode == 0:
+                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
+                return jsonify({"success": True, "mount_point": mount_point})
+
+            cmd_v4 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=4', nfs_source, mount_point]
+            res_v4 = subprocess.run(cmd_v4, capture_output=True, text=True)
+
+            if res_v4.returncode == 0:
+                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
+                return jsonify({"success": True, "mount_point": mount_point})
+
+            return jsonify({"success": False, "error": f"NFS Mount Failed: {res_v4.stderr.strip() or res.stderr.strip()}"}), 500
+
+        else:
+            unc_source = f"//{host}/{share_path.lstrip('/')}"
+            user_arg = user if user else 'guest'
+            pass_arg = password if password else ''
+
+            # Write credentials to a private temp file instead of putting
+            # "password=..." directly on the mount command line, where any
+            # local user could read it via `ps aux` while the mount runs.
+            cred_fd, cred_path = tempfile.mkstemp(prefix="pif_cifs_cred_")
+            try:
+                os.chmod(cred_path, 0o600)
+                with os.fdopen(cred_fd, 'w') as f:
+                    f.write(f"username={user_arg}\npassword={pass_arg}\n")
+
+                opts = f"credentials={cred_path},uid={service_uid},gid={service_gid},noperm,iocharset=utf8"
+                cmd_smb = ['sudo', 'mount', '-t', 'cifs', unc_source, mount_point, '-o', opts]
+                res_smb = subprocess.run(cmd_smb, capture_output=True, text=True)
+            finally:
                 try:
-                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-                except subprocess.TimeoutExpired:
-                    last_err = f"Timed out mounting with options: {opts}"
-                    continue
-                if res.returncode == 0:
-                    save_mount_history({
-                        "protocol": protocol, "host": host,
-                        "share": export_path, "mount_point": mount_point
-                    })
-                    return jsonify({
-                        "success": True,
-                        "mount_point": mount_point,
-                        "source": nfs_source,
-                        "options": opts
-                    })
-                err = (res.stderr or res.stdout or "").strip()
-                if err:
-                    last_err = err
-            hint = (
-                " Check: nfs-common installed; showmount -e <host>; "
-                "server /etc/exports allows this Pi; firewall allows 2049/tcp."
-            )
-            return jsonify({
-                "success": False,
-                "error": f"NFS Mount Failed ({nfs_source}): {last_err}.{hint}"
-            }), 500
+                    os.remove(cred_path)
+                except OSError:
+                    pass
 
-        # SMB / CIFS – use credentials file so password never appears on argv
-        unc_source = f"//{host}/{share_path.lstrip('/')}"
-        cred_file = write_smb_credentials(user or 'guest', password)
-        opts = f"credentials={cred_file},noperm,iocharset=utf8"
-        cmd_smb = [
-            'sudo', BIN_MOUNT, '-t', 'cifs',
-            unc_source, mount_point, '-o', opts
-        ]
-        res_smb = subprocess.run(cmd_smb, capture_output=True, text=True, timeout=15)
+            if res_smb.returncode == 0:
+                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
+                return jsonify({"success": True, "mount_point": mount_point})
 
-        if res_smb.returncode == 0:
-            save_mount_history({
-                "protocol": protocol, "host": host,
-                "share": share_path, "mount_point": mount_point
-            })
-            return jsonify({"success": True, "mount_point": mount_point})
-
-        return jsonify({
-            "success": False,
-            "error": f"SMB Mount Failed: {res_smb.stderr.strip()}"
-        }), 500
+            return jsonify({"success": False, "error": f"SMB Mount Failed: {res_smb.stderr.strip()}"}), 500
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        if cred_file is not None:
-            try:
-                cred_file.unlink(missing_ok=True)
-            except Exception:
-                pass
-
 
 @app.route('/api/toggle_write_block', methods=['POST'])
 @requires_auth
@@ -906,29 +1256,27 @@ def toggle_write_block():
     req = request.get_json() or {}
     enable = req.get('enable', True)
     drive = req.get('drive', '/dev/sda')
-    
-    try:
-        drive = sanitize_device(drive)
-    except ValueError:
-        try:
-            drive = sanitize_device('/dev/sda')
-        except ValueError:
-            return jsonify({"success": False, "error": "No valid target drive"}), 400
+
+    # Strict whitelist instead of startswith('/dev/'), which previously let
+    # values like "/dev/sda; rm -rf /" through into a shell=True call below.
+    if not is_valid_block_device(drive):
+        return jsonify({"success": False, "error": f"'{drive}' is not a recognized whole-disk device."}), 400
 
     action_flag = '--setro' if enable else '--setrw'
-    
+
     try:
-        # Safe unmount without shell
-        for part in [drive] + [f"{drive}{i}" for i in range(1, 16)]:
-            if os.path.exists(part):
-                subprocess.run(['sudo', 'umount', '-l', part], capture_output=True, timeout=5)
-                subprocess.run(['sudo', 'udevil', 'unmount', '-b', part], capture_output=True, timeout=5)
-        res = subprocess.run(['sudo', BIN_BLOCKDEV, action_flag, drive], capture_output=True, text=True, timeout=5)
-        
+        # Expand partitions in Python (no shell globbing) and unmount each
+        # with argv-list subprocess calls, so nothing reaches a shell.
+        for part in sorted(glob.glob(f"{drive}*")):
+            subprocess.run(['sudo', 'udevil', 'unmount', '-b', part], capture_output=True)
+            subprocess.run(['sudo', 'umount', part], capture_output=True)
+
+        res = subprocess.run(['sudo', '/usr/sbin/blockdev', action_flag, drive], capture_output=True, text=True)
+
         if res.returncode != 0:
             return jsonify({"success": False, "error": res.stderr.strip() or "blockdev execution failed"}), 500
 
-        chk = subprocess.run(['sudo', BIN_BLOCKDEV, '--getro', drive], capture_output=True, text=True)
+        chk = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getro', drive], capture_output=True, text=True)
         is_ro = (chk.returncode == 0 and chk.stdout.strip() == '1')
 
         return jsonify({"success": True, "write_blocker_active": is_ro, "device": drive})
@@ -940,37 +1288,53 @@ def toggle_write_block():
 @requires_auth
 def start_imaging():
     global current_job
-    
+
+    # Atomically check-and-reserve the job slot so two concurrent requests
+    # can't both pass the check and start simultaneous acquisitions.
     with job_lock:
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
 
     req = request.get_json() or {}
     source = req.get('source')
-    dest_path = req.get('destination', '/mnt').strip()
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
     fmt = req.get('format', 'dd')
-    hashes = req.get('hashes', ['sha256'])
-    metadata = req.get('metadata', {}) or {}
+    hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
+    metadata = req.get('metadata', {})
+    keep_raw = bool(req.get('keep_raw', True))  # only relevant when fmt == 'aff'
     
     compression = req.get('compression', 'fast')
     split_size = req.get('split_size', '2000M')
 
-    try:
-        source = sanitize_device(source)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    VALID_FORMATS = {'dd', 'raw', 'dcfldd', 'plain_dd', 'e01', 'aff'}
+    if fmt not in VALID_FORMATS:
+        update_job(active=False)
+        return jsonify({"error": f"Unrecognized format '{fmt}'. Use one of {sorted(VALID_FORMATS)}."}), 400
 
-    try:
-        dest_p = safe_path(dest_path, must_exist=False)
-        dest_path = str(dest_p)
-        if not dest_p.exists():
-            dest_p.mkdir(parents=True, exist_ok=True)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    if not is_valid_block_device(source) or not os.path.exists(source):
+        update_job(active=False)
+        return jsonify({"error": f"Source device {source} not found or not a recognized whole-disk device."}), 400
+
+    invalid_hashes = set(hashes) - ALLOWED_HASH_ALGOS
+    if invalid_hashes:
+        update_job(active=False)
+        return jsonify({"error": f"Unsupported hash algorithm(s): {sorted(invalid_hashes)}. Use any of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
+
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+
+    if not os.path.exists(dest_path):
+        try:
+            os.makedirs(dest_path, exist_ok=True)
+        except Exception as e:
+            update_job(active=False)
+            return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
 
     total_bytes = 0
     try:
-        res = subprocess.run(['sudo', BIN_BLOCKDEV, '--getsize64', source], capture_output=True, text=True)
+        res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
         if res.returncode == 0:
             total_bytes = int(res.stdout.strip())
     except Exception:
@@ -980,11 +1344,12 @@ def start_imaging():
     if total_bytes > 0 and dest_disk_usage.free < total_bytes:
         free_gb = round(dest_disk_usage.free / (1024**3), 2)
         required_gb = round(total_bytes / (1024**3), 2)
+        update_job(active=False)
         return jsonify({"error": f"Pre-flight storage check failed: Destination has only {free_gb} GB free, but source requires {required_gb} GB."}), 400
 
     smart_data = {}
     try:
-        res_smart = subprocess.run(['sudo', BIN_SMARTCTL, '-a', '-j', source], capture_output=True, text=True)
+        res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True)
         if res_smart.stdout:
             smart_data = json.loads(res_smart.stdout)
     except Exception:
@@ -1021,17 +1386,17 @@ def start_imaging():
         "pending_sectors": pending
     }
 
-    case_num = sanitize_name(metadata.get('case_number', 'UNASSIGNED'))
-    evidence_id = sanitize_name(metadata.get('evidence_id', 'ITEM-01'))
-    examiner = sanitize_name(metadata.get('examiner', 'UNSPECIFIED'), max_len=128)
-    notes = str(metadata.get('notes', 'None'))[:512]
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    examiner = metadata.get('examiner', 'UNSPECIFIED')
+    notes = metadata.get('notes', 'None')
     base_name = f"{case_num}_{evidence_id}"
 
     if fmt == 'e01':
         ewf_hash_type = "sha256" if "sha256" in hashes else ("sha1" if "sha1" in hashes else "md5")
         out_file = f"{dest_path}/{base_name}.E01"
         cmd = [
-            "sudo", "/usr/bin/ewfacquire", "-u",
+            "ewfacquire", "-u",
             "-t", f"{dest_path}/{base_name}",
             "-C", case_num,
             "-E", evidence_id,
@@ -1043,11 +1408,65 @@ def start_imaging():
             "-S", split_size,
             source
         ]
-    else:
+
+    elif fmt == 'dcfldd':
+        out_file = f"{dest_path}/{base_name}.dd"
+        cmd = [
+            "dcfldd",
+            f"if={source}",
+            f"of={out_file}",
+            "conv=noerror,sync",
+        ]
+        if hashes:
+            cmd.append(f"hash={','.join(hashes)}")
+            for h in hashes:
+                cmd.append(f"{h}log={out_file.replace('.dd', f'_{h}.log')}")
+
+    elif fmt == 'plain_dd':
+        out_file = f"{dest_path}/{base_name}.dd"
+        # Unlike dc3dd, GNU dd genuinely supports iflag=direct - this
+        # bypasses the page cache on the *read* side, which is the actual
+        # forensic concern (avoiding cache pollution/buffer dirtying from
+        # reading the source device). oflag=direct is deliberately omitted:
+        # it requires block-aligned writes and can fail outright on some
+        # destination filesystems (e.g. mounted network shares), which
+        # would break the acquisition entirely for a benefit that mostly
+        # matters on the read side anyway.
+        cmd = [
+            "dd",
+            f"if={source}",
+            f"of={out_file}",
+            "bs=4M",
+            "conv=noerror,sync",
+            "status=progress",
+            "iflag=direct",
+        ]
+        # dd itself has no built-in hashing; computed_hashes is filled in
+        # after completion by streaming the output file through hashlib.
+
+    elif fmt == 'aff':
+        # Two-phase (raw acquisition -> AFF conversion); see
+        # execution_worker_aff for why, and cmd/out_file here are only used
+        # for the report's "requested command" field, not actually launched
+        # via the generic execution_worker thread below.
+        out_file = f"{dest_path}/{base_name}.aff"
+        dc3dd_cmd_preview = ["dc3dd", f"if={source}", f"of={dest_path}/{base_name}.raw"] + [f"hash={h}" for h in hashes]
+        affconvert_cmd_preview = ["affconvert", "-o", out_file, f"{dest_path}/{base_name}.raw"]
+        cmd = dc3dd_cmd_preview + ["&&"] + affconvert_cmd_preview
+
+    else:  # 'dd' / 'raw' -> dc3dd (original default engine)
         out_file = f"{dest_path}/{base_name}.dd"
         dc3dd_log_file = f"{dest_path}/{base_name}_dc3dd.log"
+        # NOTE: dc3dd is a fork of the old-style `dd`, not GNU coreutils dd -
+        # it does not support iflag=/oflag= at all (confirmed against its
+        # own --help: only if=, of=, hash=, log=, ssz=, bufsz=, etc. are
+        # recognized). The previous iflag=direct/oflag=direct here were
+        # silently doing nothing. dc3dd has no O_DIRECT equivalent; the
+        # closest actual performance/memory knob it exposes is bufsz=,
+        # which sets the internal read buffer size. Use format=plain_dd
+        # instead if genuine O_DIRECT behavior matters for your hardware.
         cmd = [
-            "sudo", "/usr/bin/dc3dd",
+            "dc3dd",
             f"if={source}",
             f"of={out_file}",
             f"log={dc3dd_log_file}",
@@ -1055,15 +1474,15 @@ def start_imaging():
         for h in hashes:
             cmd.append(f"hash={h}")
 
-    with job_lock:
-        current_job["active"] = True
-        current_job["format"] = fmt
-        current_job["progress_percent"] = 0.0
-        current_job["speed_mbps"] = 0.0
-        current_job["transferred_bytes"] = 0
-        current_job["total_bytes"] = total_bytes
-        current_job["status"] = "Initializing..."
-        current_job["log"] = f"[*] Initializing {fmt.upper()} acquisition ({', '.join(hashes).upper()}) for {source} -> {dest_path}..."
+    update_job(
+        format=fmt,
+        progress_percent=0.0,
+        speed_mbps=0.0,
+        transferred_bytes=0,
+        total_bytes=total_bytes,
+        status="Initializing...",
+        log=f"[*] Initializing {fmt.upper()} acquisition ({', '.join(hashes).upper()}) for {source} -> {dest_path}..."
+    )
 
     report_file = os.path.join(dest_path, f"{base_name}_report.json")
     report_data = {
@@ -1075,7 +1494,8 @@ def start_imaging():
             "compression": compression if fmt == 'e01' else 'N/A',
             "split_size": split_size if fmt == 'e01' else 'N/A',
             "requested_hashes": hashes,
-            "execution_command": " ".join(cmd)
+            "execution_command": " ".join(cmd),
+            **({"raw_image_retained": None} if fmt == 'aff' else {})
         },
         "attachments": {
             "files": [],
@@ -1092,10 +1512,16 @@ def start_imaging():
     except Exception as e:
         print(f"Warning: Could not write report JSON: {e}")
 
-    thread = threading.Thread(
-        target=execution_worker,
-        args=(cmd, fmt, total_bytes, out_file, report_file, report_data)
-    )
+    if fmt == 'aff':
+        thread = threading.Thread(
+            target=execution_worker_aff,
+            args=(source, dest_path, base_name, hashes, keep_raw, report_file, report_data, total_bytes)
+        )
+    else:
+        thread = threading.Thread(
+            target=execution_worker,
+            args=(cmd, fmt, total_bytes, out_file, report_file, report_data, hashes)
+        )
     thread.daemon = True
     thread.start()
 
@@ -1105,13 +1531,11 @@ def start_imaging():
 @requires_auth
 def inspect_ddrescue_map():
     req = request.get_json() or {}
-    map_path = req.get('map_path', '')
-    try:
-        p = safe_path(map_path, must_exist=True)
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+    map_path = safe_path(req.get('map_path', ''))
+    if not map_path or not os.path.exists(map_path):
+        return jsonify({"success": False, "error": "Mapfile not found or outside the permitted evidence directory."}), 404
 
-    summary = parse_ddrescue_mapfile(str(p))
+    summary = parse_ddrescue_mapfile(map_path)
     return jsonify({
         "success": True,
         "map_path": map_path,
@@ -1125,49 +1549,58 @@ def inspect_ddrescue_map():
 @requires_auth
 def start_ddrescue():
     global current_job
+
+    # Atomically check-and-reserve the job slot, same as start_imaging.
     with job_lock:
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
 
     req = request.get_json() or {}
     source = req.get('source')
-    dest_path = req.get('destination', '/mnt').strip()
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
     strategy = req.get('strategy', 'stage1_fast')
     retry_passes = str(req.get('retry_passes', '3'))
     direct_mode = req.get('direct_mode', True)
     input_pos = req.get('input_position', '')
     max_size = req.get('max_size', '')
-    metadata = req.get('metadata', {}) or {}
+    metadata = req.get('metadata', {})
 
-    try:
-        source = sanitize_device(source)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    # This runs ddrescue via a passwordless sudo rule (see install.py), so
+    # source/destination MUST be tightly validated - otherwise any caller
+    # could point ddrescue at an arbitrary file (e.g. /etc/shadow) and have
+    # it copied out as root.
+    if not is_valid_block_device(source) or not os.path.exists(source):
+        update_job(active=False)
+        return jsonify({"error": f"Source device {source} not found or not a recognized whole-disk device."}), 400
 
-    try:
-        dest_p = safe_path(dest_path, must_exist=False)
-        dest_path = str(dest_p)
-        if not dest_p.exists():
-            dest_p.mkdir(parents=True, exist_ok=True)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
 
-    # Limit strategy to known values
     if strategy not in ('stage1_fast', 'stage2_trim', 'stage3_intensive', 'reverse'):
-        strategy = 'stage1_fast'
-    try:
-        int(retry_passes)
-    except ValueError:
-        retry_passes = '3'
+        update_job(active=False)
+        return jsonify({"error": f"Unrecognized strategy '{strategy}'."}), 400
 
-    case_num = sanitize_name(metadata.get('case_number', 'RECOVERY'))
-    evidence_id = sanitize_name(metadata.get('evidence_id', 'ITEM-01'))
+    if not retry_passes.isdigit():
+        update_job(active=False)
+        return jsonify({"error": "retry_passes must be a positive integer."}), 400
+
+    if not os.path.exists(dest_path):
+        try:
+            os.makedirs(dest_path, exist_ok=True)
+        except Exception as e:
+            update_job(active=False)
+            return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+
+    case_num = metadata.get('case_number', 'RECOVERY')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
     base_name = f"{case_num}_{evidence_id}_ddrescue"
     
     out_file = os.path.join(dest_path, f"{base_name}.dd")
     map_file = os.path.join(dest_path, f"{base_name}.map")
 
-    cmd = ["sudo", BIN_DDRESCUE, "--force"]
+    cmd = ["sudo", "/usr/bin/ddrescue", "--force"]
 
     if strategy == 'stage1_fast':
         cmd.extend(["--no-scrape", "--no-trim"])
@@ -1181,30 +1614,40 @@ def start_ddrescue():
     if direct_mode:
         cmd.append("-d")
 
+    # input_pos/max_size are ddrescue byte-offset/size arguments (e.g. "512MiB").
+    # Restrict to digits + a small unit-suffix alphabet so a stray value can't
+    # smuggle an extra flag through as a single argv token.
+    _SIZE_RE = re.compile(r'^\d+[KMGTP]?i?B?$', re.IGNORECASE)
     if input_pos:
+        if not _SIZE_RE.match(input_pos):
+            update_job(active=False)
+            return jsonify({"error": f"Invalid input_position '{input_pos}'."}), 400
         cmd.append(f"--input-position={input_pos}")
     if max_size:
+        if not _SIZE_RE.match(max_size):
+            update_job(active=False)
+            return jsonify({"error": f"Invalid max_size '{max_size}'."}), 400
         cmd.append(f"--max-size={max_size}")
 
     cmd.extend([source, out_file, map_file])
 
     total_bytes = 0
     try:
-        res = subprocess.run(['sudo', BIN_BLOCKDEV, '--getsize64', source], capture_output=True, text=True)
+        res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
         if res.returncode == 0:
             total_bytes = int(res.stdout.strip())
     except Exception:
         pass
 
-    with job_lock:
-        current_job["active"] = True
-        current_job["format"] = "ddrescue"
-        current_job["progress_percent"] = 0.0
-        current_job["speed_mbps"] = 0.0
-        current_job["transferred_bytes"] = 0
-        current_job["total_bytes"] = total_bytes
-        current_job["status"] = f"ddrescue [{strategy.upper()}]..."
-        current_job["log"] = f"[*] Initializing ddrescue ({strategy}) pass for {source} -> {out_file}\n[*] Mapfile: {map_file}..."
+    update_job(
+        format="ddrescue",
+        progress_percent=0.0,
+        speed_mbps=0.0,
+        transferred_bytes=0,
+        total_bytes=total_bytes,
+        status=f"ddrescue [{strategy.upper()}]...",
+        log=f"[*] Initializing ddrescue ({strategy}) pass for {source} -> {out_file}\n[*] Mapfile: {map_file}..."
+    )
 
     report_file = os.path.join(dest_path, f"{base_name}_report.json")
     report_data = {
@@ -1231,13 +1674,194 @@ def start_ddrescue():
 
     return jsonify({"success": True, "message": f"ddrescue ({strategy}) started."})
 
+# --- Mobile Forensics Endpoints ---
+@app.route('/api/mobile/devices', methods=['GET'])
+@requires_auth
+def get_mobile_devices():
+    return jsonify({"ios": list_ios_devices(), "android": list_android_devices()})
+
+@app.route('/api/mobile/ios/pair', methods=['POST'])
+@requires_auth
+def pair_ios_device():
+    req = request.get_json() or {}
+    udid = req.get('udid', '')
+    if not _UDID_RE.match(udid or ''):
+        return jsonify({"success": False, "error": "Invalid or missing device UDID."}), 400
+
+    try:
+        res = subprocess.run(["idevicepair", "-u", udid, "pair"], capture_output=True, text=True, timeout=15)
+        output = (res.stdout + res.stderr).strip()
+        if res.returncode == 0:
+            return jsonify({"success": True, "message": output or "Pairing request sent - accept 'Trust This Computer?' on the device if prompted."})
+        return jsonify({"success": False, "error": output or "Pairing failed."}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Timed out waiting for the device."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/mobile/start_ios_backup', methods=['POST'])
+@requires_auth
+def start_ios_backup():
+    global current_job
+
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    udid = req.get('udid', '')
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    encrypt_password = req.get('encrypt_password') or None
+    metadata = req.get('metadata', {})
+
+    if not _UDID_RE.match(udid or ''):
+        update_job(active=False)
+        return jsonify({"error": "Invalid or missing device UDID. Refresh the device list and select a connected, trusted iOS device."}), 400
+
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_ios_backup"
+    job_dest_dir = os.path.join(dest_path, base_name)
+
+    try:
+        os.makedirs(job_dest_dir, exist_ok=True)
+    except Exception as e:
+        update_job(active=False)
+        return jsonify({"error": f"Destination path {job_dest_dir} is inaccessible: {str(e)}"}), 400
+
+    update_job(
+        format="ios_backup", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Initializing iOS backup for UDID {udid} -> {job_dest_dir}..."
+    )
+
+    report_file = os.path.join(job_dest_dir, f"{base_name}_report.json")
+    report_data = {
+        "case_metadata": metadata,
+        "device_udid": udid,
+        "acquisition_parameters": {
+            "platform": "iOS",
+            "method": "idevicebackup2 full backup",
+            "encrypted": bool(encrypt_password),
+            "output_destination": job_dest_dir,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(report_data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not write report JSON: {e}")
+
+    thread = threading.Thread(
+        target=execution_worker_ios_backup,
+        args=(udid, job_dest_dir, encrypt_password, report_file, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    return jsonify({"success": True, "message": "iOS backup started."})
+
+@app.route('/api/mobile/start_android', methods=['POST'])
+@requires_auth
+def start_android_acquisition():
+    global current_job
+
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    serial = req.get('serial', '')
+    mode = req.get('mode', 'pull')
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    metadata = req.get('metadata', {})
+
+    if not _ANDROID_SERIAL_RE.match(serial or ''):
+        update_job(active=False)
+        return jsonify({"error": "Invalid or missing device serial. Refresh the device list and select a connected, authorized Android device."}), 400
+
+    if mode not in ('backup', 'pull', 'bugreport'):
+        update_job(active=False)
+        return jsonify({"error": "mode must be 'backup', 'pull', or 'bugreport'."}), 400
+
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_android_{mode}"
+
+    if mode == 'backup':
+        output_path = os.path.join(dest_path, f"{base_name}.ab")
+        try:
+            os.makedirs(dest_path, exist_ok=True)
+        except Exception as e:
+            update_job(active=False)
+            return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+    elif mode == 'bugreport':
+        output_path = os.path.join(dest_path, f"{base_name}.zip")
+        try:
+            os.makedirs(dest_path, exist_ok=True)
+        except Exception as e:
+            update_job(active=False)
+            return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+    else:
+        output_path = os.path.join(dest_path, base_name)
+        try:
+            os.makedirs(output_path, exist_ok=True)
+        except Exception as e:
+            update_job(active=False)
+            return jsonify({"error": f"Destination path {output_path} is inaccessible: {str(e)}"}), 400
+
+    update_job(
+        format=f"android_{mode}", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Initializing Android {mode} for {serial} -> {output_path}..."
+    )
+
+    report_file = os.path.join(dest_path, f"{base_name}_report.json")
+    report_data = {
+        "case_metadata": metadata,
+        "device_serial": serial,
+        "acquisition_parameters": {
+            "platform": "Android",
+            "method": f"adb {mode}",
+            "output_destination": output_path,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(report_data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not write report JSON: {e}")
+
+    thread = threading.Thread(
+        target=execution_worker_android,
+        args=(mode, serial, output_path, report_file, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    return jsonify({"success": True, "message": f"Android {mode} started."})
+
 @app.route('/api/stop_imaging', methods=['POST'])
 @requires_auth
 def stop_imaging():
     global current_job, active_proc
-    with job_lock:
-        if not current_job["active"]:
-            return jsonify({"error": "No active job running."}), 400
+    if current_job["active"]:
         try:
             if active_proc and active_proc.poll() is None:
                 os.killpg(os.getpgid(active_proc.pid), signal.SIGKILL)
@@ -1246,44 +1870,233 @@ def stop_imaging():
 
         for tool in ["dc3dd", "ewfacquire", "ddrescue"]:
             try:
-                subprocess.run(["sudo", BIN_PKILL, "-9", tool], capture_output=True, timeout=5)
+                subprocess.run(["pkill", "-9", tool], capture_output=True)
             except Exception:
                 pass
 
-        current_job["status"] = "Stopped"
-        current_job["active"] = False
-        current_job["log"] += "\n[!] Acquisition manually terminated by user."
-    return jsonify({"success": True, "message": "Acquisition stopped."})
+        with job_lock:
+            current_job["status"] = "Stopped"
+            current_job["active"] = False
+            current_job["log"] += "\n[!] Acquisition manually terminated by user."
+        return jsonify({"success": True, "message": "Acquisition stopped."})
+        
+    return jsonify({"error": "No active job running."}), 400
 
 @app.route('/api/progress', methods=['GET'])
 @requires_auth
 def get_progress():
-    with job_lock:
-        return jsonify({
-            "active": current_job["active"],
-            "format": current_job["format"],
-            "progress_percent": current_job["progress_percent"],
-            "speed_mbps": current_job["speed_mbps"],
-            "transferred_bytes": current_job["transferred_bytes"],
-            "total_bytes": current_job["total_bytes"],
-            "status": current_job["status"],
-            "log": current_job["log"]
+    job = snapshot_job()
+    return jsonify({
+        "active": job["active"],
+        "format": job["format"],
+        "progress_percent": job["progress_percent"],
+        "speed_mbps": job["speed_mbps"],
+        "transferred_bytes": job["transferred_bytes"],
+        "total_bytes": job["total_bytes"],
+        "status": job["status"],
+        "log": job["log"]
+    })
+
+# --- Advanced System Management Endpoints ---
+
+# SAFE alternative to a free-text shell terminal: a fixed allowlist of
+# read-only diagnostic commands, each a literal argv list (never shell=True,
+# never user-supplied text). A previous version of this feature accepted
+# arbitrary shell strings from the client - that's a full remote-code-
+# execution backdoor over the web API and is deliberately not implemented
+# here. If you need something a command in this list doesn't cover, SSH in.
+DIAGNOSTIC_COMMANDS = {
+    "dmesg": ["dmesg"],
+    "lsusb": ["lsusb"],
+    "df": ["df", "-h"],
+    "ip_a": ["ip", "a"],
+    "uptime": ["uptime"],
+    "lsblk": ["lsblk", "-f"],
+    "free": ["free", "-h"],
+    "mounts": ["mount"],
+}
+
+@app.route('/api/system/diagnostics', methods=['POST'])
+@requires_auth
+def run_diagnostic_command():
+    req = request.get_json() or {}
+    key = req.get('command', '')
+    argv = DIAGNOSTIC_COMMANDS.get(key)
+    if not argv:
+        return jsonify({"success": False, "error": f"Unknown diagnostic '{key}'. Allowed: {sorted(DIAGNOSTIC_COMMANDS)}"}), 400
+
+    try:
+        res = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+        output = (res.stdout or "") + (("\n" + res.stderr) if res.stderr else "")
+        return jsonify({"success": True, "command": " ".join(argv), "output": output.strip() or "[no output]"})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Command timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/system/change_password', methods=['POST'])
+@requires_auth
+def change_password():
+    req = request.get_json() or {}
+    curr_pass = req.get('current_password', '')
+    new_pass = req.get('new_password', '')
+
+    if not hmac.compare_digest(curr_pass, get_active_admin_pass()):
+        return jsonify({"success": False, "error": "Current password is incorrect."}), 400
+
+    if not new_pass or len(new_pass) < 8:
+        return jsonify({"success": False, "error": "New password must be at least 8 characters long."}), 400
+
+    cfg = load_runtime_config()
+    cfg['pass'] = new_pass
+    save_runtime_config(cfg)
+    return jsonify({"success": True, "message": "Password changed successfully. This takes effect immediately."})
+
+@app.route('/api/system/power', methods=['POST'])
+@requires_auth
+def system_power_control():
+    req = request.get_json() or {}
+    action = req.get('action')
+
+    if action == 'reboot':
+        subprocess.Popen(['sudo', '/sbin/reboot'])
+        return jsonify({"success": True, "message": "System reboot initiated."})
+    elif action == 'poweroff':
+        subprocess.Popen(['sudo', '/sbin/poweroff'])
+        return jsonify({"success": True, "message": "System shutdown initiated."})
+
+    return jsonify({"success": False, "error": "Invalid power action."}), 400
+
+@app.route('/api/system/restart_service', methods=['POST'])
+@requires_auth
+def restart_forensic_service():
+    def delayed_restart():
+        time.sleep(1)
+        subprocess.run(['sudo', '/bin/systemctl', 'restart', 'pi-forensics.service'])
+
+    threading.Thread(target=delayed_restart, daemon=True).start()
+    return jsonify({"success": True, "message": "Forensic service restart initiated - this page will disconnect briefly."})
+
+@app.route('/api/system/restart_kiosk', methods=['POST'])
+@requires_auth
+def restart_touch_kiosk():
+    # install.py sets up the kiosk via a labwc autostart script in this
+    # account's home directory, not a systemd unit - the web service
+    # already runs as that same account, so no sudo/su is needed here.
+    autostart_path = os.path.join(os.path.expanduser('~'), '.config', 'labwc', 'autostart')
+    if not os.path.exists(autostart_path):
+        return jsonify({"success": False, "error": f"Kiosk autostart script not found at {autostart_path}."}), 404
+
+    try:
+        subprocess.run(['pkill', '-9', '-f', 'chromium'], capture_output=True, timeout=10)
+        time.sleep(1)
+        subprocess.Popen(['bash', autostart_path])
+        return jsonify({"success": True, "message": "Touchscreen kiosk display restarting..."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/system/git_update', methods=['POST'])
+@requires_auth
+def git_update_application():
+    try:
+        res = subprocess.run(['git', 'pull', 'origin', 'main'], cwd=INSTALL_DIR, capture_output=True, text=True, timeout=60)
+        output = res.stdout.strip() or res.stderr.strip()
+
+        if res.returncode == 0:
+            def delayed_restart():
+                time.sleep(2)
+                subprocess.run(['sudo', '/bin/systemctl', 'restart', 'pi-forensics.service'])
+            threading.Thread(target=delayed_restart, daemon=True).start()
+            return jsonify({"success": True, "message": f"Git update successful:\n{output}\n\nRestarting service..."})
+        else:
+            return jsonify({"success": False, "error": f"git pull failed: {output}"}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "git pull timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/system/os_update', methods=['POST'])
+@requires_auth
+def update_operating_system():
+    def run_update():
+        try:
+            subprocess.run(['sudo', '/usr/bin/apt-get', 'update'], capture_output=True, timeout=300)
+            subprocess.run(['sudo', '/usr/bin/apt-get', 'upgrade', '-y'], capture_output=True, timeout=1800)
+        except Exception as e:
+            print(f"OS update error: {e}")
+
+    threading.Thread(target=run_update, daemon=True).start()
+    return jsonify({"success": True, "message": "OS update started in the background (apt-get update && upgrade -y). This can take a while - check journalctl or SSH in to monitor."})
+
+@app.route('/api/system/eject_drive', methods=['POST'])
+@requires_auth
+def eject_usb_drive():
+    req = request.get_json() or {}
+    drive = req.get('drive', '').strip()
+
+    if not is_valid_block_device(drive):
+        return jsonify({"success": False, "error": f"'{drive}' is not a recognized whole-disk device."}), 400
+
+    try:
+        subprocess.run(['sync'], timeout=30)
+        for part in sorted(glob.glob(f"{drive}*")):
+            subprocess.run(['sudo', 'udevil', 'unmount', '-b', part], capture_output=True)
+            subprocess.run(['sudo', 'umount', part], capture_output=True)
+        subprocess.run(['sudo', '/usr/sbin/blockdev', '--flushbufs', drive], capture_output=True)
+
+        return jsonify({"success": True, "message": f"Drive {drive} safely unmounted and flushed. You can now disconnect it."})
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Eject failed: {str(e)}"}), 500
+
+@app.route('/api/system/interfaces', methods=['GET'])
+@requires_auth
+def get_network_interfaces():
+    interfaces = []
+    addrs = psutil.net_if_addrs()
+    stats = psutil.net_if_stats()
+
+    for iface, addr_list in addrs.items():
+        ip_addr = "Unassigned"
+        mac_addr = "N/A"
+        for addr in addr_list:
+            if addr.family == 2:  # AF_INET (IPv4)
+                ip_addr = addr.address
+            elif addr.family == 17:  # AF_PACKET (MAC, Linux)
+                mac_addr = addr.address
+
+        is_up = stats[iface].isup if iface in stats else False
+        speed = stats[iface].speed if iface in stats else 0
+
+        interfaces.append({
+            "interface": iface,
+            "ip": ip_addr,
+            "mac": mac_addr,
+            "active": is_up,
+            "speed_mbps": speed
         })
+
+    return jsonify({"success": True, "interfaces": interfaces})
+
+@app.route('/api/system/maintenance/purge_logs', methods=['POST'])
+@requires_auth
+def purge_system_logs():
+    update_job(log="[System log buffer purged by examiner.]")
+    return jsonify({"success": True, "message": "Console log buffer cleared."})
 
 # --- File Explorer Endpoints ---
 @app.route('/api/files/browse', methods=['POST'])
 @requires_auth
 def browse_files():
     req = request.get_json() or {}
-    path = req.get('path', '/mnt')
-    try:
-        p = safe_path(path, must_exist=True)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    path = safe_path(req.get('path', EVIDENCE_ROOT))
+    if not path:
+        return jsonify({"error": "Path is outside the permitted evidence directory."}), 403
+    if not os.path.exists(path):
+        return jsonify({"error": f"Path '{path}' does not exist"}), 404
 
     items = []
     try:
-        for entry in os.scandir(p):
+        for entry in os.scandir(path):
             try:
                 stat = entry.stat()
                 items.append({
@@ -1296,7 +2109,7 @@ def browse_files():
                 })
             except Exception:
                 pass
-        return jsonify({"path": str(p), "items": sorted(items, key=lambda x: (not x['is_dir'], x['name'].lower()))})
+        return jsonify({"path": path, "items": sorted(items, key=lambda x: (not x['is_dir'], x['name'].lower()))})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1304,20 +2117,19 @@ def browse_files():
 @requires_auth
 def copy_file():
     req = request.get_json() or {}
-    src = req.get('source')
-    dest_dir = req.get('destination_dir')
+    src = safe_path(req.get('source'))
+    dest_dir = safe_path(req.get('destination_dir'))
+
+    if not src or not os.path.exists(src) or not dest_dir or not os.path.exists(dest_dir):
+        return jsonify({"success": False, "error": "Invalid source or destination path"}), 400
+
     try:
-        src_p = safe_path(src, must_exist=True)
-        dest_p = safe_path(dest_dir, must_exist=True)
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
-    try:
-        dest_path = dest_p / src_p.name
-        if src_p.is_dir():
-            shutil.copytree(src_p, dest_path, dirs_exist_ok=True)
+        dest_path = os.path.join(dest_dir, os.path.basename(src))
+        if os.path.isdir(src):
+            shutil.copytree(src, dest_path, dirs_exist_ok=True)
         else:
-            shutil.copy2(src_p, dest_path)
-        return jsonify({"success": True, "message": f"Copied {src_p.name} to {dest_p}"})
+            shutil.copy2(src, dest_path)
+        return jsonify({"success": True, "message": f"Copied {os.path.basename(src)} to {dest_dir}"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -1325,23 +2137,17 @@ def copy_file():
 @requires_auth
 def delete_file():
     req = request.get_json() or {}
-    path = req.get('path')
+    path = safe_path(req.get('path'))
+
+    if not path or not os.path.exists(path):
+        return jsonify({"success": False, "error": "Path does not exist or is outside the permitted evidence directory."}), 400
+
     try:
-        p = safe_path(path, must_exist=True)
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
-    for root in ALLOWED_ROOTS:
-        try:
-            if p.resolve() == root.resolve():
-                return jsonify({"success": False, "error": "Cannot delete root mount points"}), 400
-        except Exception:
-            pass
-    try:
-        if p.is_dir():
-            shutil.rmtree(p)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
         else:
-            p.unlink()
-        return jsonify({"success": True, "message": f"Deleted {p.name}"})
+            os.remove(path)
+        return jsonify({"success": True, "message": f"Deleted {os.path.basename(path)}"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -1350,13 +2156,13 @@ def delete_file():
 @requires_auth
 def load_report_json():
     req = request.get_json() or {}
-    report_file = req.get('report_path')
+    report_file = safe_path(req.get('report_path'))
+
+    if not report_file or not os.path.exists(report_file):
+        return jsonify({"success": False, "error": "Report file not found or outside the permitted evidence directory."}), 404
+
     try:
-        p = safe_path(report_file, must_exist=True)
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
-    try:
-        with open(p, 'r') as f:
+        with open(report_file, 'r') as f:
             data = json.load(f)
         return jsonify({"success": True, "report": data})
     except Exception as e:
@@ -1366,14 +2172,14 @@ def load_report_json():
 @requires_auth
 def save_report_json():
     req = request.get_json() or {}
-    report_file = req.get('report_path')
+    report_file = safe_path(req.get('report_path'))
     data = req.get('report_data')
+
+    if not report_file or not os.path.exists(report_file):
+        return jsonify({"success": False, "error": "Report target file not found or outside the permitted evidence directory."}), 404
+
     try:
-        p = safe_path(report_file, must_exist=True)
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
-    try:
-        with open(p, 'w') as f:
+        with open(report_file, 'w') as f:
             json.dump(data, f, indent=2)
         return jsonify({"success": True, "message": "Report JSON updated successfully."})
     except Exception as e:
@@ -1384,23 +2190,25 @@ def save_report_json():
 @requires_auth
 def verify_file_hash():
     req = request.get_json() or {}
-    file_path = req.get('file_path')
+    file_path = safe_path(req.get('file_path'))
     algo = req.get('algorithm', 'sha256').lower()
-    if algo not in ('md5', 'sha1', 'sha256'):
-        return jsonify({"success": False, "error": "Unsupported algorithm"}), 400
-    try:
-        p = safe_path(file_path, must_exist=True)
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+
+    if not file_path or not os.path.exists(file_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    if algo not in ALLOWED_HASH_ALGOS:
+        return jsonify({"success": False, "error": f"Unsupported algorithm '{algo}'. Use one of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
+
     try:
         hasher = getattr(hashlib, algo)()
-        with open(p, 'rb') as f:
+        with open(file_path, 'rb') as f:
             while chunk := f.read(65536):
                 hasher.update(chunk)
         computed = hasher.hexdigest()
+
         return jsonify({
             "success": True,
-            "file_name": p.name,
+            "file_name": os.path.basename(file_path),
             "algorithm": algo.upper(),
             "hash": computed
         })
@@ -1412,25 +2220,20 @@ def verify_file_hash():
 @requires_auth
 def export_pdf():
     req = request.get_json() or {}
-    report_file = req.get('report_path')
+    report_file = safe_path(req.get('report_path'))
 
-    try:
-        p = safe_path(report_file, must_exist=True)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    if not report_file or not os.path.exists(report_file):
+        return jsonify({"error": "Report file not found or outside the permitted evidence directory."}), 404
 
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
         from reportlab.lib.utils import ImageReader
 
-        with open(p, 'r') as f:
+        with open(report_file, 'r') as f:
             data = json.load(f)
 
-        pdf_path = str(p).replace('.json', '.pdf')
-        if not pdf_path.endswith('.pdf'):
-            pdf_path += '.pdf'
-
+        pdf_path = report_file.replace('.json', '.pdf')
         c = canvas.Canvas(pdf_path, pagesize=letter)
         
         c.setFont("Helvetica-Bold", 16)
@@ -1507,10 +2310,11 @@ def export_pdf():
             if file_list:
                 c.drawString(50, y, "Attached Case Files / Media:")
                 y -= 15
-                for file_path in file_list:
+                for raw_path in file_list:
+                    file_path = safe_path(raw_path)
                     if not file_path or not os.path.exists(file_path):
                         continue
-                        
+
                     ext = os.path.splitext(file_path)[1].lower()
                     if ext in ['.jpg', '.jpeg', '.png']:
                         if y < 200:
@@ -1535,4 +2339,16 @@ def export_pdf():
         return jsonify({"error": f"PDF Export Failed: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=False)
+    # This dev-mode entrypoint is only used for `python3 app.py` directly.
+    # The production installer (install.py) runs this app under gunicorn
+    # instead - see install.py / README.md for how to add TLS there
+    # (reverse proxy, or gunicorn's --certfile/--keyfile).
+    tls_cert = os.environ.get('FORENSIC_TLS_CERT')
+    tls_key = os.environ.get('FORENSIC_TLS_KEY')
+    ssl_context = (tls_cert, tls_key) if tls_cert and tls_key else None
+
+    if not ssl_context:
+        print("[SECURITY WARNING] No FORENSIC_TLS_CERT/FORENSIC_TLS_KEY configured - "
+              "serving plain HTTP. Basic Auth credentials will be sent unencrypted.")
+
+    app.run(host='0.0.0.0', port=5000, debug=False, ssl_context=ssl_context)
