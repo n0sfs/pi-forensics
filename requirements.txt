@@ -1,4 +1,4 @@
-Flask==3.0.0
-psutil==5.9.8
+Flask>=3.0.0
+gunicorn>=21.0.0
+psutil>=5.8.0
 reportlab==4.0.8
-gunicorn==21.2.0
