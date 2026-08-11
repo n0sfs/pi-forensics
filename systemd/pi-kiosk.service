@@ -1,12 +1,15 @@
 [Unit]
 Description=ARM Forensic Station Touchscreen Kiosk UI
-After=pi-forensics.service display-manager.service
+After=pi-forensics.service nginx.service graphical.target
 Wants=pi-forensics.service
 
 [Service]
+Type=simple
 User=pi
+Group=pi
 Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/pi/.Xauthority
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 ExecStart=/opt/pi-forensics/kiosk.sh
 Restart=on-failure
 RestartSec=5s
