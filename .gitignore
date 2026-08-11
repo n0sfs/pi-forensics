@@ -13,11 +13,23 @@ ENV/
 *.dd
 *.raw
 *.img
+*.aff
+*.E01
+*.ab
 *.log
 *_manifest.json
 *_manifest.txt
+*_report.json
+*_report.pdf
 /mnt/*
 *.bkp
+
+# Runtime secrets - never commit these (install.py/app.py generate them
+# on the target device, not in this repo)
+runtime_config.json
+*.crt
+*.key
+*.pem
 
 # Local Storage / IDE
 .vscode/
