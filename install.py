@@ -147,13 +147,14 @@ autostart_path = os.path.join(kiosk_dir, "autostart")
 autostart_content = f"""#!/bin/bash
 export DISPLAY=:0
 export WAYLAND_DISPLAY=wayland-0
-export XDG_RUNTIME_DIR=/run/user/{user_info.pw_uid}
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
 
 wlr-randr --output ALL --on 2>/dev/null || true
 
 killall -9 chromium chromium-browser 2>/dev/null || true
 rm -rf {USER_HOME}/.config/chromium/Singleton*
 rm -rf {USER_HOME}/.config/chromium/Default/LOCK*
+rm -rf {USER_HOME}/.config/chromium/Default/Preferences.lock
 
 for i in {{1..30}}; do
     if curl -s -I http://127.0.0.1:5000 | grep -q "200 OK"; then
@@ -166,9 +167,12 @@ chromium \\
   --kiosk \\
   --ozone-platform=wayland \\
   --enable-features=UseOzonePlatform \\
+  --password-store=basic \\
+  --use-mock-keychain \\
+  --no-default-browser-check \\
+  --no-first-run \\
   --gpu-subsystem-startup-dialog=0 \\
   --ignore-gpu-blocklist \\
-  --password-store=basic \\
   --noerrdialogs \\
   --disable-infobars \\
   --disable-session-crashed-bubble \\
