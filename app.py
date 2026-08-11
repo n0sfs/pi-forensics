@@ -146,9 +146,12 @@ def sanitize_host(host: str) -> str:
 
 def sanitize_share(share: str) -> str:
     share = (share or '').strip()
-    if not share or re.search(r'[;&|`$<>\\n\\r]', share):
+    if not share:
         raise ValueError("Invalid share path")
-    # Keep path-ish characters only
+    # Reject shell metacharacters and control characters (not the letters n/r)
+    if any(c in share for c in ';&|`$<>') or any(ord(c) < 32 for c in share):
+        raise ValueError("Invalid share path")
+    # Keep path-ish characters only (letters, digits, _ / . - space)
     if not re.match(r'^[A-Za-z0-9_/\.\- ]{1,256}$', share):
         raise ValueError("Invalid share path characters")
     return share
@@ -224,6 +227,26 @@ def requires_auth(f):
     return decorated
 
 # --- Hash & Recovery Output Parsers ---
+
+def parse_dc3dd_hashes_from_text(text):
+    """Extract hash lines from dc3dd stdout/stderr text."""
+    hashes = {}
+    if not text:
+        return hashes
+    try:
+        for val, algo in re.findall(
+            r'([a-fA-F0-9]{32,64})\s*\(\s*(md5|sha1|sha256)\s*\)',
+            text, re.IGNORECASE):
+            hashes[algo.lower()] = val
+        if not hashes:
+            for algo, val in re.findall(
+                r'\b(md5|sha1|sha256)\b[^\n:]*:\s*([a-fA-F0-9]{32,64})',
+                text, re.IGNORECASE):
+                hashes[algo.lower()] = val
+    except Exception as e:
+        print(f"Error parsing dc3dd hashes from text: {e}")
+    return hashes
+
 def parse_dc3dd_hashes(log_path):
     hashes = {}
     if os.path.exists(log_path):
@@ -435,6 +458,7 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
                 pass
 
         active_proc.wait()
+        rc = active_proc.returncode
 
         try:
             os.sync()
@@ -442,29 +466,60 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
             pass
 
         time.sleep(1.0)
+
+        with job_lock:
+            log_snapshot = current_job.get("log", "")
+            was_stopped = current_job.get("status") == "Stopped"
+            transferred = current_job.get("transferred_bytes", 0)
+
         computed_hashes = {}
         if fmt == 'e01':
-            computed_hashes = parse_ewf_hashes(current_job["log"])
+            computed_hashes = parse_ewf_hashes(log_snapshot)
         elif fmt in ['raw', 'dd']:
             dc3dd_log = out_file.replace('.dd', '_dc3dd.log')
             computed_hashes = parse_dc3dd_hashes(dc3dd_log)
+            if not computed_hashes:
+                computed_hashes = parse_dc3dd_hashes_from_text(log_snapshot)
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["computed_verification_hashes"] = computed_hashes
+        report_data["exit_code"] = rc
+
+        log_l = log_snapshot.lower()
+        tool_says_done = (
+            "completed" in log_l
+            or "finished" in log_l
+            or "100%" in log_snapshot
+        )
+        bytes_done = (total_bytes > 0 and transferred >= total_bytes)
+        success = (rc in (0, 1, 2)) or tool_says_done or bytes_done
+        if any(x in log_l for x in ("permission denied", "aborted", "unrecognized option", "no such file")):
+            if rc not in (0, 2) and not bytes_done:
+                success = False
 
         with job_lock:
-            if active_proc.returncode in [0, 2]:
+            if was_stopped:
+                current_job["status"] = "Stopped"
+                report_data["acquisition_status"] = "STOPPED"
+            elif success:
                 current_job["status"] = "Completed Successfully"
                 current_job["progress_percent"] = 100.0
                 current_job["speed_mbps"] = 0.0
+                if total_bytes > 0:
+                    current_job["transferred_bytes"] = total_bytes
                 report_data["acquisition_status"] = "COMPLETED"
-            elif current_job["status"] != "Stopped":
+            else:
                 current_job["status"] = "Failed"
+                current_job["speed_mbps"] = 0.0
                 report_data["acquisition_status"] = "FAILED"
-        if active_proc.returncode in [0, 2]:
-            append_log("[+] Recovery/acquisition completed successfully.")
-        elif report_data.get("acquisition_status") == "FAILED":
-            append_log(f"[-] Process exited with code {active_proc.returncode}")
+
+        if success and not was_stopped:
+            append_log(f"[+] Recovery/acquisition completed successfully (exit {rc}).")
+            if computed_hashes:
+                for algo, val in computed_hashes.items():
+                    append_log(f"[+] {algo.upper()}: {val}")
+        elif not was_stopped:
+            append_log(f"[-] Process exited with code {rc}")
 
         try:
             with open(report_file_path, 'w') as f:
@@ -766,23 +821,52 @@ def mount_network():
                        capture_output=True, timeout=10)
 
         if protocol == 'nfs':
-            nfs_source = f"{host}:{share_path}"
+            # Normalise export path: NFS wants "host:/export/path"
+            export_path = share_path if share_path.startswith('/') else f'/{share_path}'
+            nfs_source = f"{host}:{export_path}"
             last_err = ""
-            for vers in ('3', '4'):
+            # Try common client option sets (v3, v4, auto-negotiate)
+            option_sets = [
+                'nolock,soft,timeo=30,retrans=2,tcp,vers=3',
+                'nolock,soft,timeo=30,retrans=2,tcp,vers=4',
+                'nolock,soft,timeo=30,retrans=2,tcp,vers=4.1',
+                'nolock,soft,timeo=30,retrans=2,tcp',  # let client negotiate
+                'soft,timeo=30,retrans=2,tcp,vers=3',
+                'soft,timeo=30,retrans=2,tcp,vers=4',
+            ]
+            for opts in option_sets:
                 cmd = [
                     'sudo', BIN_MOUNT, '-t', 'nfs',
-                    '-o', f'nolock,soft,timeo=30,retrans=2,vers={vers}',
+                    '-o', opts,
                     nfs_source, mount_point
                 ]
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                try:
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+                except subprocess.TimeoutExpired:
+                    last_err = f"Timed out mounting with options: {opts}"
+                    continue
                 if res.returncode == 0:
                     save_mount_history({
                         "protocol": protocol, "host": host,
-                        "share": share_path, "mount_point": mount_point
+                        "share": export_path, "mount_point": mount_point
                     })
-                    return jsonify({"success": True, "mount_point": mount_point})
-                last_err = res.stderr.strip() or res.stdout.strip()
-            return jsonify({"success": False, "error": f"NFS Mount Failed: {last_err}"}), 500
+                    return jsonify({
+                        "success": True,
+                        "mount_point": mount_point,
+                        "source": nfs_source,
+                        "options": opts
+                    })
+                err = (res.stderr or res.stdout or "").strip()
+                if err:
+                    last_err = err
+            hint = (
+                " Check: nfs-common installed; showmount -e <host>; "
+                "server /etc/exports allows this Pi; firewall allows 2049/tcp."
+            )
+            return jsonify({
+                "success": False,
+                "error": f"NFS Mount Failed ({nfs_source}): {last_err}.{hint}"
+            }), 500
 
         # SMB / CIFS – use credentials file so password never appears on argv
         unc_source = f"//{host}/{share_path.lstrip('/')}"
@@ -947,7 +1031,7 @@ def start_imaging():
         ewf_hash_type = "sha256" if "sha256" in hashes else ("sha1" if "sha1" in hashes else "md5")
         out_file = f"{dest_path}/{base_name}.E01"
         cmd = [
-            "ewfacquire", "-u",
+            "sudo", "/usr/bin/ewfacquire", "-u",
             "-t", f"{dest_path}/{base_name}",
             "-C", case_num,
             "-E", evidence_id,
@@ -963,12 +1047,10 @@ def start_imaging():
         out_file = f"{dest_path}/{base_name}.dd"
         dc3dd_log_file = f"{dest_path}/{base_name}_dc3dd.log"
         cmd = [
-            "dc3dd",
+            "sudo", "/usr/bin/dc3dd",
             f"if={source}",
             f"of={out_file}",
             f"log={dc3dd_log_file}",
-            "iflag=direct",
-            "oflag=direct"
         ]
         for h in hashes:
             cmd.append(f"hash={h}")

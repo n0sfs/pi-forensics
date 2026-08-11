@@ -16,7 +16,6 @@ import sys
 import pwd
 import secrets
 import subprocess
-import shutil
 from pathlib import Path
 
 if os.geteuid() != 0:
@@ -104,8 +103,6 @@ print(f"\n[*] Preparing {INSTALL_DIR}...")
 INSTALL_DIR.mkdir(parents=True, exist_ok=True)
 
 src_root = Path(__file__).resolve().parent
-# If install.py is already running from INSTALL_DIR (e.g. after git clone
-# into /opt/pi-forensics), source and destination are the same – skip copy.
 already_in_place = src_root.resolve() == INSTALL_DIR.resolve()
 if already_in_place:
     print(f"    Source is already {INSTALL_DIR} – skipping file copy.")
@@ -119,6 +116,7 @@ else:
         if src.resolve() == dst.resolve():
             continue
         if src.is_dir():
+            import shutil
             if dst.exists():
                 shutil.rmtree(dst)
             subprocess.run(["cp", "-a", str(src), str(dst)], check=True)
