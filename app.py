@@ -1,5 +1,6 @@
 import os
 import re
+import pwd
 import glob
 import hmac
 import time
@@ -274,6 +275,28 @@ _DEVICE_RE = re.compile(r'^/dev/(sd[a-z]|nvme\d+n\d+|mmcblk\d+)$')
 def is_valid_block_device(path_str):
     """Whitelist check for whole-disk device paths (no partitions, no shell metacharacters)."""
     return bool(path_str) and bool(_DEVICE_RE.match(path_str))
+
+_SERVICE_ACCOUNT_NAME = pwd.getpwuid(os.getuid()).pw_name
+
+def reclaim_ownership(path):
+    """
+    dc3dd/dcfldd/dd/ewfacquire/photorec/ddrescue all run via sudo (root) to
+    get raw read access to the source device - their output files land
+    owned by root as a side effect. Without handing ownership back, every
+    later operation on those files (delete, hash verify, copy, ExifTool,
+    etc.) run as this unprivileged service account would fail with
+    permission denied. Safe to grant broadly in sudoers: the target
+    user:group is fixed at install time, not attacker-controllable, so this
+    can only ever hand a file back to the unprivileged account, never
+    escalate ownership to root or anyone else.
+    """
+    if not path or not os.path.exists(path):
+        return
+    try:
+        subprocess.run(['sudo', '/bin/chown', '-R', _SERVICE_ACCOUNT_NAME, path], capture_output=True, timeout=30)
+        subprocess.run(['sudo', '/bin/chgrp', '-R', _SERVICE_ACCOUNT_NAME, path], capture_output=True, timeout=30)
+    except Exception as e:
+        print(f"Warning: could not reclaim ownership of {path}: {e}")
 
 # --- Hash & Recovery Output Parsers ---
 def parse_dc3dd_hashes(log_path):
@@ -694,6 +717,7 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
                 if val:
                     computed_hashes[h] = val
         elif fmt == 'plain_dd':
+            reclaim_ownership(out_file)  # written by sudo'd dd - must reclaim before we can read it below
             append_log("[*] Computing hash(es) of output file (plain dd has no built-in hashing)...")
             computed_hashes = compute_file_hashes(out_file, hashes)
 
@@ -717,6 +741,12 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
         append_log(f"[-] Execution Exception: {str(e)}")
 
     finally:
+        # Every format this worker handles (dc3dd/dcfldd/dd/ewfacquire/
+        # ddrescue) now runs via sudo to read the raw device - their output
+        # lands owned by root. Reclaim regardless of success/failure/stop,
+        # so even a partial/failed run's output can still be inspected or
+        # deleted afterward by this unprivileged service account.
+        reclaim_ownership(os.path.dirname(out_file))
         update_job(active=False)
         active_proc = None
 
@@ -749,7 +779,7 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
                    progress_percent=0.0, speed_mbps=0.0, transferred_bytes=0, total_bytes=total_bytes)
         append_log(f"[*] Phase 1/2: Acquiring raw image to {raw_file}")
 
-        cmd1 = ["dc3dd", f"if={source}", f"of={raw_file}", f"log={dc3dd_log_file}"]
+        cmd1 = ["sudo", "/usr/bin/dc3dd", f"if={source}", f"of={raw_file}", f"log={dc3dd_log_file}"]
         for h in hashes:
             cmd1.append(f"hash={h}")
         append_log(f"[*] Command: {' '.join(cmd1)}")
@@ -772,6 +802,7 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
         time.sleep(1.0)
 
         if proc1.returncode not in [0, 2]:
+            reclaim_ownership(dest_path)  # hand back whatever partial output exists, even on failure
             if snapshot_job()["status"] != "Stopped":
                 update_job(status="Failed")
                 append_log(f"[-] Phase 1 (raw acquisition) failed with exit code {proc1.returncode}")
@@ -781,7 +812,14 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
             return
 
         if snapshot_job()["status"] == "Stopped":
+            reclaim_ownership(dest_path)  # hand back whatever phase 1 did produce, even though we're stopping
             return  # user aborted right after phase 1 finished
+
+        # Phase 1 ran via sudo (root, for raw device access) - reclaim
+        # before reading the log file directly in Python below, and before
+        # phase 2 (affconvert, unprivileged) needs to read the raw file
+        # phase 1 just wrote.
+        reclaim_ownership(dest_path)
 
         raw_hashes = parse_dc3dd_hashes(dc3dd_log_file)
         append_log(f"[+] Phase 1 complete. Raw acquisition hashes: {raw_hashes}")
@@ -1040,7 +1078,7 @@ def execution_worker_photorec(source, dest_dir, report_file_path, report_data):
 
     try:
         cmd = [
-            "photorec", "/log", "/d", dest_dir,
+            "sudo", "/usr/bin/photorec", "/log", "/d", dest_dir,
             "/cmd", source, "partition_none,options,fileopt,everything,enable,search"
         ]
         append_log(f"[*] Command: {' '.join(cmd)}")
@@ -1075,6 +1113,10 @@ def execution_worker_photorec(source, dest_dir, report_file_path, report_data):
         append_log(f"[-] Execution Exception: {str(e)}")
 
     finally:
+        # photorec now runs via sudo for raw device access - reclaim
+        # regardless of outcome, so recovered files can actually be
+        # browsed/deleted/copied afterward by this unprivileged service.
+        reclaim_ownership(dest_dir)
         update_job(active=False)
         active_proc = None
 
@@ -1123,13 +1165,29 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
         tail = b""
         last_update_time = time.time()
 
-        with open(source, 'rb') as f:
+        # Raw block devices need root to read directly - pipe through a
+        # privileged `dd` and read its stdout instead of opening the device
+        # file directly (which would hit the same permission wall dc3dd/
+        # ddrescue/etc. would without sudo). An already-acquired image file
+        # is owned by this account already, so a direct Python open() is
+        # simpler and faster there - no privilege elevation needed.
+        read_proc = None
+        if is_valid_block_device(source):
+            read_proc = subprocess.Popen(
+                ["sudo", "/usr/bin/dd", f"if={source}", f"bs={CHUNK_SIZE}"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+            source_stream = read_proc.stdout
+        else:
+            source_stream = open(source, 'rb')
+
+        try:
             while True:
                 if snapshot_job()["status"] == "Stopped":
                     append_log("[!] Scan stopped by user.")
                     break
 
-                chunk = f.read(CHUNK_SIZE)
+                chunk = source_stream.read(CHUNK_SIZE)
                 if not chunk:
                     break
 
@@ -1156,6 +1214,26 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                         updates["progress_percent"] = round((bytes_read / total_bytes) * 100, 1)
                     update_job(**updates)
                     last_update_time = time.time()
+        finally:
+            try:
+                source_stream.close()
+            except Exception:
+                pass
+            if read_proc is not None:
+                try:
+                    if read_proc.poll() is None:
+                        read_proc.terminate()
+                        read_proc.wait(timeout=5)
+                except Exception:
+                    pass  # expected if it's already root-owned via sudo - the sudo pkill below is the real cleanup
+                # sudo dd runs as root - an unprivileged terminate()/kill()
+                # from this process can't touch it, so also sweep it via
+                # the same sudo pkill pattern used to stop other privileged
+                # acquisition tools.
+                try:
+                    subprocess.run(["sudo", "pkill", "-9", "-f", f"dd if={source}"], capture_output=True)
+                except Exception:
+                    pass
 
         update_job(transferred_bytes=bytes_read)
 
@@ -1660,7 +1738,7 @@ def start_imaging():
         ewf_hash_type = "sha256" if "sha256" in hashes else ("sha1" if "sha1" in hashes else "md5")
         out_file = f"{dest_path}/{base_name}.E01"
         cmd = [
-            "ewfacquire", "-u",
+            "sudo", "/usr/bin/ewfacquire", "-u",
             "-t", f"{dest_path}/{base_name}",
             "-C", case_num,
             "-E", evidence_id,
@@ -1676,7 +1754,7 @@ def start_imaging():
     elif fmt == 'dcfldd':
         out_file = f"{dest_path}/{base_name}.dd"
         cmd = [
-            "dcfldd",
+            "sudo", "/usr/bin/dcfldd",
             f"if={source}",
             f"of={out_file}",
             "conv=noerror,sync",
@@ -1697,7 +1775,7 @@ def start_imaging():
         # would break the acquisition entirely for a benefit that mostly
         # matters on the read side anyway.
         cmd = [
-            "dd",
+            "sudo", "/usr/bin/dd",
             f"if={source}",
             f"of={out_file}",
             "bs=4M",
@@ -1714,7 +1792,7 @@ def start_imaging():
         # for the report's "requested command" field, not actually launched
         # via the generic execution_worker thread below.
         out_file = f"{dest_path}/{base_name}.aff"
-        dc3dd_cmd_preview = ["dc3dd", f"if={source}", f"of={dest_path}/{base_name}.raw"] + [f"hash={h}" for h in hashes]
+        dc3dd_cmd_preview = ["sudo", "/usr/bin/dc3dd", f"if={source}", f"of={dest_path}/{base_name}.raw"] + [f"hash={h}" for h in hashes]
         affconvert_cmd_preview = ["affconvert", "-o", out_file, f"{dest_path}/{base_name}.raw"]
         cmd = dc3dd_cmd_preview + ["&&"] + affconvert_cmd_preview
 
@@ -1730,7 +1808,7 @@ def start_imaging():
         # which sets the internal read buffer size. Use format=plain_dd
         # instead if genuine O_DIRECT behavior matters for your hardware.
         cmd = [
-            "dc3dd",
+            "sudo", "/usr/bin/dc3dd",
             f"if={source}",
             f"of={out_file}",
             f"log={dc3dd_log_file}",
@@ -2290,11 +2368,23 @@ def stop_imaging():
         except Exception as e:
             print(f"Error killing process group: {e}")
 
-        for tool in ["dc3dd", "ewfacquire", "ddrescue"]:
+        # These now run via sudo (root) to get raw device access, so killing
+        # them also needs sudo - an unprivileged kill/pkill can't signal a
+        # root-owned process. The existing /usr/bin/pkill sudoers grant is
+        # already unrestricted, so no new sudoers entry is needed here.
+        # "dd" gets matched via -f with a distinguishing substring rather
+        # than a bare name match - "dd" is too generic a process name to
+        # pkill by bare name without risking killing an unrelated process
+        # elsewhere on the system.
+        for tool in ["dc3dd", "dcfldd", "ewfacquire", "ddrescue", "photorec"]:
             try:
-                subprocess.run(["pkill", "-9", tool], capture_output=True)
+                subprocess.run(["sudo", "pkill", "-9", tool], capture_output=True)
             except Exception:
                 pass
+        try:
+            subprocess.run(["sudo", "pkill", "-9", "-f", "dd if="], capture_output=True)
+        except Exception:
+            pass
 
         with job_lock:
             current_job["status"] = "Stopped"
@@ -2372,7 +2462,7 @@ TOOL_VERSION_COMMANDS = [
     {"tool": "photorec (via testdisk pkg)", "cmd": ["dpkg-query", "-W", "-f=${Version}", "testdisk"], "package": "testdisk"},
     {"tool": "sleuthkit (mmls)", "cmd": ["mmls", "-V"], "package": "sleuthkit"},
     {"tool": "exiftool", "cmd": ["exiftool", "-ver"], "package": "libimage-exiftool-perl"},
-    {"tool": "binwalk", "cmd": ["binwalk", "--version"], "package": "binwalk"},
+    {"tool": "binwalk", "cmd": ["dpkg-query", "-W", "-f=${Version}", "binwalk"], "package": "binwalk"},
     {"tool": "clamscan", "cmd": ["clamscan", "--version"], "package": "clamav"},
     {"tool": "hashdeep", "cmd": ["hashdeep", "-V"], "package": "hashdeep"},
     {"tool": "adb", "cmd": ["adb", "--version"], "package": "adb"},
@@ -2422,12 +2512,29 @@ def install_tool():
     if package not in TOOL_INSTALLABLE_PACKAGES:
         return jsonify({"success": False, "error": f"'{package}' isn't a recognized installable package for this station."}), 400
 
-    try:
-        subprocess.run(['sudo', '/usr/bin/apt-get', 'update'], capture_output=True, timeout=120)
-        res = subprocess.run(
+    env = dict(os.environ, DEBIAN_FRONTEND='noninteractive')
+
+    def do_install():
+        return subprocess.run(
             ['sudo', '/usr/bin/apt-get', 'install', '-y', package],
-            capture_output=True, text=True, timeout=300
+            capture_output=True, text=True, timeout=300, env=env
         )
+
+    try:
+        # Try the direct install first - most of the time the package is
+        # already resolvable from the existing index, and skipping the
+        # update step here makes the common case noticeably faster (an
+        # unconditional "apt-get update" before every single click was
+        # adding real, sometimes slow, network-dependent time to installs
+        # that didn't need it). Only fall back to update+retry if the
+        # first attempt specifically failed because the package couldn't
+        # be found - that's the one case a stale index actually explains.
+        res = do_install()
+
+        if res.returncode != 0 and 'unable to locate package' in res.stderr.lower():
+            subprocess.run(['sudo', '/usr/bin/apt-get', 'update'], capture_output=True, timeout=120, env=env)
+            res = do_install()
+
         if res.returncode != 0:
             return jsonify({"success": False, "error": res.stderr.strip()[-800:] or "apt-get install failed."}), 500
 

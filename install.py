@@ -184,6 +184,9 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/bin/udevil, /usr/bin/pkill, \\
 /usr/bin/smbclient, /usr/sbin/showmount, \\
 /usr/bin/dcfldd, /usr/bin/dc3dd, /usr/bin/ddrescue, \\
+/usr/bin/ewfacquire, /usr/bin/dd, /usr/bin/photorec, \\
+/bin/chown -R {SERVICE_USER} *, \\
+/bin/chgrp -R {SERVICE_USER} *, \\
 /sbin/reboot, /sbin/poweroff, \\
 /bin/systemctl restart pi-forensics.service, \\
 /usr/bin/apt-get update, \\
