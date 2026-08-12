@@ -118,6 +118,10 @@
 
         .grid-stack-item-content { overflow: hidden !important; }
         .ui-resizable-handle { filter: invert(100%); }
+        .accordion-button { background-color: var(--card-bg); color: var(--text-bright); box-shadow: none; }
+        .accordion-button:not(.collapsed) { background-color: var(--card-bg); color: var(--accent-cyan); box-shadow: none; }
+        .accordion-button::after { filter: invert(1) grayscale(1) brightness(1.5); }
+        .accordion-item { background-color: transparent; }
     </style>
 </head>
 <body>
@@ -135,6 +139,9 @@
                 <i class="bi bi-keyboard-fill me-1"></i>Keyboard
             </button>
             {% endif %}
+            <button id="helpBtn" class="btn btn-sm btn-outline-info fw-bold" onclick="openHelpModal()">
+                <i class="bi bi-question-circle-fill me-1"></i>Help
+            </button>
             <button id="layoutLockBtn" class="btn btn-sm btn-outline-warning fw-bold" onclick="toggleLayoutLock()">
                 <i class="bi bi-lock-fill me-1"></i>Layout Locked
             </button>
@@ -198,7 +205,7 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports-app" type="button" role="tab">
+                <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports-app" type="button" role="tab" onclick="loadCaseIndex(); loadChainOfCustodyLog();">
                     <i class="bi bi-file-earmark-pdf me-1"></i>Reports & Verification
                 </button>
             </li>
@@ -216,7 +223,7 @@
             <!-- APP 1: FORENSIC ACQUISITION DASHBOARD -->
             <div class="tab-pane fade show active" id="acquisition-app" role="tabpanel">
                 <div class="grid-stack grid-stack-main">
-                    
+
                     <div class="grid-stack-item" gs-id="card-source" gs-x="0" gs-y="0" gs-w="7" gs-h="4">
                         <div class="grid-stack-item-content">
                             <div class="card">
@@ -263,7 +270,7 @@
                             <div class="card">
                                 <div class="card-header py-2"><i class="bi bi-sliders me-2"></i>Advanced Acquisition Controls</div>
                                 <div class="card-body py-2">
-                                    <div class="row g-2 mb-2">
+                                    <div class="row g-2 mb-1">
                                         <div class="col-md-4">
                                             <label class="telemetry-grid-label d-block">Format</label>
                                             <select id="imageFormatSelect" class="form-select form-select-sm" onchange="toggleFormatControls()">
@@ -292,6 +299,7 @@
                                             </select>
                                         </div>
                                     </div>
+                                    <div id="formatHelpText" class="small text-subtle mb-2">Raw bit-for-bit copy using dc3dd, with hashing built in. A solid default for most acquisitions.</div>
 
                                     <div id="affRawOptionRow" class="mb-2" style="display:none;">
                                         <div class="form-check form-check-inline mb-0">
@@ -438,10 +446,10 @@
                                         </div>
                                     </div>
 
-                                    <div class="row g-2 mb-2">
+                                    <div class="row g-2 mb-1">
                                         <div class="col-md-6">
                                             <label class="telemetry-grid-label d-block mb-1">Pass Execution Strategy</label>
-                                            <select class="form-select form-select-sm" id="tabDdrescueStrategy">
+                                            <select class="form-select form-select-sm" id="tabDdrescueStrategy" onchange="updateDdrescueStrategyHelp()">
                                                 <option value="stage1_fast" selected>1. Fast Copy (No-Scrape/No-Trim - Safest for Weak Heads)</option>
                                                 <option value="stage2_trim">2. Edge Trimming Pass (Isolate Bad Sectors)</option>
                                                 <option value="stage3_intensive">3. Intensive Bad Sector Scraping</option>
@@ -454,11 +462,13 @@
                                         </div>
                                         <div class="col-md-3 align-self-end">
                                             <div class="form-check form-switch mb-2">
-                                                <input class="form-check-input" type="checkbox" id="tabDdrescueDirect" checked>
+                                                <input class="form-check-input" type="checkbox" id="tabDdrescueDirect" data-bs-toggle="tooltip" data-bs-placement="top" title="Reads the source drive bypassing the system's cache (ddrescue's -d/--idirect flag) - can help on a failing drive, but some USB/SATA adapters don't support it correctly and will fail with an 'unaligned read' error if it's on. Off by default for that reason; try enabling it only if you're getting inconsistent results.">
                                                 <label class="form-check-label small text-light fw-bold" for="tabDdrescueDirect">Direct I/O Mode</label>
+                                                <button type="button" class="btn btn-sm p-0 border-0 bg-transparent" data-bs-toggle="tooltip" data-bs-placement="top" title="Reads the source drive bypassing the system's cache (ddrescue's -d/--idirect flag) - can help on a failing drive, but some USB/SATA adapters don't support it correctly and will fail with an 'unaligned read' error if it's on. Off by default for that reason; try enabling it only if you're getting inconsistent results."><i class="bi bi-question-circle text-subtle"></i></button>
                                             </div>
                                         </div>
                                     </div>
+                                    <div id="ddrescueStrategyHelpText" class="small text-subtle mb-2">Safest first pass - copies everything readable quickly, skipping bad areas rather than dwelling on them. Start here on a failing drive.</div>
 
                                     <div class="p-2 bg-dark border border-secondary rounded-2 mb-2">
                                         <span class="telemetry-grid-label text-info d-block mb-1"><i class="bi bi-folder-symlink me-1"></i>Case Metadata & Destination Target Path</span>
@@ -561,8 +571,94 @@
                         </div>
                     </div>
 
+                    <!-- Card: PhotoRec File Carving Recovery -->
+                    <div class="grid-stack-item" gs-id="ddr-card-photorec" gs-x="0" gs-y="9" gs-w="12" gs-h="4">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-search-heart me-2"></i>PhotoRec File Carving Recovery</span>
+                                    <span class="small text-subtle fw-normal">Recovers files by signature from a device or an already-acquired image - reads source only, never writes back to it</span>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-md-6">
+                                            <label class="telemetry-grid-label d-block mb-1">Source (device or acquired image path)</label>
+                                            <div class="input-group input-group-sm">
+                                                <select id="photorecSourceDrive" class="form-select form-select-sm drive-select"></select>
+                                                <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('photorecSource')" title="Or browse to an image file instead"><i class="bi bi-folder2-open me-1"></i></button>
+                                            </div>
+                                            <input type="text" id="photorecSourcePath" class="form-control form-control-sm font-monospace mt-1" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label class="telemetry-grid-label d-block mb-1">Destination for Recovered Files</label>
+                                            <div class="input-group input-group-sm">
+                                                <input type="text" id="photorecDest" class="form-control" value="/mnt">
+                                                <button class="btn btn-outline-info fw-bold" onclick="openFolderModal('folder', 'photorecDest')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-md-4"><input type="text" id="photorecCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
+                                        <div class="col-md-4"><input type="text" id="photorecEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
+                                        <div class="col-md-4"><input type="text" id="photorecExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
+                                    </div>
+                                    <div class="d-flex gap-2">
+                                        <button id="btnPhotorecStart" class="btn btn-primary flex-fill fw-bold" onclick="startPhotorecJob()"><i class="bi bi-play-fill me-1"></i>Start PhotoRec Recovery</button>
+                                        <button id="btnPhotorecStop" class="btn btn-danger flex-fill fw-bold" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop</button>
+                                    </div>
+                                    <div class="small text-subtle mt-2">
+                                        Recovers ~480 known file types by signature (not by filesystem metadata), so it works even on damaged/reformatted media - but recovered files lose their original names/folder structure. Progress shown is bytes recovered so far and the live log; PhotoRec doesn't report a reliable overall percentage in scripted mode.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card: Quick Triage Scan (built-in, no external tool) -->
+                    <div class="grid-stack-item" gs-id="ddr-card-triagescan" gs-x="0" gs-y="13" gs-w="12" gs-h="4">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-envelope-paper me-2"></i>Quick Triage Scan</span>
+                                    <span class="small text-subtle fw-normal">Finds emails, URLs, IP addresses, card-like numbers, and phone numbers - built in, no external tool required, read-only against the source</span>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-md-6">
+                                            <label class="telemetry-grid-label d-block mb-1">Source (device or acquired image path)</label>
+                                            <div class="input-group input-group-sm">
+                                                <select id="triageScanSourceDrive" class="form-select form-select-sm drive-select"></select>
+                                                <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('triageScanSource')" title="Or browse to an image file instead"><i class="bi bi-folder2-open me-1"></i></button>
+                                            </div>
+                                            <input type="text" id="triageScanSourcePath" class="form-control form-control-sm font-monospace mt-1" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label class="telemetry-grid-label d-block mb-1">Destination for Report Files</label>
+                                            <div class="input-group input-group-sm">
+                                                <input type="text" id="triageScanDest" class="form-control" value="/mnt">
+                                                <button class="btn btn-outline-info fw-bold" onclick="openFolderModal('folder', 'triageScanDest')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-md-4"><input type="text" id="triageScanCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
+                                        <div class="col-md-4"><input type="text" id="triageScanEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
+                                        <div class="col-md-4"><input type="text" id="triageScanExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
+                                    </div>
+                                    <div class="d-flex gap-2">
+                                        <button id="btnTriageScanStart" class="btn btn-primary flex-fill fw-bold" onclick="startTriageScanJob()"><i class="bi bi-play-fill me-1"></i>Start Triage Scan</button>
+                                        <button id="btnTriageScanStop" class="btn btn-danger flex-fill fw-bold" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop</button>
+                                    </div>
+                                    <div class="small text-subtle mt-2">
+                                        Writes one text file per category (emails.txt, urls.txt, etc.) that can be opened in any text editor - a good first pass before deeper analysis, and beginner-friendly since no filesystem or partition knowledge is required. Built in-house rather than depending on an external tool, so it works on any system this app runs on - a straightforward Python scan, not a highly-optimized C tool, so it's noticeably slower on very large (multi-TB) images.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Card 4: INTEGRATED DUAL-PANE FORENSIC FILE EXPLORER -->
-                    <div class="grid-stack-item" gs-id="ddr-card-explorer" gs-x="0" gs-y="7" gs-w="12" gs-h="5">
+                    <div class="grid-stack-item" gs-id="ddr-card-explorer" gs-x="0" gs-y="17" gs-w="12" gs-h="5">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center py-2">
@@ -575,9 +671,25 @@
                                         <button class="btn btn-sm btn-outline-info fw-bold" onclick="copyPaneFile('A','B')"><i class="bi bi-arrow-right me-1"></i>Copy A &rarr; B</button>
                                         <button class="btn btn-sm btn-outline-info fw-bold" onclick="copyPaneFile('B','A')"><i class="bi bi-arrow-left me-1"></i>Copy B &rarr; A</button>
                                         <div class="vr bg-secondary"></div>
-                                        <button id="btnPdfExport" class="btn btn-sm btn-danger fw-bold" onclick="exportSelectedPdf()" disabled><i class="bi bi-file-earmark-pdf-fill me-1"></i>Export PDF Audit Report</button>
-                                        <button id="btnVerifyHash" class="btn btn-sm btn-info text-dark fw-bold" onclick="verifySelectedHash()" disabled><i class="bi bi-hash me-1"></i>Verify Image Hash</button>
-                                        <button id="btnDeleteFile" class="btn btn-sm btn-outline-danger fw-bold" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-1"></i>Delete</button>
+
+                                        <div class="dropdown">
+                                            <button class="btn btn-sm btn-outline-light fw-bold dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                                <i class="bi bi-three-dots me-1"></i>More Actions (Selected File)
+                                            </button>
+                                            <ul class="dropdown-menu dropdown-menu-dark">
+                                                <li><button id="btnFileMetadata" class="dropdown-item" onclick="viewSelectedMetadata()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Shows hidden details saved inside a file - like when a photo was taken, what camera took it, or GPS coordinates."><i class="bi bi-info-circle me-2"></i>Metadata (ExifTool)</button></li>
+                                                <li><button id="btnVerifyHash" class="dropdown-item" onclick="verifySelectedHash()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Double-checks a .dd/.E01 image hasn't changed since it was acquired, by recalculating its fingerprint (hash) and comparing it."><i class="bi bi-hash me-2"></i>Verify Image Hash</button></li>
+                                                <li><button id="btnBrowseImage" class="dropdown-item" onclick="openImageBrowser()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Look inside an acquired image as if it were a real drive - browse its folders and files without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse Image (Sleuth Kit)</button></li>
+                                                <li><hr class="dropdown-divider"></li>
+                                                <li><button id="btnRunBinwalk" class="dropdown-item" onclick="runSelectedBinwalk()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Looks for other files or systems hidden inside this one - useful for firmware dumps, router images, or unknown binary files."><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button></li>
+                                                <li><button id="btnRunClamscan" class="dropdown-item" onclick="runSelectedClamscan()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Checks this file (or folder) against known virus/malware signatures."><i class="bi bi-shield-exclamation me-2"></i>Scan for Malware (ClamAV)</button></li>
+                                                <li><button id="btnRunStrings" class="dropdown-item" onclick="runSelectedStrings()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Pulls out any readable text hiding inside a file that isn't normally text - like URLs or passwords buried in an executable."><i class="bi bi-fonts me-2"></i>Extract Strings</button></li>
+                                                <li><button id="btnRunHashdeep" class="dropdown-item" onclick="runSelectedHashdeep()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Creates a fingerprint (hash) for every file in a folder at once - useful for proving a whole set of recovered files hasn't been tampered with."><i class="bi bi-list-check me-2"></i>Hash Directory Tree (hashdeep)</button></li>
+                                                <li><hr class="dropdown-divider"></li>
+                                                <li><button id="btnPdfExport" class="dropdown-item" onclick="exportSelectedPdf()" disabled><i class="bi bi-file-earmark-pdf-fill me-2"></i>Export PDF Audit Report</button></li>
+                                                <li><button id="btnDeleteFile" class="dropdown-item text-danger" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-2"></i>Delete</button></li>
+                                            </ul>
+                                        </div>
                                     </div>
 
                                     <div class="row g-2">
@@ -697,10 +809,12 @@
                                     </div>
 
                                     <label class="telemetry-grid-label d-block mb-1">Acquisition Mode</label>
-                                    <select id="mobileAndroidMode" class="form-select form-select-sm mb-2">
-                                        <option value="pull" selected>Pull Accessible Storage (adb pull /sdcard - more reliable)</option>
-                                        <option value="backup">Full Backup (adb backup - app data, requires on-device confirmation, unreliable on Android 12+)</option>
+                                    <select id="mobileAndroidMode" class="form-select form-select-sm mb-1" onchange="updateAndroidModeHelp()">
+                                        <option value="pull" selected>Pull Accessible Storage (adb pull)</option>
+                                        <option value="backup">Full Backup (adb backup)</option>
+                                        <option value="bugreport">Bug Report / System Logs (adb bugreport)</option>
                                     </select>
+                                    <div id="androidModeHelpText" class="small text-subtle mb-2">Copies files from the phone's visible storage (photos, downloads, documents). Reliable on any modern Android version, but only sees what's directly accessible - not inside individual apps' private data.</div>
 
                                     <div class="row g-2 mb-2">
                                         <div class="col-md-4"><input type="text" id="mobileAndroidCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
@@ -880,6 +994,55 @@
                         </div>
                     </div>
 
+                    <!-- Case Index: every report this station has produced -->
+                    <div class="grid-stack-item" gs-id="rep-card-caseindex" gs-x="0" gs-y="14" gs-w="7" gs-h="6">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                    <span><i class="bi bi-collection me-2"></i>Case Index</span>
+                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadCaseIndex()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="small text-subtle mb-2">Every report found under the evidence root - click a row to load it above for editing.</div>
+                                    <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
+                                        <table class="table table-sm table-dark table-hover mb-0 font-monospace small">
+                                            <thead>
+                                                <tr class="text-info">
+                                                    <th>Case #</th><th>Evidence ID</th><th>Method</th><th>Status</th><th>Started</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="caseIndexBody">
+                                                <tr><td colspan="5" class="text-subtle">Tap Refresh to scan for reports.</td></tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Chain of Custody Log -->
+                    <div class="grid-stack-item" gs-id="rep-card-coc" gs-x="7" gs-y="14" gs-w="5" gs-h="6">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                    <span><i class="bi bi-journal-text me-2"></i>Chain of Custody Log</span>
+                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadChainOfCustodyLog()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="small text-subtle mb-2">
+                                        Station-wide action log (most recent first). This station has one shared login, not
+                                        per-examiner accounts, so entries record what happened and when, not reliably who -
+                                        see README for details.
+                                    </div>
+                                    <div id="cocLogContainer" class="font-monospace small" style="max-height: 280px; overflow-y: auto; background-color:#090b10;" class="border border-secondary rounded-2 p-2">
+                                        <span class="text-subtle">Tap Refresh to load recent entries.</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -1013,6 +1176,31 @@
                         </div>
                     </div>
 
+                    <!-- Tool Versions -->
+                    <div class="grid-stack-item" gs-id="set-card-versions" gs-x="0" gs-y="14" gs-w="12" gs-h="5">
+                        <div class="grid-stack-item-content">
+                            <div class="card border-info">
+                                <div class="card-header bg-dark text-info fw-bold py-2 d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-info-square me-2"></i>Tool Versions</span>
+                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadToolVersions()"><i class="bi bi-arrow-clockwise me-1"></i>Check</button>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="small text-subtle mb-2">
+                                        What produced a given piece of evidence should always be answerable from the station
+                                        itself. Useful for support requests and for documenting exactly what tooling was used.
+                                    </div>
+                                    <div class="table-responsive" style="max-height: 220px; overflow-y: auto;">
+                                        <table class="table table-sm table-dark table-striped mb-0 font-monospace small">
+                                            <tbody id="toolVersionsBody">
+                                                <tr><td colspan="3" class="text-subtle">Tap Check to query tool versions.</td></tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -1037,6 +1225,127 @@
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" id="modalSelectBtn" class="btn btn-sm btn-primary fw-bold" onclick="selectCurrentFolder()">Select This Directory</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="metadataModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-success fs-6"><i class="bi bi-info-circle me-2"></i>File Metadata: <span id="metadataFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div id="metadataContainer" class="font-monospace small" style="max-height: 400px; overflow-y: auto;">
+                        <span class="text-subtle">Loading...</span>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="toolOutputModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i id="toolOutputIcon" class="bi bi-terminal-fill me-2"></i><span id="toolOutputTitle">Tool Output</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div id="toolOutputBadgeRow" class="mb-2" style="display:none;">
+                        <span id="toolOutputBadge" class="badge bg-secondary"></span>
+                    </div>
+                    <pre id="toolOutputContainer" class="log-window mb-0" style="height: 350px;">Loading...</pre>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="imageBrowserModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-warning fs-6"><i class="bi bi-hdd-stack me-2"></i>Browse Image: <span id="imageBrowserFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div id="imageBrowserFormatWarning" class="small text-warning mb-2" style="display:none;"></div>
+
+                    <div id="imageBrowserPartitions" class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Partition (from mmls):</label>
+                        <select id="imageBrowserPartitionSelect" class="form-select form-select-sm" onchange="loadImageBrowserDir('')"></select>
+                    </div>
+
+                    <div class="d-flex align-items-center mb-2">
+                        <span class="me-2 fw-bold text-muted small">Path:</span>
+                        <span id="imageBrowserPathTrail" class="font-monospace small text-info">/</span>
+                        <button class="btn btn-sm btn-outline-secondary ms-auto text-nowrap" onclick="imageBrowserGoUp()"><i class="bi bi-arrow-up me-1"></i>Up Level</button>
+                    </div>
+                    <div class="list-group list-group-flush border border-secondary rounded-2" id="imageBrowserList" style="max-height: 280px; overflow-y: auto; background-color: #090b10;"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
+                    <span id="imageBrowserSelectedFile" class="small text-subtle font-monospace"></span>
+                    <div>
+                        <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="button" id="imageBrowserExtractBtn" class="btn btn-sm btn-warning text-dark fw-bold" onclick="extractSelectedImageFile()" disabled><i class="bi bi-download me-1"></i>Extract to Evidence Root</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="helpModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content bg-dark text-light border-secondary" style="height: 85vh;">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-question-circle-fill me-2"></i>Help & Reference</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2 d-flex flex-column" style="overflow: hidden;">
+                    <ul class="nav nav-pills mb-2 flex-shrink-0" id="helpTabNav">
+                        <li class="nav-item"><button class="nav-link active" data-help-tab="start">Getting Started</button></li>
+                        <li class="nav-item"><button class="nav-link" data-help-tab="faq">FAQ</button></li>
+                        <li class="nav-item"><button class="nav-link" data-help-tab="tools">Tool Reference</button></li>
+                        <li class="nav-item"><button class="nav-link" data-help-tab="info">Additional Info</button></li>
+                    </ul>
+                    <div style="overflow-y: auto; flex: 1;">
+
+                        <div id="helpPane-start" class="help-pane">
+                            <div class="mb-2 small text-subtle">Pick the situation closest to yours - the guide will point you to the right tab and settings.</div>
+                            <div class="d-flex flex-wrap gap-2 mb-2">
+                                <button class="btn btn-sm btn-outline-info fw-bold" onclick="showGuideStep('healthy')"><i class="bi bi-check-circle me-1"></i>Drive works fine, I just need a copy</button>
+                                <button class="btn btn-sm btn-outline-warning fw-bold" onclick="showGuideStep('damaged')"><i class="bi bi-exclamation-triangle me-1"></i>Drive is damaged / clicking / not detected properly</button>
+                                <button class="btn btn-sm btn-outline-success fw-bold" onclick="showGuideStep('deleted')"><i class="bi bi-search me-1"></i>I need to recover deleted files</button>
+                                <button class="btn btn-sm btn-outline-primary fw-bold" onclick="showGuideStep('phone')"><i class="bi bi-phone me-1"></i>It's a phone, not a drive</button>
+                            </div>
+                            <div id="guideStepsContainer"></div>
+                        </div>
+
+                        <div id="helpPane-faq" class="help-pane d-none">
+                            <div id="faqAccordion" class="accordion accordion-flush"></div>
+                        </div>
+
+                        <div id="helpPane-tools" class="help-pane d-none">
+                            <div class="table-responsive">
+                                <table class="table table-sm table-dark table-striped mb-0 small">
+                                    <tbody id="toolReferenceBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div id="helpPane-info" class="help-pane d-none">
+                            <div id="infoContent" class="small text-light"></div>
+                        </div>
+
+                    </div>
                 </div>
             </div>
         </div>

@@ -103,9 +103,36 @@ apt_packages = [
     "adb", "android-sdk-platform-tools-common",  # Android device backup/pull (udev rules let plugdev group access USB without root)
     "nginx", "openssl",  # optional TLS reverse proxy (examiner is prompted below)
     "wvkbd",  # on-screen keyboard for kiosk touchscreen input (wlroots/labwc-native, see kiosk autostart)
+    "testdisk",  # provides photorec (file carving/recovery) - pairs with ddrescue for damaged drives
+    "libimage-exiftool-perl",  # exiftool - file metadata viewer
+    "sleuthkit", "libewf-dev",  # fls/mmls/icat - browse filesystems inside acquired images; libewf-dev maximizes chance of E01 support (verified at runtime, not guaranteed - see app.py)
+    "binwalk",  # embedded filesystem/firmware signature scanning
+    "clamav", "clamav-freshclam",  # malware scanning (clamscan) - freshclam keeps virus definitions updated
+    "hashdeep",  # recursive directory hashing/manifests
+    # NOTE: no bulk-extractor package here. It isn't in Debian's mainline
+    # archive (only found in Kali/Parrot's own non-free repos), and since
+    # apt-get install with an unrecognized package name fails the whole
+    # command, including it here would have crashed this entire install
+    # before sudoers/systemd/anything after it in this list ran. The
+    # "Quick Triage Scan" feature was rebuilt as a native Python scanner
+    # instead (see TRIAGE_PATTERNS in app.py) rather than depending on this
+    # tool at all, so there's no external package needed for it anymore.
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
+
+# Populate ClamAV's virus definition database. The clamav-freshclam package's
+# own systemd timer will keep it updated afterward; this just avoids
+# clamscan failing/warning against an empty database on first use. Non-fatal
+# if this Pi happens to be offline right now - freshclam's own timer will
+# catch up once it has connectivity.
+print("\n[*] Downloading initial ClamAV virus definitions (this can take a minute)...")
+subprocess.run(["systemctl", "stop", "clamav-freshclam"], capture_output=True)
+fc_res = subprocess.run(["freshclam"], capture_output=True, text=True, timeout=300)
+if fc_res.returncode != 0:
+    print("[!] Could not download virus definitions right now - clamscan will warn until this "
+          "succeeds later (clamav-freshclam's timer will retry automatically).")
+subprocess.run(["systemctl", "enable", "--now", "clamav-freshclam"], capture_output=True)
 
 # Disable background udisks2 auto-mounter to prevent desktop race conditions
 subprocess.run(["systemctl", "stop", "udisks2.service"], capture_output=True)
@@ -133,6 +160,18 @@ subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", INSTALL_DIR], c
 # 4. Scoped Sudoers Configuration
 print("\n[*] Installing scoped sudoers configuration...")
 sudoers_path = "/etc/sudoers.d/pi-forensics"
+
+# Packages the Advanced Settings > Tool Versions "Install" button can trigger
+# via apt-get. Must match TOOL_INSTALLABLE_PACKAGES in app.py - each gets an
+# exact sudoers line below rather than a wildcard, so this can't be used to
+# install anything beyond this known, reviewed list.
+INSTALLABLE_TOOL_PACKAGES = [
+    "dc3dd", "dcfldd", "gddrescue", "ewf-tools", "afflib-tools", "testdisk",
+    "sleuthkit", "libimage-exiftool-perl", "binwalk",
+    "clamav", "hashdeep", "adb", "libimobiledevice-utils", "smartmontools", "wvkbd",
+]
+install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in INSTALLABLE_TOOL_PACKAGES)
+
 # NOPASSWD is limited to exactly the binaries/invocations app.py uses via
 # sudo. Where a command could otherwise do more than intended (systemctl,
 # apt-get), the sudoers line pins the exact arguments rather than granting
@@ -148,7 +187,8 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /sbin/reboot, /sbin/poweroff, \\
 /bin/systemctl restart pi-forensics.service, \\
 /usr/bin/apt-get update, \\
-/usr/bin/apt-get upgrade -y
+/usr/bin/apt-get upgrade -y, \\
+{install_lines}
 """
 
 with open(sudoers_path, "w") as f:
@@ -360,6 +400,16 @@ export XDG_RUNTIME_DIR=/run/user/$(id -u)
 
 wlr-randr --output ALL --on 2>/dev/null || true
 
+# Give the display a moment to finish resolution negotiation before
+# chromium launches. There's a known bug (github.com/RPi-Distro/chromium
+# issue #54) where Chromium in kiosk mode on labwc/Wayland can drop out of
+# proper fullscreen if the display's mode changes/settles after Chromium
+# has already started - it doesn't crash, it just ends up in a broken
+# fullscreen-transition state that can look like a blank/white screen even
+# though the process is running fine. This delay reduces the chance of
+# racing that.
+sleep 3
+
 # On-screen keyboard for touch input - CURRENTLY DISABLED.
 #
 # wvkbd-mobintl was crash-looping on at least one real deployment (rapid
@@ -427,6 +477,18 @@ while true; do
 
     echo "[kiosk] chromium exited, restarting in 3s..." >&2
     sleep 3
+done &
+
+# Periodic watchdog: force-restart chromium every 30 minutes even if it's
+# still technically running. This exists specifically for the labwc/
+# Chromium fullscreen bug mentioned above - that failure mode leaves
+# chromium running but visually stuck, which the crash-recovery loop above
+# can't catch on its own since it only reacts to chromium actually exiting.
+# A periodic kill is a blunt but reliable self-heal: the crash-recovery
+# loop picks the kill up and relaunches fresh within a few seconds.
+while true; do
+    sleep 1800
+    pkill -9 -f "chromium.*--kiosk" 2>/dev/null || true
 done &
 """
 with open(autostart_path, "w") as f:

@@ -23,6 +23,15 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 - **Automated Evidence Manifests:** Generates structured `evidence_manifest.json` and human-readable `.txt` reports capturing case numbers, evidence IDs, examiner notes, drive serials, and timestamps.
 - **Touchscreen & Remote Friendly:** Responsive dark-mode UI with drag and drop interface designed for onboard Pi touchscreen displays or headless browser control over Wi-Fi/Ethernet. An on-screen keyboard (`wvkbd`) is visible by default at boot for the login prompt, auto-hides once you're signed in, and is a tap away in the top navbar after that.
 - **File Explorer & DDRescue:** Dedicated `ddrescue` UI module with real-time pass strategy selection (Fast Copy, Trimming, Scraping, Reverse Reading) and `.map` file audit inspection along with Dual Pane File Explorer Tab with copy to or from Device.
+- **File Carving & Recovery (PhotoRec):** Recovers files by signature (~480 known types) from a device or an already-acquired image - useful when a filesystem is too damaged for normal file listing. Read-only against the source; never writes back to it (unlike TestDisk's separate partition-repair mode, which this project deliberately does not expose, since rewriting a partition table would modify the evidence).
+- **File Metadata Viewer (ExifTool):** One-click metadata (EXIF, document properties, etc.) for any selected file in the File Explorer, without leaving the app.
+- **Image Filesystem Browser (Sleuth Kit):** Browse *inside* an acquired image's filesystem - list partitions (`mmls`), navigate directories including deleted-but-still-listed entries (`fls`), and extract a specific file out to the evidence directory (`icat`) - all read-only against the image. E01 support depends on how this system's Sleuth Kit build was linked and is checked at runtime rather than assumed; the UI warns if it looks unsupported.
+- **Triage Tools (Binwalk, ClamAV, hashdeep, strings):** Available from the File Explorer's "More Actions" menu - scan a file for embedded firmware/filesystem signatures (Binwalk), scan a file or directory for known malware (ClamAV), extract readable text from a binary (`strings`), or generate a recursive SHA-256 manifest for an entire recovered directory (`hashdeep`).
+- **Chain of Custody Log:** Station-wide, append-only log of significant actions (acquisitions started, files deleted/copied, reports edited, image files extracted) with timestamp and source IP - viewable from the Reports tab. This station has a single shared login rather than per-examiner accounts, so entries reliably show *what* happened and *when*, not *who* beyond the source IP - see [Security](#-security).
+- **Case Index:** A searchable table of every report this station has produced, scanned from the evidence root - click a row to load it straight into the report editor instead of hunting through the file tree.
+- **Tool Versions:** Advanced Settings can report the version of every external tool the app uses (`dc3dd`, `ddrescue`, `sleuthkit`, `exiftool`, etc.) - useful for support requests and for documenting exactly what tooling produced a given piece of evidence. Anything not yet installed gets a one-click Install button, scoped to the exact same allowlist of packages `install.py` itself would have installed - not a general "install anything" tool.
+- **Quick Triage Scan:** Scans a device or image for structured data - emails, URLs, IP addresses, card-like numbers, phone numbers - without needing to understand filesystems or partitions. A beginner-friendly first pass; results are one plain-text file per category. Built in-house as a native Python scanner rather than depending on `bulk_extractor` (which isn't in Debian's mainline package archive - only found in Kali/Parrot's own repos, and would have broken `install.py` outright if left in its package list). No external tool dependency at all, so this can never hit a "package not found" wall - the tradeoff is that it's a straightforward single-threaded scan, not a highly-optimized C tool, so it's noticeably slower on very large (multi-TB) images.
+- **Built-in Help & Reference:** A "Help" button in the top navbar (visible on every tab) opens a panel with a scenario-based getting-started guide (healthy drive, damaged drive, recovering deleted files, mobile device), an FAQ, a plain-language reference for every tool the app uses, and notes on data location/chain-of-custody/updates. Hovering jargon-heavy tool names (ExifTool, Sleuth Kit, Binwalk, ClamAV, hashdeep) also shows an inline explanation, and the format/strategy/mode dropdowns show live help text for whatever's currently selected - aimed at students and newcomers who shouldn't need to already know what these tools do.
 - **Mobile Forensics (iOS & Android):** A dedicated tab for acquiring already-unlocked, already-trusted mobile devices - iOS full backup via `idevicebackup2` (with optional encrypted backup to capture Keychain data, plus a manual "Pair Device" trigger via `idevicepair`), and Android via `adb pull` (accessible storage, more reliable), `adb backup` (app data, requires on-device confirmation, unreliable on Android 12+), or `adb bugreport` (system logs/dumpstate snapshot). This does **not** bypass lockscreens, device pairing, or USB-debugging authorization - devices must already be unlocked and trusted/authorized by the examiner before acquisition can start, exactly like plugging a drive into the imaging station.
 - **Advanced Settings:** Station password change (persisted independently of the systemd unit), safe USB drive eject, service/kiosk restart, git-pull self-update and OS package update (both require explicit confirmation and a source you trust), reboot/power-off, live network interface listing, and a fixed-allowlist read-only diagnostics panel (`dmesg`, `lsusb`, `df -h`, `ip a`, `uptime`, `lsblk`, `free -h`, `mount`) - deliberately **not** a free-text shell terminal. See [Security](#-security) for why.
 - **Reporting & Hash Verification:** Reporting, Case & URL attachments, JSON file raw viewer & PDF File export, and Image Integrity Verification with hash matching.
@@ -124,6 +133,7 @@ networks the examiner doesn't fully control. It's built with that threat model i
 | **File-system sandboxing** | The file explorer, report load/save, hash verification, PDF export, and imaging/recovery destinations are all restricted to one directory tree (`FORENSIC_ROOT`, default `/mnt`). Paths outside it are rejected, including via symlink or `../` traversal. |
 | **Device validation** | Acquisition/recovery source paths must match a whole-disk device pattern (`/dev/sdX`, `/dev/nvme*n*`, `/dev/mmcblk*`) - arbitrary files can't be pointed at the privileged `ddrescue`/`dc3dd` commands. |
 | **Evidence-drive-safe UI** | Filenames pulled from mounted/browsed media are rendered as plain text, never parsed as HTML - a maliciously named file on a suspect drive can't inject script into the examiner's session. |
+| **Chain-of-custody log limitation** | The log records what happened, when, and the source IP - it does **not** reliably attribute actions to a specific examiner, since this station has one shared login rather than per-examiner accounts. If your process needs per-examiner attribution, that requires separate accounts this project doesn't implement. |
 | **Network share credentials** | SMB/CIFS passwords are passed via a private, mode-0600 temporary credentials file rather than on the mount command line, so they don't show up in `ps aux`. |
 | **Transport encryption** | `install.py` prompts to set up nginx with a self-signed TLS certificate (generated per-install under `/etc/ssl/pi-forensics`). If accepted, nginx terminates TLS on 80/443 and gunicorn moves to loopback-only; if declined, gunicorn binds directly and Basic Auth credentials travel unencrypted. You can re-run the installer later to add TLS, or set it up manually - see `pi-forensics.conf` in this repo for the exact nginx config used. |
 | **No free-text shell access** | The Advanced Settings diagnostics panel runs a fixed allowlist of read-only commands (`dmesg`, `lsusb`, `df -h`, `ip a`, `uptime`, `lsblk`, `free -h`, `mount`) as literal argv lists - there is deliberately no general "run any command" box anywhere in the UI or API. A web-exposed shell is a full remote-code-execution hole on a device that images evidence; that trade-off isn't worth the convenience. |
@@ -198,6 +208,31 @@ actually starts, which requires autologin on a stock image.
    `~/.config/labwc/autostart` exists and is executable (`ls -la`) for the service account's home
    directory, and that it's owned by that account, not root.
 
+### ddrescue fails with an "unaligned read" error, or fails inconsistently
+Check the "Direct I/O Mode" checkbox in the ddrescue tab. It maps to ddrescue's real `-d`/
+`--idirect` flag (bypasses the kernel cache when reading the source - verified against the actual
+GNU ddrescue manual), which is genuinely useful on a failing drive, but the manual is explicit that
+*"not all systems support this"* and *"if the sector size is not correctly set, an unaligned read
+error may happen."* USB/SATA bridge adapters - common in budget setups - are a frequent source of
+this. It defaults to **off** for that reason; try enabling it only if you're getting inconsistent
+results with it off.
+
+### Kiosk shows a blank/white screen (chromium process looks healthy)
+This is a known bug ([RPi-Distro/chromium#54](https://github.com/RPi-Distro/chromium/issues/54)):
+Chromium in kiosk mode on labwc/Wayland can drop out of proper fullscreen if the display's
+resolution negotiation settles after Chromium has already started - it doesn't crash, it just ends
+up stuck in a broken fullscreen-transition state, which looks exactly like this (process tree
+healthy, screen blank). Two mitigations are already in the kiosk autostart script:
+
+- A short delay after enabling outputs, before Chromium launches, to reduce the chance of racing
+  the display's mode negotiation.
+- A watchdog that force-restarts Chromium every 30 minutes regardless of whether it's "crashed" -
+  since this bug doesn't actually crash the process, the normal crash-recovery loop can't catch it
+  on its own.
+
+If it happens between watchdog cycles, `sudo pkill -9 -f "chromium.*--kiosk"` from SSH will trigger
+an immediate respawn without a full reboot.
+
 ### On-screen keyboard for kiosk mode
 Chromium's `--kiosk` mode has no built-in virtual keyboard (that's a tablet-OS feature, not a
 browser one), so this project runs `wvkbd` alongside it, starting hidden. Tap the **Keyboard**
@@ -221,6 +256,15 @@ manual toggle instead.
 
 If it doesn't appear at all: confirm `wvkbd` installed correctly (`which wvkbd-mobintl`) and that
 its respawn loop is running (`ps aux | grep wvkbd-mobintl` from an SSH session).
+
+### "Browse Image" fails on an E01 file but works fine on .dd/.raw
+Sleuth Kit's E01 support depends on whether this system's `sleuthkit` package was built with
+`libewf` linked in - `install.py` installs `libewf-dev` to maximize the chance of this working,
+but it isn't guaranteed (there's a documented real-world case of a distro shipping `sleuthkit`
+without it). The Image Browser checks this at runtime and shows a warning banner if it looks
+unsupported. If it fails: confirm with `mmls -i list` from SSH - if `ewf` isn't listed as a
+supported type, you'd need a version of `sleuthkit` actually compiled against `libewf` to browse
+E01s directly (raw `.dd`/`.raw` images are unaffected either way).
 
 ### Web dashboard isn't reachable over the LAN/WiFi
 Nothing in this project touches WiFi, network interfaces, or firewall rules - if it was reachable
