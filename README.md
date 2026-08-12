@@ -47,15 +47,27 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF2.JPG" width="100%" alt="File Explorer" />
+  <img src="docs/images/PIF2.JPG" width="100%" alt="DDRescue & File Explorer" />
   <br>
   <em>Figure 2: DDRescue GUI and Dual Pane File Explorer Tab with copy to or from Device.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF3.JPG" width="100%" alt="Reporting" />
+  <img src="docs/images/PIF3.JPG" width="100%" alt="Mobile Forensics" />
   <br>
-  <em>Figure 3: Reporting, Case & URL attachments, JSON file raw viewer & PDF File export, and Image Integrity Verification with hash matching.</em>
+  <em>Figure 3: Mobile Forensics for IOS/Android.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF4.JPG" width="100%" alt="Reporting & Verification" />
+  <br>
+  <em>Figure 4: Reporting, Case & URL attachments, JSON file raw viewer & PDF File export, Chain of Custoday Logs, History, and Image Integrity Verification with hash matching.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF5.JPG" width="100%" alt="Advanced Settings" />
+  <br>
+  <em>Figure 4: Change Password, Restart Services, Tool & Update Packages, Reboot/Power Off, System Diagonostics.</em>
 </p>
 
 ---
