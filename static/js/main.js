@@ -201,6 +201,22 @@ function toggleFormatControls() {
     if (helpText) helpText.textContent = FORMAT_HELP[fmt] || '';
 }
 
+function toggleSidebarCompact() {
+    const sidebar = document.getElementById("appSidebar");
+    const icon = document.getElementById("sidebarToggleIcon");
+    if (!sidebar) return;
+
+    const isCompact = sidebar.classList.toggle("compact");
+    if (icon) icon.className = isCompact ? "bi bi-chevron-double-right" : "bi bi-chevron-double-left";
+    localStorage.setItem("pi_forensics_sidebar_compact", isCompact ? "1" : "0");
+
+    // GridStack and Chart.js both size themselves against their container's
+    // measured width, which only changes here because of a CSS transition
+    // on a *sibling* element - dispatching a resize event prompts both to
+    // recompute rather than staying sized for the old sidebar width.
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 200);
+}
+
 function switchToTab(tabId) {
     const el = document.getElementById(tabId);
     if (el) new bootstrap.Tab(el).show();
@@ -215,13 +231,13 @@ const GUIDE_SCENARIOS = {
             "Leave the write-blocker switched on (it's on by default) - this guarantees nothing can be written to the original drive.",
             "Under \"Format\", the default (Raw / dc3dd) is a safe choice for most cases - hover the format menu for what each option means.",
             "Fill in case number, evidence ID, and examiner name, then tap \"Start Acquisition\" and wait for it to finish.",
-            "Once done, go to Reports & Verification and check the hash to confirm the copy matches the original.",
+            "Once done, go to Reporting and check the hash to confirm the copy matches the original.",
         ]
     },
     damaged: {
         title: "Damaged, clicking, or not detected properly",
         steps: [
-            "Go to the DDRescue & File Explorer tab.",
+            "Go to the File Recovery tab.",
             "Select the drive and start with strategy \"1. Fast Copy\" - it copies everything readable quickly without stressing a failing drive.",
             "When it finishes, check the mapfile summary for bad sectors.",
             "If bad sectors remain, try strategy 2 (Edge Trimming), then 3 (Intensive Scraping) if needed - each is more thorough but harder on the drive, so go in order.",
@@ -233,7 +249,7 @@ const GUIDE_SCENARIOS = {
         title: "Need to recover deleted files",
         steps: [
             "If you don't have an image yet, acquire one first (see the \"drive works fine\" guide above).",
-            "Go to the DDRescue & File Explorer tab and find the PhotoRec card.",
+            "Go to the File Recovery tab and find the PhotoRec card.",
             "Point it at your image (or the drive directly) - PhotoRec finds files by matching known file signatures rather than trusting the file system, so it works even on formatted or damaged drives.",
             "Recovered files lose their original names and folder structure. If you specifically need files with their original names/paths intact, try \"Browse Image\" (Sleuth Kit) from the file explorer's More Actions menu instead - it can show deleted-but-still-listed entries.",
         ],
@@ -245,7 +261,7 @@ const GUIDE_SCENARIOS = {
             "Go to the Mobile Forensics tab and connect the device with a USB cable.",
             "iPhone: tap \"Trust This Computer?\" on the phone's own screen when it appears, then select the device here and start a backup.",
             "Android: approve the USB debugging prompt on the phone's own screen, then select the device here. \"Pull Accessible Storage\" is the most reliable mode for most cases.",
-            "Once finished, check Reports & Verification for the resulting report.",
+            "Once finished, check Reporting for the resulting report.",
         ],
         tabId: "mobile-tab"
     },
@@ -325,7 +341,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "How do I know my acquisition actually completed successfully?",
-        a: "Check the status text and log during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, go to Reports & Verification and use \"Verify Image Hash\" to confirm the acquired image's hash matches what was recorded during acquisition."
+        a: "Check the status text and log during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, go to Reporting and use \"Verify Image Hash\" to confirm the acquired image's hash matches what was recorded during acquisition."
     },
     {
         q: "What's the difference between PhotoRec and browsing an image with Sleuth Kit?",
@@ -427,7 +443,7 @@ function populateHelpInfo() {
 
     const sections = [
         ["Where does my data go?", "Acquisitions, recovered files, and reports are written under the evidence root (/mnt by default). Nothing is uploaded anywhere automatically."],
-        ["Chain of custody", "The Reports tab keeps a station-wide log of significant actions (acquisitions, deletes, copies, report edits) with timestamp and source IP. This station has one shared login rather than per-examiner accounts, so the log shows what happened and when, reliably - not who, beyond the connecting IP."],
+        ["Chain of custody", "The Reporting tab keeps a station-wide log of significant actions (acquisitions, deletes, copies, report edits) with timestamp and source IP. This station has one shared login rather than per-examiner accounts, so the log shows what happened and when, reliably - not who, beyond the connecting IP."],
         ["Physical kiosk vs. remote access", "The touchscreen kiosk skips the login prompt by default (a setting called FORENSIC_KIOSK_AUTH_BYPASS) - physical access to the device already implies a high level of trust. Remote/LAN access always requires the login you set, with no exceptions."],
         ["Updating this station", "Advanced Settings has buttons to pull the latest app code (git) or update OS packages (apt) - both need internet access and pull from external sources, so only use them on a station where you trust those sources."],
     ];
@@ -497,7 +513,7 @@ function initThroughputGraph() {
             responsive: true,
             maintainAspectRatio: false,
             animation: false,
-            scales: { x: { display: false }, y: { beginAtZero: true, grid: { color: '#2e364f' }, ticks: { color: '#cbd5e1', font: { size: 10 } } } },
+            scales: { x: { display: false }, y: { display: false, beginAtZero: true } },
             plugins: { legend: { display: false } }
         }
     });
@@ -2248,6 +2264,16 @@ async function runDiagnostic(key) {
     }
 }
 
+let toolVersionsModalInstance = null;
+
+function openToolVersionsModal() {
+    if (!toolVersionsModalInstance) {
+        toolVersionsModalInstance = new bootstrap.Modal(document.getElementById('toolVersionsModal'));
+    }
+    toolVersionsModalInstance.show();
+    loadToolVersions();
+}
+
 async function loadToolVersions() {
     const tbody = document.getElementById("toolVersionsBody");
     if (!tbody) return;
@@ -2396,7 +2422,7 @@ async function triggerSystemPower(action) {
 }
 
 async function fetchNetworkInterfaces() {
-    const container = document.getElementById("interfacesContainer");
+    const container = document.getElementById("headerInterfacesContainer");
     if (!container) return;
 
     try {
@@ -2404,39 +2430,36 @@ async function fetchNetworkInterfaces() {
         const data = await res.json();
 
         if (data.success && data.interfaces) {
+            // Dispose any existing tooltips before rebuilding - otherwise
+            // Bootstrap's tooltip instances leak/stay attached to elements
+            // that no longer exist once we replace the container's contents.
+            container.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+                const existing = bootstrap.Tooltip.getInstance(el);
+                if (existing) existing.dispose();
+            });
+
             container.innerHTML = '';
             data.interfaces.forEach(iface => {
-                const item = document.createElement("div");
-                item.className = "list-group-item bg-dark text-light border-secondary p-2 d-flex justify-content-between align-items-center";
+                const pill = document.createElement('span');
+                pill.className = 'badge bg-dark border border-secondary text-light font-monospace fw-normal';
+                pill.style.cursor = 'default';
+                pill.setAttribute('data-bs-toggle', 'tooltip');
+                pill.setAttribute('data-bs-placement', 'bottom');
+                pill.setAttribute('data-bs-html', 'true');
+                pill.setAttribute('title', `Status: ${iface.active ? 'UP' : 'DOWN'}<br>IP: ${iface.ip}<br>MAC: ${iface.mac}<br>Speed: ${iface.speed_mbps} Mbps`);
 
-                const nameSpan = document.createElement('span');
-                nameSpan.className = 'fw-bold text-info me-1';
-                nameSpan.textContent = iface.interface;
+                const dot = document.createElement('span');
+                dot.className = 'me-1';
+                dot.innerHTML = iface.active ? '<i class="bi bi-circle-fill text-success" style="font-size:8px"></i>' : '<i class="bi bi-circle-fill text-secondary" style="font-size:8px"></i>';
+                pill.appendChild(dot);
+                pill.appendChild(document.createTextNode(iface.interface));
 
-                const statusBadge = document.createElement('span');
-                statusBadge.className = iface.active ? 'badge bg-success' : 'badge bg-secondary';
-                statusBadge.textContent = iface.active ? 'UP' : 'DOWN';
-
-                const detailDiv = document.createElement('div');
-                detailDiv.className = 'font-monospace small text-subtle';
-                detailDiv.textContent = `IP: ${iface.ip} | MAC: ${iface.mac}`;
-
-                const leftDiv = document.createElement('div');
-                leftDiv.appendChild(nameSpan);
-                leftDiv.appendChild(statusBadge);
-                leftDiv.appendChild(detailDiv);
-
-                const speedSmall = document.createElement('small');
-                speedSmall.className = 'text-subtle font-monospace';
-                speedSmall.textContent = `${iface.speed_mbps} Mbps`;
-
-                item.appendChild(leftDiv);
-                item.appendChild(speedSmall);
-                container.appendChild(item);
+                container.appendChild(pill);
+                new bootstrap.Tooltip(pill, { trigger: 'hover focus' });
             });
         }
     } catch (err) {
-        if (container) container.innerHTML = '<span class="text-danger small p-2">Error querying interfaces.</span>';
+        if (container) container.innerHTML = '<span class="text-danger small">Error</span>';
     }
 }
 
@@ -2520,6 +2543,16 @@ async function fetchProgress() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+    // Must run before initGridstack() - GridStack measures its container's
+    // width at init time, so the sidebar's final width needs to be settled
+    // first, not applied afterward.
+    if (localStorage.getItem("pi_forensics_sidebar_compact") === "1") {
+        const sidebar = document.getElementById("appSidebar");
+        const icon = document.getElementById("sidebarToggleIcon");
+        if (sidebar) sidebar.classList.add("compact");
+        if (icon) icon.className = "bi bi-chevron-double-right";
+    }
+
     initGridstack();
     initThroughputGraph();
     refreshDrives();
@@ -2532,8 +2565,11 @@ document.addEventListener("DOMContentLoaded", () => {
     updateAndroidModeHelp();
     initHelpTooltips();
 
+    fetchNetworkInterfaces();
+
     setInterval(fetchSystemInfo, 2000);
     setInterval(fetchProgress, 1000);
+    setInterval(fetchNetworkInterfaces, 15000);
 });
 
 function initHelpTooltips() {

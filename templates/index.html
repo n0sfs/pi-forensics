@@ -39,33 +39,70 @@
             font-size: 0.85rem;
         }
 
-        .app-tabs-bar {
-            background-color: #111522;
-            border-bottom: 1px solid var(--border-color);
-            padding: 0 20px;
+        .app-layout {
+            display: flex;
+            align-items: stretch;
+            min-height: calc(100vh - 110px);
         }
 
-        .app-tabs-bar .nav-link {
+        .app-sidebar {
+            width: 190px;
+            flex-shrink: 0;
+            background-color: #111522;
+            border-right: 1px solid var(--border-color);
+            transition: width 0.18s ease;
+            display: flex;
+            flex-direction: column;
+            padding-top: 8px;
+        }
+
+        .app-sidebar.compact { width: 58px; }
+
+        .sidebar-toggle-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            padding: 8px 0;
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-subtle);
+            margin-bottom: 6px;
+        }
+        .sidebar-toggle-btn:hover { color: var(--text-bright); }
+
+        .app-sidebar .nav-link {
+            display: flex;
+            align-items: center;
+            gap: 10px;
             color: var(--text-subtle);
             font-weight: 600;
+            font-size: 0.88rem;
             border: none;
-            border-bottom: 3px solid transparent;
+            border-left: 3px solid transparent;
             border-radius: 0;
-            padding: 10px 18px;
-            font-size: 0.92rem;
+            padding: 12px 16px;
+            white-space: nowrap;
+            overflow: hidden;
             transition: color 0.15s ease;
         }
+        .app-sidebar.compact .nav-link { justify-content: center; padding: 12px 0; }
 
-        .app-tabs-bar .nav-link:hover {
-            color: var(--text-bright);
-        }
+        .app-sidebar .nav-link i { font-size: 1.15rem; flex-shrink: 0; }
+        .app-sidebar .tab-label { overflow: hidden; text-overflow: ellipsis; }
+        .app-sidebar.compact .tab-label { display: none; }
 
-        .app-tabs-bar .nav-link.active {
+        .app-sidebar .nav-link:hover { color: var(--text-bright); background: rgba(255,255,255,0.03); }
+
+        .app-sidebar .nav-link.active {
             color: var(--accent-cyan);
             font-weight: 700;
-            background: transparent;
-            border-bottom-color: var(--accent-cyan);
+            background: rgba(0, 242, 254, 0.07);
+            border-left-color: var(--accent-cyan);
         }
+
+        .app-content-area { flex: 1; min-width: 0; }
 
         .card { background-color: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); height: 100%; }
         .card-header { 
@@ -104,6 +141,7 @@
         .telemetry-label { color: #38bdf8 !important; font-size: 0.82rem; font-weight: 700; text-transform: uppercase; }
         .telemetry-val { color: #ffffff !important; font-weight: 700; }
         .chart-container { position: relative; height: 130px; width: 100%; }
+        .chart-container-mini { position: relative; height: 55px; width: 100%; }
         .telemetry-grid-label { color: #38bdf8 !important; font-size: 0.80rem; font-weight: 700; text-transform: uppercase; }
         .telemetry-grid-val { color: #ffffff !important; font-size: 0.92rem; font-weight: 700; }
 
@@ -139,9 +177,6 @@
                 <i class="bi bi-keyboard-fill me-1"></i>Keyboard
             </button>
             {% endif %}
-            <button id="helpBtn" class="btn btn-sm btn-outline-info fw-bold" onclick="openHelpModal()">
-                <i class="bi bi-question-circle-fill me-1"></i>Help
-            </button>
             <button id="layoutLockBtn" class="btn btn-sm btn-outline-warning fw-bold" onclick="toggleLayoutLock()">
                 <i class="bi bi-lock-fill me-1"></i>Layout Locked
             </button>
@@ -184,45 +219,65 @@
             <span><span class="telemetry-label"><i class="bi bi-arrow-down-circle text-success me-1"></i>NET DL:</span> <span id="netDlVal" class="fw-bold text-success">0.0 MB/s</span></span>
             <span><span class="telemetry-label"><i class="bi bi-arrow-up-circle text-warning me-1"></i>NET UL:</span> <span id="netUlVal" class="fw-bold text-warning">0.0 MB/s</span></span>
         </div>
+
+        <div class="d-flex align-items-center gap-2">
+            <span class="telemetry-label"><i class="bi bi-ethernet me-1"></i>Interfaces:</span>
+            <div id="headerInterfacesContainer" class="d-flex align-items-center gap-1"></div>
+        </div>
     </div>
 
     <!-- Application Module Tabs -->
-    <div class="app-tabs-bar mb-3">
-        <ul class="nav nav-tabs border-0" id="forensicAppTabs" role="tablist">
-            <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="acquisition-tab" data-bs-toggle="tab" data-bs-target="#acquisition-app" type="button" role="tab">
-                    <i class="bi bi-hdd-stack me-1"></i>Forensic Acquisition
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab">
-                    <i class="bi bi-life-preserver me-1"></i>DDRescue & File Explorer
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()">
-                    <i class="bi bi-phone me-1"></i>Mobile Forensics
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports-app" type="button" role="tab" onclick="loadCaseIndex(); loadChainOfCustodyLog();">
-                    <i class="bi bi-file-earmark-pdf me-1"></i>Reports & Verification
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-app" type="button" role="tab" onclick="fetchNetworkInterfaces()">
-                    <i class="bi bi-gear-wide-connected me-1"></i>Advanced Settings
-                </button>
-            </li>
-        </ul>
-    </div>
+    <div class="app-layout">
+        <div class="app-sidebar" id="appSidebar">
+            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" onclick="toggleSidebarCompact()" title="Expand/collapse sidebar">
+                <i class="bi bi-chevron-double-left" id="sidebarToggleIcon"></i>
+            </button>
+            <ul class="nav flex-column" id="forensicAppTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="acquisition-tab" data-bs-toggle="tab" data-bs-target="#acquisition-app" type="button" role="tab" title="Forensic Acquisition">
+                        <i class="bi bi-hdd-stack"></i><span class="tab-label">Forensic Acquisition</span>
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab" title="File Recovery (DDRescue, PhotoRec, Image Browser)">
+                        <i class="bi bi-life-preserver"></i><span class="tab-label">File Recovery</span>
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()" title="Mobile Forensics">
+                        <i class="bi bi-phone"></i><span class="tab-label">Mobile Forensics</span>
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports-app" type="button" role="tab" onclick="loadCaseIndex(); loadChainOfCustodyLog();" title="Reporting & Verification">
+                        <i class="bi bi-file-earmark-pdf"></i><span class="tab-label">Reporting</span>
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-app" type="button" role="tab" title="Advanced Settings">
+                        <i class="bi bi-gear-wide-connected"></i><span class="tab-label">Advanced Settings</span>
+                    </button>
+                </li>
+            </ul>
 
-    <div class="container-fluid px-4">
-        <div class="tab-content" id="forensicTabContent">
-            
-            <!-- APP 1: FORENSIC ACQUISITION DASHBOARD -->
-            <div class="tab-pane fade show active" id="acquisition-app" role="tabpanel">
-                <div class="grid-stack grid-stack-main">
+            <hr class="border-secondary my-2 mx-2">
+
+            <ul class="nav flex-column">
+                <li class="nav-item">
+                    <button class="nav-link" id="helpBtn" onclick="openHelpModal()" title="Help & Reference">
+                        <i class="bi bi-question-circle-fill"></i><span class="tab-label">Help</span>
+                    </button>
+                </li>
+            </ul>
+        </div>
+
+        <div class="app-content-area">
+            <div class="container-fluid px-4">
+                <div class="tab-content" id="forensicTabContent">
+                    
+                    <!-- APP 1: FORENSIC ACQUISITION DASHBOARD -->
+                    <div class="tab-pane fade show active" id="acquisition-app" role="tabpanel">
+                        <div class="grid-stack grid-stack-main">
 
                     <div class="grid-stack-item" gs-id="card-source" gs-x="0" gs-y="0" gs-w="7" gs-h="4">
                         <div class="grid-stack-item-content">
@@ -265,7 +320,7 @@
                         </div>
                     </div>
 
-                    <div class="grid-stack-item" gs-id="card-controls" gs-x="0" gs-y="4" gs-w="7" gs-h="3">
+                    <div class="grid-stack-item" gs-id="card-controls" gs-x="7" gs-y="0" gs-w="5" gs-h="9">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header py-2"><i class="bi bi-sliders me-2"></i>Advanced Acquisition Controls</div>
@@ -321,16 +376,33 @@
                                         <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="hashSha256" value="sha256" checked><label class="form-check-label small text-light" for="hashSha256">SHA256</label></div>
                                     </div>
 
-                                    <div class="d-flex gap-2">
+                                    <div class="d-flex gap-2 mb-3">
                                         <button id="startBtn" class="btn btn-primary flex-fill fw-bold py-2" onclick="startAcquisition()"><i class="bi bi-play-circle me-1"></i>Start Acquisition</button>
                                         <button id="stopBtn" class="btn btn-danger flex-fill fw-bold py-2" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop Acquisition</button>
                                     </div>
+
+                                    <hr class="border-secondary my-2">
+
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span id="jobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
+                                        <span id="progressPct" class="fw-bold fs-5 text-light">0.0%</span>
+                                    </div>
+                                    <div class="progress bg-secondary mb-2" style="height: 10px;">
+                                        <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
+                                    </div>
+                                    <div class="row text-center align-items-center mb-2">
+                                        <div class="col-4"><small class="telemetry-label d-block">Speed</small><span id="speedVal" class="fw-bold text-warning">0.0 MB/s</span></div>
+                                        <div class="col-4"><div class="chart-container-mini"><canvas id="throughputChart"></canvas></div></div>
+                                        <div class="col-4"><small class="telemetry-label d-block">Bytes</small><span id="bytesVal" class="fw-bold text-light">0 / 0 GB</span></div>
+                                    </div>
+                                    <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
+                                    <pre id="logOutput" class="log-window" style="height: 100px;">[System initialized and idle. Ready for disk acquisition job.]</pre>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <div class="grid-stack-item" gs-id="card-metadata" gs-x="0" gs-y="7" gs-w="7" gs-h="2">
+                    <div class="grid-stack-item" gs-id="card-metadata" gs-x="0" gs-y="4" gs-w="7" gs-h="2">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header py-2"><i class="bi bi-folder-symlink me-2"></i>Case & Evidence Metadata</div>
@@ -346,7 +418,7 @@
                         </div>
                     </div>
 
-                    <div class="grid-stack-item" gs-id="card-network" gs-x="0" gs-y="9" gs-w="7" gs-h="3">
+                    <div class="grid-stack-item" gs-id="card-network" gs-x="0" gs-y="6" gs-w="7" gs-h="3">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header py-2"><i class="bi bi-diagram-3 me-2"></i>Destination & Network Share Setup</div>
@@ -373,40 +445,6 @@
                                             <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'destPath')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                         </div>
                                     </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="grid-stack-item" gs-id="card-status" gs-x="7" gs-y="0" gs-w="5" gs-h="4">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header py-2"><i class="bi bi-speedometer2 me-2"></i>Live Acquisition Status</div>
-                                <div class="card-body py-2">
-                                    <div class="d-flex justify-content-between align-items-center mb-1">
-                                        <span id="jobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
-                                        <span id="progressPct" class="fw-bold fs-5 text-light">0.0%</span>
-                                    </div>
-                                    <div class="progress bg-secondary mb-2" style="height: 16px;">
-                                        <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
-                                    </div>
-                                    <div class="row text-center mb-2">
-                                        <div class="col-6"><small class="telemetry-label d-block">Transfer Speed</small><span id="speedVal" class="fs-5 fw-bold text-warning">0.0 MB/s</span></div>
-                                        <div class="col-6"><small class="telemetry-label d-block">Transferred Bytes</small><span id="bytesVal" class="fs-5 fw-bold text-light">0 / 0 GB</span></div>
-                                    </div>
-                                    <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
-                                    <pre id="logOutput" class="log-window">[System initialized and idle. Ready for disk acquisition job.]</pre>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="grid-stack-item" gs-id="card-graph" gs-x="7" gs-y="4" gs-w="5" gs-h="4">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header py-2"><i class="bi bi-graph-up-arrow me-2"></i>Live Throughput Monitor</div>
-                                <div class="card-body py-2">
-                                    <div class="chart-container"><canvas id="throughputChart"></canvas></div>
                                 </div>
                             </div>
                         </div>
@@ -1105,7 +1143,7 @@
                     </div>
 
                     <!-- Section 3: Service Controls & Updates -->
-                    <div class="grid-stack-item" gs-id="set-card-updates" gs-x="0" gs-y="4" gs-w="6" gs-h="5">
+                    <div class="grid-stack-item" gs-id="set-card-updates" gs-x="0" gs-y="4" gs-w="12" gs-h="5">
                         <div class="grid-stack-item-content">
                             <div class="card border-info">
                                 <div class="card-header bg-dark text-info fw-bold py-2"><i class="bi bi-gear-fill me-2"></i>Appliance Service & Updates</div>
@@ -1118,29 +1156,15 @@
                                         <div class="col-6"><button class="btn btn-success w-100 fw-bold py-2" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button></div>
                                         <div class="col-6"><button class="btn btn-primary w-100 fw-bold py-2" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button></div>
                                     </div>
+                                    <div class="row g-2 mb-3">
+                                        <div class="col-12"><button class="btn btn-outline-info w-100 fw-bold py-2" onclick="openToolVersionsModal()"><i class="bi bi-info-square me-1"></i>Check Tool Versions</button></div>
+                                    </div>
                                     <div class="small text-subtle mb-2">Git/OS updates pull code or packages from configured remotes - only run these on a station whose update sources you trust.</div>
                                     <hr class="border-secondary my-2">
                                     <h6 class="text-danger fw-bold mb-2"><i class="bi bi-power me-2"></i>Hardware Power Controls</h6>
                                     <div class="d-flex gap-2">
                                         <button class="btn btn-warning text-dark flex-fill fw-bold py-2" onclick="triggerSystemPower('reboot')"><i class="bi bi-arrow-clockwise me-1"></i>Reboot Appliance</button>
                                         <button class="btn btn-danger flex-fill fw-bold py-2" onclick="triggerSystemPower('poweroff')"><i class="bi bi-power me-1"></i>Power Off Station</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Section 4: Hardware Interface Diagnostics -->
-                    <div class="grid-stack-item" gs-id="set-card-interfaces" gs-x="6" gs-y="4" gs-w="6" gs-h="5">
-                        <div class="grid-stack-item-content">
-                            <div class="card border-info">
-                                <div class="card-header bg-dark text-info fw-bold py-2 d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-ethernet me-2"></i>Network Interfaces & Binding Telemetry</span>
-                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="fetchNetworkInterfaces()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-                                </div>
-                                <div class="card-body py-2">
-                                    <div id="interfacesContainer" class="list-group list-group-flush border border-secondary rounded-2" style="background-color: #090b10; max-height: 180px; overflow-y: auto;">
-                                        <span class="text-subtle small p-2">Tap Refresh to query local network interfaces.</span>
                                     </div>
                                 </div>
                             </div>
@@ -1176,34 +1200,12 @@
                         </div>
                     </div>
 
-                    <!-- Tool Versions -->
-                    <div class="grid-stack-item" gs-id="set-card-versions" gs-x="0" gs-y="14" gs-w="12" gs-h="5">
-                        <div class="grid-stack-item-content">
-                            <div class="card border-info">
-                                <div class="card-header bg-dark text-info fw-bold py-2 d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-info-square me-2"></i>Tool Versions</span>
-                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadToolVersions()"><i class="bi bi-arrow-clockwise me-1"></i>Check</button>
-                                </div>
-                                <div class="card-body py-2">
-                                    <div class="small text-subtle mb-2">
-                                        What produced a given piece of evidence should always be answerable from the station
-                                        itself. Useful for support requests and for documenting exactly what tooling was used.
-                                    </div>
-                                    <div class="table-responsive" style="max-height: 220px; overflow-y: auto;">
-                                        <table class="table table-sm table-dark table-striped mb-0 font-monospace small">
-                                            <tbody id="toolVersionsBody">
-                                                <tr><td colspan="3" class="text-subtle">Tap Check to query tool versions.</td></tr>
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
+                    <!-- Tool Versions now shown via popup - see Check Tool Versions button above -->
                 </div>
             </div>
 
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1263,6 +1265,34 @@
                     <pre id="toolOutputContainer" class="log-window mb-0" style="height: 350px;">Loading...</pre>
                 </div>
                 <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="toolVersionsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-info-square me-2"></i>Tool Versions</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-2">
+                        What produced a given piece of evidence should always be answerable from the station
+                        itself. Useful for support requests and for documenting exactly what tooling was used.
+                    </div>
+                    <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                        <table class="table table-sm table-dark table-striped mb-0 font-monospace small">
+                            <tbody id="toolVersionsBody">
+                                <tr><td colspan="3" class="text-subtle">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-outline-info fw-bold" onclick="loadToolVersions()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
