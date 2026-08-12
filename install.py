@@ -102,6 +102,7 @@ apt_packages = [
     "libimobiledevice-utils", "usbmuxd",  # iOS device backup (idevice_id, ideviceinfo, idevicebackup2)
     "adb", "android-sdk-platform-tools-common",  # Android device backup/pull (udev rules let plugdev group access USB without root)
     "nginx", "openssl",  # optional TLS reverse proxy (examiner is prompted below)
+    "wvkbd",  # on-screen keyboard for kiosk touchscreen input (wlroots/labwc-native, see kiosk autostart)
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
@@ -301,6 +302,12 @@ Environment="FORENSIC_PASS={FORENSIC_PASS}"
 # to this directory tree. Defaults to /mnt if unset.
 Environment="FORENSIC_ROOT=/mnt"
 
+# Skips login for the physical kiosk touchscreen only - remote/LAN/WiFi
+# access always still requires authentication regardless of this setting.
+# Defaults to bypassing (this line is informational; app.py's default is
+# already "on" even without it). Uncomment to require login locally too:
+# Environment="FORENSIC_KIOSK_AUTH_BYPASS=0"
+
 # Bind address depends on whether nginx+TLS was set up above:
 #   - With TLS: gunicorn stays on loopback (127.0.0.1) and nginx is the
 #     only thing listening on the network, terminating TLS on 80/443.
@@ -352,6 +359,30 @@ export WAYLAND_DISPLAY=wayland-0
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 
 wlr-randr --output ALL --on 2>/dev/null || true
+
+# On-screen keyboard for touch input - CURRENTLY DISABLED.
+#
+# wvkbd-mobintl was crash-looping on at least one real deployment (rapid
+# restart cycle every ~3s, each cycle's layer-shell surface mapping/
+# unmapping briefly, which looked like the whole kiosk screen flashing
+# between the keyboard and the app). Since local kiosk login is bypassed
+# by default (see FORENSIC_KIOSK_AUTH_BYPASS in app.py), the original
+# urgent reason for this - helping type into the native Basic Auth prompt -
+# no longer applies, so it's disabled here rather than left actively
+# breaking the kiosk display while unresolved. The remaining use case
+# (typing case numbers, notes, etc.) can use a physical USB keyboard
+# in the meantime.
+#
+# To re-enable and actually debug the crash, redirect its output to a log
+# instead of guessing at flags blind:
+#   wvkbd-mobintl --hidden -H 340 -L 230 >> /tmp/wvkbd.log 2>&1
+# then check /tmp/wvkbd.log for the actual error after it dies.
+#
+# while true; do
+#     wvkbd-mobintl --hidden -H 340 -L 230
+#     echo "[kiosk] wvkbd exited, restarting in 3s..." >&2
+#     sleep 3
+# done &
 
 # Respawn loop: if chromium crashes or is closed, relaunch it rather than
 # leaving a blank screen until the next reboot. This is the equivalent of
