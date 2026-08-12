@@ -38,6 +38,33 @@ HISTORY_FILE = os.path.join(INSTALL_DIR, "mount_history.json")
 RUNTIME_CONFIG_FILE = os.path.join(INSTALL_DIR, "runtime_config.json")
 runtime_config_lock = threading.Lock()
 
+# Append-only chain-of-custody log: one JSON object per line, covering
+# acquisitions, file deletes/copies, hash verifications, PhotoRec runs,
+# image extractions, and report edits. NOTE on what this can and can't
+# attest to: this station has a single shared login (see FORENSIC_USER/
+# FORENSIC_PASS above), not per-examiner accounts, so entries record what
+# happened and when, plus the client IP - not reliably *who*, beyond
+# whoever had the shared credentials (or physical kiosk access, if
+# FORENSIC_KIOSK_AUTH_BYPASS is on). If your process needs per-examiner
+# attribution, that requires separate accounts this project doesn't have.
+COC_LOG_FILE = os.path.join(INSTALL_DIR, "chain_of_custody.log")
+coc_log_lock = threading.Lock()
+
+def log_chain_of_custody(action, details=None):
+    entry = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "details": details or {},
+        "source_ip": request.headers.get('X-Real-IP', request.remote_addr) if request else None,
+    }
+    with coc_log_lock:
+        try:
+            os.makedirs(os.path.dirname(COC_LOG_FILE), exist_ok=True)
+            with open(COC_LOG_FILE, 'a') as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception as e:
+            print(f"Error writing chain-of-custody log: {e}")
+
 def load_runtime_config():
     with runtime_config_lock:
         if os.path.exists(RUNTIME_CONFIG_FILE):
@@ -325,6 +352,22 @@ def parse_ddrescue_line(line):
         spd = to_bytes(m_spd.group(1), m_spd.group(2)) / (1024**2)
 
     return rescued_bytes, pct, spd
+
+# --- Quick Triage Scan: pattern definitions ---
+# Deliberately built in-house rather than depending on bulk_extractor,
+# which isn't in Debian's mainline archive (see README) - this needs no
+# external tool at all, so it can never hit a "package not found" wall on
+# any system this app runs on. Patterns are intentionally loose (especially
+# the credit-card one) - a triage scan is meant to over-flag for a human to
+# review, not to be a precise validator.
+TRIAGE_PATTERNS = {
+    "emails": re.compile(rb'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'),
+    "urls": re.compile(rb'https?://[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]+'),
+    "ip_addresses": re.compile(rb'\b(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\b'),
+    "credit_card_numbers": re.compile(rb'\b(?:\d[ -]?){13,19}\b'),
+    "phone_numbers": re.compile(rb'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'),
+}
+TRIAGE_MAX_MATCHES_PER_CATEGORY = 50000  # protects memory on very large images
 
 HASH_HEX_LEN = {'md5': 32, 'sha1': 40, 'sha256': 64}
 
@@ -962,6 +1005,190 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
         update_job(active=False)
         active_proc = None
 
+def execution_worker_photorec(source, dest_dir, report_file_path, report_data):
+    """
+    PhotoRec file-carving recovery. Only ever reads from `source` and writes
+    recovered files to `dest_dir` - never writes back to the source, unlike
+    TestDisk's partition-repair mode (which this project deliberately does
+    NOT expose, since rewriting a partition table is a write to the
+    evidence, conflicting with the write-blocking this whole app is built
+    around).
+
+    Scripted-mode syntax is per CGSecurity's own docs (cgsecurity.org/
+    testdisk_doc/scripted_run.html): partition_none treats the source as a
+    single unpartitioned blob to search (appropriate here since we already
+    let the examiner point this at a specific device or a specific image
+    file directly, rather than trying to auto-detect partitions).
+
+    No detailed progress percentage is parsed from PhotoRec's output - its
+    scripted-mode reporting isn't documented/stable enough to parse safely
+    (unlike dc3dd's well-documented format). Progress is bytes recovered so
+    far (polled from the destination directory) plus the live log, same
+    conservative approach used for the mobile forensics jobs.
+    """
+    global current_job, active_proc
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    update_job(format="photorec", status="Initializing...", progress_percent=0.0,
+               speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
+
+    try:
+        cmd = [
+            "photorec", "/log", "/d", dest_dir,
+            "/cmd", source, "partition_none,options,fileopt,everything,enable,search"
+        ]
+        append_log(f"[*] Command: {' '.join(cmd)}")
+        update_job(status="Carving Files (PhotoRec)...")
+
+        def on_line(clean_line):
+            append_log(clean_line)
+
+        def on_poll():
+            update_job(transferred_bytes=poll_directory_size(dest_dir))
+
+        proc = _stream_subprocess(cmd, on_line, on_poll=on_poll, poll_interval=3.0)
+        time.sleep(1.0)
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        final_size = poll_directory_size(dest_dir)
+
+        if proc.returncode == 0:
+            update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
+            append_log(f"[+] PhotoRec recovery completed. Recovered data size: {final_size} bytes")
+            report_data["acquisition_status"] = "COMPLETED"
+            report_data["output_size_bytes"] = final_size
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            append_log(f"[-] photorec exited with code {proc.returncode}")
+            report_data["acquisition_status"] = "FAILED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
+        update_job(active=False)
+        active_proc = None
+
+def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data, total_bytes):
+    """
+    Built-in triage scan for structured data (emails, URLs, IP addresses,
+    credit-card-like numbers, phone numbers) - reads the source directly
+    and regex-matches TRIAGE_PATTERNS against it, writing deduplicated
+    results to one text file per category. No external tool dependency at
+    all (see TRIAGE_PATTERNS above for why that matters), so this can never
+    hit a "package not found" wall on any system this app runs on.
+    Read-only against the source.
+
+    Honest tradeoff: this is a straightforward single-threaded Python loop,
+    not a highly-optimized C/C++ scanner - noticeably slower than a
+    dedicated tool on a very large (multi-TB) image. It's well suited to
+    the smaller targets (USB drives, phone backups, individual files) this
+    project mostly deals with; for a full scan of a very large drive,
+    expect it to take a while.
+    """
+    global current_job, active_proc
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    update_job(format="triage_scan", status="Initializing...", progress_percent=0.0,
+               speed_mbps=0.0, transferred_bytes=0, total_bytes=total_bytes)
+
+    CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
+    OVERLAP = 256  # bytes carried over between chunks so a match spanning a
+                   # chunk boundary isn't missed
+
+    results = {name: set() for name in TRIAGE_PATTERNS}
+    truncated = {name: False for name in TRIAGE_PATTERNS}
+
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        append_log(f"[*] Scanning {source} for structured data (emails, URLs, IPs, card-like numbers, phone numbers)...")
+        update_job(status="Scanning for Structured Data...")
+
+        bytes_read = 0
+        tail = b""
+        last_update_time = time.time()
+
+        with open(source, 'rb') as f:
+            while True:
+                if snapshot_job()["status"] == "Stopped":
+                    append_log("[!] Scan stopped by user.")
+                    break
+
+                chunk = f.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+
+                data = tail + chunk
+                for name, pattern in TRIAGE_PATTERNS.items():
+                    if truncated[name]:
+                        continue
+                    for m in pattern.finditer(data):
+                        val = m.group(0)
+                        if len(val) > 4:  # skip trivial/near-empty matches
+                            results[name].add(val)
+                            if len(results[name]) >= TRIAGE_MAX_MATCHES_PER_CATEGORY:
+                                truncated[name] = True
+                                append_log(f"[!] {name}: hit the {TRIAGE_MAX_MATCHES_PER_CATEGORY}-match cap, no longer collecting new ones.")
+                                break
+
+                tail = data[-OVERLAP:] if len(data) >= OVERLAP else data
+                bytes_read += len(chunk)
+
+                # Throttle UI updates rather than pushing on every chunk.
+                if time.time() - last_update_time > 0.5:
+                    updates = {"transferred_bytes": bytes_read}
+                    if total_bytes > 0:
+                        updates["progress_percent"] = round((bytes_read / total_bytes) * 100, 1)
+                    update_job(**updates)
+                    last_update_time = time.time()
+
+        update_job(transferred_bytes=bytes_read)
+
+        total_hits = 0
+        for name, matches in results.items():
+            out_path = os.path.join(dest_dir, f"{name}.txt")
+            with open(out_path, 'w') as out_f:
+                for val in sorted(matches):
+                    out_f.write(val.decode('utf-8', errors='replace') + "\n")
+            total_hits += len(matches)
+            note = " (capped)" if truncated[name] else ""
+            append_log(f"[+] {name}: {len(matches)} unique match(es){note} -> {out_path}")
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        report_data["triage_summary"] = {name: len(matches) for name, matches in results.items()}
+
+        if snapshot_job()["status"] == "Stopped":
+            report_data["acquisition_status"] = "STOPPED"
+        else:
+            update_job(status="Completed Successfully", progress_percent=100.0)
+            append_log(f"[+] Triage scan completed. {total_hits} total unique matches across all categories.")
+            report_data["acquisition_status"] = "COMPLETED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
+        update_job(active=False)
+        active_proc = None
+
 # --- Web Routes & API Endpoints ---
 @app.route('/')
 @requires_auth
@@ -1562,6 +1789,7 @@ def start_imaging():
     thread.daemon = True
     thread.start()
 
+    log_chain_of_custody("acquisition_start", {"format": fmt, "source": source, "destination": dest_path})
     return jsonify({"success": True, "message": "Acquisition started."})
 
 @app.route('/api/ddrescue/inspect_map', methods=['POST'])
@@ -1709,6 +1937,7 @@ def start_ddrescue():
     thread.daemon = True
     thread.start()
 
+    log_chain_of_custody("ddrescue_start", {"strategy": strategy, "source": source, "destination": dest_path})
     return jsonify({"success": True, "message": f"ddrescue ({strategy}) started."})
 
 # --- Mobile Forensics Endpoints ---
@@ -1804,6 +2033,7 @@ def start_ios_backup():
     thread.daemon = True
     thread.start()
 
+    log_chain_of_custody("ios_backup_start", {"udid": udid, "destination": job_dest_dir})
     return jsonify({"success": True, "message": "iOS backup started."})
 
 @app.route('/api/mobile/start_android', methods=['POST'])
@@ -1892,7 +2122,162 @@ def start_android_acquisition():
     thread.daemon = True
     thread.start()
 
+    log_chain_of_custody("android_acquisition_start", {"mode": mode, "serial": serial, "destination": output_path})
     return jsonify({"success": True, "message": f"Android {mode} started."})
+
+# --- File Carving / Recovery (PhotoRec) ---
+@app.route('/api/recovery/start_photorec', methods=['POST'])
+@requires_auth
+def start_photorec():
+    global current_job
+
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    source_raw = req.get('source', '')
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    metadata = req.get('metadata', {})
+
+    # Source can be either a whole-disk device (recovering directly from a
+    # damaged drive) or an already-sandboxed image file (recovering from a
+    # .dd/.img acquired earlier, e.g. after a ddrescue pass) - never an
+    # arbitrary path outside EVIDENCE_ROOT either way.
+    if is_valid_block_device(source_raw) and os.path.exists(source_raw):
+        source = source_raw
+    else:
+        source = safe_path(source_raw)
+        if not source or not os.path.isfile(source):
+            update_job(active=False)
+            return jsonify({"error": f"Source '{source_raw}' is not a recognized device or a valid image file in the permitted evidence directory."}), 400
+
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_photorec"
+    job_dest_dir = os.path.join(dest_path, base_name)
+
+    try:
+        os.makedirs(job_dest_dir, exist_ok=True)
+    except Exception as e:
+        update_job(active=False)
+        return jsonify({"error": f"Destination path {job_dest_dir} is inaccessible: {str(e)}"}), 400
+
+    update_job(
+        format="photorec", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Initializing PhotoRec recovery from {source} -> {job_dest_dir}..."
+    )
+
+    report_file = os.path.join(job_dest_dir, f"{base_name}_report.json")
+    report_data = {
+        "case_metadata": metadata,
+        "acquisition_parameters": {
+            "method": "photorec (file carving)",
+            "source": source,
+            "output_destination": job_dest_dir,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(report_data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not write report JSON: {e}")
+
+    thread = threading.Thread(
+        target=execution_worker_photorec,
+        args=(source, job_dest_dir, report_file, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("photorec_start", {"source": source, "destination": job_dest_dir})
+    return jsonify({"success": True, "message": "PhotoRec recovery started."})
+
+@app.route('/api/recovery/start_triage_scan', methods=['POST'])
+@requires_auth
+def start_triage_scan():
+    global current_job
+
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    source_raw = req.get('source', '')
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    metadata = req.get('metadata', {})
+
+    if is_valid_block_device(source_raw) and os.path.exists(source_raw):
+        source = source_raw
+    else:
+        source = safe_path(source_raw)
+        if not source or not os.path.isfile(source):
+            update_job(active=False)
+            return jsonify({"error": f"Source '{source_raw}' is not a recognized device or a valid image file in the permitted evidence directory."}), 400
+
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_triagescan"
+    job_dest_dir = os.path.join(dest_path, base_name)
+
+    total_bytes = 0
+    try:
+        if is_valid_block_device(source):
+            res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
+            if res.returncode == 0:
+                total_bytes = int(res.stdout.strip())
+        else:
+            total_bytes = os.path.getsize(source)
+    except Exception:
+        pass
+
+    update_job(
+        format="triage_scan", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=total_bytes, status="Initializing...",
+        log=f"[*] Initializing triage scan of {source} -> {job_dest_dir}..."
+    )
+
+    report_file = os.path.join(dest_path, f"{base_name}_report.json")
+    report_data = {
+        "case_metadata": metadata,
+        "acquisition_parameters": {
+            "method": "built-in triage scan (emails/URLs/IPs/card-like numbers/phone numbers)",
+            "source": source,
+            "output_destination": job_dest_dir,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(report_data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not write report JSON: {e}")
+
+    thread = threading.Thread(
+        target=execution_worker_triage_scan,
+        args=(source, job_dest_dir, report_file, report_data, total_bytes)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("triage_scan_start", {"source": source, "destination": job_dest_dir})
+    return jsonify({"success": True, "message": "Triage scan started."})
 
 @app.route('/api/stop_imaging', methods=['POST'])
 @requires_auth
@@ -1968,6 +2353,88 @@ def run_diagnostic_command():
         return jsonify({"success": True, "command": " ".join(argv), "output": output.strip() or "[no output]"})
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": "Command timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# Each entry: (display name, argv to get its version string). Covers every
+# external tool this app invokes, so "what produced this evidence" is
+# always answerable from the station itself, not just from memory.
+# Each entry: display name, argv to get its version string, and the apt
+# package that provides it (None = part of the base OS, not something to
+# offer installing - e.g. GNU dd is always present via coreutils).
+TOOL_VERSION_COMMANDS = [
+    {"tool": "dc3dd", "cmd": ["dc3dd", "--version"], "package": "dc3dd"},
+    {"tool": "dcfldd", "cmd": ["dcfldd", "--version"], "package": "dcfldd"},
+    {"tool": "dd (GNU coreutils)", "cmd": ["dd", "--version"], "package": None},
+    {"tool": "ddrescue", "cmd": ["ddrescue", "--version"], "package": "gddrescue"},
+    {"tool": "ewfacquire", "cmd": ["ewfacquire", "-V"], "package": "ewf-tools"},
+    {"tool": "affconvert", "cmd": ["affconvert", "-V"], "package": "afflib-tools"},
+    {"tool": "photorec (via testdisk pkg)", "cmd": ["dpkg-query", "-W", "-f=${Version}", "testdisk"], "package": "testdisk"},
+    {"tool": "sleuthkit (mmls)", "cmd": ["mmls", "-V"], "package": "sleuthkit"},
+    {"tool": "exiftool", "cmd": ["exiftool", "-ver"], "package": "libimage-exiftool-perl"},
+    {"tool": "binwalk", "cmd": ["binwalk", "--version"], "package": "binwalk"},
+    {"tool": "clamscan", "cmd": ["clamscan", "--version"], "package": "clamav"},
+    {"tool": "hashdeep", "cmd": ["hashdeep", "-V"], "package": "hashdeep"},
+    {"tool": "adb", "cmd": ["adb", "--version"], "package": "adb"},
+    {"tool": "idevicebackup2", "cmd": ["idevicebackup2", "-v"], "package": "libimobiledevice-utils"},
+    {"tool": "smartctl", "cmd": ["smartctl", "-V"], "package": "smartmontools"},
+    {"tool": "wvkbd-mobintl", "cmd": ["wvkbd-mobintl", "-v"], "package": "wvkbd"},
+]
+# Every installable package this endpoint will ever run apt-get for - the
+# same allowlist install.py's sudoers file grants exact NOPASSWD entries
+# for, so this can't be used to install anything beyond what's already a
+# known, reviewed part of this project.
+TOOL_INSTALLABLE_PACKAGES = {t["package"] for t in TOOL_VERSION_COMMANDS if t["package"]}
+
+@app.route('/api/system/tool_versions', methods=['GET'])
+@requires_auth
+def get_tool_versions():
+    results = []
+    for entry in TOOL_VERSION_COMMANDS:
+        name, argv, package = entry["tool"], entry["cmd"], entry["package"]
+        try:
+            res = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+            if res.returncode != 0:
+                # A non-zero exit (e.g. dpkg-query reporting "no packages
+                # found matching X") means the underlying check failed, not
+                # that we found a real version string in stderr - treat it
+                # the same as "not installed" rather than displaying the
+                # raw error text as if it were version output.
+                results.append({"tool": name, "version": "Not installed", "installed": False, "package": package})
+                continue
+            output = (res.stdout.strip() or res.stderr.strip() or "(no version output)").splitlines()[0]
+            results.append({"tool": name, "version": output, "installed": True, "package": package})
+        except FileNotFoundError:
+            results.append({"tool": name, "version": "Not installed", "installed": False, "package": package})
+        except subprocess.TimeoutExpired:
+            results.append({"tool": name, "version": "timed out", "installed": True, "package": package})
+        except Exception as e:
+            results.append({"tool": name, "version": f"error: {e}", "installed": False, "package": package})
+
+    return jsonify({"success": True, "tools": results})
+
+@app.route('/api/system/install_tool', methods=['POST'])
+@requires_auth
+def install_tool():
+    req = request.get_json() or {}
+    package = req.get('package', '')
+
+    if package not in TOOL_INSTALLABLE_PACKAGES:
+        return jsonify({"success": False, "error": f"'{package}' isn't a recognized installable package for this station."}), 400
+
+    try:
+        subprocess.run(['sudo', '/usr/bin/apt-get', 'update'], capture_output=True, timeout=120)
+        res = subprocess.run(
+            ['sudo', '/usr/bin/apt-get', 'install', '-y', package],
+            capture_output=True, text=True, timeout=300
+        )
+        if res.returncode != 0:
+            return jsonify({"success": False, "error": res.stderr.strip()[-800:] or "apt-get install failed."}), 500
+
+        log_chain_of_custody("tool_package_installed", {"package": package})
+        return jsonify({"success": True, "message": f"{package} installed successfully."})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Install timed out - check your network connection and try again."}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -2192,6 +2659,7 @@ def copy_file():
             shutil.copytree(src, dest_path, dirs_exist_ok=True)
         else:
             shutil.copy2(src, dest_path)
+        log_chain_of_custody("file_copy", {"source": src, "destination": dest_path})
         return jsonify({"success": True, "message": f"Copied {os.path.basename(src)} to {dest_dir}"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -2210,6 +2678,7 @@ def delete_file():
             shutil.rmtree(path)
         else:
             os.remove(path)
+        log_chain_of_custody("file_delete", {"path": path})
         return jsonify({"success": True, "message": f"Deleted {os.path.basename(path)}"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -2244,6 +2713,7 @@ def save_report_json():
     try:
         with open(report_file, 'w') as f:
             json.dump(data, f, indent=2)
+        log_chain_of_custody("report_edit", {"report_path": report_file})
         return jsonify({"success": True, "message": "Report JSON updated successfully."})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -2275,6 +2745,341 @@ def verify_file_hash():
             "algorithm": algo.upper(),
             "hash": computed
         })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- File Metadata (ExifTool) ---
+@app.route('/api/files/exif', methods=['POST'])
+@requires_auth
+def get_file_exif():
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    try:
+        # -j = JSON output, -a = allow duplicate tags, -G = group names (helps
+        # distinguish e.g. EXIF:CreateDate from File:FileModifyDate at a glance)
+        res = subprocess.run(['exiftool', '-j', '-a', '-G', file_path], capture_output=True, text=True, timeout=30)
+        if res.returncode != 0 and not res.stdout.strip():
+            return jsonify({"success": False, "error": res.stderr.strip() or "exiftool failed with no output."}), 500
+
+        parsed = json.loads(res.stdout)
+        metadata = parsed[0] if parsed else {}
+        # SourceFile is just the path we already know - drop it to avoid
+        # re-exposing the full server-side path in the UI unnecessarily.
+        metadata.pop('SourceFile', None)
+
+        return jsonify({"success": True, "file_name": os.path.basename(file_path), "metadata": metadata})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "exiftool timed out."}), 500
+    except json.JSONDecodeError:
+        return jsonify({"success": False, "error": "Could not parse exiftool output."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- Binwalk: Embedded Filesystem / Firmware Signature Scan ---
+@app.route('/api/files/binwalk', methods=['POST'])
+@requires_auth
+def run_binwalk():
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    try:
+        # Signature scan only - deliberately not using -e (extract), which
+        # would write files into the evidence directory automatically.
+        # Extraction can be added as an explicit, separate action later if
+        # needed, with its own destination picker rather than happening
+        # silently as a side effect of scanning.
+        res = subprocess.run(['binwalk', file_path], capture_output=True, text=True, timeout=120)
+        output = res.stdout.strip() or res.stderr.strip() or "[no output]"
+        log_chain_of_custody("binwalk_scan", {"path": file_path})
+        return jsonify({"success": True, "file_name": os.path.basename(file_path), "output": output})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "binwalk timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- ClamAV: Malware Scan ---
+@app.route('/api/files/clamscan', methods=['POST'])
+@requires_auth
+def run_clamscan():
+    req = request.get_json() or {}
+    target_path = safe_path(req.get('path'))
+    if not target_path or not os.path.exists(target_path):
+        return jsonify({"success": False, "error": "Path not found or outside the permitted evidence directory."}), 400
+
+    try:
+        # -r = recursive (harmless no-op on a single file), --no-summary
+        # keeps output focused on actual findings rather than a stats block.
+        res = subprocess.run(['clamscan', '-r', '--no-summary', target_path], capture_output=True, text=True, timeout=300)
+        output = res.stdout.strip() or res.stderr.strip() or "[no output]"
+        # clamscan exit codes: 0 = clean, 1 = virus(es) found, 2 = error
+        infected = res.returncode == 1
+        log_chain_of_custody("clamav_scan", {"path": target_path, "infected": infected})
+        return jsonify({"success": True, "path": target_path, "infected": infected, "output": output})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "clamscan timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- hashdeep: Recursive Directory Hash Manifest ---
+@app.route('/api/files/hashdeep', methods=['POST'])
+@requires_auth
+def run_hashdeep():
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    algo = req.get('algorithm', 'sha256').lower()
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+    if algo not in ALLOWED_HASH_ALGOS:
+        return jsonify({"success": False, "error": f"Unsupported algorithm '{algo}'. Use one of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
+
+    manifest_path = os.path.join(target_dir, f"_hashdeep_{algo}_manifest.txt")
+    try:
+        res = subprocess.run(
+            ['hashdeep', '-r', '-c', algo, target_dir],
+            capture_output=True, text=True, timeout=600
+        )
+        with open(manifest_path, 'w') as f:
+            f.write(res.stdout)
+
+        file_count = sum(1 for line in res.stdout.splitlines() if line and not line.startswith('%') and not line.startswith('#'))
+        log_chain_of_custody("hashdeep_manifest", {"directory": target_dir, "algorithm": algo, "file_count": file_count})
+        return jsonify({"success": True, "manifest_path": manifest_path, "file_count": file_count})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "hashdeep timed out (large directory - consider a subdirectory instead)."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- strings: Extract Printable Text From a Binary File ---
+@app.route('/api/files/strings', methods=['POST'])
+@requires_auth
+def run_strings():
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    try:
+        res = subprocess.run(['strings', '-n', '6', file_path], capture_output=True, text=True, timeout=60)
+        lines = res.stdout.splitlines()
+        truncated = len(lines) > 1000
+        output = "\n".join(lines[:1000])
+        if truncated:
+            output += f"\n\n[... truncated, {len(lines) - 1000} more lines not shown ...]"
+        return jsonify({"success": True, "file_name": os.path.basename(file_path), "output": output or "[no printable strings found]"})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "strings timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- Chain of Custody Log ---
+@app.route('/api/coc/log', methods=['GET'])
+@requires_auth
+def get_chain_of_custody_log():
+    limit = request.args.get('limit', 200, type=int)
+    entries = []
+    try:
+        if os.path.exists(COC_LOG_FILE):
+            with open(COC_LOG_FILE, 'r') as f:
+                lines = f.readlines()
+            for line in lines[-limit:]:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        entries.reverse()  # most recent first
+        return jsonify({"success": True, "entries": entries})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- Case / Report Index ---
+@app.route('/api/reports/index', methods=['GET'])
+@requires_auth
+def get_reports_index():
+    reports = []
+    try:
+        for root, dirs, files in os.walk(EVIDENCE_ROOT):
+            # Bound the scan depth so this can't turn into a very slow crawl
+            # of a huge or deeply-mounted evidence tree.
+            depth = root[len(EVIDENCE_ROOT):].count(os.sep)
+            if depth >= 6:
+                dirs[:] = []
+                continue
+            for fname in files:
+                if fname.endswith('_report.json'):
+                    fpath = os.path.join(root, fname)
+                    try:
+                        with open(fpath, 'r') as f:
+                            data = json.load(f)
+                        meta = data.get('case_metadata', {})
+                        reports.append({
+                            "path": fpath,
+                            "case_number": meta.get('case_number', '--'),
+                            "evidence_id": meta.get('evidence_id', '--'),
+                            "examiner": meta.get('examiner', '--'),
+                            "status": data.get('acquisition_status', '--'),
+                            "timestamp_start": data.get('timestamp_start', '--'),
+                            "method": data.get('acquisition_parameters', {}).get('method', data.get('acquisition_parameters', {}).get('output_format', '--')),
+                        })
+                    except (json.JSONDecodeError, OSError):
+                        continue
+
+        reports.sort(key=lambda r: r.get('timestamp_start', ''), reverse=True)
+        return jsonify({"success": True, "reports": reports})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- Sleuth Kit: Browse Filesystems Inside Acquired Images ---
+# mmls/fls/icat only ever read the image file - nothing here writes to it.
+# E01 support depends on whether this system's sleuthkit build was linked
+# against libewf (not guaranteed just because libewf-dev is installed - see
+# install.py) - detect_image_format_support() checks this at runtime rather
+# than assuming, since a real-world case (a SIFT workstation packaging bug)
+# shipped sleuthkit with only raw-image support despite libewf being present.
+_FLS_LINE_RE = re.compile(r'^([rdlcbps\-+*/]+)\s+(\d+(?:-\d+)*(?:-\d+)?):\s+(.+)$')
+
+def detect_image_format_support():
+    try:
+        res = subprocess.run(['mmls', '-i', 'list'], capture_output=True, text=True, timeout=10)
+        output = (res.stdout + res.stderr).lower()
+        return {"raw": True, "ewf": "ewf" in output, "aff": "aff" in output}
+    except Exception:
+        return {"raw": True, "ewf": False, "aff": False}
+
+@app.route('/api/image/format_support', methods=['GET'])
+@requires_auth
+def image_format_support():
+    return jsonify({"success": True, "support": detect_image_format_support()})
+
+@app.route('/api/image/mmls', methods=['POST'])
+@requires_auth
+def image_mmls():
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    try:
+        res = subprocess.run(['mmls', image_path], capture_output=True, text=True, timeout=30)
+        if res.returncode != 0:
+            return jsonify({"success": False, "error": res.stderr.strip() or "mmls failed - unsupported format, or no partition table (try fls directly with offset 0)."}), 500
+
+        partitions = []
+        for line in res.stdout.splitlines():
+            # Typical mmls line: "002:  000:  000000063  002097151  002097089  Linux (0x83)"
+            parts = line.split()
+            if len(parts) >= 5 and parts[0].rstrip(':').isdigit():
+                try:
+                    partitions.append({
+                        "slot": parts[0].rstrip(':'),
+                        "start_sector": int(parts[2]),
+                        "end_sector": int(parts[3]),
+                        "length_sectors": int(parts[4]),
+                        "description": " ".join(parts[5:]) if len(parts) > 5 else ""
+                    })
+                except ValueError:
+                    continue
+
+        return jsonify({"success": True, "partitions": partitions, "raw_output": res.stdout})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "mmls timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/image/fls', methods=['POST'])
+@requires_auth
+def image_fls():
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')  # empty = root of the filesystem at this offset
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "offset must be a sector number."}), 400
+    if inode and not re.match(r'^\d+(-\d+)*(-\d+)?$', str(inode)):
+        return jsonify({"success": False, "error": "Invalid inode reference."}), 400
+
+    cmd = ['fls', '-o', str(offset), image_path]
+    if inode:
+        cmd.append(str(inode))
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if res.returncode != 0:
+            return jsonify({"success": False, "error": res.stderr.strip() or "fls failed - check the partition offset."}), 500
+
+        entries = []
+        for line in res.stdout.splitlines():
+            m = _FLS_LINE_RE.match(line.strip())
+            if not m:
+                continue
+            type_flags, inode_ref, name = m.groups()
+            if name in ('.', '..'):
+                continue
+            entries.append({
+                "name": name,
+                "inode": inode_ref,
+                "is_dir": type_flags.startswith('d'),
+                "deleted": '*' in type_flags
+            })
+
+        return jsonify({"success": True, "entries": entries})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "fls timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/image/extract', methods=['POST'])
+@requires_auth
+def image_extract():
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    out_name = req.get('output_name', '')
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "offset must be a sector number."}), 400
+    if not inode or not re.match(r'^\d+(-\d+)*(-\d+)?$', str(inode)):
+        return jsonify({"success": False, "error": "Invalid inode reference."}), 400
+
+    # Sanitize the requested filename (from an untrusted evidence filesystem)
+    # to a bare basename before using it to build a destination path.
+    safe_name = os.path.basename(out_name).strip() or f"extracted_{inode}"
+    dest_file = os.path.join(dest_dir, safe_name)
+    if not safe_path(dest_file):
+        return jsonify({"success": False, "error": "Resulting destination path is outside the permitted evidence directory."}), 400
+
+    try:
+        with open(dest_file, 'wb') as f:
+            res = subprocess.run(['icat', '-o', str(offset), image_path, str(inode)], stdout=f, stderr=subprocess.PIPE, timeout=120)
+        if res.returncode != 0:
+            try:
+                os.remove(dest_file)
+            except OSError:
+                pass
+            return jsonify({"success": False, "error": res.stderr.decode(errors='ignore').strip() or "icat failed."}), 500
+
+        log_chain_of_custody("image_file_extract", {"image_path": image_path, "inode": str(inode), "extracted_to": dest_file})
+        return jsonify({"success": True, "message": f"Extracted to {dest_file}", "path": dest_file})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "icat timed out."}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
