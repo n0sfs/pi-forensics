@@ -67,7 +67,7 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 <p align="center">
   <img src="docs/images/PIF5.JPG" width="100%" alt="Advanced Settings" />
   <br>
-  <em>Figure 4: Change Password, Restart Services, Tool & Update Packages, Reboot/Power Off, System Diagonostics.</em>
+  <em>Figure 5: Change Password, Restart Services, Tool & Update Packages, Reboot/Power Off, System Diagonostics.</em>
 </p>
 
 ---
