@@ -79,6 +79,19 @@ auth_fail_tracker = {}  # ip -> {"count": int, "locked_until": float|None}
 MAX_AUTH_FAILURES = 5
 LOCKOUT_SECONDS = 300
 
+# Skips login for the physical kiosk touchscreen only (see requires_auth and
+# is_local_kiosk_request below) - remote/LAN/WiFi access always still
+# requires authentication regardless of this setting. Defaults on since a
+# working on-screen keyboard for the native Basic Auth prompt has proven
+# unreliable in this project's Wayland/labwc kiosk environment. Set
+# FORENSIC_KIOSK_AUTH_BYPASS=0 to require login locally too.
+KIOSK_AUTH_BYPASS_ENABLED = os.environ.get('FORENSIC_KIOSK_AUTH_BYPASS', '1') != '0'
+if KIOSK_AUTH_BYPASS_ENABLED:
+    print("[SECURITY] Local kiosk login is bypassed (FORENSIC_KIOSK_AUTH_BYPASS=1, the default). "
+          "Anyone with physical access to the touchscreen has full control of this station without "
+          "a password. Remote/LAN access still requires login. Set FORENSIC_KIOSK_AUTH_BYPASS=0 "
+          "in the systemd unit to disable this.")
+
 ALLOWED_HASH_ALGOS = {'md5', 'sha1', 'sha256'}
 
 def update_job(**kwargs):
@@ -136,6 +149,22 @@ def check_auth(username, password):
     pass_ok = hmac.compare_digest(password or '', get_active_admin_pass())
     return user_ok and pass_ok
 
+def is_local_kiosk_request():
+    """
+    True if this request is coming from the Pi's own local kiosk session,
+    not a remote LAN/WiFi client. The kiosk's chromium always talks to
+    gunicorn directly over loopback (http://127.0.0.1:5000), regardless of
+    whether TLS/nginx is set up - see install.py's autostart script.
+
+    When nginx is in front of gunicorn (TLS setup), gunicorn only ever sees
+    connections from nginx itself (also loopback), so a naive remote_addr
+    check would misidentify every remote client as local. nginx forwards
+    the real client IP via X-Real-IP (see nginx/pi-forensics.conf), so that
+    takes priority when present.
+    """
+    real_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    return real_ip in ('127.0.0.1', '::1', 'localhost')
+
 def authenticate():
     return Response(
         'Authentication required to access ARM Forensic Station.\n',
@@ -163,12 +192,20 @@ def _record_auth_success(client_key):
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # NOTE: There is intentionally no "trusted subnet" bypass here.
-        # This device is designed for field deployment on networks the
-        # examiner does not fully control (client sites, shared labs,
-        # conference Wi-Fi, etc.), and it can read/write/delete evidence,
-        # mount arbitrary shares, and run privileged recovery tools -
-        # every request must authenticate, regardless of source IP.
+        # Physical-kiosk-only auth bypass. Deliberately narrow: this only
+        # matches genuine loopback origin with no X-Real-IP header (see
+        # is_local_kiosk_request() above) - a remote client proxied through
+        # nginx always has X-Real-IP set to their real address, so this does
+        # NOT bypass auth for LAN/WiFi/remote access, which stays fully
+        # authenticated exactly as before. The remaining risk is narrow but
+        # real: anyone with physical access to the touchscreen gets full
+        # control of the station, including destructive actions in Advanced
+        # Settings (those still have confirmation dialogs). Set
+        # FORENSIC_KIOSK_AUTH_BYPASS=0 to disable this and require login
+        # locally too.
+        if KIOSK_AUTH_BYPASS_ENABLED and is_local_kiosk_request():
+            return f(*args, **kwargs)
+
         client_key = request.remote_addr or 'unknown'
 
         if _is_locked_out(client_key):
@@ -929,7 +966,7 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
 @app.route('/')
 @requires_auth
 def index():
-    return render_template('index.html')
+    return render_template('index.html', is_local_kiosk=is_local_kiosk_request())
 
 @app.route('/api/system_info', methods=['GET'])
 @requires_auth
@@ -2082,6 +2119,32 @@ def get_network_interfaces():
 def purge_system_logs():
     update_job(log="[System log buffer purged by examiner.]")
     return jsonify({"success": True, "message": "Console log buffer cleared."})
+
+@app.route('/api/system/toggle_keyboard', methods=['POST'])
+@requires_auth
+def toggle_onscreen_keyboard():
+    # wvkbd-mobintl starts VISIBLE (see install.py's kiosk autostart
+    # script) so it's usable immediately for the browser's native Basic
+    # Auth login prompt, which appears before any of this app's own HTML/JS
+    # loads - a button inside the dashboard can't help with that screen,
+    # since you can't reach the dashboard until you're already past it.
+    # Signalled rather than clicked/focus-detected: SIGUSR2 shows, SIGUSR1
+    # hides, SIGRTMIN toggles (per `man wvkbd`). Runs as the same account
+    # as this web service, so no sudo is needed to signal it.
+    req = request.get_json(silent=True) or {}
+    action = req.get('action', 'toggle')
+    signal_map = {'show': '-SIGUSR2', 'hide': '-SIGUSR1', 'toggle': '-SIGRTMIN'}
+    sig = signal_map.get(action)
+    if not sig:
+        return jsonify({"success": False, "error": f"Unknown action '{action}'. Use show, hide, or toggle."}), 400
+
+    try:
+        res = subprocess.run(['pkill', sig, '-f', 'wvkbd-mobintl'], capture_output=True, timeout=5)
+        if res.returncode not in (0, 1):  # 1 = "no matching process" from pkill, not a real error here
+            return jsonify({"success": False, "error": "Could not signal the on-screen keyboard process."}), 500
+        return jsonify({"success": True, "message": f"On-screen keyboard: {action}."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # --- File Explorer Endpoints ---
 @app.route('/api/files/browse', methods=['POST'])

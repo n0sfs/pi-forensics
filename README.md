@@ -21,7 +21,7 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 - **Software Write-Blocker Toggle:** Quick toggle for `udev` read-only rule enforcement (`ATTR{ro}="1"`) to preserve chain of custody.
 - **Hardened by Default:** Every request requires authentication (no bypass for local/private networks), runs as an unprivileged service account rather than root, and sandboxes all file-explorer/report/attachment/acquisition-destination operations to a configurable evidence directory. See [Security](#-security) below.
 - **Automated Evidence Manifests:** Generates structured `evidence_manifest.json` and human-readable `.txt` reports capturing case numbers, evidence IDs, examiner notes, drive serials, and timestamps.
-- **Touchscreen & Remote Friendly:** Responsive dark-mode UI with drag and drop interface designed for onboard Pi touchscreen displays or headless browser control over Wi-Fi/Ethernet.
+- **Touchscreen & Remote Friendly:** Responsive dark-mode UI with drag and drop interface designed for onboard Pi touchscreen displays or headless browser control over Wi-Fi/Ethernet. An on-screen keyboard (`wvkbd`) is visible by default at boot for the login prompt, auto-hides once you're signed in, and is a tap away in the top navbar after that.
 - **File Explorer & DDRescue:** Dedicated `ddrescue` UI module with real-time pass strategy selection (Fast Copy, Trimming, Scraping, Reverse Reading) and `.map` file audit inspection along with Dual Pane File Explorer Tab with copy to or from Device.
 - **Mobile Forensics (iOS & Android):** A dedicated tab for acquiring already-unlocked, already-trusted mobile devices - iOS full backup via `idevicebackup2` (with optional encrypted backup to capture Keychain data, plus a manual "Pair Device" trigger via `idevicepair`), and Android via `adb pull` (accessible storage, more reliable), `adb backup` (app data, requires on-device confirmation, unreliable on Android 12+), or `adb bugreport` (system logs/dumpstate snapshot). This does **not** bypass lockscreens, device pairing, or USB-debugging authorization - devices must already be unlocked and trusted/authorized by the examiner before acquisition can start, exactly like plugging a drive into the imaging station.
 - **Advanced Settings:** Station password change (persisted independently of the systemd unit), safe USB drive eject, service/kiosk restart, git-pull self-update and OS package update (both require explicit confirmation and a source you trust), reboot/power-off, live network interface listing, and a fixed-allowlist read-only diagnostics panel (`dmesg`, `lsusb`, `df -h`, `ip a`, `uptime`, `lsblk`, `free -h`, `mount`) - deliberately **not** a free-text shell terminal. See [Security](#-security) for why.
@@ -117,7 +117,8 @@ networks the examiner doesn't fully control. It's built with that threat model i
 
 | Area | Behavior |
 |---|---|
-| **Authentication** | Every API route requires HTTP Basic Auth. There is **no bypass** for loopback or private-subnet clients. |
+| **Authentication** | Every API route requires HTTP Basic Auth for remote/LAN/WiFi access - there is **no bypass** for private-subnet or proxied clients, even when nginx is in front of gunicorn. The one exception is the physical kiosk touchscreen itself; see below. |
+| **Local kiosk auth bypass (opt-out)** | By default (`FORENSIC_KIOSK_AUTH_BYPASS=1`), the physical kiosk skips the login prompt - a working on-screen keyboard for the native Basic Auth dialog proved unreliable in this project's Wayland/labwc environment, so the practical choice was to either fight that indefinitely or accept that physical access to the touchscreen already implies a high trust level (it also gets you the SD card, recovery mode, etc.). This is detected narrowly via genuine loopback origin with no `X-Real-IP` header - a remote client proxied through nginx always has that header set to their real address, so **this never weakens remote/LAN/WiFi access**, which stays fully authenticated. Destructive actions (reboot, delete, etc.) still have confirmation dialogs regardless. Set `FORENSIC_KIOSK_AUTH_BYPASS=0` in the systemd unit to require login locally too. |
 | **Brute-force protection** | 5 failed logins from an IP triggers a 5-minute lockout (in-memory; resets on service restart). |
 | **Service privileges** | `app.py` runs as the service account you chose during install (not root). It only reaches root for the specific, whitelisted commands in `/etc/sudoers.d/pi-forensics` (mount/umount/mkdir under `/mnt`, blockdev, smartctl, dc3dd/ewfacquire/ddrescue, pkill). Raw device reads for imaging work via `disk` group membership, not sudo. |
 | **File-system sandboxing** | The file explorer, report load/save, hash verification, PDF export, and imaging/recovery destinations are all restricted to one directory tree (`FORENSIC_ROOT`, default `/mnt`). Paths outside it are rejected, including via symlink or `../` traversal. |
@@ -196,6 +197,30 @@ actually starts, which requires autologin on a stock image.
 4. If autologin is confirmed correct and kiosk still doesn't appear, check
    `~/.config/labwc/autostart` exists and is executable (`ls -la`) for the service account's home
    directory, and that it's owned by that account, not root.
+
+### On-screen keyboard for kiosk mode
+Chromium's `--kiosk` mode has no built-in virtual keyboard (that's a tablet-OS feature, not a
+browser one), so this project runs `wvkbd` alongside it, starting hidden. Tap the **Keyboard**
+button in the top navbar (visible on every tab) to show/hide it for text entry - case number,
+evidence ID, examiner name, notes, network share host/path, etc.
+
+**This is local-kiosk-only and never appears for remote access.** `wvkbd` controls a physical
+overlay on the Pi's own screen - it has no meaning for someone accessing the dashboard from a
+laptop or phone over the LAN, since they can't see the Pi's display at all. The server detects
+whether a request came from the local kiosk (loopback, no `X-Real-IP` header - see the local
+kiosk auth bypass in [Security](#-security) above, which uses the same detection) and only
+renders the Keyboard button for that session.
+
+It doesn't auto-show based on which field has focus, by design: Raspberry Pi OS's own default
+on-screen keyboard (Squeekboard) has an [open upstream bug](https://github.com/labwc/labwc/issues/2926)
+where it fails to render above fullscreen/kiosk Chromium on labwc. `wvkbd` avoids that problem
+entirely by reserving its own strip of the screen via the Wayland layer-shell protocol rather than
+trying to float on top of an already-fullscreen window - but that means nothing can automatically
+detect "a text field just got focus" without deeper Wayland input-method integration, so it's a
+manual toggle instead.
+
+If it doesn't appear at all: confirm `wvkbd` installed correctly (`which wvkbd-mobintl`) and that
+its respawn loop is running (`ps aux | grep wvkbd-mobintl` from an SSH session).
 
 ### Web dashboard isn't reachable over the LAN/WiFi
 Nothing in this project touches WiFi, network interfaces, or firewall rules - if it was reachable

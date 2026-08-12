@@ -46,21 +46,23 @@
         }
 
         .app-tabs-bar .nav-link {
-            color: #94a3b8;
+            color: var(--text-subtle);
             font-weight: 600;
             border: none;
             border-bottom: 3px solid transparent;
             border-radius: 0;
             padding: 10px 18px;
             font-size: 0.92rem;
+            transition: color 0.15s ease;
         }
 
         .app-tabs-bar .nav-link:hover {
-            color: var(--accent-blue);
+            color: var(--text-bright);
         }
 
         .app-tabs-bar .nav-link.active {
             color: var(--accent-cyan);
+            font-weight: 700;
             background: transparent;
             border-bottom-color: var(--accent-cyan);
         }
@@ -124,6 +126,15 @@
             <i class="bi bi-shield-check text-cyan me-2 fs-3"></i>ARM Forensic Acquisition Station
         </span>
         <div class="d-flex align-items-center gap-2">
+            {% if is_local_kiosk and False %}
+            {# Keyboard button disabled: wvkbd is currently disabled in install.py's
+               autostart script (was crash-looping on real hardware). Local kiosk
+               login is bypassed by default, so this isn't blocking anything urgent -
+               re-enable both once wvkbd's actual crash is debugged. #}
+            <button id="kbdToggleBtn" class="btn btn-sm btn-outline-info fw-bold" onclick="toggleOnscreenKeyboard()" title="Show/hide the on-screen keyboard (for touchscreen text entry)">
+                <i class="bi bi-keyboard-fill me-1"></i>Keyboard
+            </button>
+            {% endif %}
             <button id="layoutLockBtn" class="btn btn-sm btn-outline-warning fw-bold" onclick="toggleLayoutLock()">
                 <i class="bi bi-lock-fill me-1"></i>Layout Locked
             </button>
@@ -177,8 +188,8 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link text-warning fw-bold" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab">
-                    <i class="bi bi-exclamation-triangle-fill me-1"></i>Damaged Drive Recovery & Explorer (ddrescue)
+                <button class="nav-link" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab">
+                    <i class="bi bi-life-preserver me-1"></i>DDRescue & File Explorer
                 </button>
             </li>
             <li class="nav-item" role="presentation">
@@ -403,15 +414,15 @@
                     <!-- Card 1: Control & Execution Configuration -->
                     <div class="grid-stack-item" gs-id="ddr-card-control" gs-x="0" gs-y="0" gs-w="7" gs-h="7">
                         <div class="grid-stack-item-content">
-                            <div class="card border-warning">
-                                <div class="card-header bg-warning text-dark fw-bold py-2 d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-shield-slash-fill me-2"></i>GNU ddrescue Advanced Recovery Engine</span>
-                                    <button class="btn btn-sm btn-dark text-warning border-warning fw-bold py-0" onclick="refreshDrives()"><i class="bi bi-arrow-clockwise me-1"></i>Scan Drives</button>
+                            <div class="card">
+                                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                                    <span><i class="bi bi-life-preserver me-2"></i>GNU ddrescue Advanced Recovery Engine</span>
+                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="refreshDrives()"><i class="bi bi-arrow-clockwise me-1"></i>Scan Drives</button>
                                 </div>
                                 <div class="card-body py-3">
                                     
                                     <div class="p-2 bg-dark border border-secondary rounded-2 mb-2">
-                                        <label class="telemetry-grid-label text-warning d-block mb-1"><i class="bi bi-hdd-network me-1"></i>Target Damaged Drive Selection & Telemetry</label>
+                                        <label class="telemetry-grid-label text-info d-block mb-1"><i class="bi bi-hdd-network me-1"></i>Target Damaged Drive Selection & Telemetry</label>
                                         <div class="row g-2 align-items-center mb-2">
                                             <div class="col-md-8">
                                                 <select class="form-select form-select-sm drive-select" id="tabDdrescueSource" onchange="checkDdrescueSmartTelemetry()"></select>
@@ -484,7 +495,7 @@
                                     </div>
 
                                     <div class="d-flex gap-2">
-                                        <button id="btnTabDdrescueStart" class="btn btn-warning text-dark flex-fill fw-bold py-2" onclick="startTabDdrescueJob()">
+                                        <button id="btnTabDdrescueStart" class="btn btn-primary flex-fill fw-bold py-2" onclick="startTabDdrescueJob()">
                                             <i class="bi bi-play-fill me-1"></i>Execute Selected ddrescue Pass
                                         </button>
                                         <button id="btnTabDdrescueStop" class="btn btn-danger flex-fill fw-bold py-2" onclick="stopAcquisition()" disabled>
@@ -499,15 +510,15 @@
                     <!-- Card 2: Output Monitor -->
                     <div class="grid-stack-item" gs-id="ddr-card-output" gs-x="7" gs-y="0" gs-w="5" gs-h="4">
                         <div class="grid-stack-item-content">
-                            <div class="card border-warning">
-                                <div class="card-header py-2 text-warning fw-bold"><i class="bi bi-speedometer2 me-2"></i>ddrescue Execution Status & Stream</div>
+                            <div class="card">
+                                <div class="card-header py-2"><i class="bi bi-speedometer2 me-2"></i>ddrescue Execution Status & Stream</div>
                                 <div class="card-body py-2">
                                     <div class="d-flex justify-content-between align-items-center mb-1">
                                         <span id="ddrescueJobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
                                         <span id="ddrescueProgressPct" class="fw-bold fs-5 text-light">0.0%</span>
                                     </div>
                                     <div class="progress bg-secondary mb-2" style="height: 16px;">
-                                        <div id="ddrescueProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-warning text-dark fw-bold" role="progressbar" style="width: 0%"></div>
+                                        <div id="ddrescueProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
                                     </div>
                                     <div class="row text-center mb-2">
                                         <div class="col-6"><small class="telemetry-label d-block">Current Rate</small><span id="ddrescueSpeedVal" class="fs-5 fw-bold text-warning">0.0 MB/s</span></div>
@@ -565,7 +576,7 @@
                                         <button class="btn btn-sm btn-outline-info fw-bold" onclick="copyPaneFile('B','A')"><i class="bi bi-arrow-left me-1"></i>Copy B &rarr; A</button>
                                         <div class="vr bg-secondary"></div>
                                         <button id="btnPdfExport" class="btn btn-sm btn-danger fw-bold" onclick="exportSelectedPdf()" disabled><i class="bi bi-file-earmark-pdf-fill me-1"></i>Export PDF Audit Report</button>
-                                        <button id="btnVerifyHash" class="btn btn-sm btn-warning text-dark fw-bold" onclick="verifySelectedHash()" disabled><i class="bi bi-hash me-1"></i>Verify Image Hash</button>
+                                        <button id="btnVerifyHash" class="btn btn-sm btn-info text-dark fw-bold" onclick="verifySelectedHash()" disabled><i class="bi bi-hash me-1"></i>Verify Image Hash</button>
                                         <button id="btnDeleteFile" class="btn btn-sm btn-outline-danger fw-bold" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-1"></i>Delete</button>
                                     </div>
 
@@ -739,17 +750,17 @@
 
             <!-- APP 3: REPORTS & VERIFICATION TAB -->
             <div class="tab-pane fade" id="reports-app" role="tabpanel">
-                <div class="card mb-3">
-                    <div class="card-header d-flex justify-content-between align-items-center py-2">
-                        <span><i class="bi bi-shield-check me-2"></i>Forensic Case Audit Reports & Evidence Verification</span>
-                        <span class="small text-subtle fw-normal">Edit case metadata, attach multiple photos/docs/URLs, export PDF certificates, and perform image hash checks</span>
-                    </div>
-                    <div class="card-body py-3">
-                        <div class="row g-3 mb-3">
-                            <div class="col-md-7">
-                                <div class="p-3 bg-dark border border-secondary rounded-2 h-100">
-                                    <h6 class="text-info fw-bold mb-3"><i class="bi bi-pencil-square me-2"></i>Report Modifier & Metadata Editor</h6>
-                                    
+                <div class="grid-stack grid-stack-reports">
+
+                    <!-- Card 1: Report Modifier & Metadata Editor -->
+                    <div class="grid-stack-item" gs-id="rep-card-editor" gs-x="0" gs-y="0" gs-w="7" gs-h="10">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                    <span><i class="bi bi-pencil-square me-2"></i>Report Modifier & Metadata Editor</span>
+                                    <span class="small text-subtle fw-normal">Edit case metadata, attach photos/docs/URLs, export PDF certificates</span>
+                                </div>
+                                <div class="card-body py-3">
                                     <div class="mb-3">
                                         <label class="telemetry-grid-label d-block mb-1">Target JSON Report File Path:</label>
                                         <div class="input-group input-group-sm">
@@ -783,8 +794,8 @@
 
                                     <div class="border-top border-secondary pt-2 mb-3">
                                         <div class="d-flex justify-content-between align-items-center mb-2">
-                                            <h6 class="text-warning fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Multiple Case Attachments</h6>
-                                            <button class="btn btn-sm btn-outline-warning fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-plus-lg me-1"></i>Add File Attachment</button>
+                                            <h6 class="text-success fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Multiple Case Attachments</h6>
+                                            <button class="btn btn-sm btn-outline-success fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-plus-lg me-1"></i>Add File Attachment</button>
                                         </div>
                                         
                                         <div id="attachmentsContainer" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 120px; overflow-y: auto;">
@@ -803,11 +814,15 @@
                                     </div>
                                 </div>
                             </div>
+                        </div>
+                    </div>
 
-                            <div class="col-md-5">
-                                <div class="p-3 bg-dark border border-secondary rounded-2 h-100 d-flex flex-column">
-                                    <h6 class="text-warning fw-bold mb-3"><i class="bi bi-hash me-2"></i>Evidence Image Integrity Verification</h6>
-                                    
+                    <!-- Card 2: Evidence Image Integrity Verification -->
+                    <div class="grid-stack-item" gs-id="rep-card-verify" gs-x="7" gs-y="0" gs-w="5" gs-h="10">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header py-2"><i class="bi bi-hash me-2"></i>Evidence Image Integrity Verification</div>
+                                <div class="card-body py-3 d-flex flex-column">
                                     <div class="mb-3">
                                         <label class="telemetry-grid-label d-block mb-1">Target Evidence Image (.dd / .E01):</label>
                                         <div class="input-group input-group-sm">
@@ -830,7 +845,7 @@
                                         <input type="text" id="verifyExpectedHash" class="form-control form-control-sm font-monospace" placeholder="Paste known acquisition hash here...">
                                     </div>
 
-                                    <button class="btn btn-sm btn-warning text-dark fw-bold w-100 mb-3" onclick="runStandaloneHashVerification()">
+                                    <button class="btn btn-sm btn-info text-dark fw-bold w-100 mb-3" onclick="runStandaloneHashVerification()">
                                         <i class="bi bi-cpu-fill me-1"></i>Calculate & Verify Hash
                                     </button>
 
@@ -848,20 +863,23 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
 
-                        <div class="row g-3">
-                            <div class="col-12">
-                                <div class="p-3 bg-dark border border-secondary rounded-2">
-                                    <div class="d-flex justify-content-between align-items-center mb-2">
-                                        <h6 class="text-info fw-bold mb-0"><i class="bi bi-code-slash me-2"></i>Live JSON Report Raw Data Structure</h6>
-                                        <span class="small text-subtle font-monospace">Auto-updates on load/save</span>
-                                    </div>
+                    <!-- Card 3: Live JSON Report Raw Data Structure -->
+                    <div class="grid-stack-item" gs-id="rep-card-json" gs-x="0" gs-y="10" gs-w="12" gs-h="4">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                    <span><i class="bi bi-code-slash me-2"></i>Live JSON Report Raw Data Structure</span>
+                                    <span class="small text-subtle fw-normal">Auto-updates on load/save</span>
+                                </div>
+                                <div class="card-body py-2">
                                     <pre id="jsonPreview" class="log-window mb-0" style="height: 250px;">[Select or load a report file above to view raw structured JSON data]</pre>
                                 </div>
                             </div>
                         </div>
-
                     </div>
+
                 </div>
             </div>
 
@@ -1026,6 +1044,14 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/gridstack@9.2.0/dist/gridstack-all.js"></script>
+    <script>
+        // Set server-side (see is_local_kiosk_request() in app.py) - true only
+        // for the Pi's own local kiosk session, never for remote LAN/WiFi
+        // clients. Gates the on-screen keyboard auto-hide-on-load behavior,
+        // which controls a physical overlay on the Pi's own screen that a
+        // remote client can't see or use.
+        window.IS_LOCAL_KIOSK = {{ 'true' if is_local_kiosk else 'false' }};
+    </script>
     <script src="/static/js/main.js"></script>
 </body>
 </html>

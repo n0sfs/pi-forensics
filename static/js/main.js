@@ -1,6 +1,7 @@
 let gridMain = null;
 let gridDdrescue = null;
 let gridMobile = null;
+let gridReports = null;
 let gridSettings = null;
 let isLayoutLocked = true;
 let isWriteBlockActive = true;
@@ -59,6 +60,16 @@ function initGridstack() {
         resizable: { handles: 'se, s, e' }
     }, '.grid-stack-mobile');
 
+    gridReports = GridStack.init({
+        cellHeight: 85,
+        margin: 6,
+        handle: '.card-header',
+        animate: true,
+        disableOneColumnMode: true,
+        float: true,
+        resizable: { handles: 'se, s, e' }
+    }, '.grid-stack-reports');
+
     gridSettings = GridStack.init({
         cellHeight: 85,
         margin: 6,
@@ -84,6 +95,11 @@ function initGridstack() {
         try { gridMobile.load(JSON.parse(savedMobileLayout)); } catch (e) {}
     }
 
+    const savedReportsLayout = localStorage.getItem('pi_forensics_layout_reports');
+    if (savedReportsLayout && gridReports) {
+        try { gridReports.load(JSON.parse(savedReportsLayout)); } catch (e) {}
+    }
+
     const savedSettingsLayout = localStorage.getItem('pi_forensics_layout_settings');
     if (savedSettingsLayout && gridSettings) {
         try { gridSettings.load(JSON.parse(savedSettingsLayout)); } catch (e) {}
@@ -92,6 +108,7 @@ function initGridstack() {
     if (gridMain) gridMain.on('change', () => { saveDashboardLayout(); });
     if (gridDdrescue) gridDdrescue.on('change', () => { saveDashboardLayout(); });
     if (gridMobile) gridMobile.on('change', () => { saveDashboardLayout(); });
+    if (gridReports) gridReports.on('change', () => { saveDashboardLayout(); });
     if (gridSettings) gridSettings.on('change', () => { saveDashboardLayout(); });
     
     applyLockState();
@@ -102,10 +119,18 @@ function toggleLayoutLock() {
     applyLockState();
 }
 
+async function toggleOnscreenKeyboard() {
+    try {
+        const res = await fetch('/api/system/toggle_keyboard', { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) alert(`Keyboard toggle failed: ${data.error}`);
+    } catch (err) {}
+}
+
 function applyLockState() {
     const lockBtn = document.getElementById("layoutLockBtn");
 
-    [gridMain, gridDdrescue, gridMobile, gridSettings].forEach(g => {
+    [gridMain, gridDdrescue, gridMobile, gridReports, gridSettings].forEach(g => {
         if (!g) return;
         if (isLayoutLocked) {
             g.enableMove(false);
@@ -133,6 +158,7 @@ function saveDashboardLayout() {
     if (gridMain) localStorage.setItem('pi_forensics_layout_main', JSON.stringify(gridMain.save(false)));
     if (gridDdrescue) localStorage.setItem('pi_forensics_layout_ddr', JSON.stringify(gridDdrescue.save(false)));
     if (gridMobile) localStorage.setItem('pi_forensics_layout_mobile', JSON.stringify(gridMobile.save(false)));
+    if (gridReports) localStorage.setItem('pi_forensics_layout_reports', JSON.stringify(gridReports.save(false)));
     if (gridSettings) localStorage.setItem('pi_forensics_layout_settings', JSON.stringify(gridSettings.save(false)));
 }
 
@@ -140,6 +166,7 @@ function resetDashboardLayout() {
     localStorage.removeItem('pi_forensics_layout_main');
     localStorage.removeItem('pi_forensics_layout_ddr');
     localStorage.removeItem('pi_forensics_layout_mobile');
+    localStorage.removeItem('pi_forensics_layout_reports');
     localStorage.removeItem('pi_forensics_layout_settings');
     location.reload();
 }
