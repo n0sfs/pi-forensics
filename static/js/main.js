@@ -179,6 +179,7 @@ function toggleFormatControls() {
     const compSelect = document.getElementById("compressionSelect");
     const splitSelect = document.getElementById("splitSizeSelect");
     const affRow = document.getElementById("affRawOptionRow");
+    const helpText = document.getElementById("formatHelpText");
 
     if (fmt === 'e01') {
         if (compSelect) compSelect.disabled = false;
@@ -189,6 +190,288 @@ function toggleFormatControls() {
     }
 
     if (affRow) affRow.style.display = (fmt === 'aff') ? '' : 'none';
+
+    const FORMAT_HELP = {
+        dd: "Raw bit-for-bit copy using dc3dd, with hashing built in. A solid default for most acquisitions.",
+        dcfldd: "Same idea as dc3dd (raw copy + hashing), from a different tool - useful if you specifically need dcfldd's output style.",
+        plain_dd: "Plain GNU dd, no built-in hashing (computed separately after). Supports true direct disk access, bypassing the cache on read.",
+        e01: "EnCase-compatible format (.E01) - widely used in law enforcement/EnCase workflows, supports compression and splitting into segments.",
+        aff: "Advanced Forensic Format - acquires a raw image first, then converts it to .aff. You'll be asked whether to keep the intermediate raw file.",
+    };
+    if (helpText) helpText.textContent = FORMAT_HELP[fmt] || '';
+}
+
+function switchToTab(tabId) {
+    const el = document.getElementById(tabId);
+    if (el) new bootstrap.Tab(el).show();
+}
+
+const GUIDE_SCENARIOS = {
+    healthy: {
+        title: "Drive works fine - straightforward copy",
+        steps: [
+            "Stay on this tab. Pick your drive from the dropdown in \"Target Source Selection\" above.",
+            "Optional but recommended: check the drive's health first (SMART status shown once selected).",
+            "Leave the write-blocker switched on (it's on by default) - this guarantees nothing can be written to the original drive.",
+            "Under \"Format\", the default (Raw / dc3dd) is a safe choice for most cases - hover the format menu for what each option means.",
+            "Fill in case number, evidence ID, and examiner name, then tap \"Start Acquisition\" and wait for it to finish.",
+            "Once done, go to Reports & Verification and check the hash to confirm the copy matches the original.",
+        ]
+    },
+    damaged: {
+        title: "Damaged, clicking, or not detected properly",
+        steps: [
+            "Go to the DDRescue & File Explorer tab.",
+            "Select the drive and start with strategy \"1. Fast Copy\" - it copies everything readable quickly without stressing a failing drive.",
+            "When it finishes, check the mapfile summary for bad sectors.",
+            "If bad sectors remain, try strategy 2 (Edge Trimming), then 3 (Intensive Scraping) if needed - each is more thorough but harder on the drive, so go in order.",
+            "Once you have a copy, you can also run PhotoRec (further down the same tab) on it to recover files even from damaged or partly-corrupted areas.",
+        ],
+        tabId: "ddrescue-tab"
+    },
+    deleted: {
+        title: "Need to recover deleted files",
+        steps: [
+            "If you don't have an image yet, acquire one first (see the \"drive works fine\" guide above).",
+            "Go to the DDRescue & File Explorer tab and find the PhotoRec card.",
+            "Point it at your image (or the drive directly) - PhotoRec finds files by matching known file signatures rather than trusting the file system, so it works even on formatted or damaged drives.",
+            "Recovered files lose their original names and folder structure. If you specifically need files with their original names/paths intact, try \"Browse Image\" (Sleuth Kit) from the file explorer's More Actions menu instead - it can show deleted-but-still-listed entries.",
+        ],
+        tabId: "ddrescue-tab"
+    },
+    phone: {
+        title: "It's a phone, not a drive",
+        steps: [
+            "Go to the Mobile Forensics tab and connect the device with a USB cable.",
+            "iPhone: tap \"Trust This Computer?\" on the phone's own screen when it appears, then select the device here and start a backup.",
+            "Android: approve the USB debugging prompt on the phone's own screen, then select the device here. \"Pull Accessible Storage\" is the most reliable mode for most cases.",
+            "Once finished, check Reports & Verification for the resulting report.",
+        ],
+        tabId: "mobile-tab"
+    },
+};
+
+function showGuideStep(scenario) {
+    const container = document.getElementById("guideStepsContainer");
+    if (!container) return;
+    const data = GUIDE_SCENARIOS[scenario];
+    if (!data) return;
+
+    container.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'p-2 bg-dark border border-secondary rounded-2';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'text-info fw-bold small mb-2';
+    titleEl.textContent = data.title;
+    wrap.appendChild(titleEl);
+
+    const ol = document.createElement('ol');
+    ol.className = 'small text-light mb-2 ps-3';
+    data.steps.forEach(step => {
+        const li = document.createElement('li');
+        li.className = 'mb-1';
+        li.textContent = step;
+        ol.appendChild(li);
+    });
+    wrap.appendChild(ol);
+
+    if (data.tabId) {
+        const goBtn = document.createElement('button');
+        goBtn.className = 'btn btn-sm btn-info text-dark fw-bold';
+        goBtn.innerHTML = '<i class="bi bi-arrow-right-circle me-1"></i>Take me there';
+        goBtn.onclick = () => {
+            if (helpModalInstance) helpModalInstance.hide();
+            switchToTab(data.tabId);
+        };
+        wrap.appendChild(goBtn);
+    }
+
+    container.appendChild(wrap);
+}
+
+// ===================== HELP MODAL =====================
+let helpModalInstance = null;
+
+function openHelpModal() {
+    if (!helpModalInstance) {
+        helpModalInstance = new bootstrap.Modal(document.getElementById('helpModal'));
+    }
+    populateFaq();
+    populateToolReference();
+    populateHelpInfo();
+    helpModalInstance.show();
+}
+
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('#helpTabNav .nav-link');
+    if (!btn) return;
+    document.querySelectorAll('#helpTabNav .nav-link').forEach(el => el.classList.remove('active'));
+    btn.classList.add('active');
+    const target = btn.getAttribute('data-help-tab');
+    document.querySelectorAll('.help-pane').forEach(pane => {
+        pane.classList.toggle('d-none', pane.id !== `helpPane-${target}`);
+    });
+});
+
+const FAQ_ITEMS = [
+    {
+        q: "What does the write-blocker do, and should I leave it on?",
+        a: "It forces the source drive into read-only mode at the kernel level, so nothing - this app or anything else - can accidentally modify the original evidence. Leave it on for any drive you're imaging from. You'd only turn it off for a destination drive you're writing an image to."
+    },
+    {
+        q: "Which format should I use - dd, E01, or AFF?",
+        a: "Raw / dc3dd (the default) is a solid choice for most cases and includes built-in hashing. E01 is the standard if you need EnCase compatibility or want compression/splitting into segments. AFF is less common now but supported if your workflow needs it. Hover the format dropdown in the Acquisition tab for a live explanation of whichever one is selected."
+    },
+    {
+        q: "How do I know my acquisition actually completed successfully?",
+        a: "Check the status text and log during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, go to Reports & Verification and use \"Verify Image Hash\" to confirm the acquired image's hash matches what was recorded during acquisition."
+    },
+    {
+        q: "What's the difference between PhotoRec and browsing an image with Sleuth Kit?",
+        a: "PhotoRec finds files by matching known file signatures in the raw data - it works even on damaged or reformatted drives, but recovered files lose their original names and folder structure. Sleuth Kit's Image Browser reads the actual filesystem structure, so it shows real file names and paths (including deleted-but-still-listed entries), but needs a filesystem it can understand."
+    },
+    {
+        q: "Does this station need an internet connection to work?",
+        a: "No - acquisition, recovery, and analysis tools all run locally and don't need internet access. Internet is only used for optional things: the initial software install, ClamAV virus definition updates, and the git-pull self-update feature in Advanced Settings."
+    },
+    {
+        q: "What happens if power is lost mid-acquisition?",
+        a: "The partial image file remains on disk, but it won't have a valid hash recorded, since the job never completed. Treat an interrupted acquisition as failed and start over once power is restored - don't rely on a partial image as evidence."
+    },
+    {
+        q: "How do I change the login password?",
+        a: "Advanced Settings tab, Security & Account Password card. You'll need the current password to set a new one."
+    },
+    {
+        q: "PhotoRec recovered files but with generic names like f0001234.jpg - is that normal?",
+        a: "Yes - PhotoRec identifies file types by content, not by reading filesystem metadata, so it has no way to know the original filename. If you need original names, try browsing the image with Sleuth Kit instead (works only if the filesystem itself is still readable)."
+    },
+    {
+        q: "How do I access this station from another computer?",
+        a: "Navigate to the station's IP address (or hostname, if you set one up) on port 5000, or over HTTPS if TLS was configured during install. Every remote connection requires the login you set - there's no bypass for remote/LAN access, only for the physical kiosk touchscreen."
+    },
+];
+
+function populateFaq() {
+    const container = document.getElementById("faqAccordion");
+    if (!container || container.children.length > 0) return; // build once
+    FAQ_ITEMS.forEach((item, idx) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'accordion-item bg-dark border-secondary';
+
+        const header = document.createElement('h2');
+        header.className = 'accordion-header';
+        const btn = document.createElement('button');
+        btn.className = 'accordion-button collapsed bg-dark text-light';
+        btn.type = 'button';
+        btn.setAttribute('data-bs-toggle', 'collapse');
+        btn.setAttribute('data-bs-target', `#faqCollapse${idx}`);
+        btn.textContent = item.q; // untrusted-safe habit even though this is static content
+        header.appendChild(btn);
+        wrap.appendChild(header);
+
+        const collapse = document.createElement('div');
+        collapse.id = `faqCollapse${idx}`;
+        collapse.className = 'accordion-collapse collapse';
+        const body = document.createElement('div');
+        body.className = 'accordion-body small text-subtle';
+        body.textContent = item.a;
+        collapse.appendChild(body);
+        wrap.appendChild(collapse);
+
+        container.appendChild(wrap);
+    });
+}
+
+const TOOL_REFERENCE = [
+    ["dc3dd", "Forensic raw disk imaging with built-in hashing. The default acquisition engine."],
+    ["dcfldd", "Alternate raw imaging engine, similar to dc3dd - useful if you specifically need its output style."],
+    ["GNU dd", "Plain raw copy, no built-in hashing (computed separately). Supports true direct-I/O reads."],
+    ["ewfacquire", "Creates EnCase-compatible .E01 images with compression and segment splitting."],
+    ["affconvert", "Converts a raw image into AFF (.aff) format."],
+    ["ddrescue", "Recovery-focused imaging for damaged/failing drives - works around bad sectors instead of stopping."],
+    ["PhotoRec", "Recovers files by matching known file signatures in raw data, even on damaged/reformatted media. Loses original filenames."],
+    ["Quick Triage Scan", "Scans a device or image for emails, URLs, IP addresses, card-like numbers, and phone numbers - built in, no external tool needed."],
+    ["ExifTool", "Reads hidden metadata inside a file - camera info, GPS coordinates, document properties."],
+    ["Sleuth Kit (mmls/fls/icat)", "Browses the real filesystem inside an acquired image, including deleted-but-listed entries, with original names/paths."],
+    ["Binwalk", "Looks for other files or filesystems hidden inside a binary - useful for firmware/router images."],
+    ["ClamAV", "Scans a file or folder against known malware signatures."],
+    ["hashdeep", "Generates a fingerprint (hash) for every file in a folder at once, as a single manifest."],
+    ["adb", "Android Debug Bridge - used to pull files, back up, or capture diagnostics from a connected Android device."],
+    ["idevicebackup2 / idevicepair", "Used to pair with and back up a connected iPhone/iPad, the same protocol iTunes/Finder use."],
+    ["smartctl", "Reads a drive's built-in health/diagnostic data (SMART) before committing to a long acquisition."],
+];
+
+function populateToolReference() {
+    const tbody = document.getElementById("toolReferenceBody");
+    if (!tbody || tbody.children.length > 0) return; // build once
+    TOOL_REFERENCE.forEach(([name, desc]) => {
+        const row = document.createElement('tr');
+        const nameCell = document.createElement('td');
+        nameCell.className = 'text-info fw-bold text-nowrap';
+        nameCell.style.width = '22%';
+        nameCell.textContent = name;
+        const descCell = document.createElement('td');
+        descCell.className = 'text-light';
+        descCell.textContent = desc;
+        row.appendChild(nameCell);
+        row.appendChild(descCell);
+        tbody.appendChild(row);
+    });
+}
+
+function populateHelpInfo() {
+    const container = document.getElementById("infoContent");
+    if (!container || container.children.length > 0) return; // build once
+
+    const sections = [
+        ["Where does my data go?", "Acquisitions, recovered files, and reports are written under the evidence root (/mnt by default). Nothing is uploaded anywhere automatically."],
+        ["Chain of custody", "The Reports tab keeps a station-wide log of significant actions (acquisitions, deletes, copies, report edits) with timestamp and source IP. This station has one shared login rather than per-examiner accounts, so the log shows what happened and when, reliably - not who, beyond the connecting IP."],
+        ["Physical kiosk vs. remote access", "The touchscreen kiosk skips the login prompt by default (a setting called FORENSIC_KIOSK_AUTH_BYPASS) - physical access to the device already implies a high level of trust. Remote/LAN access always requires the login you set, with no exceptions."],
+        ["Updating this station", "Advanced Settings has buttons to pull the latest app code (git) or update OS packages (apt) - both need internet access and pull from external sources, so only use them on a station where you trust those sources."],
+    ];
+
+    sections.forEach(([title, body]) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'mb-3 p-2 bg-dark border border-secondary rounded-2';
+        const titleEl = document.createElement('div');
+        titleEl.className = 'text-info fw-bold small mb-1';
+        titleEl.textContent = title;
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'text-subtle small';
+        bodyEl.textContent = body;
+        wrap.appendChild(titleEl);
+        wrap.appendChild(bodyEl);
+        container.appendChild(wrap);
+    });
+}
+
+function updateAndroidModeHelp() {
+    const sel = document.getElementById("mobileAndroidMode");
+    const helpText = document.getElementById("androidModeHelpText");
+    if (!sel || !helpText) return;
+
+    const MODE_HELP = {
+        pull: "Copies files from the phone's visible storage (photos, downloads, documents). Reliable on any modern Android version, but only sees what's directly accessible - not inside individual apps' private data.",
+        backup: "Asks the phone to package up app data. The phone will show an on-screen prompt the user has to approve - check the device screen. Often disabled or unreliable on Android 12 and newer.",
+        bugreport: "Captures a system diagnostic snapshot (logs, running processes, device state) - not a copy of personal files, but useful supporting evidence about what the device was doing.",
+    };
+    helpText.textContent = MODE_HELP[sel.value] || '';
+}
+
+function updateDdrescueStrategyHelp() {
+    const sel = document.getElementById("tabDdrescueStrategy");
+    const helpText = document.getElementById("ddrescueStrategyHelpText");
+    if (!sel || !helpText) return;
+
+    const STRATEGY_HELP = {
+        stage1_fast: "Safest first pass - copies everything readable quickly, skipping bad areas rather than dwelling on them. Start here on a failing drive.",
+        stage2_trim: "Second pass - carefully narrows in on the edges of bad areas found in the first pass, to recover a bit more without excessive stress on the drive.",
+        stage3_intensive: "Third pass - repeatedly retries the toughest bad sectors. Slower and harder on a failing drive, so run this last, after the safer passes.",
+        reverse: "Reads the drive back-to-front instead of front-to-back - sometimes recovers data a forward pass missed, especially near the end of a failing drive.",
+    };
+    helpText.textContent = STRATEGY_HELP[sel.value] || '';
 }
 
 function initThroughputGraph() {
@@ -313,8 +596,19 @@ function updateContextToolbar(item) {
     const btnPdf = document.getElementById("btnPdfExport");
     const btnVerify = document.getElementById("btnVerifyHash");
     const btnDelete = document.getElementById("btnDeleteFile");
+    const btnMetadata = document.getElementById("btnFileMetadata");
+    const btnBrowseImage = document.getElementById("btnBrowseImage");
+    const btnBinwalk = document.getElementById("btnRunBinwalk");
+    const btnClamscan = document.getElementById("btnRunClamscan");
+    const btnStrings = document.getElementById("btnRunStrings");
+    const btnHashdeep = document.getElementById("btnRunHashdeep");
 
     if (btnDelete) btnDelete.disabled = false;
+    if (btnMetadata) btnMetadata.disabled = item.is_dir;
+    if (btnBinwalk) btnBinwalk.disabled = item.is_dir;
+    if (btnStrings) btnStrings.disabled = item.is_dir;
+    if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
+    if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
 
     if (!item.is_dir && item.name.toLowerCase().endsWith('_report.json')) {
         if (btnPdf) btnPdf.disabled = false;
@@ -326,6 +620,13 @@ function updateContextToolbar(item) {
         if (btnVerify) btnVerify.disabled = false;
     } else {
         if (btnVerify) btnVerify.disabled = true;
+    }
+
+    const IMAGE_EXTENSIONS = ['.dd', '.raw', '.img', '.e01', '.aff'];
+    if (!item.is_dir && IMAGE_EXTENSIONS.some(ext => item.name.toLowerCase().endsWith(ext))) {
+        if (btnBrowseImage) btnBrowseImage.disabled = false;
+    } else {
+        if (btnBrowseImage) btnBrowseImage.disabled = true;
     }
 }
 
@@ -395,6 +696,366 @@ async function verifySelectedHash() {
 async function exportSelectedPdf() {
     if (!activeSelectedFile) return;
     triggerPdfDownload(activeSelectedFile);
+}
+
+// --- File Metadata Viewer (ExifTool) ---
+let metadataModalInstance = null;
+
+async function viewSelectedMetadata() {
+    if (!activeSelectedFile) return;
+
+    if (!metadataModalInstance) {
+        metadataModalInstance = new bootstrap.Modal(document.getElementById('metadataModal'));
+    }
+    const container = document.getElementById("metadataContainer");
+    const nameEl = document.getElementById("metadataFileName");
+    if (container) container.innerHTML = '<span class="text-subtle">Loading...</span>';
+    if (nameEl) nameEl.textContent = activeSelectedFile.split('/').pop();
+    metadataModalInstance.show();
+
+    try {
+        const res = await fetch('/api/files/exif', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile })
+        });
+        const data = await res.json();
+
+        if (!container) return;
+        if (!data.success) {
+            container.innerHTML = '';
+            const err = document.createElement('div');
+            err.className = 'text-danger';
+            err.textContent = data.error;
+            container.appendChild(err);
+            return;
+        }
+
+        container.innerHTML = '';
+        const table = document.createElement('table');
+        table.className = 'table table-sm table-dark table-striped mb-0';
+        const tbody = document.createElement('tbody');
+        const entries = Object.entries(data.metadata || {});
+        if (entries.length === 0) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.textContent = 'No metadata found.';
+            cell.className = 'text-subtle';
+            row.appendChild(cell);
+            tbody.appendChild(row);
+        } else {
+            for (const [key, value] of entries) {
+                const row = document.createElement('tr');
+                const keyCell = document.createElement('td');
+                keyCell.className = 'text-info fw-bold text-nowrap';
+                keyCell.style.width = '35%';
+                keyCell.textContent = key; // text node - metadata values come from the file itself, never innerHTML
+                const valCell = document.createElement('td');
+                valCell.className = 'text-break';
+                valCell.textContent = String(value);
+                row.appendChild(keyCell);
+                row.appendChild(valCell);
+                tbody.appendChild(row);
+            }
+        }
+        table.appendChild(tbody);
+        container.appendChild(table);
+    } catch (err) {
+        if (container) container.innerHTML = '<span class="text-danger">Request failed.</span>';
+    }
+}
+
+// --- Shared "run a scan, show text output" modal (binwalk / strings / clamscan) ---
+let toolOutputModalInstance = null;
+
+function showToolOutputModal(title, icon) {
+    if (!toolOutputModalInstance) {
+        toolOutputModalInstance = new bootstrap.Modal(document.getElementById('toolOutputModal'));
+    }
+    const titleEl = document.getElementById("toolOutputTitle");
+    const iconEl = document.getElementById("toolOutputIcon");
+    const badgeRow = document.getElementById("toolOutputBadgeRow");
+    const container = document.getElementById("toolOutputContainer");
+    if (titleEl) titleEl.textContent = title;
+    if (iconEl) iconEl.className = `bi ${icon} me-2`;
+    if (badgeRow) badgeRow.style.display = 'none';
+    if (container) container.textContent = 'Running...';
+    toolOutputModalInstance.show();
+}
+
+function setToolOutputBadge(text, badgeClass) {
+    const badgeRow = document.getElementById("toolOutputBadgeRow");
+    const badge = document.getElementById("toolOutputBadge");
+    if (badge) { badge.textContent = text; badge.className = `badge ${badgeClass}`; }
+    if (badgeRow) badgeRow.style.display = '';
+}
+
+async function runSelectedBinwalk() {
+    if (!activeSelectedFile) return;
+    showToolOutputModal(`Binwalk: ${activeSelectedFile.split('/').pop()}`, 'bi-cpu');
+
+    try {
+        const res = await fetch('/api/files/binwalk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = data.success ? data.output : `[ERROR] ${data.error}`;
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runSelectedClamscan() {
+    if (!activeSelectedFile) return;
+    showToolOutputModal(`ClamAV Scan: ${activeSelectedFile.split('/').pop()}`, 'bi-shield-exclamation');
+
+    try {
+        const res = await fetch('/api/files/clamscan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) {
+            if (container) container.textContent = `[ERROR] ${data.error}`;
+            return;
+        }
+        setToolOutputBadge(data.infected ? 'THREAT(S) FOUND' : 'CLEAN', data.infected ? 'bg-danger' : 'bg-success');
+        if (container) container.textContent = data.output;
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runSelectedStrings() {
+    if (!activeSelectedFile) return;
+    showToolOutputModal(`Strings: ${activeSelectedFile.split('/').pop()}`, 'bi-fonts');
+
+    try {
+        const res = await fetch('/api/files/strings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = data.success ? data.output : `[ERROR] ${data.error}`;
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runSelectedHashdeep() {
+    if (!activeSelectedFile) return;
+
+    try {
+        const res = await fetch('/api/files/hashdeep', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, algorithm: 'sha256' })
+        });
+        const data = await res.json();
+        if (data.success) {
+            alert(`Hashed ${data.file_count} file(s).\nManifest written to:\n${data.manifest_path}`);
+            loadPane('A', paneAPath);
+            loadPane('B', paneBPath);
+        } else {
+            alert(`hashdeep failed: ${data.error}`);
+        }
+    } catch (err) {}
+}
+
+// --- Image Browser (Sleuth Kit: mmls/fls/icat) ---
+let imageBrowserModalInstance = null;
+let imageBrowserImagePath = null;
+let imageBrowserOffset = 0;
+let imageBrowserPathStack = [];  // [{inode, name}, ...] for breadcrumb + "up" navigation
+let imageBrowserSelected = null; // {inode, name}
+
+async function openImageBrowser() {
+    if (!activeSelectedFile) return;
+    imageBrowserImagePath = activeSelectedFile;
+    imageBrowserPathStack = [];
+    imageBrowserSelected = null;
+
+    if (!imageBrowserModalInstance) {
+        imageBrowserModalInstance = new bootstrap.Modal(document.getElementById('imageBrowserModal'));
+    }
+    document.getElementById("imageBrowserFileName").textContent = activeSelectedFile.split('/').pop();
+    document.getElementById("imageBrowserSelectedFile").textContent = '';
+    if (document.getElementById("imageBrowserExtractBtn")) document.getElementById("imageBrowserExtractBtn").disabled = true;
+    imageBrowserModalInstance.show();
+
+    // Warn up front if this image's format might not be supported (E01
+    // support depends on how this system's sleuthkit was built - not
+    // guaranteed just because the package is installed).
+    const warningEl = document.getElementById("imageBrowserFormatWarning");
+    if (warningEl) warningEl.style.display = 'none';
+    if (activeSelectedFile.toLowerCase().endsWith('.e01')) {
+        try {
+            const res = await fetch('/api/image/format_support');
+            const data = await res.json();
+            if (data.success && !data.support.ewf && warningEl) {
+                warningEl.textContent = 'This system\'s Sleuth Kit build may not support E01 images - if browsing fails below, that\'s likely why.';
+                warningEl.style.display = '';
+            }
+        } catch (err) {}
+    }
+
+    await loadImageBrowserPartitions();
+}
+
+async function loadImageBrowserPartitions() {
+    const select = document.getElementById("imageBrowserPartitionSelect");
+    if (select) select.innerHTML = '<option value="0">Loading...</option>';
+
+    try {
+        const res = await fetch('/api/image/mmls', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: imageBrowserImagePath })
+        });
+        const data = await res.json();
+
+        if (!select) return;
+        select.innerHTML = '';
+
+        if (!data.success || !data.partitions || data.partitions.length === 0) {
+            // No partition table detected (or mmls failed) - fall back to
+            // treating the whole image as a single filesystem at offset 0,
+            // which is common for a single-partition raw dd of e.g. a
+            // phone or a small media card.
+            const opt = document.createElement('option');
+            opt.value = '0';
+            opt.textContent = 'Whole image (offset 0, no partition table detected)';
+            select.appendChild(opt);
+        } else {
+            data.partitions.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.start_sector;
+                opt.textContent = `Slot ${p.slot}: ${p.description} (offset ${p.start_sector})`;
+                select.appendChild(opt);
+            });
+        }
+
+        imageBrowserPathStack = [];
+        await loadImageBrowserDir('');
+    } catch (err) {
+        if (select) select.innerHTML = '<option value="0">Error loading partitions</option>';
+    }
+}
+
+async function loadImageBrowserDir(inode) {
+    const select = document.getElementById("imageBrowserPartitionSelect");
+    imageBrowserOffset = select ? parseInt(select.value, 10) || 0 : 0;
+
+    const listEl = document.getElementById("imageBrowserList");
+    if (listEl) listEl.innerHTML = '<span class="text-subtle small p-2">Loading...</span>';
+    imageBrowserSelected = null;
+    document.getElementById("imageBrowserSelectedFile").textContent = '';
+    if (document.getElementById("imageBrowserExtractBtn")) document.getElementById("imageBrowserExtractBtn").disabled = true;
+
+    try {
+        const res = await fetch('/api/image/fls', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: imageBrowserImagePath, offset: imageBrowserOffset, inode: inode })
+        });
+        const data = await res.json();
+
+        if (!listEl) return;
+        listEl.innerHTML = '';
+
+        if (!data.success) {
+            const err = document.createElement('span');
+            err.className = 'text-danger small p-2';
+            err.textContent = data.error;
+            listEl.appendChild(err);
+            return;
+        }
+
+        if (data.entries.length === 0) {
+            listEl.innerHTML = '<span class="text-subtle small p-2">(empty)</span>';
+        }
+
+        data.entries.forEach(entry => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'list-group-item list-group-item-action bg-dark text-light border-secondary d-flex justify-content-between align-items-center';
+
+            const icon = entry.is_dir ? 'bi-folder-fill text-info' : 'bi-file-earmark text-light';
+            const iconSpan = document.createElement('span');
+            iconSpan.innerHTML = `<i class="bi ${icon} me-2"></i>`; // static/trusted markup
+            iconSpan.appendChild(document.createTextNode(entry.name)); // untrusted evidence filename, text-only
+            if (entry.deleted) {
+                const delBadge = document.createElement('span');
+                delBadge.className = 'badge bg-danger ms-2';
+                delBadge.textContent = 'DELETED';
+                iconSpan.appendChild(delBadge);
+            }
+            item.appendChild(iconSpan);
+
+            item.onclick = () => {
+                if (entry.is_dir) {
+                    imageBrowserPathStack.push({ inode: entry.inode, name: entry.name });
+                    updateImageBrowserPathTrail();
+                    loadImageBrowserDir(entry.inode);
+                } else {
+                    imageBrowserSelected = entry;
+                    document.getElementById("imageBrowserSelectedFile").textContent = `Selected: ${entry.name}`;
+                    if (document.getElementById("imageBrowserExtractBtn")) document.getElementById("imageBrowserExtractBtn").disabled = false;
+                }
+            };
+            listEl.appendChild(item);
+        });
+    } catch (err) {
+        if (listEl) listEl.innerHTML = '<span class="text-danger small p-2">Request failed.</span>';
+    }
+}
+
+function updateImageBrowserPathTrail() {
+    const trail = document.getElementById("imageBrowserPathTrail");
+    if (!trail) return;
+    trail.textContent = '/' + imageBrowserPathStack.map(p => p.name).join('/');
+}
+
+function imageBrowserGoUp() {
+    if (imageBrowserPathStack.length === 0) return;
+    imageBrowserPathStack.pop();
+    updateImageBrowserPathTrail();
+    const parentInode = imageBrowserPathStack.length > 0 ? imageBrowserPathStack[imageBrowserPathStack.length - 1].inode : '';
+    loadImageBrowserDir(parentInode);
+}
+
+async function extractSelectedImageFile() {
+    if (!imageBrowserSelected) return;
+
+    try {
+        const res = await fetch('/api/image/extract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: imageBrowserImagePath,
+                offset: imageBrowserOffset,
+                inode: imageBrowserSelected.inode,
+                output_name: imageBrowserSelected.name,
+                destination_dir: '/mnt'
+            })
+        });
+        const data = await res.json();
+        alert(data.success ? data.message : `Extraction failed: ${data.error}`);
+        if (data.success) {
+            loadPane('A', paneAPath);
+            loadPane('B', paneBPath);
+        }
+    } catch (err) {}
 }
 
 // --- Dynamic Attachments List Functions ---
@@ -499,6 +1160,113 @@ async function loadReportForEditing() {
         }
     } catch (err) {
         alert(`Failed to load report: ${err.message}`);
+    }
+}
+
+// --- Case Index ---
+async function loadCaseIndex() {
+    const tbody = document.getElementById("caseIndexBody");
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="5" class="text-subtle">Loading...</td></tr>';
+
+    try {
+        const res = await fetch('/api/reports/index');
+        const data = await res.json();
+
+        if (!data.success) {
+            tbody.innerHTML = '';
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 5;
+            cell.className = 'text-danger';
+            cell.textContent = data.error;
+            row.appendChild(cell);
+            tbody.appendChild(row);
+            return;
+        }
+
+        tbody.innerHTML = '';
+        if (data.reports.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-subtle">No reports found under the evidence root.</td></tr>';
+            return;
+        }
+
+        data.reports.forEach(r => {
+            const row = document.createElement('tr');
+            row.style.cursor = 'pointer';
+            row.title = r.path;
+
+            [r.case_number, r.evidence_id, r.method, r.status, r.timestamp_start].forEach(val => {
+                const cell = document.createElement('td');
+                cell.textContent = val; // untrusted report data - text node only
+                row.appendChild(cell);
+            });
+
+            row.onclick = () => {
+                const reportPathEl = document.getElementById("editReportPath");
+                if (reportPathEl) reportPathEl.value = r.path;
+                loadReportForEditing();
+            };
+            tbody.appendChild(row);
+        });
+    } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-danger">Request failed.</td></tr>';
+    }
+}
+
+// --- Chain of Custody Log ---
+async function loadChainOfCustodyLog() {
+    const container = document.getElementById("cocLogContainer");
+    if (!container) return;
+    container.innerHTML = '<span class="text-subtle">Loading...</span>';
+
+    try {
+        const res = await fetch('/api/coc/log?limit=200');
+        const data = await res.json();
+
+        if (!data.success) {
+            container.innerHTML = '';
+            const err = document.createElement('div');
+            err.className = 'text-danger';
+            err.textContent = data.error;
+            container.appendChild(err);
+            return;
+        }
+
+        container.innerHTML = '';
+        if (data.entries.length === 0) {
+            container.innerHTML = '<span class="text-subtle">No entries logged yet.</span>';
+            return;
+        }
+
+        data.entries.forEach(entry => {
+            const row = document.createElement('div');
+            row.className = 'mb-1 pb-1 border-bottom border-secondary';
+
+            const line1 = document.createElement('div');
+            const tsSpan = document.createElement('span');
+            tsSpan.className = 'text-subtle';
+            tsSpan.textContent = entry.timestamp + '  ';
+            const actionSpan = document.createElement('span');
+            actionSpan.className = 'text-info fw-bold';
+            actionSpan.textContent = entry.action;
+            line1.appendChild(tsSpan);
+            line1.appendChild(actionSpan);
+            row.appendChild(line1);
+
+            const detailsStr = Object.entries(entry.details || {}).map(([k, v]) => `${k}=${v}`).join(', ');
+            if (detailsStr) {
+                const line2 = document.createElement('div');
+                line2.className = 'text-light text-break';
+                line2.style.fontSize = '0.85em';
+                line2.textContent = detailsStr; // untrusted (contains file paths etc.) - text node only
+                row.appendChild(line2);
+            }
+
+            container.appendChild(row);
+        });
+    } catch (err) {
+        container.innerHTML = '<span class="text-danger">Request failed.</span>';
     }
 }
 
@@ -678,6 +1446,12 @@ function openFolderModal(mode = 'folder', targetInputId = 'destPath') {
     } else if (modalPickerMode === 'mapfile') {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-bar-chart-line me-2"></i>Select ddrescue Mapfile (.map)';
         if (selectBtn) selectBtn.style.display = 'none';
+    } else if (modalPickerMode === 'photorecSource') {
+        if (titleEl) titleEl.innerHTML = '<i class="bi bi-search-heart me-2"></i>Select Source Image for PhotoRec';
+        if (selectBtn) selectBtn.style.display = 'none';
+    } else if (modalPickerMode === 'triageScanSource') {
+        if (titleEl) titleEl.innerHTML = '<i class="bi bi-envelope-paper me-2"></i>Select Source Image for Triage Scan';
+        if (selectBtn) selectBtn.style.display = 'none';
     } else {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-folder2-open me-2"></i>Select Destination Directory';
         if (selectBtn) selectBtn.style.display = 'inline-block';
@@ -719,6 +1493,10 @@ async function loadFolderList(path) {
                 isSelectableFile = true;
             } else if (modalPickerMode === 'mapfile' && !item.is_dir && item.name.toLowerCase().endsWith('.map')) {
                 isSelectableFile = true;
+            } else if (modalPickerMode === 'photorecSource' && !item.is_dir) {
+                isSelectableFile = true;
+            } else if (modalPickerMode === 'triageScanSource' && !item.is_dir) {
+                isSelectableFile = true;
             }
 
             if (item.is_dir || isSelectableFile) {
@@ -731,6 +1509,8 @@ async function loadFolderList(path) {
                     else if (modalPickerMode === 'attachment') icon = '<i class="bi bi-paperclip text-info me-2 fs-5"></i>';
                     else if (modalPickerMode === 'evidence') icon = '<i class="bi bi-disc text-primary me-2 fs-5"></i>';
                     else if (modalPickerMode === 'mapfile') icon = '<i class="bi bi-map text-warning me-2 fs-5"></i>';
+                    else if (modalPickerMode === 'photorecSource') icon = '<i class="bi bi-disc text-primary me-2 fs-5"></i>';
+                    else if (modalPickerMode === 'triageScanSource') icon = '<i class="bi bi-envelope-paper text-primary me-2 fs-5"></i>';
                 }
 
                 const outerSpan = document.createElement('span');
@@ -769,6 +1549,14 @@ async function loadFolderList(path) {
                         if (mapPathEl) mapPathEl.value = item.path;
                         if (folderModalInstance) folderModalInstance.hide();
                         inspectDdrescueMapfile();
+                    } else if (modalPickerMode === 'photorecSource') {
+                        const sourcePathEl = document.getElementById("photorecSourcePath");
+                        if (sourcePathEl) sourcePathEl.value = item.path;
+                        if (folderModalInstance) folderModalInstance.hide();
+                    } else if (modalPickerMode === 'triageScanSource') {
+                        const sourcePathEl = document.getElementById("triageScanSourcePath");
+                        if (sourcePathEl) sourcePathEl.value = item.path;
+                        if (folderModalInstance) folderModalInstance.hide();
                     }
                 };
                 folderListEl.appendChild(btn);
@@ -1139,6 +1927,84 @@ async function startTabDdrescueJob() {
     }
 }
 
+async function startPhotorecJob() {
+    // Source can be either the drive dropdown (a whole device) or the
+    // typed/browsed image path field - the image path takes priority if
+    // both are filled in, since picking a specific image file is a more
+    // deliberate choice than whatever happens to be selected in the dropdown.
+    const sourcePath = document.getElementById("photorecSourcePath")?.value.trim();
+    const sourceDrive = document.getElementById("photorecSourceDrive")?.value;
+    const source = sourcePath || sourceDrive;
+    const dest = document.getElementById("photorecDest")?.value || "/mnt";
+
+    if (!source) {
+        alert("Select a source drive, or browse to a source image file, first.");
+        return;
+    }
+
+    const metadata = {
+        case_number: document.getElementById("photorecCaseNum")?.value || "RECOVERY",
+        evidence_id: document.getElementById("photorecEvidenceId")?.value || "ITEM-01",
+        examiner: document.getElementById("photorecExaminer")?.value || "UNSPECIFIED",
+        notes: "PhotoRec file carving recovery"
+    };
+
+    try {
+        const res = await fetch('/api/recovery/start_photorec', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source, destination: dest, metadata })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            if (document.getElementById("btnPhotorecStart")) document.getElementById("btnPhotorecStart").disabled = true;
+            if (document.getElementById("btnPhotorecStop")) document.getElementById("btnPhotorecStop").disabled = false;
+        } else {
+            alert(`PhotoRec Start Failed: ${data.error}`);
+        }
+    } catch (err) {
+        console.error("Error starting PhotoRec:", err);
+    }
+}
+
+async function startTriageScanJob() {
+    const sourcePath = document.getElementById("triageScanSourcePath")?.value.trim();
+    const sourceDrive = document.getElementById("triageScanSourceDrive")?.value;
+    const source = sourcePath || sourceDrive;
+    const dest = document.getElementById("triageScanDest")?.value || "/mnt";
+
+    if (!source) {
+        alert("Select a source drive, or browse to a source image file, first.");
+        return;
+    }
+
+    const metadata = {
+        case_number: document.getElementById("triageScanCaseNum")?.value || "TRIAGE",
+        evidence_id: document.getElementById("triageScanEvidenceId")?.value || "ITEM-01",
+        examiner: document.getElementById("triageScanExaminer")?.value || "UNSPECIFIED",
+        notes: "Built-in structured data triage scan"
+    };
+
+    try {
+        const res = await fetch('/api/recovery/start_triage_scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source, destination: dest, metadata })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            if (document.getElementById("btnTriageScanStart")) document.getElementById("btnTriageScanStart").disabled = true;
+            if (document.getElementById("btnTriageScanStop")) document.getElementById("btnTriageScanStop").disabled = false;
+        } else {
+            alert(`Triage Scan Start Failed: ${data.error}`);
+        }
+    } catch (err) {
+        console.error("Error starting triage scan:", err);
+    }
+}
+
 async function inspectDdrescueMapfile() {
     const mapPathEl = document.getElementById("tabMapfilePath");
     const mapPath = mapPathEl ? mapPathEl.value.trim() : "";
@@ -1382,6 +2248,81 @@ async function runDiagnostic(key) {
     }
 }
 
+async function loadToolVersions() {
+    const tbody = document.getElementById("toolVersionsBody");
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="3" class="text-subtle">Checking...</td></tr>';
+
+    try {
+        const res = await fetch('/api/system/tool_versions');
+        const data = await res.json();
+
+        if (!data.success) {
+            tbody.innerHTML = '';
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 3;
+            cell.className = 'text-danger';
+            cell.textContent = data.error;
+            row.appendChild(cell);
+            tbody.appendChild(row);
+            return;
+        }
+
+        tbody.innerHTML = '';
+        data.tools.forEach(t => {
+            const row = document.createElement('tr');
+
+            const nameCell = document.createElement('td');
+            nameCell.className = 'text-info fw-bold';
+            nameCell.style.width = '30%';
+            nameCell.textContent = t.tool;
+
+            const verCell = document.createElement('td');
+            verCell.className = t.installed ? 'text-light' : 'text-danger';
+            verCell.textContent = t.version;
+
+            const actionCell = document.createElement('td');
+            actionCell.style.width = '15%';
+            if (!t.installed && t.package) {
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-xs btn-outline-success py-0 px-2';
+                btn.innerHTML = '<i class="bi bi-download me-1"></i>Install';
+                btn.onclick = () => installTool(t.package, btn);
+                actionCell.appendChild(btn);
+            }
+
+            row.appendChild(nameCell);
+            row.appendChild(verCell);
+            row.appendChild(actionCell);
+            tbody.appendChild(row);
+        });
+    } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="3" class="text-danger">Request failed.</td></tr>';
+    }
+}
+
+async function installTool(pkg, btnEl) {
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Installing...';
+    }
+
+    try {
+        const res = await fetch('/api/system/install_tool', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ package: pkg })
+        });
+        const data = await res.json();
+        if (!data.success) alert(`Install failed: ${data.error}`);
+        loadToolVersions(); // refresh the whole table either way
+    } catch (err) {
+        alert('Install request failed.');
+        loadToolVersions();
+    }
+}
+
 async function ejectTargetDrive() {
     const drive = document.getElementById("ejectDriveSelect")?.value;
     if (!drive) return alert("Select a drive to detach first.");
@@ -1560,8 +2501,12 @@ async function fetchProgress() {
 
         if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = data.active;
         if (document.getElementById("btnTabDdrescueStart")) document.getElementById("btnTabDdrescueStart").disabled = data.active;
+        if (document.getElementById("btnPhotorecStart")) document.getElementById("btnPhotorecStart").disabled = data.active;
+        if (document.getElementById("btnTriageScanStart")) document.getElementById("btnTriageScanStart").disabled = data.active;
         if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = !data.active;
         if (document.getElementById("btnTabDdrescueStop")) document.getElementById("btnTabDdrescueStop").disabled = !data.active;
+        if (document.getElementById("btnPhotorecStop")) document.getElementById("btnPhotorecStop").disabled = !data.active;
+        if (document.getElementById("btnTriageScanStop")) document.getElementById("btnTriageScanStop").disabled = !data.active;
         if (document.getElementById("btnMobileStop")) document.getElementById("btnMobileStop").disabled = !data.active;
         if (data.active) {
             if (document.getElementById("btnMobileIosStart")) document.getElementById("btnMobileIosStart").disabled = true;
@@ -1583,7 +2528,19 @@ document.addEventListener("DOMContentLoaded", () => {
     loadPane('B', '/mnt');
     toggleFormatControls();
     refreshMobileDevices();
-    
+    updateDdrescueStrategyHelp();
+    updateAndroidModeHelp();
+    initHelpTooltips();
+
     setInterval(fetchSystemInfo, 2000);
     setInterval(fetchProgress, 1000);
 });
+
+function initHelpTooltips() {
+    // Bootstrap tooltips need explicit init - "hover focus" so they also
+    // work reasonably on touch (tapping a button focuses it first), since
+    // this is primarily a touchscreen kiosk interface, not a mouse-driven one.
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+        new bootstrap.Tooltip(el, { trigger: 'hover focus', placement: el.getAttribute('data-bs-placement') || 'top' });
+    });
+}
