@@ -164,7 +164,22 @@ req_file = os.path.join(INSTALL_DIR, "requirements.txt")
 if os.path.exists(req_file):
     subprocess.run([pip_bin, "install", "-r", req_file], check=True)
 else:
-    subprocess.run([pip_bin, "install", "flask", "gunicorn", "psutil", "reportlab"], check=True)
+    subprocess.run([pip_bin, "install", "flask", "gunicorn", "psutil", "reportlab", "mvt"], check=True)
+
+# MVT (mobile spyware/IOC scanner in the File Explorer's Actions menu) needs
+# indicator files to actually match against, same idea as ClamAV's freshclam
+# below - try to fetch them now so it's useful immediately, but don't fail
+# the install if this Pi happens to be offline right now (the dashboard's
+# Tool Versions > "Update MVT Indicators" button covers it later).
+print("\n[*] Downloading initial MVT spyware/IOC indicator files...")
+mvt_ios_bin = os.path.join(venv_dir, "bin", "mvt-ios")
+mvt_android_bin = os.path.join(venv_dir, "bin", "mvt-android")
+for mvt_bin in (mvt_ios_bin, mvt_android_bin):
+    if os.path.exists(mvt_bin):
+        res = subprocess.run([mvt_bin, "download-iocs"], capture_output=True, text=True, timeout=180)
+        if res.returncode != 0:
+            print(f"[!] Could not download IOC indicators for {os.path.basename(mvt_bin)} right now - "
+                  f"use the dashboard's Tool Versions > 'Update MVT Indicators' button once online.")
 
 # 3. Directory Ownership Setup
 print(f"\n[*] Setting directory permissions on {INSTALL_DIR} for '{SERVICE_USER}'...")

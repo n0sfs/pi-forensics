@@ -22,60 +22,54 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 - **Hardened by Default:** Every request requires authentication (no bypass for local/private networks), runs as an unprivileged service account rather than root, and sandboxes all file-explorer/report/attachment/acquisition-destination operations to a configurable evidence directory. See [Security](#-security) below.
 - **Automated Evidence Manifests:** Generates structured `evidence_manifest.json` and human-readable `.txt` reports capturing case numbers, evidence IDs, examiner notes, drive serials, and timestamps.
 - **Touchscreen & Remote Friendly:** Responsive dark-mode UI with drag and drop interface designed for onboard Pi touchscreen displays or headless browser control over Wi-Fi/Ethernet. An on-screen keyboard (`wvkbd`) is visible by default at boot for the login prompt, auto-hides once you're signed in, and is a tap away in the top navbar after that.
-- **Collapsible Sidebar Navigation:** The five main sections (Acquisition, DDRescue, Mobile Forensics, Reports, Advanced Settings) live in a left sidebar rather than a horizontal tab bar - toggle between icons-with-labels and icons-only via the chevron button at the top, freeing up screen width on smaller displays. The choice persists across visits.
+- **Collapsible Sidebar Navigation:** The five main sections (Forensic Acquisition, File Recovery, Mobile Forensics, Reporting, Advanced Settings) live in a left sidebar rather than a horizontal tab bar - toggle between icons-with-labels and icons-only via the chevron button at the top, freeing up screen width on smaller displays. The choice persists across visits.
 - **Recovery-Aware Acquisition:** `ddrescue` lives as a Format option in the main Acquisition tab (alongside dc3dd/dcfldd/E01/AFF) rather than a separate workflow - select it to get pass-strategy selection (Fast Copy, Trimming, Scraping, Reverse Reading), retry passes, and Direct I/O, sharing the same status display, source drive, and Start/Stop controls as every other format.
-- **File Recovery Suite:** A dedicated tab bringing together everything for working with damaged or already-acquired evidence: a dual-pane file explorer (browse local evidence and network mounts side by side, copy between them), PhotoRec and Sleuth Kit's Image Browser (already documented above), plus `extundelete` (deleted-file recovery for ext2/3/4 filesystems via the journal, can restore original filenames unlike carving tools), `foremost` and `scalpel` (alternate signature-based file carvers - scalpel is multithreaded and ships with a curated common-format config, since its stock config has every signature disabled by default), a Mapfile Audit Inspector for reviewing a completed ddrescue run's bad-sector summary, and read-only TestDisk partition analysis (uses TestDisk's dedicated `-l` listing flag specifically - never the separate write-capable repair mode, so it can never modify the evidence it's examining).
+- **File Recovery Suite:** A dedicated tab bringing together everything for working with damaged or already-acquired evidence, consolidated into one tool selector rather than a separate card per tool: PhotoRec and Sleuth Kit's Image Browser (already documented above), plus `extundelete` (deleted-file recovery for ext2/3/4 filesystems via the journal, can restore original filenames unlike carving tools), `foremost` and `scalpel` (alternate signature-based file carvers - scalpel is multithreaded and ships with a curated common-format config, since its stock config has every signature disabled by default), a Mapfile Audit Inspector for reviewing a completed ddrescue run's bad-sector summary, and read-only TestDisk partition analysis (uses TestDisk's dedicated `-l` listing flag specifically - never the separate write-capable repair mode, so it can never modify the evidence it's examining). Alongside it, a single-pane Forensic File Explorer (browse local evidence and network mounts, with a live preview pane and right-click/press-and-hold "Copy to..." between folders) covers general evidence browsing.
 - **File Carving & Recovery (PhotoRec):** Recovers files by signature (~480 known types) from a device or an already-acquired image - useful when a filesystem is too damaged for normal file listing. Read-only against the source; never writes back to it (unlike TestDisk's separate partition-repair mode, which this project deliberately does not expose, since rewriting a partition table would modify the evidence).
 - **File Metadata Viewer (ExifTool):** One-click metadata (EXIF, document properties, etc.) for any selected file in the File Explorer, without leaving the app.
 - **Image Filesystem Browser (Sleuth Kit):** Browse *inside* an acquired image's filesystem - list partitions (`mmls`), navigate directories including deleted-but-still-listed entries (`fls`), and extract a specific file out to the evidence directory (`icat`) - all read-only against the image. E01 support depends on how this system's Sleuth Kit build was linked and is checked at runtime rather than assumed; the UI warns if it looks unsupported.
-- **Triage Tools (Binwalk, ClamAV, hashdeep, strings):** Available from the File Explorer's "More Actions" menu - scan a file for embedded firmware/filesystem signatures (Binwalk), scan a file or directory for known malware (ClamAV), extract readable text from a binary (`strings`), or generate a recursive SHA-256 manifest for an entire recovered directory (`hashdeep`).
+- **Triage Tools (Binwalk, ClamAV, hashdeep, strings, MVT):** Available from the File Explorer's "Actions" menu - scan a file for embedded firmware/filesystem signatures (Binwalk), scan a file or directory for known malware (ClamAV), extract readable text from a binary (`strings`), generate a recursive SHA-256 manifest for an entire recovered directory (`hashdeep`), or scan an acquired mobile backup for spyware/compromise indicators (MVT - Mobile Verification Toolkit). iOS is a clean fit against `idevicebackup2` output; Android support is best-effort, since `adb pull`/`bugreport` don't match MVT's expected backup format.
 - **Chain of Custody Log:** Station-wide, append-only log of significant actions (acquisitions started, files deleted/copied, reports edited, image files extracted) with timestamp and source IP - viewable from the Reporting tab. This station has a single shared login rather than per-examiner accounts, so entries reliably show *what* happened and *when*, not *who* beyond the source IP - see [Security](#-security).
 - **Case Index:** A searchable table of every report this station has produced, scanned from the evidence root - click a row to load it straight into the report editor instead of hunting through the file tree.
-- **Tool Versions:** A "Check Tool Versions" button in Advanced Settings opens a popup reporting the version of every external tool the app uses (`dc3dd`, `ddrescue`, `sleuthkit`, `exiftool`, etc.) - useful for support requests and for documenting exactly what tooling produced a given piece of evidence. Anything not yet installed gets a one-click Install button, scoped to the exact same allowlist of packages `install.py` itself would have installed - not a general "install anything" tool.
+- **Tool Versions:** A "Check Tool Versions" button in Advanced Settings lists the version of every external tool the app uses (`dc3dd`, `ddrescue`, `sleuthkit`, `exiftool`, `mvt-ios`/`mvt-android`, etc.) right in the Service Controls & Diagnostics panel - useful for support requests and for documenting exactly what tooling produced a given piece of evidence. Anything not yet installed gets a one-click Install button, scoped to the exact same allowlist of packages `install.py` itself would have installed - not a general "install anything" tool.
 - **Quick Triage Scan:** Scans a device or image for structured data - emails, URLs, IP addresses, card-like numbers, phone numbers - without needing to understand filesystems or partitions. A beginner-friendly first pass; results are one plain-text file per category. Built in-house as a native Python scanner rather than depending on `bulk_extractor` (which isn't in Debian's mainline package archive - only found in Kali/Parrot's own repos, and would have broken `install.py` outright if left in its package list). No external tool dependency at all, so this can never hit a "package not found" wall - the tradeoff is that it's a straightforward single-threaded scan, not a highly-optimized C tool, so it's noticeably slower on very large (multi-TB) images.
 - **Built-in Help & Reference:** A "Help" button in the top navbar (visible on every tab) opens a panel with a scenario-based getting-started guide (healthy drive, damaged drive, recovering deleted files, mobile device), an FAQ, a plain-language reference for every tool the app uses, and notes on data location/chain-of-custody/updates. Hovering jargon-heavy tool names (ExifTool, Sleuth Kit, Binwalk, ClamAV, hashdeep) also shows an inline explanation, and the format/strategy/mode dropdowns show live help text for whatever's currently selected - aimed at students and newcomers who shouldn't need to already know what these tools do.
 - **Mobile Forensics (iOS & Android):** A dedicated tab for acquiring already-unlocked, already-trusted mobile devices - iOS full backup via `idevicebackup2` (with optional encrypted backup to capture Keychain data, plus a manual "Pair Device" trigger via `idevicepair`), and Android via `adb pull` (accessible storage, more reliable), `adb backup` (app data, requires on-device confirmation, unreliable on Android 12+), or `adb bugreport` (system logs/dumpstate snapshot). This does **not** bypass lockscreens, device pairing, or USB-debugging authorization - devices must already be unlocked and trusted/authorized by the examiner before acquisition can start, exactly like plugging a drive into the imaging station.
-- **Advanced Settings:** Station password change (persisted independently of the systemd unit), safe USB drive eject, service/kiosk restart, git-pull self-update and OS package update (both require explicit confirmation and a source you trust), reboot/power-off, live network interface listing, and a fixed-allowlist read-only diagnostics panel (`dmesg`, `lsusb`, `df -h`, `ip a`, `uptime`, `lsblk`, `free -h`, `mount`) - deliberately **not** a free-text shell terminal. See [Security](#-security) for why.
+- **Advanced Settings:** Station password change (persisted independently of the systemd unit), safe USB drive eject, and a combined Service Controls & Diagnostics panel - service/kiosk restart, git-pull self-update, OS package update (both require explicit confirmation and a source you trust), reboot/power-off, Check Tool Versions, and a fixed-allowlist read-only diagnostics dropdown (`dmesg`, `lsusb`, `df -h`, `ip a`, `uptime`, `lsblk`, `free -h`, `mount`) - deliberately **not** a free-text shell terminal. Every action in this panel reports into one shared output pane instead of popup alerts. See [Security](#-security) for why there's no free-text shell.
 - **Reporting & Hash Verification:** Reporting, Case & URL attachments, JSON file raw viewer & PDF File export, and Image Integrity Verification with hash matching.
 
 ---
 
 ## 📸 Screenshot
 
-> **Note:** these screenshots are from an earlier UI revision - taken before the switch to left
-> sidebar navigation, before `ddrescue` moved into the Acquisition tab's Format dropdown, and
-> before the File Recovery tab grew to include extundelete/foremost/scalpel/TestDisk analysis
-> alongside PhotoRec. The overall look and dark theme carry through unchanged; the navigation and
-> a few tab names (e.g. "Reports & Verification" is now "Reporting") have moved since.
-
 <p align="center">
   <img src="docs/images/PIF1.JPG" width="100%" alt="Forensic Acquisition" />
   <br>
-  <em>Figure 1: Forensic Acquisition Dashboard with Drive Check, Write Blocker Toggle, Raw/EWF Output, MD5/SHA1/SHA256 Hashes and Native Network Discovery, Drive Mapping and Telemetry.</em>
+  <em>Figure 1: Forensic Acquisition Dashboard with Drive Check, Write Blocker Toggle, Raw/EWF/ddrescue Output, MD5/SHA1/SHA256 Hashes, and Native Network Discovery, Drive Mapping and Telemetry.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF2.JPG" width="100%" alt="DDRescue & File Explorer" />
+  <img src="docs/images/PIF2.JPG" width="100%" alt="File Recovery Tools" />
   <br>
-  <em>Figure 2: DDRescue GUI and Dual Pane File Explorer Tab with copy to or from Device. (ddrescue has since moved into the Acquisition tab's Format dropdown - see Key Features above.)</em>
+  <em>Figure 2: File Recovery tab - one unified tool selector (PhotoRec, extundelete, foremost, scalpel, Quick Triage Scan, TestDisk Partition Analysis, ddrescue Mapfile Inspector) sharing a single source/destination/metadata layout and live terminal output.</em>
 </p>
 
 <p align="center">
   <img src="docs/images/PIF3.JPG" width="100%" alt="Mobile Forensics" />
   <br>
-  <em>Figure 3: Mobile Forensics for iOS/Android.</em>
+  <em>Figure 3: Mobile Forensics - device detection plus iOS full backup (idevicebackup2) and Android acquisition (adb pull/backup/bugreport) side by side, with an MVT spyware/IOC scan available afterward from the File Explorer's Actions menu.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF4.JPG" width="100%" alt="Reports & Verification" />
+  <img src="docs/images/PIF4.JPG" width="100%" alt="Reporting & Verification" />
   <br>
-  <em>Figure 4: Reporting, Case & URL attachments, JSON file raw viewer & PDF File export, Chain of Custody Log, and Image Integrity Verification with hash matching.</em>
+  <em>Figure 4: Reporting - case metadata editor, file/URL attachments, PDF export, and Evidence Image Integrity Verification with hash matching.</em>
 </p>
 
 <p align="center">
   <img src="docs/images/PIF5.JPG" width="100%" alt="Advanced Settings" />
   <br>
-  <em>Figure 5: Change Password, Restart Services, Tool & OS Package Updates, Reboot/Power Off, System Diagnostics.</em>
+  <em>Figure 5: Advanced Settings - Security & Account Password, Safe Hardware Detach, and the combined Service Controls & Diagnostics panel (restart/update/power controls, a fixed-allowlist diagnostics dropdown, and Check Tool Versions) all reporting into one shared output pane.</em>
 </p>
 
 ---

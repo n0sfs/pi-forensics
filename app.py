@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import pwd
 import glob
 import hmac
@@ -37,6 +38,16 @@ HISTORY_FILE = os.path.join(INSTALL_DIR, "mount_history.json")
 # INSTALL_DIR by install.py, so scalpel actually recovers something by
 # default rather than silently finding nothing.
 SCALPEL_CONF_PATH = os.path.join(INSTALL_DIR, "scalpel.conf")
+
+# mvt-ios/mvt-android are pip console-scripts (see requirements.txt),
+# installed into the same Python environment app.py itself runs in - not on
+# system PATH like every other tool this app shells out to (those are all
+# apt packages). Resolve their path from sys.executable rather than a bare
+# command name, so this works whether running under the venv (production)
+# or a plain `python3 app.py` dev invocation.
+MVT_BIN_DIR = os.path.dirname(sys.executable)
+MVT_IOS_BIN = os.path.join(MVT_BIN_DIR, "mvt-ios")
+MVT_ANDROID_BIN = os.path.join(MVT_BIN_DIR, "mvt-android")
 
 # Password changes made from the Advanced Settings tab are persisted here
 # (0600, owned by the service account) so they survive a restart without
@@ -2896,6 +2907,10 @@ TOOL_VERSION_COMMANDS = [
     {"tool": "extundelete", "cmd": ["dpkg-query", "-W", "-f=${Version}", "extundelete"], "package": "extundelete"},
     {"tool": "foremost", "cmd": ["dpkg-query", "-W", "-f=${Version}", "foremost"], "package": "foremost"},
     {"tool": "scalpel", "cmd": ["scalpel", "-v"], "package": "scalpel"},
+    # package=None (not apt): mvt is a pip package (see requirements.txt),
+    # installed/upgraded via the venv, not the Tool Versions "Install" button.
+    {"tool": "mvt-ios", "cmd": [MVT_IOS_BIN, "version"], "package": None},
+    {"tool": "mvt-android", "cmd": [MVT_ANDROID_BIN, "version"], "package": None},
 ]
 # Every installable package this endpoint will ever run apt-get for - the
 # same allowlist install.py's sudoers file grants exact NOPASSWD entries
@@ -2919,8 +2934,14 @@ def get_tool_versions():
                 # raw error text as if it were version output.
                 results.append({"tool": name, "version": "Not installed", "installed": False, "package": package})
                 continue
-            output = (res.stdout.strip() or res.stderr.strip() or "(no version output)").splitlines()[0]
-            results.append({"tool": name, "version": output, "installed": True, "package": package})
+            raw = res.stdout.strip() or res.stderr.strip() or "(no version output)"
+            lines = raw.splitlines()
+            # MVT's `version` subcommand buries the actual version number a
+            # few lines into a banner rather than putting it on line 1 like
+            # every other tool here - prefer a line that actually says
+            # "Version:" when one exists, instead of showing the banner text.
+            version_line = next((l.strip() for l in lines if 'version:' in l.lower()), lines[0])
+            results.append({"tool": name, "version": version_line, "installed": True, "package": package})
         except FileNotFoundError:
             results.append({"tool": name, "version": "Not installed", "installed": False, "package": package})
         except subprocess.TimeoutExpired:
@@ -3476,6 +3497,72 @@ def run_strings():
         return jsonify({"success": False, "error": "strings timed out."}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+# --- MVT (Mobile Verification Toolkit): Spyware/IOC Analysis ---
+# Analyzes an already-acquired mobile backup for indicators of compromise
+# (known spyware, e.g. Pegasus) - this does NOT acquire anything itself, it
+# runs against output the Mobile Forensics tab already produced. iOS is a
+# clean fit: mvt-ios's check-backup expects exactly the directory structure
+# idevicebackup2 --full already writes. Android is best-effort only -
+# mvt-android's check-backup expects a decrypted `adb backup` (.ab)
+# extraction, which doesn't line up with this app's adb pull/bugreport
+# output; it will error clearly on those rather than silently finding
+# nothing, so it's still exposed rather than blocked outright.
+@app.route('/api/files/mvt_scan', methods=['POST'])
+@requires_auth
+def run_mvt_scan():
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    platform = req.get('platform', '')
+
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+    if platform not in ('ios', 'android'):
+        return jsonify({"success": False, "error": "platform must be 'ios' or 'android'."}), 400
+
+    mvt_bin = MVT_IOS_BIN if platform == 'ios' else MVT_ANDROID_BIN
+    if not os.path.isfile(mvt_bin):
+        return jsonify({"success": False, "error": f"{os.path.basename(mvt_bin)} is not installed. Check Advanced Settings > Tool Versions."}), 400
+
+    output_dir = os.path.join(target_dir, f"_mvt_{platform}_scan")
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        res = subprocess.run(
+            [mvt_bin, 'check-backup', '--output', output_dir, target_dir],
+            capture_output=True, text=True, timeout=900
+        )
+        output = ((res.stdout or "") + (("\n" + res.stderr) if res.stderr else "")).strip() or "[no output]"
+        log_chain_of_custody("mvt_scan", {"path": target_dir, "platform": platform, "output_dir": output_dir})
+        return jsonify({"success": True, "platform": platform, "output_dir": output_dir, "output": output})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "MVT scan timed out (large backup - partial results may still be in output_dir)."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/tools/mvt_update_iocs', methods=['POST'])
+@requires_auth
+def mvt_update_iocs():
+    results = {}
+    ran_any = False
+    for platform, mvt_bin in (('ios', MVT_IOS_BIN), ('android', MVT_ANDROID_BIN)):
+        if not os.path.isfile(mvt_bin):
+            results[platform] = "not installed"
+            continue
+        ran_any = True
+        try:
+            res = subprocess.run([mvt_bin, 'download-iocs'], capture_output=True, text=True, timeout=180)
+            results[platform] = (res.stdout.strip() or res.stderr.strip() or "(no output)")
+        except subprocess.TimeoutExpired:
+            results[platform] = "timed out"
+        except Exception as e:
+            results[platform] = f"error: {e}"
+
+    if not ran_any:
+        return jsonify({"success": False, "error": "Neither mvt-ios nor mvt-android is installed."}), 400
+
+    log_chain_of_custody("mvt_update_iocs", {})
+    return jsonify({"success": True, "results": results})
 
 # --- Chain of Custody Log ---
 @app.route('/api/coc/log', methods=['GET'])
