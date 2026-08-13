@@ -32,6 +32,12 @@ if ADMIN_USER == 'admin' and ADMIN_PASS == 'forensics':
 INSTALL_DIR = os.environ.get('FORENSIC_INSTALL_DIR', '/opt/pi-forensics')
 HISTORY_FILE = os.path.join(INSTALL_DIR, "mount_history.json")
 
+# scalpel ships with every file signature disabled in its stock config -
+# this curated one (jpg/png/gif/pdf/zip, common formats) is written to
+# INSTALL_DIR by install.py, so scalpel actually recovers something by
+# default rather than silently finding nothing.
+SCALPEL_CONF_PATH = os.path.join(INSTALL_DIR, "scalpel.conf")
+
 # Password changes made from the Advanced Settings tab are persisted here
 # (0600, owned by the service account) so they survive a restart without
 # requiring the examiner to edit the systemd unit. Falls back to
@@ -475,7 +481,7 @@ def parse_ddrescue_mapfile(map_path):
     return summary
 
 # --- Direct Real-time Asynchronous Execution Engine ---
-def _stream_subprocess(cmd, on_line, on_poll=None, poll_interval=2.0):
+def _stream_subprocess(cmd, on_line, on_poll=None, poll_interval=2.0, cwd=None, stdin_yes=False):
     """
     Launch cmd, non-blockingly stream stdout+stderr line by line (ANSI-
     stripped) into on_line(clean_line), and return the finished Popen
@@ -488,16 +494,36 @@ def _stream_subprocess(cmd, on_line, on_poll=None, poll_interval=2.0):
     regardless of stdout activity - some tools (idevicebackup2, adb
     backup) go long stretches with no output while still working, so
     line-triggered progress alone isn't enough to show the job is alive.
+
+    cwd: run the process in this working directory - needed for tools
+    like extundelete that write output relative to their cwd rather than
+    accepting an explicit output-path flag.
+
+    stdin_yes: pipe "y\\n" to the process immediately, then close stdin -
+    needed for extundelete, which can block on an interactive
+    confirmation prompt about filesystem safety warnings. Without an
+    explicit pipe here, stdin would be whatever the parent service
+    process has (typically /dev/null under systemd), which doesn't
+    reliably answer that prompt.
     """
     global active_proc
     active_proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        stdin=subprocess.PIPE if stdin_yes else None,
         text=False,
         bufsize=0,
+        cwd=cwd,
         preexec_fn=os.setsid
     )
+
+    if stdin_yes:
+        try:
+            active_proc.stdin.write(b'y\n')
+            active_proc.stdin.close()
+        except Exception:
+            pass
 
     fd = active_proc.stdout.fileno()
     fl = fcntl.fcntl(fd, fcntl.F_GETFL)
@@ -1116,6 +1142,193 @@ def execution_worker_photorec(source, dest_dir, report_file_path, report_data):
         # photorec now runs via sudo for raw device access - reclaim
         # regardless of outcome, so recovered files can actually be
         # browsed/deleted/copied afterward by this unprivileged service.
+        reclaim_ownership(dest_dir)
+        update_job(active=False)
+        active_proc = None
+
+def execution_worker_extundelete(source, dest_dir, report_file_path, report_data):
+    """
+    extundelete recovers deleted files from ext2/3/4 filesystems by
+    parsing the filesystem journal - can recover original filenames/paths
+    where a normal carving tool (PhotoRec) can't, but only works on
+    ext-family filesystems specifically, unlike PhotoRec's format-agnostic
+    signature matching.
+
+    Two things this tool needs that others here don't:
+    - It writes to RECOVERED_FILES/ in its *working directory* - there's
+      no output-path flag - so it's launched with cwd=dest_dir instead.
+    - It can block on an interactive y/n safety confirmation about the
+      filesystem's journal state - answered via stdin_yes rather than
+      risking an indefinite hang.
+    """
+    global current_job, active_proc
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    update_job(format="extundelete", status="Initializing...", progress_percent=0.0,
+               speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
+
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        cmd = ["sudo", "/usr/bin/extundelete", source, "--restore-all"]
+        append_log(f"[*] Command: {' '.join(cmd)} (run from {dest_dir})")
+        update_job(status="Recovering Deleted Files (extundelete)...")
+
+        def on_line(clean_line):
+            append_log(clean_line)
+
+        def on_poll():
+            update_job(transferred_bytes=poll_directory_size(dest_dir))
+
+        proc = _stream_subprocess(cmd, on_line, on_poll=on_poll, poll_interval=3.0, cwd=dest_dir, stdin_yes=True)
+        time.sleep(1.0)
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        final_size = poll_directory_size(dest_dir)
+
+        if proc.returncode == 0:
+            update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
+            append_log(f"[+] extundelete completed. Recovered data in {dest_dir}/RECOVERED_FILES/")
+            report_data["acquisition_status"] = "COMPLETED"
+            report_data["output_size_bytes"] = final_size
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            append_log(f"[-] extundelete exited with code {proc.returncode} - is the source an ext2/3/4 filesystem?")
+            report_data["acquisition_status"] = "FAILED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
+        reclaim_ownership(dest_dir)
+        update_job(active=False)
+        active_proc = None
+
+def execution_worker_foremost(source, dest_dir, report_file_path, report_data):
+    """
+    foremost - signature-based file carving, an alternative to PhotoRec.
+    Older and narrower in supported types than PhotoRec, but sometimes
+    faster for the common formats it does support.
+    """
+    global current_job, active_proc
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    update_job(format="foremost", status="Initializing...", progress_percent=0.0,
+               speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
+
+    try:
+        cmd = ["sudo", "/usr/bin/foremost", "-t", "all", "-i", source, "-o", dest_dir]
+        append_log(f"[*] Command: {' '.join(cmd)}")
+        update_job(status="Carving Files (foremost)...")
+
+        def on_line(clean_line):
+            append_log(clean_line)
+
+        def on_poll():
+            update_job(transferred_bytes=poll_directory_size(dest_dir))
+
+        # foremost refuses to run if the output directory already exists -
+        # unlike PhotoRec (-Z) it has no flag to force/wipe it, so this
+        # must not be pre-created (matches PhotoRec's route not
+        # pre-creating job_dest_dir either).
+        proc = _stream_subprocess(cmd, on_line, on_poll=on_poll, poll_interval=3.0)
+        time.sleep(1.0)
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        final_size = poll_directory_size(dest_dir)
+
+        if proc.returncode == 0:
+            update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
+            append_log(f"[+] foremost completed. Recovered data size: {final_size} bytes")
+            report_data["acquisition_status"] = "COMPLETED"
+            report_data["output_size_bytes"] = final_size
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            append_log(f"[-] foremost exited with code {proc.returncode}")
+            report_data["acquisition_status"] = "FAILED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
+        reclaim_ownership(dest_dir)
+        update_job(active=False)
+        active_proc = None
+
+def execution_worker_scalpel(source, dest_dir, report_file_path, report_data):
+    """
+    scalpel - signature-based file carving, another PhotoRec alternative,
+    multithreaded so sometimes faster on larger images. Ships with every
+    file signature disabled by default in its stock config - this uses a
+    curated config file installed alongside this app (SCALPEL_CONF_PATH)
+    covering common formats (jpg/png/gif/pdf/zip) rather than depending on
+    the stock config, which would silently recover nothing if left as-is.
+    """
+    global current_job, active_proc
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    update_job(format="scalpel", status="Initializing...", progress_percent=0.0,
+               speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
+
+    try:
+        cmd = ["sudo", "/usr/bin/scalpel", "-c", SCALPEL_CONF_PATH, "-o", dest_dir, source]
+        append_log(f"[*] Command: {' '.join(cmd)}")
+        update_job(status="Carving Files (scalpel)...")
+
+        def on_line(clean_line):
+            append_log(clean_line)
+
+        def on_poll():
+            update_job(transferred_bytes=poll_directory_size(dest_dir))
+
+        # Like foremost, scalpel refuses to run against an existing output
+        # directory - must not be pre-created.
+        proc = _stream_subprocess(cmd, on_line, on_poll=on_poll, poll_interval=3.0)
+        time.sleep(1.0)
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        final_size = poll_directory_size(dest_dir)
+
+        if proc.returncode == 0:
+            update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
+            append_log(f"[+] scalpel completed. Recovered data size: {final_size} bytes")
+            report_data["acquisition_status"] = "COMPLETED"
+            report_data["output_size_bytes"] = final_size
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            append_log(f"[-] scalpel exited with code {proc.returncode}")
+            report_data["acquisition_status"] = "FAILED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
         reclaim_ownership(dest_dir)
         update_job(active=False)
         active_proc = None
@@ -2280,6 +2493,217 @@ def start_photorec():
     log_chain_of_custody("photorec_start", {"source": source, "destination": job_dest_dir})
     return jsonify({"success": True, "message": "PhotoRec recovery started."})
 
+@app.route('/api/recovery/start_extundelete', methods=['POST'])
+@requires_auth
+def start_extundelete():
+    global current_job
+
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    source_raw = req.get('source', '')
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    metadata = req.get('metadata', {})
+
+    if is_valid_block_device(source_raw) and os.path.exists(source_raw):
+        source = source_raw
+    else:
+        source = safe_path(source_raw)
+        if not source or not os.path.isfile(source):
+            update_job(active=False)
+            return jsonify({"error": f"Source '{source_raw}' is not a recognized device or a valid image file in the permitted evidence directory."}), 400
+
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_extundelete"
+    job_dest_dir = os.path.join(dest_path, base_name)
+
+    try:
+        # Must pre-create (unlike foremost/scalpel below) - extundelete is
+        # launched with cwd=job_dest_dir, which requires the directory to
+        # already exist.
+        os.makedirs(job_dest_dir, exist_ok=True)
+    except Exception as e:
+        update_job(active=False)
+        return jsonify({"error": f"Destination path {job_dest_dir} is inaccessible: {str(e)}"}), 400
+
+    update_job(
+        format="extundelete", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Initializing extundelete recovery from {source} -> {job_dest_dir}..."
+    )
+
+    report_file = os.path.join(job_dest_dir, f"{base_name}_report.json")
+    report_data = {
+        "case_metadata": metadata,
+        "acquisition_parameters": {
+            "method": "extundelete (ext2/3/4 journal-based deleted file recovery)",
+            "source": source,
+            "output_destination": job_dest_dir,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(report_data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not write report JSON: {e}")
+
+    thread = threading.Thread(
+        target=execution_worker_extundelete,
+        args=(source, job_dest_dir, report_file, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("extundelete_start", {"source": source, "destination": job_dest_dir})
+    return jsonify({"success": True, "message": "extundelete recovery started."})
+
+@app.route('/api/recovery/start_foremost', methods=['POST'])
+@requires_auth
+def start_foremost():
+    global current_job
+
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    source_raw = req.get('source', '')
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    metadata = req.get('metadata', {})
+
+    if is_valid_block_device(source_raw) and os.path.exists(source_raw):
+        source = source_raw
+    else:
+        source = safe_path(source_raw)
+        if not source or not os.path.isfile(source):
+            update_job(active=False)
+            return jsonify({"error": f"Source '{source_raw}' is not a recognized device or a valid image file in the permitted evidence directory."}), 400
+
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_foremost"
+    job_dest_dir = os.path.join(dest_path, base_name)
+    # Deliberately NOT pre-created - foremost refuses to run if its output
+    # directory already exists. The report lives in the parent dest_path
+    # instead, since job_dest_dir won't exist until foremost itself creates it.
+
+    update_job(
+        format="foremost", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Initializing foremost recovery from {source} -> {job_dest_dir}..."
+    )
+
+    report_file = os.path.join(dest_path, f"{base_name}_report.json")
+    report_data = {
+        "case_metadata": metadata,
+        "acquisition_parameters": {
+            "method": "foremost (signature-based file carving)",
+            "source": source,
+            "output_destination": job_dest_dir,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(report_data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not write report JSON: {e}")
+
+    thread = threading.Thread(
+        target=execution_worker_foremost,
+        args=(source, job_dest_dir, report_file, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("foremost_start", {"source": source, "destination": job_dest_dir})
+    return jsonify({"success": True, "message": "foremost recovery started."})
+
+@app.route('/api/recovery/start_scalpel', methods=['POST'])
+@requires_auth
+def start_scalpel():
+    global current_job
+
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    source_raw = req.get('source', '')
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    metadata = req.get('metadata', {})
+
+    if is_valid_block_device(source_raw) and os.path.exists(source_raw):
+        source = source_raw
+    else:
+        source = safe_path(source_raw)
+        if not source or not os.path.isfile(source):
+            update_job(active=False)
+            return jsonify({"error": f"Source '{source_raw}' is not a recognized device or a valid image file in the permitted evidence directory."}), 400
+
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_scalpel"
+    job_dest_dir = os.path.join(dest_path, base_name)
+    # Deliberately NOT pre-created - same reason as foremost above.
+
+    update_job(
+        format="scalpel", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Initializing scalpel recovery from {source} -> {job_dest_dir}..."
+    )
+
+    report_file = os.path.join(dest_path, f"{base_name}_report.json")
+    report_data = {
+        "case_metadata": metadata,
+        "acquisition_parameters": {
+            "method": "scalpel (signature-based file carving)",
+            "source": source,
+            "output_destination": job_dest_dir,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(report_data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not write report JSON: {e}")
+
+    thread = threading.Thread(
+        target=execution_worker_scalpel,
+        args=(source, job_dest_dir, report_file, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("scalpel_start", {"source": source, "destination": job_dest_dir})
+    return jsonify({"success": True, "message": "scalpel recovery started."})
+
 @app.route('/api/recovery/start_triage_scan', methods=['POST'])
 @requires_auth
 def start_triage_scan():
@@ -2376,7 +2800,7 @@ def stop_imaging():
         # than a bare name match - "dd" is too generic a process name to
         # pkill by bare name without risking killing an unrelated process
         # elsewhere on the system.
-        for tool in ["dc3dd", "dcfldd", "ewfacquire", "ddrescue", "photorec"]:
+        for tool in ["dc3dd", "dcfldd", "ewfacquire", "ddrescue", "photorec", "extundelete", "foremost", "scalpel"]:
             try:
                 subprocess.run(["sudo", "pkill", "-9", tool], capture_output=True)
             except Exception:
@@ -2469,6 +2893,9 @@ TOOL_VERSION_COMMANDS = [
     {"tool": "idevicebackup2", "cmd": ["idevicebackup2", "-v"], "package": "libimobiledevice-utils"},
     {"tool": "smartctl", "cmd": ["smartctl", "-V"], "package": "smartmontools"},
     {"tool": "wvkbd-mobintl", "cmd": ["wvkbd-mobintl", "-v"], "package": "wvkbd"},
+    {"tool": "extundelete", "cmd": ["dpkg-query", "-W", "-f=${Version}", "extundelete"], "package": "extundelete"},
+    {"tool": "foremost", "cmd": ["dpkg-query", "-W", "-f=${Version}", "foremost"], "package": "foremost"},
+    {"tool": "scalpel", "cmd": ["scalpel", "-v"], "package": "scalpel"},
 ]
 # Every installable package this endpoint will ever run apt-get for - the
 # same allowlist install.py's sudoers file grants exact NOPASSWD entries
@@ -2790,6 +3217,42 @@ def delete_file():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+# --- File Preview (image src / text content) ---
+_PREVIEWABLE_IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
+_PREVIEWABLE_TEXT_EXT = {'.txt', '.json', '.log', '.md', '.csv', '.xml', '.html', '.htm', '.py', '.js', '.sh', '.conf', '.ini', '.cfg', '.yaml', '.yml'}
+_PREVIEW_TEXT_MAX_BYTES = 200 * 1024  # 200 KB - enough for a meaningful preview without loading huge files into memory
+
+@app.route('/api/files/raw', methods=['GET'])
+@requires_auth
+def get_raw_file():
+    path = safe_path(request.args.get('path', ''))
+    if not path or not os.path.isfile(path):
+        return jsonify({"error": "File not found or outside the permitted evidence directory."}), 404
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in _PREVIEWABLE_IMAGE_EXT:
+        return jsonify({"error": "Only image files can be served this way."}), 400
+
+    return send_file(path)
+
+@app.route('/api/files/preview_text', methods=['POST'])
+@requires_auth
+def preview_text_file():
+    req = request.get_json() or {}
+    path = safe_path(req.get('path'))
+    if not path or not os.path.isfile(path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 404
+
+    try:
+        size = os.path.getsize(path)
+        with open(path, 'rb') as f:
+            raw = f.read(_PREVIEW_TEXT_MAX_BYTES)
+        text = raw.decode('utf-8', errors='replace')
+        truncated = size > _PREVIEW_TEXT_MAX_BYTES
+        return jsonify({"success": True, "content": text, "truncated": truncated, "size_bytes": size})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 # --- Report Modifier & Attachment Endpoints ---
 @app.route('/api/report/load', methods=['POST'])
 @requires_auth
@@ -2907,6 +3370,36 @@ def run_binwalk():
         return jsonify({"success": True, "file_name": os.path.basename(file_path), "output": output})
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": "binwalk timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# --- TestDisk: Read-Only Partition Analysis ---
+@app.route('/api/recovery/testdisk_analyze', methods=['POST'])
+@requires_auth
+def testdisk_analyze():
+    req = request.get_json() or {}
+    source_raw = req.get('source', '')
+
+    if is_valid_block_device(source_raw) and os.path.exists(source_raw):
+        source = source_raw
+    else:
+        source = safe_path(source_raw)
+        if not source or not os.path.isfile(source):
+            return jsonify({"success": False, "error": f"Source '{source_raw}' is not a recognized device or a valid image file in the permitted evidence directory."}), 400
+
+    try:
+        # -l is TestDisk's dedicated read-only partition listing flag - a
+        # genuinely separate, simpler command from the /cmd scripting
+        # syntax (which supports write-capable actions like rebuildbs).
+        # Using -l specifically, rather than /cmd with a hand-picked
+        # read-only subset of keywords, means this can never accidentally
+        # grow a write action later - the flag itself is incapable of one.
+        res = subprocess.run(['sudo', '/usr/bin/testdisk', '-l', source], capture_output=True, text=True, timeout=60)
+        output = res.stdout.strip() or res.stderr.strip() or "[no output]"
+        log_chain_of_custody("testdisk_analyze", {"source": source})
+        return jsonify({"success": True, "source": source, "output": output})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "testdisk timed out."}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

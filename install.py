@@ -117,9 +117,22 @@ apt_packages = [
     # "Quick Triage Scan" feature was rebuilt as a native Python scanner
     # instead (see TRIAGE_PATTERNS in app.py) rather than depending on this
     # tool at all, so there's no external package needed for it anymore.
+    "extundelete",  # deleted-file recovery for ext2/3/4 filesystems specifically
+    "foremost", "scalpel",  # alternate signature-based file carvers to PhotoRec
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
+
+# scalpel needs this curated config (its own stock config has every file
+# signature disabled) - it should already be at INSTALL_DIR since the
+# whole repo deploys there, but check explicitly rather than let scalpel
+# silently recover nothing later if something about the deployment was
+# incomplete.
+scalpel_conf_check = os.path.join(INSTALL_DIR, "scalpel.conf")
+if not os.path.exists(scalpel_conf_check):
+    print(f"[!] scalpel.conf not found at {scalpel_conf_check} - the scalpel recovery "
+          f"tool will not work correctly until this file is present (it ships with the repo, "
+          f"so this usually means the deployment is missing a file - check your clone/copy).")
 
 # Populate ClamAV's virus definition database. The clamav-freshclam package's
 # own systemd timer will keep it updated afterward; this just avoids
@@ -169,6 +182,7 @@ INSTALLABLE_TOOL_PACKAGES = [
     "dc3dd", "dcfldd", "gddrescue", "ewf-tools", "afflib-tools", "testdisk",
     "sleuthkit", "libimage-exiftool-perl", "binwalk",
     "clamav", "hashdeep", "adb", "libimobiledevice-utils", "smartmontools", "wvkbd",
+    "extundelete", "foremost", "scalpel",
 ]
 install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in INSTALLABLE_TOOL_PACKAGES)
 
@@ -185,6 +199,7 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/bin/smbclient, /usr/sbin/showmount, \\
 /usr/bin/dcfldd, /usr/bin/dc3dd, /usr/bin/ddrescue, \\
 /usr/bin/ewfacquire, /usr/bin/dd, /usr/bin/photorec, \\
+/usr/bin/extundelete, /usr/bin/foremost, /usr/bin/scalpel, /usr/bin/testdisk, \\
 /bin/chown -R {SERVICE_USER} *, \\
 /bin/chgrp -R {SERVICE_USER} *, \\
 /sbin/reboot, /sbin/poweroff, \\
