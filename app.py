@@ -3,6 +3,7 @@ import re
 import io
 import csv
 import sys
+import uuid
 import pwd
 import glob
 import hmac
@@ -614,11 +615,93 @@ def poll_directory_size(path):
     except Exception:
         return 0
 
-def _write_report(report_file_path, report_data, append_log):
+# --- Consolidated Per-Case Reporting ---
+# A "case" started via /api/cases/create now gets exactly one JSON file
+# ({slug}_case.json, at the case folder root) that every job run against
+# any evidence item in that case appends an "event" to, instead of each of
+# the 9 job-starting routes below writing its own separate {base}_report.json.
+# No-case-active usage (a destination that isn't a real case folder) keeps
+# writing the old flat per-job file, completely unchanged - see
+# build_report_target(). Existing cases stay on the old scattered-files
+# layout until explicitly migrated (see /api/cases/migrate_preview/_apply);
+# there's no silent auto-upgrade, to avoid a case ending up half-migrated.
+class CaseEventTarget:
+    """Marks a report write as 'append/update one event inside a case's
+    consolidated file' rather than 'overwrite a standalone _report.json'."""
+    __slots__ = ("case_file", "event_id")
+    def __init__(self, case_file, event_id):
+        self.case_file = case_file
+        self.event_id = event_id
+
+def case_consolidated_path(dest_path):
+    """Returns the case's consolidated-file path if `dest_path` IS a case
+    folder root (checked directly, no ancestor walk - matches how the
+    frontend sends `destination` as the case folder itself verbatim once a
+    case is active), else None."""
+    if not dest_path or not os.path.isdir(dest_path):
+        return None
+    slug = os.path.basename(dest_path.rstrip(os.sep))
+    case_file = os.path.join(dest_path, f"{slug}_case.json")
+    return case_file if os.path.isfile(case_file) else None
+
+def _read_case_file(case_file):
     try:
-        with open(report_file_path, 'w') as f:
-            json.dump(report_data, f, indent=2)
-        append_log(f"[+] Forensic case report updated: {report_file_path}")
+        with open(case_file, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {"schema_version": 1, "events": [], "attachments": {"files": [], "reference_urls": []}}
+
+def _write_case_file(case_file, case_record):
+    with open(case_file, 'w') as f:
+        json.dump(case_record, f, indent=2)
+
+def _case_upsert_event(case_file, event_id, event_data):
+    """Replaces the event matching event_id if present, else appends it -
+    this is what makes a job's start-write and later complete-write update
+    the SAME array entry instead of appending a duplicate."""
+    case_record = _read_case_file(case_file)
+    events = case_record.setdefault("events", [])
+    events[:] = [e for e in events if e.get("event_id") != event_id]
+    payload = dict(event_data)
+    payload["event_id"] = event_id
+    events.append(payload)
+    case_record["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    _write_case_file(case_file, case_record)
+
+def build_report_target(dest_path, legacy_dir, base_name):
+    """Returns a CaseEventTarget if `dest_path` is an active case folder,
+    else the plain flat-file path this route would have used before this
+    change existed (legacy_dir is job_dest_dir for tools that write into
+    their own subfolder, dest_path itself for the rest)."""
+    case_file = case_consolidated_path(dest_path)
+    if case_file:
+        return CaseEventTarget(case_file, uuid.uuid4().hex)
+    return os.path.join(legacy_dir, f"{base_name}_report.json")
+
+def write_initial_report(report_target, report_data):
+    """First write at job start (status IN_PROGRESS) - mirrors what every
+    route used to do with a bare open()/json.dump() against its own file."""
+    try:
+        if isinstance(report_target, CaseEventTarget):
+            _case_upsert_event(report_target.case_file, report_target.event_id, report_data)
+        else:
+            with open(report_target, 'w') as f:
+                json.dump(report_data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not write report JSON: {e}")
+
+def _write_report(report_target, report_data, append_log):
+    """Second write at job completion (status COMPLETED/FAILED/etc) - called
+    from inside the worker threads, unchanged at every call site; only the
+    type of report_target (flat path vs CaseEventTarget) changed upstream."""
+    try:
+        if isinstance(report_target, CaseEventTarget):
+            _case_upsert_event(report_target.case_file, report_target.event_id, report_data)
+            append_log(f"[+] Forensic case report updated: {report_target.case_file} (event {report_target.event_id[:8]})")
+        else:
+            with open(report_target, 'w') as f:
+                json.dump(report_data, f, indent=2)
+            append_log(f"[+] Forensic case report updated: {report_target}")
     except Exception as e:
         append_log(f"[-] Warning: Failed updating report JSON: {e}")
 
@@ -779,14 +862,28 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["computed_verification_hashes"] = computed_hashes
 
-        if proc.returncode in [0, 2]:
+        # dc3dd's own process exit code is not reliable on its own - it can
+        # exit 0/2 (treated as success below) while still self-reporting a
+        # failure (e.g. an unrecovered read error partway through) via a
+        # "dc3dd failed at <timestamp>" line in its own output, distinct
+        # from "dc3dd completed at <timestamp>" on genuine success. Since
+        # that line is already being streamed into log_history live, check
+        # it directly rather than trusting returncode alone for this format.
+        dc3dd_self_reported_failure = (
+            fmt in ['raw', 'dd'] and 'dc3dd failed at' in "\n".join(log_history)
+        )
+
+        if proc.returncode in [0, 2] and not dc3dd_self_reported_failure:
             update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
             append_log("[+] Recovery/acquisition completed successfully.")
             report_data["acquisition_status"] = "COMPLETED"
 
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
-            append_log(f"[-] Process exited with code {proc.returncode}")
+            if dc3dd_self_reported_failure:
+                append_log("[-] dc3dd reported its own failure (see 'dc3dd failed at ...' above) despite exiting with a code normally treated as success - treating this run as failed.")
+            else:
+                append_log(f"[-] Process exited with code {proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
 
         _write_report(report_file_path, report_data, append_log)
@@ -2068,8 +2165,8 @@ def start_imaging():
         log=f"[*] Initializing {fmt.upper()} acquisition ({', '.join(hashes).upper()}) for {source} -> {dest_path}..."
     )
 
-    report_file = os.path.join(dest_path, f"{base_name}_report.json")
     report_data = {
+        "tool": fmt,
         "case_metadata": metadata,
         "source_drive_telemetry": drive_telemetry,
         "acquisition_parameters": {
@@ -2090,21 +2187,18 @@ def start_imaging():
         "computed_verification_hashes": {}
     }
 
-    try:
-        with open(report_file, 'w') as f:
-            json.dump(report_data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Could not write report JSON: {e}")
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
 
     if fmt == 'aff':
         thread = threading.Thread(
             target=execution_worker_aff,
-            args=(source, dest_path, base_name, hashes, keep_raw, report_file, report_data, total_bytes)
+            args=(source, dest_path, base_name, hashes, keep_raw, report_target, report_data, total_bytes)
         )
     else:
         thread = threading.Thread(
             target=execution_worker,
-            args=(cmd, fmt, total_bytes, out_file, report_file, report_data, hashes)
+            args=(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes)
         )
     thread.daemon = True
     thread.start()
@@ -2234,8 +2328,8 @@ def start_ddrescue():
         log=f"[*] Initializing ddrescue ({strategy}) pass for {source} -> {out_file}\n[*] Mapfile: {map_file}..."
     )
 
-    report_file = os.path.join(dest_path, f"{base_name}_report.json")
     report_data = {
+        "tool": "ddrescue",
         "case_metadata": metadata,
         "acquisition_parameters": {
             "output_destination": dest_path,
@@ -2250,9 +2344,11 @@ def start_ddrescue():
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
     }
 
+    report_target = build_report_target(dest_path, dest_path, base_name)
+
     thread = threading.Thread(
         target=execution_worker,
-        args=(cmd, "ddrescue", total_bytes, out_file, report_file, report_data)
+        args=(cmd, "ddrescue", total_bytes, out_file, report_target, report_data)
     )
     thread.daemon = True
     thread.start()
@@ -2326,8 +2422,8 @@ def start_ios_backup():
         log=f"[*] Initializing iOS backup for UDID {udid} -> {job_dest_dir}..."
     )
 
-    report_file = os.path.join(job_dest_dir, f"{base_name}_report.json")
     report_data = {
+        "tool": "ios_backup",
         "case_metadata": metadata,
         "device_udid": udid,
         "acquisition_parameters": {
@@ -2340,15 +2436,12 @@ def start_ios_backup():
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
     }
-    try:
-        with open(report_file, 'w') as f:
-            json.dump(report_data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Could not write report JSON: {e}")
+    report_target = build_report_target(dest_path, job_dest_dir, base_name)
+    write_initial_report(report_target, report_data)
 
     thread = threading.Thread(
         target=execution_worker_ios_backup,
-        args=(udid, job_dest_dir, encrypt_password, report_file, report_data)
+        args=(udid, job_dest_dir, encrypt_password, report_target, report_data)
     )
     thread.daemon = True
     thread.start()
@@ -2416,8 +2509,8 @@ def start_android_acquisition():
         log=f"[*] Initializing Android {mode} for {serial} -> {output_path}..."
     )
 
-    report_file = os.path.join(dest_path, f"{base_name}_report.json")
     report_data = {
+        "tool": f"android_{mode}",
         "case_metadata": metadata,
         "device_serial": serial,
         "acquisition_parameters": {
@@ -2429,15 +2522,12 @@ def start_android_acquisition():
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
     }
-    try:
-        with open(report_file, 'w') as f:
-            json.dump(report_data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Could not write report JSON: {e}")
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
 
     thread = threading.Thread(
         target=execution_worker_android,
-        args=(mode, serial, output_path, report_file, report_data)
+        args=(mode, serial, output_path, report_target, report_data)
     )
     thread.daemon = True
     thread.start()
@@ -2494,8 +2584,8 @@ def start_photorec():
         log=f"[*] Initializing PhotoRec recovery from {source} -> {job_dest_dir}..."
     )
 
-    report_file = os.path.join(job_dest_dir, f"{base_name}_report.json")
     report_data = {
+        "tool": "photorec",
         "case_metadata": metadata,
         "acquisition_parameters": {
             "method": "photorec (file carving)",
@@ -2506,15 +2596,12 @@ def start_photorec():
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
     }
-    try:
-        with open(report_file, 'w') as f:
-            json.dump(report_data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Could not write report JSON: {e}")
+    report_target = build_report_target(dest_path, job_dest_dir, base_name)
+    write_initial_report(report_target, report_data)
 
     thread = threading.Thread(
         target=execution_worker_photorec,
-        args=(source, job_dest_dir, report_file, report_data)
+        args=(source, job_dest_dir, report_target, report_data)
     )
     thread.daemon = True
     thread.start()
@@ -2569,8 +2656,8 @@ def start_extundelete():
         log=f"[*] Initializing extundelete recovery from {source} -> {job_dest_dir}..."
     )
 
-    report_file = os.path.join(job_dest_dir, f"{base_name}_report.json")
     report_data = {
+        "tool": "extundelete",
         "case_metadata": metadata,
         "acquisition_parameters": {
             "method": "extundelete (ext2/3/4 journal-based deleted file recovery)",
@@ -2581,15 +2668,12 @@ def start_extundelete():
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
     }
-    try:
-        with open(report_file, 'w') as f:
-            json.dump(report_data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Could not write report JSON: {e}")
+    report_target = build_report_target(dest_path, job_dest_dir, base_name)
+    write_initial_report(report_target, report_data)
 
     thread = threading.Thread(
         target=execution_worker_extundelete,
-        args=(source, job_dest_dir, report_file, report_data)
+        args=(source, job_dest_dir, report_target, report_data)
     )
     thread.daemon = True
     thread.start()
@@ -2638,8 +2722,8 @@ def start_foremost():
         log=f"[*] Initializing foremost recovery from {source} -> {job_dest_dir}..."
     )
 
-    report_file = os.path.join(dest_path, f"{base_name}_report.json")
     report_data = {
+        "tool": "foremost",
         "case_metadata": metadata,
         "acquisition_parameters": {
             "method": "foremost (signature-based file carving)",
@@ -2650,15 +2734,12 @@ def start_foremost():
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
     }
-    try:
-        with open(report_file, 'w') as f:
-            json.dump(report_data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Could not write report JSON: {e}")
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
 
     thread = threading.Thread(
         target=execution_worker_foremost,
-        args=(source, job_dest_dir, report_file, report_data)
+        args=(source, job_dest_dir, report_target, report_data)
     )
     thread.daemon = True
     thread.start()
@@ -2705,8 +2786,8 @@ def start_scalpel():
         log=f"[*] Initializing scalpel recovery from {source} -> {job_dest_dir}..."
     )
 
-    report_file = os.path.join(dest_path, f"{base_name}_report.json")
     report_data = {
+        "tool": "scalpel",
         "case_metadata": metadata,
         "acquisition_parameters": {
             "method": "scalpel (signature-based file carving)",
@@ -2717,15 +2798,12 @@ def start_scalpel():
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
     }
-    try:
-        with open(report_file, 'w') as f:
-            json.dump(report_data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Could not write report JSON: {e}")
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
 
     thread = threading.Thread(
         target=execution_worker_scalpel,
-        args=(source, job_dest_dir, report_file, report_data)
+        args=(source, job_dest_dir, report_target, report_data)
     )
     thread.daemon = True
     thread.start()
@@ -2782,8 +2860,8 @@ def start_triage_scan():
         log=f"[*] Initializing triage scan of {source} -> {job_dest_dir}..."
     )
 
-    report_file = os.path.join(dest_path, f"{base_name}_report.json")
     report_data = {
+        "tool": "triage_scan",
         "case_metadata": metadata,
         "acquisition_parameters": {
             "method": "built-in triage scan (emails/URLs/IPs/card-like numbers/phone numbers)",
@@ -2794,15 +2872,12 @@ def start_triage_scan():
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
     }
-    try:
-        with open(report_file, 'w') as f:
-            json.dump(report_data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Could not write report JSON: {e}")
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
 
     thread = threading.Thread(
         target=execution_worker_triage_scan,
-        args=(source, job_dest_dir, report_file, report_data, total_bytes)
+        args=(source, job_dest_dir, report_target, report_data, total_bytes)
     )
     thread.daemon = True
     thread.start()
@@ -3583,22 +3658,57 @@ def mvt_update_iocs():
     return jsonify({"success": True, "results": results})
 
 # --- Chain of Custody Log ---
+def _read_coc_entries(limit=None):
+    """Read chain-of-custody log entries, most recent first. limit=None reads the whole file."""
+    entries = []
+    if os.path.exists(COC_LOG_FILE):
+        with open(COC_LOG_FILE, 'r') as f:
+            lines = f.readlines()
+        if limit:
+            lines = lines[-limit:]
+        for line in lines:
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    entries.reverse()
+    return entries
+
 @app.route('/api/coc/log', methods=['GET'])
 @requires_auth
 def get_chain_of_custody_log():
     limit = request.args.get('limit', 200, type=int)
-    entries = []
     try:
-        if os.path.exists(COC_LOG_FILE):
-            with open(COC_LOG_FILE, 'r') as f:
-                lines = f.readlines()
-            for line in lines[-limit:]:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-        entries.reverse()  # most recent first
-        return jsonify({"success": True, "entries": entries})
+        return jsonify({"success": True, "entries": _read_coc_entries(limit)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# Case-scoped view of the same log, for the Reporting tab's History sub-tab -
+# distinct from /api/coc/log above, which is the station-wide Audit Log in
+# Settings. No log entries are tagged with a case_number field (retrofitting
+# that onto every one of the ~20 log_chain_of_custody() call sites would be
+# a much larger change), so this filters by substring match against every
+# logged detail value instead - covers both old flat-file evidence (case
+# number was always the filename prefix) and new case-folder evidence (case
+# number is the folder name) with one heuristic, no directory resolution
+# needed.
+@app.route('/api/coc/case_history', methods=['GET'])
+@requires_auth
+def get_case_history():
+    case_number = request.args.get('case_number', '').strip()
+    limit = request.args.get('limit', 200, type=int)
+    if not case_number:
+        return jsonify({"success": False, "error": "case_number is required."}), 400
+
+    try:
+        matched = []
+        for entry in _read_coc_entries(limit=None):
+            details = entry.get("details", {})
+            if any(case_number in str(v) for v in details.values()):
+                matched.append(entry)
+            if len(matched) >= limit:
+                break
+        return jsonify({"success": True, "entries": matched})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -3678,20 +3788,28 @@ def create_case():
 
     try:
         os.makedirs(case_dir)
-        case_info = {
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        # New cases go straight onto the consolidated one-file-per-case
+        # format (see "Consolidated Per-Case Reporting" above) - only cases
+        # created before this existed need the explicit migration path
+        # (/api/cases/migrate_preview / _apply) to get folded in.
+        case_record = {
+            "schema_version": 1,
             "case_number": case_number_raw,
-            "examiner": examiner,
             "case_folder": case_dir,
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "examiner": examiner,
             "notes": notes,
+            "created_at": now,
+            "updated_at": now,
+            "attachments": {"files": [], "reference_urls": []},
+            "events": [],
         }
-        with open(os.path.join(case_dir, "case_info.json"), 'w') as f:
-            json.dump(case_info, f, indent=2)
+        _write_case_file(os.path.join(case_dir, f"{slug}_case.json"), case_record)
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not create case folder: {e}"}), 500
 
     log_chain_of_custody("case_create", {"case_number": case_number_raw, "examiner": examiner, "case_folder": case_dir})
-    return jsonify({"success": True, "case": case_info})
+    return jsonify({"success": True, "case": case_record})
 
 @app.route('/api/cases/list', methods=['GET'])
 @requires_auth
@@ -3704,7 +3822,30 @@ def list_cases():
             if depth >= 6:
                 dirs[:] = []
                 continue
-            if 'case_info.json' in files:
+
+            # A case folder's marker filename is always derived from its own
+            # basename (see case_consolidated_path) - check for that exact
+            # name first (new consolidated schema), falling back to the old
+            # generic case_info.json for cases created before this existed
+            # and not yet migrated (see /api/cases/migrate_preview/_apply).
+            consolidated_name = f"{os.path.basename(root)}_case.json"
+            if consolidated_name in files:
+                try:
+                    with open(os.path.join(root, consolidated_name), 'r') as f:
+                        data = json.load(f)
+                    cases.append({
+                        "case_number": data.get('case_number', '--'),
+                        "examiner": data.get('examiner', '--'),
+                        "case_folder": data.get('case_folder', root),
+                        "created_at": data.get('created_at', '--'),
+                        "notes": data.get('notes', ''),
+                        "event_count": len(data.get('events', [])),
+                        "schema": "consolidated",
+                    })
+                except (json.JSONDecodeError, OSError):
+                    pass
+                dirs[:] = []  # a case folder never contains another case folder
+            elif 'case_info.json' in files:
                 try:
                     with open(os.path.join(root, 'case_info.json'), 'r') as f:
                         data = json.load(f)
@@ -3714,11 +3855,11 @@ def list_cases():
                         "case_folder": data.get('case_folder', root),
                         "created_at": data.get('created_at', '--'),
                         "notes": data.get('notes', ''),
+                        "event_count": None,
+                        "schema": "legacy",
                     })
                 except (json.JSONDecodeError, OSError):
                     pass
-                # A case folder never contains another case folder - no
-                # need to keep descending into this subtree.
                 dirs[:] = []
 
         cases.sort(key=lambda c: c.get('created_at', ''), reverse=True)
@@ -3739,9 +3880,141 @@ def log_case_select():
     })
     return jsonify({"success": True})
 
+# --- Legacy Case Migration: fold scattered case_info.json + *_report.json
+# files into the new one-file-per-case consolidated schema ---
+# Non-destructive by design: originals are renamed with a
+# ".pre_consolidation_backup" suffix (never deleted), and only after the new
+# consolidated file has been written and confirmed. One-shot per case - if
+# it already has a *_case.json, both routes below refuse rather than risk
+# merging/duplicating; picking up reports created after a migration is a
+# known, documented limitation, not handled here.
+def _scan_case_folder_for_migration(case_dir):
+    """Read-only: returns (case_info_data_or_None, [(path, parsed_report_dict), ...], [unreadable_paths])."""
+    case_info = None
+    case_info_path = os.path.join(case_dir, "case_info.json")
+    if os.path.isfile(case_info_path):
+        try:
+            with open(case_info_path, 'r') as f:
+                case_info = json.load(f)
+        except Exception:
+            pass
+
+    reports = []
+    unreadable = []
+    for root, dirs, files in os.walk(case_dir):
+        for fname in files:
+            if fname.endswith('_report.json'):
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, 'r') as f:
+                        reports.append((fpath, json.load(f)))
+                except Exception:
+                    unreadable.append(fpath)
+    return case_info, reports, unreadable
+
+@app.route('/api/cases/migrate_preview', methods=['POST'])
+@requires_auth
+def migrate_case_preview():
+    req = request.get_json() or {}
+    case_dir = safe_path(req.get('case_folder', ''))
+    if not case_dir or not os.path.isdir(case_dir):
+        return jsonify({"success": False, "error": "Case folder not found or outside the permitted evidence directory."}), 404
+
+    slug = os.path.basename(case_dir.rstrip(os.sep))
+    already_migrated = os.path.isfile(os.path.join(case_dir, f"{slug}_case.json"))
+
+    case_info, reports, unreadable = _scan_case_folder_for_migration(case_dir)
+    return jsonify({
+        "success": True,
+        "already_migrated": already_migrated,
+        "case_info_found": case_info is not None,
+        "reports": [{
+            "path": p,
+            "case_number": r.get("case_metadata", {}).get("case_number", "--"),
+            "evidence_id": r.get("case_metadata", {}).get("evidence_id", "--"),
+            "tool": r.get("tool", "--"),
+            "status": r.get("acquisition_status", "--"),
+            "timestamp_start": r.get("timestamp_start", "--"),
+        } for p, r in reports],
+        "unreadable": unreadable,
+    })
+
+@app.route('/api/cases/migrate_apply', methods=['POST'])
+@requires_auth
+def migrate_case_apply():
+    req = request.get_json() or {}
+    case_dir = safe_path(req.get('case_folder', ''))
+    if not case_dir or not os.path.isdir(case_dir):
+        return jsonify({"success": False, "error": "Case folder not found or outside the permitted evidence directory."}), 404
+
+    slug = os.path.basename(case_dir.rstrip(os.sep))
+    case_file = os.path.join(case_dir, f"{slug}_case.json")
+    if os.path.isfile(case_file):
+        return jsonify({"success": False, "error": "This case is already on the consolidated format."}), 409
+
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Wait for the current job to finish before migrating - migration renames files a running job may still be writing to."}), 409
+
+    case_info, reports, unreadable = _scan_case_folder_for_migration(case_dir)
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    events = []
+    migrated_paths = []
+    for path, data in reports:
+        event = dict(data)
+        event["event_id"] = uuid.uuid4().hex
+        events.append(event)
+        migrated_paths.append(path)
+    events.sort(key=lambda e: e.get("timestamp_start", ""))
+
+    case_record = {
+        "schema_version": 1,
+        "case_number": (case_info or {}).get("case_number", slug),
+        "case_folder": case_dir,
+        "examiner": (case_info or {}).get("examiner", ""),
+        "notes": (case_info or {}).get("notes", ""),
+        "created_at": (case_info or {}).get("created_at") or (events[0]["timestamp_start"] if events else now),
+        "updated_at": now,
+        "attachments": {"files": [], "reference_urls": []},
+        "events": events,
+    }
+
+    try:
+        _write_case_file(case_file, case_record)
+        if not os.path.isfile(case_file):
+            raise IOError("consolidated file did not appear on disk after write")
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Failed writing consolidated case file - nothing was renamed: {e}"}), 500
+
+    # Only rename originals after the new file is confirmed written - if the
+    # process dies partway through renaming, worst case is duplicate data on
+    # disk (old files still present next to a complete new one), never loss.
+    case_info_path = os.path.join(case_dir, "case_info.json")
+    if case_info is not None and os.path.isfile(case_info_path):
+        try:
+            os.rename(case_info_path, case_info_path + ".pre_consolidation_backup")
+        except Exception:
+            pass
+    for path in migrated_paths:
+        try:
+            os.rename(path, path + ".pre_consolidation_backup")
+        except Exception:
+            pass
+
+    log_chain_of_custody("case_migrate", {"case_folder": case_dir, "events_migrated": len(events), "skipped": len(unreadable)})
+    return jsonify({"success": True, "case_file": case_file, "events_migrated": len(events), "skipped": unreadable})
+
 @app.route('/api/reports/index', methods=['GET'])
 @requires_auth
 def get_reports_index():
+    # One row per CASE for cases on the consolidated schema (summarized
+    # from their events, not walked into further - nothing report-related
+    # lives in a case's job subfolders anymore once it's on this schema).
+    # Standalone *_report.json files are still walked and listed exactly as
+    # before - this covers both genuine no-case/ad-hoc jobs (a permanent,
+    # not just transitional, code path) and any case not yet migrated,
+    # which stays visible here as a signal that it still needs migrating.
     reports = []
     try:
         for root, dirs, files in os.walk(EVIDENCE_ROOT):
@@ -3751,6 +4024,29 @@ def get_reports_index():
             if depth >= 6:
                 dirs[:] = []
                 continue
+
+            consolidated_name = f"{os.path.basename(root)}_case.json"
+            if consolidated_name in files:
+                try:
+                    with open(os.path.join(root, consolidated_name), 'r') as f:
+                        data = json.load(f)
+                    events = data.get('events', [])
+                    latest = max(events, key=lambda e: e.get('timestamp_start', ''), default=None)
+                    reports.append({
+                        "path": os.path.join(root, consolidated_name),
+                        "case_number": data.get('case_number', '--'),
+                        "evidence_id": f"{len(events)} item(s)" if events else "--",
+                        "examiner": data.get('examiner', '--'),
+                        "status": latest.get('acquisition_status', '--') if latest else '--',
+                        "timestamp_start": (latest.get('timestamp_start') if latest else None) or data.get('created_at', '--'),
+                        "method": "case (consolidated)",
+                        "is_case": True,
+                    })
+                except (json.JSONDecodeError, OSError):
+                    pass
+                dirs[:] = []  # a case folder never contains another case folder
+                continue
+
             for fname in files:
                 if fname.endswith('_report.json'):
                     fpath = os.path.join(root, fname)
@@ -3766,6 +4062,7 @@ def get_reports_index():
                             "status": data.get('acquisition_status', '--'),
                             "timestamp_start": data.get('timestamp_start', '--'),
                             "method": data.get('acquisition_parameters', {}).get('method', data.get('acquisition_parameters', {}).get('output_format', '--')),
+                            "is_case": False,
                         })
                     except (json.JSONDecodeError, OSError):
                         continue
@@ -3925,6 +4222,91 @@ def image_extract():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # --- PDF Forensic Audit Exporter ---
+def _draw_pdf_job_section(c, y, event):
+    """Draws one job/event's telemetry + acquisition params + hashes block -
+    shared between the single-legacy-report path and the per-event loop for
+    a consolidated case file below. Returns the y position after drawing."""
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "Source Media Telemetry")
+    y -= 15
+    c.setFont("Helvetica", 10)
+    drive = event.get('source_drive_telemetry', {})
+    c.drawString(50, y, f"Device: {drive.get('device_path')} ({drive.get('capacity_gb')} GB)")
+    c.drawString(300, y, f"Model: {drive.get('vendor_model')}")
+    y -= 15
+    c.drawString(50, y, f"Serial: {drive.get('serial_number')}")
+    c.drawString(300, y, f"SMART Status: {'PASSED' if drive.get('smart_healthy') else 'FAILING'}")
+    y -= 30
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "Acquisition & Verification Hashes")
+    y -= 15
+    c.setFont("Helvetica", 10)
+    params = event.get('acquisition_parameters', {})
+    c.drawString(50, y, f"Format: {params.get('output_format', event.get('tool', 'N/A')).upper()}")
+    c.drawString(300, y, f"Status: {event.get('acquisition_status')}")
+    y -= 20
+
+    hashes = event.get('computed_verification_hashes', {})
+    for k, v in hashes.items():
+        c.drawString(50, y, f"{k.upper()}: {v}")
+        y -= 15
+    return y
+
+def _draw_pdf_attachments(c, y, attachments):
+    file_list = attachments.get('files', [])
+    if not file_list and attachments.get('image_path'):
+        file_list = [attachments.get('image_path')]
+    ref_urls = attachments.get('reference_urls', [])
+    if not (file_list or ref_urls):
+        return y
+
+    if y < 150:
+        c.showPage()
+        y = 730
+
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "Case Attachments & References")
+    y -= 20
+    c.setFont("Helvetica", 10)
+
+    if ref_urls:
+        c.drawString(50, y, "Reference Links / URLs:")
+        y -= 15
+        for url in ref_urls:
+            c.setFillColorRGB(0, 0, 0.8)
+            c.drawString(60, y, f"• {url}")
+            c.setFillColorRGB(0, 0, 0)
+            y -= 15
+
+    if file_list:
+        c.drawString(50, y, "Attached Case Files / Media:")
+        y -= 15
+        for raw_path in file_list:
+            file_path = safe_path(raw_path)
+            if not file_path or not os.path.exists(file_path):
+                continue
+
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in ['.jpg', '.jpeg', '.png']:
+                if y < 200:
+                    c.showPage()
+                    y = 730
+                try:
+                    from reportlab.lib.utils import ImageReader
+                    c.drawString(60, y, f"• Photo: {os.path.basename(file_path)}")
+                    y -= 140
+                    c.drawImage(ImageReader(file_path), 60, y, width=200, height=130, preserveAspectRatio=True)
+                    y -= 15
+                except Exception as img_err:
+                    c.drawString(60, y, f"• Photo Error ({os.path.basename(file_path)}): {str(img_err)}")
+                    y -= 15
+            else:
+                c.drawString(60, y, f"• Document: {os.path.basename(file_path)} ({file_path})")
+                y -= 15
+    return y
+
 @app.route('/api/export_pdf', methods=['POST'])
 @requires_auth
 def export_pdf():
@@ -3937,109 +4319,62 @@ def export_pdf():
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
-        from reportlab.lib.utils import ImageReader
 
         with open(report_file, 'r') as f:
             data = json.load(f)
 
         pdf_path = report_file.replace('.json', '.pdf')
         c = canvas.Canvas(pdf_path, pagesize=letter)
-        
+
         c.setFont("Helvetica-Bold", 16)
         c.drawString(50, 750, "ARM FORENSIC ACQUISITION AUDIT REPORT")
         c.setLineWidth(1)
         c.line(50, 740, 550, 740)
 
-        c.setFont("Helvetica", 10)
-        y = 710
-        
-        meta = data.get('case_metadata', {})
-        c.drawString(50, y, f"Case Number: {meta.get('case_number', 'N/A')}")
-        c.drawString(300, y, f"Evidence ID: {meta.get('evidence_id', 'N/A')}")
-        y -= 20
-        c.drawString(50, y, f"Examiner: {meta.get('examiner', 'N/A')}")
-        c.drawString(300, y, f"Date: {data.get('timestamp_start', 'N/A')}")
-        y -= 20
-        c.drawString(50, y, f"Notes: {meta.get('notes', 'None')}")
-        y -= 30
-
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, "Source Media Telemetry")
-        y -= 15
-        c.setFont("Helvetica", 10)
-        drive = data.get('source_drive_telemetry', {})
-        c.drawString(50, y, f"Device: {drive.get('device_path')} ({drive.get('capacity_gb')} GB)")
-        c.drawString(300, y, f"Model: {drive.get('vendor_model')}")
-        y -= 15
-        c.drawString(50, y, f"Serial: {drive.get('serial_number')}")
-        c.drawString(300, y, f"SMART Status: {'PASSED' if drive.get('smart_healthy') else 'FAILING'}")
-        y -= 30
-
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, "Acquisition & Verification Hashes")
-        y -= 15
-        c.setFont("Helvetica", 10)
-        params = data.get('acquisition_parameters', {})
-        c.drawString(50, y, f"Format: {params.get('output_format', 'dd').upper()}")
-        c.drawString(300, y, f"Status: {data.get('acquisition_status')}")
-        y -= 20
-
-        hashes = data.get('computed_verification_hashes', {})
-        for k, v in hashes.items():
-            c.drawString(50, y, f"{k.upper()}: {v}")
-            y -= 15
-
-        attachments = data.get('attachments', {})
-        file_list = attachments.get('files', [])
-        if not file_list and attachments.get('image_path'):
-            file_list = [attachments.get('image_path')]
-
-        ref_urls = attachments.get('reference_urls', [])
-
-        if file_list or ref_urls:
-            if y < 150:
-                c.showPage()
-                y = 730
-
-            y -= 15
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(50, y, "Case Attachments & References")
-            y -= 20
+        # A consolidated case file (has "events") gets a case-level header +
+        # one section per job event; a legacy single-job report (no
+        # "events" key - either never migrated, or a genuine no-case ad-hoc
+        # job) keeps the exact original single-section layout.
+        if 'events' in data:
             c.setFont("Helvetica", 10)
+            y = 710
+            c.drawString(50, y, f"Case Number: {data.get('case_number', 'N/A')}")
+            c.drawString(300, y, f"Examiner: {data.get('examiner', 'N/A')}")
+            y -= 20
+            c.drawString(50, y, f"Created: {data.get('created_at', 'N/A')}")
+            c.drawString(300, y, f"Evidence Items: {len(data.get('events', []))}")
+            y -= 20
+            c.drawString(50, y, f"Notes: {data.get('notes', 'None')}")
+            y -= 30
 
-            if ref_urls:
-                c.drawString(50, y, "Reference Links / URLs:")
-                y -= 15
-                for url in ref_urls:
-                    c.setFillColorRGB(0, 0, 0.8)
-                    c.drawString(60, y, f"• {url}")
-                    c.setFillColorRGB(0, 0, 0)
-                    y -= 15
+            for i, event in enumerate(data.get('events', [])):
+                if i > 0:
+                    c.showPage()
+                    y = 750
+                meta = event.get('case_metadata', {})
+                c.setFont("Helvetica-Bold", 13)
+                c.drawString(50, y, f"Evidence Item: {meta.get('evidence_id', 'N/A')} ({event.get('tool', 'N/A')})")
+                y -= 20
+                c.setFont("Helvetica", 10)
+                c.drawString(50, y, f"Date: {event.get('timestamp_start', 'N/A')}")
+                y -= 25
+                y = _draw_pdf_job_section(c, y, event)
 
-            if file_list:
-                c.drawString(50, y, "Attached Case Files / Media:")
-                y -= 15
-                for raw_path in file_list:
-                    file_path = safe_path(raw_path)
-                    if not file_path or not os.path.exists(file_path):
-                        continue
-
-                    ext = os.path.splitext(file_path)[1].lower()
-                    if ext in ['.jpg', '.jpeg', '.png']:
-                        if y < 200:
-                            c.showPage()
-                            y = 730
-                        try:
-                            c.drawString(60, y, f"• Photo: {os.path.basename(file_path)}")
-                            y -= 140
-                            c.drawImage(ImageReader(file_path), 60, y, width=200, height=130, preserveAspectRatio=True)
-                            y -= 15
-                        except Exception as img_err:
-                            c.drawString(60, y, f"• Photo Error ({os.path.basename(file_path)}): {str(img_err)}")
-                            y -= 15
-                    else:
-                        c.drawString(60, y, f"• Document: {os.path.basename(file_path)} ({file_path})")
-                        y -= 15
+            y = _draw_pdf_attachments(c, y, data.get('attachments', {}))
+        else:
+            c.setFont("Helvetica", 10)
+            y = 710
+            meta = data.get('case_metadata', {})
+            c.drawString(50, y, f"Case Number: {meta.get('case_number', 'N/A')}")
+            c.drawString(300, y, f"Evidence ID: {meta.get('evidence_id', 'N/A')}")
+            y -= 20
+            c.drawString(50, y, f"Examiner: {meta.get('examiner', 'N/A')}")
+            c.drawString(300, y, f"Date: {data.get('timestamp_start', 'N/A')}")
+            y -= 20
+            c.drawString(50, y, f"Notes: {meta.get('notes', 'None')}")
+            y -= 30
+            y = _draw_pdf_job_section(c, y, data)
+            y = _draw_pdf_attachments(c, y, data.get('attachments', {}))
 
         c.save()
         return send_file(pdf_path, as_attachment=True)
