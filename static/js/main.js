@@ -754,6 +754,8 @@ function updateContextToolbar(item) {
     const btnClamscan = document.getElementById("btnRunClamscan");
     const btnStrings = document.getElementById("btnRunStrings");
     const btnHashdeep = document.getElementById("btnRunHashdeep");
+    const btnMvtIos = document.getElementById("btnRunMvtIos");
+    const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
 
     if (btnDelete) btnDelete.disabled = false;
     if (btnCopy) btnCopy.disabled = false;
@@ -762,6 +764,8 @@ function updateContextToolbar(item) {
     if (btnStrings) btnStrings.disabled = item.is_dir;
     if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
+    if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
+    if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
 
     if (!item.is_dir && (item.name.toLowerCase().endsWith('.dd') || item.name.toLowerCase().endsWith('.e01'))) {
         if (btnVerify) btnVerify.disabled = false;
@@ -1014,6 +1018,55 @@ async function runSelectedHashdeep() {
             alert(`hashdeep failed: ${data.error}`);
         }
     } catch (err) {}
+}
+
+async function runSelectedMvtScan(platform) {
+    if (!activeSelectedFile) return;
+    const label = platform === 'ios' ? 'MVT iOS Backup Scan' : 'MVT Android Backup Scan';
+    showToolOutputModal(`${label}: ${activeSelectedFile.split('/').pop()}`, 'bi-phone');
+
+    try {
+        const res = await fetch('/api/files/mvt_scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, platform })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) {
+            if (container) container.textContent = `[ERROR] ${data.error}`;
+            return;
+        }
+        if (container) container.textContent = `${data.output}\n\n[Full results written to: ${data.output_dir}]`;
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function updateMvtIndicators(btnEl) {
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Updating...';
+    }
+
+    try {
+        const res = await fetch('/api/tools/mvt_update_iocs', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            const summary = Object.entries(data.results).map(([platform, msg]) => `${platform}: ${msg}`).join('\n\n');
+            alert(`MVT indicator update finished:\n\n${summary}`);
+        } else {
+            alert(`Update failed: ${data.error}`);
+        }
+    } catch (err) {
+        alert('Update request failed.');
+    } finally {
+        if (btnEl) {
+            btnEl.disabled = false;
+            btnEl.innerHTML = '<i class="bi bi-cloud-download me-1"></i>Update MVT Indicators';
+        }
+    }
 }
 
 // --- Image Browser (Sleuth Kit: mmls/fls/icat) ---
@@ -2326,10 +2379,43 @@ async function changeAdminPassword() {
     }
 }
 
-async function runDiagnostic(key) {
-    const out = document.getElementById("diagOutput");
-    if (out) out.innerText = `$ ${key}\nRunning...`;
+// --- Shared Service Controls & Diagnostics right pane (Advanced Settings) ---
+// Every button in that card reports here instead of alert() popups, so the
+// examiner has a running record of what was run and what it returned. The
+// pane is one of two mutually-exclusive views - a terminal-style <pre> for
+// command output, or a table for Check Tool Versions - never both at once.
+function showDiagTerminal() {
+    const pre = document.getElementById("diagOutput");
+    const panel = document.getElementById("toolVersionsPanel");
+    const actions = document.getElementById("toolVersionsActions");
+    if (pre) pre.style.display = '';
+    if (panel) panel.style.display = 'none';
+    if (actions) actions.style.display = 'none';
+}
 
+function showToolVersionsPanel() {
+    const pre = document.getElementById("diagOutput");
+    const panel = document.getElementById("toolVersionsPanel");
+    const actions = document.getElementById("toolVersionsActions");
+    if (pre) pre.style.display = 'none';
+    if (panel) panel.style.display = '';
+    if (actions) actions.style.display = 'flex';
+    loadToolVersions();
+}
+
+function diagRunning(label) {
+    showDiagTerminal();
+    const out = document.getElementById("diagOutput");
+    if (out) out.innerText = `$ ${label}\nRunning...`;
+}
+
+function diagResult(label, text) {
+    const out = document.getElementById("diagOutput");
+    if (out) out.innerText = `$ ${label}\n\n${text}`;
+}
+
+async function runDiagnostic(key) {
+    diagRunning(key);
     try {
         const res = await fetch('/api/system/diagnostics', {
             method: 'POST',
@@ -2337,20 +2423,10 @@ async function runDiagnostic(key) {
             body: JSON.stringify({ command: key })
         });
         const data = await res.json();
-        if (out) out.innerText = data.success ? `$ ${data.command}\n\n${data.output}` : `[ERROR] ${data.error}`;
+        diagResult(data.success ? data.command : key, data.success ? data.output : `[ERROR] ${data.error}`);
     } catch (err) {
-        if (out) out.innerText = '[REQUEST FAILED]';
+        diagResult(key, '[REQUEST FAILED]');
     }
-}
-
-let toolVersionsModalInstance = null;
-
-function openToolVersionsModal() {
-    if (!toolVersionsModalInstance) {
-        toolVersionsModalInstance = new bootstrap.Modal(document.getElementById('toolVersionsModal'));
-    }
-    toolVersionsModalInstance.show();
-    loadToolVersions();
 }
 
 async function loadToolVersions() {
@@ -2453,42 +2529,56 @@ async function purgeConsoleLogs() {
 
 async function restartForensicService() {
     if (!confirm("Restart the forensic web service now? Any running acquisition job state will be lost, and this page will disconnect briefly.")) return;
+    diagRunning("Restart Service");
     try {
         const res = await fetch('/api/system/restart_service', { method: 'POST' });
         const data = await res.json();
-        alert(data.message || data.error);
-    } catch (err) {}
+        diagResult("Restart Service", data.message || data.error);
+    } catch (err) {
+        diagResult("Restart Service", "[REQUEST FAILED]");
+    }
 }
 
 async function restartKioskDisplay() {
+    diagRunning("Reload Touch Kiosk");
     try {
         const res = await fetch('/api/system/restart_kiosk', { method: 'POST' });
         const data = await res.json();
-        alert(data.message || data.error);
-    } catch (err) {}
+        diagResult("Reload Touch Kiosk", data.message || data.error);
+    } catch (err) {
+        diagResult("Reload Touch Kiosk", "[REQUEST FAILED]");
+    }
 }
 
 async function gitUpdateApp() {
     if (!confirm("Pull the latest code from the configured git remote and restart the service? Only do this if you trust that remote.")) return;
+    diagRunning("Update App (Git Pull)");
     try {
         const res = await fetch('/api/system/git_update', { method: 'POST' });
         const data = await res.json();
-        alert(data.message || data.error);
-    } catch (err) {}
+        diagResult("Update App (Git Pull)", data.message || data.error);
+    } catch (err) {
+        diagResult("Update App (Git Pull)", "[REQUEST FAILED]");
+    }
 }
 
 async function updateOperatingSystem() {
     if (!confirm("Run apt-get update && upgrade -y in the background? This can take a while and should not be interrupted.")) return;
+    diagRunning("Update OS Packages");
     try {
         const res = await fetch('/api/system/os_update', { method: 'POST' });
         const data = await res.json();
-        alert(data.message || data.error);
-    } catch (err) {}
+        diagResult("Update OS Packages", data.message || data.error);
+    } catch (err) {
+        diagResult("Update OS Packages", "[REQUEST FAILED]");
+    }
 }
 
 async function triggerSystemPower(action) {
-    const label = action === 'poweroff' ? 'power off' : 'reboot';
-    if (!confirm(`Are you sure you want to ${label} the station now? Any running acquisition will be interrupted.`)) return;
+    const label = action === 'poweroff' ? 'Power Off Station' : 'Reboot Appliance';
+    const confirmLabel = action === 'poweroff' ? 'power off' : 'reboot';
+    if (!confirm(`Are you sure you want to ${confirmLabel} the station now? Any running acquisition will be interrupted.`)) return;
+    diagRunning(label);
     try {
         const res = await fetch('/api/system/power', {
             method: 'POST',
@@ -2496,8 +2586,10 @@ async function triggerSystemPower(action) {
             body: JSON.stringify({ action })
         });
         const data = await res.json();
-        alert(data.message || data.error);
-    } catch (err) {}
+        diagResult(label, data.message || data.error);
+    } catch (err) {
+        diagResult(label, "[REQUEST FAILED]");
+    }
 }
 
 async function fetchNetworkInterfaces() {

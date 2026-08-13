@@ -508,11 +508,11 @@
                                     <div id="recoverySourceRow" class="row g-2 mb-2">
                                         <div class="col-md-6">
                                             <label class="telemetry-grid-label d-block mb-1">Source (device or acquired image path)</label>
-                                            <div class="input-group input-group-sm">
-                                                <select id="recoverySourceDrive" class="form-select form-select-sm drive-select"></select>
-                                                <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('recoverySource')" title="Or browse to an image file instead"><i class="bi bi-folder2-open me-1"></i></button>
+                                            <select id="recoverySourceDrive" class="form-select form-select-sm drive-select"></select>
+                                            <div class="input-group input-group-sm mt-1">
+                                                <input type="text" id="recoverySourcePath" class="form-control font-monospace" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
+                                                <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('recoverySource')" title="Browse to an image file"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                             </div>
-                                            <input type="text" id="recoverySourcePath" class="form-control form-control-sm font-monospace mt-1" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
                                         </div>
                                         <div class="col-md-6" id="recoveryDestCol">
                                             <label class="telemetry-grid-label d-block mb-1">Destination</label>
@@ -595,6 +595,8 @@
                                                         <li><button id="btnRunClamscan" class="dropdown-item" onclick="runSelectedClamscan()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks this file (or folder) against known virus/malware signatures."><i class="bi bi-shield-exclamation me-2"></i>Scan for Malware (ClamAV)</button></li>
                                                         <li><button id="btnRunStrings" class="dropdown-item" onclick="runSelectedStrings()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls out any readable text hiding inside a file that isn't normally text - like URLs or passwords buried in an executable."><i class="bi bi-fonts me-2"></i>Extract Strings</button></li>
                                                         <li><button id="btnRunHashdeep" class="dropdown-item" onclick="runSelectedHashdeep()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Creates a fingerprint (hash) for every file in a folder at once - useful for proving a whole set of recovered files hasn't been tampered with."><i class="bi bi-list-check me-2"></i>Hash Directory Tree (hashdeep)</button></li>
+                                                        <li><button id="btnRunMvtIos" class="dropdown-item" onclick="runSelectedMvtScan('ios')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks an iOS backup folder (from Mobile Forensics) against known spyware indicators, using Amnesty International's Mobile Verification Toolkit."><i class="bi bi-phone me-2"></i>MVT Scan (iOS Backup)</button></li>
+                                                        <li><button id="btnRunMvtAndroid" class="dropdown-item" onclick="runSelectedMvtScan('android')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Best-effort spyware/IOC scan of an Android backup folder using MVT. Only matches a decrypted adb-backup-format directory, not adb pull/bugreport output - errors clearly if the format doesn't match."><i class="bi bi-phone me-2"></i>MVT Scan (Android Backup)</button></li>
                                                         <li><hr class="dropdown-divider"></li>
                                                         <li><button id="btnCopyFile" class="dropdown-item" onclick="promptCopySelected()" disabled><i class="bi bi-copy me-2"></i>Copy to...</button></li>
                                                         <li><button id="btnDeleteFile" class="dropdown-item text-danger" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-2"></i>Delete</button></li>
@@ -1009,65 +1011,70 @@
                         </div>
                     </div>
 
-                    <!-- Section 3: Service Controls & Updates -->
-                    <div class="grid-stack-item" gs-id="set-card-updates" gs-x="0" gs-y="4" gs-w="12" gs-h="5">
+                    <!-- Section 3: Service Controls, Updates, Power & Diagnostics (combined) -->
+                    <div class="grid-stack-item" gs-id="set-card-diag" gs-x="0" gs-y="4" gs-w="12" gs-h="10">
                         <div class="grid-stack-item-content">
                             <div class="card border-info">
-                                <div class="card-header bg-dark text-info fw-bold py-2"><i class="bi bi-gear-fill me-2"></i>Appliance Service & Updates</div>
-                                <div class="card-body py-3">
-                                    <div class="row g-2 mb-3">
-                                        <div class="col-6"><button class="btn btn-outline-info w-100 fw-bold py-2" onclick="restartForensicService()"><i class="bi bi-arrow-repeat me-1"></i>Restart Service</button></div>
-                                        <div class="col-6"><button class="btn btn-outline-warning w-100 fw-bold py-2" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button></div>
-                                    </div>
-                                    <div class="row g-2 mb-3">
-                                        <div class="col-6"><button class="btn btn-success w-100 fw-bold py-2" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button></div>
-                                        <div class="col-6"><button class="btn btn-primary w-100 fw-bold py-2" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button></div>
-                                    </div>
-                                    <div class="row g-2 mb-3">
-                                        <div class="col-12"><button class="btn btn-outline-info w-100 fw-bold py-2" onclick="openToolVersionsModal()"><i class="bi bi-info-square me-1"></i>Check Tool Versions</button></div>
-                                    </div>
-                                    <div class="small text-subtle mb-2">Git/OS updates pull code or packages from configured remotes - only run these on a station whose update sources you trust.</div>
-                                    <hr class="border-secondary my-2">
-                                    <h6 class="text-danger fw-bold mb-2"><i class="bi bi-power me-2"></i>Hardware Power Controls</h6>
-                                    <div class="d-flex gap-2">
-                                        <button class="btn btn-warning text-dark flex-fill fw-bold py-2" onclick="triggerSystemPower('reboot')"><i class="bi bi-arrow-clockwise me-1"></i>Reboot Appliance</button>
-                                        <button class="btn btn-danger flex-fill fw-bold py-2" onclick="triggerSystemPower('poweroff')"><i class="bi bi-power me-1"></i>Power Off Station</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Section 5: Safe Fixed-Command Diagnostics (no free-text shell exec) -->
-                    <div class="grid-stack-item" gs-id="set-card-diag" gs-x="0" gs-y="9" gs-w="12" gs-h="5">
-                        <div class="grid-stack-item-content">
-                            <div class="card border-info">
-                                <div class="card-header bg-dark text-info fw-bold py-2 d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-terminal-fill me-2"></i>Read-Only System Diagnostics</span>
-                                    <div class="d-flex gap-1 flex-wrap">
-                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('dmesg')">dmesg</button>
-                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('lsusb')">lsusb</button>
-                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('df')">df -h</button>
-                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('ip_a')">ip a</button>
-                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('uptime')">uptime</button>
-                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('lsblk')">lsblk</button>
-                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('free')">free -h</button>
-                                        <button class="btn btn-xs btn-outline-secondary text-light px-2" onclick="runDiagnostic('mounts')">mount</button>
-                                    </div>
-                                </div>
+                                <div class="card-header bg-dark text-info fw-bold py-2"><i class="bi bi-terminal-fill me-2"></i>Service Controls & Diagnostics</div>
                                 <div class="card-body py-2">
-                                    <div class="small text-subtle mb-2">
-                                        This runs a fixed, read-only diagnostic command via a strict allowlist - not a general shell.
-                                        There is intentionally no free-text command box here: a web-exposed "run anything" terminal is a full remote
-                                        code execution hole, and that trade-off isn't worth the convenience on a device that images evidence. SSH in for anything not listed above.
+                                    <div class="row g-2">
+                                        <div class="col-md-3">
+                                            <div class="d-grid gap-1">
+                                                <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartForensicService()"><i class="bi bi-arrow-repeat me-1"></i>Restart Service</button>
+                                                <button class="btn btn-sm btn-outline-warning fw-bold text-start" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button>
+                                                <button class="btn btn-sm btn-success fw-bold text-start" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button>
+                                                <button class="btn btn-sm btn-primary fw-bold text-start" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button>
+                                                <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="showToolVersionsPanel()"><i class="bi bi-info-square me-1"></i>Check Tool Versions</button>
+
+                                                <hr class="border-secondary my-1">
+
+                                                <div class="dropdown">
+                                                    <button class="btn btn-sm btn-outline-secondary text-light fw-bold text-start w-100 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-terminal me-1"></i>Run Diagnostic</button>
+                                                    <ul class="dropdown-menu dropdown-menu-dark">
+                                                        <li><button class="dropdown-item" onclick="runDiagnostic('dmesg')">dmesg</button></li>
+                                                        <li><button class="dropdown-item" onclick="runDiagnostic('lsusb')">lsusb</button></li>
+                                                        <li><button class="dropdown-item" onclick="runDiagnostic('df')">df -h</button></li>
+                                                        <li><button class="dropdown-item" onclick="runDiagnostic('ip_a')">ip a</button></li>
+                                                        <li><button class="dropdown-item" onclick="runDiagnostic('uptime')">uptime</button></li>
+                                                        <li><button class="dropdown-item" onclick="runDiagnostic('lsblk')">lsblk</button></li>
+                                                        <li><button class="dropdown-item" onclick="runDiagnostic('free')">free -h</button></li>
+                                                        <li><button class="dropdown-item" onclick="runDiagnostic('mounts')">mount</button></li>
+                                                    </ul>
+                                                </div>
+
+                                                <hr class="border-secondary my-1">
+
+                                                <button class="btn btn-sm btn-warning text-dark fw-bold text-start" onclick="triggerSystemPower('reboot')"><i class="bi bi-arrow-clockwise me-1"></i>Reboot Appliance</button>
+                                                <button class="btn btn-sm btn-danger fw-bold text-start" onclick="triggerSystemPower('poweroff')"><i class="bi bi-power me-1"></i>Power Off Station</button>
+                                            </div>
+                                            <div class="small text-subtle mt-2">
+                                                Git/OS updates pull from configured remotes - only run these on a station whose update
+                                                sources you trust. Diagnostics are a fixed, read-only allowlist, not a general shell -
+                                                SSH in for anything not listed here.
+                                            </div>
+                                        </div>
+                                        <div class="col-md-9">
+                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                <span class="telemetry-grid-label">Output</span>
+                                                <div id="toolVersionsActions" style="display:none; gap: 4px;">
+                                                    <button type="button" class="btn btn-xs btn-outline-warning fw-bold py-0 px-2" onclick="updateMvtIndicators(this)" title="Downloads the latest spyware/IOC indicator files MVT scans check against - needs internet access."><i class="bi bi-cloud-download me-1"></i>Update MVT Indicators</button>
+                                                    <button type="button" class="btn btn-xs btn-outline-info fw-bold py-0 px-2" onclick="loadToolVersions()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                                </div>
+                                            </div>
+                                            <pre id="diagOutput" class="log-window mb-0" style="height: 420px;">[Run a command on the left to see its output here.]</pre>
+                                            <div id="toolVersionsPanel" class="log-window mb-0 p-0" style="height: 420px; overflow-y: auto; display:none;">
+                                                <table class="table table-sm table-dark table-striped mb-0 font-monospace small">
+                                                    <tbody id="toolVersionsBody">
+                                                        <tr><td colspan="3" class="text-subtle">Loading...</td></tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <pre id="diagOutput" class="log-window mb-0" style="height: 160px;">[Select a diagnostic above to run it.]</pre>
                                 </div>
                             </div>
                         </div>
                     </div>
-
-                    <!-- Tool Versions now shown via popup - see Check Tool Versions button above -->
                 </div>
             </div>
 
@@ -1132,34 +1139,6 @@
                     <pre id="toolOutputContainer" class="log-window mb-0" style="height: 350px;">Loading...</pre>
                 </div>
                 <div class="modal-footer border-secondary py-2">
-                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal fade" id="toolVersionsModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered modal-lg">
-            <div class="modal-content bg-dark text-light border-secondary">
-                <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-info-square me-2"></i>Tool Versions</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body py-2">
-                    <div class="small text-subtle mb-2">
-                        What produced a given piece of evidence should always be answerable from the station
-                        itself. Useful for support requests and for documenting exactly what tooling was used.
-                    </div>
-                    <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
-                        <table class="table table-sm table-dark table-striped mb-0 font-monospace small">
-                            <tbody id="toolVersionsBody">
-                                <tr><td colspan="3" class="text-subtle">Loading...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-                <div class="modal-footer border-secondary py-2">
-                    <button type="button" class="btn btn-sm btn-outline-info fw-bold" onclick="loadToolVersions()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
