@@ -769,7 +769,6 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function updateContextToolbar(item) {
-    const btnVerify = document.getElementById("btnVerifyHash");
     const btnDelete = document.getElementById("btnDeleteFile");
     const btnCopy = document.getElementById("btnCopyFile");
     const btnMetadata = document.getElementById("btnFileMetadata");
@@ -790,12 +789,6 @@ function updateContextToolbar(item) {
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
-
-    if (!item.is_dir && (item.name.toLowerCase().endsWith('.dd') || item.name.toLowerCase().endsWith('.e01'))) {
-        if (btnVerify) btnVerify.disabled = false;
-    } else {
-        if (btnVerify) btnVerify.disabled = true;
-    }
 
     const IMAGE_EXTENSIONS = ['.dd', '.raw', '.img', '.e01', '.aff'];
     if (!item.is_dir && IMAGE_EXTENSIONS.some(ext => item.name.toLowerCase().endsWith(ext))) {
@@ -849,24 +842,6 @@ async function deleteSelectedFile() {
             loadExplorer(explorerPath);
         } else {
             alert(`Delete failed: ${data.error}`);
-        }
-    } catch (err) {}
-}
-
-async function verifySelectedHash() {
-    if (!activeSelectedFile) return;
-
-    try {
-        const res = await fetch('/api/verify_hash', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file_path: activeSelectedFile, algorithm: 'sha256' })
-        });
-        const data = await res.json();
-        if (data.success) {
-            alert(`Verification Hash (${data.algorithm}):\nFile: ${data.file_name}\nHash: ${data.hash}`);
-        } else {
-            alert(`Hash verification error: ${data.error}`);
         }
     } catch (err) {}
 }
@@ -1334,10 +1309,10 @@ function openFilePickerModal(mode) {
     openFolderModal(modalPickerMode);
 }
 
-async function loadReportForEditing() {
+async function loadCaseForEditing() {
     const reportPathEl = document.getElementById("editReportPath");
     const reportPath = reportPathEl ? reportPathEl.value.trim() : "";
-    if (!reportPath) return alert("Select or enter a report JSON file path first.");
+    if (!reportPath) return alert("Select or enter a report/case JSON file path first.");
 
     try {
         const res = await fetch('/api/report/load', {
@@ -1349,17 +1324,27 @@ async function loadReportForEditing() {
 
         if (data.success) {
             currentLoadedReportData = data.report;
-            
-            const meta = currentLoadedReportData.case_metadata || {};
+
+            // A consolidated case file has a top-level "events" array; a
+            // legacy single-job report has case_number/examiner/notes
+            // nested under case_metadata instead. Same Case Information
+            // fields, different source location depending on which one
+            // was loaded.
+            const isConsolidated = Array.isArray(currentLoadedReportData.events);
+            const legacyMeta = currentLoadedReportData.case_metadata || {};
+
             const editCaseNum = document.getElementById("editCaseNum");
-            const editEvidenceId = document.getElementById("editEvidenceId");
             const editExaminer = document.getElementById("editExaminer");
             const editNotes = document.getElementById("editNotes");
+            const legacyNotice = document.getElementById("repLegacyNotice");
 
-            if (editCaseNum) editCaseNum.value = meta.case_number || "";
-            if (editEvidenceId) editEvidenceId.value = meta.evidence_id || "";
-            if (editExaminer) editExaminer.value = meta.examiner || "";
-            if (editNotes) editNotes.value = meta.notes || "";
+            if (editCaseNum) editCaseNum.value = (isConsolidated ? currentLoadedReportData.case_number : legacyMeta.case_number) || "";
+            if (editExaminer) editExaminer.value = (isConsolidated ? currentLoadedReportData.examiner : legacyMeta.examiner) || "";
+            if (editNotes) editNotes.value = (isConsolidated ? currentLoadedReportData.notes : legacyMeta.notes) || "";
+            if (legacyNotice) legacyNotice.style.display = isConsolidated ? 'none' : 'block';
+
+            loadCaseHistory();
+            renderCaseJobs();
 
             const attach = currentLoadedReportData.attachments || {};
             currentAttachedFilesList = attach.files || [];
@@ -1425,7 +1410,7 @@ async function loadCaseIndex() {
             row.onclick = () => {
                 const reportPathEl = document.getElementById("editReportPath");
                 if (reportPathEl) reportPathEl.value = r.path;
-                loadReportForEditing();
+                loadCaseForEditing();
             };
             tbody.appendChild(row);
         });
@@ -1434,7 +1419,108 @@ async function loadCaseIndex() {
     }
 }
 
+// --- Case Jobs (consolidated-schema case files only) ---
+// Renders currentLoadedReportData.events directly - already in memory from
+// loadCaseForEditing(), no extra fetch. A legacy single-job report has no
+// "events" array at all, so that case is called out distinctly rather than
+// just showing an empty list.
+function renderCaseJobs() {
+    const container = document.getElementById("jobsContainer");
+    if (!container) return;
+
+    if (!currentLoadedReportData) {
+        container.innerHTML = '<span class="text-subtle">Load a case above, then open this tab to see its jobs.</span>';
+        return;
+    }
+    const events = currentLoadedReportData.events;
+    if (!Array.isArray(events)) {
+        container.innerHTML = '<span class="text-subtle">This is a single-job legacy report with no separate job history - migrate it (Case Index or Case Manager) to see jobs listed individually.</span>';
+        return;
+    }
+    if (events.length === 0) {
+        container.innerHTML = '<span class="text-subtle">No jobs recorded against this case yet.</span>';
+        return;
+    }
+
+    container.innerHTML = '';
+    const sorted = [...events].sort((a, b) => (b.timestamp_start || '').localeCompare(a.timestamp_start || ''));
+    sorted.forEach(ev => {
+        const meta = ev.case_metadata || {};
+        const wrapper = document.createElement('div');
+        wrapper.className = 'mb-1 pb-1 border-bottom border-secondary';
+
+        const summary = document.createElement('div');
+        summary.className = 'd-flex justify-content-between align-items-center';
+        summary.style.cursor = 'pointer';
+
+        const left = document.createElement('span');
+        const toolSpan = document.createElement('span');
+        toolSpan.className = 'text-info fw-bold';
+        toolSpan.textContent = (ev.tool || '--').toUpperCase() + '  ';
+        left.appendChild(toolSpan);
+        left.appendChild(document.createTextNode(`${meta.evidence_id || '--'}  ·  ${ev.timestamp_start || '--'}`));
+
+        const status = (ev.acquisition_status || '--').toUpperCase();
+        const statusBadge = document.createElement('span');
+        statusBadge.className = 'badge ' + (status === 'COMPLETED' ? 'bg-success' : status === 'FAILED' ? 'bg-danger' : 'bg-info text-dark');
+        statusBadge.textContent = status;
+
+        summary.appendChild(left);
+        summary.appendChild(statusBadge);
+
+        const detail = document.createElement('pre');
+        detail.className = 'text-light small mt-1 mb-0';
+        detail.style.display = 'none';
+        detail.style.whiteSpace = 'pre-wrap';
+        detail.textContent = JSON.stringify(ev, null, 2); // this case's own data, but still rendered as text, never HTML
+
+        summary.onclick = () => { detail.style.display = detail.style.display === 'none' ? 'block' : 'none'; };
+
+        wrapper.appendChild(summary);
+        wrapper.appendChild(detail);
+        container.appendChild(wrapper);
+    });
+}
+
 // --- Chain of Custody Log ---
+// Shared row-rendering for both the station-wide Audit Log (Settings) and
+// the per-case History tab (Reporting) - same entry shape from either
+// /api/coc/log or /api/coc/case_history, just a different filter server-side.
+function renderCocEntries(container, entries) {
+    container.innerHTML = '';
+    if (entries.length === 0) {
+        container.innerHTML = '<span class="text-subtle">No entries found.</span>';
+        return;
+    }
+
+    entries.forEach(entry => {
+        const row = document.createElement('div');
+        row.className = 'mb-1 pb-1 border-bottom border-secondary';
+
+        const line1 = document.createElement('div');
+        const tsSpan = document.createElement('span');
+        tsSpan.className = 'text-subtle';
+        tsSpan.textContent = entry.timestamp + '  ';
+        const actionSpan = document.createElement('span');
+        actionSpan.className = 'text-info fw-bold';
+        actionSpan.textContent = entry.action;
+        line1.appendChild(tsSpan);
+        line1.appendChild(actionSpan);
+        row.appendChild(line1);
+
+        const detailsStr = Object.entries(entry.details || {}).map(([k, v]) => `${k}=${v}`).join(', ');
+        if (detailsStr) {
+            const line2 = document.createElement('div');
+            line2.className = 'text-light text-break';
+            line2.style.fontSize = '0.85em';
+            line2.textContent = detailsStr; // untrusted (contains file paths etc.) - text node only
+            row.appendChild(line2);
+        }
+
+        container.appendChild(row);
+    });
+}
+
 async function loadChainOfCustodyLog() {
     const container = document.getElementById("cocLogContainer");
     if (!container) return;
@@ -1443,7 +1529,6 @@ async function loadChainOfCustodyLog() {
     try {
         const res = await fetch('/api/coc/log?limit=200');
         const data = await res.json();
-
         if (!data.success) {
             container.innerHTML = '';
             const err = document.createElement('div');
@@ -1452,39 +1537,7 @@ async function loadChainOfCustodyLog() {
             container.appendChild(err);
             return;
         }
-
-        container.innerHTML = '';
-        if (data.entries.length === 0) {
-            container.innerHTML = '<span class="text-subtle">No entries logged yet.</span>';
-            return;
-        }
-
-        data.entries.forEach(entry => {
-            const row = document.createElement('div');
-            row.className = 'mb-1 pb-1 border-bottom border-secondary';
-
-            const line1 = document.createElement('div');
-            const tsSpan = document.createElement('span');
-            tsSpan.className = 'text-subtle';
-            tsSpan.textContent = entry.timestamp + '  ';
-            const actionSpan = document.createElement('span');
-            actionSpan.className = 'text-info fw-bold';
-            actionSpan.textContent = entry.action;
-            line1.appendChild(tsSpan);
-            line1.appendChild(actionSpan);
-            row.appendChild(line1);
-
-            const detailsStr = Object.entries(entry.details || {}).map(([k, v]) => `${k}=${v}`).join(', ');
-            if (detailsStr) {
-                const line2 = document.createElement('div');
-                line2.className = 'text-light text-break';
-                line2.style.fontSize = '0.85em';
-                line2.textContent = detailsStr; // untrusted (contains file paths etc.) - text node only
-                row.appendChild(line2);
-            }
-
-            container.appendChild(row);
-        });
+        renderCocEntries(container, data.entries);
     } catch (err) {
         container.innerHTML = '<span class="text-danger">Request failed.</span>';
     }
@@ -1495,6 +1548,37 @@ function exportAuditLogCsv() {
     // takes over - the response's Content-Disposition: attachment header
     // means this never actually navigates away from the app.
     window.location.href = '/api/coc/export_csv';
+}
+
+// Case-scoped view of the same log, for Reporting's History tab - distinct
+// from the station-wide Audit Log above. Uses whatever case number is
+// currently loaded into the Case Information block.
+async function loadCaseHistory() {
+    const container = document.getElementById("caseHistoryContainer");
+    if (!container) return;
+
+    const caseNum = document.getElementById("editCaseNum")?.value.trim();
+    if (!caseNum) {
+        container.innerHTML = '<span class="text-subtle">Load a report above first - History needs a case number to filter by.</span>';
+        return;
+    }
+
+    container.innerHTML = '<span class="text-subtle">Loading...</span>';
+    try {
+        const res = await fetch(`/api/coc/case_history?case_number=${encodeURIComponent(caseNum)}&limit=200`);
+        const data = await res.json();
+        if (!data.success) {
+            container.innerHTML = '';
+            const err = document.createElement('div');
+            err.className = 'text-danger';
+            err.textContent = data.error;
+            container.appendChild(err);
+            return;
+        }
+        renderCocEntries(container, data.entries);
+    } catch (err) {
+        container.innerHTML = '<span class="text-danger">Request failed.</span>';
+    }
 }
 
 async function saveReportMetadata() {
@@ -1510,12 +1594,27 @@ async function saveReportMetadata() {
         currentLoadedReportData = { case_metadata: {}, attachments: {} };
     }
 
-    currentLoadedReportData.case_metadata = {
-        case_number: document.getElementById("editCaseNum")?.value || "",
-        evidence_id: document.getElementById("editEvidenceId")?.value || "",
-        examiner: document.getElementById("editExaminer")?.value || "",
-        notes: document.getElementById("editNotes")?.value || ""
-    };
+    const caseNumber = document.getElementById("editCaseNum")?.value || "";
+    const examiner = document.getElementById("editExaminer")?.value || "";
+    const notes = document.getElementById("editNotes")?.value || "";
+
+    if (Array.isArray(currentLoadedReportData.events)) {
+        // Consolidated case file - case_number/examiner/notes are top-level
+        // fields; events[] is left completely untouched so a metadata save
+        // can never clobber job history.
+        currentLoadedReportData.case_number = caseNumber;
+        currentLoadedReportData.examiner = examiner;
+        currentLoadedReportData.notes = notes;
+    } else {
+        // Legacy single-job report - preserve evidence_id (no longer
+        // editable here, but still part of this report's own data).
+        currentLoadedReportData.case_metadata = {
+            ...(currentLoadedReportData.case_metadata || {}),
+            case_number: caseNumber,
+            examiner: examiner,
+            notes: notes
+        };
+    }
 
     const urlsRaw = document.getElementById("editUrls")?.value.trim() || "";
     const urlArray = urlsRaw ? urlsRaw.split(',').map(u => u.trim()).filter(u => u.length > 0) : [];
@@ -1670,6 +1769,22 @@ document.addEventListener('shown.bs.modal', (ev) => {
     if (topBackdrop) topBackdrop.style.zIndex = zBase;
 });
 
+// --- Collapsible Settings Cards ---
+// Generic chevron-flip for any Bootstrap .collapse toggle - finds whichever
+// button targets the collapse element that just opened/closed and flips its
+// icon, rather than wiring a dedicated handler per card. Works for any
+// future collapsible card too, not just the current five in Settings.
+document.addEventListener('show.bs.collapse', (ev) => {
+    const btn = document.querySelector(`[data-bs-target="#${ev.target.id}"]`);
+    const icon = btn ? btn.querySelector('i') : null;
+    if (icon) { icon.classList.remove('bi-chevron-down'); icon.classList.add('bi-chevron-up'); }
+});
+document.addEventListener('hide.bs.collapse', (ev) => {
+    const btn = document.querySelector(`[data-bs-target="#${ev.target.id}"]`);
+    const icon = btn ? btn.querySelector('i') : null;
+    if (icon) { icon.classList.remove('bi-chevron-up'); icon.classList.add('bi-chevron-down'); }
+});
+
 // --- Active Case Management ---
 // A "case" is just a folder (see /api/cases/create) that every tool's
 // Destination field gets pointed at once active, so evidence for one case
@@ -1802,15 +1917,24 @@ async function loadExistingCases() {
 
         listEl.innerHTML = '';
         data.cases.forEach(c => {
-            const btn = document.createElement("button");
+            // A plain div, not a <button>, because legacy rows nest their
+            // own Migrate <button> inside it below - button-in-button is
+            // invalid HTML.
+            const btn = document.createElement("div");
             btn.className = "list-group-item list-group-item-action bg-dark text-light border-secondary py-2";
-            btn.type = 'button';
+            btn.style.cursor = 'pointer';
 
             const topRow = document.createElement('div');
             topRow.className = 'd-flex justify-content-between align-items-center';
             const nameSpan = document.createElement('span');
             nameSpan.className = 'fw-bold text-info';
             nameSpan.appendChild(document.createTextNode(c.case_number)); // examiner-entered, text-only
+            if (c.schema === 'legacy') {
+                const legacyBadge = document.createElement('span');
+                legacyBadge.className = 'badge bg-warning text-dark ms-2';
+                legacyBadge.textContent = 'LEGACY';
+                nameSpan.appendChild(legacyBadge);
+            }
             const dateSpan = document.createElement('small');
             dateSpan.className = 'text-subtle';
             dateSpan.textContent = c.created_at;
@@ -1824,10 +1948,62 @@ async function loadExistingCases() {
             btn.appendChild(topRow);
             btn.appendChild(subRow);
             btn.onclick = () => selectCase(c);
+
+            if (c.schema === 'legacy') {
+                const migrateBtn = document.createElement('button');
+                migrateBtn.type = 'button';
+                migrateBtn.className = 'btn btn-xs btn-outline-warning py-0 px-2 mt-2';
+                migrateBtn.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>Migrate to Consolidated Format';
+                migrateBtn.onclick = (ev) => { ev.stopPropagation(); migrateCase(c); };
+                btn.appendChild(migrateBtn);
+            }
+
             listEl.appendChild(btn);
         });
     } catch (err) {
         listEl.innerHTML = '<div class="text-danger small p-2">Request failed.</div>';
+    }
+}
+
+// Non-destructive: originals are renamed with a ".pre_consolidation_backup"
+// suffix server-side, never deleted (see /api/cases/migrate_apply). Preview
+// first so the examiner sees what will be folded in before committing.
+async function migrateCase(c) {
+    if (!confirm(`Migrate case "${c.case_number}" to the new consolidated one-file-per-case format?\n\nThe original case_info.json and *_report.json files will be renamed with a ".pre_consolidation_backup" suffix - nothing is deleted.`)) {
+        return;
+    }
+    try {
+        const previewRes = await fetch('/api/cases/migrate_preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: c.case_folder })
+        });
+        const preview = await previewRes.json();
+        if (!preview.success) return alert(`Migration preview failed: ${preview.error}`);
+        if (preview.already_migrated) {
+            alert('This case is already on the consolidated format.');
+            loadExistingCases();
+            return;
+        }
+
+        const unreadableNote = preview.unreadable.length ? `, ${preview.unreadable.length} unreadable file(s) will be skipped` : '';
+        if (!confirm(`Found ${preview.reports.length} job report(s) to fold into this case${unreadableNote}.\n\nProceed with migration?`)) {
+            return;
+        }
+
+        const applyRes = await fetch('/api/cases/migrate_apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: c.case_folder })
+        });
+        const applyData = await applyRes.json();
+        if (!applyData.success) return alert(`Migration failed: ${applyData.error}`);
+
+        alert(`Migrated ${applyData.events_migrated} job(s) into ${applyData.case_file}.`);
+        loadExistingCases();
+        if (document.getElementById('caseIndexBody')) loadCaseIndex();
+    } catch (err) {
+        alert(`Migration request failed: ${err.message}`);
     }
 }
 
@@ -1964,7 +2140,7 @@ async function loadFolderList(path) {
                         const editReportPath = document.getElementById("editReportPath");
                         if (editReportPath) editReportPath.value = item.path;
                         if (folderModalInstance) folderModalInstance.hide();
-                        loadReportForEditing();
+                        loadCaseForEditing();
                     } else if (modalPickerMode === 'attachment') {
                         addFileAttachment(item.path);
                         if (folderModalInstance) folderModalInstance.hide();
