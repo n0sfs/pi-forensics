@@ -226,6 +226,17 @@
         </div>
     </div>
 
+    <!-- Active Case Bar: persists across every tab below, unlike everything in .app-layout -->
+    <div id="activeCaseBar" class="top-telemetry-bar d-flex flex-wrap align-items-center gap-3 text-nowrap">
+        <button id="btnCaseAction" class="btn btn-sm btn-outline-info fw-bold" onclick="openCaseManagerModal()">
+            <i class="bi bi-folder-plus me-1"></i><span id="btnCaseActionLabel">Create / Select Case</span>
+        </button>
+        <div id="activeCaseInfo" style="display:none; align-items: center; gap: 1rem;">
+            <span><span class="telemetry-label">Case #:</span> <span id="activeCaseNumVal" class="fw-bold text-info">--</span></span>
+            <span><span class="telemetry-label">Examiner:</span> <span id="activeCaseExaminerVal" class="fw-bold text-light">--</span></span>
+        </div>
+    </div>
+
     <!-- Application Module Tabs -->
     <div class="app-layout">
         <div class="app-sidebar" id="appSidebar">
@@ -244,18 +255,23 @@
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="explorer-tab" data-bs-toggle="tab" data-bs-target="#explorer-app" type="button" role="tab" title="Forensic File Explorer">
+                        <i class="bi bi-folder-check"></i><span class="tab-label">File Explorer</span>
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
                     <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()" title="Mobile Forensics">
                         <i class="bi bi-phone"></i><span class="tab-label">Mobile Forensics</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports-app" type="button" role="tab" onclick="loadCaseIndex(); loadChainOfCustodyLog();" title="Reporting & Verification">
+                    <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports-app" type="button" role="tab" onclick="loadCaseIndex();" title="Reporting & Verification">
                         <i class="bi bi-file-earmark-pdf"></i><span class="tab-label">Reporting</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-app" type="button" role="tab" title="Advanced Settings">
-                        <i class="bi bi-gear-wide-connected"></i><span class="tab-label">Advanced Settings</span>
+                    <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-app" type="button" role="tab" onclick="loadChainOfCustodyLog()" title="Settings">
+                        <i class="bi bi-gear-wide-connected"></i><span class="tab-label">Settings</span>
                     </button>
                 </li>
             </ul>
@@ -562,8 +578,14 @@
                         </div>
                     </div>
 
-                    <!-- Card: INTEGRATED DUAL-PANE FORENSIC FILE EXPLORER -->
-                    <div class="grid-stack-item" gs-id="ddr-card-explorer" gs-x="0" gs-y="12" gs-w="12" gs-h="5">
+                </div>
+            </div>
+
+            <!-- APP 2b: FORENSIC FILE EXPLORER (its own tab - moved out of File Recovery) -->
+            <div class="tab-pane fade" id="explorer-app" role="tabpanel">
+                <div class="grid-stack grid-stack-explorer">
+
+                    <div class="grid-stack-item" gs-id="exp-card-explorer" gs-x="0" gs-y="0" gs-w="12" gs-h="5">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center py-2">
@@ -902,7 +924,7 @@
                     </div>
 
                     <!-- Case Index: every report this station has produced -->
-                    <div class="grid-stack-item" gs-id="rep-card-caseindex" gs-x="0" gs-y="14" gs-w="7" gs-h="6">
+                    <div class="grid-stack-item" gs-id="rep-card-caseindex" gs-x="0" gs-y="14" gs-w="12" gs-h="6">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center py-2">
@@ -928,32 +950,10 @@
                         </div>
                     </div>
 
-                    <!-- Chain of Custody Log -->
-                    <div class="grid-stack-item" gs-id="rep-card-coc" gs-x="7" gs-y="14" gs-w="5" gs-h="6">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header d-flex justify-content-between align-items-center py-2">
-                                    <span><i class="bi bi-journal-text me-2"></i>Chain of Custody Log</span>
-                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadChainOfCustodyLog()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-                                </div>
-                                <div class="card-body py-2">
-                                    <div class="small text-subtle mb-2">
-                                        Station-wide action log (most recent first). This station has one shared login, not
-                                        per-examiner accounts, so entries record what happened and when, not reliably who -
-                                        see README for details.
-                                    </div>
-                                    <div id="cocLogContainer" class="font-monospace small" style="max-height: 280px; overflow-y: auto; background-color:#090b10;" class="border border-secondary rounded-2 p-2">
-                                        <span class="text-subtle">Tap Refresh to load recent entries.</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
                 </div>
             </div>
 
-            <!-- APP 5: ADVANCED SETTINGS -->
+            <!-- APP 5: SETTINGS -->
             <div class="tab-pane fade" id="settings-app" role="tabpanel">
                 <div class="grid-stack grid-stack-settings">
 
@@ -1075,6 +1075,32 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Audit Log (moved from Reporting) -->
+                    <div class="grid-stack-item" gs-id="set-card-audit" gs-x="0" gs-y="14" gs-w="12" gs-h="8">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                    <span><i class="bi bi-journal-text me-2"></i>Audit Log</span>
+                                    <div class="d-flex gap-1">
+                                        <button class="btn btn-sm btn-outline-success fw-bold py-0" onclick="exportAuditLogCsv()"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Export to CSV</button>
+                                        <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadChainOfCustodyLog()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                    </div>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="small text-subtle mb-2">
+                                        Station-wide action log (most recent first, this view capped at 200 entries - Export to
+                                        CSV always includes the full log). This station has one shared login, not per-examiner
+                                        accounts, so entries record what happened and when, not reliably who - see README for
+                                        details.
+                                    </div>
+                                    <div id="cocLogContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
+                                        <span class="text-subtle">Tap Refresh to load recent entries.</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1101,6 +1127,45 @@
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" id="modalSelectBtn" class="btn btn-sm btn-primary fw-bold" onclick="selectCurrentFolder()">Select This Directory</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="caseManagerModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-folder-plus me-2"></i>Create or Select Case</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <h6 class="text-info fw-bold mb-2"><i class="bi bi-plus-circle me-2"></i>Create New Case</h6>
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-6"><input type="text" id="newCaseNumber" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
+                        <div class="col-md-6"><input type="text" id="newCaseExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
+                    </div>
+                    <div class="input-group input-group-sm mb-2">
+                        <input type="text" id="newCaseParentDir" class="form-control" value="/mnt" placeholder="Where to create the case folder">
+                        <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'newCaseParentDir')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                    </div>
+                    <textarea id="newCaseNotes" class="form-control form-control-sm mb-2" rows="2" placeholder="Notes (optional)"></textarea>
+                    <button class="btn btn-sm btn-primary fw-bold w-100" onclick="createCase()"><i class="bi bi-folder-plus me-1"></i>Create Case</button>
+                    <div id="createCaseStatus" class="small mt-2"></div>
+
+                    <hr class="border-secondary my-3">
+
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="text-info fw-bold mb-0"><i class="bi bi-search me-2"></i>Select Existing Case</h6>
+                        <button class="btn btn-xs btn-outline-info py-0 px-2" onclick="loadExistingCases()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                    </div>
+                    <div class="list-group list-group-flush border border-secondary rounded-2" id="caseList" style="max-height: 220px; overflow-y: auto; background-color: #090b10;">
+                        <div class="text-subtle small p-2">Loading...</div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
+                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearActiveCase()"><i class="bi bi-x-circle me-1"></i>Clear Active Case</button>
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>

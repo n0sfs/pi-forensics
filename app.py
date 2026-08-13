@@ -1,5 +1,7 @@
 import os
 import re
+import io
+import csv
 import sys
 import pwd
 import glob
@@ -292,6 +294,22 @@ _DEVICE_RE = re.compile(r'^/dev/(sd[a-z]|nvme\d+n\d+|mmcblk\d+)$')
 def is_valid_block_device(path_str):
     """Whitelist check for whole-disk device paths (no partitions, no shell metacharacters)."""
     return bool(path_str) and bool(_DEVICE_RE.match(path_str))
+
+# --- Case Folder Name Sanitization ---
+_CASE_SLUG_INVALID_RE = re.compile(r'[^A-Za-z0-9_-]+')
+
+def sanitize_case_slug(raw):
+    """
+    Turn an examiner-typed case number into a filesystem-safe folder name.
+    Whitelist-based (like _DEVICE_RE above) rather than blacklisting bad
+    characters, so this can never be tricked into producing '..' or an
+    absolute-path-looking result. Returns None if nothing usable is left.
+    """
+    if not raw:
+        return None
+    slug = _CASE_SLUG_INVALID_RE.sub('_', raw.strip())
+    slug = re.sub(r'_+', '_', slug).strip('_')
+    return slug[:80] or None
 
 _SERVICE_ACCOUNT_NAME = pwd.getpwuid(os.getuid()).pw_name
 
@@ -3584,7 +3602,143 @@ def get_chain_of_custody_log():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/coc/export_csv', methods=['GET'])
+@requires_auth
+def export_chain_of_custody_csv():
+    # Unlike /api/coc/log above (capped to the most recent `limit` entries
+    # for the on-screen view), an export is expected to be the complete
+    # record - no limit here.
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["timestamp", "action", "source_ip", "details"])
+
+    try:
+        if os.path.exists(COC_LOG_FILE):
+            with open(COC_LOG_FILE, 'r') as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    # `details` is a free-form dict that varies by action
+                    # type - flatten it to a single JSON string column
+                    # rather than guessing at a fixed set of sub-columns.
+                    writer.writerow([
+                        entry.get("timestamp", ""),
+                        entry.get("action", ""),
+                        entry.get("source_ip", ""),
+                        json.dumps(entry.get("details", {})),
+                    ])
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    filename = f"chain_of_custody_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
 # --- Case / Report Index ---
+# --- Case Management: create/discover case folders ---
+# A "case" here is a folder (identified by a case_info.json marker file at
+# its root) that examiners point every acquisition/recovery/mobile tool's
+# Destination field at, so one case's evidence never lands as a sibling of
+# another case's files. No server-side "active case" state is kept here -
+# every job-starting route already takes `destination` per-request, so
+# selecting a case is purely a frontend concern (send its folder as the
+# destination); these routes only handle creating and discovering the case
+# folders themselves.
+@app.route('/api/cases/create', methods=['POST'])
+@requires_auth
+def create_case():
+    req = request.get_json() or {}
+    case_number_raw = req.get('case_number', '').strip()
+    examiner = req.get('examiner', '').strip()
+    notes = req.get('notes', '').strip()
+    parent_dir = safe_path(req.get('parent_dir', EVIDENCE_ROOT).strip())
+
+    if not parent_dir or not os.path.isdir(parent_dir):
+        return jsonify({"success": False, "error": "Parent location is not a valid directory in the permitted evidence directory."}), 400
+
+    slug = sanitize_case_slug(case_number_raw)
+    if not slug:
+        return jsonify({"success": False, "error": "Case number must contain at least one letter, number, underscore, or hyphen."}), 400
+
+    # Belt-and-suspenders: slug is already whitelisted to [A-Za-z0-9_-] so
+    # os.path.join(parent_dir, slug) can't escape parent_dir on its own, but
+    # re-validating through safe_path matches the posture every other
+    # path-accepting endpoint in this app uses.
+    case_dir = safe_path(os.path.join(parent_dir, slug))
+    if not case_dir:
+        return jsonify({"success": False, "error": "Resulting case path is outside the permitted evidence directory."}), 400
+
+    if os.path.exists(case_dir):
+        return jsonify({"success": False, "error": f"A case folder named '{slug}' already exists at this location. Choose a different case number or parent location."}), 409
+
+    try:
+        os.makedirs(case_dir)
+        case_info = {
+            "case_number": case_number_raw,
+            "examiner": examiner,
+            "case_folder": case_dir,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "notes": notes,
+        }
+        with open(os.path.join(case_dir, "case_info.json"), 'w') as f:
+            json.dump(case_info, f, indent=2)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not create case folder: {e}"}), 500
+
+    log_chain_of_custody("case_create", {"case_number": case_number_raw, "examiner": examiner, "case_folder": case_dir})
+    return jsonify({"success": True, "case": case_info})
+
+@app.route('/api/cases/list', methods=['GET'])
+@requires_auth
+def list_cases():
+    cases = []
+    try:
+        for root, dirs, files in os.walk(EVIDENCE_ROOT):
+            # Same bounded-depth pattern as /api/reports/index below.
+            depth = root[len(EVIDENCE_ROOT):].count(os.sep)
+            if depth >= 6:
+                dirs[:] = []
+                continue
+            if 'case_info.json' in files:
+                try:
+                    with open(os.path.join(root, 'case_info.json'), 'r') as f:
+                        data = json.load(f)
+                    cases.append({
+                        "case_number": data.get('case_number', '--'),
+                        "examiner": data.get('examiner', '--'),
+                        "case_folder": data.get('case_folder', root),
+                        "created_at": data.get('created_at', '--'),
+                        "notes": data.get('notes', ''),
+                    })
+                except (json.JSONDecodeError, OSError):
+                    pass
+                # A case folder never contains another case folder - no
+                # need to keep descending into this subtree.
+                dirs[:] = []
+
+        cases.sort(key=lambda c: c.get('created_at', ''), reverse=True)
+        return jsonify({"success": True, "cases": cases})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/cases/log_select', methods=['POST'])
+@requires_auth
+def log_case_select():
+    # No state is stored here - this exists purely so selecting a case
+    # leaves a chain-of-custody entry, same as every other significant
+    # action in this app.
+    req = request.get_json() or {}
+    log_chain_of_custody("case_select", {
+        "case_number": req.get('case_number', ''),
+        "case_folder": req.get('case_folder', ''),
+    })
+    return jsonify({"success": True})
+
 @app.route('/api/reports/index', methods=['GET'])
 @requires_auth
 def get_reports_index():

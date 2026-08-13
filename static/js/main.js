@@ -1,5 +1,6 @@
 let gridMain = null;
 let gridDdrescue = null;
+let gridExplorer = null;
 let gridMobile = null;
 let gridReports = null;
 let gridSettings = null;
@@ -26,6 +27,11 @@ let activeSelectedIsDir = false;
 let currentLoadedReportData = null;
 let currentAttachedFilesList = [];
 
+// activeCase shape: {case_number, examiner, case_folder} | null
+let activeCase = null;
+let caseManagerModalInstance = null;
+const ACTIVE_CASE_STORAGE_KEY = 'pi_forensics_active_case';
+
 function initGridstack() {
     gridMain = GridStack.init({
         cellHeight: 85,
@@ -46,6 +52,16 @@ function initGridstack() {
         float: true,
         resizable: { handles: 'se, s, e' }
     }, '.grid-stack-ddrescue');
+
+    gridExplorer = GridStack.init({
+        cellHeight: 85,
+        margin: 6,
+        handle: '.card-header',
+        animate: true,
+        disableOneColumnMode: true,
+        float: true,
+        resizable: { handles: 'se, s, e' }
+    }, '.grid-stack-explorer');
 
     gridMobile = GridStack.init({
         cellHeight: 85,
@@ -87,6 +103,11 @@ function initGridstack() {
         try { gridDdrescue.load(JSON.parse(savedDdrLayout)); } catch (e) {}
     }
 
+    const savedExplorerLayout = localStorage.getItem('pi_forensics_layout_explorer');
+    if (savedExplorerLayout && gridExplorer) {
+        try { gridExplorer.load(JSON.parse(savedExplorerLayout)); } catch (e) {}
+    }
+
     const savedMobileLayout = localStorage.getItem('pi_forensics_layout_mobile');
     if (savedMobileLayout && gridMobile) {
         try { gridMobile.load(JSON.parse(savedMobileLayout)); } catch (e) {}
@@ -104,6 +125,7 @@ function initGridstack() {
 
     if (gridMain) gridMain.on('change', () => { saveDashboardLayout(); });
     if (gridDdrescue) gridDdrescue.on('change', () => { saveDashboardLayout(); });
+    if (gridExplorer) gridExplorer.on('change', () => { saveDashboardLayout(); });
     if (gridMobile) gridMobile.on('change', () => { saveDashboardLayout(); });
     if (gridReports) gridReports.on('change', () => { saveDashboardLayout(); });
     if (gridSettings) gridSettings.on('change', () => { saveDashboardLayout(); });
@@ -127,7 +149,7 @@ async function toggleOnscreenKeyboard() {
 function applyLockState() {
     const lockBtn = document.getElementById("layoutLockBtn");
 
-    [gridMain, gridDdrescue, gridMobile, gridReports, gridSettings].forEach(g => {
+    [gridMain, gridDdrescue, gridExplorer, gridMobile, gridReports, gridSettings].forEach(g => {
         if (!g) return;
         if (isLayoutLocked) {
             g.enableMove(false);
@@ -154,6 +176,7 @@ function applyLockState() {
 function saveDashboardLayout() {
     if (gridMain) localStorage.setItem('pi_forensics_layout_main', JSON.stringify(gridMain.save(false)));
     if (gridDdrescue) localStorage.setItem('pi_forensics_layout_ddr', JSON.stringify(gridDdrescue.save(false)));
+    if (gridExplorer) localStorage.setItem('pi_forensics_layout_explorer', JSON.stringify(gridExplorer.save(false)));
     if (gridMobile) localStorage.setItem('pi_forensics_layout_mobile', JSON.stringify(gridMobile.save(false)));
     if (gridReports) localStorage.setItem('pi_forensics_layout_reports', JSON.stringify(gridReports.save(false)));
     if (gridSettings) localStorage.setItem('pi_forensics_layout_settings', JSON.stringify(gridSettings.save(false)));
@@ -162,6 +185,7 @@ function saveDashboardLayout() {
 function resetDashboardLayout() {
     localStorage.removeItem('pi_forensics_layout_main');
     localStorage.removeItem('pi_forensics_layout_ddr');
+    localStorage.removeItem('pi_forensics_layout_explorer');
     localStorage.removeItem('pi_forensics_layout_mobile');
     localStorage.removeItem('pi_forensics_layout_reports');
     localStorage.removeItem('pi_forensics_layout_settings');
@@ -1466,6 +1490,13 @@ async function loadChainOfCustodyLog() {
     }
 }
 
+function exportAuditLogCsv() {
+    // A plain navigation (not fetch) so the browser's own download handling
+    // takes over - the response's Content-Disposition: attachment header
+    // means this never actually navigates away from the app.
+    window.location.href = '/api/coc/export_csv';
+}
+
 async function saveReportMetadata() {
     const reportPathEl = document.getElementById("editReportPath");
     const reportPath = reportPathEl ? reportPathEl.value.trim() : "";
@@ -1617,6 +1648,210 @@ async function runStandaloneHashVerification() {
         }
         if (output) output.innerText = `Request Failed: ${err.message}`;
     }
+}
+
+// --- Stacked Modals ---
+// Bootstrap gives every modal (and the backdrop it creates on show) the
+// same static default z-index, so opening one modal from inside an
+// already-open one (e.g. clicking "Browse" for the case folder while the
+// Case Manager modal is open) renders it behind the modal that's already
+// showing - DOM order decides stacking when z-index ties. This listens
+// globally for any modal being shown and, if more than one is open at
+// once, bumps the newly-shown modal and the backdrop it just created
+// above whatever was already open. General fix, not specific to the case
+// manager - covers any future nested-modal case too.
+document.addEventListener('shown.bs.modal', (ev) => {
+    const openModals = document.querySelectorAll('.modal.show');
+    if (openModals.length <= 1) return;
+    const zBase = 1055 + (openModals.length - 1) * 20;
+    ev.target.style.zIndex = zBase + 10;
+    const backdrops = document.querySelectorAll('.modal-backdrop');
+    const topBackdrop = backdrops[backdrops.length - 1];
+    if (topBackdrop) topBackdrop.style.zIndex = zBase;
+});
+
+// --- Active Case Management ---
+// A "case" is just a folder (see /api/cases/create) that every tool's
+// Destination field gets pointed at once active, so evidence for one case
+// never lands as a sibling of another case's files. There's no server-side
+// "active case" state - the backend is stateless per-request as everywhere
+// else in this app - so the active case lives entirely here in the browser
+// (persisted to localStorage) and is applied to each tab's fields once,
+// at the moment of create/select/restore, never on a timer, so it can
+// never fight a manual edit made afterward.
+function initActiveCaseBar() {
+    try {
+        const saved = localStorage.getItem(ACTIVE_CASE_STORAGE_KEY);
+        if (saved) activeCase = JSON.parse(saved);
+    } catch (err) {
+        activeCase = null;
+    }
+    renderActiveCaseBar();
+    if (activeCase) applyActiveCaseToFields();
+}
+
+function persistActiveCase() {
+    if (activeCase) {
+        localStorage.setItem(ACTIVE_CASE_STORAGE_KEY, JSON.stringify(activeCase));
+    } else {
+        localStorage.removeItem(ACTIVE_CASE_STORAGE_KEY);
+    }
+}
+
+function renderActiveCaseBar() {
+    const label = document.getElementById("btnCaseActionLabel");
+    const info = document.getElementById("activeCaseInfo");
+    const numVal = document.getElementById("activeCaseNumVal");
+    const examinerVal = document.getElementById("activeCaseExaminerVal");
+
+    if (activeCase) {
+        if (label) label.textContent = `Case: ${activeCase.case_number}`;
+        if (info) info.style.display = 'flex';
+        if (numVal) numVal.textContent = activeCase.case_number;
+        if (examinerVal) examinerVal.textContent = activeCase.examiner || '--';
+    } else {
+        if (label) label.textContent = 'Create / Select Case';
+        if (info) info.style.display = 'none';
+    }
+}
+
+function applyActiveCaseToFields() {
+    if (!activeCase) return;
+    const fieldGroups = [
+        ['caseNum', 'examiner', 'destPath'],
+        ['recoveryCaseNum', 'recoveryExaminer', 'recoveryDest'],
+        ['mobileIosCaseNum', 'mobileIosExaminer', 'mobileIosDest'],
+        ['mobileAndroidCaseNum', 'mobileAndroidExaminer', 'mobileAndroidDest'],
+    ];
+    fieldGroups.forEach(([caseNumId, examinerId, destId]) => {
+        const caseNumEl = document.getElementById(caseNumId);
+        const examinerEl = document.getElementById(examinerId);
+        const destEl = document.getElementById(destId);
+        if (caseNumEl) caseNumEl.value = activeCase.case_number;
+        if (examinerEl) examinerEl.value = activeCase.examiner || '';
+        if (destEl) destEl.value = activeCase.case_folder;
+    });
+}
+
+function openCaseManagerModal() {
+    if (!caseManagerModalInstance) {
+        caseManagerModalInstance = new bootstrap.Modal(document.getElementById('caseManagerModal'));
+    }
+    const statusEl = document.getElementById("createCaseStatus");
+    if (statusEl) statusEl.textContent = '';
+    caseManagerModalInstance.show();
+    loadExistingCases();
+}
+
+async function createCase() {
+    const caseNumber = document.getElementById("newCaseNumber")?.value.trim();
+    const examiner = document.getElementById("newCaseExaminer")?.value.trim();
+    const parentDir = document.getElementById("newCaseParentDir")?.value.trim() || '/mnt';
+    const notes = document.getElementById("newCaseNotes")?.value.trim();
+    const statusEl = document.getElementById("createCaseStatus");
+
+    if (!caseNumber) {
+        if (statusEl) { statusEl.textContent = 'Case number is required.'; statusEl.className = 'small mt-2 text-danger'; }
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/cases/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_number: caseNumber, examiner, parent_dir: parentDir, notes })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (statusEl) { statusEl.textContent = data.error; statusEl.className = 'small mt-2 text-danger'; }
+            return;
+        }
+
+        activeCase = { case_number: data.case.case_number, examiner: data.case.examiner, case_folder: data.case.case_folder };
+        persistActiveCase();
+        renderActiveCaseBar();
+        applyActiveCaseToFields();
+
+        // Reset the form for next time and close - the bar now shows the result.
+        ["newCaseNumber", "newCaseExaminer", "newCaseNotes"].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        if (caseManagerModalInstance) caseManagerModalInstance.hide();
+    } catch (err) {
+        if (statusEl) { statusEl.textContent = 'Request failed.'; statusEl.className = 'small mt-2 text-danger'; }
+    }
+}
+
+async function loadExistingCases() {
+    const listEl = document.getElementById("caseList");
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="text-subtle small p-2">Loading...</div>';
+
+    try {
+        const res = await fetch('/api/cases/list');
+        const data = await res.json();
+        if (!data.success) {
+            listEl.innerHTML = `<div class="text-danger small p-2">${data.error}</div>`;
+            return;
+        }
+        if (data.cases.length === 0) {
+            listEl.innerHTML = '<div class="text-subtle small p-2">No cases found yet - create one above.</div>';
+            return;
+        }
+
+        listEl.innerHTML = '';
+        data.cases.forEach(c => {
+            const btn = document.createElement("button");
+            btn.className = "list-group-item list-group-item-action bg-dark text-light border-secondary py-2";
+            btn.type = 'button';
+
+            const topRow = document.createElement('div');
+            topRow.className = 'd-flex justify-content-between align-items-center';
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'fw-bold text-info';
+            nameSpan.appendChild(document.createTextNode(c.case_number)); // examiner-entered, text-only
+            const dateSpan = document.createElement('small');
+            dateSpan.className = 'text-subtle';
+            dateSpan.textContent = c.created_at;
+            topRow.appendChild(nameSpan);
+            topRow.appendChild(dateSpan);
+
+            const subRow = document.createElement('div');
+            subRow.className = 'small text-subtle font-monospace';
+            subRow.appendChild(document.createTextNode(`${c.examiner || '--'} · ${c.case_folder}`));
+
+            btn.appendChild(topRow);
+            btn.appendChild(subRow);
+            btn.onclick = () => selectCase(c);
+            listEl.appendChild(btn);
+        });
+    } catch (err) {
+        listEl.innerHTML = '<div class="text-danger small p-2">Request failed.</div>';
+    }
+}
+
+async function selectCase(c) {
+    activeCase = { case_number: c.case_number, examiner: c.examiner, case_folder: c.case_folder };
+    persistActiveCase();
+    renderActiveCaseBar();
+    applyActiveCaseToFields();
+    if (caseManagerModalInstance) caseManagerModalInstance.hide();
+
+    try {
+        await fetch('/api/cases/log_select', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_number: c.case_number, case_folder: c.case_folder })
+        });
+    } catch (err) {}
+}
+
+function clearActiveCase() {
+    activeCase = null;
+    persistActiveCase();
+    renderActiveCaseBar();
+    if (caseManagerModalInstance) caseManagerModalInstance.hide();
 }
 
 // --- Modular Folder & File Modals ---
@@ -2732,6 +2967,7 @@ document.addEventListener("DOMContentLoaded", () => {
     updateRecoveryToolControls();
     updateAndroidModeHelp();
     initHelpTooltips();
+    initActiveCaseBar();
 
     fetchNetworkInterfaces();
 
