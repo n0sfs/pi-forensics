@@ -239,7 +239,7 @@
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab" title="File Recovery (DDRescue, PhotoRec, Image Browser)">
+                    <button class="nav-link" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab" title="File Recovery (PhotoRec, extundelete, foremost, scalpel, Image Browser)">
                         <i class="bi bi-life-preserver"></i><span class="tab-label">File Recovery</span>
                     </button>
                 </li>
@@ -334,6 +334,7 @@
                                                 <option value="plain_dd">Raw / GNU dd (.dd)</option>
                                                 <option value="e01">EWF (.E01)</option>
                                                 <option value="aff">AFF (.aff)</option>
+                                                <option value="ddrescue">Recovery / ddrescue (.dd)</option>
                                             </select>
                                         </div>
                                         <div class="col-md-4">
@@ -356,6 +357,31 @@
                                     </div>
                                     <div id="formatHelpText" class="small text-subtle mb-2">Raw bit-for-bit copy using dc3dd, with hashing built in. A solid default for most acquisitions.</div>
 
+                                    <div id="ddrescueOptionRow" class="mb-2" style="display:none;">
+                                        <div class="row g-2 mb-1">
+                                            <div class="col-md-6">
+                                                <label class="telemetry-grid-label d-block mb-1">Recovery Strategy</label>
+                                                <select id="ddrescueStrategySelect" class="form-select form-select-sm" onchange="updateDdrescueStrategyHelp()">
+                                                    <option value="stage1_fast" selected>1. Fast Copy (No-Scrape/No-Trim - Safest for Weak Heads)</option>
+                                                    <option value="stage2_trim">2. Edge Trimming Pass (Isolate Bad Sectors)</option>
+                                                    <option value="stage3_intensive">3. Intensive Bad Sector Scraping</option>
+                                                    <option value="reverse">4. Reverse Direction Reading Pass (--reverse)</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="telemetry-grid-label d-block mb-1">Bad Sector Retries</label>
+                                                <input type="number" class="form-control form-control-sm" id="ddrescueRetries" value="3" min="0" max="10">
+                                            </div>
+                                            <div class="col-md-3 align-self-end">
+                                                <div class="form-check form-switch mb-2">
+                                                    <input class="form-check-input" type="checkbox" id="ddrescueDirect" data-bs-toggle="tooltip" data-bs-placement="top" title="Reads the source drive bypassing the system's cache (ddrescue's -d/--idirect flag) - can help on a failing drive, but some USB/SATA adapters don't support it correctly and will fail with an 'unaligned read' error if it's on. Off by default for that reason; try enabling it only if you're getting inconsistent results.">
+                                                    <label class="form-check-label small text-light fw-bold" for="ddrescueDirect">Direct I/O Mode</label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div id="ddrescueStrategyHelpText" class="small text-subtle mb-1">Safest first pass - copies everything readable quickly, skipping bad areas rather than dwelling on them. Start here on a failing drive.</div>
+                                    </div>
+
                                     <div id="affRawOptionRow" class="mb-2" style="display:none;">
                                         <div class="form-check form-check-inline mb-0">
                                             <input class="form-check-input" type="checkbox" id="affKeepRaw" checked>
@@ -369,7 +395,7 @@
                                         </div>
                                     </div>
 
-                                    <div class="mb-2">
+                                    <div id="hashRow" class="mb-2">
                                         <span class="telemetry-grid-label d-inline me-2">Verification Hashes:</span>
                                         <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="hashMd5" value="md5"><label class="form-check-label small text-light" for="hashMd5">MD5</label></div>
                                         <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="hashSha1" value="sha1"><label class="form-check-label small text-light" for="hashSha1">SHA1</label></div>
@@ -457,298 +483,139 @@
             <div class="tab-pane fade" id="ddrescue-app" role="tabpanel">
                 <div class="grid-stack grid-stack-ddrescue">
                     
-                    <!-- Card 1: Control & Execution Configuration -->
-                    <div class="grid-stack-item" gs-id="ddr-card-control" gs-x="0" gs-y="0" gs-w="7" gs-h="7">
+                    <!-- Card: Unified Recovery Tools -->
+                    <div class="grid-stack-item" gs-id="ddr-card-recovery" gs-x="0" gs-y="0" gs-w="12" gs-h="12">
                         <div class="grid-stack-item-content">
                             <div class="card">
-                                <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-life-preserver me-2"></i>GNU ddrescue Advanced Recovery Engine</span>
-                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="refreshDrives()"><i class="bi bi-arrow-clockwise me-1"></i>Scan Drives</button>
-                                </div>
-                                <div class="card-body py-3">
-                                    
-                                    <div class="p-2 bg-dark border border-secondary rounded-2 mb-2">
-                                        <label class="telemetry-grid-label text-info d-block mb-1"><i class="bi bi-hdd-network me-1"></i>Target Damaged Drive Selection & Telemetry</label>
-                                        <div class="row g-2 align-items-center mb-2">
-                                            <div class="col-md-8">
-                                                <select class="form-select form-select-sm drive-select" id="tabDdrescueSource" onchange="checkDdrescueSmartTelemetry()"></select>
-                                            </div>
-                                            <div class="col-md-4">
-                                                <span id="lblDdrescueHealthBadge" class="badge bg-secondary w-100 py-2">UNCHECKED</span>
-                                            </div>
-                                        </div>
-                                        <div class="row g-2 small text-subtle">
-                                            <div class="col-4">Model: <span id="lblDdrescueModel" class="text-light fw-bold">--</span></div>
-                                            <div class="col-4">Serial: <span id="lblDdrescueSerial" class="text-warning font-monospace fw-bold">--</span></div>
-                                            <div class="col-4">Bad Sectors: <span id="lblDdrescuePending" class="text-danger fw-bold">--</span></div>
-                                        </div>
-                                    </div>
-
+                                <div class="card-header py-2"><i class="bi bi-tools me-2"></i>Recovery Tools</div>
+                                <div class="card-body py-2">
                                     <div class="row g-2 mb-1">
-                                        <div class="col-md-6">
-                                            <label class="telemetry-grid-label d-block mb-1">Pass Execution Strategy</label>
-                                            <select class="form-select form-select-sm" id="tabDdrescueStrategy" onchange="updateDdrescueStrategyHelp()">
-                                                <option value="stage1_fast" selected>1. Fast Copy (No-Scrape/No-Trim - Safest for Weak Heads)</option>
-                                                <option value="stage2_trim">2. Edge Trimming Pass (Isolate Bad Sectors)</option>
-                                                <option value="stage3_intensive">3. Intensive Bad Sector Scraping</option>
-                                                <option value="reverse">4. Reverse Direction Reading Pass (--reverse)</option>
+                                        <div class="col-md-5">
+                                            <label class="telemetry-grid-label d-block mb-1">Tool</label>
+                                            <select id="recoveryToolSelect" class="form-select form-select-sm" onchange="updateRecoveryToolControls()">
+                                                <option value="photorec" selected>PhotoRec - File Carving</option>
+                                                <option value="extundelete">extundelete - ext2/3/4 Deleted File Recovery</option>
+                                                <option value="foremost">foremost - File Carving</option>
+                                                <option value="scalpel">scalpel - File Carving (Multithreaded)</option>
+                                                <option value="triage_scan">Quick Triage Scan - Emails/URLs/IPs/Numbers</option>
+                                                <option value="testdisk_analyze">TestDisk Partition Analysis (Read-Only)</option>
+                                                <option value="mapfile_inspect">ddrescue Mapfile Inspector</option>
                                             </select>
                                         </div>
-                                        <div class="col-md-3">
-                                            <label class="telemetry-grid-label d-block mb-1">Bad Sector Retries</label>
-                                            <input type="number" class="form-control form-control-sm" id="tabDdrescueRetries" value="3" min="0" max="10">
+                                    </div>
+                                    <div id="recoveryToolHelpText" class="small text-subtle mb-2">Recovers files by matching known file signatures - works even on formatted or damaged drives, but recovered files lose their original names/folder structure.</div>
+
+                                    <div id="recoverySourceRow" class="row g-2 mb-2">
+                                        <div class="col-md-6">
+                                            <label class="telemetry-grid-label d-block mb-1">Source (device or acquired image path)</label>
+                                            <div class="input-group input-group-sm">
+                                                <select id="recoverySourceDrive" class="form-select form-select-sm drive-select"></select>
+                                                <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('recoverySource')" title="Or browse to an image file instead"><i class="bi bi-folder2-open me-1"></i></button>
+                                            </div>
+                                            <input type="text" id="recoverySourcePath" class="form-control form-control-sm font-monospace mt-1" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
                                         </div>
-                                        <div class="col-md-3 align-self-end">
-                                            <div class="form-check form-switch mb-2">
-                                                <input class="form-check-input" type="checkbox" id="tabDdrescueDirect" data-bs-toggle="tooltip" data-bs-placement="top" title="Reads the source drive bypassing the system's cache (ddrescue's -d/--idirect flag) - can help on a failing drive, but some USB/SATA adapters don't support it correctly and will fail with an 'unaligned read' error if it's on. Off by default for that reason; try enabling it only if you're getting inconsistent results.">
-                                                <label class="form-check-label small text-light fw-bold" for="tabDdrescueDirect">Direct I/O Mode</label>
-                                                <button type="button" class="btn btn-sm p-0 border-0 bg-transparent" data-bs-toggle="tooltip" data-bs-placement="top" title="Reads the source drive bypassing the system's cache (ddrescue's -d/--idirect flag) - can help on a failing drive, but some USB/SATA adapters don't support it correctly and will fail with an 'unaligned read' error if it's on. Off by default for that reason; try enabling it only if you're getting inconsistent results."><i class="bi bi-question-circle text-subtle"></i></button>
+                                        <div class="col-md-6" id="recoveryDestCol">
+                                            <label class="telemetry-grid-label d-block mb-1">Destination</label>
+                                            <div class="input-group input-group-sm">
+                                                <input type="text" id="recoveryDest" class="form-control" value="/mnt">
+                                                <button class="btn btn-outline-info fw-bold" onclick="openFolderModal('folder', 'recoveryDest')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                             </div>
                                         </div>
                                     </div>
-                                    <div id="ddrescueStrategyHelpText" class="small text-subtle mb-2">Safest first pass - copies everything readable quickly, skipping bad areas rather than dwelling on them. Start here on a failing drive.</div>
 
-                                    <div class="p-2 bg-dark border border-secondary rounded-2 mb-2">
-                                        <span class="telemetry-grid-label text-info d-block mb-1"><i class="bi bi-folder-symlink me-1"></i>Case Metadata & Destination Target Path</span>
-                                        <div class="row g-2 mb-2">
-                                            <div class="col-md-4"><input type="text" id="tabDdrescueCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-REC-01)"></div>
-                                            <div class="col-md-4"><input type="text" id="tabDdrescueEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
-                                            <div class="col-md-4"><input type="text" id="tabDdrescueExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
-                                        </div>
+                                    <div id="recoveryMapfileRow" class="mb-2" style="display:none;">
+                                        <label class="telemetry-grid-label d-block mb-1">Mapfile Path (.map)</label>
                                         <div class="input-group input-group-sm">
-                                            <input type="text" id="tabDdrescueDest" class="form-control" value="/mnt">
-                                            <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'tabDdrescueDest')">
-                                                <i class="bi bi-folder2-open me-1"></i>Browse
-                                            </button>
+                                            <input type="text" id="recoveryMapfilePath" class="form-control font-monospace" placeholder="/mnt/CASE_ITEM-01_ddrescue.map">
+                                            <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('mapfile')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                         </div>
                                     </div>
 
-                                    <div class="p-2 bg-dark border border-secondary rounded-2 mb-2">
-                                        <span class="telemetry-grid-label text-success d-block mb-1"><i class="bi bi-diagram-3 me-1"></i>Mount Remote Network Recovery Destination</span>
-                                        <div class="row g-2 mb-2">
-                                            <div class="col-md-3">
-                                                <select id="tabDdrescueNetProtocol" class="form-select form-select-sm">
-                                                    <option value="nfs">NFS Share</option>
-                                                    <option value="smb">SMB / CIFS</option>
-                                                </select>
-                                            </div>
-                                            <div class="col-md-5"><input type="text" id="tabDdrescueNetHost" class="form-control form-control-sm" placeholder="Server IP (192.168.1.100)"></div>
-                                            <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares('tabDdrescueNetHost', 'tabDdrescueNetProtocol', 'tabDdrescueServerShareSelect', 'tabDdrescueMountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
-                                        </div>
-                                        <div class="row g-2 align-items-center mb-1">
-                                            <div class="col-md-8"><select id="tabDdrescueServerShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select></div>
-                                            <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('tabDdrescueNetHost', 'tabDdrescueNetProtocol', 'tabDdrescueServerShareSelect', 'tabDdrescueDest', 'tabDdrescueMountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
-                                        </div>
-                                        <div id="tabDdrescueMountStatus" class="small text-light"></div>
+                                    <div id="recoveryMetadataRow" class="row g-2 mb-2">
+                                        <div class="col-md-4"><input type="text" id="recoveryCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
+                                        <div class="col-md-4"><input type="text" id="recoveryEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
+                                        <div class="col-md-4"><input type="text" id="recoveryExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
                                     </div>
 
-                                    <div class="d-flex gap-2">
-                                        <button id="btnTabDdrescueStart" class="btn btn-primary flex-fill fw-bold py-2" onclick="startTabDdrescueJob()">
-                                            <i class="bi bi-play-fill me-1"></i>Execute Selected ddrescue Pass
-                                        </button>
-                                        <button id="btnTabDdrescueStop" class="btn btn-danger flex-fill fw-bold py-2" onclick="stopAcquisition()" disabled>
-                                            <i class="bi bi-stop-circle me-1"></i>Stop Process
-                                        </button>
+                                    <div class="d-flex gap-2 mb-3">
+                                        <button id="btnRecoveryStart" class="btn btn-primary flex-fill fw-bold" onclick="startRecoveryTool()"><i class="bi bi-play-fill me-1"></i><span id="btnRecoveryStartLabel">Start Recovery</span></button>
+                                        <button id="btnRecoveryStop" class="btn btn-danger flex-fill fw-bold" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop</button>
                                     </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
 
-                    <!-- Card 2: Output Monitor -->
-                    <div class="grid-stack-item" gs-id="ddr-card-output" gs-x="7" gs-y="0" gs-w="5" gs-h="4">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header py-2"><i class="bi bi-speedometer2 me-2"></i>ddrescue Execution Status & Stream</div>
-                                <div class="card-body py-2">
+                                    <hr class="border-secondary my-2">
+
                                     <div class="d-flex justify-content-between align-items-center mb-1">
-                                        <span id="ddrescueJobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
-                                        <span id="ddrescueProgressPct" class="fw-bold fs-5 text-light">0.0%</span>
+                                        <span id="recoveryJobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
+                                        <span id="recoveryProgressPct" class="fw-bold fs-5 text-light">0.0%</span>
                                     </div>
-                                    <div class="progress bg-secondary mb-2" style="height: 16px;">
-                                        <div id="ddrescueProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
+                                    <div class="progress bg-secondary mb-2" style="height: 10px;">
+                                        <div id="recoveryProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
                                     </div>
                                     <div class="row text-center mb-2">
-                                        <div class="col-6"><small class="telemetry-label d-block">Current Rate</small><span id="ddrescueSpeedVal" class="fs-5 fw-bold text-warning">0.0 MB/s</span></div>
-                                        <div class="col-6"><small class="telemetry-label d-block">Rescued Size</small><span id="ddrescueBytesVal" class="fs-5 fw-bold text-light">0 / 0 GB</span></div>
+                                        <div class="col-6"><small class="telemetry-label d-block">Speed / Rate</small><span id="recoverySpeedVal" class="fw-bold text-warning">0.0 MB/s</span></div>
+                                        <div class="col-6"><small class="telemetry-label d-block">Data Written</small><span id="recoveryBytesVal" class="fw-bold text-light">0 / 0 GB</span></div>
                                     </div>
-                                    <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
-                                    <pre id="ddrescueLogOutput" class="log-window" style="height: 140px;">[ddrescue module idle and ready.]</pre>
+                                    <label class="form-label fw-bold text-light small mb-1">Terminal / Output:</label>
+                                    <pre id="recoveryLogOutput" class="log-window" style="height: 180px;">[Recovery tools idle. Select a tool and source above, then Start.]</pre>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Card 3: Mapfile Inspector -->
-                    <div class="grid-stack-item" gs-id="ddr-card-map" gs-x="7" gs-y="4" gs-w="5" gs-h="3">
-                        <div class="grid-stack-item-content">
-                            <div class="card border-info">
-                                <div class="card-header py-2 text-info fw-bold"><i class="bi bi-search me-2"></i>Mapfile Audit Inspector</div>
-                                <div class="card-body py-2">
-                                    <div class="mb-2">
-                                        <div class="input-group input-group-sm">
-                                            <input type="text" id="tabMapfilePath" class="form-control font-monospace" placeholder="/mnt/CASE_ITEM-01_ddrescue.map">
-                                            <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('mapfile')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
-                                            <button class="btn btn-info text-dark fw-bold" onclick="inspectDdrescueMapfile()"><i class="bi bi-bar-chart-line me-1"></i>Inspect</button>
-                                        </div>
-                                    </div>
-                                    <div class="p-2 bg-black border border-secondary rounded-2">
-                                        <div class="d-flex justify-content-between align-items-center mb-1 border-bottom border-secondary pb-1">
-                                            <span class="telemetry-grid-label">Mapfile Summary:</span>
-                                            <span id="mapStatusBadge" class="badge bg-secondary">NO MAPFILE LOADED</span>
-                                        </div>
-                                        <div class="row g-2">
-                                            <div class="col-6"><span class="telemetry-grid-label d-block">Rescued Data</span><span id="mapRescuedVal" class="fs-6 fw-bold text-success">-- GB</span></div>
-                                            <div class="col-6"><span class="telemetry-grid-label d-block">Unattempted Data</span><span id="mapUnattemptedVal" class="fs-6 fw-bold text-info">-- MB</span></div>
-                                            <div class="col-6"><span class="telemetry-grid-label d-block">Bad Sectors Size</span><span id="mapBadSectorVal" class="fs-6 fw-bold text-danger">-- KB</span></div>
-                                            <div class="col-6"><span class="telemetry-grid-label d-block">Hard Error Blocks</span><span id="mapErrorBlocksVal" class="fs-6 fw-bold text-warning">--</span></div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Card: PhotoRec File Carving Recovery -->
-                    <div class="grid-stack-item" gs-id="ddr-card-photorec" gs-x="0" gs-y="9" gs-w="12" gs-h="4">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-search-heart me-2"></i>PhotoRec File Carving Recovery</span>
-                                    <span class="small text-subtle fw-normal">Recovers files by signature from a device or an already-acquired image - reads source only, never writes back to it</span>
-                                </div>
-                                <div class="card-body py-2">
-                                    <div class="row g-2 mb-2">
-                                        <div class="col-md-6">
-                                            <label class="telemetry-grid-label d-block mb-1">Source (device or acquired image path)</label>
-                                            <div class="input-group input-group-sm">
-                                                <select id="photorecSourceDrive" class="form-select form-select-sm drive-select"></select>
-                                                <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('photorecSource')" title="Or browse to an image file instead"><i class="bi bi-folder2-open me-1"></i></button>
-                                            </div>
-                                            <input type="text" id="photorecSourcePath" class="form-control form-control-sm font-monospace mt-1" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
-                                        </div>
-                                        <div class="col-md-6">
-                                            <label class="telemetry-grid-label d-block mb-1">Destination for Recovered Files</label>
-                                            <div class="input-group input-group-sm">
-                                                <input type="text" id="photorecDest" class="form-control" value="/mnt">
-                                                <button class="btn btn-outline-info fw-bold" onclick="openFolderModal('folder', 'photorecDest')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="row g-2 mb-2">
-                                        <div class="col-md-4"><input type="text" id="photorecCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
-                                        <div class="col-md-4"><input type="text" id="photorecEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
-                                        <div class="col-md-4"><input type="text" id="photorecExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
-                                    </div>
-                                    <div class="d-flex gap-2">
-                                        <button id="btnPhotorecStart" class="btn btn-primary flex-fill fw-bold" onclick="startPhotorecJob()"><i class="bi bi-play-fill me-1"></i>Start PhotoRec Recovery</button>
-                                        <button id="btnPhotorecStop" class="btn btn-danger flex-fill fw-bold" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop</button>
-                                    </div>
-                                    <div class="small text-subtle mt-2">
-                                        Recovers ~480 known file types by signature (not by filesystem metadata), so it works even on damaged/reformatted media - but recovered files lose their original names/folder structure. Progress shown is bytes recovered so far and the live log; PhotoRec doesn't report a reliable overall percentage in scripted mode.
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Card: Quick Triage Scan (built-in, no external tool) -->
-                    <div class="grid-stack-item" gs-id="ddr-card-triagescan" gs-x="0" gs-y="13" gs-w="12" gs-h="4">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-envelope-paper me-2"></i>Quick Triage Scan</span>
-                                    <span class="small text-subtle fw-normal">Finds emails, URLs, IP addresses, card-like numbers, and phone numbers - built in, no external tool required, read-only against the source</span>
-                                </div>
-                                <div class="card-body py-2">
-                                    <div class="row g-2 mb-2">
-                                        <div class="col-md-6">
-                                            <label class="telemetry-grid-label d-block mb-1">Source (device or acquired image path)</label>
-                                            <div class="input-group input-group-sm">
-                                                <select id="triageScanSourceDrive" class="form-select form-select-sm drive-select"></select>
-                                                <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('triageScanSource')" title="Or browse to an image file instead"><i class="bi bi-folder2-open me-1"></i></button>
-                                            </div>
-                                            <input type="text" id="triageScanSourcePath" class="form-control form-control-sm font-monospace mt-1" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
-                                        </div>
-                                        <div class="col-md-6">
-                                            <label class="telemetry-grid-label d-block mb-1">Destination for Report Files</label>
-                                            <div class="input-group input-group-sm">
-                                                <input type="text" id="triageScanDest" class="form-control" value="/mnt">
-                                                <button class="btn btn-outline-info fw-bold" onclick="openFolderModal('folder', 'triageScanDest')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="row g-2 mb-2">
-                                        <div class="col-md-4"><input type="text" id="triageScanCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
-                                        <div class="col-md-4"><input type="text" id="triageScanEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
-                                        <div class="col-md-4"><input type="text" id="triageScanExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
-                                    </div>
-                                    <div class="d-flex gap-2">
-                                        <button id="btnTriageScanStart" class="btn btn-primary flex-fill fw-bold" onclick="startTriageScanJob()"><i class="bi bi-play-fill me-1"></i>Start Triage Scan</button>
-                                        <button id="btnTriageScanStop" class="btn btn-danger flex-fill fw-bold" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop</button>
-                                    </div>
-                                    <div class="small text-subtle mt-2">
-                                        Writes one text file per category (emails.txt, urls.txt, etc.) that can be opened in any text editor - a good first pass before deeper analysis, and beginner-friendly since no filesystem or partition knowledge is required. Built in-house rather than depending on an external tool, so it works on any system this app runs on - a straightforward Python scan, not a highly-optimized C tool, so it's noticeably slower on very large (multi-TB) images.
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Card 4: INTEGRATED DUAL-PANE FORENSIC FILE EXPLORER -->
-                    <div class="grid-stack-item" gs-id="ddr-card-explorer" gs-x="0" gs-y="17" gs-w="12" gs-h="5">
+                    <!-- Card: INTEGRATED DUAL-PANE FORENSIC FILE EXPLORER -->
+                    <div class="grid-stack-item" gs-id="ddr-card-explorer" gs-x="0" gs-y="12" gs-w="12" gs-h="5">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center py-2">
-                                    <span><i class="bi bi-folder-check me-2"></i>Dual-Pane Forensic File Explorer</span>
-                                    <span class="small text-subtle fw-normal">Tap item to select | Double-tap folder to enter</span>
+                                    <span><i class="bi bi-folder-check me-2"></i>Forensic File Explorer</span>
+                                    <span class="small text-subtle fw-normal">Tap to preview | Double-tap folder to enter | Right-click (or press-and-hold) for actions</span>
                                 </div>
                                 <div class="card-body py-2">
-                                    <div class="d-flex flex-wrap gap-2 p-2 mb-2 bg-dark border border-secondary rounded-2 align-items-center">
-                                        <span class="telemetry-grid-label me-1"><i class="bi bi-tools me-1"></i>Actions:</span>
-                                        <button class="btn btn-sm btn-outline-info fw-bold" onclick="copyPaneFile('A','B')"><i class="bi bi-arrow-right me-1"></i>Copy A &rarr; B</button>
-                                        <button class="btn btn-sm btn-outline-info fw-bold" onclick="copyPaneFile('B','A')"><i class="bi bi-arrow-left me-1"></i>Copy B &rarr; A</button>
-                                        <div class="vr bg-secondary"></div>
-
-                                        <div class="dropdown">
-                                            <button class="btn btn-sm btn-outline-light fw-bold dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                                                <i class="bi bi-three-dots me-1"></i>More Actions (Selected File)
-                                            </button>
-                                            <ul class="dropdown-menu dropdown-menu-dark">
-                                                <li><button id="btnFileMetadata" class="dropdown-item" onclick="viewSelectedMetadata()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Shows hidden details saved inside a file - like when a photo was taken, what camera took it, or GPS coordinates."><i class="bi bi-info-circle me-2"></i>Metadata (ExifTool)</button></li>
-                                                <li><button id="btnVerifyHash" class="dropdown-item" onclick="verifySelectedHash()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Double-checks a .dd/.E01 image hasn't changed since it was acquired, by recalculating its fingerprint (hash) and comparing it."><i class="bi bi-hash me-2"></i>Verify Image Hash</button></li>
-                                                <li><button id="btnBrowseImage" class="dropdown-item" onclick="openImageBrowser()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Look inside an acquired image as if it were a real drive - browse its folders and files without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse Image (Sleuth Kit)</button></li>
-                                                <li><hr class="dropdown-divider"></li>
-                                                <li><button id="btnRunBinwalk" class="dropdown-item" onclick="runSelectedBinwalk()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Looks for other files or systems hidden inside this one - useful for firmware dumps, router images, or unknown binary files."><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button></li>
-                                                <li><button id="btnRunClamscan" class="dropdown-item" onclick="runSelectedClamscan()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Checks this file (or folder) against known virus/malware signatures."><i class="bi bi-shield-exclamation me-2"></i>Scan for Malware (ClamAV)</button></li>
-                                                <li><button id="btnRunStrings" class="dropdown-item" onclick="runSelectedStrings()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Pulls out any readable text hiding inside a file that isn't normally text - like URLs or passwords buried in an executable."><i class="bi bi-fonts me-2"></i>Extract Strings</button></li>
-                                                <li><button id="btnRunHashdeep" class="dropdown-item" onclick="runSelectedHashdeep()" disabled data-bs-toggle="tooltip" data-bs-placement="right" title="Creates a fingerprint (hash) for every file in a folder at once - useful for proving a whole set of recovered files hasn't been tampered with."><i class="bi bi-list-check me-2"></i>Hash Directory Tree (hashdeep)</button></li>
-                                                <li><hr class="dropdown-divider"></li>
-                                                <li><button id="btnPdfExport" class="dropdown-item" onclick="exportSelectedPdf()" disabled><i class="bi bi-file-earmark-pdf-fill me-2"></i>Export PDF Audit Report</button></li>
-                                                <li><button id="btnDeleteFile" class="dropdown-item text-danger" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-2"></i>Delete</button></li>
-                                            </ul>
-                                        </div>
-                                    </div>
-
                                     <div class="row g-2">
                                         <div class="col-md-6">
                                             <div class="d-flex justify-content-between align-items-center mb-1">
-                                                <span class="telemetry-grid-label">Pane A (Local /mnt)</span>
-                                                <span id="paneAPath" class="font-monospace small text-info fw-bold">/mnt</span>
+                                                <span class="telemetry-grid-label">Files</span>
+                                                <span id="explorerPath" class="font-monospace small text-info fw-bold">/mnt</span>
                                             </div>
-                                            <div id="paneAContainer" class="file-pane" style="height: 220px;"></div>
+                                            <div id="explorerContainer" class="file-pane" style="height: 260px;"></div>
                                         </div>
                                         <div class="col-md-6">
                                             <div class="d-flex justify-content-between align-items-center mb-1">
-                                                <span class="telemetry-grid-label">Pane B (Network Mounts / Exports)</span>
-                                                <span id="paneBPath" class="font-monospace small text-info fw-bold">/mnt</span>
+                                                <span class="telemetry-grid-label">Preview</span>
+                                                <div class="dropdown">
+                                                    <button class="btn btn-sm btn-outline-light fw-bold dropdown-toggle py-0" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                                        <i class="bi bi-three-dots me-1"></i>Actions
+                                                    </button>
+                                                    <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+                                                        <li><button id="btnFileMetadata" class="dropdown-item" onclick="viewSelectedMetadata()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Shows hidden details saved inside a file - like when a photo was taken, what camera took it, or GPS coordinates."><i class="bi bi-info-circle me-2"></i>Metadata (ExifTool)</button></li>
+                                                        <li><button id="btnVerifyHash" class="dropdown-item" onclick="verifySelectedHash()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Double-checks a .dd/.E01 image hasn't changed since it was acquired, by recalculating its fingerprint (hash) and comparing it."><i class="bi bi-hash me-2"></i>Verify Image Hash</button></li>
+                                                        <li><button id="btnBrowseImage" class="dropdown-item" onclick="openImageBrowser()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse Image (Sleuth Kit)</button></li>
+                                                        <li><hr class="dropdown-divider"></li>
+                                                        <li><button id="btnRunBinwalk" class="dropdown-item" onclick="runSelectedBinwalk()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Looks for other files or systems hidden inside this one - useful for firmware dumps, router images, or unknown binary files."><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button></li>
+                                                        <li><button id="btnRunClamscan" class="dropdown-item" onclick="runSelectedClamscan()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks this file (or folder) against known virus/malware signatures."><i class="bi bi-shield-exclamation me-2"></i>Scan for Malware (ClamAV)</button></li>
+                                                        <li><button id="btnRunStrings" class="dropdown-item" onclick="runSelectedStrings()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls out any readable text hiding inside a file that isn't normally text - like URLs or passwords buried in an executable."><i class="bi bi-fonts me-2"></i>Extract Strings</button></li>
+                                                        <li><button id="btnRunHashdeep" class="dropdown-item" onclick="runSelectedHashdeep()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Creates a fingerprint (hash) for every file in a folder at once - useful for proving a whole set of recovered files hasn't been tampered with."><i class="bi bi-list-check me-2"></i>Hash Directory Tree (hashdeep)</button></li>
+                                                        <li><hr class="dropdown-divider"></li>
+                                                        <li><button id="btnCopyFile" class="dropdown-item" onclick="promptCopySelected()" disabled><i class="bi bi-copy me-2"></i>Copy to...</button></li>
+                                                        <li><button id="btnDeleteFile" class="dropdown-item text-danger" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-2"></i>Delete</button></li>
+                                                    </ul>
+                                                </div>
                                             </div>
-                                            <div id="paneBContainer" class="file-pane" style="height: 220px;"></div>
+                                            <div id="explorerPreview" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="height: 260px;">
+                                                <i class="bi bi-cursor fs-1 text-subtle mb-2"></i>
+                                                <span class="text-subtle small">Select a file on the left to preview it here.</span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
+                    </div>
+
+                    <!-- Right-click / press-and-hold context menu for file items -->
+                    <div id="fileContextMenu" class="dropdown-menu dropdown-menu-dark" style="display:none; position:fixed; z-index:2000;">
+                        <button class="dropdown-item" id="contextMenuCopyBtn"><i class="bi bi-copy me-2"></i>Copy to...</button>
+                        <button class="dropdown-item text-danger" id="contextMenuDeleteBtn"><i class="bi bi-trash-fill me-2"></i>Delete</button>
                     </div>
 
                 </div>
