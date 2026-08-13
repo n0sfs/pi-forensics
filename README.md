@@ -21,6 +21,7 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 - **Software Write-Blocker Toggle:** Quick toggle for `udev` read-only rule enforcement (`ATTR{ro}="1"`) to preserve chain of custody.
 - **Hardened by Default:** Every request requires authentication (no bypass for local/private networks), runs as an unprivileged service account rather than root, and sandboxes all file-explorer/report/attachment/acquisition-destination operations to a configurable evidence directory. See [Security](#-security) below.
 - **Automated Evidence Manifests:** Generates structured `evidence_manifest.json` and human-readable `.txt` reports capturing case numbers, evidence IDs, examiner notes, drive serials, and timestamps.
+- **Case Management:** A persistent bar (below the telemetry strip, visible from every tab) to create or select a case - once active, it auto-fills Case#/Examiner/Destination into every acquisition, recovery, and mobile job launcher, and each case gets a real folder on disk (marked by a `case_info.json` file) instead of evidence just being grouped by filename prefix. Entirely optional - every tool works exactly as before if no case is active, and fields stay editable, not locked.
 - **Touchscreen & Remote Friendly:** Responsive dark-mode UI with drag and drop interface designed for onboard Pi touchscreen displays or headless browser control over Wi-Fi/Ethernet. An on-screen keyboard (`wvkbd`) is visible by default at boot for the login prompt, auto-hides once you're signed in, and is a tap away in the top navbar after that.
 - **Collapsible Sidebar Navigation:** The six main sections (Forensic Acquisition, File Recovery, File Explorer, Mobile Forensics, Reporting, Settings) live in a left sidebar rather than a horizontal tab bar - toggle between icons-with-labels and icons-only via the chevron button at the top, freeing up screen width on smaller displays. The choice persists across visits.
 - **Recovery-Aware Acquisition:** `ddrescue` lives as a Format option in the main Acquisition tab (alongside dc3dd/dcfldd/E01/AFF) rather than a separate workflow - select it to get pass-strategy selection (Fast Copy, Trimming, Scraping, Reverse Reading), retry passes, and Direct I/O, sharing the same status display, source drive, and Start/Stop controls as every other format.
@@ -46,7 +47,7 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 <p align="center">
   <img src="docs/images/PIF1.JPG" width="100%" alt="Forensic Acquisition" />
   <br>
-  <em>Figure 1: Forensic Acquisition Dashboard with Drive Check, Write Blocker Toggle, Raw/EWF/ddrescue Output, MD5/SHA1/SHA256 Hashes, and Native Network Discovery, Drive Mapping and Telemetry.</em>
+  <em>Figure 1: Forensic Acquisition Dashboard with the active-case bar (auto-fills Case#/Examiner/Destination), Drive Check, Write Blocker Toggle, Raw/EWF/ddrescue Output, MD5/SHA1/SHA256 Hashes, and Native Network Discovery, Drive Mapping and Telemetry.</em>
 </p>
 
 <p align="center">
@@ -56,21 +57,27 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF3.JPG" width="100%" alt="Mobile Forensics" />
+  <img src="docs/images/PIF3.JPG" width="100%" alt="Forensic File Explorer" />
   <br>
-  <em>Figure 3: Mobile Forensics - device detection plus iOS full backup (idevicebackup2) and Android acquisition (adb pull/backup/bugreport) side by side, with an MVT spyware/IOC scan available afterward from the File Explorer's Actions menu.</em>
+  <em>Figure 3: Forensic File Explorer, now its own tab - single-pane browser with a live preview pane, shown here previewing a case's <code>case_info.json</code> marker file inside its real per-case evidence folder.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF4.JPG" width="100%" alt="Reporting & Verification" />
+  <img src="docs/images/PIF4.JPG" width="100%" alt="Mobile Forensics" />
   <br>
-  <em>Figure 4: Reporting - case metadata editor, file/URL attachments, PDF export, and Evidence Image Integrity Verification with hash matching.</em>
+  <em>Figure 4: Mobile Forensics - device detection plus iOS full backup (idevicebackup2) and Android acquisition (adb pull/backup/bugreport) side by side, with an MVT spyware/IOC scan available afterward from the File Explorer's Actions menu.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF5.JPG" width="100%" alt="Advanced Settings" />
+  <img src="docs/images/PIF5.JPG" width="100%" alt="Reporting & Verification" />
   <br>
-  <em>Figure 5: Advanced Settings - Security & Account Password, Safe Hardware Detach, and the combined Service Controls & Diagnostics panel (restart/update/power controls, a fixed-allowlist diagnostics dropdown, and Check Tool Versions) all reporting into one shared output pane.</em>
+  <em>Figure 5: Reporting - case metadata editor, file/URL attachments, PDF export, and Evidence Image Integrity Verification with hash matching.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF6.JPG" width="100%" alt="Settings" />
+  <br>
+  <em>Figure 6: Settings - Security & Account Password, Safe Hardware Detach, the Audit Log (with one-click Export to CSV), and the combined Service Controls & Diagnostics panel (restart/update/power controls, a fixed-allowlist diagnostics dropdown, and Check Tool Versions) all reporting into one shared output pane.</em>
 </p>
 
 ---
