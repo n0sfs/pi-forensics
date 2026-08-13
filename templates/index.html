@@ -105,14 +105,27 @@
         .app-content-area { flex: 1; min-width: 0; }
 
         .card { background-color: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); height: 100%; }
-        .card-header { 
-            background-color: rgba(255, 255, 255, 0.05); 
-            border-bottom: 1px solid var(--border-color); 
-            font-weight: 700; 
+        .card-header {
+            background-color: rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 700;
             color: var(--accent-cyan) !important;
-            letter-spacing: 0.5px; 
+            letter-spacing: 0.5px;
             font-size: 0.95rem;
         }
+        /* Bootstrap's .card-body sets its own color: var(--bs-body-color),
+           which defaults to a light-mode near-black (#212529) and has
+           higher specificity than the body { color: white } rule above -
+           so any text inside a card that doesn't have its own explicit
+           color class silently inherited near-black-on-dark, unreadable.
+           This app is dark-themed everywhere, so give card-body a sane
+           default here rather than patching every individual element. */
+        .card-body { color: var(--text-bright); }
+        /* Used throughout for secondary/help text (~25 places) via the
+           --text-subtle variable, but the class itself was never actually
+           defined - it was a no-op, silently falling back to .card-body's
+           near-black default above. This is the fix. */
+        .text-subtle { color: var(--text-subtle) !important; }
 
         .form-control, .form-select { 
             background-color: #090b10 !important; 
