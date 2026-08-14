@@ -849,7 +849,7 @@
                     <!-- Card 1: Files / Notes / Jobs / Export - left-nav + right-pane, mirrors Settings.
                          Driven entirely by the Active Case Bar above (see currentReportPath /
                          loadCaseForEditing() in main.js) - no independent load/browse step here. -->
-                    <div class="grid-stack-item" gs-id="rep-card-details" gs-x="0" gs-y="0" gs-w="12" gs-h="14">
+                    <div class="grid-stack-item" gs-id="rep-card-details" gs-x="0" gs-y="0" gs-w="12" gs-h="18">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center py-2">
@@ -871,11 +871,11 @@
                                                 <button class="list-group-item list-group-item-action active" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
                                                 <button class="list-group-item list-group-item-action" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
                                                 <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab"><i class="bi bi-paperclip"></i>Files</button>
-                                                <button class="list-group-item list-group-item-action" id="repNotesTab" data-bs-toggle="list" data-bs-target="#repNotesPane" type="button" role="tab"><i class="bi bi-journal-text"></i>Notes</button>
                                                 <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
                                                 <button class="list-group-item list-group-item-action" id="repHistoryTab" data-bs-toggle="list" data-bs-target="#repHistoryPane" type="button" role="tab" onclick="loadCaseHistory()"><i class="bi bi-clock-history"></i>Audit Trail</button>
                                                 <button class="list-group-item list-group-item-action" id="repDetailsTab" data-bs-toggle="list" data-bs-target="#repDetailsPane" type="button" role="tab"><i class="bi bi-info-circle"></i>Case Details</button>
                                                 <button class="list-group-item list-group-item-action" id="repExportTab" data-bs-toggle="list" data-bs-target="#repExportPane" type="button" role="tab" onclick="prepareExportPane()"><i class="bi bi-file-earmark-arrow-down-fill"></i>Export</button>
+                                                <button class="list-group-item list-group-item-action" id="repRawJsonTab" data-bs-toggle="list" data-bs-target="#repRawJsonPane" type="button" role="tab"><i class="bi bi-code-slash"></i>Raw JSON</button>
                                             </div>
                                             <div class="reports-content tab-content" id="reportDetailTabContent">
                                                 <div class="tab-pane fade show active" id="repCaseNotesPane" role="tabpanel">
@@ -941,10 +941,6 @@
                                                         <label class="telemetry-grid-label d-block mb-1">Reference URLs / Links (Comma-separated or newline):</label>
                                                         <input type="text" id="editUrls" class="form-control form-control-sm font-monospace" placeholder="e.g. https://cve.mitre.org/..., https://case-tracker.local/id/102">
                                                     </div>
-                                                </div>
-                                                <div class="tab-pane fade" id="repNotesPane" role="tabpanel">
-                                                    <label class="telemetry-grid-label d-block mb-1">Examiner Notes / Custody Remarks</label>
-                                                    <textarea id="editNotes" class="form-control form-control-sm" rows="10" placeholder="Additional findings, bad sector notes, or physical condition notes..."></textarea>
                                                 </div>
                                                 <div class="tab-pane fade" id="repJobsPane" role="tabpanel">
                                                     <div class="small text-subtle mb-2">Every acquisition/recovery job recorded against this case, most recent first. Click a row to see its full telemetry, parameters and hashes.</div>
@@ -1059,24 +1055,15 @@
                                                         <button type="button" class="btn btn-sm btn-danger fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
                                                     </div>
                                                 </div>
+                                                <div class="tab-pane fade" id="repRawJsonPane" role="tabpanel">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <div class="small text-subtle">Live raw JSON structure of the case report - auto-updates on load/save.</div>
+                                                    </div>
+                                                    <pre id="jsonPreview" class="log-window mb-0" style="height: 420px;">[Select or create a case above to view raw structured JSON data]</pre>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Card 2: Live JSON Report Raw Data Structure -->
-                    <div class="grid-stack-item" gs-id="rep-card-json" gs-x="0" gs-y="14" gs-w="12" gs-h="4">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header d-flex justify-content-between align-items-center py-2">
-                                    <span><i class="bi bi-code-slash me-2"></i>Live JSON Report Raw Data Structure</span>
-                                    <span class="small text-subtle fw-normal">Auto-updates on load/save</span>
-                                </div>
-                                <div class="card-body py-2">
-                                    <pre id="jsonPreview" class="log-window mb-0" style="height: 250px;">[Select or load a report file above to view raw structured JSON data]</pre>
                                 </div>
                             </div>
                         </div>
