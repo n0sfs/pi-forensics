@@ -898,7 +898,7 @@
 
                                     <div class="d-flex gap-2">
                                         <button class="btn btn-sm btn-success flex-fill fw-bold" onclick="saveReportMetadata()"><i class="bi bi-save me-1"></i>Save Report Changes</button>
-                                        <button class="btn btn-sm btn-danger flex-fill fw-bold" onclick="exportEditedPdf()"><i class="bi bi-file-earmark-pdf-fill me-1"></i>Save & Export PDF Report</button>
+                                        <button class="btn btn-sm btn-danger flex-fill fw-bold" onclick="openExportReportModal()"><i class="bi bi-file-earmark-arrow-down-fill me-1"></i>Export</button>
                                     </div>
                                 </div>
                             </div>
@@ -1243,6 +1243,93 @@
                 <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
                     <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearActiveCase()"><i class="bi bi-x-circle me-1"></i>Clear Active Case</button>
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="exportReportModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-file-earmark-arrow-down me-2"></i>Export Report</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="telemetry-grid-label d-block mb-1">Export Format</label>
+                            <select id="exportFormatSelect" class="form-select form-select-sm mb-3">
+                                <option value="pdf">PDF Document (.pdf)</option>
+                                <option value="html">HTML Report (.html)</option>
+                            </select>
+
+                            <label class="telemetry-grid-label d-block mb-1">Sections to Include</label>
+                            <div class="form-check">
+                                <input class="form-check-input export-section-check" type="checkbox" id="expSecCaseInfo" checked>
+                                <label class="form-check-label small" for="expSecCaseInfo">Case Information</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input export-section-check" type="checkbox" id="expSecAttachments" checked>
+                                <label class="form-check-label small" for="expSecAttachments">Case Attachments &amp; References</label>
+                            </div>
+                            <div class="form-check mb-3">
+                                <input class="form-check-input export-section-check" type="checkbox" id="expSecAuditTrail" checked>
+                                <label class="form-check-label small" for="expSecAuditTrail">Case Activity Log (Audit Trail)</label>
+                            </div>
+
+                            <label class="telemetry-grid-label d-block mb-1">Evidence Item Detail Fields</label>
+                            <div class="form-check">
+                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldTelemetry" checked>
+                                <label class="form-check-label small" for="expFieldTelemetry">Source Media Telemetry</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldParams" checked>
+                                <label class="form-check-label small" for="expFieldParams">Acquisition Parameters</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldHashes" checked>
+                                <label class="form-check-label small" for="expFieldHashes">Verification Hashes</label>
+                            </div>
+
+                            <div class="d-flex gap-2 mt-3">
+                                <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportCheckboxes(true)">Check All</button>
+                                <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportCheckboxes(false)">Uncheck All</button>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <label class="telemetry-grid-label d-block mb-0">Evidence Items to Include</label>
+                                <div class="d-flex gap-1">
+                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportItemCheckboxes(true)">All</button>
+                                    <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportItemCheckboxes(false)">None</button>
+                                </div>
+                            </div>
+                            <div id="exportItemsList" class="list-group list-group-flush border border-secondary rounded-2" style="max-height: 340px; overflow-y: auto; background-color: #090b10;">
+                                <div class="text-subtle small p-2">Load a report above first.</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <label class="telemetry-grid-label d-block mb-0">Case Files &amp; URLs to Include</label>
+                                <div class="d-flex gap-1">
+                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportFileCheckboxes(true)">All</button>
+                                    <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportFileCheckboxes(false)">None</button>
+                                </div>
+                            </div>
+                            <div class="small text-subtle mb-1">Photos, notes, emails, text files, and reference URLs attached to this case, plus anything else found sitting in the case folder (e.g. copied in via File Explorer).</div>
+                            <div id="exportFilesList" class="list-group list-group-flush border border-secondary rounded-2" style="max-height: 340px; overflow-y: auto; background-color: #090b10;">
+                                <div class="text-subtle small p-2">Load a report above first.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
+                    <span id="exportReportStatus" class="small text-subtle"></span>
+                    <div>
+                        <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-sm btn-danger fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
+                    </div>
                 </div>
             </div>
         </div>
