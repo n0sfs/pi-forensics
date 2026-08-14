@@ -803,6 +803,7 @@ function updateContextToolbar(item) {
     const btnMetadata = document.getElementById("btnFileMetadata");
     const btnBrowseImage = document.getElementById("btnBrowseImage");
     const btnVerifyHash = document.getElementById("btnVerifyHash");
+    const btnRecoverFromImage = document.getElementById("btnRecoverFromImage");
     const btnBinwalk = document.getElementById("btnRunBinwalk");
     const btnClamscan = document.getElementById("btnRunClamscan");
     const btnStrings = document.getElementById("btnRunStrings");
@@ -821,6 +822,7 @@ function updateContextToolbar(item) {
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnVerifyHash) btnVerifyHash.disabled = item.is_dir;
+    if (btnRecoverFromImage) btnRecoverFromImage.disabled = item.is_dir || !isImageFile(item.name);
 }
 
 function promptCopySelected() {
@@ -2186,6 +2188,21 @@ async function runExportReport() {
     }
 }
 
+// Context-menu shortcut: jump to File Recovery with this image pre-filled as
+// the source, instead of making the examiner re-browse to the same path
+// they just right-clicked in File Explorer. Defaults to PhotoRec (the most
+// commonly reached-for recovery tool) - the tool selector is a normal field
+// on the File Recovery tab if a different one is needed.
+function recoverDeletedFilesFromImage() {
+    if (!activeSelectedFile) return;
+    const toolSelect = document.getElementById("recoveryToolSelect");
+    if (toolSelect) toolSelect.value = 'photorec';
+    updateRecoveryToolControls();
+    const sourceEl = document.getElementById("recoverySourcePath");
+    if (sourceEl) sourceEl.value = activeSelectedFile;
+    switchToTab('ddrescue-tab');
+}
+
 // --- Evidence Hash Verifier (context-menu action, scoped to the selected file) ---
 let verifyHashModalInstance = null;
 
@@ -2883,7 +2900,7 @@ async function queryNetworkShares(hostId, protocolId, shareSelectId, mountStatus
     }
 }
 
-async function mountNetworkDrive(hostId, protocolId, shareSelectId, destPathId, mountStatusId) {
+async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusId) {
     const host = document.getElementById(hostId)?.value.trim() || "";
     const protocol = document.getElementById(protocolId)?.value || "smb";
     const shareSelect = document.getElementById(shareSelectId);
@@ -2903,15 +2920,23 @@ async function mountNetworkDrive(hostId, protocolId, shareSelectId, destPathId, 
         const data = await res.json();
 
         if (data.success) {
-            if (mountStatus) mountStatus.innerText = `Successfully mounted: ${data.mount_point}`;
-            
-            // Auto-update the destination input field
-            const destPathMain = document.getElementById("destPath");
-            if (destPathMain) destPathMain.value = data.mount_point;
+            // Mounting is system-wide now (Settings), not tied to any one
+            // tab's destination field - just surface the new path clearly
+            // so the examiner can Browse into it from wherever they need it.
+            if (mountStatus) {
+                mountStatus.innerHTML = '';
+                const okLine = document.createElement('div');
+                okLine.className = 'text-success fw-bold';
+                okLine.textContent = `Mounted: ${data.mount_point}`;
+                const hintLine = document.createElement('div');
+                hintLine.className = 'text-subtle';
+                hintLine.textContent = 'Use any tab\'s Browse button to navigate into this path.';
+                mountStatus.appendChild(okLine);
+                mountStatus.appendChild(hintLine);
+            }
 
             loadExplorer(data.mount_point);
             loadNetworkHistory();
-            alert(`Share Mounted to ${data.mount_point}! Destination paths updated.`);
         } else {
             if (mountStatus) mountStatus.innerText = `Mount Error: ${data.error}`;
             alert(`Mount Failed: ${data.error}`);
