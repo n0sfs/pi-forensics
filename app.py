@@ -18,6 +18,7 @@ import pytsk3
 import shutil
 import hashlib
 import tempfile
+import textwrap
 import subprocess
 import threading
 from functools import wraps
@@ -5040,6 +5041,321 @@ def discover_case_files():
     files, truncated = _discover_case_files(case_folder)
     return jsonify({"success": True, "files": files, "truncated": truncated})
 
+# --- Case Notes: timestamped, append-only journal entries ---
+# Inspired by forensicnotes.com's contemporaneous-notes model, adapted to
+# what this appliance can honestly provide: there's no real cryptographic
+# timestamp authority here, so instead each note gets a local SHA-256
+# integrity hash (detects local tampering, not a legal notarization
+# service) and edits are append-only - a note's original text/timestamp/
+# author is never overwritten, only superseded with the prior version kept
+# in edit_history. This is what the "Forensic Analysis / Steps Taken"
+# report section renders (see _draw_pdf_case_notes below).
+def _hash_note_content(text, attachment_paths):
+    h = hashlib.sha256()
+    h.update((text or '').encode('utf-8'))
+    for path in attachment_paths:
+        try:
+            with open(path, 'rb') as f:
+                for chunk in iter(lambda: f.read(65536), b''):
+                    h.update(chunk)
+        except OSError:
+            pass
+    return h.hexdigest()
+
+@app.route('/api/cases/notes/add', methods=['POST'])
+@requires_auth
+def add_case_note():
+    report_file = safe_path(request.form.get('report_path', ''))
+    if not report_file or not os.path.exists(report_file):
+        return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
+
+    text = request.form.get('text', '').strip()
+    category = request.form.get('category', 'General').strip() or 'General'
+    if not text:
+        return jsonify({"success": False, "error": "Note text cannot be empty."}), 400
+
+    try:
+        with open(report_file, 'r') as f:
+            data = json.load(f)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read report: {e}"}), 500
+
+    note_id = uuid.uuid4().hex
+    saved_attachments = []
+    uploaded_files = request.files.getlist('files')
+    if uploaded_files and any(f.filename for f in uploaded_files):
+        note_dir = safe_path(os.path.join(os.path.dirname(report_file), "case_notes_attachments", note_id))
+        if not note_dir:
+            return jsonify({"success": False, "error": "Could not resolve a safe attachment directory for this note."}), 500
+        os.makedirs(note_dir, exist_ok=True)
+        for uf in uploaded_files:
+            if not uf.filename:
+                continue
+            fname = os.path.basename(uf.filename)
+            if not fname:
+                continue
+            fpath = os.path.join(note_dir, fname)
+            uf.save(fpath)
+            ext = os.path.splitext(fname)[1].lower()
+            kind = 'image' if ext in ATTACHMENT_IMAGE_EXT else ('text' if ext in ATTACHMENT_TEXT_EXT else 'other')
+            saved_attachments.append({
+                "filename": fname,
+                "path": fpath,
+                "size_bytes": os.path.getsize(fpath),
+                "kind": kind,
+            })
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    note = {
+        "note_id": note_id,
+        "timestamp": now,
+        "author": getattr(g, 'forensic_user', None),
+        "category": category,
+        "text": text,
+        "attachments": saved_attachments,
+        "content_hash": _hash_note_content(text, [a["path"] for a in saved_attachments]),
+        "edited_at": None,
+        "edit_history": [],
+    }
+
+    data.setdefault('case_notes', []).append(note)
+    if 'updated_at' in data:
+        data['updated_at'] = now
+
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not save note: {e}"}), 500
+
+    log_chain_of_custody("case_note_add", {"report_path": report_file, "note_id": note_id, "category": category})
+    return jsonify({"success": True, "note": note})
+
+@app.route('/api/cases/notes/edit', methods=['POST'])
+@requires_auth
+def edit_case_note():
+    req = request.get_json() or {}
+    report_file = safe_path(req.get('report_path'))
+    note_id = req.get('note_id', '')
+    new_text = (req.get('text') or '').strip()
+
+    if not report_file or not os.path.exists(report_file):
+        return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
+    if not new_text:
+        return jsonify({"success": False, "error": "Note text cannot be empty."}), 400
+
+    try:
+        with open(report_file, 'r') as f:
+            data = json.load(f)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read report: {e}"}), 500
+
+    notes = data.get('case_notes', [])
+    note = next((n for n in notes if n.get('note_id') == note_id), None)
+    if not note:
+        return jsonify({"success": False, "error": "Note not found on this case/report."}), 404
+
+    # Append-only: the prior text/hash/edited_at is preserved in
+    # edit_history rather than overwritten - note_id/timestamp/author never
+    # change, so a note's contemporaneous origin stays provable after edits.
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    note.setdefault('edit_history', []).append({
+        "text": note["text"],
+        "content_hash": note["content_hash"],
+        "edited_at": note.get("edited_at"),
+    })
+    note["text"] = new_text
+    note["content_hash"] = _hash_note_content(new_text, [a["path"] for a in note.get("attachments", [])])
+    note["edited_at"] = now
+
+    if 'updated_at' in data:
+        data['updated_at'] = now
+
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not save note edit: {e}"}), 500
+
+    log_chain_of_custody("case_note_edit", {"report_path": report_file, "note_id": note_id})
+    return jsonify({"success": True, "note": note})
+
+def _embed_file_into_pdf(c, y, file_path):
+    """Draws one file's content (image/text embedded, or a path+size
+    fallback) at the current y and returns the new y. Shared by Exhibits
+    (case attachments) and the Case Notes journal so the per-extension
+    embedding dispatch isn't duplicated a third time."""
+    name = os.path.basename(file_path)
+    ext = os.path.splitext(file_path)[1].lower()
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        size = 0
+
+    if ext in ATTACHMENT_IMAGE_EXT and size <= ATTACHMENT_MAX_IMAGE_EMBED_BYTES:
+        if y < 220:
+            c.showPage()
+            y = 750
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(50, y, f"Image: {name}"[:100])
+        y -= 145
+        try:
+            from reportlab.lib.utils import ImageReader
+            c.drawImage(ImageReader(file_path), 60, y, width=220, height=140, preserveAspectRatio=True, anchor='sw')
+        except Exception as img_err:
+            c.setFont("Helvetica", 9)
+            c.drawString(60, y + 130, f"(could not render image: {img_err})"[:100])
+        y -= 15
+        c.setFont("Helvetica", 10)
+    elif ext in ATTACHMENT_TEXT_EXT and size <= ATTACHMENT_MAX_TEXT_EMBED_BYTES:
+        if y < 100:
+            c.showPage()
+            y = 750
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(50, y, f"Text File: {name}"[:100])
+        y -= 14
+        c.setFont("Courier", 7.5)
+        try:
+            with open(file_path, 'r', errors='replace') as tf:
+                text_content = tf.read(ATTACHMENT_MAX_TEXT_EMBED_BYTES)
+        except OSError as e:
+            text_content = f"(could not read file: {e})"
+        for line in text_content.splitlines()[:400]:
+            if y < 50:
+                c.showPage()
+                y = 750
+                c.setFont("Courier", 7.5)
+            c.drawString(55, y, line[:130])
+            y -= 9
+        y -= 10
+        c.setFont("Helvetica", 10)
+    else:
+        if y < 60:
+            c.showPage()
+            y = 750
+            c.setFont("Helvetica", 10)
+        size_note = f" ({size:,} bytes)" if size else ""
+        c.drawString(60, y, f"• Document: {name}{size_note} - {file_path}"[:130])
+        y -= 15
+    return y
+
+def _draw_pdf_wrapped_text(c, y, text, x=50, width_chars=95, font="Helvetica", size=9, leading=12):
+    """Word-wraps and paginates a block of examiner-entered narrative text -
+    shared by the narrative sections and the Case Notes journal, since both
+    can run to multiple paragraphs (unlike the header's single-line fields,
+    which stay truncated)."""
+    c.setFont(font, size)
+    for para in (text or '').splitlines() or ['']:
+        for line in (textwrap.wrap(para, width_chars) or ['']):
+            if y < 60:
+                c.showPage()
+                y = 750
+                c.setFont(font, size)
+            c.drawString(x, y, line)
+            y -= leading
+    return y
+
+def _draw_pdf_narrative_section(c, y, title, text):
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, title)
+    y -= 18
+    if not (text or '').strip():
+        c.setFont("Helvetica-Oblique", 9)
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(50, y, "(Not provided)")
+        c.setFillColorRGB(0, 0, 0)
+        y -= 14
+        return y
+    y = _draw_pdf_wrapped_text(c, y, text)
+    y -= 8
+    return y
+
+def _draw_pdf_evidence_inventory(c, y, events):
+    if not events:
+        return y
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "Evidence Inventory")
+    y -= 20
+    headers = ["Evidence ID", "Device", "Model", "Serial", "Capacity", "Acquisition Hash"]
+    xpos = [50, 130, 225, 320, 400, 460]
+    c.setFont("Helvetica-Bold", 8)
+    for label, x in zip(headers, xpos):
+        c.drawString(x, y, label)
+    y -= 4
+    c.line(50, y, 550, y)
+    y -= 12
+    c.setFont("Helvetica", 7.5)
+    for event in events:
+        if y < 60:
+            c.showPage()
+            y = 750
+            c.setFont("Helvetica", 7.5)
+        meta = event.get('case_metadata', {})
+        drive = event.get('source_drive_telemetry', {})
+        hashes = event.get('computed_verification_hashes', {})
+        hash_display = next(iter(hashes.values()), 'N/A') if hashes else 'N/A'
+        row = [
+            str(meta.get('evidence_id', 'N/A'))[:14],
+            str(drive.get('device_path', 'N/A'))[:16],
+            str(drive.get('vendor_model', 'N/A'))[:15],
+            str(drive.get('serial_number', 'N/A'))[:13],
+            f"{drive.get('capacity_gb', 'N/A')} GB",
+            str(hash_display)[:22],
+        ]
+        for val, x in zip(row, xpos):
+            c.drawString(x, y, val)
+        y -= 11
+    y -= 12
+    return y
+
+def _draw_pdf_case_notes(c, y, notes):
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "Forensic Analysis / Steps Taken (Case Notes)")
+    y -= 16
+    c.setFont("Helvetica-Oblique", 7)
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.drawString(50, y, "Chronological case notes, each with a local SHA-256 integrity hash (tamper-evidence only, not a legal timestamp authority).")
+    c.setFillColorRGB(0, 0, 0)
+    y -= 16
+    if not notes:
+        c.setFont("Helvetica", 10)
+        c.drawString(50, y, "No case notes recorded.")
+        y -= 15
+        return y
+    for note in notes:
+        if y < 100:
+            c.showPage()
+            y = 750
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(50, y, f"[{note.get('category', 'General')}] {note.get('timestamp', '')} — {note.get('author') or 'unknown'}"[:110])
+        y -= 13
+        if note.get('edited_at'):
+            c.setFont("Helvetica-Oblique", 8)
+            c.setFillColorRGB(0.4, 0.4, 0.4)
+            c.drawString(50, y, f"(edited {note['edited_at']})")
+            c.setFillColorRGB(0, 0, 0)
+            y -= 11
+        y = _draw_pdf_wrapped_text(c, y, note.get('text') or '', x=60, width_chars=90)
+        y -= 4
+        for att in note.get('attachments', []):
+            file_path = safe_path(att.get('path', ''))
+            if file_path and os.path.exists(file_path):
+                y = _embed_file_into_pdf(c, y, file_path)
+        y -= 10
+    return y
+
 def _draw_pdf_attachments(c, y, urls, files):
     if not (urls or files):
         return y
@@ -5050,7 +5366,7 @@ def _draw_pdf_attachments(c, y, urls, files):
 
     y -= 15
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "Case Attachments & References")
+    c.drawString(50, y, "Exhibits")
     y -= 20
     c.setFont("Helvetica", 10)
 
@@ -5072,62 +5388,10 @@ def _draw_pdf_attachments(c, y, urls, files):
         file_path = safe_path(raw_path)
         if not file_path or not os.path.exists(file_path):
             continue
-
-        name = os.path.basename(file_path)
-        ext = os.path.splitext(file_path)[1].lower()
-        try:
-            size = os.path.getsize(file_path)
-        except OSError:
-            size = 0
-
-        if ext in ATTACHMENT_IMAGE_EXT and size <= ATTACHMENT_MAX_IMAGE_EMBED_BYTES:
-            if y < 220:
-                c.showPage()
-                y = 750
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(50, y, f"Image: {name}"[:100])
-            y -= 145
-            try:
-                from reportlab.lib.utils import ImageReader
-                c.drawImage(ImageReader(file_path), 60, y, width=220, height=140, preserveAspectRatio=True, anchor='sw')
-            except Exception as img_err:
-                c.setFont("Helvetica", 9)
-                c.drawString(60, y + 130, f"(could not render image: {img_err})"[:100])
-            y -= 15
-            c.setFont("Helvetica", 10)
-        elif ext in ATTACHMENT_TEXT_EXT and size <= ATTACHMENT_MAX_TEXT_EMBED_BYTES:
-            if y < 100:
-                c.showPage()
-                y = 750
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(50, y, f"Text File: {name}"[:100])
-            y -= 14
-            c.setFont("Courier", 7.5)
-            try:
-                with open(file_path, 'r', errors='replace') as tf:
-                    text_content = tf.read(ATTACHMENT_MAX_TEXT_EMBED_BYTES)
-            except OSError as e:
-                text_content = f"(could not read file: {e})"
-            for line in text_content.splitlines()[:400]:
-                if y < 50:
-                    c.showPage()
-                    y = 750
-                    c.setFont("Courier", 7.5)
-                c.drawString(55, y, line[:130])
-                y -= 9
-            y -= 10
-            c.setFont("Helvetica", 10)
-        else:
-            if y < 60:
-                c.showPage()
-                y = 750
-                c.setFont("Helvetica", 10)
-            size_note = f" ({size:,} bytes)" if size else ""
-            c.drawString(60, y, f"• Document: {name}{size_note} - {file_path}"[:130])
-            y -= 15
+        y = _embed_file_into_pdf(c, y, file_path)
     return y
 
-def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, sections, job_fields):
+def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, case_notes, sections, job_fields):
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
 
@@ -5159,6 +5423,13 @@ def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, sect
 
     y = (_draw_pdf_header(c, header) if sections.get('case_info', True) else title_bottom - 30)
 
+    if sections.get('executive_summary', True):
+        y = _draw_pdf_narrative_section(c, y, "Executive Summary", header.get('executive_summary'))
+        y = _draw_pdf_narrative_section(c, y, "Objectives", header.get('objectives'))
+
+    if sections.get('evidence_inventory', True):
+        y = _draw_pdf_evidence_inventory(c, y, events)
+
     for i, event in enumerate(events):
         if i > 0:
             c.showPage()
@@ -5172,6 +5443,16 @@ def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, sect
         y -= 25
         y = _draw_pdf_job_section(c, y, event, job_fields)
 
+    if sections.get('forensic_analysis', True):
+        y = _draw_pdf_case_notes(c, y, case_notes)
+
+    if sections.get('relevant_findings', True):
+        y = _draw_pdf_narrative_section(c, y, "Relevant Findings", header.get('findings_summary'))
+    if sections.get('limitations', True):
+        y = _draw_pdf_narrative_section(c, y, "Limitations & Statement of Uncertainty", header.get('limitations'))
+    if sections.get('conclusion', True):
+        y = _draw_pdf_narrative_section(c, y, "Conclusion", header.get('conclusion'))
+
     if sections.get('attachments', True):
         y = _draw_pdf_attachments(c, y, urls, files)
     if sections.get('audit_trail', True):
@@ -5179,7 +5460,46 @@ def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, sect
 
     c.save()
 
-def _build_html_report(header, events, urls, files, audit_entries, sections, job_fields):
+def _embed_file_into_html(file_path):
+    """HTML counterpart to _embed_file_into_pdf - shared by Exhibits (case
+    attachments) and the Case Notes journal."""
+    esc = html.escape
+    name = os.path.basename(file_path)
+    ext = os.path.splitext(file_path)[1].lower()
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        size = 0
+
+    if ext in ATTACHMENT_IMAGE_EXT and size <= ATTACHMENT_MAX_IMAGE_EMBED_BYTES:
+        mime = {
+            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+            '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp',
+        }.get(ext, 'application/octet-stream')
+        try:
+            with open(file_path, 'rb') as imf:
+                b64 = base64.b64encode(imf.read()).decode('ascii')
+            return f'<div class="attach-item"><h3>{esc(name)}</h3><img src="data:{mime};base64,{b64}"></div>'
+        except OSError as e:
+            return f'<div class="attach-item"><h3>{esc(name)}</h3><p class="muted">Could not read image: {esc(str(e))}</p></div>'
+    elif ext in ATTACHMENT_TEXT_EXT and size <= ATTACHMENT_MAX_TEXT_EMBED_BYTES:
+        try:
+            with open(file_path, 'r', errors='replace') as tf:
+                text_content = tf.read(ATTACHMENT_MAX_TEXT_EMBED_BYTES)
+        except OSError as e:
+            text_content = f"(could not read file: {e})"
+        return f'<div class="attach-item"><h3>{esc(name)}</h3><pre>{esc(text_content)}</pre></div>'
+    else:
+        size_note = f" ({size:,} bytes)" if size else ""
+        return f'<div class="attach-item"><h3>{esc(name)}</h3><p class="muted mono">{esc(file_path)}{esc(size_note)}</p></div>'
+
+def _html_narrative_block(title, text):
+    esc = html.escape
+    text = (text or '').strip()
+    body = f'<span style="white-space:pre-wrap;">{esc(text)}</span>' if text else '<span class="muted">(Not provided)</span>'
+    return f'<h2>{esc(title)}</h2><p>{body}</p>'
+
+def _build_html_report(header, events, urls, files, audit_entries, case_notes, sections, job_fields):
     """Self-contained HTML report - every value is escaped since it may
     contain examiner-entered text or evidence-derived strings (filenames,
     device paths) that this file could later be reopened/served from disk."""
@@ -5239,6 +5559,28 @@ def _build_html_report(header, events, urls, files, audit_entries, sections, job
             parts.append(f'<tr><th>{esc(str(field["label"]))}</th><td colspan="3">{esc(str(field["value"]))}</td></tr>')
         parts.append('</table>')
 
+    if sections.get('executive_summary', True):
+        parts.append(_html_narrative_block('Executive Summary', header.get('executive_summary')))
+        parts.append(_html_narrative_block('Objectives', header.get('objectives')))
+
+    if sections.get('evidence_inventory', True) and events:
+        parts.append('<h2>Evidence Inventory</h2><table>')
+        parts.append('<tr><th>Evidence ID</th><th>Device</th><th>Model</th><th>Serial</th><th>Capacity</th><th>Acquisition Hash</th></tr>')
+        for event in events:
+            meta = event.get('case_metadata', {})
+            drive = event.get('source_drive_telemetry', {})
+            hashes = event.get('computed_verification_hashes', {})
+            hash_display = next(iter(hashes.values()), 'N/A') if hashes else 'N/A'
+            parts.append(
+                f'<tr><td>{esc(str(meta.get("evidence_id", "N/A")))}</td>'
+                f'<td>{esc(str(drive.get("device_path", "N/A")))}</td>'
+                f'<td>{esc(str(drive.get("vendor_model", "N/A")))}</td>'
+                f'<td>{esc(str(drive.get("serial_number", "N/A")))}</td>'
+                f'<td>{esc(str(drive.get("capacity_gb", "N/A")))} GB</td>'
+                f'<td class="mono">{esc(str(hash_display))}</td></tr>'
+            )
+        parts.append('</table>')
+
     for event in events:
         meta = event.get('case_metadata', {})
         parts.append('<div class="job">')
@@ -5271,8 +5613,33 @@ def _build_html_report(header, events, urls, files, audit_entries, sections, job
 
         parts.append('</div>')
 
+    if sections.get('forensic_analysis', True):
+        parts.append('<h2>Forensic Analysis / Steps Taken (Case Notes)</h2>')
+        parts.append('<p class="muted">Chronological case notes, each with a local SHA-256 integrity hash (tamper-evidence only, not a legal timestamp authority).</p>')
+        if not case_notes:
+            parts.append('<p class="muted">No case notes recorded.</p>')
+        for note in case_notes:
+            parts.append('<div class="job">')
+            author = esc(str(note.get('author') or 'unknown'))
+            parts.append(f'<h3>[{esc(str(note.get("category", "General")))}] {esc(str(note.get("timestamp", "")))} &mdash; {author}</h3>')
+            if note.get('edited_at'):
+                parts.append(f'<div class="muted">(edited {esc(str(note["edited_at"]))})</div>')
+            parts.append(f'<p style="white-space:pre-wrap;">{esc(str(note.get("text", "")))}</p>')
+            for att in note.get('attachments', []):
+                file_path = safe_path(att.get('path', ''))
+                if file_path and os.path.exists(file_path):
+                    parts.append(_embed_file_into_html(file_path))
+            parts.append('</div>')
+
+    if sections.get('relevant_findings', True):
+        parts.append(_html_narrative_block('Relevant Findings', header.get('findings_summary')))
+    if sections.get('limitations', True):
+        parts.append(_html_narrative_block('Limitations & Statement of Uncertainty', header.get('limitations')))
+    if sections.get('conclusion', True):
+        parts.append(_html_narrative_block('Conclusion', header.get('conclusion')))
+
     if sections.get('attachments', True) and (urls or files):
-        parts.append('<h2>Case Attachments &amp; References</h2>')
+        parts.append('<h2>Exhibits</h2>')
         if urls:
             parts.append('<p><strong>Reference Links / URLs:</strong></p><ul>')
             for url in urls:
@@ -5283,34 +5650,7 @@ def _build_html_report(header, events, urls, files, audit_entries, sections, job
             file_path = safe_path(raw_path)
             if not file_path or not os.path.exists(file_path):
                 continue
-            name = os.path.basename(file_path)
-            ext = os.path.splitext(file_path)[1].lower()
-            try:
-                size = os.path.getsize(file_path)
-            except OSError:
-                size = 0
-
-            if ext in ATTACHMENT_IMAGE_EXT and size <= ATTACHMENT_MAX_IMAGE_EMBED_BYTES:
-                mime = {
-                    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
-                    '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp',
-                }.get(ext, 'application/octet-stream')
-                try:
-                    with open(file_path, 'rb') as imf:
-                        b64 = base64.b64encode(imf.read()).decode('ascii')
-                    parts.append(f'<div class="attach-item"><h3>{esc(name)}</h3><img src="data:{mime};base64,{b64}"></div>')
-                except OSError as e:
-                    parts.append(f'<div class="attach-item"><h3>{esc(name)}</h3><p class="muted">Could not read image: {esc(str(e))}</p></div>')
-            elif ext in ATTACHMENT_TEXT_EXT and size <= ATTACHMENT_MAX_TEXT_EMBED_BYTES:
-                try:
-                    with open(file_path, 'r', errors='replace') as tf:
-                        text_content = tf.read(ATTACHMENT_MAX_TEXT_EMBED_BYTES)
-                except OSError as e:
-                    text_content = f"(could not read file: {e})"
-                parts.append(f'<div class="attach-item"><h3>{esc(name)}</h3><pre>{esc(text_content)}</pre></div>')
-            else:
-                size_note = f" ({size:,} bytes)" if size else ""
-                parts.append(f'<div class="attach-item"><h3>{esc(name)}</h3><p class="muted mono">{esc(file_path)}{esc(size_note)}</p></div>')
+            parts.append(_embed_file_into_html(file_path))
 
     if sections.get('audit_trail', True):
         parts.append('<h2>Case Activity Log (Audit Trail)</h2>')
@@ -5388,6 +5728,11 @@ def export_report():
             "notes": data.get('notes', ''),
             "created_at": data.get('created_at', 'N/A'),
             "custom_fields": _custom_field_pairs(data.get('custom_fields')),
+            "executive_summary": data.get('executive_summary', ''),
+            "objectives": data.get('objectives', ''),
+            "findings_summary": data.get('findings_summary', ''),
+            "limitations": data.get('limitations', ''),
+            "conclusion": data.get('conclusion', ''),
         }
         attachments = data.get('attachments', {})
     else:
@@ -5399,8 +5744,17 @@ def export_report():
             "notes": meta.get('notes', ''),
             "created_at": data.get('timestamp_start', 'N/A'),
             "custom_fields": _custom_field_pairs(meta.get('custom_fields')),
+            "executive_summary": meta.get('executive_summary', ''),
+            "objectives": meta.get('objectives', ''),
+            "findings_summary": meta.get('findings_summary', ''),
+            "limitations": meta.get('limitations', ''),
+            "conclusion": meta.get('conclusion', ''),
         }
         attachments = data.get('attachments', {})
+
+    # case_notes is top-level in both schemas (same precedent as
+    # attachments) - not nested under case_metadata for the legacy branch.
+    case_notes = data.get('case_notes', [])
 
     header["branding"] = report_defaults.get('branding', {})
 
@@ -5427,10 +5781,10 @@ def export_report():
         if fmt == 'html':
             out_path = report_file.rsplit('.json', 1)[0] + '.html'
             with open(out_path, 'w') as f:
-                f.write(_build_html_report(header, events, sel_urls, sel_files, audit_entries, sections, job_fields))
+                f.write(_build_html_report(header, events, sel_urls, sel_files, audit_entries, case_notes, sections, job_fields))
         else:
             out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-            _build_pdf_report(out_path, header, events, sel_urls, sel_files, audit_entries, sections, job_fields)
+            _build_pdf_report(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, sections, job_fields)
         return send_file(out_path, as_attachment=True)
     except Exception as e:
         return jsonify({"error": f"Report export failed: {str(e)}"}), 500

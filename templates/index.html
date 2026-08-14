@@ -187,6 +187,24 @@
             color: var(--accent-cyan); font-weight: 700; background: rgba(0, 242, 254, 0.07); border-left-color: var(--accent-cyan);
         }
         .settings-content { flex: 1; min-width: 0; padding: 20px; }
+
+        /* Reporting's left-nav + right-pane, same pattern as Settings above
+           but kept as its own class set so the two stay independently
+           tunable rather than sharing one generic name. */
+        .reports-shell { display: flex; align-items: stretch; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.4); background-color: var(--card-bg); }
+        .reports-nav { flex: 0 0 auto; width: max-content; min-width: 200px; border-right: 1px solid var(--border-color); background: rgba(255,255,255,0.02); padding: 6px 0; }
+        .reports-nav .list-group-item {
+            display: flex; align-items: center; gap: 10px;
+            background: transparent; color: var(--text-subtle); font-weight: 600; font-size: 0.88rem;
+            border: none; border-left: 3px solid transparent; border-radius: 0;
+            padding: 12px 18px; white-space: nowrap; text-align: left;
+        }
+        .reports-nav .list-group-item i { font-size: 1.05rem; flex-shrink: 0; }
+        .reports-nav .list-group-item:hover { color: var(--text-bright); background: rgba(255,255,255,0.03); }
+        .reports-nav .list-group-item.active {
+            color: var(--accent-cyan); font-weight: 700; background: rgba(0, 242, 254, 0.07); border-left-color: var(--accent-cyan);
+        }
+        .reports-content { flex: 1; min-width: 0; padding: 20px; }
         .ui-resizable-handle { filter: invert(100%); }
         .accordion-button { background-color: var(--card-bg); color: var(--text-bright); box-shadow: none; }
         .accordion-button:not(.collapsed) { background-color: var(--card-bg); color: var(--accent-cyan); box-shadow: none; }
@@ -272,6 +290,9 @@
             <span><span class="telemetry-label">Case #:</span> <span id="activeCaseNumVal" class="fw-bold text-info">--</span></span>
             <span><span class="telemetry-label">Examiner:</span> <span id="activeCaseExaminerVal" class="fw-bold text-light">--</span></span>
         </div>
+        <button id="btnSaveReportChanges" class="btn btn-sm btn-success fw-bold ms-auto" onclick="saveReportMetadata()">
+            <i class="bi bi-save me-1"></i>Save Report Changes
+        </button>
     </div>
 
     <!-- Application Module Tabs -->
@@ -825,107 +846,228 @@
             <div class="tab-pane fade" id="reports-app" role="tabpanel">
                 <div class="grid-stack grid-stack-reports">
 
-                    <!-- Card 1: Case Information -->
-                    <div class="grid-stack-item" gs-id="rep-card-info" gs-x="0" gs-y="0" gs-w="12" gs-h="5">
+                    <!-- Card 1: Files / Notes / Jobs / Export - left-nav + right-pane, mirrors Settings.
+                         Driven entirely by the Active Case Bar above (see currentReportPath /
+                         loadCaseForEditing() in main.js) - no independent load/browse step here. -->
+                    <div class="grid-stack-item" gs-id="rep-card-details" gs-x="0" gs-y="0" gs-w="12" gs-h="14">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center py-2">
-                                    <span><i class="bi bi-pencil-square me-2"></i>Case Information</span>
-                                    <span class="small text-subtle fw-normal">Load a report, edit case metadata, save changes or export a PDF</span>
+                                    <span><i class="bi bi-journal-richtext me-2"></i>Case Report</span>
+                                    <span class="small text-subtle fw-normal">Follows the case selected in the bar above - select or create one there to populate this</span>
                                 </div>
                                 <div class="card-body py-3">
-                                    <div class="mb-3">
-                                        <label class="telemetry-grid-label d-block mb-1">Target JSON Report File Path:</label>
-                                        <div class="input-group input-group-sm">
-                                            <input type="text" id="editReportPath" class="form-control font-monospace" placeholder="/mnt/2026-CASE-001_ITEM-01_report.json">
-                                            <button class="btn btn-outline-info fw-bold" onclick="openReportPickerModal()"><i class="bi bi-folder2-open me-1"></i>Browse</button>
-                                            <button class="btn btn-info fw-bold text-dark" onclick="loadCaseForEditing()"><i class="bi bi-box-arrow-in-down me-1"></i>Load Report</button>
-                                        </div>
+                                    <div id="reportsNoCaseState" class="text-subtle small py-4 text-center">
+                                        <i id="reportsNoCaseIcon" class="bi bi-folder2-open fs-3 d-block mb-2"></i>
+                                        <span id="reportsNoCaseMsg">Select or create a case using the bar above to view its report.</span>
                                     </div>
+                                    <div id="reportsLoadedState" style="display:none;">
+                                        <div id="repLegacyNotice" class="alert alert-warning small py-2 px-3 mb-3" style="display:none;">
+                                            <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                                            This is a single-job report, not a consolidated case file. Migrate this case from the Case Manager to combine all of its evidence items into one file.
+                                        </div>
+                                        <div class="reports-shell">
+                                            <div class="reports-nav list-group" id="reportsNavList" role="tablist">
+                                                <button class="list-group-item list-group-item-action active" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
+                                                <button class="list-group-item list-group-item-action" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
+                                                <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab"><i class="bi bi-paperclip"></i>Files</button>
+                                                <button class="list-group-item list-group-item-action" id="repNotesTab" data-bs-toggle="list" data-bs-target="#repNotesPane" type="button" role="tab"><i class="bi bi-journal-text"></i>Notes</button>
+                                                <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
+                                                <button class="list-group-item list-group-item-action" id="repHistoryTab" data-bs-toggle="list" data-bs-target="#repHistoryPane" type="button" role="tab" onclick="loadCaseHistory()"><i class="bi bi-clock-history"></i>Audit Trail</button>
+                                                <button class="list-group-item list-group-item-action" id="repDetailsTab" data-bs-toggle="list" data-bs-target="#repDetailsPane" type="button" role="tab"><i class="bi bi-info-circle"></i>Case Details</button>
+                                                <button class="list-group-item list-group-item-action" id="repExportTab" data-bs-toggle="list" data-bs-target="#repExportPane" type="button" role="tab" onclick="prepareExportPane()"><i class="bi bi-file-earmark-arrow-down-fill"></i>Export</button>
+                                            </div>
+                                            <div class="reports-content tab-content" id="reportDetailTabContent">
+                                                <div class="tab-pane fade show active" id="repCaseNotesPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">
+                                                        A chronological, append-only journal of what was done and observed - this is the "Forensic Analysis / Steps Taken" section of the exported report. Each note gets a timestamp, author, and a local SHA-256 integrity hash computed at save time (a tamper-evidence check on this station only, not a legal timestamp authority). Editing a note keeps its original text in an "Edited" history rather than overwriting it.
+                                                    </div>
+                                                    <div id="caseNotesContainer" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
+                                                        <span class="text-subtle small italic">No case notes recorded yet.</span>
+                                                    </div>
+                                                    <div class="border-top border-secondary pt-2">
+                                                        <div class="row g-2 mb-2">
+                                                            <div class="col-md-4">
+                                                                <select id="newCaseNoteCategory" class="form-select form-select-sm">
+                                                                    <option value="General">General</option>
+                                                                    <option value="Objective">Objective</option>
+                                                                    <option value="Acquisition">Acquisition</option>
+                                                                    <option value="Analysis">Analysis</option>
+                                                                    <option value="Finding">Finding</option>
+                                                                </select>
+                                                            </div>
+                                                            <div class="col-md-8">
+                                                                <input type="file" id="newCaseNoteFiles" class="form-control form-control-sm" multiple>
+                                                            </div>
+                                                        </div>
+                                                        <textarea id="newCaseNoteText" class="form-control form-control-sm mb-2" rows="3" placeholder="What did you do / observe just now?"></textarea>
+                                                        <button class="btn btn-sm btn-success fw-bold" onclick="addCaseNote()"><i class="bi bi-plus-lg me-1"></i>Add Note</button>
+                                                        <div id="caseNoteAddStatus" class="small mt-1"></div>
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repNarrativePane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">Examiner-authored narrative for the exported report - filled in once analysis is complete, distinct from the running Case Notes journal above.</div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Executive Summary</label>
+                                                        <textarea id="editExecSummary" class="form-control form-control-sm" rows="3" placeholder="High-level summary of the case, scope, and outcome for a non-technical reader..."></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Objectives</label>
+                                                        <textarea id="editObjectives" class="form-control form-control-sm" rows="2" placeholder="What was this examination asked to determine?"></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Relevant Findings</label>
+                                                        <textarea id="editFindingsSummary" class="form-control form-control-sm" rows="3" placeholder="Findings most relevant to the objectives above..."></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Limitations &amp; Statement of Uncertainty</label>
+                                                        <textarea id="editLimitations" class="form-control form-control-sm" rows="2" placeholder="Anything that limits confidence in these findings (partial acquisition, damaged media, tool limitations)..."></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Conclusion</label>
+                                                        <textarea id="editConclusion" class="form-control form-control-sm" rows="2" placeholder="Closing statement..."></textarea>
+                                                    </div>
+                                                    <div class="small text-subtle">Saved via "Save Report Changes" in the case bar above.</div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repFilesPane" role="tabpanel">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <h6 class="text-success fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Multiple Case Attachments</h6>
+                                                        <button class="btn btn-sm btn-outline-success fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-plus-lg me-1"></i>Add File Attachment</button>
+                                                    </div>
+                                                    <div id="attachmentsContainer" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 200px; overflow-y: auto;">
+                                                        <span class="text-subtle small italic">No files attached yet. Click 'Add File Attachment' to browse.</span>
+                                                    </div>
+                                                    <div>
+                                                        <label class="telemetry-grid-label d-block mb-1">Reference URLs / Links (Comma-separated or newline):</label>
+                                                        <input type="text" id="editUrls" class="form-control form-control-sm font-monospace" placeholder="e.g. https://cve.mitre.org/..., https://case-tracker.local/id/102">
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repNotesPane" role="tabpanel">
+                                                    <label class="telemetry-grid-label d-block mb-1">Examiner Notes / Custody Remarks</label>
+                                                    <textarea id="editNotes" class="form-control form-control-sm" rows="10" placeholder="Additional findings, bad sector notes, or physical condition notes..."></textarea>
+                                                </div>
+                                                <div class="tab-pane fade" id="repJobsPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">Every acquisition/recovery job recorded against this case, most recent first. Click a row to see its full telemetry, parameters and hashes.</div>
+                                                    <div id="jobsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
+                                                        <span class="text-subtle">Open this tab to see this case's jobs.</span>
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repHistoryPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">Station-wide actions tagged to this case number (creation, selection, job starts/stops, settings changes) - a broad activity log, not a structured acquisition record. See the Jobs tab for that, or Settings &gt; Audit Log for the full station-wide log across all cases.</div>
+                                                    <div id="caseHistoryContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
+                                                        <span class="text-subtle">Open this tab to see this case's history.</span>
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repDetailsPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">Station-configured extra fields (Settings &gt; Case &amp; Reporting) for this case. Saved via "Save Report Changes" in the case bar above.</div>
+                                                    <div id="customFieldsContainer" class="row g-2 mb-3"></div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repExportPane" role="tabpanel">
+                                                    <div class="row g-3">
+                                                        <div class="col-md-4">
+                                                            <label class="telemetry-grid-label d-block mb-1">Export Format</label>
+                                                            <select id="exportFormatSelect" class="form-select form-select-sm mb-3">
+                                                                <option value="pdf">PDF Document (.pdf)</option>
+                                                                <option value="html">HTML Report (.html)</option>
+                                                            </select>
 
-                                    <div class="row g-2 mb-3">
-                                        <div class="col-md-6">
-                                            <label class="telemetry-grid-label d-block mb-1">Case Number</label>
-                                            <input type="text" id="editCaseNum" class="form-control form-control-sm">
-                                        </div>
-                                        <div class="col-md-6">
-                                            <label class="telemetry-grid-label d-block mb-1">Examiner</label>
-                                            <input type="text" id="editExaminer" class="form-control form-control-sm">
-                                        </div>
-                                    </div>
-                                    <div id="customFieldsContainer" class="row g-2 mb-3"></div>
-                                    <div id="repLegacyNotice" class="alert alert-warning small py-2 px-3 mb-3" style="display:none;">
-                                        <i class="bi bi-exclamation-triangle-fill me-1"></i>
-                                        This is a single-job report, not a consolidated case file. Migrate this case from the Case Manager to combine all of its evidence items into one file.
-                                    </div>
+                                                            <label class="telemetry-grid-label d-block mb-1">Sections to Include</label>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecCaseInfo" checked>
+                                                                <label class="form-check-label small" for="expSecCaseInfo">Case Information</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecExecSummary" checked>
+                                                                <label class="form-check-label small" for="expSecExecSummary">Executive Summary &amp; Objectives</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecEvidenceInventory" checked>
+                                                                <label class="form-check-label small" for="expSecEvidenceInventory">Evidence Inventory</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecForensicAnalysis" checked>
+                                                                <label class="form-check-label small" for="expSecForensicAnalysis">Forensic Analysis / Steps Taken (Case Notes)</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecFindings" checked>
+                                                                <label class="form-check-label small" for="expSecFindings">Relevant Findings</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecLimitations" checked>
+                                                                <label class="form-check-label small" for="expSecLimitations">Limitations &amp; Statement of Uncertainty</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecConclusion" checked>
+                                                                <label class="form-check-label small" for="expSecConclusion">Conclusion</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecAttachments" checked>
+                                                                <label class="form-check-label small" for="expSecAttachments">Exhibits</label>
+                                                            </div>
+                                                            <div class="form-check mb-3">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecAuditTrail" checked>
+                                                                <label class="form-check-label small" for="expSecAuditTrail">Case Activity Log (Audit Trail)</label>
+                                                            </div>
 
-                                    <div class="d-flex gap-2">
-                                        <button class="btn btn-sm btn-success flex-fill fw-bold" onclick="saveReportMetadata()"><i class="bi bi-save me-1"></i>Save Report Changes</button>
-                                        <button class="btn btn-sm btn-danger flex-fill fw-bold" onclick="openExportReportModal()"><i class="bi bi-file-earmark-arrow-down-fill me-1"></i>Export</button>
+                                                            <label class="telemetry-grid-label d-block mb-1">Evidence Item Detail Fields</label>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldTelemetry" checked>
+                                                                <label class="form-check-label small" for="expFieldTelemetry">Source Media Telemetry</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldParams" checked>
+                                                                <label class="form-check-label small" for="expFieldParams">Acquisition Parameters</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldHashes" checked>
+                                                                <label class="form-check-label small" for="expFieldHashes">Verification Hashes</label>
+                                                            </div>
+
+                                                            <div class="d-flex gap-2 mt-3">
+                                                                <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportCheckboxes(true)">Check All</button>
+                                                                <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportCheckboxes(false)">Uncheck All</button>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                                <label class="telemetry-grid-label d-block mb-0">Evidence Items to Include</label>
+                                                                <div class="d-flex gap-1">
+                                                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportItemCheckboxes(true)">All</button>
+                                                                    <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportItemCheckboxes(false)">None</button>
+                                                                </div>
+                                                            </div>
+                                                            <div id="exportItemsList" class="list-group list-group-flush border border-secondary rounded-2" style="max-height: 340px; overflow-y: auto; background-color: #090b10;">
+                                                                <div class="text-subtle small p-2">Loading...</div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                                <label class="telemetry-grid-label d-block mb-0">Case Files &amp; URLs to Include</label>
+                                                                <div class="d-flex gap-1">
+                                                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportFileCheckboxes(true)">All</button>
+                                                                    <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportFileCheckboxes(false)">None</button>
+                                                                </div>
+                                                            </div>
+                                                            <div class="small text-subtle mb-1">Photos, notes, emails, text files, and reference URLs attached to this case, plus anything else found sitting in the case folder (e.g. copied in via File Explorer).</div>
+                                                            <div id="exportFilesList" class="list-group list-group-flush border border-secondary rounded-2" style="max-height: 340px; overflow-y: auto; background-color: #090b10;">
+                                                                <div class="text-subtle small p-2">Loading...</div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="d-flex justify-content-between align-items-center mt-3 pt-2 border-top border-secondary">
+                                                        <span id="exportReportStatus" class="small text-subtle"></span>
+                                                        <button type="button" class="btn btn-sm btn-danger fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Card 2: Files / Notes / History -->
-                    <div class="grid-stack-item" gs-id="rep-card-details" gs-x="0" gs-y="5" gs-w="12" gs-h="9">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header py-2 px-2">
-                                    <ul class="nav nav-tabs card-header-tabs border-0" id="reportDetailTabs" role="tablist">
-                                        <li class="nav-item" role="presentation">
-                                            <button class="nav-link active" id="repFilesTab" data-bs-toggle="tab" data-bs-target="#repFilesPane" type="button" role="tab"><i class="bi bi-paperclip me-1"></i>Files</button>
-                                        </li>
-                                        <li class="nav-item" role="presentation">
-                                            <button class="nav-link" id="repNotesTab" data-bs-toggle="tab" data-bs-target="#repNotesPane" type="button" role="tab"><i class="bi bi-journal-text me-1"></i>Notes</button>
-                                        </li>
-                                        <li class="nav-item" role="presentation">
-                                            <button class="nav-link" id="repJobsTab" data-bs-toggle="tab" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task me-1"></i>Jobs</button>
-                                        </li>
-                                        <li class="nav-item" role="presentation">
-                                            <button class="nav-link" id="repHistoryTab" data-bs-toggle="tab" data-bs-target="#repHistoryPane" type="button" role="tab" onclick="loadCaseHistory()"><i class="bi bi-clock-history me-1"></i>Audit Trail</button>
-                                        </li>
-                                    </ul>
-                                </div>
-                                <div class="card-body py-3">
-                                    <div class="tab-content" id="reportDetailTabContent">
-                                        <div class="tab-pane fade show active" id="repFilesPane" role="tabpanel">
-                                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                                <h6 class="text-success fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Multiple Case Attachments</h6>
-                                                <button class="btn btn-sm btn-outline-success fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-plus-lg me-1"></i>Add File Attachment</button>
-                                            </div>
-                                            <div id="attachmentsContainer" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 200px; overflow-y: auto;">
-                                                <span class="text-subtle small italic">No files attached yet. Click 'Add File Attachment' to browse.</span>
-                                            </div>
-                                            <div>
-                                                <label class="telemetry-grid-label d-block mb-1">Reference URLs / Links (Comma-separated or newline):</label>
-                                                <input type="text" id="editUrls" class="form-control form-control-sm font-monospace" placeholder="e.g. https://cve.mitre.org/..., https://case-tracker.local/id/102">
-                                            </div>
-                                        </div>
-                                        <div class="tab-pane fade" id="repNotesPane" role="tabpanel">
-                                            <label class="telemetry-grid-label d-block mb-1">Examiner Notes / Custody Remarks</label>
-                                            <textarea id="editNotes" class="form-control form-control-sm" rows="10" placeholder="Additional findings, bad sector notes, or physical condition notes..."></textarea>
-                                        </div>
-                                        <div class="tab-pane fade" id="repJobsPane" role="tabpanel">
-                                            <div class="small text-subtle mb-2">Every acquisition/recovery job recorded against this case, most recent first. Click a row to see its full telemetry, parameters and hashes.</div>
-                                            <div id="jobsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
-                                                <span class="text-subtle">Load a case above, then open this tab to see its jobs.</span>
-                                            </div>
-                                        </div>
-                                        <div class="tab-pane fade" id="repHistoryPane" role="tabpanel">
-                                            <div class="small text-subtle mb-2">Station-wide actions tagged to this case number (creation, selection, job starts/stops, settings changes) - a broad activity log, not a structured acquisition record. See the Jobs tab for that, or Settings &gt; Audit Log for the full station-wide log across all cases.</div>
-                                            <div id="caseHistoryContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
-                                                <span class="text-subtle">Load a report above, then open this tab to see its history.</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Card 3: Live JSON Report Raw Data Structure -->
+                    <!-- Card 2: Live JSON Report Raw Data Structure -->
                     <div class="grid-stack-item" gs-id="rep-card-json" gs-x="0" gs-y="14" gs-w="12" gs-h="4">
                         <div class="grid-stack-item-content">
                             <div class="card">
@@ -1148,7 +1290,13 @@
                             <div class="row g-2 mb-2">
                                 <div class="col-md-6">
                                     <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecCaseInfo" checked><label class="form-check-label small" for="defSecCaseInfo">Case Information</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAttachments" checked><label class="form-check-label small" for="defSecAttachments">Attachments</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecExecSummary" checked><label class="form-check-label small" for="defSecExecSummary">Executive Summary &amp; Objectives</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecEvidenceInventory" checked><label class="form-check-label small" for="defSecEvidenceInventory">Evidence Inventory</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecForensicAnalysis" checked><label class="form-check-label small" for="defSecForensicAnalysis">Forensic Analysis (Case Notes)</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecFindings" checked><label class="form-check-label small" for="defSecFindings">Relevant Findings</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecLimitations" checked><label class="form-check-label small" for="defSecLimitations">Limitations &amp; Uncertainty</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecConclusion" checked><label class="form-check-label small" for="defSecConclusion">Conclusion</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAttachments" checked><label class="form-check-label small" for="defSecAttachments">Exhibits</label></div>
                                     <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAuditTrail" checked><label class="form-check-label small" for="defSecAuditTrail">Audit Trail</label></div>
                                 </div>
                                 <div class="col-md-6">
@@ -1285,93 +1433,6 @@
                 <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
                     <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearActiveCase()"><i class="bi bi-x-circle me-1"></i>Clear Active Case</button>
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal fade" id="exportReportModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered modal-xl">
-            <div class="modal-content bg-dark text-light border-secondary">
-                <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-file-earmark-arrow-down me-2"></i>Export Report</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body py-2">
-                    <div class="row g-3">
-                        <div class="col-md-4">
-                            <label class="telemetry-grid-label d-block mb-1">Export Format</label>
-                            <select id="exportFormatSelect" class="form-select form-select-sm mb-3">
-                                <option value="pdf">PDF Document (.pdf)</option>
-                                <option value="html">HTML Report (.html)</option>
-                            </select>
-
-                            <label class="telemetry-grid-label d-block mb-1">Sections to Include</label>
-                            <div class="form-check">
-                                <input class="form-check-input export-section-check" type="checkbox" id="expSecCaseInfo" checked>
-                                <label class="form-check-label small" for="expSecCaseInfo">Case Information</label>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input export-section-check" type="checkbox" id="expSecAttachments" checked>
-                                <label class="form-check-label small" for="expSecAttachments">Case Attachments &amp; References</label>
-                            </div>
-                            <div class="form-check mb-3">
-                                <input class="form-check-input export-section-check" type="checkbox" id="expSecAuditTrail" checked>
-                                <label class="form-check-label small" for="expSecAuditTrail">Case Activity Log (Audit Trail)</label>
-                            </div>
-
-                            <label class="telemetry-grid-label d-block mb-1">Evidence Item Detail Fields</label>
-                            <div class="form-check">
-                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldTelemetry" checked>
-                                <label class="form-check-label small" for="expFieldTelemetry">Source Media Telemetry</label>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldParams" checked>
-                                <label class="form-check-label small" for="expFieldParams">Acquisition Parameters</label>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldHashes" checked>
-                                <label class="form-check-label small" for="expFieldHashes">Verification Hashes</label>
-                            </div>
-
-                            <div class="d-flex gap-2 mt-3">
-                                <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportCheckboxes(true)">Check All</button>
-                                <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportCheckboxes(false)">Uncheck All</button>
-                            </div>
-                        </div>
-                        <div class="col-md-4">
-                            <div class="d-flex justify-content-between align-items-center mb-1">
-                                <label class="telemetry-grid-label d-block mb-0">Evidence Items to Include</label>
-                                <div class="d-flex gap-1">
-                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportItemCheckboxes(true)">All</button>
-                                    <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportItemCheckboxes(false)">None</button>
-                                </div>
-                            </div>
-                            <div id="exportItemsList" class="list-group list-group-flush border border-secondary rounded-2" style="max-height: 340px; overflow-y: auto; background-color: #090b10;">
-                                <div class="text-subtle small p-2">Load a report above first.</div>
-                            </div>
-                        </div>
-                        <div class="col-md-4">
-                            <div class="d-flex justify-content-between align-items-center mb-1">
-                                <label class="telemetry-grid-label d-block mb-0">Case Files &amp; URLs to Include</label>
-                                <div class="d-flex gap-1">
-                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportFileCheckboxes(true)">All</button>
-                                    <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportFileCheckboxes(false)">None</button>
-                                </div>
-                            </div>
-                            <div class="small text-subtle mb-1">Photos, notes, emails, text files, and reference URLs attached to this case, plus anything else found sitting in the case folder (e.g. copied in via File Explorer).</div>
-                            <div id="exportFilesList" class="list-group list-group-flush border border-secondary rounded-2" style="max-height: 340px; overflow-y: auto; background-color: #090b10;">
-                                <div class="text-subtle small p-2">Load a report above first.</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
-                    <span id="exportReportStatus" class="small text-subtle"></span>
-                    <div>
-                        <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                        <button type="button" class="btn btn-sm btn-danger fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
-                    </div>
                 </div>
             </div>
         </div>
