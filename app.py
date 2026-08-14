@@ -827,8 +827,14 @@ def list_ios_devices():
             if not _UDID_RE.match(udid):
                 continue
             info = {"udid": udid, "name": "Unknown", "model": "Unknown",
-                     "ios_version": "Unknown", "serial": "Unknown", "trusted": True}
+                     "ios_version": "Unknown", "serial": "Unknown", "trusted": True,
+                     "build_version": "Unknown", "storage_capacity_gb": "Unknown",
+                     "imei": "Unknown", "wifi_mac": "Unknown", "bluetooth_mac": "Unknown",
+                     "activation_state": "Unknown"}
             try:
+                # ideviceinfo's full dump is already being fetched for the 4
+                # fields above - parsing more of it here is free (no extra
+                # subprocess call), unlike the Android path below.
                 info_res = subprocess.run(["ideviceinfo", "-u", udid], capture_output=True, text=True, timeout=15)
                 if info_res.returncode == 0:
                     for line in info_res.stdout.splitlines():
@@ -844,6 +850,21 @@ def list_ios_devices():
                             info['ios_version'] = val
                         elif key == 'SerialNumber':
                             info['serial'] = val
+                        elif key == 'BuildVersion':
+                            info['build_version'] = val
+                        elif key == 'TotalDiskCapacity':
+                            try:
+                                info['storage_capacity_gb'] = round(int(val) / (1024**3), 1)
+                            except ValueError:
+                                pass
+                        elif key == 'InternationalMobileEquipmentIdentity':
+                            info['imei'] = val
+                        elif key == 'WiFiAddress':
+                            info['wifi_mac'] = val
+                        elif key == 'BluetoothAddress':
+                            info['bluetooth_mac'] = val
+                        elif key == 'ActivationState':
+                            info['activation_state'] = val
                 else:
                     # Device is plugged in (usbmuxd sees it) but hasn't
                     # granted "Trust This Computer?" yet - not a bypass
@@ -874,12 +895,35 @@ def list_android_devices():
             for tok in parts[2:]:
                 if tok.startswith("model:"):
                     model = tok.split(":", 1)[1]
-            devices.append({
+
+            device = {
                 "serial": serial,
                 "state": state,  # 'device' = authorized, 'unauthorized' = waiting on RSA prompt, 'offline' = other
                 "model": model,
-                "authorized": (state == "device")
-            })
+                "authorized": (state == "device"),
+                "android_version": "Unknown", "api_level": "Unknown",
+                "manufacturer": "Unknown", "build_id": "Unknown",
+            }
+            # Only query an authorized device - `adb shell` against an
+            # unauthorized/offline one just hangs waiting on the RSA prompt
+            # or fails outright, unlike iOS where ideviceinfo already runs
+            # unconditionally above.
+            if device["authorized"]:
+                try:
+                    props_res = subprocess.run(["adb", "-s", serial, "shell", "getprop"], capture_output=True, text=True, timeout=15)
+                    if props_res.returncode == 0:
+                        props = {}
+                        for line in props_res.stdout.splitlines():
+                            m = re.match(r'^\[([^\]]+)\]:\s*\[([^\]]*)\]$', line.strip())
+                            if m:
+                                props[m.group(1)] = m.group(2)
+                        device['android_version'] = props.get('ro.build.version.release', 'Unknown')
+                        device['api_level'] = props.get('ro.build.version.sdk', 'Unknown')
+                        device['manufacturer'] = props.get('ro.product.manufacturer', 'Unknown')
+                        device['build_id'] = props.get('ro.build.display.id', 'Unknown')
+                except Exception:
+                    pass
+            devices.append(device)
     except Exception as e:
         print(f"Error listing Android devices: {e}")
     return devices
