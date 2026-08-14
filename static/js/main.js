@@ -1,9 +1,3 @@
-let gridMain = null;
-let gridDdrescue = null;
-let gridExplorer = null;
-let gridMobile = null;
-let gridReports = null;
-let isLayoutLocked = true;
 let isWriteBlockActive = true;
 let throughputChart = null;
 const maxGraphPoints = 30;
@@ -30,147 +24,12 @@ let activeCase = null;
 let caseManagerModalInstance = null;
 const ACTIVE_CASE_STORAGE_KEY = 'pi_forensics_active_case';
 
-function initGridstack() {
-    gridMain = GridStack.init({
-        cellHeight: 85,
-        margin: 6,
-        handle: '.card-header',
-        animate: true,
-        disableOneColumnMode: true,
-        float: true,
-        resizable: { handles: 'se, s, e' }
-    }, '.grid-stack-main');
-
-    gridDdrescue = GridStack.init({
-        cellHeight: 85,
-        margin: 6,
-        handle: '.card-header',
-        animate: true,
-        disableOneColumnMode: true,
-        float: true,
-        resizable: { handles: 'se, s, e' }
-    }, '.grid-stack-ddrescue');
-
-    gridExplorer = GridStack.init({
-        cellHeight: 85,
-        margin: 6,
-        handle: '.card-header',
-        animate: true,
-        disableOneColumnMode: true,
-        float: true,
-        resizable: { handles: 'se, s, e' }
-    }, '.grid-stack-explorer');
-
-    gridMobile = GridStack.init({
-        cellHeight: 85,
-        margin: 6,
-        handle: '.card-header',
-        animate: true,
-        disableOneColumnMode: true,
-        float: true,
-        resizable: { handles: 'se, s, e' }
-    }, '.grid-stack-mobile');
-
-    gridReports = GridStack.init({
-        cellHeight: 85,
-        margin: 6,
-        handle: '.card-header',
-        animate: true,
-        disableOneColumnMode: true,
-        float: true,
-        resizable: { handles: 'se, s, e' }
-    }, '.grid-stack-reports');
-
-    const savedMainLayout = localStorage.getItem('pi_forensics_layout_main');
-    if (savedMainLayout && gridMain) {
-        try { gridMain.load(JSON.parse(savedMainLayout)); } catch (e) {}
-    }
-
-    const savedDdrLayout = localStorage.getItem('pi_forensics_layout_ddr');
-    if (savedDdrLayout && gridDdrescue) {
-        try { gridDdrescue.load(JSON.parse(savedDdrLayout)); } catch (e) {}
-    }
-
-    const savedExplorerLayout = localStorage.getItem('pi_forensics_layout_explorer');
-    if (savedExplorerLayout && gridExplorer) {
-        try { gridExplorer.load(JSON.parse(savedExplorerLayout)); } catch (e) {}
-    }
-
-    const savedMobileLayout = localStorage.getItem('pi_forensics_layout_mobile');
-    if (savedMobileLayout && gridMobile) {
-        try { gridMobile.load(JSON.parse(savedMobileLayout)); } catch (e) {}
-    }
-
-    const savedReportsLayout = localStorage.getItem('pi_forensics_layout_reports');
-    if (savedReportsLayout && gridReports) {
-        try { gridReports.load(JSON.parse(savedReportsLayout)); } catch (e) {}
-    }
-
-    if (gridMain) gridMain.on('change', () => { saveDashboardLayout(); });
-    if (gridDdrescue) gridDdrescue.on('change', () => { saveDashboardLayout(); });
-    if (gridExplorer) gridExplorer.on('change', () => { saveDashboardLayout(); });
-    if (gridMobile) gridMobile.on('change', () => { saveDashboardLayout(); });
-    if (gridReports) gridReports.on('change', () => { saveDashboardLayout(); });
-
-    applyLockState();
-}
-
-function toggleLayoutLock() {
-    isLayoutLocked = !isLayoutLocked;
-    applyLockState();
-}
-
 async function toggleOnscreenKeyboard() {
     try {
         const res = await fetch('/api/system/toggle_keyboard', { method: 'POST' });
         const data = await res.json();
         if (!data.success) alert(`Keyboard toggle failed: ${data.error}`);
     } catch (err) {}
-}
-
-function applyLockState() {
-    const lockBtn = document.getElementById("layoutLockBtn");
-
-    [gridMain, gridDdrescue, gridExplorer, gridMobile, gridReports].forEach(g => {
-        if (!g) return;
-        if (isLayoutLocked) {
-            g.enableMove(false);
-            g.enableResize(false);
-        } else {
-            g.enableMove(true);
-            g.enableResize(true);
-        }
-    });
-
-    if (lockBtn) {
-        if (isLayoutLocked) {
-            lockBtn.className = "btn btn-sm btn-outline-warning fw-bold";
-            lockBtn.innerHTML = '<i class="bi bi-lock-fill me-1"></i>Layout Locked';
-            document.querySelectorAll('.grid-stack-item .card-header').forEach(el => el.style.cursor = 'default');
-        } else {
-            lockBtn.className = "btn btn-sm btn-success fw-bold";
-            lockBtn.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Layout Unlocked';
-            document.querySelectorAll('.grid-stack-item .card-header').forEach(el => el.style.cursor = 'grab');
-        }
-    }
-}
-
-function saveDashboardLayout() {
-    if (gridMain) localStorage.setItem('pi_forensics_layout_main', JSON.stringify(gridMain.save(false)));
-    if (gridDdrescue) localStorage.setItem('pi_forensics_layout_ddr', JSON.stringify(gridDdrescue.save(false)));
-    if (gridExplorer) localStorage.setItem('pi_forensics_layout_explorer', JSON.stringify(gridExplorer.save(false)));
-    if (gridMobile) localStorage.setItem('pi_forensics_layout_mobile', JSON.stringify(gridMobile.save(false)));
-    if (gridReports) localStorage.setItem('pi_forensics_layout_reports', JSON.stringify(gridReports.save(false)));
-}
-
-function resetDashboardLayout() {
-    localStorage.removeItem('pi_forensics_layout_main');
-    localStorage.removeItem('pi_forensics_layout_ddr');
-    localStorage.removeItem('pi_forensics_layout_explorer');
-    localStorage.removeItem('pi_forensics_layout_mobile');
-    localStorage.removeItem('pi_forensics_layout_reports');
-    localStorage.removeItem('pi_forensics_layout_settings');
-    location.reload();
 }
 
 function toggleFormatControls() {
@@ -219,10 +78,10 @@ function toggleSidebarCompact() {
     if (icon) icon.className = isCompact ? "bi bi-chevron-double-right" : "bi bi-chevron-double-left";
     localStorage.setItem("pi_forensics_sidebar_compact", isCompact ? "1" : "0");
 
-    // GridStack and Chart.js both size themselves against their container's
-    // measured width, which only changes here because of a CSS transition
-    // on a *sibling* element - dispatching a resize event prompts both to
-    // recompute rather than staying sized for the old sidebar width.
+    // Chart.js sizes itself against its container's measured width, which
+    // only changes here because of a CSS transition on a *sibling* element -
+    // dispatching a resize event prompts it to recompute rather than staying
+    // sized for the old sidebar width.
     setTimeout(() => window.dispatchEvent(new Event('resize')), 200);
 }
 
@@ -3215,11 +3074,11 @@ async function fetchSystemInfo() {
         const wbBadgeBtn = document.getElementById("wbBadgeBtn");
         if (wbBadgeBtn) {
             if (isWriteBlockActive) {
-                wbBadgeBtn.className = "btn btn-sm btn-danger fw-bold fs-6 px-3 py-1 shadow-sm";
-                wbBadgeBtn.innerHTML = `<i class="bi bi-lock-fill me-1"></i>Software Write Blocker: PROTECTED (${activeDrive})`;
+                wbBadgeBtn.className = "btn btn-sm btn-danger fw-bold";
+                wbBadgeBtn.innerHTML = `<i class="bi bi-lock-fill me-1"></i>Write Blocker: PROTECTED (${activeDrive})`;
             } else {
-                wbBadgeBtn.className = "btn btn-sm btn-warning text-dark fw-bold fs-6 px-3 py-1 shadow-sm";
-                wbBadgeBtn.innerHTML = `<i class="bi bi-unlock-fill me-1"></i>Software Write Blocker: UNLOCKED (${activeDrive})`;
+                wbBadgeBtn.className = "btn btn-sm btn-warning text-dark fw-bold";
+                wbBadgeBtn.innerHTML = `<i class="bi bi-unlock-fill me-1"></i>Write Blocker: UNLOCKED (${activeDrive})`;
             }
         }
     } catch (err) {}
@@ -4616,9 +4475,6 @@ async function fetchProgress() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-    // Must run before initGridstack() - GridStack measures its container's
-    // width at init time, so the sidebar's final width needs to be settled
-    // first, not applied afterward.
     if (localStorage.getItem("pi_forensics_sidebar_compact") === "1") {
         const sidebar = document.getElementById("appSidebar");
         const icon = document.getElementById("sidebarToggleIcon");
@@ -4626,7 +4482,6 @@ document.addEventListener("DOMContentLoaded", () => {
         if (icon) icon.className = "bi bi-chevron-double-right";
     }
 
-    initGridstack();
     initThroughputGraph();
     refreshDrives();
     loadNetworkHistory();
