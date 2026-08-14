@@ -2995,6 +2995,23 @@ async function startAcquisition() {
     } catch (err) {}
 }
 
+// The right-hand pane shows either the live terminal (background jobs,
+// TestDisk's raw partition dump) or a structured label/value panel (Mapfile
+// Inspector's already-labeled fields) - never both at once.
+function resetRecoveryOutputView() {
+    const term = document.getElementById("recoveryLogOutput");
+    const structured = document.getElementById("recoveryStructuredOutput");
+    if (structured) { structured.style.display = 'none'; structured.innerHTML = ''; }
+    if (term) term.style.display = '';
+}
+
+function showRecoveryStructuredOutput() {
+    const term = document.getElementById("recoveryLogOutput");
+    const structured = document.getElementById("recoveryStructuredOutput");
+    if (term) term.style.display = 'none';
+    if (structured) structured.style.display = '';
+}
+
 function updateRecoveryToolControls() {
     const tool = document.getElementById("recoveryToolSelect")?.value;
     const sourceRow = document.getElementById("recoverySourceRow");
@@ -3004,6 +3021,8 @@ function updateRecoveryToolControls() {
     const stopBtn = document.getElementById("btnRecoveryStop");
     const startLabel = document.getElementById("btnRecoveryStartLabel");
     const helpText = document.getElementById("recoveryToolHelpText");
+
+    resetRecoveryOutputView();
 
     const isMapfile = tool === 'mapfile_inspect';
     const isTestdisk = tool === 'testdisk_analyze';
@@ -3039,6 +3058,7 @@ async function startRecoveryTool() {
     if (tool === 'mapfile_inspect') {
         return inspectDdrescueMapfile();
     }
+    resetRecoveryOutputView();
 
     const sourcePath = document.getElementById("recoverySourcePath")?.value.trim();
     const sourceDrive = document.getElementById("recoverySourceDrive")?.value;
@@ -3103,16 +3123,32 @@ async function startRecoveryTool() {
     }
 }
 
+function recoveryStructuredRow(container, label, value) {
+    const row = document.createElement('div');
+    row.className = 'd-flex justify-content-between mb-1 pb-1 border-bottom border-secondary';
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'text-subtle';
+    labelSpan.textContent = label;
+    const valueSpan = document.createElement('span');
+    valueSpan.className = 'text-info fw-bold text-break ms-2';
+    valueSpan.textContent = value; // examiner-entered path or a computed number either way - text node only
+    row.appendChild(labelSpan);
+    row.appendChild(valueSpan);
+    container.appendChild(row);
+}
+
 async function inspectDdrescueMapfile() {
     const mapPathEl = document.getElementById("recoveryMapfilePath");
     const mapPath = mapPathEl ? mapPathEl.value.trim() : "";
-    const outEl = document.getElementById("recoveryLogOutput");
 
     if (!mapPath) {
         alert("Please enter or select a .map file path first.");
         return;
     }
-    if (outEl) outEl.textContent = "Reading mapfile...";
+
+    showRecoveryStructuredOutput();
+    const structured = document.getElementById("recoveryStructuredOutput");
+    if (structured) structured.innerHTML = '<span class="text-subtle">Reading mapfile...</span>';
 
     try {
         const res = await fetch('/api/ddrescue/inspect_map', {
@@ -3121,19 +3157,29 @@ async function inspectDdrescueMapfile() {
             body: JSON.stringify({ map_path: mapPath })
         });
         const data = await res.json();
+        if (!structured) return;
+        structured.innerHTML = '';
 
-        if (data.success && outEl) {
-            outEl.textContent =
-                `Mapfile: ${mapPath}\n\n` +
-                `Rescued Data:        ${data.rescued_gb} GB\n` +
-                `Unattempted Data:    ${data.non_tried_mb} MB\n` +
-                `Bad Sectors Size:    ${data.bad_sector_kb} KB\n` +
-                `Hard Error Blocks:   ${data.bad_blocks_count}`;
-        } else if (outEl) {
-            outEl.textContent = `[ERROR] ${data.error}`;
+        if (data.success) {
+            recoveryStructuredRow(structured, 'Mapfile', mapPath);
+            recoveryStructuredRow(structured, 'Rescued Data', `${data.rescued_gb} GB`);
+            recoveryStructuredRow(structured, 'Unattempted Data', `${data.non_tried_mb} MB`);
+            recoveryStructuredRow(structured, 'Bad Sectors Size', `${data.bad_sector_kb} KB`);
+            recoveryStructuredRow(structured, 'Hard Error Blocks', String(data.bad_blocks_count));
+        } else {
+            const err = document.createElement('span');
+            err.className = 'text-danger';
+            err.textContent = `Error: ${data.error}`;
+            structured.appendChild(err);
         }
     } catch (err) {
-        if (outEl) outEl.textContent = '[REQUEST FAILED]';
+        if (structured) {
+            structured.innerHTML = '';
+            const errSpan = document.createElement('span');
+            errSpan.className = 'text-danger';
+            errSpan.textContent = 'Request failed.';
+            structured.appendChild(errSpan);
+        }
     }
 }
 
@@ -3593,13 +3639,6 @@ async function fetchProgress() {
         if (document.getElementById("speedVal")) document.getElementById("speedVal").innerText = `${currentSpeed.toFixed(1)} MB/s`;
         if (document.getElementById("bytesVal") && data.total_bytes > 0) {
             document.getElementById("bytesVal").innerText = `${(data.transferred_bytes / (1024**3)).toFixed(2)} / ${(data.total_bytes / (1024**3)).toFixed(2)} GB`;
-        }
-        // Mirror to the File Recovery tab's unified card - same single
-        // shared job, just shown in two places depending on which tab
-        // you're on.
-        if (document.getElementById("recoverySpeedVal")) document.getElementById("recoverySpeedVal").innerText = `${currentSpeed.toFixed(1)} MB/s`;
-        if (document.getElementById("recoveryBytesVal") && data.total_bytes > 0) {
-            document.getElementById("recoveryBytesVal").innerText = `${(data.transferred_bytes / (1024**3)).toFixed(2)} / ${(data.total_bytes / (1024**3)).toFixed(2)} GB`;
         }
 
         if (data.active) {
