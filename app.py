@@ -2,6 +2,8 @@ import os
 import re
 import io
 import csv
+import html
+import base64
 import sys
 import uuid
 import pwd
@@ -3692,6 +3694,19 @@ def get_chain_of_custody_log():
 # number was always the filename prefix) and new case-folder evidence (case
 # number is the folder name) with one heuristic, no directory resolution
 # needed.
+def _case_history_entries(case_number, limit=200):
+    """Same substring-match filter used by /api/coc/case_history below,
+    factored out so the report exporter's Audit Trail section can reuse it
+    without an extra HTTP round-trip."""
+    matched = []
+    for entry in _read_coc_entries(limit=None):
+        details = entry.get("details", {})
+        if any(case_number in str(v) for v in details.values()):
+            matched.append(entry)
+        if len(matched) >= limit:
+            break
+    return matched
+
 @app.route('/api/coc/case_history', methods=['GET'])
 @requires_auth
 def get_case_history():
@@ -3701,14 +3716,7 @@ def get_case_history():
         return jsonify({"success": False, "error": "case_number is required."}), 400
 
     try:
-        matched = []
-        for entry in _read_coc_entries(limit=None):
-            details = entry.get("details", {})
-            if any(case_number in str(v) for v in details.values()):
-                matched.append(entry)
-            if len(matched) >= limit:
-                break
-        return jsonify({"success": True, "entries": matched})
+        return jsonify({"success": True, "entries": _case_history_entries(case_number, limit)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -4221,44 +4229,151 @@ def image_extract():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-# --- PDF Forensic Audit Exporter ---
-def _draw_pdf_job_section(c, y, event):
-    """Draws one job/event's telemetry + acquisition params + hashes block -
-    shared between the single-legacy-report path and the per-event loop for
-    a consolidated case file below. Returns the y position after drawing."""
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "Source Media Telemetry")
-    y -= 15
-    c.setFont("Helvetica", 10)
-    drive = event.get('source_drive_telemetry', {})
-    c.drawString(50, y, f"Device: {drive.get('device_path')} ({drive.get('capacity_gb')} GB)")
-    c.drawString(300, y, f"Model: {drive.get('vendor_model')}")
-    y -= 15
-    c.drawString(50, y, f"Serial: {drive.get('serial_number')}")
-    c.drawString(300, y, f"SMART Status: {'PASSED' if drive.get('smart_healthy') else 'FAILING'}")
-    y -= 30
+# --- Forensic Audit Report Exporter (PDF / HTML, configurable sections) ---
+def _draw_pdf_job_section(c, y, event, job_fields=None):
+    """Draws one job/event's telemetry + acquisition params + hashes block,
+    each independently toggleable via job_fields - shared between the
+    single-legacy-report path and the per-event loop for a consolidated case
+    file below. Returns the y position after drawing."""
+    job_fields = job_fields if job_fields is not None else {'telemetry': True, 'params': True, 'hashes': True}
 
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "Acquisition & Verification Hashes")
-    y -= 15
-    c.setFont("Helvetica", 10)
-    params = event.get('acquisition_parameters', {})
-    c.drawString(50, y, f"Format: {params.get('output_format', event.get('tool', 'N/A')).upper()}")
-    c.drawString(300, y, f"Status: {event.get('acquisition_status')}")
-    y -= 20
-
-    hashes = event.get('computed_verification_hashes', {})
-    for k, v in hashes.items():
-        c.drawString(50, y, f"{k.upper()}: {v}")
+    if job_fields.get('telemetry', True):
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, "Source Media Telemetry")
         y -= 15
+        c.setFont("Helvetica", 10)
+        drive = event.get('source_drive_telemetry', {})
+        c.drawString(50, y, f"Device: {drive.get('device_path')} ({drive.get('capacity_gb')} GB)")
+        c.drawString(300, y, f"Model: {drive.get('vendor_model')}")
+        y -= 15
+        c.drawString(50, y, f"Serial: {drive.get('serial_number')}")
+        c.drawString(300, y, f"SMART Status: {'PASSED' if drive.get('smart_healthy') else 'FAILING'}")
+        y -= 30
+
+    if job_fields.get('params', True):
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, "Acquisition Parameters")
+        y -= 15
+        c.setFont("Helvetica", 10)
+        params = event.get('acquisition_parameters', {})
+        c.drawString(50, y, f"Format: {params.get('output_format', event.get('tool', 'N/A')).upper()}")
+        c.drawString(300, y, f"Status: {event.get('acquisition_status')}")
+        y -= 25
+
+    if job_fields.get('hashes', True):
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, "Verification Hashes")
+        y -= 15
+        c.setFont("Helvetica", 10)
+        hashes = event.get('computed_verification_hashes', {})
+        if hashes:
+            for k, v in hashes.items():
+                c.drawString(50, y, f"{k.upper()}: {v}")
+                y -= 15
+        else:
+            c.drawString(50, y, "No hashes recorded.")
+            y -= 15
+        y -= 5
     return y
 
-def _draw_pdf_attachments(c, y, attachments):
-    file_list = attachments.get('files', [])
-    if not file_list and attachments.get('image_path'):
-        file_list = [attachments.get('image_path')]
-    ref_urls = attachments.get('reference_urls', [])
-    if not (file_list or ref_urls):
+def _draw_pdf_header(c, header):
+    c.setFont("Helvetica", 10)
+    y = 710
+    c.drawString(50, y, f"Case Number: {header['case_number']}")
+    c.drawString(300, y, f"Examiner: {header['examiner']}")
+    y -= 20
+    c.drawString(50, y, f"Created: {header['created_at']}")
+    y -= 20
+    c.drawString(50, y, f"Notes: {header['notes'] or 'None'}")
+    y -= 30
+    return y
+
+def _draw_pdf_audit_trail(c, y, entries):
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "Case Activity Log (Audit Trail)")
+    y -= 20
+    c.setFont("Helvetica", 8)
+    if not entries:
+        c.drawString(50, y, "No activity log entries found for this case.")
+        y -= 12
+    for entry in entries:
+        if y < 60:
+            c.showPage()
+            y = 750
+            c.setFont("Helvetica", 8)
+        c.drawString(50, y, f"{entry.get('timestamp', '')}  {entry.get('action', '')}"[:120])
+        y -= 11
+        details = entry.get('details') or {}
+        if details:
+            c.setFillColorRGB(0.4, 0.4, 0.4)
+            c.drawString(60, y, ', '.join(f'{k}={v}' for k, v in details.items())[:130])
+            c.setFillColorRGB(0, 0, 0)
+            y -= 11
+    return y
+
+# --- Case File Attachments: discovery + embedding ---
+# Images and small text-ish files get their actual content embedded into
+# the exported report (not just listed by path), since the point of
+# attaching a photo or a note to a case is that it shows up IN the report
+# an examiner hands off - a bare file path is not useful to someone who
+# doesn't have filesystem access to the Pi.
+ATTACHMENT_IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
+ATTACHMENT_TEXT_EXT = {'.txt', '.log', '.md', '.csv', '.json', '.eml', '.msg', '.rtf', '.xml', '.yaml', '.yml'}
+ATTACHMENT_EXCLUDE_EXT = {'.dd', '.e01', '.aff', '.001', '.raw', '.img'}
+ATTACHMENT_MAX_TEXT_EMBED_BYTES = 100_000
+ATTACHMENT_MAX_IMAGE_EMBED_BYTES = 8_000_000
+ATTACHMENT_DISCOVERY_MAX_FILES = 200
+ATTACHMENT_DISCOVERY_SKIP_DIRS = {'RECOVERED_FILES'}  # extundelete's fixed output dir name
+
+def _discover_case_files(case_folder):
+    """Find files physically present in a case folder that are candidates
+    for attaching to a report (photos, notes, extracted emails, etc.) but
+    weren't necessarily added via the explicit 'Add File Attachment' flow -
+    e.g. dropped in via File Explorer's Copy-to action. Skips this case's
+    own report artifacts, raw acquisition images (too large, already
+    represented via the Jobs section), and recovery tools' bulk carved-file
+    output directories (could be thousands of tiny files, impractical to
+    list individually). Returns (files, truncated)."""
+    slug = os.path.basename(case_folder.rstrip(os.sep))
+    own_artifact_names = {f"{slug}_case.json", f"{slug}_case.pdf", f"{slug}_case.html", "case_info.json"}
+
+    results = []
+    truncated = False
+    for root, dirs, files in os.walk(case_folder):
+        dirs[:] = [d for d in dirs if d not in ATTACHMENT_DISCOVERY_SKIP_DIRS
+                   and not d.endswith(('_photorec', '_foremost', '_scalpel', '_triagescan'))]
+        for fname in files:
+            if fname in own_artifact_names or fname.endswith(('.pre_consolidation_backup', '_report.json')):
+                continue
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in ATTACHMENT_EXCLUDE_EXT:
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                size = os.path.getsize(fpath)
+            except OSError:
+                continue
+            kind = 'image' if ext in ATTACHMENT_IMAGE_EXT else ('text' if ext in ATTACHMENT_TEXT_EXT else 'other')
+            results.append({"path": fpath, "name": fname, "size_bytes": size, "kind": kind})
+            if len(results) >= ATTACHMENT_DISCOVERY_MAX_FILES:
+                return results, True
+    return results, truncated
+
+@app.route('/api/cases/discover_files', methods=['GET'])
+@requires_auth
+def discover_case_files():
+    case_folder = safe_path(request.args.get('case_folder', ''))
+    if not case_folder or not os.path.isdir(case_folder):
+        return jsonify({"success": False, "error": "Case folder not found or outside the permitted evidence directory."}), 404
+    files, truncated = _discover_case_files(case_folder)
+    return jsonify({"success": True, "files": files, "truncated": truncated})
+
+def _draw_pdf_attachments(c, y, urls, files):
+    if not (urls or files):
         return y
 
     if y < 150:
@@ -4271,116 +4386,311 @@ def _draw_pdf_attachments(c, y, attachments):
     y -= 20
     c.setFont("Helvetica", 10)
 
-    if ref_urls:
+    if urls:
         c.drawString(50, y, "Reference Links / URLs:")
         y -= 15
-        for url in ref_urls:
+        for url in urls:
+            if y < 60:
+                c.showPage()
+                y = 750
+                c.setFont("Helvetica", 10)
             c.setFillColorRGB(0, 0, 0.8)
-            c.drawString(60, y, f"• {url}")
+            c.drawString(60, y, f"• {url}"[:110])
             c.setFillColorRGB(0, 0, 0)
             y -= 15
+        y -= 5
 
-    if file_list:
-        c.drawString(50, y, "Attached Case Files / Media:")
-        y -= 15
-        for raw_path in file_list:
+    for raw_path in files:
+        file_path = safe_path(raw_path)
+        if not file_path or not os.path.exists(file_path):
+            continue
+
+        name = os.path.basename(file_path)
+        ext = os.path.splitext(file_path)[1].lower()
+        try:
+            size = os.path.getsize(file_path)
+        except OSError:
+            size = 0
+
+        if ext in ATTACHMENT_IMAGE_EXT and size <= ATTACHMENT_MAX_IMAGE_EMBED_BYTES:
+            if y < 220:
+                c.showPage()
+                y = 750
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(50, y, f"Image: {name}"[:100])
+            y -= 145
+            try:
+                from reportlab.lib.utils import ImageReader
+                c.drawImage(ImageReader(file_path), 60, y, width=220, height=140, preserveAspectRatio=True, anchor='sw')
+            except Exception as img_err:
+                c.setFont("Helvetica", 9)
+                c.drawString(60, y + 130, f"(could not render image: {img_err})"[:100])
+            y -= 15
+            c.setFont("Helvetica", 10)
+        elif ext in ATTACHMENT_TEXT_EXT and size <= ATTACHMENT_MAX_TEXT_EMBED_BYTES:
+            if y < 100:
+                c.showPage()
+                y = 750
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(50, y, f"Text File: {name}"[:100])
+            y -= 14
+            c.setFont("Courier", 7.5)
+            try:
+                with open(file_path, 'r', errors='replace') as tf:
+                    text_content = tf.read(ATTACHMENT_MAX_TEXT_EMBED_BYTES)
+            except OSError as e:
+                text_content = f"(could not read file: {e})"
+            for line in text_content.splitlines()[:400]:
+                if y < 50:
+                    c.showPage()
+                    y = 750
+                    c.setFont("Courier", 7.5)
+                c.drawString(55, y, line[:130])
+                y -= 9
+            y -= 10
+            c.setFont("Helvetica", 10)
+        else:
+            if y < 60:
+                c.showPage()
+                y = 750
+                c.setFont("Helvetica", 10)
+            size_note = f" ({size:,} bytes)" if size else ""
+            c.drawString(60, y, f"• Document: {name}{size_note} - {file_path}"[:130])
+            y -= 15
+    return y
+
+def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, sections, job_fields):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    c = canvas.Canvas(pdf_path, pagesize=letter)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, 750, "ARM FORENSIC ACQUISITION AUDIT REPORT")
+    c.setLineWidth(1)
+    c.line(50, 740, 550, 740)
+
+    y = _draw_pdf_header(c, header) if sections.get('case_info', True) else 710
+
+    for i, event in enumerate(events):
+        if i > 0:
+            c.showPage()
+            y = 750
+        meta = event.get('case_metadata', {})
+        c.setFont("Helvetica-Bold", 13)
+        c.drawString(50, y, f"Evidence Item: {meta.get('evidence_id', 'N/A')} ({event.get('tool', 'N/A')})")
+        y -= 20
+        c.setFont("Helvetica", 10)
+        c.drawString(50, y, f"Date: {event.get('timestamp_start', 'N/A')}")
+        y -= 25
+        y = _draw_pdf_job_section(c, y, event, job_fields)
+
+    if sections.get('attachments', True):
+        y = _draw_pdf_attachments(c, y, urls, files)
+    if sections.get('audit_trail', True):
+        y = _draw_pdf_audit_trail(c, y, audit_entries)
+
+    c.save()
+
+def _build_html_report(header, events, urls, files, audit_entries, sections, job_fields):
+    """Self-contained HTML report - every value is escaped since it may
+    contain examiner-entered text or evidence-derived strings (filenames,
+    device paths) that this file could later be reopened/served from disk."""
+    esc = html.escape
+    parts = [
+        '<!doctype html><html><head><meta charset="utf-8">',
+        f'<title>Case Report - {esc(str(header["case_number"]))}</title>',
+        '<style>',
+        'body{font-family:Arial,Helvetica,sans-serif;color:#111;max-width:900px;margin:2em auto;padding:0 1em;}',
+        'h1{font-size:1.4em;border-bottom:2px solid #333;padding-bottom:.3em;}',
+        'h2{font-size:1.15em;margin-top:1.6em;border-bottom:1px solid #999;padding-bottom:.2em;}',
+        'h3{font-size:1em;margin:.8em 0 .3em;}',
+        'table{border-collapse:collapse;width:100%;margin:.4em 0;}',
+        'td,th{border:1px solid #ccc;padding:4px 8px;text-align:left;font-size:.9em;vertical-align:top;}',
+        '.job{margin-top:1.2em;padding:.8em;border:1px solid #ccc;border-radius:6px;}',
+        '.muted{color:#666;font-size:.85em;}',
+        '.mono{font-family:"Courier New",monospace;}',
+        '.attach-item{margin-top:1em;padding:.7em;border:1px solid #ddd;border-radius:6px;}',
+        '.attach-item img{max-width:100%;border:1px solid #ccc;display:block;margin-top:.4em;}',
+        '.attach-item pre{background:#f5f5f5;padding:.6em;overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:.8em;margin-top:.4em;}',
+        '</style></head><body>',
+        '<h1>ARM Forensic Acquisition Audit Report</h1>',
+    ]
+
+    if sections.get('case_info', True):
+        parts.append('<table>')
+        parts.append(f'<tr><th>Case Number</th><td>{esc(str(header["case_number"]))}</td><th>Examiner</th><td>{esc(str(header["examiner"]))}</td></tr>')
+        parts.append(f'<tr><th>Created</th><td>{esc(str(header["created_at"]))}</td><th>Evidence Items</th><td>{len(events)}</td></tr>')
+        parts.append(f'<tr><th>Notes</th><td colspan="3">{esc(str(header["notes"] or "None"))}</td></tr>')
+        parts.append('</table>')
+
+    for event in events:
+        meta = event.get('case_metadata', {})
+        parts.append('<div class="job">')
+        parts.append(f'<h2>Evidence Item: {esc(str(meta.get("evidence_id", "N/A")))} ({esc(str(event.get("tool", "N/A")))})</h2>')
+        parts.append(f'<div class="muted">Date: {esc(str(event.get("timestamp_start", "N/A")))} &middot; Status: {esc(str(event.get("acquisition_status", "N/A")))}</div>')
+
+        if job_fields.get('telemetry', True):
+            drive = event.get('source_drive_telemetry', {})
+            parts.append('<h3>Source Media Telemetry</h3><table>')
+            parts.append(f'<tr><th>Device</th><td>{esc(str(drive.get("device_path")))}</td><th>Capacity</th><td>{esc(str(drive.get("capacity_gb")))} GB</td></tr>')
+            parts.append(f'<tr><th>Model</th><td>{esc(str(drive.get("vendor_model")))}</td><th>Serial</th><td>{esc(str(drive.get("serial_number")))}</td></tr>')
+            parts.append(f'<tr><th>SMART Status</th><td colspan="3">{"PASSED" if drive.get("smart_healthy") else "FAILING"}</td></tr>')
+            parts.append('</table>')
+
+        if job_fields.get('params', True):
+            params = event.get('acquisition_parameters', {})
+            parts.append('<h3>Acquisition Parameters</h3><table>')
+            parts.append(f'<tr><th>Format</th><td>{esc(str(params.get("output_format", event.get("tool", "N/A"))).upper())}</td><th>Status</th><td>{esc(str(event.get("acquisition_status")))}</td></tr>')
+            parts.append('</table>')
+
+        if job_fields.get('hashes', True):
+            hashes = event.get('computed_verification_hashes', {})
+            parts.append('<h3>Verification Hashes</h3><table>')
+            if hashes:
+                for k, v in hashes.items():
+                    parts.append(f'<tr><th>{esc(k.upper())}</th><td class="mono">{esc(str(v))}</td></tr>')
+            else:
+                parts.append('<tr><td colspan="2" class="muted">No hashes recorded.</td></tr>')
+            parts.append('</table>')
+
+        parts.append('</div>')
+
+    if sections.get('attachments', True) and (urls or files):
+        parts.append('<h2>Case Attachments &amp; References</h2>')
+        if urls:
+            parts.append('<p><strong>Reference Links / URLs:</strong></p><ul>')
+            for url in urls:
+                parts.append(f'<li><a href="{esc(str(url))}">{esc(str(url))}</a></li>')
+            parts.append('</ul>')
+
+        for raw_path in files:
             file_path = safe_path(raw_path)
             if not file_path or not os.path.exists(file_path):
                 continue
-
+            name = os.path.basename(file_path)
             ext = os.path.splitext(file_path)[1].lower()
-            if ext in ['.jpg', '.jpeg', '.png']:
-                if y < 200:
-                    c.showPage()
-                    y = 730
-                try:
-                    from reportlab.lib.utils import ImageReader
-                    c.drawString(60, y, f"• Photo: {os.path.basename(file_path)}")
-                    y -= 140
-                    c.drawImage(ImageReader(file_path), 60, y, width=200, height=130, preserveAspectRatio=True)
-                    y -= 15
-                except Exception as img_err:
-                    c.drawString(60, y, f"• Photo Error ({os.path.basename(file_path)}): {str(img_err)}")
-                    y -= 15
-            else:
-                c.drawString(60, y, f"• Document: {os.path.basename(file_path)} ({file_path})")
-                y -= 15
-    return y
+            try:
+                size = os.path.getsize(file_path)
+            except OSError:
+                size = 0
 
-@app.route('/api/export_pdf', methods=['POST'])
+            if ext in ATTACHMENT_IMAGE_EXT and size <= ATTACHMENT_MAX_IMAGE_EMBED_BYTES:
+                mime = {
+                    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                    '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp',
+                }.get(ext, 'application/octet-stream')
+                try:
+                    with open(file_path, 'rb') as imf:
+                        b64 = base64.b64encode(imf.read()).decode('ascii')
+                    parts.append(f'<div class="attach-item"><h3>{esc(name)}</h3><img src="data:{mime};base64,{b64}"></div>')
+                except OSError as e:
+                    parts.append(f'<div class="attach-item"><h3>{esc(name)}</h3><p class="muted">Could not read image: {esc(str(e))}</p></div>')
+            elif ext in ATTACHMENT_TEXT_EXT and size <= ATTACHMENT_MAX_TEXT_EMBED_BYTES:
+                try:
+                    with open(file_path, 'r', errors='replace') as tf:
+                        text_content = tf.read(ATTACHMENT_MAX_TEXT_EMBED_BYTES)
+                except OSError as e:
+                    text_content = f"(could not read file: {e})"
+                parts.append(f'<div class="attach-item"><h3>{esc(name)}</h3><pre>{esc(text_content)}</pre></div>')
+            else:
+                size_note = f" ({size:,} bytes)" if size else ""
+                parts.append(f'<div class="attach-item"><h3>{esc(name)}</h3><p class="muted mono">{esc(file_path)}{esc(size_note)}</p></div>')
+
+    if sections.get('audit_trail', True):
+        parts.append('<h2>Case Activity Log (Audit Trail)</h2>')
+        if audit_entries:
+            parts.append('<table><tr><th>Timestamp</th><th>Action</th><th>Details</th></tr>')
+            for entry in audit_entries:
+                details_str = ', '.join(f'{k}={v}' for k, v in (entry.get('details') or {}).items())
+                parts.append(f'<tr><td>{esc(str(entry.get("timestamp", "")))}</td><td>{esc(str(entry.get("action", "")))}</td><td>{esc(details_str)}</td></tr>')
+            parts.append('</table>')
+        else:
+            parts.append('<p class="muted">No activity log entries found for this case.</p>')
+
+    parts.append('</body></html>')
+    return ''.join(parts)
+
+@app.route('/api/export_report', methods=['POST'])
 @requires_auth
-def export_pdf():
+def export_report():
     req = request.get_json() or {}
     report_file = safe_path(req.get('report_path'))
-
     if not report_file or not os.path.exists(report_file):
         return jsonify({"error": "Report file not found or outside the permitted evidence directory."}), 404
 
-    try:
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
+    fmt = req.get('format', 'pdf')
+    if fmt not in ('pdf', 'html'):
+        return jsonify({"error": "format must be 'pdf' or 'html'."}), 400
 
+    sections = req.get('sections') or {}
+    job_fields = req.get('job_fields') or {}
+    requested_event_ids = req.get('event_ids')
+    attachment_selection = req.get('attachment_selection')
+
+    try:
         with open(report_file, 'r') as f:
             data = json.load(f)
-
-        pdf_path = report_file.replace('.json', '.pdf')
-        c = canvas.Canvas(pdf_path, pagesize=letter)
-
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(50, 750, "ARM FORENSIC ACQUISITION AUDIT REPORT")
-        c.setLineWidth(1)
-        c.line(50, 740, 550, 740)
-
-        # A consolidated case file (has "events") gets a case-level header +
-        # one section per job event; a legacy single-job report (no
-        # "events" key - either never migrated, or a genuine no-case ad-hoc
-        # job) keeps the exact original single-section layout.
-        if 'events' in data:
-            c.setFont("Helvetica", 10)
-            y = 710
-            c.drawString(50, y, f"Case Number: {data.get('case_number', 'N/A')}")
-            c.drawString(300, y, f"Examiner: {data.get('examiner', 'N/A')}")
-            y -= 20
-            c.drawString(50, y, f"Created: {data.get('created_at', 'N/A')}")
-            c.drawString(300, y, f"Evidence Items: {len(data.get('events', []))}")
-            y -= 20
-            c.drawString(50, y, f"Notes: {data.get('notes', 'None')}")
-            y -= 30
-
-            for i, event in enumerate(data.get('events', [])):
-                if i > 0:
-                    c.showPage()
-                    y = 750
-                meta = event.get('case_metadata', {})
-                c.setFont("Helvetica-Bold", 13)
-                c.drawString(50, y, f"Evidence Item: {meta.get('evidence_id', 'N/A')} ({event.get('tool', 'N/A')})")
-                y -= 20
-                c.setFont("Helvetica", 10)
-                c.drawString(50, y, f"Date: {event.get('timestamp_start', 'N/A')}")
-                y -= 25
-                y = _draw_pdf_job_section(c, y, event)
-
-            y = _draw_pdf_attachments(c, y, data.get('attachments', {}))
-        else:
-            c.setFont("Helvetica", 10)
-            y = 710
-            meta = data.get('case_metadata', {})
-            c.drawString(50, y, f"Case Number: {meta.get('case_number', 'N/A')}")
-            c.drawString(300, y, f"Evidence ID: {meta.get('evidence_id', 'N/A')}")
-            y -= 20
-            c.drawString(50, y, f"Examiner: {meta.get('examiner', 'N/A')}")
-            c.drawString(300, y, f"Date: {data.get('timestamp_start', 'N/A')}")
-            y -= 20
-            c.drawString(50, y, f"Notes: {meta.get('notes', 'None')}")
-            y -= 30
-            y = _draw_pdf_job_section(c, y, data)
-            y = _draw_pdf_attachments(c, y, data.get('attachments', {}))
-
-        c.save()
-        return send_file(pdf_path, as_attachment=True)
-
     except Exception as e:
-        return jsonify({"error": f"PDF Export Failed: {str(e)}"}), 500
+        return jsonify({"error": f"Could not read report: {e}"}), 500
+
+    # A consolidated case file (has "events") exposes a case-level header +
+    # a filterable list of job events; a legacy single-job report (no
+    # "events" key - either never migrated, or a genuine no-case ad-hoc job)
+    # is always treated as its own single, always-included event.
+    if isinstance(data.get('events'), list):
+        all_events = data['events']
+        if requested_event_ids:
+            events = [e for e in all_events if e.get('event_id') in requested_event_ids]
+        else:
+            events = all_events
+        header = {
+            "case_number": data.get('case_number', 'N/A'),
+            "examiner": data.get('examiner', 'N/A'),
+            "notes": data.get('notes', ''),
+            "created_at": data.get('created_at', 'N/A'),
+        }
+        attachments = data.get('attachments', {})
+    else:
+        events = [data]
+        meta = data.get('case_metadata', {})
+        header = {
+            "case_number": meta.get('case_number', 'N/A'),
+            "examiner": meta.get('examiner', 'N/A'),
+            "notes": meta.get('notes', ''),
+            "created_at": data.get('timestamp_start', 'N/A'),
+        }
+        attachments = data.get('attachments', {})
+
+    # attachment_selection lets the export modal pick a subset of
+    # explicitly-attached files/URLs plus any extra files discovered in the
+    # case folder (via /api/cases/discover_files) that weren't necessarily
+    # added through the "Add File Attachment" flow. If the caller doesn't
+    # supply one, fall back to everything in the report's own attachments
+    # dict (today's behavior, and the sane default for non-UI callers).
+    if attachment_selection is not None:
+        sel_urls = attachment_selection.get('urls') or []
+        sel_files = attachment_selection.get('files') or []
+    else:
+        sel_urls = attachments.get('reference_urls', [])
+        sel_files = attachments.get('files', [])
+        if not sel_files and attachments.get('image_path'):
+            sel_files = [attachments.get('image_path')]
+
+    audit_entries = []
+    if sections.get('audit_trail', True) and header['case_number'] not in (None, '', 'N/A'):
+        audit_entries = _case_history_entries(header['case_number'], limit=500)
+
+    try:
+        if fmt == 'html':
+            out_path = report_file.rsplit('.json', 1)[0] + '.html'
+            with open(out_path, 'w') as f:
+                f.write(_build_html_report(header, events, sel_urls, sel_files, audit_entries, sections, job_fields))
+        else:
+            out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
+            _build_pdf_report(out_path, header, events, sel_urls, sel_files, audit_entries, sections, job_fields)
+        return send_file(out_path, as_attachment=True)
+    except Exception as e:
+        return jsonify({"error": f"Report export failed: {str(e)}"}), 500
 
 if __name__ == '__main__':
     # This dev-mode entrypoint is only used for `python3 app.py` directly.
