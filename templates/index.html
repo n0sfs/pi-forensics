@@ -508,10 +508,10 @@
                             <div class="card">
                                 <div class="card-header py-2"><i class="bi bi-tools me-2"></i>Recovery Tools</div>
                                 <div class="card-body py-2">
-                                    <div class="row g-2 mb-1">
+                                    <div class="row g-3">
                                         <div class="col-md-5">
                                             <label class="telemetry-grid-label d-block mb-1">Tool</label>
-                                            <select id="recoveryToolSelect" class="form-select form-select-sm" onchange="updateRecoveryToolControls()">
+                                            <select id="recoveryToolSelect" class="form-select form-select-sm mb-1" onchange="updateRecoveryToolControls()">
                                                 <option value="photorec" selected>PhotoRec - File Carving</option>
                                                 <option value="extundelete">extundelete - ext2/3/4 Deleted File Recovery</option>
                                                 <option value="foremost">foremost - File Carving</option>
@@ -520,62 +520,57 @@
                                                 <option value="testdisk_analyze">TestDisk Partition Analysis (Read-Only)</option>
                                                 <option value="mapfile_inspect">ddrescue Mapfile Inspector</option>
                                             </select>
-                                        </div>
-                                    </div>
-                                    <div id="recoveryToolHelpText" class="small text-subtle mb-2">Recovers files by matching known file signatures - works even on formatted or damaged drives, but recovered files lose their original names/folder structure.</div>
+                                            <div id="recoveryToolHelpText" class="small text-subtle mb-2">Recovers files by matching known file signatures - works even on formatted or damaged drives, but recovered files lose their original names/folder structure.</div>
 
-                                    <div id="recoverySourceRow" class="row g-2 mb-2">
-                                        <div class="col-md-6">
-                                            <label class="telemetry-grid-label d-block mb-1">Source (device or acquired image path)</label>
-                                            <select id="recoverySourceDrive" class="form-select form-select-sm drive-select"></select>
-                                            <div class="input-group input-group-sm mt-1">
-                                                <input type="text" id="recoverySourcePath" class="form-control font-monospace" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
-                                                <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('recoverySource')" title="Browse to an image file"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                                            <div id="recoverySourceRow" class="mb-2">
+                                                <label class="telemetry-grid-label d-block mb-1">Source (device or acquired image path)</label>
+                                                <select id="recoverySourceDrive" class="form-select form-select-sm drive-select"></select>
+                                                <div class="input-group input-group-sm mt-1">
+                                                    <input type="text" id="recoverySourcePath" class="form-control font-monospace" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
+                                                    <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('recoverySource')" title="Browse to an image file"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                                                </div>
+                                            </div>
+                                            <div id="recoveryDestCol" class="mb-2">
+                                                <label class="telemetry-grid-label d-block mb-1">Destination</label>
+                                                <div class="input-group input-group-sm">
+                                                    <input type="text" id="recoveryDest" class="form-control" value="/mnt">
+                                                    <button class="btn btn-outline-info fw-bold" onclick="openFolderModal('folder', 'recoveryDest')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                                                </div>
+                                            </div>
+
+                                            <div id="recoveryMapfileRow" class="mb-2" style="display:none;">
+                                                <label class="telemetry-grid-label d-block mb-1">Mapfile Path (.map)</label>
+                                                <div class="input-group input-group-sm">
+                                                    <input type="text" id="recoveryMapfilePath" class="form-control font-monospace" placeholder="/mnt/CASE_ITEM-01_ddrescue.map">
+                                                    <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('mapfile')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                                                </div>
+                                            </div>
+
+                                            <div id="recoveryMetadataRow" class="row g-2 mb-3">
+                                                <div class="col-4"><input type="text" id="recoveryCaseNum" class="form-control form-control-sm" placeholder="Case #"></div>
+                                                <div class="col-4"><input type="text" id="recoveryEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID"></div>
+                                                <div class="col-4"><input type="text" id="recoveryExaminer" class="form-control form-control-sm" placeholder="Examiner"></div>
+                                            </div>
+
+                                            <div class="d-flex gap-2">
+                                                <button id="btnRecoveryStart" class="btn btn-primary flex-fill fw-bold" onclick="startRecoveryTool()"><i class="bi bi-play-fill me-1"></i><span id="btnRecoveryStartLabel">Start Recovery</span></button>
+                                                <button id="btnRecoveryStop" class="btn btn-danger flex-fill fw-bold" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop</button>
                                             </div>
                                         </div>
-                                        <div class="col-md-6" id="recoveryDestCol">
-                                            <label class="telemetry-grid-label d-block mb-1">Destination</label>
-                                            <div class="input-group input-group-sm">
-                                                <input type="text" id="recoveryDest" class="form-control" value="/mnt">
-                                                <button class="btn btn-outline-info fw-bold" onclick="openFolderModal('folder', 'recoveryDest')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+
+                                        <div class="col-md-7">
+                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                <span id="recoveryJobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
+                                                <span id="recoveryProgressPct" class="fw-bold fs-5 text-light">0.0%</span>
                                             </div>
+                                            <div class="progress bg-secondary mb-2" style="height: 10px;">
+                                                <div id="recoveryProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
+                                            </div>
+                                            <label class="form-label fw-bold text-light small mb-1">Terminal / Output:</label>
+                                            <pre id="recoveryLogOutput" class="log-window" style="height: 420px;">[Recovery tools idle. Select a tool and source above, then Start.]</pre>
+                                            <div id="recoveryStructuredOutput" class="font-monospace small border border-secondary rounded-2 p-2" style="display:none; height: 420px; overflow-y: auto; background-color: #090b10;"></div>
                                         </div>
                                     </div>
-
-                                    <div id="recoveryMapfileRow" class="mb-2" style="display:none;">
-                                        <label class="telemetry-grid-label d-block mb-1">Mapfile Path (.map)</label>
-                                        <div class="input-group input-group-sm">
-                                            <input type="text" id="recoveryMapfilePath" class="form-control font-monospace" placeholder="/mnt/CASE_ITEM-01_ddrescue.map">
-                                            <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('mapfile')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
-                                        </div>
-                                    </div>
-
-                                    <div id="recoveryMetadataRow" class="row g-2 mb-2">
-                                        <div class="col-md-4"><input type="text" id="recoveryCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
-                                        <div class="col-md-4"><input type="text" id="recoveryEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (ITEM-01)"></div>
-                                        <div class="col-md-4"><input type="text" id="recoveryExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
-                                    </div>
-
-                                    <div class="d-flex gap-2 mb-3">
-                                        <button id="btnRecoveryStart" class="btn btn-primary flex-fill fw-bold" onclick="startRecoveryTool()"><i class="bi bi-play-fill me-1"></i><span id="btnRecoveryStartLabel">Start Recovery</span></button>
-                                        <button id="btnRecoveryStop" class="btn btn-danger flex-fill fw-bold" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop</button>
-                                    </div>
-
-                                    <hr class="border-secondary my-2">
-
-                                    <div class="d-flex justify-content-between align-items-center mb-1">
-                                        <span id="recoveryJobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
-                                        <span id="recoveryProgressPct" class="fw-bold fs-5 text-light">0.0%</span>
-                                    </div>
-                                    <div class="progress bg-secondary mb-2" style="height: 10px;">
-                                        <div id="recoveryProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
-                                    </div>
-                                    <div class="row text-center mb-2">
-                                        <div class="col-6"><small class="telemetry-label d-block">Speed / Rate</small><span id="recoverySpeedVal" class="fw-bold text-warning">0.0 MB/s</span></div>
-                                        <div class="col-6"><small class="telemetry-label d-block">Data Written</small><span id="recoveryBytesVal" class="fw-bold text-light">0 / 0 GB</span></div>
-                                    </div>
-                                    <label class="form-label fw-bold text-light small mb-1">Terminal / Output:</label>
-                                    <pre id="recoveryLogOutput" class="log-window" style="height: 180px;">[Recovery tools idle. Select a tool and source above, then Start.]</pre>
                                 </div>
                             </div>
                         </div>
