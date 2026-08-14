@@ -3168,12 +3168,51 @@ TOOL_VERSION_COMMANDS = [
 # known, reviewed part of this project.
 TOOL_INSTALLABLE_PACKAGES = {t["package"] for t in TOOL_VERSION_COMMANDS if t["package"]}
 
+def _apt_candidate_version(package):
+    """
+    Read-only, no sudo needed (unlike apt-get install/update) - just queries
+    apt's already-cached package index for what it currently considers
+    installed vs. the newest candidate available. Reflects whatever that
+    index was last refreshed to (via install.py's initial `apt-get update`
+    or the Settings > Service Controls "Update OS Packages" button), not a
+    live network check - a stale index can under-report a newer release
+    upstream, same caveat as running `apt list --upgradable` by hand.
+    """
+    try:
+        res = subprocess.run(['apt-cache', 'policy', package], capture_output=True, text=True, timeout=10)
+        if res.returncode != 0:
+            return None, None
+        installed = candidate = None
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if line.startswith('Installed:'):
+                v = line.split(':', 1)[1].strip()
+                installed = None if v == '(none)' else v
+            elif line.startswith('Candidate:'):
+                v = line.split(':', 1)[1].strip()
+                candidate = None if v == '(none)' else v
+        return installed, candidate
+    except Exception:
+        return None, None
+
 @app.route('/api/system/tool_versions', methods=['GET'])
 @requires_auth
 def get_tool_versions():
     results = []
     for entry in TOOL_VERSION_COMMANDS:
         name, argv, package = entry["tool"], entry["cmd"], entry["package"]
+
+        # apt's own candidate version - independent of whether the tool's
+        # own --version invocation below succeeds, since a broken PATH entry
+        # or similar shouldn't hide "there's a newer package available".
+        latest_version = None
+        update_available = False
+        if package:
+            apt_installed, apt_candidate = _apt_candidate_version(package)
+            latest_version = apt_candidate
+            if apt_installed and apt_candidate and apt_installed != apt_candidate:
+                update_available = True
+
         try:
             res = subprocess.run(argv, capture_output=True, text=True, timeout=10)
             if res.returncode != 0:
@@ -3182,7 +3221,8 @@ def get_tool_versions():
                 # that we found a real version string in stderr - treat it
                 # the same as "not installed" rather than displaying the
                 # raw error text as if it were version output.
-                results.append({"tool": name, "version": "Not installed", "installed": False, "package": package})
+                results.append({"tool": name, "version": "Not installed", "installed": False, "package": package,
+                                 "latest_version": latest_version, "update_available": update_available})
                 continue
             raw = res.stdout.strip() or res.stderr.strip() or "(no version output)"
             lines = raw.splitlines()
@@ -3191,13 +3231,17 @@ def get_tool_versions():
             # every other tool here - prefer a line that actually says
             # "Version:" when one exists, instead of showing the banner text.
             version_line = next((l.strip() for l in lines if 'version:' in l.lower()), lines[0])
-            results.append({"tool": name, "version": version_line, "installed": True, "package": package})
+            results.append({"tool": name, "version": version_line, "installed": True, "package": package,
+                             "latest_version": latest_version, "update_available": update_available})
         except FileNotFoundError:
-            results.append({"tool": name, "version": "Not installed", "installed": False, "package": package})
+            results.append({"tool": name, "version": "Not installed", "installed": False, "package": package,
+                             "latest_version": latest_version, "update_available": update_available})
         except subprocess.TimeoutExpired:
-            results.append({"tool": name, "version": "timed out", "installed": True, "package": package})
+            results.append({"tool": name, "version": "timed out", "installed": True, "package": package,
+                             "latest_version": latest_version, "update_available": update_available})
         except Exception as e:
-            results.append({"tool": name, "version": f"error: {e}", "installed": False, "package": package})
+            results.append({"tool": name, "version": f"error: {e}", "installed": False, "package": package,
+                             "latest_version": latest_version, "update_available": update_available})
 
     return jsonify({"success": True, "tools": results})
 
