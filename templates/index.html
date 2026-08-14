@@ -604,46 +604,35 @@
             <div class="tab-pane fade" id="explorer-app" role="tabpanel">
                 <div class="grid-stack grid-stack-explorer">
 
-                    <div class="grid-stack-item" gs-id="exp-card-explorer" gs-x="0" gs-y="0" gs-w="12" gs-h="5">
+                    <div class="grid-stack-item" gs-id="exp-card-explorer" gs-x="0" gs-y="0" gs-w="12" gs-h="11">
                         <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center py-2">
                                     <span><i class="bi bi-folder-check me-2"></i>Forensic File Explorer</span>
-                                    <span class="small text-subtle fw-normal">Tap to preview | Double-tap folder to enter | Right-click (or press-and-hold) for actions</span>
+                                    <span class="small text-subtle fw-normal">Tap to preview | Double-tap folder/image to enter | Right-click (or press-and-hold) for actions</span>
                                 </div>
                                 <div class="card-body py-2">
                                     <div class="row g-2">
                                         <div class="col-md-6">
                                             <div class="d-flex justify-content-between align-items-center mb-1">
                                                 <span class="telemetry-grid-label">Files</span>
-                                                <span id="explorerPath" class="font-monospace small text-info fw-bold">/mnt</span>
+                                                <span id="explorerPath" class="font-monospace small text-info fw-bold text-truncate" style="max-width: 70%;">/mnt</span>
                                             </div>
-                                            <div id="explorerContainer" class="file-pane" style="height: 260px;"></div>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <div class="d-flex justify-content-between align-items-center mb-1">
-                                                <span class="telemetry-grid-label">Preview</span>
-                                                <div class="dropdown">
-                                                    <button class="btn btn-sm btn-outline-light fw-bold dropdown-toggle py-0" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                                                        <i class="bi bi-three-dots me-1"></i>Actions
-                                                    </button>
-                                                    <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
-                                                        <li><button id="btnFileMetadata" class="dropdown-item" onclick="viewSelectedMetadata()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Shows hidden details saved inside a file - like when a photo was taken, what camera took it, or GPS coordinates."><i class="bi bi-info-circle me-2"></i>Metadata (ExifTool)</button></li>
-                                                        <li><button id="btnBrowseImage" class="dropdown-item" onclick="openImageBrowser()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse Image (Sleuth Kit)</button></li>
-                                                        <li><hr class="dropdown-divider"></li>
-                                                        <li><button id="btnRunBinwalk" class="dropdown-item" onclick="runSelectedBinwalk()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Looks for other files or systems hidden inside this one - useful for firmware dumps, router images, or unknown binary files."><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button></li>
-                                                        <li><button id="btnRunClamscan" class="dropdown-item" onclick="runSelectedClamscan()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks this file (or folder) against known virus/malware signatures."><i class="bi bi-shield-exclamation me-2"></i>Scan for Malware (ClamAV)</button></li>
-                                                        <li><button id="btnRunStrings" class="dropdown-item" onclick="runSelectedStrings()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls out any readable text hiding inside a file that isn't normally text - like URLs or passwords buried in an executable."><i class="bi bi-fonts me-2"></i>Extract Strings</button></li>
-                                                        <li><button id="btnRunHashdeep" class="dropdown-item" onclick="runSelectedHashdeep()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Creates a fingerprint (hash) for every file in a folder at once - useful for proving a whole set of recovered files hasn't been tampered with."><i class="bi bi-list-check me-2"></i>Hash Directory Tree (hashdeep)</button></li>
-                                                        <li><button id="btnRunMvtIos" class="dropdown-item" onclick="runSelectedMvtScan('ios')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks an iOS backup folder (from Mobile Forensics) against known spyware indicators, using Amnesty International's Mobile Verification Toolkit."><i class="bi bi-phone me-2"></i>MVT Scan (iOS Backup)</button></li>
-                                                        <li><button id="btnRunMvtAndroid" class="dropdown-item" onclick="runSelectedMvtScan('android')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Best-effort spyware/IOC scan of an Android backup folder using MVT. Only matches a decrypted adb-backup-format directory, not adb pull/bugreport output - errors clearly if the format doesn't match."><i class="bi bi-phone me-2"></i>MVT Scan (Android Backup)</button></li>
-                                                        <li><hr class="dropdown-divider"></li>
-                                                        <li><button id="btnCopyFile" class="dropdown-item" onclick="promptCopySelected()" disabled><i class="bi bi-copy me-2"></i>Copy to...</button></li>
-                                                        <li><button id="btnDeleteFile" class="dropdown-item text-danger" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-2"></i>Delete</button></li>
-                                                    </ul>
+                                            <div id="explorerImageToolbar" style="display:none; align-items:center; justify-content:space-between; margin-bottom:.25rem;">
+                                                <select id="explorerImagePartitionSelect" class="form-select form-select-sm" style="max-width: 55%;" onchange="explorerImageChangePartition()"></select>
+                                                <div class="d-flex gap-1">
+                                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="explorerImageToggleSearch()" title="Search inside image"><i class="bi bi-search"></i></button>
+                                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="explorerImageToggleTimeline()" title="Generate timeline"><i class="bi bi-clock-history"></i></button>
+                                                    <button type="button" class="btn btn-xs btn-outline-warning py-0 px-2" onclick="exitExplorerImage()" title="Exit image, return to file system"><i class="bi bi-x-lg me-1"></i>Exit Image</button>
                                                 </div>
                                             </div>
-                                            <div id="explorerPreview" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="height: 260px;">
+                                            <div id="explorerContainer" class="file-pane" style="height: 620px;"></div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="mb-1">
+                                                <span class="telemetry-grid-label">Preview</span>
+                                            </div>
+                                            <div id="explorerPreview" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="height: 620px;">
                                                 <i class="bi bi-cursor fs-1 text-subtle mb-2"></i>
                                                 <span class="text-subtle small">Select a file on the left to preview it here.</span>
                                             </div>
@@ -654,60 +643,29 @@
                         </div>
                     </div>
 
-                    <!-- Evidence Image Integrity Verification (moved from Reporting - File Explorer's
-                         own Actions menu already covered a quick one-click version of this) -->
-                    <div class="grid-stack-item" gs-id="exp-card-verify" gs-x="0" gs-y="5" gs-w="12" gs-h="6">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header py-2"><i class="bi bi-hash me-2"></i>Evidence Image Integrity Verification</div>
-                                <div class="card-body py-3">
-                                    <div class="row g-3">
-                                        <div class="col-md-6">
-                                            <div class="mb-3">
-                                                <label class="telemetry-grid-label d-block mb-1">Target Evidence Image (.dd / .E01):</label>
-                                                <div class="input-group input-group-sm">
-                                                    <input type="text" id="verifyImagePath" class="form-control font-monospace" placeholder="/mnt/2026-CASE-001_ITEM-01.dd">
-                                                    <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('evidence')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
-                                                </div>
-                                            </div>
-                                            <div class="mb-3">
-                                                <label class="telemetry-grid-label d-block mb-1">Hash Algorithm:</label>
-                                                <select id="verifyAlgorithmSelect" class="form-select form-select-sm">
-                                                    <option value="sha256" selected>SHA-256</option>
-                                                    <option value="sha1">SHA-1</option>
-                                                    <option value="md5">MD5</option>
-                                                </select>
-                                            </div>
-                                            <div class="mb-3">
-                                                <label class="telemetry-grid-label d-block mb-1">Expected Reference Hash (Optional Comparison):</label>
-                                                <input type="text" id="verifyExpectedHash" class="form-control form-control-sm font-monospace" placeholder="Paste known acquisition hash here...">
-                                            </div>
-                                            <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="runStandaloneHashVerification()">
-                                                <i class="bi bi-cpu-fill me-1"></i>Calculate & Verify Hash
-                                            </button>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <div class="p-2 bg-black border border-secondary rounded-2 h-100 d-flex flex-column justify-content-center">
-                                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                                    <span class="telemetry-grid-label">Verification Status:</span>
-                                                    <span id="hashMatchBadge" class="badge bg-secondary">AWAITING INPUT</span>
-                                                </div>
-                                                <div class="mb-2">
-                                                    <small class="telemetry-grid-label d-block">Computed Hash:</small>
-                                                    <div id="computedHashOutput" class="font-monospace small text-info text-break bg-dark p-2 rounded border border-secondary">--</div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Right-click / press-and-hold context menu for file items -->
+                    <!-- Right-click / press-and-hold context menu for file items - two mutually
+                         exclusive action sets: real filesystem items get the full action list,
+                         virtual entries inside an image (Image Browser mode) only get Extract,
+                         since Metadata/Binwalk/ClamAV/etc. all need a real path on disk. -->
                     <div id="fileContextMenu" class="dropdown-menu dropdown-menu-dark" style="display:none; position:fixed; z-index:2000;">
-                        <button class="dropdown-item" id="contextMenuCopyBtn"><i class="bi bi-copy me-2"></i>Copy to...</button>
-                        <button class="dropdown-item text-danger" id="contextMenuDeleteBtn"><i class="bi bi-trash-fill me-2"></i>Delete</button>
+                        <div id="ctxMenuRealActions">
+                            <button id="btnFileMetadata" class="dropdown-item" onclick="viewSelectedMetadata()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Shows hidden details saved inside a file - like when a photo was taken, what camera took it, or GPS coordinates."><i class="bi bi-info-circle me-2"></i>Metadata (ExifTool)</button>
+                            <button id="btnBrowseImage" class="dropdown-item" onclick="enterExplorerImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files right here, without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse as Image (Sleuth Kit)</button>
+                            <button id="btnVerifyHash" class="dropdown-item" onclick="openVerifyHashModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Computes a cryptographic hash of this file and optionally compares it against a known reference hash - confirms an evidence image (or any file) hasn't been altered since acquisition."><i class="bi bi-hash me-2"></i>Verify Image Hash</button>
+                            <div class="dropdown-divider"></div>
+                            <button id="btnRunBinwalk" class="dropdown-item" onclick="runSelectedBinwalk()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Looks for other files or systems hidden inside this one - useful for firmware dumps, router images, or unknown binary files."><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button>
+                            <button id="btnRunClamscan" class="dropdown-item" onclick="runSelectedClamscan()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks this file (or folder) against known virus/malware signatures."><i class="bi bi-shield-exclamation me-2"></i>Scan for Malware (ClamAV)</button>
+                            <button id="btnRunStrings" class="dropdown-item" onclick="runSelectedStrings()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls out any readable text hiding inside a file that isn't normally text - like URLs or passwords buried in an executable."><i class="bi bi-fonts me-2"></i>Extract Strings</button>
+                            <button id="btnRunHashdeep" class="dropdown-item" onclick="runSelectedHashdeep()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Creates a fingerprint (hash) for every file in a folder at once - useful for proving a whole set of recovered files hasn't been tampered with."><i class="bi bi-list-check me-2"></i>Hash Directory Tree (hashdeep)</button>
+                            <button id="btnRunMvtIos" class="dropdown-item" onclick="runSelectedMvtScan('ios')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks an iOS backup folder (from Mobile Forensics) against known spyware indicators, using Amnesty International's Mobile Verification Toolkit."><i class="bi bi-phone me-2"></i>MVT Scan (iOS Backup)</button>
+                            <button id="btnRunMvtAndroid" class="dropdown-item" onclick="runSelectedMvtScan('android')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Best-effort spyware/IOC scan of an Android backup folder using MVT. Only matches a decrypted adb-backup-format directory, not adb pull/bugreport output - errors clearly if the format doesn't match."><i class="bi bi-phone me-2"></i>MVT Scan (Android Backup)</button>
+                            <div class="dropdown-divider"></div>
+                            <button id="btnCopyFile" class="dropdown-item" onclick="promptCopySelected()" disabled><i class="bi bi-copy me-2"></i>Copy to...</button>
+                            <button id="btnDeleteFile" class="dropdown-item text-danger" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-2"></i>Delete</button>
+                        </div>
+                        <div id="ctxMenuImageActions" style="display:none;">
+                            <button id="ctxMenuImageExtract" class="dropdown-item" onclick="extractExplorerImageSelected()"><i class="bi bi-download me-2"></i>Extract to Evidence Root</button>
+                        </div>
                     </div>
 
                 </div>
@@ -1354,6 +1312,47 @@
         </div>
     </div>
 
+    <div class="modal fade" id="verifyHashModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-hash me-2"></i>Verify Image Hash: <span id="verifyHashFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Hash Algorithm:</label>
+                        <select id="verifyAlgorithmSelect" class="form-select form-select-sm">
+                            <option value="sha256" selected>SHA-256</option>
+                            <option value="sha1">SHA-1</option>
+                            <option value="md5">MD5</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Expected Reference Hash (Optional Comparison):</label>
+                        <input type="text" id="verifyExpectedHash" class="form-control form-control-sm font-monospace" placeholder="Paste known acquisition hash here...">
+                    </div>
+                    <button class="btn btn-sm btn-info text-dark fw-bold w-100 mb-3" onclick="runStandaloneHashVerification()">
+                        <i class="bi bi-cpu-fill me-1"></i>Calculate & Verify Hash
+                    </button>
+                    <div class="p-2 bg-black border border-secondary rounded-2">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="telemetry-grid-label">Verification Status:</span>
+                            <span id="hashMatchBadge" class="badge bg-secondary">AWAITING INPUT</span>
+                        </div>
+                        <div>
+                            <small class="telemetry-grid-label d-block">Computed Hash:</small>
+                            <div id="computedHashOutput" class="font-monospace small text-info text-break bg-dark p-2 rounded border border-secondary">--</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="toolOutputModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content bg-dark text-light border-secondary">
@@ -1369,39 +1368,6 @@
                 </div>
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal fade" id="imageBrowserModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered modal-xl">
-            <div class="modal-content bg-dark text-light border-secondary">
-                <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-warning fs-6"><i class="bi bi-hdd-stack me-2"></i>Browse Image: <span id="imageBrowserFileName" class="font-monospace">--</span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body py-2">
-                    <div id="imageBrowserFormatWarning" class="small text-warning mb-2" style="display:none;"></div>
-
-                    <div id="imageBrowserPartitions" class="mb-3">
-                        <label class="telemetry-grid-label d-block mb-1">Partition (from mmls):</label>
-                        <select id="imageBrowserPartitionSelect" class="form-select form-select-sm" onchange="loadImageBrowserDir('')"></select>
-                    </div>
-
-                    <div class="d-flex align-items-center mb-2">
-                        <span class="me-2 fw-bold text-muted small">Path:</span>
-                        <span id="imageBrowserPathTrail" class="font-monospace small text-info">/</span>
-                        <button class="btn btn-sm btn-outline-secondary ms-auto text-nowrap" onclick="imageBrowserGoUp()"><i class="bi bi-arrow-up me-1"></i>Up Level</button>
-                    </div>
-                    <div class="list-group list-group-flush border border-secondary rounded-2" id="imageBrowserList" style="max-height: 280px; overflow-y: auto; background-color: #090b10;"></div>
-                </div>
-                <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
-                    <span id="imageBrowserSelectedFile" class="small text-subtle font-monospace"></span>
-                    <div>
-                        <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
-                        <button type="button" id="imageBrowserExtractBtn" class="btn btn-sm btn-warning text-dark fw-bold" onclick="extractSelectedImageFile()" disabled><i class="bi bi-download me-1"></i>Extract to Evidence Root</button>
-                    </div>
                 </div>
             </div>
         </div>

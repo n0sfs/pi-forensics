@@ -639,7 +639,11 @@ async function loadExplorer(path) {
             };
 
             itemDiv.ondblclick = () => {
-                if (item.is_dir) loadExplorer(item.path);
+                if (item.is_dir) {
+                    loadExplorer(item.path);
+                } else if (isImageFile(item.name)) {
+                    enterExplorerImageFor(item);
+                }
             };
 
             itemDiv.oncontextmenu = (ev) => {
@@ -729,25 +733,47 @@ async function previewSelectedFile(item) {
 }
 
 // --- Right-click / press-and-hold context menu ---
+// One menu element, two mutually exclusive action sets swapped in/out by
+// display toggling (#ctxMenuRealActions vs #ctxMenuImageActions) - a real
+// filesystem item gets the full action list, a virtual entry inside an
+// image (Image Browser mode) only gets Extract, since Metadata/Binwalk/
+// ClamAV/etc. all need a real path on disk to operate on.
 let contextMenuTargetItem = null;
+
+function positionContextMenu(ev) {
+    const menu = document.getElementById('fileContextMenu');
+    if (!menu) return;
+    const x = ev.clientX || (ev.touches && ev.touches[0] && ev.touches[0].clientX) || 0;
+    const y = ev.clientY || (ev.touches && ev.touches[0] && ev.touches[0].clientY) || 0;
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    menu.style.display = 'block';
+}
 
 function showFileContextMenu(ev, item) {
     contextMenuTargetItem = item;
-    // Right-click also selects the item, so the same copy/delete
-    // functions used by the Actions dropdown work correctly here too.
+    // Right-click also selects the item, so the same actions used
+    // elsewhere in File Explorer work correctly here too.
     activeSelectedFile = item.path;
     activeSelectedIsDir = item.is_dir;
     updateContextToolbar(item);
 
-    const menu = document.getElementById('fileContextMenu');
-    if (!menu) return;
+    const realActions = document.getElementById('ctxMenuRealActions');
+    const imageActions = document.getElementById('ctxMenuImageActions');
+    if (realActions) realActions.style.display = '';
+    if (imageActions) imageActions.style.display = 'none';
+    positionContextMenu(ev);
+}
 
-    const x = ev.clientX || (ev.touches && ev.touches[0] && ev.touches[0].clientX) || 0;
-    const y = ev.clientY || (ev.touches && ev.touches[0] && ev.touches[0].clientY) || 0;
-
-    menu.style.left = `${x}px`;
-    menu.style.top = `${y}px`;
-    menu.style.display = 'block';
+function showExplorerImageContextMenu(ev, entry) {
+    explorerImageSelected = entry;
+    const realActions = document.getElementById('ctxMenuRealActions');
+    const imageActions = document.getElementById('ctxMenuImageActions');
+    if (realActions) realActions.style.display = 'none';
+    if (imageActions) imageActions.style.display = '';
+    const extractBtn = document.getElementById('ctxMenuImageExtract');
+    if (extractBtn) extractBtn.disabled = entry.is_dir;
+    positionContextMenu(ev);
 }
 
 function hideFileContextMenu() {
@@ -765,8 +791,10 @@ document.addEventListener('click', (ev) => {
 document.addEventListener('DOMContentLoaded', () => {
     const copyBtn = document.getElementById('contextMenuCopyBtn');
     const deleteBtn = document.getElementById('contextMenuDeleteBtn');
+    const extractBtn = document.getElementById('ctxMenuImageExtract');
     if (copyBtn) copyBtn.onclick = () => { hideFileContextMenu(); promptCopySelected(); };
     if (deleteBtn) deleteBtn.onclick = () => { hideFileContextMenu(); deleteSelectedFile(); };
+    if (extractBtn) extractBtn.onclick = () => { hideFileContextMenu(); extractExplorerImageSelected(); };
 });
 
 function updateContextToolbar(item) {
@@ -774,6 +802,7 @@ function updateContextToolbar(item) {
     const btnCopy = document.getElementById("btnCopyFile");
     const btnMetadata = document.getElementById("btnFileMetadata");
     const btnBrowseImage = document.getElementById("btnBrowseImage");
+    const btnVerifyHash = document.getElementById("btnVerifyHash");
     const btnBinwalk = document.getElementById("btnRunBinwalk");
     const btnClamscan = document.getElementById("btnRunClamscan");
     const btnStrings = document.getElementById("btnRunStrings");
@@ -790,13 +819,8 @@ function updateContextToolbar(item) {
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
-
-    const IMAGE_EXTENSIONS = ['.dd', '.raw', '.img', '.e01', '.aff'];
-    if (!item.is_dir && IMAGE_EXTENSIONS.some(ext => item.name.toLowerCase().endsWith(ext))) {
-        if (btnBrowseImage) btnBrowseImage.disabled = false;
-    } else {
-        if (btnBrowseImage) btnBrowseImage.disabled = true;
-    }
+    if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
+    if (btnVerifyHash) btnVerifyHash.disabled = item.is_dir;
 }
 
 function promptCopySelected() {
@@ -1069,69 +1093,101 @@ async function updateMvtIndicators(btnEl) {
     }
 }
 
-// --- Image Browser (Sleuth Kit: mmls/fls/icat) ---
-let imageBrowserModalInstance = null;
-let imageBrowserImagePath = null;
-let imageBrowserOffset = 0;
-let imageBrowserPathStack = [];  // [{inode, name}, ...] for breadcrumb + "up" navigation
-let imageBrowserSelected = null; // {inode, name}
+// --- Image Browser (Sleuth Kit via pytsk3) - inline in File Explorer, not a modal ---
+// Browsing inside an acquired image reuses the exact same #explorerContainer/
+// #explorerPreview panes File Explorer already has for the real filesystem -
+// entering "image mode" just swaps what those two panes are driven by.
+let explorerImageMode = false;
+let explorerImagePath = null;
+let explorerImageOffset = 0;
+let explorerImagePathStack = [];  // [{inode, name}, ...] for breadcrumb + "up" navigation
+let explorerImageSelected = null; // {inode, name} or a timeline event with a .path
+let explorerImageView = 'browse'; // 'browse' | 'search' | 'timeline'
 
-async function openImageBrowser() {
-    if (!activeSelectedFile) return;
-    imageBrowserImagePath = activeSelectedFile;
-    imageBrowserPathStack = [];
-    imageBrowserSelected = null;
-
-    if (!imageBrowserModalInstance) {
-        imageBrowserModalInstance = new bootstrap.Modal(document.getElementById('imageBrowserModal'));
-    }
-    document.getElementById("imageBrowserFileName").textContent = activeSelectedFile.split('/').pop();
-    document.getElementById("imageBrowserSelectedFile").textContent = '';
-    if (document.getElementById("imageBrowserExtractBtn")) document.getElementById("imageBrowserExtractBtn").disabled = true;
-    imageBrowserModalInstance.show();
-
-    // Warn up front if this image's format might not be supported (E01
-    // support depends on how this system's sleuthkit was built - not
-    // guaranteed just because the package is installed).
-    const warningEl = document.getElementById("imageBrowserFormatWarning");
-    if (warningEl) warningEl.style.display = 'none';
-    if (activeSelectedFile.toLowerCase().endsWith('.e01')) {
-        try {
-            const res = await fetch('/api/image/format_support');
-            const data = await res.json();
-            if (data.success && !data.support.ewf && warningEl) {
-                warningEl.textContent = 'This system\'s Sleuth Kit build may not support E01 images - if browsing fails below, that\'s likely why.';
-                warningEl.style.display = '';
-            }
-        } catch (err) {}
-    }
-
-    await loadImageBrowserPartitions();
+function imgFormatBytes(n) {
+    if (n === null || n === undefined) return '--';
+    if (n < 1024) return `${n} B`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let val = n / 1024;
+    let i = 0;
+    while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
+    return `${val.toFixed(1)} ${units[i]}`;
 }
 
-async function loadImageBrowserPartitions() {
-    const select = document.getElementById("imageBrowserPartitionSelect");
+function imgFormatTimestamp(epochSeconds) {
+    if (!epochSeconds) return '--';
+    try {
+        return new Date(epochSeconds * 1000).toLocaleString();
+    } catch (err) {
+        return '--';
+    }
+}
+
+function isImageFile(name) {
+    const IMAGE_EXTENSIONS = ['.dd', '.raw', '.img', '.e01', '.aff'];
+    return IMAGE_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
+}
+
+// Entry point for both the context menu's "Browse as Image" action (reads
+// the currently right-clicked/selected real file) and double-clicking a
+// recognized image file directly in the file list.
+function enterExplorerImage() {
+    if (!activeSelectedFile) return;
+    enterExplorerImageFor({ path: activeSelectedFile, name: activeSelectedFile.split('/').pop() });
+}
+
+function enterExplorerImageFor(item) {
+    explorerImageMode = true;
+    explorerImagePath = item.path;
+    explorerImageOffset = 0;
+    explorerImagePathStack = [];
+    explorerImageSelected = null;
+    explorerImageView = 'browse';
+
+    const toolbar = document.getElementById("explorerImageToolbar");
+    if (toolbar) toolbar.style.display = 'flex';
+
+    const preview = document.getElementById("explorerPreview");
+    if (preview) {
+        preview.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+        preview.innerHTML = '<span class="text-subtle small">Select a file to preview.</span>';
+    }
+
+    loadExplorerImagePartitions();
+}
+
+// explorerPath (the JS variable, not the #explorerPath DOM label) is never
+// mutated while in image mode - only loadExplorer() touches it, and nothing
+// calls that until exitExplorerImage() does - so it still holds the real
+// filesystem directory the image lives in, with no separate state needed.
+function exitExplorerImage() {
+    explorerImageMode = false;
+    const toolbar = document.getElementById("explorerImageToolbar");
+    if (toolbar) toolbar.style.display = 'none';
+    loadExplorer(explorerPath);
+}
+
+async function loadExplorerImagePartitions() {
+    const select = document.getElementById("explorerImagePartitionSelect");
     if (select) select.innerHTML = '<option value="0">Loading...</option>';
 
     try {
         const res = await fetch('/api/image/mmls', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image_path: imageBrowserImagePath })
+            body: JSON.stringify({ image_path: explorerImagePath })
         });
         const data = await res.json();
-
         if (!select) return;
         select.innerHTML = '';
 
         if (!data.success || !data.partitions || data.partitions.length === 0) {
-            // No partition table detected (or mmls failed) - fall back to
-            // treating the whole image as a single filesystem at offset 0,
-            // which is common for a single-partition raw dd of e.g. a
-            // phone or a small media card.
+            // No partition table detected - fall back to treating the whole
+            // image as a single filesystem at offset 0, common for a
+            // single-partition raw dd of e.g. a phone or a small media card.
             const opt = document.createElement('option');
             opt.value = '0';
-            opt.textContent = 'Whole image (offset 0, no partition table detected)';
+            opt.textContent = 'Whole image (offset 0)';
             select.appendChild(opt);
         } else {
             data.partitions.forEach(p => {
@@ -1142,115 +1198,369 @@ async function loadImageBrowserPartitions() {
             });
         }
 
-        imageBrowserPathStack = [];
-        await loadImageBrowserDir('');
+        explorerImagePathStack = [];
+        await loadExplorerImageDir('');
     } catch (err) {
         if (select) select.innerHTML = '<option value="0">Error loading partitions</option>';
     }
 }
 
-async function loadImageBrowserDir(inode) {
-    const select = document.getElementById("imageBrowserPartitionSelect");
-    imageBrowserOffset = select ? parseInt(select.value, 10) || 0 : 0;
+function explorerImageChangePartition() {
+    explorerImagePathStack = [];
+    loadExplorerImageDir('');
+}
 
-    const listEl = document.getElementById("imageBrowserList");
-    if (listEl) listEl.innerHTML = '<span class="text-subtle small p-2">Loading...</span>';
-    imageBrowserSelected = null;
-    document.getElementById("imageBrowserSelectedFile").textContent = '';
-    if (document.getElementById("imageBrowserExtractBtn")) document.getElementById("imageBrowserExtractBtn").disabled = true;
+function updateExplorerImagePathDisplay() {
+    const pathLabel = document.getElementById("explorerPath");
+    if (!pathLabel || !explorerImagePath) return;
+    const imageName = explorerImagePath.split('/').pop();
+    const innerPath = '/' + explorerImagePathStack.map(p => p.name).join('/');
+    pathLabel.textContent = `💿 ${imageName} : ${innerPath}`;
+    pathLabel.title = `${imageName} : ${innerPath}`;
+}
+
+async function loadExplorerImageDir(inode) {
+    const select = document.getElementById("explorerImagePartitionSelect");
+    explorerImageOffset = select ? parseInt(select.value, 10) || 0 : 0;
+    explorerImageView = 'browse';
+    explorerImageSelected = null;
+    updateExplorerImagePathDisplay();
+
+    const container = document.getElementById("explorerContainer");
+    if (container) container.innerHTML = '<div class="p-2 text-subtle small">Loading...</div>';
 
     try {
         const res = await fetch('/api/image/fls', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image_path: imageBrowserImagePath, offset: imageBrowserOffset, inode: inode })
+            body: JSON.stringify({ image_path: explorerImagePath, offset: explorerImageOffset, inode })
         });
         const data = await res.json();
-
-        if (!listEl) return;
-        listEl.innerHTML = '';
+        if (!container) return;
+        container.innerHTML = '';
 
         if (!data.success) {
-            const err = document.createElement('span');
-            err.className = 'text-danger small p-2';
+            const err = document.createElement('div');
+            err.className = 'p-2 text-danger small';
             err.textContent = data.error;
-            listEl.appendChild(err);
+            container.appendChild(err);
             return;
         }
 
+        // "Up" pseudo-row: parent directory inside the image, or exit the
+        // image entirely (back to the real filesystem) if already at its root.
+        const upDiv = document.createElement('div');
+        upDiv.className = 'file-item text-warning fw-bold';
+        upDiv.innerHTML = '<i class="bi bi-arrow-up-left me-1"></i>.. [Up]';
+        upDiv.onclick = () => explorerImageGoUp();
+        container.appendChild(upDiv);
+
         if (data.entries.length === 0) {
-            listEl.innerHTML = '<span class="text-subtle small p-2">(empty)</span>';
+            const empty = document.createElement('div');
+            empty.className = 'p-2 text-subtle small';
+            empty.textContent = '(empty)';
+            container.appendChild(empty);
         }
 
-        data.entries.forEach(entry => {
-            const item = document.createElement('button');
-            item.type = 'button';
-            item.className = 'list-group-item list-group-item-action bg-dark text-light border-secondary d-flex justify-content-between align-items-center';
-
-            const icon = entry.is_dir ? 'bi-folder-fill text-info' : 'bi-file-earmark text-light';
-            const iconSpan = document.createElement('span');
-            iconSpan.innerHTML = `<i class="bi ${icon} me-2"></i>`; // static/trusted markup
-            iconSpan.appendChild(document.createTextNode(entry.name)); // untrusted evidence filename, text-only
-            if (entry.deleted) {
-                const delBadge = document.createElement('span');
-                delBadge.className = 'badge bg-danger ms-2';
-                delBadge.textContent = 'DELETED';
-                iconSpan.appendChild(delBadge);
-            }
-            item.appendChild(iconSpan);
-
-            item.onclick = () => {
-                if (entry.is_dir) {
-                    imageBrowserPathStack.push({ inode: entry.inode, name: entry.name });
-                    updateImageBrowserPathTrail();
-                    loadImageBrowserDir(entry.inode);
-                } else {
-                    imageBrowserSelected = entry;
-                    document.getElementById("imageBrowserSelectedFile").textContent = `Selected: ${entry.name}`;
-                    if (document.getElementById("imageBrowserExtractBtn")) document.getElementById("imageBrowserExtractBtn").disabled = false;
-                }
-            };
-            listEl.appendChild(item);
-        });
+        data.entries.forEach(entry => renderExplorerImageEntryRow(container, entry));
     } catch (err) {
-        if (listEl) listEl.innerHTML = '<span class="text-danger small p-2">Request failed.</span>';
+        if (container) container.innerHTML = '<div class="p-2 text-danger small">Request failed.</div>';
     }
 }
 
-function updateImageBrowserPathTrail() {
-    const trail = document.getElementById("imageBrowserPathTrail");
-    if (!trail) return;
-    trail.textContent = '/' + imageBrowserPathStack.map(p => p.name).join('/');
+function explorerImageGoUp() {
+    if (explorerImagePathStack.length === 0) {
+        exitExplorerImage();
+        return;
+    }
+    explorerImagePathStack.pop();
+    updateExplorerImagePathDisplay();
+    const parentInode = explorerImagePathStack.length > 0 ? explorerImagePathStack[explorerImagePathStack.length - 1].inode : '';
+    loadExplorerImageDir(parentInode);
 }
 
-function imageBrowserGoUp() {
-    if (imageBrowserPathStack.length === 0) return;
-    imageBrowserPathStack.pop();
-    updateImageBrowserPathTrail();
-    const parentInode = imageBrowserPathStack.length > 0 ? imageBrowserPathStack[imageBrowserPathStack.length - 1].inode : '';
-    loadImageBrowserDir(parentInode);
+// Shared row renderer for both directory listings and search results -
+// displayName lets search show a full path while browse shows a bare name.
+function renderExplorerImageEntryRow(container, entry, displayName) {
+    const itemDiv = document.createElement('div');
+    itemDiv.className = 'file-item d-flex justify-content-between align-items-center';
+
+    const icon = entry.is_dir
+        ? '<i class="bi bi-folder-fill folder-icon me-2 fs-6"></i>'
+        : '<i class="bi bi-file-earmark-text text-info me-2 fs-6"></i>';
+    const labelSpan = document.createElement('span');
+    labelSpan.className = entry.is_dir ? 'folder-text' : 'text-light';
+    labelSpan.innerHTML = icon; // static/trusted markup
+    labelSpan.appendChild(document.createTextNode(displayName || entry.name)); // untrusted evidence filename, text-only
+    if (entry.deleted) {
+        const delBadge = document.createElement('span');
+        delBadge.className = 'badge bg-danger ms-2';
+        delBadge.textContent = 'DELETED';
+        labelSpan.appendChild(delBadge);
+    }
+
+    const sizeEl = document.createElement('small');
+    sizeEl.className = 'text-subtle font-monospace';
+    sizeEl.textContent = entry.is_dir ? '' : imgFormatBytes(entry.size);
+
+    itemDiv.appendChild(labelSpan);
+    itemDiv.appendChild(sizeEl);
+
+    itemDiv.onclick = () => {
+        document.querySelectorAll('.file-pane .file-item').forEach(el => el.classList.remove('active'));
+        itemDiv.classList.add('active');
+        explorerImageSelected = entry;
+        if (!entry.is_dir) previewExplorerImageEntry(entry);
+    };
+
+    itemDiv.ondblclick = () => {
+        if (entry.is_dir && explorerImageView === 'browse') {
+            explorerImagePathStack.push({ inode: entry.inode, name: entry.name });
+            loadExplorerImageDir(entry.inode);
+        }
+    };
+
+    itemDiv.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        showExplorerImageContextMenu(ev, entry);
+        return false;
+    };
+
+    container.appendChild(itemDiv);
 }
 
-async function extractSelectedImageFile() {
-    if (!imageBrowserSelected) return;
+// In-memory preview straight from the image - no extract-to-disk step
+// first, unlike the old icat-then-browse-in-File-Explorer flow this
+// replaced. Renders into the same #explorerPreview pane real files use.
+async function previewExplorerImageEntry(entry) {
+    const preview = document.getElementById("explorerPreview");
+    if (!preview) return;
+    preview.className = 'file-pane p-2';
+    preview.innerHTML = '<span class="text-subtle small">Loading preview...</span>';
 
+    try {
+        const res = await fetch('/api/image/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, offset: explorerImageOffset, inode: entry.inode, name: entry.name })
+        });
+        const data = await res.json();
+        preview.innerHTML = '';
+
+        if (!data.success) {
+            preview.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+            const err = document.createElement('span');
+            err.className = 'text-danger small';
+            err.textContent = data.error;
+            preview.appendChild(err);
+            return;
+        }
+
+        if (data.kind === 'image') {
+            const img = document.createElement('img');
+            img.src = `data:${data.mime};base64,${data.data}`;
+            img.style.maxWidth = '100%';
+            img.style.maxHeight = '100%';
+            img.style.objectFit = 'contain';
+            preview.appendChild(img);
+        } else if (data.kind === 'too_large') {
+            preview.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+            preview.innerHTML = '<span class="text-subtle small">File too large to preview inline - use Extract instead.</span>';
+        } else {
+            preview.className = 'file-pane p-2 d-block text-start';
+            const pre = document.createElement('pre');
+            pre.className = 'log-window mb-0';
+            pre.style.height = '100%';
+            pre.textContent = data.text + (data.truncated ? '\n\n[... truncated, file is larger than the preview limit ...]' : ''); // untrusted evidence content, text node only
+            preview.appendChild(pre);
+        }
+    } catch (err) {
+        preview.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+        preview.innerHTML = '<span class="text-danger small">Preview request failed.</span>';
+    }
+}
+
+function explorerImageBackToBrowseRow(container) {
+    const backDiv = document.createElement('div');
+    backDiv.className = 'file-item text-warning fw-bold';
+    backDiv.innerHTML = '<i class="bi bi-arrow-left me-1"></i>Back to Browse';
+    backDiv.onclick = () => {
+        const currentInode = explorerImagePathStack.length > 0 ? explorerImagePathStack[explorerImagePathStack.length - 1].inode : '';
+        loadExplorerImageDir(currentInode);
+    };
+    container.appendChild(backDiv);
+}
+
+function explorerImageToggleSearch() {
+    explorerImageView = 'search';
+    const container = document.getElementById("explorerContainer");
+    if (!container) return;
+    container.innerHTML = '';
+    explorerImageBackToBrowseRow(container);
+
+    const formDiv = document.createElement('div');
+    formDiv.className = 'p-2';
+    formDiv.innerHTML = '<div class="input-group input-group-sm mb-1">' +
+        '<input type="text" id="explorerImageSearchQuery" class="form-control" placeholder="Filename contains...">' +
+        '<button class="btn btn-outline-info fw-bold" id="explorerImageSearchBtn"><i class="bi bi-search"></i></button>' +
+        '</div><div class="text-subtle small">Searches recursively from this partition\'s root. Capped at 500 results.</div>';
+    container.appendChild(formDiv);
+
+    const resultsDiv = document.createElement('div');
+    resultsDiv.id = 'explorerImageSearchResults';
+    container.appendChild(resultsDiv);
+
+    document.getElementById('explorerImageSearchBtn').onclick = runExplorerImageSearch;
+    document.getElementById('explorerImageSearchQuery').onkeydown = (ev) => { if (ev.key === 'Enter') runExplorerImageSearch(); };
+    document.getElementById('explorerImageSearchQuery').focus();
+}
+
+async function runExplorerImageSearch() {
+    const queryEl = document.getElementById("explorerImageSearchQuery");
+    const query = queryEl ? queryEl.value.trim() : '';
+    const resultsEl = document.getElementById("explorerImageSearchResults");
+    if (!resultsEl) return;
+    if (!query) {
+        resultsEl.innerHTML = '<div class="p-2 text-subtle small">Enter a search term above.</div>';
+        return;
+    }
+
+    resultsEl.innerHTML = '<div class="p-2 text-subtle small">Searching...</div>';
+    try {
+        const res = await fetch('/api/image/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, offset: explorerImageOffset, query })
+        });
+        const data = await res.json();
+        resultsEl.innerHTML = '';
+
+        if (!data.success) {
+            const err = document.createElement('div');
+            err.className = 'p-2 text-danger small';
+            err.textContent = data.error;
+            resultsEl.appendChild(err);
+            return;
+        }
+        if (data.results.length === 0) {
+            resultsEl.innerHTML = '<div class="p-2 text-subtle small">No matches found.</div>';
+            return;
+        }
+        data.results.forEach(entry => renderExplorerImageEntryRow(resultsEl, entry, entry.path));
+
+        if (data.truncated) {
+            const note = document.createElement('div');
+            note.className = 'p-2 text-subtle small';
+            note.textContent = 'Showing the first 500 matches - narrow your search term for a complete result set.';
+            resultsEl.appendChild(note);
+        }
+    } catch (err) {
+        resultsEl.innerHTML = '<div class="p-2 text-danger small">Request failed.</div>';
+    }
+}
+
+function explorerImageToggleTimeline() {
+    explorerImageView = 'timeline';
+    const container = document.getElementById("explorerContainer");
+    if (!container) return;
+    container.innerHTML = '';
+    explorerImageBackToBrowseRow(container);
+
+    const genDiv = document.createElement('div');
+    genDiv.className = 'p-2';
+    genDiv.innerHTML = '<button class="btn btn-sm btn-outline-info fw-bold w-100 mb-1" id="explorerImageTimelineBtn"><i class="bi bi-clock-history me-1"></i>Generate Timeline</button>' +
+        '<div class="text-subtle small">MACB timestamps for every file on this partition, most recent first. Capped at 5000 events - can take a while on a large filesystem.</div>';
+    container.appendChild(genDiv);
+
+    const resultsDiv = document.createElement('div');
+    resultsDiv.id = 'explorerImageTimelineResults';
+    container.appendChild(resultsDiv);
+
+    document.getElementById('explorerImageTimelineBtn').onclick = runExplorerImageTimeline;
+}
+
+async function runExplorerImageTimeline() {
+    const resultsEl = document.getElementById("explorerImageTimelineResults");
+    if (!resultsEl) return;
+    resultsEl.innerHTML = '<div class="p-2 text-subtle small">Generating - this walks the entire filesystem and can take a while...</div>';
+
+    try {
+        const res = await fetch('/api/image/timeline', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, offset: explorerImageOffset })
+        });
+        const data = await res.json();
+        resultsEl.innerHTML = '';
+
+        if (!data.success) {
+            const err = document.createElement('div');
+            err.className = 'p-2 text-danger small';
+            err.textContent = data.error;
+            resultsEl.appendChild(err);
+            return;
+        }
+        if (data.events.length === 0) {
+            resultsEl.innerHTML = '<div class="p-2 text-subtle small">No timestamped entries found.</div>';
+            return;
+        }
+
+        const activityLabels = { M: 'Modified', A: 'Accessed', C: 'Changed', B: 'Born' };
+        const activityColors = { M: 'text-info', A: 'text-subtle', C: 'text-warning', B: 'text-success' };
+        data.events.forEach(ev => {
+            const row = document.createElement('div');
+            row.className = 'file-item';
+
+            const line1 = document.createElement('div');
+            const actSpan = document.createElement('span');
+            actSpan.className = `fw-bold me-2 ${activityColors[ev.activity] || ''}`;
+            actSpan.textContent = `[${activityLabels[ev.activity] || ev.activity}]`;
+            line1.appendChild(actSpan);
+            line1.appendChild(document.createTextNode(imgFormatTimestamp(ev.timestamp)));
+
+            const line2 = document.createElement('div');
+            line2.className = 'text-subtle small text-break';
+            line2.textContent = ev.path + (ev.deleted ? '  [DELETED]' : ''); // untrusted evidence path, text-only
+
+            row.appendChild(line1);
+            row.appendChild(line2);
+
+            row.onclick = () => {
+                document.querySelectorAll('.file-pane .file-item').forEach(el => el.classList.remove('active'));
+                row.classList.add('active');
+                explorerImageSelected = ev;
+            };
+
+            resultsEl.appendChild(row);
+        });
+
+        if (data.truncated) {
+            const note = document.createElement('div');
+            note.className = 'p-2 text-subtle small';
+            note.textContent = 'Showing the first 5000 events - this filesystem has more activity than fits in one timeline.';
+            resultsEl.appendChild(note);
+        }
+    } catch (err) {
+        resultsEl.innerHTML = '<div class="p-2 text-danger small">Request failed.</div>';
+    }
+}
+
+async function extractExplorerImageSelected() {
+    if (!explorerImageSelected) return;
     try {
         const res = await fetch('/api/image/extract', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                image_path: imageBrowserImagePath,
-                offset: imageBrowserOffset,
-                inode: imageBrowserSelected.inode,
-                output_name: imageBrowserSelected.name,
+                image_path: explorerImagePath,
+                offset: explorerImageOffset,
+                inode: explorerImageSelected.inode,
+                output_name: explorerImageSelected.name,
                 destination_dir: '/mnt'
             })
         });
         const data = await res.json();
         alert(data.success ? data.message : `Extraction failed: ${data.error}`);
-        if (data.success) {
-            loadExplorer(explorerPath);
-        }
     } catch (err) {}
 }
 
@@ -1876,21 +2186,38 @@ async function runExportReport() {
     }
 }
 
-// --- Standalone Evidence Hash Verifier Suite ---
+// --- Evidence Hash Verifier (context-menu action, scoped to the selected file) ---
+let verifyHashModalInstance = null;
+
+function openVerifyHashModal() {
+    if (!activeSelectedFile) return;
+    document.getElementById("verifyHashFileName").textContent = activeSelectedFile.split('/').pop();
+    const expectedEl = document.getElementById("verifyExpectedHash");
+    if (expectedEl) expectedEl.value = '';
+    const output = document.getElementById("computedHashOutput");
+    if (output) output.textContent = '--';
+    const badge = document.getElementById("hashMatchBadge");
+    if (badge) { badge.className = 'badge bg-secondary'; badge.textContent = 'AWAITING INPUT'; }
+
+    if (!verifyHashModalInstance) {
+        verifyHashModalInstance = new bootstrap.Modal(document.getElementById('verifyHashModal'));
+    }
+    verifyHashModalInstance.show();
+}
+
 async function runStandaloneHashVerification() {
-    const imagePathEl = document.getElementById("verifyImagePath");
-    const imagePath = imagePathEl ? imagePathEl.value.trim() : "";
-    
+    const imagePath = activeSelectedFile;
+
     const algoEl = document.getElementById("verifyAlgorithmSelect");
     const algorithm = algoEl ? algoEl.value : "sha256";
-    
+
     const expectedEl = document.getElementById("verifyExpectedHash");
     const expectedHash = expectedEl ? expectedEl.value.trim().toLowerCase() : "";
-    
+
     const badge = document.getElementById("hashMatchBadge");
     const output = document.getElementById("computedHashOutput");
 
-    if (!imagePath) return alert("Select an evidence image file first.");
+    if (!imagePath) return alert("Select a file first.");
 
     if (badge) {
         badge.className = "badge bg-info text-dark";
@@ -2242,9 +2569,6 @@ function openFolderModal(mode = 'folder', targetInputId = 'destPath') {
     } else if (modalPickerMode === 'attachment') {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-paperclip me-2"></i>Select Case File / Photo Attachment';
         if (selectBtn) selectBtn.style.display = 'none';
-    } else if (modalPickerMode === 'evidence') {
-        if (titleEl) titleEl.innerHTML = '<i class="bi bi-hdd-fill me-2"></i>Select Target Evidence Image (.dd / .E01)';
-        if (selectBtn) selectBtn.style.display = 'none';
     } else if (modalPickerMode === 'mapfile') {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-bar-chart-line me-2"></i>Select ddrescue Mapfile (.map)';
         if (selectBtn) selectBtn.style.display = 'none';
@@ -2291,8 +2615,6 @@ async function loadFolderList(path) {
                 isSelectableFile = true;
             } else if (modalPickerMode === 'attachment' && !item.is_dir) {
                 isSelectableFile = true;
-            } else if (modalPickerMode === 'evidence' && !item.is_dir && (item.name.toLowerCase().endsWith('.dd') || item.name.toLowerCase().endsWith('.e01') || item.name.toLowerCase().endsWith('.raw'))) {
-                isSelectableFile = true;
             } else if (modalPickerMode === 'mapfile' && !item.is_dir && item.name.toLowerCase().endsWith('.map')) {
                 isSelectableFile = true;
             } else if (modalPickerMode === 'recoverySource' && !item.is_dir) {
@@ -2307,7 +2629,6 @@ async function loadFolderList(path) {
                 if (isSelectableFile) {
                     if (modalPickerMode === 'report') icon = '<i class="bi bi-filetype-json text-warning me-2 fs-5"></i>';
                     else if (modalPickerMode === 'attachment') icon = '<i class="bi bi-paperclip text-info me-2 fs-5"></i>';
-                    else if (modalPickerMode === 'evidence') icon = '<i class="bi bi-disc text-primary me-2 fs-5"></i>';
                     else if (modalPickerMode === 'mapfile') icon = '<i class="bi bi-map text-warning me-2 fs-5"></i>';
                     else if (modalPickerMode === 'recoverySource') icon = '<i class="bi bi-disc text-primary me-2 fs-5"></i>';
                 }
@@ -2338,10 +2659,6 @@ async function loadFolderList(path) {
                         loadCaseForEditing();
                     } else if (modalPickerMode === 'attachment') {
                         addFileAttachment(item.path);
-                        if (folderModalInstance) folderModalInstance.hide();
-                    } else if (modalPickerMode === 'evidence') {
-                        const verifyImagePath = document.getElementById("verifyImagePath");
-                        if (verifyImagePath) verifyImagePath.value = item.path;
                         if (folderModalInstance) folderModalInstance.hide();
                     } else if (modalPickerMode === 'mapfile') {
                         const mapPathEl = document.getElementById("tabMapfilePath");

@@ -14,6 +14,7 @@ import json
 import fcntl
 import signal
 import psutil
+import pytsk3
 import shutil
 import hashlib
 import tempfile
@@ -4080,27 +4081,115 @@ def get_reports_index():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-# --- Sleuth Kit: Browse Filesystems Inside Acquired Images ---
-# mmls/fls/icat only ever read the image file - nothing here writes to it.
-# E01 support depends on whether this system's sleuthkit build was linked
-# against libewf (not guaranteed just because libewf-dev is installed - see
-# install.py) - detect_image_format_support() checks this at runtime rather
-# than assuming, since a real-world case (a SIFT workstation packaging bug)
-# shipped sleuthkit with only raw-image support despite libewf being present.
-_FLS_LINE_RE = re.compile(r'^([rdlcbps\-+*/]+)\s+(\d+(?:-\d+)*(?:-\d+)?):\s+(.+)$')
+# --- Sleuth Kit (pytsk3): Browse/Search/Timeline Filesystems Inside Acquired Images ---
+# Everything here only ever reads the image file - nothing writes to evidence.
+# Uses pytsk3 (Python bindings for libtsk) instead of shelling out to
+# mmls/fls/icat: one in-process filesystem walk yields name + full MACB
+# timestamps + size together, and lets recursive search / timeline / an
+# in-memory preview work without spawning a subprocess per file or per
+# directory the way the old CLI-wrapped version needed to. Verified against
+# Debian trixie/aarch64 before adding - PyPI ships a prebuilt manylinux
+# aarch64 wheel (no compile step, installs in ~10s) that was functionally
+# tested against a real acquired image on the deployed Pi. See CLAUDE.md.
+TSK_DEFAULT_SECTOR_SIZE = 512  # matches the sector size this app's images have always assumed (mmls/fls/dc3dd never handled 4Kn-native source drives specially either - not a new limitation)
+TSK_READ_CHUNK_BYTES = 1024 * 1024
+TSK_MAX_SEARCH_RESULTS = 500
+TSK_MAX_TIMELINE_ENTRIES = 5000
+TSK_MAX_WALK_DIRS = 5000   # safety cap against pathological/looping directory structures
+TSK_MAX_WALK_DEPTH = 25
+TSK_PREVIEW_TEXT_MAX_BYTES = 200_000
+TSK_PREVIEW_IMAGE_MAX_BYTES = 8_000_000
+TSK_PREVIEW_IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
+TSK_PREVIEW_MIME = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                     '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp'}
 
 def detect_image_format_support():
-    try:
-        res = subprocess.run(['mmls', '-i', 'list'], capture_output=True, text=True, timeout=10)
-        output = (res.stdout + res.stderr).lower()
-        return {"raw": True, "ewf": "ewf" in output, "aff": "aff" in output}
-    except Exception:
-        return {"raw": True, "ewf": False, "aff": False}
+    # pytsk3's PyPI wheels bundle libewf support at build time, unlike the
+    # old mmls-based check (which could only string-match mmls's "-i list"
+    # advertised formats, never confirm a real E01 would actually open) -
+    # safe to report as always-on rather than re-probing per request.
+    return {"raw": True, "ewf": True, "aff": hasattr(pytsk3, 'TSK_IMG_TYPE_AFF_AFF')}
 
 @app.route('/api/image/format_support', methods=['GET'])
 @requires_auth
 def image_format_support():
     return jsonify({"success": True, "support": detect_image_format_support()})
+
+def _tsk_parse_inode(raw):
+    """Directory/file navigation uses the base inode address only - NTFS's
+    optional '-type-id' attribute-selector suffix (for alternate data
+    streams) isn't chased here, same scope the old fls-based version had."""
+    return int(str(raw).split('-')[0])
+
+def _tsk_open_fs(image_path, offset_sectors):
+    img = pytsk3.Img_Info(image_path)
+    return pytsk3.FS_Info(img, offset=int(offset_sectors) * TSK_DEFAULT_SECTOR_SIZE)
+
+def _tsk_entry_dict(entry):
+    name = entry.info.name.name.decode('utf-8', errors='replace')
+    meta = entry.info.meta
+    return {
+        "name": name,
+        "inode": str(entry.info.name.meta_addr),
+        "is_dir": entry.info.name.type == pytsk3.TSK_FS_NAME_TYPE_DIR,
+        "deleted": bool(entry.info.name.flags & pytsk3.TSK_FS_NAME_FLAG_UNALLOC),
+        "size": meta.size if meta else None,
+        "mtime": meta.mtime if meta else None,
+        "atime": meta.atime if meta else None,
+        "ctime": meta.ctime if meta else None,
+        "crtime": getattr(meta, 'crtime', None) if meta else None,
+    }
+
+def _tsk_list_dir(fs, inode_num):
+    tsk_dir = fs.open_dir(inode=inode_num) if inode_num is not None else fs.open_dir(path='/')
+    entries = []
+    for entry in tsk_dir:
+        if not entry.info.name or entry.info.name.name in (b'.', b'..'):
+            continue
+        try:
+            entries.append(_tsk_entry_dict(entry))
+        except Exception:
+            continue  # one corrupt/unreadable directory entry shouldn't fail the whole listing
+    return entries
+
+def _tsk_walk(fs, start_inode_num=None, max_dirs=TSK_MAX_WALK_DIRS, max_depth=TSK_MAX_WALK_DEPTH):
+    """Recursively walks a filesystem from start_inode_num (or root),
+    yielding (entry_dict, path) for every entry found - shared by search and
+    timeline below. Deliberately does not recurse into deleted directories:
+    a deleted directory's inode may already have been reallocated to
+    something unrelated, and walking it can loop or return garbage on a live
+    evidence filesystem. Capped on both directories visited and depth as a
+    safety net against reused-inode loops."""
+    visited = [0]
+
+    def _walk(inode_num, path, depth):
+        if visited[0] >= max_dirs or depth > max_depth:
+            return
+        try:
+            entries = _tsk_list_dir(fs, inode_num)
+        except Exception:
+            return
+        visited[0] += 1
+        for d in entries:
+            entry_path = f"{path}/{d['name']}"
+            yield d, entry_path
+            if d['is_dir'] and not d['deleted']:
+                yield from _walk(int(d['inode']), entry_path, depth + 1)
+
+    yield from _walk(start_inode_num, '', 0)
+
+def _tsk_stream_file(tsk_file, write_fn, max_bytes=None):
+    size = tsk_file.info.meta.size if tsk_file.info.meta else 0
+    if max_bytes is not None:
+        size = min(size, max_bytes)
+    read_offset = 0
+    while read_offset < size:
+        chunk = tsk_file.read_random(read_offset, min(TSK_READ_CHUNK_BYTES, size - read_offset))
+        if not chunk:
+            break
+        write_fn(chunk)
+        read_offset += len(chunk)
+    return read_offset
 
 @app.route('/api/image/mmls', methods=['POST'])
 @requires_auth
@@ -4111,31 +4200,25 @@ def image_mmls():
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
 
     try:
-        res = subprocess.run(['mmls', image_path], capture_output=True, text=True, timeout=30)
-        if res.returncode != 0:
-            return jsonify({"success": False, "error": res.stderr.strip() or "mmls failed - unsupported format, or no partition table (try fls directly with offset 0)."}), 500
-
-        partitions = []
-        for line in res.stdout.splitlines():
-            # Typical mmls line: "002:  000:  000000063  002097151  002097089  Linux (0x83)"
-            parts = line.split()
-            if len(parts) >= 5 and parts[0].rstrip(':').isdigit():
-                try:
-                    partitions.append({
-                        "slot": parts[0].rstrip(':'),
-                        "start_sector": int(parts[2]),
-                        "end_sector": int(parts[3]),
-                        "length_sectors": int(parts[4]),
-                        "description": " ".join(parts[5:]) if len(parts) > 5 else ""
-                    })
-                except ValueError:
-                    continue
-
-        return jsonify({"success": True, "partitions": partitions, "raw_output": res.stdout})
-    except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "mmls timed out."}), 500
+        img = pytsk3.Img_Info(image_path)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": f"Could not open image: {e}"}), 500
+
+    partitions = []
+    try:
+        vol = pytsk3.Volume_Info(img)
+        for part in vol:
+            partitions.append({
+                "slot": str(part.addr),
+                "start_sector": part.start,
+                "end_sector": part.start + part.len - 1,
+                "length_sectors": part.len,
+                "description": part.desc.decode('utf-8', errors='replace'),
+            })
+    except IOError:
+        pass  # no partition table - normal for a single-filesystem image (phone/media card dd)
+
+    return jsonify({"success": True, "partitions": partitions})
 
 @app.route('/api/image/fls', methods=['POST'])
 @requires_auth
@@ -4151,38 +4234,20 @@ def image_fls():
         offset = int(offset)
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "offset must be a sector number."}), 400
-    if inode and not re.match(r'^\d+(-\d+)*(-\d+)?$', str(inode)):
-        return jsonify({"success": False, "error": "Invalid inode reference."}), 400
 
-    cmd = ['fls', '-o', str(offset), image_path]
+    inode_num = None
     if inode:
-        cmd.append(str(inode))
+        try:
+            inode_num = _tsk_parse_inode(inode)
+        except ValueError:
+            return jsonify({"success": False, "error": "Invalid inode reference."}), 400
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if res.returncode != 0:
-            return jsonify({"success": False, "error": res.stderr.strip() or "fls failed - check the partition offset."}), 500
-
-        entries = []
-        for line in res.stdout.splitlines():
-            m = _FLS_LINE_RE.match(line.strip())
-            if not m:
-                continue
-            type_flags, inode_ref, name = m.groups()
-            if name in ('.', '..'):
-                continue
-            entries.append({
-                "name": name,
-                "inode": inode_ref,
-                "is_dir": type_flags.startswith('d'),
-                "deleted": '*' in type_flags
-            })
-
+        fs = _tsk_open_fs(image_path, offset)
+        entries = _tsk_list_dir(fs, inode_num)
         return jsonify({"success": True, "entries": entries})
-    except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "fls timed out."}), 500
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": f"Could not list directory: {e}"}), 500
 
 @app.route('/api/image/extract', methods=['POST'])
 @requires_auth
@@ -4202,32 +4267,165 @@ def image_extract():
         offset = int(offset)
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "offset must be a sector number."}), 400
-    if not inode or not re.match(r'^\d+(-\d+)*(-\d+)?$', str(inode)):
+    if not inode:
+        return jsonify({"success": False, "error": "Invalid inode reference."}), 400
+    try:
+        inode_num = _tsk_parse_inode(inode)
+    except ValueError:
         return jsonify({"success": False, "error": "Invalid inode reference."}), 400
 
     # Sanitize the requested filename (from an untrusted evidence filesystem)
     # to a bare basename before using it to build a destination path.
-    safe_name = os.path.basename(out_name).strip() or f"extracted_{inode}"
+    safe_name = os.path.basename(out_name).strip() or f"extracted_{inode_num}"
     dest_file = os.path.join(dest_dir, safe_name)
     if not safe_path(dest_file):
         return jsonify({"success": False, "error": "Resulting destination path is outside the permitted evidence directory."}), 400
 
     try:
-        with open(dest_file, 'wb') as f:
-            res = subprocess.run(['icat', '-o', str(offset), image_path, str(inode)], stdout=f, stderr=subprocess.PIPE, timeout=120)
-        if res.returncode != 0:
-            try:
-                os.remove(dest_file)
-            except OSError:
-                pass
-            return jsonify({"success": False, "error": res.stderr.decode(errors='ignore').strip() or "icat failed."}), 500
-
-        log_chain_of_custody("image_file_extract", {"image_path": image_path, "inode": str(inode), "extracted_to": dest_file})
-        return jsonify({"success": True, "message": f"Extracted to {dest_file}", "path": dest_file})
-    except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "icat timed out."}), 500
+        fs = _tsk_open_fs(image_path, offset)
+        tsk_file = fs.open_meta(inode=inode_num)
+        with open(dest_file, 'wb') as out:
+            _tsk_stream_file(tsk_file, out.write)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        try:
+            os.remove(dest_file)
+        except OSError:
+            pass
+        return jsonify({"success": False, "error": f"Extraction failed: {e}"}), 500
+
+    log_chain_of_custody("image_file_extract", {"image_path": image_path, "inode": str(inode), "extracted_to": dest_file})
+    return jsonify({"success": True, "message": f"Extracted to {dest_file}", "path": dest_file})
+
+@app.route('/api/image/preview', methods=['POST'])
+@requires_auth
+def image_preview():
+    """In-memory preview of a file still inside the image - no extract-to-
+    disk step first, unlike the old icat-then-browse-in-File-Explorer flow."""
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    name_hint = req.get('name', '')
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tsk_file = fs.open_meta(inode=inode_num)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not open file: {e}"}), 500
+
+    size = tsk_file.info.meta.size if tsk_file.info.meta else 0
+    ext = os.path.splitext(name_hint)[1].lower()
+
+    try:
+        if ext in TSK_PREVIEW_IMAGE_EXT:
+            if size > TSK_PREVIEW_IMAGE_MAX_BYTES:
+                return jsonify({"success": True, "kind": "too_large", "size": size})
+            buf = io.BytesIO()
+            _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_PREVIEW_IMAGE_MAX_BYTES)
+            mime = TSK_PREVIEW_MIME.get(ext, 'application/octet-stream')
+            return jsonify({"success": True, "kind": "image", "size": size, "mime": mime,
+                             "data": base64.b64encode(buf.getvalue()).decode('ascii')})
+        else:
+            buf = io.BytesIO()
+            truncated = size > TSK_PREVIEW_TEXT_MAX_BYTES
+            _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_PREVIEW_TEXT_MAX_BYTES)
+            return jsonify({"success": True, "kind": "text", "size": size, "truncated": truncated,
+                             "text": buf.getvalue().decode('utf-8', errors='replace')})
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Preview failed: {e}"}), 500
+
+@app.route('/api/image/search', methods=['POST'])
+@requires_auth
+def image_search():
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    offset = req.get('offset', 0)
+    query = (req.get('query') or '').strip().lower()
+    start_inode = req.get('start_inode', '')
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not query:
+        return jsonify({"success": False, "error": "A search query is required."}), 400
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "offset must be a sector number."}), 400
+
+    start_inode_num = None
+    if start_inode:
+        try:
+            start_inode_num = _tsk_parse_inode(start_inode)
+        except ValueError:
+            return jsonify({"success": False, "error": "Invalid inode reference."}), 400
+
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not open filesystem: {e}"}), 500
+
+    results = []
+    truncated = False
+    for entry, path in _tsk_walk(fs, start_inode_num):
+        if query in entry['name'].lower():
+            results.append({**entry, "path": path})
+            if len(results) >= TSK_MAX_SEARCH_RESULTS:
+                truncated = True
+                break
+
+    return jsonify({"success": True, "results": results, "truncated": truncated})
+
+@app.route('/api/image/timeline', methods=['POST'])
+@requires_auth
+def image_timeline():
+    """MACB timeline built directly from a pytsk3 walk - no dependency on
+    the external mactime perl script fls -m output traditionally needs."""
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    offset = req.get('offset', 0)
+    start_inode = req.get('start_inode', '')
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "offset must be a sector number."}), 400
+
+    start_inode_num = None
+    if start_inode:
+        try:
+            start_inode_num = _tsk_parse_inode(start_inode)
+        except ValueError:
+            return jsonify({"success": False, "error": "Invalid inode reference."}), 400
+
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not open filesystem: {e}"}), 500
+
+    events = []
+    truncated = False
+    for entry, path in _tsk_walk(fs, start_inode_num):
+        for ts_field, label in (('mtime', 'M'), ('atime', 'A'), ('ctime', 'C'), ('crtime', 'B')):
+            ts = entry.get(ts_field)
+            if ts:
+                events.append({"timestamp": ts, "activity": label, "path": path,
+                                "name": entry['name'], "is_dir": entry['is_dir'], "deleted": entry['deleted']})
+        if len(events) >= TSK_MAX_TIMELINE_ENTRIES:
+            truncated = True
+            break
+
+    events.sort(key=lambda e: e['timestamp'], reverse=True)
+    return jsonify({"success": True, "events": events[:TSK_MAX_TIMELINE_ENTRIES], "truncated": truncated})
 
 # --- Forensic Audit Report Exporter (PDF / HTML, configurable sections) ---
 def _draw_pdf_job_section(c, y, event, job_fields=None):

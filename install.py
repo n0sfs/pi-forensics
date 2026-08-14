@@ -164,7 +164,7 @@ req_file = os.path.join(INSTALL_DIR, "requirements.txt")
 if os.path.exists(req_file):
     subprocess.run([pip_bin, "install", "-r", req_file], check=True)
 else:
-    subprocess.run([pip_bin, "install", "flask", "gunicorn", "psutil", "reportlab", "mvt"], check=True)
+    subprocess.run([pip_bin, "install", "flask", "gunicorn", "psutil", "reportlab", "mvt", "pytsk3"], check=True)
 
 # MVT (mobile spyware/IOC scanner in the File Explorer's Actions menu) needs
 # indicator files to actually match against, same idea as ClamAV's freshclam
