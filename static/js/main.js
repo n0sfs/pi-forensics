@@ -2853,8 +2853,7 @@ function applyActiveCaseToFields() {
     const fieldGroups = [
         ['caseNum', 'examiner', 'destPath'],
         ['recoveryCaseNum', 'recoveryExaminer', 'recoveryDest'],
-        ['mobileIosCaseNum', 'mobileIosExaminer', 'mobileIosDest'],
-        ['mobileAndroidCaseNum', 'mobileAndroidExaminer', 'mobileAndroidDest'],
+        ['mobileCaseNum', 'mobileExaminer', 'mobileDest'],
     ];
     fieldGroups.forEach(([caseNumId, examinerId, destId]) => {
         const caseNumEl = document.getElementById(caseNumId);
@@ -3794,30 +3793,72 @@ async function refreshMobileDevices() {
     } catch (err) {}
 }
 
+// Single Start button is shared between platforms - only enabled when the
+// currently-selected device (for whichever platform is in mode) is ready.
+// Called after every device-list refresh and every mode switch so it can
+// never go stale (e.g. an Android device becoming ready shouldn't enable
+// Start while iOS mode is still selected).
+function refreshMobileStartButtonState() {
+    const mode = document.getElementById("mobileDeviceMode")?.value || 'ios';
+    const startBtn = document.getElementById("btnMobileStart");
+    if (!startBtn) return;
+
+    if (mode === 'ios') {
+        const udid = document.getElementById("mobileIosSelect")?.value;
+        const dev = mobileIosDevices.find(d => d.udid === udid);
+        startBtn.disabled = !dev || !dev.trusted;
+    } else {
+        const serial = document.getElementById("mobileAndroidSelect")?.value;
+        const dev = mobileAndroidDevices.find(d => d.serial === serial);
+        startBtn.disabled = !dev || !dev.authorized;
+    }
+}
+
+function updateMobileDeviceMode() {
+    const mode = document.getElementById("mobileDeviceMode")?.value || 'ios';
+    const iosControls = document.getElementById("mobileIosControls");
+    const androidControls = document.getElementById("mobileAndroidControls");
+    const startLabel = document.getElementById("btnMobileStartLabel");
+
+    if (iosControls) iosControls.style.display = mode === 'ios' ? '' : 'none';
+    if (androidControls) androidControls.style.display = mode === 'android' ? '' : 'none';
+    if (startLabel) startLabel.textContent = mode === 'ios' ? 'Start iOS Backup' : 'Start Android Acquisition';
+
+    refreshMobileStartButtonState();
+}
+
 function onMobileIosSelect() {
     const udid = document.getElementById("mobileIosSelect")?.value;
     const dev = mobileIosDevices.find(d => d.udid === udid);
-    const startBtn = document.getElementById("btnMobileIosStart");
 
     if (document.getElementById("mobileIosModel")) document.getElementById("mobileIosModel").innerText = dev?.model || '--';
     if (document.getElementById("mobileIosVersion")) document.getElementById("mobileIosVersion").innerText = dev?.ios_version || '--';
+    if (document.getElementById("mobileIosBuild")) document.getElementById("mobileIosBuild").innerText = dev?.build_version || '--';
+    if (document.getElementById("mobileIosStorage")) document.getElementById("mobileIosStorage").innerText = dev ? `${dev.storage_capacity_gb} GB` : '--';
+    if (document.getElementById("mobileIosActivation")) document.getElementById("mobileIosActivation").innerText = dev?.activation_state || '--';
     if (document.getElementById("mobileIosSerial")) document.getElementById("mobileIosSerial").innerText = dev?.serial || '--';
+    if (document.getElementById("mobileIosImei")) document.getElementById("mobileIosImei").innerText = dev?.imei || '--';
+    if (document.getElementById("mobileIosWifiMac")) document.getElementById("mobileIosWifiMac").innerText = dev?.wifi_mac || '--';
+    if (document.getElementById("mobileIosBtMac")) document.getElementById("mobileIosBtMac").innerText = dev?.bluetooth_mac || '--';
 
     const statusEl = document.getElementById("mobileIosStatus");
     if (statusEl) {
         statusEl.innerText = (dev && !dev.trusted) ? 'Device connected but not trusted yet - tap "Trust This Computer?" on the device, then Refresh.' : '';
     }
 
-    if (startBtn) startBtn.disabled = !dev || !dev.trusted;
+    refreshMobileStartButtonState();
 }
 
 function onMobileAndroidSelect() {
     const serial = document.getElementById("mobileAndroidSelect")?.value;
     const dev = mobileAndroidDevices.find(d => d.serial === serial);
-    const startBtn = document.getElementById("btnMobileAndroidStart");
 
     if (document.getElementById("mobileAndroidModel")) document.getElementById("mobileAndroidModel").innerText = dev?.model || '--';
+    if (document.getElementById("mobileAndroidManufacturer")) document.getElementById("mobileAndroidManufacturer").innerText = dev?.manufacturer || '--';
     if (document.getElementById("mobileAndroidState")) document.getElementById("mobileAndroidState").innerText = dev?.state || '--';
+    if (document.getElementById("mobileAndroidVersion")) document.getElementById("mobileAndroidVersion").innerText = dev?.android_version || '--';
+    if (document.getElementById("mobileAndroidApiLevel")) document.getElementById("mobileAndroidApiLevel").innerText = dev?.api_level || '--';
+    if (document.getElementById("mobileAndroidBuildId")) document.getElementById("mobileAndroidBuildId").innerText = dev?.build_id || '--';
     if (document.getElementById("mobileAndroidSerial")) document.getElementById("mobileAndroidSerial").innerText = dev?.serial || '--';
 
     const statusEl = document.getElementById("mobileAndroidStatus");
@@ -3825,7 +3866,7 @@ function onMobileAndroidSelect() {
         statusEl.innerText = (dev && !dev.authorized) ? 'Device connected but not authorized yet - approve the USB debugging prompt on the device, then Refresh.' : '';
     }
 
-    if (startBtn) startBtn.disabled = !dev || !dev.authorized;
+    refreshMobileStartButtonState();
 }
 
 function toggleIosEncryptField() {
@@ -3834,20 +3875,29 @@ function toggleIosEncryptField() {
     if (row) row.style.display = checked ? '' : 'none';
 }
 
+// Dispatches to the correct platform's start function based on the
+// selected device mode - mirrors startRecoveryTool()'s dispatch-by-select
+// pattern for File Recovery.
+function startMobileAcquisition() {
+    const mode = document.getElementById("mobileDeviceMode")?.value || 'ios';
+    if (mode === 'ios') return startIosBackup();
+    return startAndroidAcquisition();
+}
+
 async function startIosBackup() {
     const udid = document.getElementById("mobileIosSelect")?.value;
     if (!udid) return alert("Select a trusted iOS device first.");
 
-    const dest = document.getElementById("mobileIosDest")?.value || '/mnt';
+    const dest = document.getElementById("mobileDest")?.value || '/mnt';
     const encryptEnabled = document.getElementById("mobileIosEncryptToggle")?.checked;
     const encrypt_password = encryptEnabled ? (document.getElementById("mobileIosEncryptPassword")?.value || '') : '';
 
     if (encryptEnabled && !encrypt_password) return alert("Enter an encryption password, or turn off the encrypted backup toggle.");
 
     const metadata = {
-        case_number: document.getElementById("mobileIosCaseNum")?.value || "2026-UNASSIGNED",
-        evidence_id: document.getElementById("mobileIosEvidenceId")?.value || "ITEM-01",
-        examiner: document.getElementById("mobileIosExaminer")?.value || "UNSPECIFIED",
+        case_number: document.getElementById("mobileCaseNum")?.value || "2026-UNASSIGNED",
+        evidence_id: document.getElementById("mobileEvidenceId")?.value || "ITEM-01",
+        examiner: document.getElementById("mobileExaminer")?.value || "UNSPECIFIED",
         notes: "iOS full backup via idevicebackup2"
     };
 
@@ -3867,12 +3917,12 @@ async function startAndroidAcquisition() {
     if (!serial) return alert("Select an authorized Android device first.");
 
     const mode = document.getElementById("mobileAndroidMode")?.value || 'pull';
-    const dest = document.getElementById("mobileAndroidDest")?.value || '/mnt';
+    const dest = document.getElementById("mobileDest")?.value || '/mnt';
 
     const metadata = {
-        case_number: document.getElementById("mobileAndroidCaseNum")?.value || "2026-UNASSIGNED",
-        evidence_id: document.getElementById("mobileAndroidEvidenceId")?.value || "ITEM-01",
-        examiner: document.getElementById("mobileAndroidExaminer")?.value || "UNSPECIFIED",
+        case_number: document.getElementById("mobileCaseNum")?.value || "2026-UNASSIGNED",
+        evidence_id: document.getElementById("mobileEvidenceId")?.value || "ITEM-01",
+        examiner: document.getElementById("mobileExaminer")?.value || "UNSPECIFIED",
         notes: `Android ${mode} via adb`
     };
 
@@ -4557,11 +4607,9 @@ async function fetchProgress() {
         if (document.getElementById("btnRecoveryStop")) document.getElementById("btnRecoveryStop").disabled = !data.active;
         if (document.getElementById("btnMobileStop")) document.getElementById("btnMobileStop").disabled = !data.active;
         if (data.active) {
-            if (document.getElementById("btnMobileIosStart")) document.getElementById("btnMobileIosStart").disabled = true;
-            if (document.getElementById("btnMobileAndroidStart")) document.getElementById("btnMobileAndroidStart").disabled = true;
+            if (document.getElementById("btnMobileStart")) document.getElementById("btnMobileStart").disabled = true;
         } else {
-            onMobileIosSelect();     // re-derives disabled state from current device trust/selection
-            onMobileAndroidSelect();
+            refreshMobileStartButtonState();     // re-derives disabled state from current device trust/selection + mode
         }
 
     } catch (err) {}
