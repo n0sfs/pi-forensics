@@ -40,7 +40,7 @@
         .app-layout {
             display: flex;
             align-items: stretch;
-            min-height: calc(100vh - 110px);
+            min-height: calc(100vh - 47px);
         }
 
         .app-sidebar {
@@ -100,7 +100,8 @@
             border-left-color: var(--accent-cyan);
         }
 
-        .app-content-area { flex: 1; min-width: 0; }
+        .app-content-area { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .app-content-area .container-fluid { flex: 1; min-height: 0; }
 
         .card { background-color: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); height: 100%; }
         .card-header {
@@ -222,67 +223,12 @@
                 <i class="bi bi-keyboard-fill me-1"></i>Keyboard
             </button>
             {% endif %}
-            <!-- Write Blocker status - a link to Settings > Drive Management, not a direct
-                 toggle (that was too easy to flip by accident - see goToDriveManagement()) -->
-            <button id="wbBadgeBtn" class="btn btn-sm btn-danger fw-bold" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to change this">
-                <i class="bi bi-lock-fill me-1"></i>Write Blocker: ACTIVE
-            </button>
-            <!-- Basic Auth has no real logout - this exists so who's currently
-                 authenticated is at least visible, not to imply a session that
-                 can be cleanly ended from here (see CLAUDE.md for why). -->
-            <span id="whoamiIndicator" class="small text-subtle ms-1" style="display:none;"></span>
+            <!-- Basic Auth has no real server-side session - clicking this opens Switch User,
+                 which re-authenticates this browser as a different account client-side (see
+                 openSwitchUserModal()/submitSwitchUser() and CLAUDE.md for the mechanism/caveats). -->
+            <button id="whoamiIndicator" class="btn btn-link btn-sm text-subtle p-0 ms-1" style="display:none; text-decoration:none;" onclick="openSwitchUserModal()" title="Click to switch user"></button>
         </div>
     </nav>
-
-    <div class="top-telemetry-bar d-flex flex-wrap align-items-center justify-content-between gap-3 text-nowrap">
-        <div class="d-flex align-items-center gap-2">
-            <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
-            <span id="cpuVal" class="telemetry-val">0%</span>
-            <div class="progress bg-secondary" style="width: 70px; height: 6px;">
-                <div id="cpuBar" class="progress-bar bg-info" style="width: 0%"></div>
-            </div>
-        </div>
-
-        <div class="d-flex align-items-center gap-2">
-            <span class="telemetry-label"><i class="bi bi-memory text-primary me-1"></i>RAM:</span>
-            <span id="memVal" class="telemetry-val">0 / 0 GB (0%)</span>
-            <div class="progress bg-secondary" style="width: 70px; height: 6px;">
-                <div id="memBar" class="progress-bar bg-primary" style="width: 0%"></div>
-            </div>
-        </div>
-
-        <div class="d-flex align-items-center gap-2">
-            <span class="telemetry-label"><i class="bi bi-hdd text-warning me-1"></i>Pi Storage:</span>
-            <span id="storageVal" class="telemetry-val">0 / 0 GB</span>
-            <div class="progress bg-secondary" style="width: 70px; height: 6px;">
-                <div id="storageBar" class="progress-bar bg-warning" style="width: 0%"></div>
-            </div>
-        </div>
-
-        <div class="d-flex align-items-center gap-3">
-            <span><span class="telemetry-label"><i class="bi bi-arrow-down-circle text-success me-1"></i>NET DL:</span> <span id="netDlVal" class="fw-bold text-success">0.0 MB/s</span></span>
-            <span><span class="telemetry-label"><i class="bi bi-arrow-up-circle text-warning me-1"></i>NET UL:</span> <span id="netUlVal" class="fw-bold text-warning">0.0 MB/s</span></span>
-        </div>
-
-        <div class="d-flex align-items-center gap-2">
-            <span class="telemetry-label"><i class="bi bi-ethernet me-1"></i>Interfaces:</span>
-            <div id="headerInterfacesContainer" class="d-flex align-items-center gap-1"></div>
-        </div>
-    </div>
-
-    <!-- Active Case Bar: persists across every tab below, unlike everything in .app-layout -->
-    <div id="activeCaseBar" class="top-telemetry-bar d-flex flex-wrap align-items-center gap-3 text-nowrap">
-        <button id="btnCaseAction" class="btn btn-sm btn-outline-info fw-bold" onclick="openCaseManagerModal()">
-            <i class="bi bi-folder-plus me-1"></i><span id="btnCaseActionLabel">Create / Select Case</span>
-        </button>
-        <div id="activeCaseInfo" style="display:none; align-items: center; gap: 1rem;">
-            <span><span class="telemetry-label">Case #:</span> <span id="activeCaseNumVal" class="fw-bold text-info">--</span></span>
-            <span><span class="telemetry-label">Examiner:</span> <span id="activeCaseExaminerVal" class="fw-bold text-light">--</span></span>
-        </div>
-        <button id="btnSaveReportChanges" class="btn btn-sm btn-success fw-bold ms-auto" onclick="saveReportMetadata()">
-            <i class="bi bi-save me-1"></i>Save Report Changes
-        </button>
-    </div>
 
     <!-- Application Module Tabs -->
     <div class="app-layout">
@@ -341,6 +287,65 @@
         </div>
 
         <div class="app-content-area">
+            <div class="top-telemetry-bar d-flex flex-wrap align-items-center justify-content-between gap-3 text-nowrap">
+                <div class="d-flex align-items-center gap-2">
+                    <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
+                    <span id="cpuVal" class="telemetry-val">0%</span>
+                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                        <div id="cpuBar" class="progress-bar bg-info" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="d-flex align-items-center gap-2">
+                    <span class="telemetry-label"><i class="bi bi-memory text-primary me-1"></i>RAM:</span>
+                    <span id="memVal" class="telemetry-val">0 / 0 GB (0%)</span>
+                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                        <div id="memBar" class="progress-bar bg-primary" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="d-flex align-items-center gap-2">
+                    <span class="telemetry-label"><i class="bi bi-hdd text-warning me-1"></i>Pi Storage:</span>
+                    <span id="storageVal" class="telemetry-val">0 / 0 GB</span>
+                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                        <div id="storageBar" class="progress-bar bg-warning" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="d-flex align-items-center gap-3">
+                    <span><span class="telemetry-label"><i class="bi bi-arrow-down-circle text-success me-1"></i>NET DL:</span> <span id="netDlVal" class="fw-bold text-success">0.0 MB/s</span></span>
+                    <span><span class="telemetry-label"><i class="bi bi-arrow-up-circle text-warning me-1"></i>NET UL:</span> <span id="netUlVal" class="fw-bold text-warning">0.0 MB/s</span></span>
+                </div>
+
+                <div class="d-flex align-items-center gap-2">
+                    <span class="telemetry-label"><i class="bi bi-ethernet me-1"></i>Interfaces:</span>
+                    <div id="headerInterfacesContainer" class="d-flex align-items-center gap-1"></div>
+                </div>
+            </div>
+
+            <!-- Active Case Bar: persists across every tab below, unlike everything in .container-fluid -->
+            <div id="activeCaseBar" class="top-telemetry-bar d-flex flex-wrap align-items-center gap-3 text-nowrap">
+                <button id="btnCaseAction" class="btn btn-sm btn-outline-info fw-bold" onclick="openCaseManagerModal()">
+                    <i class="bi bi-folder-plus me-1"></i><span id="btnCaseActionLabel">Create / Select Case</span>
+                </button>
+                <div id="activeCaseInfo" style="display:none; align-items: center; gap: 1rem;">
+                    <span><span class="telemetry-label">Case #:</span> <span id="activeCaseNumVal" class="fw-bold text-info">--</span></span>
+                    <span><span class="telemetry-label">Examiner:</span> <span id="activeCaseExaminerVal" class="fw-bold text-light">--</span></span>
+                </div>
+                <button id="btnSaveReportChanges" class="btn btn-sm btn-success fw-bold" onclick="saveReportMetadata()">
+                    <i class="bi bi-save me-1"></i>Save Report Changes
+                </button>
+                <!-- Write Blocker status + Safe Detach shortcut - both link to Settings >
+                     Drive Management rather than acting directly (too easy to flip/eject by
+                     accident from a compact top-bar button - see goToDriveManagement()). -->
+                <button id="wbBadgeBtn" class="btn btn-sm btn-success fw-bold ms-auto" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to change this">
+                    <i class="bi bi-lock-fill me-1"></i>Write Blocker: On
+                </button>
+                <button class="btn btn-sm btn-warning text-dark fw-bold" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to safely detach a drive">
+                    <i class="bi bi-eject-fill me-1"></i>Safe Detach
+                </button>
+            </div>
+
             <div class="container-fluid px-4">
                 <div class="tab-content" id="forensicTabContent">
                     
@@ -1299,7 +1304,7 @@
                     <h6 class="text-info fw-bold mb-2"><i class="bi bi-plus-circle me-2"></i>Create New Case</h6>
                     <div class="row g-2 mb-2">
                         <div class="col-md-6"><input type="text" id="newCaseNumber" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
-                        <div class="col-md-6"><input type="text" id="newCaseExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
+                        <div class="col-md-6"><input type="text" id="newCaseExaminer" class="form-control form-control-sm" readonly title="Auto-filled from your logged-in account"></div>
                     </div>
                     <div class="input-group input-group-sm mb-2">
                         <input type="text" id="newCaseParentDir" class="form-control" value="/mnt" placeholder="Where to create the case folder">
@@ -1322,6 +1327,37 @@
                 <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
                     <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearActiveCase()"><i class="bi bi-x-circle me-1"></i>Clear Active Case</button>
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="switchUserModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-sm">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-person-fill-lock me-2"></i>Switch User</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-2">
+                        Basic Auth has no real server-side logout, so this re-authenticates the browser as a
+                        different station account. Works in most Chromium/Firefox-based browsers; not
+                        guaranteed identical in every browser.
+                    </div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Username</label>
+                        <input type="text" id="switchUserUsername" class="form-control form-control-sm" autocomplete="username">
+                    </div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Password</label>
+                        <input type="password" id="switchUserPassword" class="form-control form-control-sm" autocomplete="current-password">
+                    </div>
+                    <div id="switchUserStatus" class="small"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-primary fw-bold" onclick="submitSwitchUser()">Switch</button>
                 </div>
             </div>
         </div>
