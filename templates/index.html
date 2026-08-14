@@ -168,6 +168,13 @@
         .folder-icon { color: var(--folder-gold); }
 
         .grid-stack-item-content { overflow: hidden !important; }
+        /* Settings tab: a plain stacked accordion list, not a draggable/resizable
+           GridStack dashboard like every other tab - Settings cards aren't meant to
+           be repositioned, so there's no drag-handle/lock-state interaction here,
+           just a continuous list that expands/collapses in place. */
+        .settings-list { border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+        .settings-list .card { border: none; border-radius: 0; border-bottom: 1px solid var(--border-color); box-shadow: none; height: auto; }
+        .settings-list .card:last-child { border-bottom: none; }
         .ui-resizable-handle { filter: invert(100%); }
         .accordion-button { background-color: var(--card-bg); color: var(--text-bright); box-shadow: none; }
         .accordion-button:not(.collapsed) { background-color: var(--card-bg); color: var(--accent-cyan); box-shadow: none; }
@@ -196,8 +203,9 @@
             <button class="btn btn-sm btn-outline-secondary text-light fw-bold" onclick="resetDashboardLayout()">
                 <i class="bi bi-arrow-counterclockwise me-1"></i>Reset Layout
             </button>
-            <!-- Interactive Software Write Blocker Toggle Button -->
-            <button id="wbBadgeBtn" class="btn btn-sm btn-danger fw-bold fs-6 px-3 py-1 shadow-sm" onclick="toggleWriteBlockGlobal()">
+            <!-- Software Write Blocker status - a link to Settings > Drive Management, not a
+                 direct toggle (that was too easy to flip by accident - see goToDriveManagement()) -->
+            <button id="wbBadgeBtn" class="btn btn-sm btn-danger fw-bold fs-6 px-3 py-1 shadow-sm" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to change this">
                 <i class="bi bi-lock-fill me-1"></i>Software Write Blocker: ACTIVE (Read-Only)
             </button>
         </div>
@@ -920,200 +928,179 @@
 
             <!-- APP 5: SETTINGS -->
             <div class="tab-pane fade" id="settings-app" role="tabpanel">
-                <div class="grid-stack grid-stack-settings">
+                <div class="settings-list">
 
                     <!-- Section 1: Security & Credentials -->
-                    <div class="grid-stack-item" gs-id="set-card-auth" gs-x="0" gs-y="0" gs-w="6" gs-h="4">
-                        <div class="grid-stack-item-content">
-                            <div class="card border-info">
-                                <div class="card-header bg-dark text-info fw-bold py-2 d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-key-fill me-2"></i>Security & Account Password</span>
-                                    <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-auth" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
+                    <div class="card" id="set-card-auth">
+                        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-key-fill me-2"></i>Security & Account Password</span>
+                            <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-auth" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
+                        </div>
+                        <div class="collapse" id="collapse-set-auth">
+                        <div class="card-body py-3">
+                            <div class="mb-2">
+                                <label class="telemetry-grid-label d-block mb-1">Current Password</label>
+                                <input type="password" id="cfgCurrentPass" class="form-control form-control-sm" placeholder="Enter active password">
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-6">
+                                    <label class="telemetry-grid-label d-block mb-1">New Password</label>
+                                    <input type="password" id="cfgNewPass" class="form-control form-control-sm" placeholder="New password (min 8 chars)">
                                 </div>
-                                <div class="collapse show" id="collapse-set-auth">
-                                <div class="card-body py-3">
-                                    <div class="mb-2">
-                                        <label class="telemetry-grid-label d-block mb-1">Current Password</label>
-                                        <input type="password" id="cfgCurrentPass" class="form-control form-control-sm" placeholder="Enter active password">
-                                    </div>
-                                    <div class="row g-2 mb-3">
-                                        <div class="col-6">
-                                            <label class="telemetry-grid-label d-block mb-1">New Password</label>
-                                            <input type="password" id="cfgNewPass" class="form-control form-control-sm" placeholder="New password (min 8 chars)">
-                                        </div>
-                                        <div class="col-6">
-                                            <label class="telemetry-grid-label d-block mb-1">Confirm New Password</label>
-                                            <input type="password" id="cfgConfirmPass" class="form-control form-control-sm" placeholder="Confirm new password">
-                                        </div>
-                                    </div>
-                                    <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="changeAdminPassword()">
-                                        <i class="bi bi-shield-lock-fill me-1"></i>Update Station Password
-                                    </button>
-                                    <div id="cfgPassStatus" class="small mt-2"></div>
-                                </div>
+                                <div class="col-6">
+                                    <label class="telemetry-grid-label d-block mb-1">Confirm New Password</label>
+                                    <input type="password" id="cfgConfirmPass" class="form-control form-control-sm" placeholder="Confirm new password">
                                 </div>
                             </div>
+                            <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="changeAdminPassword()">
+                                <i class="bi bi-shield-lock-fill me-1"></i>Update Station Password
+                            </button>
+                            <div id="cfgPassStatus" class="small mt-2"></div>
+                        </div>
                         </div>
                     </div>
 
                     <!-- Section 2: Hardware Eject & Buffer Purge -->
-                    <div class="grid-stack-item" gs-id="set-card-eject" gs-x="6" gs-y="0" gs-w="6" gs-h="4">
-                        <div class="grid-stack-item-content">
-                            <div class="card border-info">
-                                <div class="card-header bg-dark text-info fw-bold py-2 d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-usb-drive-fill me-2"></i>Safe Hardware Detach & Drive Eject</span>
-                                    <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-eject" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
-                                </div>
-                                <div class="collapse show" id="collapse-set-eject">
-                                <div class="card-body py-3">
-                                    <label class="telemetry-grid-label d-block mb-1">Select Connected Target Drive to Detach:</label>
-                                    <div class="row g-2 align-items-center mb-3">
-                                        <div class="col-8">
-                                            <select id="ejectDriveSelect" class="form-select form-select-sm drive-select">
-                                                <option value="">-- Choose Connected Drive --</option>
-                                            </select>
-                                        </div>
-                                        <div class="col-4">
-                                            <button class="btn btn-danger btn-sm w-100 fw-bold" onclick="ejectTargetDrive()"><i class="bi bi-eject-fill me-1"></i>Safe Detach</button>
-                                        </div>
-                                    </div>
-                                    <hr class="border-secondary my-2">
-                                    <h6 class="text-info fw-bold mb-2"><i class="bi bi-eraser-fill me-2"></i>Buffer Maintenance</h6>
-                                    <button class="btn btn-sm btn-outline-warning w-100 fw-bold" onclick="purgeConsoleLogs()"><i class="bi bi-trash3 me-1"></i>Purge Active Terminal Log Buffer</button>
-                                </div>
-                                </div>
+                    <div class="card" id="set-card-eject">
+                        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-usb-drive-fill me-2"></i>Drive Management</span>
+                            <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-eject" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
+                        </div>
+                        <div class="collapse" id="collapse-set-eject">
+                        <div class="card-body py-3">
+                            <label class="telemetry-grid-label d-block mb-1">Select Connected Target Drive:</label>
+                            <select id="ejectDriveSelect" class="form-select form-select-sm drive-select mb-2" onchange="refreshDriveManagementStatus()">
+                                <option value="">-- Choose Connected Drive --</option>
+                            </select>
+                            <div class="d-flex justify-content-between align-items-center mb-2 p-2 bg-black border border-secondary rounded-2">
+                                <span class="telemetry-grid-label mb-0">Write Blocker Status:</span>
+                                <span id="driveMgmtWriteBlockBadge" class="badge bg-secondary">Select a drive</span>
                             </div>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-outline-warning btn-sm flex-fill fw-bold" onclick="toggleWriteBlockForSelectedDrive()"><i class="bi bi-shield-lock me-1"></i>Toggle Write Blocker</button>
+                                <button class="btn btn-danger btn-sm flex-fill fw-bold" onclick="ejectTargetDrive()"><i class="bi bi-eject-fill me-1"></i>Safe Detach</button>
+                            </div>
+                        </div>
                         </div>
                     </div>
 
                     <!-- Section 3: Service Controls, Updates, Power & Diagnostics (combined) -->
-                    <div class="grid-stack-item" gs-id="set-card-diag" gs-x="0" gs-y="4" gs-w="12" gs-h="10">
-                        <div class="grid-stack-item-content">
-                            <div class="card border-info">
-                                <div class="card-header bg-dark text-info fw-bold py-2 d-flex justify-content-between align-items-center">
-                                    <span><i class="bi bi-terminal-fill me-2"></i>Service Controls & Diagnostics</span>
-                                    <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-diag" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
-                                </div>
-                                <div class="collapse show" id="collapse-set-diag">
-                                <div class="card-body py-2">
-                                    <div class="row g-2">
-                                        <div class="col-md-3">
-                                            <div class="d-grid gap-1">
-                                                <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartForensicService()"><i class="bi bi-arrow-repeat me-1"></i>Restart Service</button>
-                                                <button class="btn btn-sm btn-outline-warning fw-bold text-start" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button>
-                                                <button class="btn btn-sm btn-success fw-bold text-start" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button>
-                                                <button class="btn btn-sm btn-primary fw-bold text-start" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button>
-                                                <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="showToolVersionsPanel()"><i class="bi bi-info-square me-1"></i>Check Tool Versions</button>
+                    <div class="card" id="set-card-diag">
+                        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-terminal-fill me-2"></i>Service Controls & Diagnostics</span>
+                            <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-diag" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
+                        </div>
+                        <div class="collapse" id="collapse-set-diag">
+                        <div class="card-body py-2">
+                            <div class="row g-2">
+                                <div class="col-md-3">
+                                    <div class="d-grid gap-1">
+                                        <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartForensicService()"><i class="bi bi-arrow-repeat me-1"></i>Restart Service</button>
+                                        <button class="btn btn-sm btn-outline-warning fw-bold text-start" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button>
+                                        <button class="btn btn-sm btn-success fw-bold text-start" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button>
+                                        <button class="btn btn-sm btn-primary fw-bold text-start" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button>
+                                        <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="showToolVersionsPanel()"><i class="bi bi-info-square me-1"></i>Check Tool Versions</button>
+                                        <button class="btn btn-sm btn-outline-warning fw-bold text-start" onclick="purgeConsoleLogs()"><i class="bi bi-trash3 me-1"></i>Purge Terminal Log Buffer</button>
 
-                                                <hr class="border-secondary my-1">
+                                        <hr class="border-secondary my-1">
 
-                                                <div class="dropdown">
-                                                    <button class="btn btn-sm btn-outline-secondary text-light fw-bold text-start w-100 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-terminal me-1"></i>Run Diagnostic</button>
-                                                    <ul class="dropdown-menu dropdown-menu-dark">
-                                                        <li><button class="dropdown-item" onclick="runDiagnostic('dmesg')">dmesg</button></li>
-                                                        <li><button class="dropdown-item" onclick="runDiagnostic('lsusb')">lsusb</button></li>
-                                                        <li><button class="dropdown-item" onclick="runDiagnostic('df')">df -h</button></li>
-                                                        <li><button class="dropdown-item" onclick="runDiagnostic('ip_a')">ip a</button></li>
-                                                        <li><button class="dropdown-item" onclick="runDiagnostic('uptime')">uptime</button></li>
-                                                        <li><button class="dropdown-item" onclick="runDiagnostic('lsblk')">lsblk</button></li>
-                                                        <li><button class="dropdown-item" onclick="runDiagnostic('free')">free -h</button></li>
-                                                        <li><button class="dropdown-item" onclick="runDiagnostic('mounts')">mount</button></li>
-                                                    </ul>
-                                                </div>
-
-                                                <hr class="border-secondary my-1">
-
-                                                <button class="btn btn-sm btn-warning text-dark fw-bold text-start" onclick="triggerSystemPower('reboot')"><i class="bi bi-arrow-clockwise me-1"></i>Reboot Appliance</button>
-                                                <button class="btn btn-sm btn-danger fw-bold text-start" onclick="triggerSystemPower('poweroff')"><i class="bi bi-power me-1"></i>Power Off Station</button>
-                                            </div>
-                                            <div class="small text-subtle mt-2">
-                                                Git/OS updates pull from configured remotes - only run these on a station whose update
-                                                sources you trust. Diagnostics are a fixed, read-only allowlist, not a general shell -
-                                                SSH in for anything not listed here.
-                                            </div>
+                                        <div class="dropdown">
+                                            <button class="btn btn-sm btn-outline-secondary text-light fw-bold text-start w-100 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-terminal me-1"></i>Run Diagnostic</button>
+                                            <ul class="dropdown-menu dropdown-menu-dark">
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('dmesg')">dmesg</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('lsusb')">lsusb</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('df')">df -h</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('ip_a')">ip a</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('uptime')">uptime</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('lsblk')">lsblk</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('free')">free -h</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('mounts')">mount</button></li>
+                                            </ul>
                                         </div>
-                                        <div class="col-md-9">
-                                            <div class="d-flex justify-content-between align-items-center mb-1">
-                                                <span class="telemetry-grid-label">Output</span>
-                                                <div id="toolVersionsActions" style="display:none; gap: 4px;">
-                                                    <button type="button" class="btn btn-xs btn-outline-warning fw-bold py-0 px-2" onclick="updateMvtIndicators(this)" title="Downloads the latest spyware/IOC indicator files MVT scans check against - needs internet access."><i class="bi bi-cloud-download me-1"></i>Update MVT Indicators</button>
-                                                    <button type="button" class="btn btn-xs btn-outline-info fw-bold py-0 px-2" onclick="loadToolVersions()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-                                                </div>
-                                            </div>
-                                            <pre id="diagOutput" class="log-window mb-0" style="height: 420px;">[Run a command on the left to see its output here.]</pre>
-                                            <div id="toolVersionsPanel" class="log-window mb-0 p-0" style="height: 420px; overflow-y: auto; display:none;">
-                                                <table class="table table-sm table-dark table-striped mb-0 font-monospace small">
-                                                    <tbody id="toolVersionsBody">
-                                                        <tr><td colspan="3" class="text-subtle">Loading...</td></tr>
-                                                    </tbody>
-                                                </table>
-                                            </div>
+
+                                        <hr class="border-secondary my-1">
+
+                                        <button class="btn btn-sm btn-warning text-dark fw-bold text-start" onclick="triggerSystemPower('reboot')"><i class="bi bi-arrow-clockwise me-1"></i>Reboot Appliance</button>
+                                        <button class="btn btn-sm btn-danger fw-bold text-start" onclick="triggerSystemPower('poweroff')"><i class="bi bi-power me-1"></i>Power Off Station</button>
+                                    </div>
+                                    <div class="small text-subtle mt-2">
+                                        Git/OS updates pull from configured remotes - only run these on a station whose update
+                                        sources you trust. Diagnostics are a fixed, read-only allowlist, not a general shell -
+                                        SSH in for anything not listed here.
+                                    </div>
+                                </div>
+                                <div class="col-md-9">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="telemetry-grid-label">Output</span>
+                                        <div id="toolVersionsActions" style="display:none; gap: 4px;">
+                                            <button type="button" class="btn btn-xs btn-outline-warning fw-bold py-0 px-2" onclick="updateMvtIndicators(this)" title="Downloads the latest spyware/IOC indicator files MVT scans check against - needs internet access."><i class="bi bi-cloud-download me-1"></i>Update MVT Indicators</button>
+                                            <button type="button" class="btn btn-xs btn-outline-info fw-bold py-0 px-2" onclick="loadToolVersions()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
                                         </div>
                                     </div>
-                                </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Audit Log (moved from Reporting) -->
-                    <div class="grid-stack-item" gs-id="set-card-audit" gs-x="0" gs-y="14" gs-w="12" gs-h="8">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header d-flex justify-content-between align-items-center py-2">
-                                    <span><i class="bi bi-journal-text me-2"></i>Audit Log</span>
-                                    <div class="d-flex gap-1">
-                                        <button class="btn btn-sm btn-outline-success fw-bold py-0" onclick="exportAuditLogCsv()"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Export to CSV</button>
-                                        <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadChainOfCustodyLog()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-                                        <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-audit" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
-                                    </div>
-                                </div>
-                                <div class="collapse show" id="collapse-set-audit">
-                                <div class="card-body py-2">
-                                    <div class="small text-subtle mb-2">
-                                        Station-wide action log (most recent first, this view capped at 200 entries - Export to
-                                        CSV always includes the full log). This station has one shared login, not per-examiner
-                                        accounts, so entries record what happened and when, not reliably who - see README for
-                                        details.
-                                    </div>
-                                    <div id="cocLogContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
-                                        <span class="text-subtle">Tap Refresh to load recent entries.</span>
-                                    </div>
-                                </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Case Index (moved from Reporting): every report this station has produced -->
-                    <div class="grid-stack-item" gs-id="set-card-caseindex" gs-x="0" gs-y="22" gs-w="12" gs-h="6">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header d-flex justify-content-between align-items-center py-2">
-                                    <span><i class="bi bi-collection me-2"></i>Case Index</span>
-                                    <div class="d-flex gap-1">
-                                        <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadCaseIndex()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-                                        <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-caseindex" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
-                                    </div>
-                                </div>
-                                <div class="collapse show" id="collapse-set-caseindex">
-                                <div class="card-body py-2">
-                                    <div class="small text-subtle mb-2">Every report found under the evidence root - click a row to load it into Reporting's Case Information block for editing.</div>
-                                    <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
-                                        <table class="table table-sm table-dark table-hover mb-0 font-monospace small">
-                                            <thead>
-                                                <tr class="text-info">
-                                                    <th>Case #</th><th>Evidence ID</th><th>Method</th><th>Status</th><th>Started</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody id="caseIndexBody">
-                                                <tr><td colspan="5" class="text-subtle">Tap Refresh to scan for reports.</td></tr>
+                                    <pre id="diagOutput" class="log-window mb-0" style="height: 420px;">[Run a command on the left to see its output here.]</pre>
+                                    <div id="toolVersionsPanel" class="log-window mb-0 p-0" style="height: 420px; overflow-y: auto; display:none;">
+                                        <table class="table table-sm table-dark table-striped mb-0 font-monospace small">
+                                            <tbody id="toolVersionsBody">
+                                                <tr><td colspan="3" class="text-subtle">Loading...</td></tr>
                                             </tbody>
                                         </table>
                                     </div>
                                 </div>
-                                </div>
                             </div>
+                        </div>
+                        </div>
+                    </div>
+
+                    <!-- Audit Log (moved from Reporting) -->
+                    <div class="card" id="set-card-audit">
+                        <div class="card-header d-flex justify-content-between align-items-center py-2">
+                            <span><i class="bi bi-journal-text me-2"></i>Audit Log</span>
+                            <div class="d-flex gap-1">
+                                <button class="btn btn-sm btn-outline-success fw-bold py-0" onclick="exportAuditLogCsv()"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Export to CSV</button>
+                                <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadChainOfCustodyLog()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-audit" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
+                            </div>
+                        </div>
+                        <div class="collapse" id="collapse-set-audit">
+                        <div class="card-body py-2">
+                            <div class="small text-subtle mb-2">
+                                Station-wide action log (most recent first, this view capped at 200 entries - Export to
+                                CSV always includes the full log). This station has one shared login, not per-examiner
+                                accounts, so entries record what happened and when, not reliably who - see README for
+                                details.
+                            </div>
+                            <div id="cocLogContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
+                                <span class="text-subtle">Tap Refresh to load recent entries.</span>
+                            </div>
+                        </div>
+                        </div>
+                    </div>
+
+                    <!-- Case Index (moved from Reporting): every report this station has produced -->
+                    <div class="card" id="set-card-caseindex">
+                        <div class="card-header d-flex justify-content-between align-items-center py-2">
+                            <span><i class="bi bi-collection me-2"></i>Case Index</span>
+                            <div class="d-flex gap-1">
+                                <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadCaseIndex()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-caseindex" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
+                            </div>
+                        </div>
+                        <div class="collapse" id="collapse-set-caseindex">
+                        <div class="card-body py-2">
+                            <div class="small text-subtle mb-2">Every report found under the evidence root - click a row to load it into Reporting's Case Information block for editing.</div>
+                            <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
+                                <table class="table table-sm table-dark table-hover mb-0 font-monospace small">
+                                    <thead>
+                                        <tr class="text-info">
+                                            <th>Case #</th><th>Evidence ID</th><th>Method</th><th>Status</th><th>Started</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="caseIndexBody">
+                                        <tr><td colspan="5" class="text-subtle">Tap Refresh to scan for reports.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                         </div>
                     </div>
 
@@ -1121,34 +1108,30 @@
                          resource, not specific to any one tool, so it lives here now. Mounting
                          just produces a path under /mnt; use any tab's own destination field +
                          Browse button to point at it, the same way you'd browse to any local path. -->
-                    <div class="grid-stack-item" gs-id="set-card-network" gs-x="0" gs-y="28" gs-w="12" gs-h="5">
-                        <div class="grid-stack-item-content">
-                            <div class="card">
-                                <div class="card-header d-flex justify-content-between align-items-center py-2">
-                                    <span><i class="bi bi-diagram-3 me-2"></i>Network Drive Mounting</span>
-                                    <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-network" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
+                    <div class="card" id="set-card-network">
+                        <div class="card-header d-flex justify-content-between align-items-center py-2">
+                            <span><i class="bi bi-diagram-3 me-2"></i>Network Drive Mounting</span>
+                            <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-network" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
+                        </div>
+                        <div class="collapse" id="collapse-set-network">
+                        <div class="card-body py-2">
+                            <div class="small text-subtle mb-2">Mount an NFS or SMB/CIFS share once here - every tool's own destination field can then Browse into it, the same as any local path under the evidence root.</div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-3">
+                                    <select id="netProtocol" class="form-select form-select-sm">
+                                        <option value="nfs">NFS Share</option>
+                                        <option value="smb">SMB / CIFS</option>
+                                    </select>
                                 </div>
-                                <div class="collapse show" id="collapse-set-network">
-                                <div class="card-body py-2">
-                                    <div class="small text-subtle mb-2">Mount an NFS or SMB/CIFS share once here - every tool's own destination field can then Browse into it, the same as any local path under the evidence root.</div>
-                                    <div class="row g-2 mb-2">
-                                        <div class="col-md-3">
-                                            <select id="netProtocol" class="form-select form-select-sm">
-                                                <option value="nfs">NFS Share</option>
-                                                <option value="smb">SMB / CIFS</option>
-                                            </select>
-                                        </div>
-                                        <div class="col-md-5"><input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)"></div>
-                                        <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
-                                    </div>
-                                    <div class="row g-2 align-items-center mb-2">
-                                        <div class="col-md-8"><select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select></div>
-                                        <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
-                                    </div>
-                                    <div id="mountStatus" class="small text-light"></div>
-                                </div>
-                                </div>
+                                <div class="col-md-5"><input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)"></div>
+                                <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
                             </div>
+                            <div class="row g-2 align-items-center mb-2">
+                                <div class="col-md-8"><select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select></div>
+                                <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
+                            </div>
+                            <div id="mountStatus" class="small text-light"></div>
+                        </div>
                         </div>
                     </div>
                 </div>

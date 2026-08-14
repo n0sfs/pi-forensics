@@ -3,7 +3,6 @@ let gridDdrescue = null;
 let gridExplorer = null;
 let gridMobile = null;
 let gridReports = null;
-let gridSettings = null;
 let isLayoutLocked = true;
 let isWriteBlockActive = true;
 let throughputChart = null;
@@ -84,16 +83,6 @@ function initGridstack() {
         resizable: { handles: 'se, s, e' }
     }, '.grid-stack-reports');
 
-    gridSettings = GridStack.init({
-        cellHeight: 85,
-        margin: 6,
-        handle: '.card-header',
-        animate: true,
-        disableOneColumnMode: true,
-        float: true,
-        resizable: { handles: 'se, s, e' }
-    }, '.grid-stack-settings');
-
     const savedMainLayout = localStorage.getItem('pi_forensics_layout_main');
     if (savedMainLayout && gridMain) {
         try { gridMain.load(JSON.parse(savedMainLayout)); } catch (e) {}
@@ -119,18 +108,12 @@ function initGridstack() {
         try { gridReports.load(JSON.parse(savedReportsLayout)); } catch (e) {}
     }
 
-    const savedSettingsLayout = localStorage.getItem('pi_forensics_layout_settings');
-    if (savedSettingsLayout && gridSettings) {
-        try { gridSettings.load(JSON.parse(savedSettingsLayout)); } catch (e) {}
-    }
-
     if (gridMain) gridMain.on('change', () => { saveDashboardLayout(); });
     if (gridDdrescue) gridDdrescue.on('change', () => { saveDashboardLayout(); });
     if (gridExplorer) gridExplorer.on('change', () => { saveDashboardLayout(); });
     if (gridMobile) gridMobile.on('change', () => { saveDashboardLayout(); });
     if (gridReports) gridReports.on('change', () => { saveDashboardLayout(); });
-    if (gridSettings) gridSettings.on('change', () => { saveDashboardLayout(); });
-    
+
     applyLockState();
 }
 
@@ -150,7 +133,7 @@ async function toggleOnscreenKeyboard() {
 function applyLockState() {
     const lockBtn = document.getElementById("layoutLockBtn");
 
-    [gridMain, gridDdrescue, gridExplorer, gridMobile, gridReports, gridSettings].forEach(g => {
+    [gridMain, gridDdrescue, gridExplorer, gridMobile, gridReports].forEach(g => {
         if (!g) return;
         if (isLayoutLocked) {
             g.enableMove(false);
@@ -165,11 +148,11 @@ function applyLockState() {
         if (isLayoutLocked) {
             lockBtn.className = "btn btn-sm btn-outline-warning fw-bold";
             lockBtn.innerHTML = '<i class="bi bi-lock-fill me-1"></i>Layout Locked';
-            document.querySelectorAll('.card-header').forEach(el => el.style.cursor = 'default');
+            document.querySelectorAll('.grid-stack-item .card-header').forEach(el => el.style.cursor = 'default');
         } else {
             lockBtn.className = "btn btn-sm btn-success fw-bold";
             lockBtn.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Layout Unlocked';
-            document.querySelectorAll('.card-header').forEach(el => el.style.cursor = 'grab');
+            document.querySelectorAll('.grid-stack-item .card-header').forEach(el => el.style.cursor = 'grab');
         }
     }
 }
@@ -180,7 +163,6 @@ function saveDashboardLayout() {
     if (gridExplorer) localStorage.setItem('pi_forensics_layout_explorer', JSON.stringify(gridExplorer.save(false)));
     if (gridMobile) localStorage.setItem('pi_forensics_layout_mobile', JSON.stringify(gridMobile.save(false)));
     if (gridReports) localStorage.setItem('pi_forensics_layout_reports', JSON.stringify(gridReports.save(false)));
-    if (gridSettings) localStorage.setItem('pi_forensics_layout_settings', JSON.stringify(gridSettings.save(false)));
 }
 
 function resetDashboardLayout() {
@@ -1549,6 +1531,11 @@ async function runExplorerImageTimeline() {
 
 async function extractExplorerImageSelected() {
     if (!explorerImageSelected) return;
+    // Land in the active case's own folder when one is selected, instead of
+    // dumping extracted files loose at the evidence root - matches how
+    // every other job-launcher already routes its output once a case is
+    // active (see applyActiveCaseToFields()).
+    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
     try {
         const res = await fetch('/api/image/extract', {
             method: 'POST',
@@ -1558,7 +1545,7 @@ async function extractExplorerImageSelected() {
                 offset: explorerImageOffset,
                 inode: explorerImageSelected.inode,
                 output_name: explorerImageSelected.name,
-                destination_dir: '/mnt'
+                destination_dir: destinationDir
             })
         });
         const data = await res.json();
@@ -2309,10 +2296,16 @@ document.addEventListener('shown.bs.modal', (ev) => {
 });
 
 // --- Collapsible Settings Cards ---
+// Settings is a plain stacked list (.settings-list), not a GridStack grid
+// like every other tab - see templates/index.html and CLAUDE.md for why.
+// Bootstrap's .collapse toggling a card-body in normal document flow just
+// works here with zero extra height-tracking: nothing reserves space for
+// hidden content the way a GridStack grid-stack-item's fixed gs-h did.
+//
 // Generic chevron-flip for any Bootstrap .collapse toggle - finds whichever
 // button targets the collapse element that just opened/closed and flips its
 // icon, rather than wiring a dedicated handler per card. Works for any
-// future collapsible card too, not just the current five in Settings.
+// collapsible card in the app, not just Settings.
 document.addEventListener('show.bs.collapse', (ev) => {
     const btn = document.querySelector(`[data-bs-target="#${ev.target.id}"]`);
     const icon = btn ? btn.querySelector('i') : null;
@@ -2754,20 +2747,75 @@ async function fetchSystemInfo() {
     } catch (err) {}
 }
 
-async function toggleWriteBlockGlobal() {
-    const activeDrive = getActiveTargetDrive();
-    const newEnableState = !isWriteBlockActive;
+// The top-right badge is now a link, not a direct toggle - switches to
+// Settings, expands the Drive Management card (collapsed by default like
+// every other Settings card), and scrolls it into view. The actual toggle
+// lives inside that card, scoped to whichever drive is selected there.
+function goToDriveManagement() {
+    switchToTab('settings-tab');
+    const collapseEl = document.getElementById('collapse-set-eject');
+    if (collapseEl && !collapseEl.classList.contains('show')) {
+        new bootstrap.Collapse(collapseEl, { show: true });
+    }
+    setTimeout(() => {
+        const card = collapseEl?.closest('.card');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 350);
+}
+
+// Shows the write-block status of whichever drive is selected in Drive
+// Management's own dropdown - deliberately a fresh /api/system_info lookup
+// for that specific drive, not the global isWriteBlockActive (that reflects
+// whatever drive Acquisition has selected, which may be a different drive).
+async function refreshDriveManagementStatus() {
+    const drive = document.getElementById("ejectDriveSelect")?.value;
+    const badge = document.getElementById("driveMgmtWriteBlockBadge");
+    if (!badge) return;
+    if (!drive) {
+        badge.className = 'badge bg-secondary';
+        badge.textContent = 'Select a drive';
+        return;
+    }
+    badge.className = 'badge bg-secondary';
+    badge.textContent = 'Checking...';
+    try {
+        const res = await fetch(`/api/system_info?drive=${encodeURIComponent(drive)}`);
+        const data = await res.json();
+        if (data.write_blocker_active) {
+            badge.className = 'badge bg-success';
+            badge.textContent = 'PROTECTED (Read-Only)';
+        } else {
+            badge.className = 'badge bg-danger';
+            badge.textContent = 'UNLOCKED (Read-Write)';
+        }
+    } catch (err) {
+        badge.className = 'badge bg-secondary';
+        badge.textContent = 'Unknown';
+    }
+}
+
+async function toggleWriteBlockForSelectedDrive() {
+    const drive = document.getElementById("ejectDriveSelect")?.value;
+    if (!drive) return alert("Select a connected drive first.");
 
     try {
+        // Check this specific drive's current status first, rather than
+        // trusting isWriteBlockActive - that global reflects whichever
+        // drive Acquisition currently has selected, not necessarily this one.
+        const statusRes = await fetch(`/api/system_info?drive=${encodeURIComponent(drive)}`);
+        const statusData = await statusRes.json();
+        const newEnableState = !statusData.write_blocker_active;
+
         const res = await fetch('/api/toggle_write_block', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enable: newEnableState, drive: activeDrive })
+            body: JSON.stringify({ enable: newEnableState, drive })
         });
         const data = await res.json();
         if (data.success) {
-            await fetchSystemInfo();
-            alert(`Drive ${activeDrive} Write-Blocker status set to: ${newEnableState ? 'PROTECTED (Read-Only)' : 'UNLOCKED (Read-Write)'}`);
+            await refreshDriveManagementStatus();
+            await fetchSystemInfo(); // keeps the top-right badge in sync if it's the same drive
+            alert(`Drive ${drive} Write-Blocker status set to: ${newEnableState ? 'PROTECTED (Read-Only)' : 'UNLOCKED (Read-Write)'}`);
         } else {
             alert(`Write Blocker Toggle Failed: ${data.error}`);
         }
