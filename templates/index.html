@@ -268,13 +268,13 @@
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="explorer-tab" data-bs-toggle="tab" data-bs-target="#explorer-app" type="button" role="tab" title="Forensic File Explorer">
-                        <i class="bi bi-folder-check"></i><span class="tab-label">File Explorer</span>
+                    <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()" title="Mobile Forensics">
+                        <i class="bi bi-phone"></i><span class="tab-label">Mobile Forensics</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()" title="Mobile Forensics">
-                        <i class="bi bi-phone"></i><span class="tab-label">Mobile Forensics</span>
+                    <button class="nav-link" id="explorer-tab" data-bs-toggle="tab" data-bs-target="#explorer-app" type="button" role="tab" title="Forensic File Explorer">
+                        <i class="bi bi-folder-check"></i><span class="tab-label">File Explorer</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
@@ -479,33 +479,17 @@
                         </div>
                     </div>
 
-                    <div class="grid-stack-item" gs-id="card-network" gs-x="0" gs-y="6" gs-w="7" gs-h="3">
+                    <div class="grid-stack-item" gs-id="card-network" gs-x="0" gs-y="6" gs-w="7" gs-h="2">
                         <div class="grid-stack-item-content">
                             <div class="card">
-                                <div class="card-header py-2"><i class="bi bi-diagram-3 me-2"></i>Destination & Network Share Setup</div>
+                                <div class="card-header py-2"><i class="bi bi-folder2-open me-2"></i>Destination Directory</div>
                                 <div class="card-body py-2">
-                                    <div class="row g-2 mb-2">
-                                        <div class="col-md-3">
-                                            <select id="netProtocol" class="form-select form-select-sm">
-                                                <option value="nfs">NFS Share</option>
-                                                <option value="smb">SMB / CIFS</option>
-                                            </select>
-                                        </div>
-                                        <div class="col-md-5"><input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)"></div>
-                                        <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
+                                    <label class="form-label fw-bold text-light small mb-1">Destination Target Path:</label>
+                                    <div class="input-group input-group-sm">
+                                        <input type="text" id="destPath" class="form-control" value="/mnt">
+                                        <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'destPath')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                     </div>
-                                    <div class="row g-2 align-items-center mb-2">
-                                        <div class="col-md-8"><select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select></div>
-                                        <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'destPath', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
-                                    </div>
-                                    <div id="mountStatus" class="small mb-2 text-light"></div>
-                                    <div class="border-top border-secondary pt-2">
-                                        <label class="form-label fw-bold text-light small mb-1">Destination Target Path:</label>
-                                        <div class="input-group input-group-sm">
-                                            <input type="text" id="destPath" class="form-control" value="/mnt">
-                                            <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'destPath')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
-                                        </div>
-                                    </div>
+                                    <div class="small text-subtle mt-1">Mounting a network share is now under Settings &gt; Network Drive Mounting - once mounted, Browse into it like any local path.</div>
                                 </div>
                             </div>
                         </div>
@@ -652,6 +636,7 @@
                             <button id="btnFileMetadata" class="dropdown-item" onclick="viewSelectedMetadata()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Shows hidden details saved inside a file - like when a photo was taken, what camera took it, or GPS coordinates."><i class="bi bi-info-circle me-2"></i>Metadata (ExifTool)</button>
                             <button id="btnBrowseImage" class="dropdown-item" onclick="enterExplorerImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files right here, without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse as Image (Sleuth Kit)</button>
                             <button id="btnVerifyHash" class="dropdown-item" onclick="openVerifyHashModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Computes a cryptographic hash of this file and optionally compares it against a known reference hash - confirms an evidence image (or any file) hasn't been altered since acquisition."><i class="bi bi-hash me-2"></i>Verify Image Hash</button>
+                            <button id="btnRecoverFromImage" class="dropdown-item" onclick="recoverDeletedFilesFromImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Jumps to File Recovery with this image pre-filled as the source, ready to run PhotoRec, foremost, scalpel, or extundelete against it."><i class="bi bi-life-preserver me-2"></i>Recover Deleted Files...</button>
                             <div class="dropdown-divider"></div>
                             <button id="btnRunBinwalk" class="dropdown-item" onclick="runSelectedBinwalk()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Looks for other files or systems hidden inside this one - useful for firmware dumps, router images, or unknown binary files."><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button>
                             <button id="btnRunClamscan" class="dropdown-item" onclick="runSelectedClamscan()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks this file (or folder) against known virus/malware signatures."><i class="bi bi-shield-exclamation me-2"></i>Scan for Malware (ClamAV)</button>
@@ -1131,6 +1116,41 @@
                                             </tbody>
                                         </table>
                                     </div>
+                                </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Network Drive Mounting (moved from Acquisition - a mount is a system-wide
+                         resource, not specific to any one tool, so it lives here now. Mounting
+                         just produces a path under /mnt; use any tab's own destination field +
+                         Browse button to point at it, the same way you'd browse to any local path. -->
+                    <div class="grid-stack-item" gs-id="set-card-network" gs-x="0" gs-y="28" gs-w="12" gs-h="5">
+                        <div class="grid-stack-item-content">
+                            <div class="card">
+                                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                    <span><i class="bi bi-diagram-3 me-2"></i>Network Drive Mounting</span>
+                                    <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-network" aria-expanded="true"><i class="bi bi-chevron-up"></i></button>
+                                </div>
+                                <div class="collapse show" id="collapse-set-network">
+                                <div class="card-body py-2">
+                                    <div class="small text-subtle mb-2">Mount an NFS or SMB/CIFS share once here - every tool's own destination field can then Browse into it, the same as any local path under the evidence root.</div>
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-md-3">
+                                            <select id="netProtocol" class="form-select form-select-sm">
+                                                <option value="nfs">NFS Share</option>
+                                                <option value="smb">SMB / CIFS</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-5"><input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)"></div>
+                                        <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
+                                    </div>
+                                    <div class="row g-2 align-items-center mb-2">
+                                        <div class="col-md-8"><select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select></div>
+                                        <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
+                                    </div>
+                                    <div id="mountStatus" class="small text-light"></div>
                                 </div>
                                 </div>
                             </div>
