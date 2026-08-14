@@ -208,6 +208,10 @@
             <button id="wbBadgeBtn" class="btn btn-sm btn-danger fw-bold fs-6 px-3 py-1 shadow-sm" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to change this">
                 <i class="bi bi-lock-fill me-1"></i>Software Write Blocker: ACTIVE (Read-Only)
             </button>
+            <!-- Basic Auth has no real logout - this exists so who's currently
+                 authenticated is at least visible, not to imply a session that
+                 can be cleanly ended from here (see CLAUDE.md for why). -->
+            <span id="whoamiIndicator" class="small text-subtle ms-1" style="display:none;"></span>
         </div>
     </nav>
 
@@ -299,7 +303,7 @@
                      a visual separator, positioned via a plain <li> so this can't regress that. -->
                 <li><hr class="border-secondary my-2 mx-2"></li>
                 <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-app" type="button" role="tab" onclick="loadChainOfCustodyLog(); loadCaseIndex();" title="Settings">
+                    <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-app" type="button" role="tab" onclick="loadChainOfCustodyLog(); loadUserList(); loadTlsStatus(); loadCaseReportingSettings();" title="Settings">
                         <i class="bi bi-gear-wide-connected"></i><span class="tab-label">Settings</span>
                     </button>
                 </li>
@@ -837,9 +841,10 @@
                                             <input type="text" id="editExaminer" class="form-control form-control-sm">
                                         </div>
                                     </div>
+                                    <div id="customFieldsContainer" class="row g-2 mb-3"></div>
                                     <div id="repLegacyNotice" class="alert alert-warning small py-2 px-3 mb-3" style="display:none;">
                                         <i class="bi bi-exclamation-triangle-fill me-1"></i>
-                                        This is a single-job report, not a consolidated case file. Migrate this case from the Case Index or Case Manager to combine all of its evidence items into one file.
+                                        This is a single-job report, not a consolidated case file. Migrate this case from the Case Manager to combine all of its evidence items into one file.
                                     </div>
 
                                     <div class="d-flex gap-2">
@@ -930,14 +935,15 @@
             <div class="tab-pane fade" id="settings-app" role="tabpanel">
                 <div class="settings-list">
 
-                    <!-- Section 1: Security & Credentials -->
+                    <!-- Section 1: Security & Privacy -->
                     <div class="card" id="set-card-auth">
                         <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                            <span><i class="bi bi-key-fill me-2"></i>Security & Account Password</span>
+                            <span><i class="bi bi-shield-lock-fill me-2"></i>Security & Privacy</span>
                             <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-auth" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
                         </div>
                         <div class="collapse" id="collapse-set-auth">
                         <div class="card-body py-3">
+                            <div class="telemetry-grid-label mb-2">Change My Password</div>
                             <div class="mb-2">
                                 <label class="telemetry-grid-label d-block mb-1">Current Password</label>
                                 <input type="password" id="cfgCurrentPass" class="form-control form-control-sm" placeholder="Enter active password">
@@ -953,9 +959,54 @@
                                 </div>
                             </div>
                             <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="changeAdminPassword()">
-                                <i class="bi bi-shield-lock-fill me-1"></i>Update Station Password
+                                <i class="bi bi-shield-lock-fill me-1"></i>Change My Password
                             </button>
                             <div id="cfgPassStatus" class="small mt-2"></div>
+
+                            <hr class="border-secondary my-3">
+
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <span class="telemetry-grid-label mb-0">Station User Accounts</span>
+                                <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadUserList()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                            </div>
+                            <div id="userListContainer" class="font-monospace small border border-secondary rounded-2 p-2 mb-2" style="max-height: 220px; overflow-y: auto; background-color:#090b10;">
+                                <span class="text-subtle">Tap Refresh to load accounts.</span>
+                            </div>
+                            <div id="userMgmtStandardNotice" class="small text-subtle mb-2" style="display:none;">Only admins can create/delete users or reset another user's password. You can still change your own password above.</div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-4"><input type="text" id="newUserUsername" class="form-control form-control-sm" placeholder="New username"></div>
+                                <div class="col-md-4"><input type="password" id="newUserPassword" class="form-control form-control-sm" placeholder="Password (min 8 chars)"></div>
+                                <div class="col-md-2">
+                                    <select id="newUserRole" class="form-select form-select-sm">
+                                        <option value="standard">Standard</option>
+                                        <option value="admin">Admin</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2"><button class="btn btn-sm btn-success w-100 fw-bold" id="btnCreateUser" onclick="createUser()"><i class="bi bi-person-plus-fill me-1"></i>Add</button></div>
+                            </div>
+                            <div id="userMgmtStatus" class="small"></div>
+
+                            <hr class="border-secondary my-3">
+
+                            <div class="telemetry-grid-label mb-2">HTTPS Certificate</div>
+                            <div id="tlsStatusContainer" class="font-monospace small border border-secondary rounded-2 p-2 mb-2" style="background-color:#090b10;">
+                                <span class="text-subtle">Loading...</span>
+                            </div>
+                            <div class="small text-subtle mb-2">Replace with a custom certificate + private key (RSA only). Both files are validated as a matching pair before anything is installed.</div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label class="telemetry-grid-label d-block mb-1">Certificate File (.crt/.pem)</label>
+                                    <input type="file" id="tlsCertFile" class="form-control form-control-sm" accept=".crt,.pem,.cer">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="telemetry-grid-label d-block mb-1">Private Key File (.key)</label>
+                                    <input type="file" id="tlsKeyFile" class="form-control form-control-sm" accept=".key,.pem">
+                                </div>
+                            </div>
+                            <button class="btn btn-sm btn-warning text-dark fw-bold w-100" onclick="uploadTlsCertificate()">
+                                <i class="bi bi-upload me-1"></i>Install Certificate
+                            </button>
+                            <div id="tlsUploadStatus" class="small mt-2"></div>
                         </div>
                         </div>
                     </div>
@@ -1064,11 +1115,13 @@
                         <div class="collapse" id="collapse-set-audit">
                         <div class="card-body py-2">
                             <div class="small text-subtle mb-2">
-                                Station-wide action log (most recent first, this view capped at 200 entries - Export to
-                                CSV always includes the full log). This station has one shared login, not per-examiner
-                                accounts, so entries record what happened and when, not reliably who - see README for
-                                details.
+                                Station-wide action log (most recent first, this view capped at 200 entries and
+                                auto-refreshes every 20 seconds while expanded - Export to CSV always includes the
+                                full log). Entries are attributed to the logged-in user once real accounts exist
+                                (Security & Privacy above); stations still on the legacy shared login only get a
+                                timestamp and source IP.
                             </div>
+                            <input type="text" id="cocSearchInput" class="form-control form-control-sm mb-2" placeholder="Search these entries..." oninput="applyCocSearchFilter()">
                             <div id="cocLogContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
                                 <span class="text-subtle">Tap Refresh to load recent entries.</span>
                             </div>
@@ -1076,30 +1129,52 @@
                         </div>
                     </div>
 
-                    <!-- Case Index (moved from Reporting): every report this station has produced -->
-                    <div class="card" id="set-card-caseindex">
+                    <!-- Case & Reporting: report export defaults/branding + custom case-field definitions (replaces the old Case Index table) -->
+                    <div class="card" id="set-card-casereporting">
                         <div class="card-header d-flex justify-content-between align-items-center py-2">
-                            <span><i class="bi bi-collection me-2"></i>Case Index</span>
-                            <div class="d-flex gap-1">
-                                <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadCaseIndex()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-                                <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-caseindex" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
-                            </div>
+                            <span><i class="bi bi-collection me-2"></i>Case & Reporting</span>
+                            <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-casereporting" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
                         </div>
-                        <div class="collapse" id="collapse-set-caseindex">
+                        <div class="collapse" id="collapse-set-casereporting">
                         <div class="card-body py-2">
-                            <div class="small text-subtle mb-2">Every report found under the evidence root - click a row to load it into Reporting's Case Information block for editing.</div>
-                            <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
-                                <table class="table table-sm table-dark table-hover mb-0 font-monospace small">
-                                    <thead>
-                                        <tr class="text-info">
-                                            <th>Case #</th><th>Evidence ID</th><th>Method</th><th>Status</th><th>Started</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="caseIndexBody">
-                                        <tr><td colspan="5" class="text-subtle">Tap Refresh to scan for reports.</td></tr>
-                                    </tbody>
-                                </table>
+                            <div class="telemetry-grid-label mb-2">Report Export Defaults</div>
+                            <div class="small text-subtle mb-2">Pre-checks these sections/fields when opening the Export Report modal from Reporting - still adjustable per-export there.</div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecCaseInfo" checked><label class="form-check-label small" for="defSecCaseInfo">Case Information</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAttachments" checked><label class="form-check-label small" for="defSecAttachments">Attachments</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAuditTrail" checked><label class="form-check-label small" for="defSecAuditTrail">Audit Trail</label></div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldTelemetry" checked><label class="form-check-label small" for="defFieldTelemetry">Evidence Telemetry</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldParams" checked><label class="form-check-label small" for="defFieldParams">Acquisition Parameters</label></div>
+                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldHashes" checked><label class="form-check-label small" for="defFieldHashes">Verification Hashes</label></div>
+                                </div>
                             </div>
+
+                            <hr class="border-secondary my-3">
+
+                            <div class="telemetry-grid-label mb-2">Report Branding</div>
+                            <div class="mb-2">
+                                <label class="telemetry-grid-label d-block mb-1">Header Text (shown as a subtitle under the report title)</label>
+                                <input type="text" id="reportBrandingText" class="form-control form-control-sm" placeholder="e.g. Acme Digital Forensics Lab" maxlength="200">
+                            </div>
+                            <div class="row g-2 align-items-center mb-2">
+                                <div class="col-md-6"><input type="file" id="reportLogoFile" class="form-control form-control-sm" accept=".jpg,.jpeg,.png,.gif,.bmp,.webp"></div>
+                                <div class="col-md-3"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="uploadReportLogo()"><i class="bi bi-upload me-1"></i>Upload Logo</button></div>
+                                <div class="col-md-3"><button class="btn btn-sm btn-outline-danger w-100 fw-bold" onclick="clearReportLogo()"><i class="bi bi-x-circle me-1"></i>Clear Logo</button></div>
+                            </div>
+                            <div id="reportLogoStatus" class="small text-subtle mb-2"></div>
+
+                            <hr class="border-secondary my-3">
+
+                            <div class="telemetry-grid-label mb-2">Custom Case Fields</div>
+                            <div class="small text-subtle mb-2">Extra fields (e.g. "Agency", "Reference #") that appear on every case's Case Information block and in report exports.</div>
+                            <div id="customFieldDefsContainer" class="mb-2"></div>
+                            <button class="btn btn-sm btn-outline-info fw-bold mb-3" onclick="addCustomFieldDefRow()"><i class="bi bi-plus-lg me-1"></i>Add Field</button>
+
+                            <button class="btn btn-sm btn-success fw-bold w-100" onclick="saveCaseReportingSettings()"><i class="bi bi-check2-circle me-1"></i>Save Settings</button>
+                            <div id="caseReportingStatus" class="small mt-2"></div>
                         </div>
                         </div>
                     </div>
@@ -1115,19 +1190,31 @@
                         </div>
                         <div class="collapse" id="collapse-set-network">
                         <div class="card-body py-2">
-                            <div class="small text-subtle mb-2">Mount an NFS or SMB/CIFS share once here - every tool's own destination field can then Browse into it, the same as any local path under the evidence root.</div>
+                            <div class="small text-subtle mb-2">Mount an NFS, SMB/CIFS, or SFTP share once here - every tool's own destination field can then Browse into it, the same as any local path under the evidence root.</div>
                             <div class="row g-2 mb-2">
                                 <div class="col-md-3">
-                                    <select id="netProtocol" class="form-select form-select-sm">
+                                    <select id="netProtocol" class="form-select form-select-sm" onchange="updateNetworkMountControls()">
                                         <option value="nfs">NFS Share</option>
                                         <option value="smb">SMB / CIFS</option>
+                                        <option value="sftp">SFTP</option>
                                     </select>
                                 </div>
                                 <div class="col-md-5"><input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)"></div>
-                                <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="queryNetworkShares('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
+                                <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" id="btnQueryShares" onclick="queryNetworkShares('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
+                            </div>
+                            <div class="row g-2 mb-2" id="netCredentialsRow" style="display:none;">
+                                <div class="col-md-6"><input type="text" id="netUser" class="form-control form-control-sm" placeholder="Username"></div>
+                                <div class="col-md-6"><input type="password" id="netPass" class="form-control form-control-sm" placeholder="Password"></div>
+                            </div>
+                            <div class="mb-2" id="netSftpKeyRow" style="display:none;">
+                                <label class="telemetry-grid-label d-block mb-1">SSH Private Key (optional - paste instead of a password)</label>
+                                <textarea id="netSftpKey" class="form-control form-control-sm font-monospace" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----..."></textarea>
                             </div>
                             <div class="row g-2 align-items-center mb-2">
-                                <div class="col-md-8"><select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select></div>
+                                <div class="col-md-8">
+                                    <select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select>
+                                    <input type="text" id="netSftpPath" class="form-control form-control-sm" placeholder="Remote path (e.g. /home/user/evidence)" style="display:none;">
+                                </div>
                                 <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
                             </div>
                             <div id="mountStatus" class="small text-light"></div>
@@ -1346,6 +1433,33 @@
                 </div>
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="userActionModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6" id="userActionModalTitle"><i class="bi bi-person-gear me-2"></i>Confirm</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div id="userActionModalWarning" class="small text-warning mb-3" style="display:none;"></div>
+                    <div class="mb-3" id="userActionNewPassRow" style="display:none;">
+                        <label class="telemetry-grid-label d-block mb-1">New Password for <span id="userActionTargetName2" class="font-monospace"></span></label>
+                        <input type="password" id="userActionNewPass" class="form-control form-control-sm" placeholder="New password (min 8 chars)">
+                    </div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Your Current Password (to confirm)</label>
+                        <input type="password" id="userActionCurrentPass" class="form-control form-control-sm" placeholder="Re-enter your own password">
+                    </div>
+                    <div id="userActionModalStatus" class="small mt-2"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-danger fw-bold" id="userActionConfirmBtn" onclick="submitUserAction()">Confirm</button>
                 </div>
             </div>
         </div>

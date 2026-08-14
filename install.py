@@ -2,6 +2,8 @@
 import os
 import re
 import sys
+import json
+import time
 import pwd
 import getpass
 import subprocess
@@ -11,6 +13,11 @@ if os.geteuid() != 0:
     sys.exit(1)
 
 INSTALL_DIR = "/opt/pi-forensics"
+# Referenced by both the sudoers block (step 4, below) and the optional TLS
+# setup (step 5b, further down) - defined here, once, so the sudoers grant
+# for cert/key replacement and the actual cert/key generation can never
+# drift out of sync with each other.
+SSL_DIR = "/etc/ssl/pi-forensics"
 
 # Detect non-root sudo invoker as default candidate
 default_user = os.environ.get("SUDO_USER")
@@ -97,7 +104,8 @@ apt_packages = [
     "python3-venv", "python3-pip", "python3-psutil", "python3-dev",
     "dc3dd", "dcfldd", "ewf-tools", "gddrescue", "afflib-tools", "smartmontools",
     "util-linux", "udevil", "cifs-utils", "nfs-common",
-    "smbclient", "chromium-browser", "curl", "git",
+    "smbclient", "sshfs",  # SFTP network-share mounting (FUSE-based, provides /usr/bin/sshfs - verified present on Debian trixie/arm64)
+    "chromium-browser", "curl", "git",
     "libopenjp2-7", "libtiff6",
     "libimobiledevice-utils", "usbmuxd",  # iOS device backup (idevice_id, ideviceinfo, idevicebackup2)
     "adb", "android-sdk-platform-tools-common",  # Android device backup/pull (udev rules let plugdev group access USB without root)
@@ -166,6 +174,50 @@ if os.path.exists(req_file):
 else:
     subprocess.run([pip_bin, "install", "flask", "gunicorn", "psutil", "reportlab", "mvt", "pytsk3"], check=True)
 
+# 2b. Seed the initial admin account into runtime_config.json (the same
+# store app.py's multi-user login manages at runtime - see check_auth() in
+# app.py). The password hash MUST be generated via the venv's own werkzeug
+# (a transitive Flask dependency, not necessarily present in system
+# Python, which is what this installer itself runs under) - hashing with
+# the wrong Python risks an ImportError, or worse, a hash format the
+# running app's werkzeug can't verify. This is why this step waits until
+# now rather than happening right after the dashboard-login prompt above.
+print("\n[*] Seeding initial admin account...")
+admin_seeded = False
+venv_python = os.path.join(venv_dir, "bin", "python3")
+hash_res = subprocess.run(
+    [venv_python, "-c",
+     "from werkzeug.security import generate_password_hash; import sys; print(generate_password_hash(sys.argv[1]))",
+     FORENSIC_PASS],
+    capture_output=True, text=True
+)
+if hash_res.returncode != 0:
+    print(f"[!] Failed to hash the initial admin password: {hash_res.stderr.strip()}")
+    print("    Falling back to the legacy FORENSIC_USER/FORENSIC_PASS env-var login for now - "
+          "create a real account from the Settings tab once the station is up.")
+else:
+    runtime_config_path = os.path.join(INSTALL_DIR, "runtime_config.json")
+    runtime_cfg = {}
+    if os.path.exists(runtime_config_path):
+        try:
+            with open(runtime_config_path, "r") as f:
+                runtime_cfg = json.load(f)
+        except Exception:
+            runtime_cfg = {}
+    runtime_cfg.setdefault("users", [])
+    if not any(u.get("username") == FORENSIC_USER for u in runtime_cfg["users"]):
+        runtime_cfg["users"].append({
+            "username": FORENSIC_USER,
+            "password_hash": hash_res.stdout.strip(),
+            "role": "admin",
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        with open(runtime_config_path, "w") as f:
+            json.dump(runtime_cfg, f, indent=2)
+        os.chmod(runtime_config_path, 0o600)
+        admin_seeded = True
+        print(f"[+] Initial admin account '{FORENSIC_USER}' created.")
+
 # MVT (mobile spyware/IOC scanner in the File Explorer's Actions menu) needs
 # indicator files to actually match against, same idea as ClamAV's freshclam
 # below - try to fetch them now so it's useful immediately, but don't fail
@@ -211,7 +263,7 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/sbin/smartctl, \\
 /bin/mount, /bin/umount, /bin/mkdir, \\
 /usr/bin/udevil, /usr/bin/pkill, \\
-/usr/bin/smbclient, /usr/sbin/showmount, \\
+/usr/bin/smbclient, /usr/sbin/showmount, /usr/bin/sshfs, \\
 /usr/bin/dcfldd, /usr/bin/dc3dd, /usr/bin/ddrescue, \\
 /usr/bin/ewfacquire, /usr/bin/dd, /usr/bin/photorec, \\
 /usr/bin/extundelete, /usr/bin/foremost, /usr/bin/scalpel, /usr/bin/testdisk, \\
@@ -219,6 +271,10 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /bin/chgrp -R {SERVICE_USER} *, \\
 /sbin/reboot, /sbin/poweroff, \\
 /bin/systemctl restart pi-forensics.service, \\
+/bin/systemctl reload nginx, \\
+/bin/cp * {os.path.join(SSL_DIR, "pi-forensics.crt")}, \\
+/bin/cp * {os.path.join(SSL_DIR, "pi-forensics.key")}, \\
+/bin/chmod 600 {os.path.join(SSL_DIR, "pi-forensics.key")}, \\
 /usr/bin/apt-get update, \\
 /usr/bin/apt-get upgrade -y, \\
 {install_lines}
@@ -240,6 +296,38 @@ with open(udev_path, "w") as f:
 subprocess.run(["udevadm", "control", "--reload-rules"], check=True)
 subprocess.run(["udevadm", "trigger"], check=True)
 
+# 5a. Enable FUSE allow_other for SFTP network mounting
+# sshfs mounts run as root (via sudo, see app.py's mount_network()), but
+# every other part of this app (dc3dd, the file explorer, etc.) runs
+# unprivileged - without allow_other in the mount options (already set by
+# app.py) AND user_allow_other enabled system-wide here, those processes
+# would get permission-denied trying to read into an otherwise-successful
+# mount. Handles all three states: line absent, line present but
+# commented out, line already active.
+print("\n[*] Enabling FUSE allow_other for SFTP network mounting...")
+fuse_conf_path = "/etc/fuse.conf"
+fuse_conf_lines = []
+if os.path.exists(fuse_conf_path):
+    with open(fuse_conf_path, "r") as f:
+        fuse_conf_lines = f.readlines()
+
+found_enabled = False
+for i, line in enumerate(fuse_conf_lines):
+    stripped = line.strip()
+    if stripped == "user_allow_other":
+        found_enabled = True
+        break
+    if stripped == "#user_allow_other":
+        fuse_conf_lines[i] = "user_allow_other\n"
+        found_enabled = True
+        break
+
+if not found_enabled:
+    fuse_conf_lines.append("user_allow_other\n")
+
+with open(fuse_conf_path, "w") as f:
+    f.writelines(fuse_conf_lines)
+
 # 5b. Optional: nginx + self-signed TLS reverse proxy
 # Without this, gunicorn is reachable directly over plain HTTP - Basic Auth
 # credentials go over the wire unencrypted. With it, nginx terminates TLS
@@ -249,7 +337,6 @@ print("    Without TLS, login credentials are sent over plain HTTP on your netwo
 tls_choice = input("    Set up nginx + a self-signed TLS certificate now? [Y/n]: ").strip().lower()
 USE_TLS = tls_choice in ('', 'y', 'yes')
 
-SSL_DIR = "/etc/ssl/pi-forensics"
 NGINX_SITE = "/etc/nginx/sites-available/pi-forensics"
 NGINX_ENABLED = "/etc/nginx/sites-enabled/pi-forensics"
 NGINX_DEFAULT_ENABLED = "/etc/nginx/sites-enabled/default"
@@ -355,6 +442,17 @@ GUNICORN_BIND = "127.0.0.1:5000" if USE_TLS else "0.0.0.0:5000"
 # 6. Install Systemd Service Unit
 print("\n[*] Installing systemd WSGI production service...")
 service_path = "/etc/systemd/system/pi-forensics.service"
+
+# FORENSIC_USER is harmless to leave here (not a secret - see runtime_config.json's
+# hashed 'users' list, the actual credential store once seeding above succeeds).
+# FORENSIC_PASS is only written here as a fallback for the rare case the admin
+# account above failed to seed (see admin_seeded) - once real accounts exist,
+# baking a second, plaintext copy of the same password into this file would be
+# pure redundant risk with no benefit, so it's deliberately omitted.
+env_lines = f'Environment="FORENSIC_USER={FORENSIC_USER}"'
+if not admin_seeded:
+    env_lines += f'\nEnvironment="FORENSIC_PASS={FORENSIC_PASS}"'
+
 service_content = f"""[Unit]
 Description=ARM Forensic Acquisition Station (Production WSGI)
 After=network.target network-online.target
@@ -366,10 +464,10 @@ Group={SERVICE_USER}
 WorkingDirectory={INSTALL_DIR}
 
 # Set interactively above. If you need to change these later, either edit
-# this file directly or use the Advanced Settings tab in the dashboard
-# (password only - the username isn't changeable from the UI).
-Environment="FORENSIC_USER={FORENSIC_USER}"
-Environment="FORENSIC_PASS={FORENSIC_PASS}"
+# this file directly or use the Settings tab in the dashboard (which manages
+# runtime_config.json's real account store, not these env vars, once at
+# least one user exists there).
+{env_lines}
 
 # Restricts the file-explorer/report/attachment/imaging-destination API
 # to this directory tree. Defaults to /mnt if unset.
@@ -406,9 +504,10 @@ WantedBy=multi-user.target
 """
 with open(service_path, "w") as f:
     f.write(service_content)
-# This file now contains a real plaintext password (FORENSIC_PASS above),
-# not just the old harmless default - restrict it to root, matching every
-# other secret this installer writes (sudoers file, TLS key).
+# Restricted to root regardless of whether admin_seeded ended up True (no
+# plaintext password written above) or False (the FORENSIC_PASS fallback
+# line is present) - matching every other secret this installer writes
+# (sudoers file, TLS key).
 os.chmod(service_path, 0o600)
 
 subprocess.run(["systemctl", "daemon-reload"], check=True)
