@@ -22,8 +22,8 @@ let activeSelectedFile = null;
 let activeSelectedIsDir = false;
 
 let currentLoadedReportData = null;
+let currentReportPath = null;
 let currentAttachedFilesList = [];
-let exportReportModalInstance = null;
 
 // activeCase shape: {case_number, examiner, case_folder} | null
 let activeCase = null;
@@ -1110,6 +1110,14 @@ function isImageFile(name) {
     return IMAGE_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
 }
 
+// Photo/picture extensions (distinct from isImageFile() above, which
+// detects forensic disk images) - used to decide whether a case attachment
+// gets a thumbnail preview via /api/files/raw.
+function isPhotoImagePath(path) {
+    const PHOTO_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
+    return PHOTO_EXTENSIONS.some(ext => path.toLowerCase().endsWith(ext));
+}
+
 // Entry point for both the context menu's "Browse as Image" action (reads
 // the currently right-clicked/selected real file) and double-clicking a
 // recognized image file directly in the file list.
@@ -1569,8 +1577,17 @@ function renderAttachmentsList() {
         const fileName = filePath.split('/').pop();
 
         const nameSpan = document.createElement('span');
-        nameSpan.className = 'text-truncate me-2';
-        nameSpan.innerHTML = '<i class="bi bi-file-earmark-arrow-up text-info me-1"></i>'; // static/trusted markup
+        nameSpan.className = 'text-truncate me-2 d-flex align-items-center';
+        if (isPhotoImagePath(filePath)) {
+            const thumb = document.createElement('img');
+            thumb.src = `/api/files/raw?path=${encodeURIComponent(filePath)}`;
+            thumb.className = 'me-2 rounded border border-secondary';
+            thumb.style.cssText = 'width:28px;height:28px;object-fit:cover;';
+            thumb.alt = '';
+            nameSpan.appendChild(thumb);
+        } else {
+            nameSpan.innerHTML = '<i class="bi bi-file-earmark-arrow-up text-info me-1"></i>'; // static/trusted markup
+        }
         nameSpan.appendChild(document.createTextNode(fileName)); // untrusted, appended as text only
 
         const removeBtn = document.createElement('button');
@@ -1597,11 +1614,6 @@ function addFileAttachment(filePath) {
 }
 
 // --- Report Modifier Functions ---
-function openReportPickerModal() {
-    modalPickerMode = 'report';
-    openFolderModal(modalPickerMode);
-}
-
 function openFilePickerModal(mode) {
     modalPickerMode = mode;
     openFolderModal(modalPickerMode);
@@ -1679,6 +1691,12 @@ async function loadCaseReportingSettings() {
             if (el) el.checked = Object.prototype.hasOwnProperty.call(obj, key) ? !!obj[key] : true;
         };
         setChecked('defSecCaseInfo', sections, 'case_info');
+        setChecked('defSecExecSummary', sections, 'executive_summary');
+        setChecked('defSecEvidenceInventory', sections, 'evidence_inventory');
+        setChecked('defSecForensicAnalysis', sections, 'forensic_analysis');
+        setChecked('defSecFindings', sections, 'relevant_findings');
+        setChecked('defSecLimitations', sections, 'limitations');
+        setChecked('defSecConclusion', sections, 'conclusion');
         setChecked('defSecAttachments', sections, 'attachments');
         setChecked('defSecAuditTrail', sections, 'audit_trail');
         setChecked('defFieldTelemetry', jobFields, 'telemetry');
@@ -1739,6 +1757,12 @@ async function saveCaseReportingSettings() {
 
     const sections = {
         case_info: document.getElementById("defSecCaseInfo")?.checked ?? true,
+        executive_summary: document.getElementById("defSecExecSummary")?.checked ?? true,
+        evidence_inventory: document.getElementById("defSecEvidenceInventory")?.checked ?? true,
+        forensic_analysis: document.getElementById("defSecForensicAnalysis")?.checked ?? true,
+        relevant_findings: document.getElementById("defSecFindings")?.checked ?? true,
+        limitations: document.getElementById("defSecLimitations")?.checked ?? true,
+        conclusion: document.getElementById("defSecConclusion")?.checked ?? true,
         attachments: document.getElementById("defSecAttachments")?.checked ?? true,
         audit_trail: document.getElementById("defSecAuditTrail")?.checked ?? true,
     };
@@ -1812,61 +1836,101 @@ async function clearReportLogo() {
     }
 }
 
+// Reporting has no independent load step anymore - it always follows the
+// Active Case Bar. Called once at the end of applyActiveCaseToFields() (so
+// case create/select/page-load-restore all pick this up for free) and
+// again after any case-notes add/edit to re-fetch authoritative on-disk
+// state. Toggles #reportsNoCaseState / #reportsLoadedState depending on
+// whether there's an active case at all vs. an active case whose
+// consolidated report file doesn't exist yet (not-yet-migrated legacy case).
 async function loadCaseForEditing() {
-    const reportPathEl = document.getElementById("editReportPath");
-    const reportPath = reportPathEl ? reportPathEl.value.trim() : "";
-    if (!reportPath) return alert("Select or enter a report/case JSON file path first.");
+    const noCaseEl = document.getElementById("reportsNoCaseState");
+    const loadedEl = document.getElementById("reportsLoadedState");
+    const noCaseIcon = document.getElementById("reportsNoCaseIcon");
+    const noCaseMsg = document.getElementById("reportsNoCaseMsg");
+
+    if (!activeCase) {
+        currentReportPath = null;
+        currentLoadedReportData = null;
+        if (noCaseIcon) noCaseIcon.className = 'bi bi-folder2-open fs-3 d-block mb-2';
+        if (noCaseMsg) noCaseMsg.textContent = 'Select or create a case using the bar above to view its report.';
+        if (noCaseEl) noCaseEl.style.display = 'block';
+        if (loadedEl) loadedEl.style.display = 'none';
+        return;
+    }
+
+    const slug = activeCase.case_folder.split('/').filter(Boolean).pop();
+    currentReportPath = `${activeCase.case_folder}/${slug}_case.json`;
 
     try {
         const res = await fetch('/api/report/load', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ report_path: reportPath })
+            body: JSON.stringify({ report_path: currentReportPath })
         });
         const data = await res.json();
 
-        if (data.success) {
-            currentLoadedReportData = data.report;
+        if (!data.success) {
+            currentReportPath = null;
+            currentLoadedReportData = null;
+            if (noCaseIcon) noCaseIcon.className = 'bi bi-exclamation-triangle fs-3 d-block mb-2';
+            if (noCaseMsg) noCaseMsg.textContent = `This case ("${activeCase.case_number}") hasn't been migrated to the consolidated report format yet - migrate it via the Case Manager.`;
+            if (noCaseEl) noCaseEl.style.display = 'block';
+            if (loadedEl) loadedEl.style.display = 'none';
+            return;
+        }
 
-            // A consolidated case file has a top-level "events" array; a
-            // legacy single-job report has case_number/examiner/notes
-            // nested under case_metadata instead. Same Case Information
-            // fields, different source location depending on which one
-            // was loaded.
-            const isConsolidated = Array.isArray(currentLoadedReportData.events);
-            const legacyMeta = currentLoadedReportData.case_metadata || {};
+        currentLoadedReportData = data.report;
+        if (noCaseEl) noCaseEl.style.display = 'none';
+        if (loadedEl) loadedEl.style.display = 'block';
 
-            const editCaseNum = document.getElementById("editCaseNum");
-            const editExaminer = document.getElementById("editExaminer");
-            const editNotes = document.getElementById("editNotes");
-            const legacyNotice = document.getElementById("repLegacyNotice");
+        // A consolidated case file has a top-level "events" array; a
+        // legacy single-job report has case_number/examiner/notes
+        // nested under case_metadata instead. Same Case Information
+        // fields, different source location depending on which one
+        // was loaded.
+        const isConsolidated = Array.isArray(currentLoadedReportData.events);
+        const legacyMeta = currentLoadedReportData.case_metadata || {};
 
-            if (editCaseNum) editCaseNum.value = (isConsolidated ? currentLoadedReportData.case_number : legacyMeta.case_number) || "";
-            if (editExaminer) editExaminer.value = (isConsolidated ? currentLoadedReportData.examiner : legacyMeta.examiner) || "";
-            if (editNotes) editNotes.value = (isConsolidated ? currentLoadedReportData.notes : legacyMeta.notes) || "";
-            if (legacyNotice) legacyNotice.style.display = isConsolidated ? 'none' : 'block';
+        const editNotes = document.getElementById("editNotes");
+        const legacyNotice = document.getElementById("repLegacyNotice");
 
-            renderCustomFieldsForCase(isConsolidated ? currentLoadedReportData.custom_fields : legacyMeta.custom_fields);
+        if (editNotes) editNotes.value = (isConsolidated ? currentLoadedReportData.notes : legacyMeta.notes) || "";
+        if (legacyNotice) legacyNotice.style.display = isConsolidated ? 'none' : 'block';
 
-            loadCaseHistory();
-            renderCaseJobs();
+        renderCustomFieldsForCase(isConsolidated ? currentLoadedReportData.custom_fields : legacyMeta.custom_fields);
 
-            const attach = currentLoadedReportData.attachments || {};
-            currentAttachedFilesList = attach.files || [];
-            if (!currentAttachedFilesList.length && attach.image_path) {
-                currentAttachedFilesList = [attach.image_path];
-            }
-            renderAttachmentsList();
+        // Report Narrative fields - same isConsolidated/legacyMeta split
+        // as case_number/examiner/notes above.
+        const narrativeSrc = isConsolidated ? currentLoadedReportData : legacyMeta;
+        const execSummaryEl = document.getElementById("editExecSummary");
+        const objectivesEl = document.getElementById("editObjectives");
+        const findingsEl = document.getElementById("editFindingsSummary");
+        const limitationsEl = document.getElementById("editLimitations");
+        const conclusionEl = document.getElementById("editConclusion");
+        if (execSummaryEl) execSummaryEl.value = narrativeSrc.executive_summary || "";
+        if (objectivesEl) objectivesEl.value = narrativeSrc.objectives || "";
+        if (findingsEl) findingsEl.value = narrativeSrc.findings_summary || "";
+        if (limitationsEl) limitationsEl.value = narrativeSrc.limitations || "";
+        if (conclusionEl) conclusionEl.value = narrativeSrc.conclusion || "";
 
-            const editUrls = document.getElementById("editUrls");
-            if (editUrls) editUrls.value = (attach.reference_urls || []).join(", ");
+        renderCaseNotesList();
+        loadCaseHistory();
+        renderCaseJobs();
 
-            const previewEl = document.getElementById("jsonPreview");
-            if (previewEl) {
-                previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
-            }
-        } else {
-            alert(`Load Error: ${data.error}`);
+        const attach = currentLoadedReportData.attachments || {};
+        currentAttachedFilesList = attach.files || [];
+        if (!currentAttachedFilesList.length && attach.image_path) {
+            currentAttachedFilesList = [attach.image_path];
+        }
+        renderAttachmentsList();
+
+        const editUrls = document.getElementById("editUrls");
+        if (editUrls) editUrls.value = (attach.reference_urls || []).join(", ");
+
+        const previewEl = document.getElementById("jsonPreview");
+        if (previewEl) {
+            previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
         }
     } catch (err) {
         alert(`Failed to load report: ${err.message}`);
@@ -1934,6 +1998,187 @@ function renderCaseJobs() {
         wrapper.appendChild(detail);
         container.appendChild(wrapper);
     });
+}
+
+// --- Case Notes: timestamped, append-only journal (Forensic Analysis / Steps Taken) ---
+// case_notes[] rides along inside currentLoadedReportData exactly like
+// events[] does for Jobs - no separate list endpoint. Editing never
+// overwrites in place: the prior text is preserved in edit_history, see
+// /api/cases/notes/edit in app.py.
+let editingCaseNoteId = null;
+
+function renderCaseNotesList() {
+    const container = document.getElementById("caseNotesContainer");
+    if (!container) return;
+
+    if (!currentLoadedReportData) {
+        container.innerHTML = '<span class="text-subtle small italic">Load a case above, then open this tab to see and add case notes.</span>';
+        return;
+    }
+    const notes = currentLoadedReportData.case_notes || [];
+    if (notes.length === 0) {
+        container.innerHTML = '<span class="text-subtle small italic">No case notes recorded yet - add the first one below.</span>';
+        return;
+    }
+
+    container.innerHTML = '';
+    const sorted = [...notes].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+    sorted.forEach(note => {
+        const card = document.createElement('div');
+        card.className = 'mb-2 pb-2 border-bottom border-secondary';
+
+        const headerLine = document.createElement('div');
+        headerLine.className = 'd-flex justify-content-between align-items-start gap-2 mb-1';
+
+        const left = document.createElement('div');
+        const catBadge = document.createElement('span');
+        catBadge.className = 'badge bg-info text-dark me-2';
+        catBadge.textContent = note.category || 'General';
+        left.appendChild(catBadge);
+        left.appendChild(document.createTextNode(`${note.timestamp || '--'} · ${note.author || 'unknown'}`));
+        if (note.edited_at) {
+            const editedTag = document.createElement('div');
+            editedTag.className = 'text-subtle small';
+            editedTag.style.cursor = 'pointer';
+            editedTag.textContent = `(edited ${note.edited_at} - click to view prior version${(note.edit_history || []).length > 1 ? 's' : ''})`;
+            editedTag.onclick = () => {
+                const hist = card.querySelector('.note-edit-history');
+                if (hist) hist.style.display = hist.style.display === 'none' ? 'block' : 'none';
+            };
+            left.appendChild(editedTag);
+        }
+
+        const editBtn = document.createElement('button');
+        editBtn.className = 'btn btn-xs btn-outline-info py-0 px-2 flex-shrink-0';
+        editBtn.textContent = 'Edit';
+        editBtn.onclick = () => { editingCaseNoteId = note.note_id; renderCaseNotesList(); };
+
+        headerLine.appendChild(left);
+        headerLine.appendChild(editBtn);
+        card.appendChild(headerLine);
+
+        if (editingCaseNoteId === note.note_id) {
+            const textarea = document.createElement('textarea');
+            textarea.className = 'form-control form-control-sm mb-1';
+            textarea.rows = 3;
+            textarea.value = note.text || '';
+            card.appendChild(textarea);
+
+            const btnRow = document.createElement('div');
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'btn btn-xs btn-success py-0 px-2 me-1';
+            saveBtn.textContent = 'Save Edit';
+            saveBtn.onclick = () => saveCaseNoteEdit(note.note_id, textarea.value);
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.onclick = () => { editingCaseNoteId = null; renderCaseNotesList(); };
+            btnRow.appendChild(saveBtn);
+            btnRow.appendChild(cancelBtn);
+            card.appendChild(btnRow);
+        } else {
+            const textEl = document.createElement('div');
+            textEl.className = 'small mb-1';
+            textEl.style.whiteSpace = 'pre-wrap';
+            textEl.textContent = note.text || ''; // untrusted, text node only
+            card.appendChild(textEl);
+        }
+
+        (note.attachments || []).forEach(att => {
+            if (att.kind === 'image') {
+                const img = document.createElement('img');
+                img.src = `/api/files/raw?path=${encodeURIComponent(att.path)}`;
+                img.style.maxWidth = '160px';
+                img.style.maxHeight = '160px';
+                img.className = 'border border-secondary rounded-2 me-2 mb-1';
+                img.alt = att.filename || '';
+                card.appendChild(img);
+            } else {
+                const fileLine = document.createElement('div');
+                fileLine.className = 'text-subtle small';
+                fileLine.innerHTML = '<i class="bi bi-file-earmark me-1"></i>'; // static/trusted markup
+                fileLine.appendChild(document.createTextNode(`${att.filename || ''} (${((att.size_bytes || 0) / 1024).toFixed(1)} KB)`)); // untrusted, text node only
+                card.appendChild(fileLine);
+            }
+        });
+
+        if (note.edit_history && note.edit_history.length > 0) {
+            const histDiv = document.createElement('div');
+            histDiv.className = 'note-edit-history text-subtle small mt-1 ps-2 border-start border-secondary';
+            histDiv.style.display = 'none';
+            note.edit_history.forEach((h, i) => {
+                const line = document.createElement('div');
+                line.className = 'mb-1';
+                line.style.whiteSpace = 'pre-wrap';
+                line.textContent = `Version ${i + 1} (superseded ${h.edited_at || note.timestamp}): ${h.text}`; // untrusted, text node only
+                histDiv.appendChild(line);
+            });
+            card.appendChild(histDiv);
+        }
+
+        container.appendChild(card);
+    });
+}
+
+async function addCaseNote() {
+    const reportPath = currentReportPath;
+    const statusEl = document.getElementById("caseNoteAddStatus");
+    if (!reportPath || !currentLoadedReportData) {
+        if (statusEl) { statusEl.textContent = 'Select an active case first.'; statusEl.className = 'small mt-1 text-danger'; }
+        return;
+    }
+    const text = document.getElementById("newCaseNoteText")?.value.trim() || "";
+    if (!text) {
+        if (statusEl) { statusEl.textContent = 'Note text cannot be empty.'; statusEl.className = 'small mt-1 text-danger'; }
+        return;
+    }
+    const category = document.getElementById("newCaseNoteCategory")?.value || "General";
+    const filesInput = document.getElementById("newCaseNoteFiles");
+
+    const formData = new FormData();
+    formData.append('report_path', reportPath);
+    formData.append('text', text);
+    formData.append('category', category);
+    if (filesInput && filesInput.files) {
+        Array.from(filesInput.files).forEach(f => formData.append('files', f));
+    }
+
+    if (statusEl) { statusEl.textContent = 'Adding...'; statusEl.className = 'small mt-1 text-info'; }
+    try {
+        const res = await fetch('/api/cases/notes/add', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById("newCaseNoteText").value = '';
+            if (filesInput) filesInput.value = '';
+            if (statusEl) { statusEl.textContent = 'Note added.'; statusEl.className = 'small mt-1 text-success'; }
+            await loadCaseForEditing();
+        } else {
+            if (statusEl) { statusEl.textContent = `Error: ${data.error}`; statusEl.className = 'small mt-1 text-danger'; }
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.textContent = `Failed: ${err.message}`; statusEl.className = 'small mt-1 text-danger'; }
+    }
+}
+
+async function saveCaseNoteEdit(noteId, newText) {
+    const reportPath = currentReportPath;
+    if (!reportPath || !newText || !newText.trim()) return;
+    try {
+        const res = await fetch('/api/cases/notes/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report_path: reportPath, note_id: noteId, text: newText.trim() })
+        });
+        const data = await res.json();
+        if (data.success) {
+            editingCaseNoteId = null;
+            await loadCaseForEditing();
+        } else {
+            alert(`Edit failed: ${data.error}`);
+        }
+    } catch (err) {
+        alert(`Edit failed: ${err.message}`);
+    }
 }
 
 // --- Chain of Custody Log ---
@@ -2049,16 +2294,18 @@ function exportAuditLogCsv() {
     window.location.href = '/api/coc/export_csv';
 }
 
-// Case-scoped view of the same log, for Reporting's History tab - distinct
-// from the station-wide Audit Log above. Uses whatever case number is
-// currently loaded into the Case Information block.
+// Case-scoped view of the same log, for Reporting's Audit Trail tab -
+// distinct from the station-wide Audit Log in Settings. Uses whichever
+// case is currently loaded (isConsolidated/legacyMeta split, same pattern
+// used throughout this file for currentLoadedReportData).
 async function loadCaseHistory() {
     const container = document.getElementById("caseHistoryContainer");
     if (!container) return;
 
-    const caseNum = document.getElementById("editCaseNum")?.value.trim();
+    const isConsolidated = Array.isArray(currentLoadedReportData?.events);
+    const caseNum = (isConsolidated ? currentLoadedReportData?.case_number : currentLoadedReportData?.case_metadata?.case_number) || '';
     if (!caseNum) {
-        container.innerHTML = '<span class="text-subtle">Load a report above first - History needs a case number to filter by.</span>';
+        container.innerHTML = '<span class="text-subtle">Select an active case first - History needs a case number to filter by.</span>';
         return;
     }
 
@@ -2081,41 +2328,42 @@ async function loadCaseHistory() {
 }
 
 async function saveReportMetadata() {
-    const reportPathEl = document.getElementById("editReportPath");
-    const reportPath = reportPathEl ? reportPathEl.value.trim() : "";
+    const reportPath = currentReportPath;
 
-    if (!reportPath) {
-        alert("Please select or enter a valid report JSON file path first.");
+    if (!reportPath || !currentLoadedReportData) {
+        alert("Select or create a case using the bar above first.");
         return;
     }
 
-    if (!currentLoadedReportData) {
-        currentLoadedReportData = { case_metadata: {}, attachments: {} };
-    }
-
-    const caseNumber = document.getElementById("editCaseNum")?.value || "";
-    const examiner = document.getElementById("editExaminer")?.value || "";
     const notes = document.getElementById("editNotes")?.value || "";
 
     const customFieldValues = gatherCustomFieldValues();
 
+    const narrativeFields = {
+        executive_summary: document.getElementById("editExecSummary")?.value || "",
+        objectives: document.getElementById("editObjectives")?.value || "",
+        findings_summary: document.getElementById("editFindingsSummary")?.value || "",
+        limitations: document.getElementById("editLimitations")?.value || "",
+        conclusion: document.getElementById("editConclusion")?.value || "",
+    };
+
     if (Array.isArray(currentLoadedReportData.events)) {
-        // Consolidated case file - case_number/examiner/notes are top-level
-        // fields; events[] is left completely untouched so a metadata save
-        // can never clobber job history.
-        currentLoadedReportData.case_number = caseNumber;
-        currentLoadedReportData.examiner = examiner;
+        // Consolidated case file - notes/narrative are top-level fields;
+        // case_number/examiner are no longer editable here (they come
+        // read-only from the Active Case Bar) so they're left untouched,
+        // same as events[] and case_notes[] already are.
         currentLoadedReportData.notes = notes;
         currentLoadedReportData.custom_fields = customFieldValues;
+        Object.assign(currentLoadedReportData, narrativeFields);
     } else {
-        // Legacy single-job report - preserve evidence_id (no longer
-        // editable here, but still part of this report's own data).
+        // Legacy single-job report - preserve case_number/examiner/
+        // evidence_id (no longer editable here, but still part of this
+        // report's own data).
         currentLoadedReportData.case_metadata = {
             ...(currentLoadedReportData.case_metadata || {}),
-            case_number: caseNumber,
-            examiner: examiner,
             notes: notes,
-            custom_fields: customFieldValues
+            custom_fields: customFieldValues,
+            ...narrativeFields
         };
     }
 
@@ -2149,17 +2397,17 @@ async function saveReportMetadata() {
     }
 }
 
-// --- Export Report Modal ---
+// --- Export pane (inline, part of Reporting's left-nav/right-pane) ---
 // Deliberately a separate action from "Save Report Changes" - Export always
-// reads whatever is currently on disk at editReportPath (same as the old
+// reads whatever is currently on disk at currentReportPath (same as the old
 // exportEditedPdf did after its own auto-save), so unsaved edits in the
 // form are not silently included. If the examiner wants their edits in the
-// exported file, Save Report Changes first, same as before.
-async function openExportReportModal() {
-    const reportPath = document.getElementById("editReportPath")?.value.trim();
+// exported file, Save Report Changes first, same as before. Called via the
+// Export nav button's onclick, mirroring the Jobs/Audit Trail pattern.
+async function prepareExportPane() {
+    const reportPath = currentReportPath;
     if (!reportPath || !currentLoadedReportData) {
-        alert("Load a report/case first.");
-        return;
+        return; // Reporting's own no-case empty state already covers this
     }
 
     // Pre-set the section/field checkboxes from the station's configured
@@ -2178,6 +2426,12 @@ async function openExportReportModal() {
                 }
             };
             setIfKnown('expSecCaseInfo', sections, 'case_info');
+            setIfKnown('expSecExecSummary', sections, 'executive_summary');
+            setIfKnown('expSecEvidenceInventory', sections, 'evidence_inventory');
+            setIfKnown('expSecForensicAnalysis', sections, 'forensic_analysis');
+            setIfKnown('expSecFindings', sections, 'relevant_findings');
+            setIfKnown('expSecLimitations', sections, 'limitations');
+            setIfKnown('expSecConclusion', sections, 'conclusion');
             setIfKnown('expSecAttachments', sections, 'attachments');
             setIfKnown('expSecAuditTrail', sections, 'audit_trail');
             setIfKnown('expFieldTelemetry', jobFields, 'telemetry');
@@ -2191,11 +2445,6 @@ async function openExportReportModal() {
 
     const statusEl = document.getElementById("exportReportStatus");
     if (statusEl) { statusEl.textContent = ''; statusEl.className = 'small text-subtle'; }
-
-    if (!exportReportModalInstance) {
-        exportReportModalInstance = new bootstrap.Modal(document.getElementById('exportReportModal'));
-    }
-    exportReportModalInstance.show();
 }
 
 function renderExportItemsList() {
@@ -2257,8 +2506,7 @@ async function renderExportFilesList() {
     let explicitFiles = attach.files || [];
     if (!explicitFiles.length && attach.image_path) explicitFiles = [attach.image_path];
 
-    const reportPath = document.getElementById("editReportPath")?.value.trim() || "";
-    const caseFolder = reportPath.substring(0, reportPath.lastIndexOf('/'));
+    const caseFolder = activeCase ? activeCase.case_folder : "";
 
     let discovered = [];
     let truncated = false;
@@ -2294,6 +2542,18 @@ async function renderExportFilesList() {
         cb.dataset.kind = kind;
         cb.dataset.value = value;
 
+        if (kind === 'file' && isPhotoImagePath(value)) {
+            const thumb = document.createElement('img');
+            thumb.src = `/api/files/raw?path=${encodeURIComponent(value)}`;
+            thumb.className = 'rounded border border-secondary flex-shrink-0';
+            thumb.style.cssText = 'width:36px;height:36px;object-fit:cover;';
+            thumb.alt = '';
+            row.appendChild(cb);
+            row.appendChild(thumb);
+        } else {
+            row.appendChild(cb);
+        }
+
         const textWrap = document.createElement('div');
         const line1 = document.createElement('div');
         line1.className = 'small text-break';
@@ -2306,7 +2566,6 @@ async function renderExportFilesList() {
             textWrap.appendChild(line2);
         }
 
-        row.appendChild(cb);
         row.appendChild(textWrap);
         listEl.appendChild(row);
     };
@@ -2340,13 +2599,18 @@ function setExportFileCheckboxes(checked) {
 }
 
 async function runExportReport() {
-    const reportPathEl = document.getElementById("editReportPath");
-    const reportPath = reportPathEl ? reportPathEl.value.trim() : "";
-    if (!reportPath) return alert("Load a report/case first.");
+    const reportPath = currentReportPath;
+    if (!reportPath) return alert("Select an active case first.");
 
     const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
     const sections = {
         case_info: !!document.getElementById("expSecCaseInfo")?.checked,
+        executive_summary: !!document.getElementById("expSecExecSummary")?.checked,
+        evidence_inventory: !!document.getElementById("expSecEvidenceInventory")?.checked,
+        forensic_analysis: !!document.getElementById("expSecForensicAnalysis")?.checked,
+        relevant_findings: !!document.getElementById("expSecFindings")?.checked,
+        limitations: !!document.getElementById("expSecLimitations")?.checked,
+        conclusion: !!document.getElementById("expSecConclusion")?.checked,
         attachments: !!document.getElementById("expSecAttachments")?.checked,
         audit_trail: !!document.getElementById("expSecAuditTrail")?.checked,
     };
@@ -2392,7 +2656,6 @@ async function runExportReport() {
             a.click();
             a.remove();
             if (statusEl) { statusEl.textContent = 'Export complete.'; statusEl.className = 'small text-success'; }
-            if (exportReportModalInstance) exportReportModalInstance.hide();
         } else {
             const data = await res.json();
             if (statusEl) { statusEl.textContent = `Export failed: ${data.error}`; statusEl.className = 'small text-danger'; }
@@ -2606,6 +2869,10 @@ function applyActiveCaseToFields() {
         if (examinerEl) examinerEl.value = activeCase.examiner || '';
         if (destEl) destEl.value = activeCase.case_folder;
     });
+    // Single funnel point for Reporting's auto-load - covers createCase(),
+    // selectCase(), and initActiveCaseBar()'s page-load restore, all three
+    // of which call this function already.
+    loadCaseForEditing();
 }
 
 function openCaseManagerModal() {
@@ -2786,6 +3053,7 @@ function clearActiveCase() {
     activeCase = null;
     persistActiveCase();
     renderActiveCaseBar();
+    loadCaseForEditing();
     if (caseManagerModalInstance) caseManagerModalInstance.hide();
 }
 
@@ -2800,10 +3068,7 @@ function openFolderModal(mode = 'folder', targetInputId = 'destPath') {
     const titleEl = document.getElementById("modalTitle");
     const selectBtn = document.getElementById("modalSelectBtn");
 
-    if (modalPickerMode === 'report') {
-        if (titleEl) titleEl.innerHTML = '<i class="bi bi-file-earmark-code me-2"></i>Select JSON Case Report';
-        if (selectBtn) selectBtn.style.display = 'none';
-    } else if (modalPickerMode === 'attachment') {
+    if (modalPickerMode === 'attachment') {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-paperclip me-2"></i>Select Case File / Photo Attachment';
         if (selectBtn) selectBtn.style.display = 'none';
     } else if (modalPickerMode === 'mapfile') {
@@ -2848,9 +3113,7 @@ async function loadFolderList(path) {
         data.items.forEach(item => {
             let isSelectableFile = false;
             
-            if (modalPickerMode === 'report' && !item.is_dir && item.name.toLowerCase().endsWith('.json')) {
-                isSelectableFile = true;
-            } else if (modalPickerMode === 'attachment' && !item.is_dir) {
+            if (modalPickerMode === 'attachment' && !item.is_dir) {
                 isSelectableFile = true;
             } else if (modalPickerMode === 'mapfile' && !item.is_dir && item.name.toLowerCase().endsWith('.map')) {
                 isSelectableFile = true;
@@ -2864,8 +3127,7 @@ async function loadFolderList(path) {
                 
                 let icon = item.is_dir ? '<i class="bi bi-folder-fill folder-icon me-2"></i>' : '<i class="bi bi-file-earmark-text text-info me-2 fs-5"></i>';
                 if (isSelectableFile) {
-                    if (modalPickerMode === 'report') icon = '<i class="bi bi-filetype-json text-warning me-2 fs-5"></i>';
-                    else if (modalPickerMode === 'attachment') icon = '<i class="bi bi-paperclip text-info me-2 fs-5"></i>';
+                    if (modalPickerMode === 'attachment') icon = '<i class="bi bi-paperclip text-info me-2 fs-5"></i>';
                     else if (modalPickerMode === 'mapfile') icon = '<i class="bi bi-map text-warning me-2 fs-5"></i>';
                     else if (modalPickerMode === 'recoverySource') icon = '<i class="bi bi-disc text-primary me-2 fs-5"></i>';
                 }
@@ -2889,11 +3151,6 @@ async function loadFolderList(path) {
                 btn.onclick = () => {
                     if (item.is_dir) {
                         loadFolderList(item.path);
-                    } else if (modalPickerMode === 'report') {
-                        const editReportPath = document.getElementById("editReportPath");
-                        if (editReportPath) editReportPath.value = item.path;
-                        if (folderModalInstance) folderModalInstance.hide();
-                        loadCaseForEditing();
                     } else if (modalPickerMode === 'attachment') {
                         addFileAttachment(item.path);
                         if (folderModalInstance) folderModalInstance.hide();
