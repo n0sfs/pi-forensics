@@ -4041,7 +4041,7 @@ async function runDiagnostic(key) {
 async function loadToolVersions() {
     const tbody = document.getElementById("toolVersionsBody");
     if (!tbody) return;
-    tbody.innerHTML = '<tr><td colspan="3" class="text-subtle">Checking...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="text-subtle">Checking...</td></tr>';
 
     try {
         const res = await fetch('/api/system/tool_versions');
@@ -4051,7 +4051,7 @@ async function loadToolVersions() {
             tbody.innerHTML = '';
             const row = document.createElement('tr');
             const cell = document.createElement('td');
-            cell.colSpan = 3;
+            cell.colSpan = 5;
             cell.className = 'text-danger';
             cell.textContent = data.error;
             row.appendChild(cell);
@@ -4065,37 +4065,61 @@ async function loadToolVersions() {
 
             const nameCell = document.createElement('td');
             nameCell.className = 'text-info fw-bold';
-            nameCell.style.width = '30%';
             nameCell.textContent = t.tool;
 
             const verCell = document.createElement('td');
-            verCell.className = t.installed ? 'text-light' : 'text-danger';
-            verCell.textContent = t.version;
+            verCell.className = t.installed ? 'text-light' : 'text-subtle';
+            verCell.textContent = t.installed ? t.version : '--';
+
+            const latestCell = document.createElement('td');
+            latestCell.className = t.update_available ? 'text-warning fw-bold' : 'text-subtle';
+            latestCell.textContent = t.latest_version || (t.package ? 'Unknown' : '--');
+
+            const statusCell = document.createElement('td');
+            const statusBadge = document.createElement('span');
+            statusBadge.className = `badge ${t.installed ? 'bg-success' : 'bg-danger'}`;
+            statusBadge.textContent = t.installed ? 'Installed' : 'Not Installed';
+            statusCell.appendChild(statusBadge);
 
             const actionCell = document.createElement('td');
-            actionCell.style.width = '15%';
             if (!t.installed && t.package) {
                 const btn = document.createElement('button');
                 btn.className = 'btn btn-xs btn-outline-success py-0 px-2';
                 btn.innerHTML = '<i class="bi bi-download me-1"></i>Install';
                 btn.onclick = () => installTool(t.package, btn);
                 actionCell.appendChild(btn);
+            } else if (t.installed && t.update_available && t.package) {
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-xs btn-outline-warning py-0 px-2';
+                btn.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>Update';
+                btn.onclick = () => installTool(t.package, btn);
+                actionCell.appendChild(btn);
+            } else if (t.installed && t.package) {
+                const upToDate = document.createElement('span');
+                upToDate.className = 'text-subtle';
+                upToDate.textContent = 'Up to date';
+                actionCell.appendChild(upToDate);
             }
 
             row.appendChild(nameCell);
             row.appendChild(verCell);
+            row.appendChild(latestCell);
+            row.appendChild(statusCell);
             row.appendChild(actionCell);
             tbody.appendChild(row);
         });
     } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="3" class="text-danger">Request failed.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="text-danger">Request failed.</td></tr>';
     }
 }
 
+// Shared by both the "Install" and "Update" buttons - `apt-get install -y
+// <pkg>` already upgrades an existing package to the latest candidate when
+// one is available, so there's no separate "update" command/endpoint needed.
 async function installTool(pkg, btnEl) {
     if (btnEl) {
         btnEl.disabled = true;
-        btnEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Installing...';
+        btnEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Working...';
     }
 
     try {
@@ -4105,7 +4129,7 @@ async function installTool(pkg, btnEl) {
             body: JSON.stringify({ package: pkg })
         });
         const data = await res.json();
-        if (!data.success) alert(`Install failed: ${data.error}`);
+        if (!data.success) alert(`Install/update failed: ${data.error}`);
         loadToolVersions(); // refresh the whole table either way
     } catch (err) {
         alert('Install request failed.');
