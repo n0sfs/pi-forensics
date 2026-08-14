@@ -3,11 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ARM Forensic Acquisition Station</title>
+    <title>Pi Forensics Suite</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
-    <link href="https://cdn.jsdelivr.net/npm/gridstack@9.2.0/dist/gridstack.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/gridstack@9.2.0/dist/gridstack-extra.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -167,12 +165,10 @@
         .folder-text { color: var(--accent-blue); font-weight: 600; }
         .folder-icon { color: var(--folder-gold); }
 
-        .grid-stack-item-content { overflow: hidden !important; }
         /* Settings tab: a left nav (category list) + single right-hand content
-           pane, not a draggable/resizable GridStack dashboard like every other
-           tab, and not the plain stacked accordion this used to be either -
-           clicking a category swaps what's shown on the right, matching a
-           typical Settings-app layout. */
+           pane, not the plain stacked accordion this used to be - clicking a
+           category swaps what's shown on the right, matching a typical
+           Settings-app layout. */
         .settings-shell { display: flex; align-items: stretch; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.4); background-color: var(--card-bg); }
         .settings-nav { flex: 0 0 auto; width: max-content; min-width: 200px; border-right: 1px solid var(--border-color); background: rgba(255,255,255,0.02); padding: 6px 0; }
         .settings-nav .list-group-item {
@@ -205,7 +201,6 @@
             color: var(--accent-cyan); font-weight: 700; background: rgba(0, 242, 254, 0.07); border-left-color: var(--accent-cyan);
         }
         .reports-content { flex: 1; min-width: 0; padding: 20px; }
-        .ui-resizable-handle { filter: invert(100%); }
         .accordion-button { background-color: var(--card-bg); color: var(--text-bright); box-shadow: none; }
         .accordion-button:not(.collapsed) { background-color: var(--card-bg); color: var(--accent-cyan); box-shadow: none; }
         .accordion-button::after { filter: invert(1) grayscale(1) brightness(1.5); }
@@ -213,9 +208,9 @@
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-dark px-4 py-2">
-        <span class="navbar-brand fw-bold text-info fs-4 d-flex align-items-center">
-            <i class="bi bi-shield-check text-cyan me-2 fs-3"></i>ARM Forensic Acquisition Station
+    <nav class="navbar navbar-dark px-4 py-1">
+        <span class="navbar-brand fw-bold text-info fs-6 d-flex align-items-center">
+            <i class="bi bi-shield-check text-cyan me-2"></i>Pi Forensics Suite
         </span>
         <div class="d-flex align-items-center gap-2">
             {% if is_local_kiosk and False %}
@@ -227,16 +222,10 @@
                 <i class="bi bi-keyboard-fill me-1"></i>Keyboard
             </button>
             {% endif %}
-            <button id="layoutLockBtn" class="btn btn-sm btn-outline-warning fw-bold" onclick="toggleLayoutLock()">
-                <i class="bi bi-lock-fill me-1"></i>Layout Locked
-            </button>
-            <button class="btn btn-sm btn-outline-secondary text-light fw-bold" onclick="resetDashboardLayout()">
-                <i class="bi bi-arrow-counterclockwise me-1"></i>Reset Layout
-            </button>
-            <!-- Software Write Blocker status - a link to Settings > Drive Management, not a
-                 direct toggle (that was too easy to flip by accident - see goToDriveManagement()) -->
-            <button id="wbBadgeBtn" class="btn btn-sm btn-danger fw-bold fs-6 px-3 py-1 shadow-sm" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to change this">
-                <i class="bi bi-lock-fill me-1"></i>Software Write Blocker: ACTIVE (Read-Only)
+            <!-- Write Blocker status - a link to Settings > Drive Management, not a direct
+                 toggle (that was too easy to flip by accident - see goToDriveManagement()) -->
+            <button id="wbBadgeBtn" class="btn btn-sm btn-danger fw-bold" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to change this">
+                <i class="bi bi-lock-fill me-1"></i>Write Blocker: ACTIVE
             </button>
             <!-- Basic Auth has no real logout - this exists so who's currently
                  authenticated is at least visible, not to imply a session that
@@ -357,10 +346,6 @@
                     
                     <!-- APP 1: FORENSIC ACQUISITION DASHBOARD -->
                     <div class="tab-pane fade show active" id="acquisition-app" role="tabpanel">
-                        <div class="grid-stack grid-stack-main">
-
-                    <div class="grid-stack-item" gs-id="card-acquisition" gs-x="0" gs-y="0" gs-w="12" gs-h="12">
-                        <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header py-2"><i class="bi bi-hdd-network me-2"></i>Forensic Acquisition</div>
                                 <div class="card-body py-2">
@@ -510,24 +495,15 @@
                                                 <div class="col-4"><small class="telemetry-label d-block">Bytes</small><span id="bytesVal" class="fw-bold text-light">0 / 0 GB</span></div>
                                             </div>
                                             <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
-                                            <pre id="logOutput" class="log-window" style="height: 260px;">[System initialized and idle. Ready for disk acquisition job.]</pre>
+                                            <pre id="logOutput" class="log-window" style="height: clamp(140px, 30vh, 260px);">[System initialized and idle. Ready for disk acquisition job.]</pre>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-                        </div>
                     </div>
-
-                </div>
-            </div>
 
             <!-- APP 2: SELF-CONTAINED DDRESCUE RECOVERY MODULE & DUAL-PANE FILE EXPLORER TAB -->
             <div class="tab-pane fade" id="ddrescue-app" role="tabpanel">
-                <div class="grid-stack grid-stack-ddrescue">
-                    
-                    <!-- Card: Unified Recovery Tools -->
-                    <div class="grid-stack-item" gs-id="ddr-card-recovery" gs-x="0" gs-y="0" gs-w="12" gs-h="12">
-                        <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header py-2"><i class="bi bi-tools me-2"></i>Recovery Tools</div>
                                 <div class="card-body py-2">
@@ -590,24 +566,16 @@
                                                 <div id="recoveryProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
                                             </div>
                                             <label class="form-label fw-bold text-light small mb-1">Terminal / Output:</label>
-                                            <pre id="recoveryLogOutput" class="log-window" style="height: 420px;">[Recovery tools idle. Select a tool and source above, then Start.]</pre>
-                                            <div id="recoveryStructuredOutput" class="font-monospace small border border-secondary rounded-2 p-2" style="display:none; height: 420px; overflow-y: auto; background-color: #090b10;"></div>
+                                            <pre id="recoveryLogOutput" class="log-window" style="height: clamp(180px, 45vh, 420px);">[Recovery tools idle. Select a tool and source above, then Start.]</pre>
+                                            <div id="recoveryStructuredOutput" class="font-monospace small border border-secondary rounded-2 p-2" style="display:none; height: clamp(180px, 45vh, 420px); overflow-y: auto; background-color: #090b10;"></div>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-                        </div>
-                    </div>
-
-                </div>
             </div>
 
             <!-- APP 2b: FORENSIC FILE EXPLORER (its own tab - moved out of File Recovery) -->
             <div class="tab-pane fade" id="explorer-app" role="tabpanel">
-                <div class="grid-stack grid-stack-explorer">
-
-                    <div class="grid-stack-item" gs-id="exp-card-explorer" gs-x="0" gs-y="0" gs-w="12" gs-h="11">
-                        <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center py-2">
                                     <span><i class="bi bi-folder-check me-2"></i>Forensic File Explorer</span>
@@ -628,13 +596,13 @@
                                                     <button type="button" class="btn btn-xs btn-outline-warning py-0 px-2" onclick="exitExplorerImage()" title="Exit image, return to file system"><i class="bi bi-x-lg me-1"></i>Exit Image</button>
                                                 </div>
                                             </div>
-                                            <div id="explorerContainer" class="file-pane" style="height: 620px;"></div>
+                                            <div id="explorerContainer" class="file-pane" style="height: clamp(220px, 55vh, 620px);"></div>
                                         </div>
                                         <div class="col-md-6">
                                             <div class="mb-1">
                                                 <span class="telemetry-grid-label">Preview</span>
                                             </div>
-                                            <div id="explorerPreview" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="height: 620px;">
+                                            <div id="explorerPreview" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="height: clamp(220px, 55vh, 620px);">
                                                 <i class="bi bi-cursor fs-1 text-subtle mb-2"></i>
                                                 <span class="text-subtle small">Select a file on the left to preview it here.</span>
                                             </div>
@@ -642,8 +610,6 @@
                                     </div>
                                 </div>
                             </div>
-                        </div>
-                    </div>
 
                     <!-- Right-click / press-and-hold context menu for file items - two mutually
                          exclusive action sets: real filesystem items get the full action list,
@@ -670,16 +636,10 @@
                             <button id="ctxMenuImageExtract" class="dropdown-item" onclick="extractExplorerImageSelected()"><i class="bi bi-download me-2"></i>Extract to Evidence Root</button>
                         </div>
                     </div>
-
-                </div>
             </div>
 
             <!-- APP 3: MOBILE FORENSICS -->
             <div class="tab-pane fade" id="mobile-app" role="tabpanel">
-                <div class="grid-stack grid-stack-mobile">
-
-                    <div class="grid-stack-item" gs-id="mob-card-acquisition" gs-x="0" gs-y="0" gs-w="12" gs-h="11">
-                        <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header py-2"><i class="bi bi-phone me-2"></i>Mobile Forensics</div>
                                 <div class="card-body py-2">
@@ -788,26 +748,15 @@
                                                 Mobile acquisition tools don't report a reliable global percentage, so this shows live bytes-on-disk and the tool's own log instead of a progress bar.
                                             </div>
                                             <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
-                                            <pre id="mobileLogOutput" class="log-window" style="height: 420px;">[Mobile forensics module idle and ready.]</pre>
+                                            <pre id="mobileLogOutput" class="log-window" style="height: clamp(180px, 45vh, 420px);">[Mobile forensics module idle and ready.]</pre>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-                        </div>
-                    </div>
-
-                </div>
             </div>
 
             <!-- APP 3: REPORTS & VERIFICATION TAB -->
             <div class="tab-pane fade" id="reports-app" role="tabpanel">
-                <div class="grid-stack grid-stack-reports">
-
-                    <!-- Card 1: Files / Notes / Jobs / Export - left-nav + right-pane, mirrors Settings.
-                         Driven entirely by the Active Case Bar above (see currentReportPath /
-                         loadCaseForEditing() in main.js) - no independent load/browse step here. -->
-                    <div class="grid-stack-item" gs-id="rep-card-details" gs-x="0" gs-y="0" gs-w="12" gs-h="18">
-                        <div class="grid-stack-item-content">
                             <div class="card">
                                 <div class="card-header d-flex justify-content-between align-items-center py-2">
                                     <span><i class="bi bi-journal-richtext me-2"></i>Case Report</span>
@@ -1016,17 +965,13 @@
                                                     <div class="d-flex justify-content-between align-items-center mb-2">
                                                         <div class="small text-subtle">Live raw JSON structure of the case report - auto-updates on load/save.</div>
                                                     </div>
-                                                    <pre id="jsonPreview" class="log-window mb-0" style="height: 420px;">[Select or create a case above to view raw structured JSON data]</pre>
+                                                    <pre id="jsonPreview" class="log-window mb-0" style="height: clamp(180px, 40vh, 420px);">[Select or create a case above to view raw structured JSON data]</pre>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-                        </div>
-                    </div>
-
-                </div>
             </div>
 
             <!-- APP 5: SETTINGS -->
@@ -1539,7 +1484,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/gridstack@9.2.0/dist/gridstack-all.js"></script>
     <script>
         // Set server-side (see is_local_kiosk_request() in app.py) - true only
         // for the Pi's own local kiosk session, never for remote LAN/WiFi
