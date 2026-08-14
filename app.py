@@ -21,7 +21,8 @@ import tempfile
 import subprocess
 import threading
 from functools import wraps
-from flask import Flask, render_template, jsonify, request, Response, send_file
+from flask import Flask, render_template, jsonify, request, Response, send_file, g
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 
@@ -55,6 +56,15 @@ MVT_BIN_DIR = os.path.dirname(sys.executable)
 MVT_IOS_BIN = os.path.join(MVT_BIN_DIR, "mvt-ios")
 MVT_ANDROID_BIN = os.path.join(MVT_BIN_DIR, "mvt-android")
 
+# Written by install.py's optional TLS setup (self-signed, via openssl) at
+# a fixed path also hardcoded in nginx/pi-forensics.conf's ssl_certificate/
+# ssl_certificate_key directives - keep all three in sync if this ever
+# changes. The .crt is left world-readable by install.py (no explicit
+# chmod), so this app can read/parse it directly with no sudo; the .key is
+# root-only (chmod 600), never read directly - only replaced, via sudo.
+TLS_CERT_PATH = "/etc/ssl/pi-forensics/pi-forensics.crt"
+TLS_KEY_PATH = "/etc/ssl/pi-forensics/pi-forensics.key"
+
 # Password changes made from the Advanced Settings tab are persisted here
 # (0600, owned by the service account) so they survive a restart without
 # requiring the examiner to edit the systemd unit. Falls back to
@@ -65,12 +75,14 @@ runtime_config_lock = threading.Lock()
 # Append-only chain-of-custody log: one JSON object per line, covering
 # acquisitions, file deletes/copies, hash verifications, PhotoRec runs,
 # image extractions, and report edits. NOTE on what this can and can't
-# attest to: this station has a single shared login (see FORENSIC_USER/
-# FORENSIC_PASS above), not per-examiner accounts, so entries record what
-# happened and when, plus the client IP - not reliably *who*, beyond
-# whoever had the shared credentials (or physical kiosk access, if
-# FORENSIC_KIOSK_AUTH_BYPASS is on). If your process needs per-examiner
-# attribution, that requires separate accounts this project doesn't have.
+# attest to: once real per-user accounts exist (runtime_config.json['users'],
+# see check_auth()), entries carry the authenticated username via the
+# "user" field. Stations still on the legacy single-shared-login path
+# (FORENSIC_USER/FORENSIC_PASS, no users created yet) get "user": null -
+# there's genuinely no examiner to attribute to in that mode, only the
+# client IP. Physical kiosk access (FORENSIC_KIOSK_AUTH_BYPASS) always
+# attributes to the fixed sentinel "local-kiosk" regardless of account
+# mode, since kiosk requests never carry real credentials to attribute to.
 COC_LOG_FILE = os.path.join(INSTALL_DIR, "chain_of_custody.log")
 coc_log_lock = threading.Lock()
 
@@ -80,6 +92,7 @@ def log_chain_of_custody(action, details=None):
         "action": action,
         "details": details or {},
         "source_ip": request.headers.get('X-Real-IP', request.remote_addr) if request else None,
+        "user": getattr(g, 'forensic_user', None),
     }
     with coc_log_lock:
         try:
@@ -110,6 +123,17 @@ def save_runtime_config(cfg):
 
 def get_active_admin_pass():
     return load_runtime_config().get('pass', ADMIN_PASS)
+
+# Station-wide report export defaults and custom case-field definitions,
+# both edited together from Settings > Case & Reporting. Stored in the same
+# schema-agnostic runtime_config.json as the admin password/users above -
+# load_runtime_config()/save_runtime_config() need no changes to support
+# these additional top-level keys.
+def get_report_defaults():
+    return load_runtime_config().get('report_defaults', {})
+
+def get_custom_case_fields():
+    return load_runtime_config().get('custom_case_fields', [])
 
 # Root directory that all file-explorer / report / attachment / imaging-destination
 # endpoints are sandboxed to. Nothing outside this tree can be browsed, read,
@@ -194,7 +218,33 @@ def save_mount_history(entry):
         print(f"Error saving mount history: {e}")
 
 # --- Authentication Middleware ---
+# Computed once at import time so check_auth() always has a real hash to
+# compare against for a nonexistent username - without this, a lookup miss
+# would return instantly while a real user takes as long as a scrypt hash
+# comparison, a timing side-channel that leaks which usernames exist.
+_DUMMY_PASSWORD_HASH = generate_password_hash('dummy-timing-safety-password')
+
+def find_user(username, users=None):
+    if users is None:
+        users = load_runtime_config().get('users') or []
+    for u in users:
+        if hmac.compare_digest(u.get('username', ''), username or ''):
+            return u
+    return None
+
 def check_auth(username, password):
+    # Two-tier: real multi-user accounts (runtime_config.json['users']) take
+    # priority once any exist; otherwise fall back to the original single
+    # shared-login path unchanged, so a station that upgrades app.py via git
+    # pull but hasn't created a user yet keeps working exactly as before.
+    users = load_runtime_config().get('users')
+    if users:
+        user = find_user(username, users)
+        if user:
+            return check_password_hash(user.get('password_hash', ''), password or '')
+        check_password_hash(_DUMMY_PASSWORD_HASH, password or '')
+        return False
+
     # Constant-time comparison to avoid leaking credential info via timing.
     user_ok = hmac.compare_digest(username or '', ADMIN_USER)
     pass_ok = hmac.compare_digest(password or '', get_active_admin_pass())
@@ -255,6 +305,10 @@ def requires_auth(f):
         # FORENSIC_KIOSK_AUTH_BYPASS=0 to disable this and require login
         # locally too.
         if KIOSK_AUTH_BYPASS_ENABLED and is_local_kiosk_request():
+            # Kiosk requests never carry a Basic Auth header, so there's no
+            # real username to attribute - use a fixed sentinel rather than
+            # leaving chain-of-custody entries with no user at all.
+            g.forensic_user = 'local-kiosk'
             return f(*args, **kwargs)
 
         client_key = request.remote_addr or 'unknown'
@@ -272,6 +326,53 @@ def requires_auth(f):
             return authenticate()
 
         _record_auth_success(client_key)
+        # Stashed on Flask's request-scoped g object (not a new global - g
+        # is reset per-request) so log_chain_of_custody() can attribute
+        # entries to whoever is actually logged in, without threading a
+        # username parameter through every one of its ~23 call sites.
+        g.forensic_user = auth.username
+        return f(*args, **kwargs)
+    return decorated
+
+def get_current_user_role():
+    """
+    Role of whoever requires_auth() just authenticated on this request.
+    Local kiosk access and the pre-multi-user single-shared-account mode
+    both behave as "admin" - they're the same one account this app has
+    always had, full station control, nothing new granted by this change.
+    """
+    username = getattr(g, 'forensic_user', None)
+    if username == 'local-kiosk':
+        return 'admin'
+    users = load_runtime_config().get('users')
+    if not users:
+        return 'admin'
+    user = find_user(username, users)
+    return user.get('role', 'standard') if user else None
+
+def caller_reauth_ok(current_password):
+    """
+    Re-verifies the CALLER's own password for the delete/reset-another-user
+    actions (same friction as self-service password change). The physical
+    kiosk sentinel ('local-kiosk', see requires_auth's bypass branch) has no
+    real account/password to check against - physical access to the
+    touchscreen is already this app's most-trusted tier (full station
+    control with no login at all), so demanding a password confirmation
+    there would be both meaningless and a hard lockout, not a security
+    improvement.
+    """
+    caller_username = getattr(g, 'forensic_user', None)
+    if caller_username == 'local-kiosk':
+        return True
+    caller = find_user(caller_username)
+    return bool(caller) and check_password_hash(caller.get('password_hash', ''), current_password)
+
+def requires_admin(f):
+    """Stack under @requires_auth - relies on it having already set g.forensic_user."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if get_current_user_role() != 'admin':
+            return jsonify({"success": False, "error": "Admin privileges required."}), 403
         return f(*args, **kwargs)
     return decorated
 
@@ -1823,6 +1924,12 @@ def list_server_shares():
                 return jsonify({"success": True, "shares": shares})
             else:
                 return jsonify({"success": False, "error": res.stderr.strip() or "No NFS exports found."}), 500
+        elif protocol == 'sftp':
+            # SFTP has no share-enumeration equivalent to showmount/smbclient
+            # -L - there's no "list exported paths" concept over plain SSH.
+            # Not an error, just nothing to list - the examiner enters the
+            # remote path directly in the Mount form instead.
+            return jsonify({"success": True, "shares": [], "info": "SFTP has no share-listing equivalent - enter the remote path directly."})
         else:
             user = req.get('user', '')
             pass_val = req.get('pass', '')
@@ -1863,9 +1970,10 @@ def mount_network():
     share = req.get('share', '').strip()
     user = req.get('user', '').strip()
     password = req.get('pass', '').strip()
+    ssh_key = req.get('key', '').strip()
 
     if not host or not share:
-        return jsonify({"success": False, "error": "Server IP and Share path are required."}), 400
+        return jsonify({"success": False, "error": "Server IP and Share/Path are required."}), 400
 
     share_path = f"/{share.lstrip('/')}"
     safe_folder_name = share_path.replace('/', '_').strip('_')
@@ -1901,6 +2009,52 @@ def mount_network():
                 return jsonify({"success": True, "mount_point": mount_point})
 
             return jsonify({"success": False, "error": f"NFS Mount Failed: {res_v4.stderr.strip() or res.stderr.strip()}"}), 500
+
+        elif protocol == 'sftp':
+            # sshfs (FUSE) has no CIFS-style credentials=file option, so the
+            # two auth mechanisms differ: a pasted private key goes to a
+            # temp IdentityFile (same mkstemp/chmod 0600/remove-in-finally
+            # hygiene as the CIFS credentials file below), otherwise the
+            # password is piped over stdin via -o password_stdin rather
+            # than ever appearing in the command line (readable via `ps`).
+            #
+            # allow_other is required so the mount is usable by every other
+            # unprivileged process in this app (dc3dd, the file explorer,
+            # etc.) even though the mount itself runs as root via sudo -
+            # install.py enables user_allow_other in /etc/fuse.conf for
+            # this. StrictHostKeyChecking=no is necessary for a
+            # non-interactive first connection (there's no TTY here to
+            # answer a host-key prompt, so without this the mount would
+            # simply hang) - this app's NFS/CIFS mounting has no equivalent
+            # server-authenticity check either, so this isn't a new
+            # departure from this feature's existing trust model.
+            sftp_source = f"{user or 'root'}@{host}:{share_path}"
+            opts_parts = [f"uid={service_uid}", f"gid={service_gid}", "allow_other", "StrictHostKeyChecking=no"]
+
+            if ssh_key:
+                key_fd, key_path = tempfile.mkstemp(prefix="pif_sftp_key_")
+                try:
+                    os.chmod(key_path, 0o600)
+                    with os.fdopen(key_fd, 'w') as f:
+                        f.write(ssh_key if ssh_key.endswith('\n') else ssh_key + '\n')
+                    opts_parts.append(f"IdentityFile={key_path}")
+                    cmd_sftp = ['sudo', 'sshfs', sftp_source, mount_point, '-o', ",".join(opts_parts)]
+                    res_sftp = subprocess.run(cmd_sftp, capture_output=True, text=True)
+                finally:
+                    try:
+                        os.remove(key_path)
+                    except OSError:
+                        pass
+            else:
+                opts_parts.append("password_stdin")
+                cmd_sftp = ['sudo', 'sshfs', sftp_source, mount_point, '-o', ",".join(opts_parts)]
+                res_sftp = subprocess.run(cmd_sftp, input=password, capture_output=True, text=True)
+
+            if res_sftp.returncode == 0:
+                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
+                return jsonify({"success": True, "mount_point": mount_point})
+
+            return jsonify({"success": False, "error": f"SFTP Mount Failed: {res_sftp.stderr.strip()}"}), 500
 
         else:
             unc_source = f"//{host}/{share_path.lstrip('/')}"
@@ -3096,16 +3250,341 @@ def change_password():
     curr_pass = req.get('current_password', '')
     new_pass = req.get('new_password', '')
 
-    if not hmac.compare_digest(curr_pass, get_active_admin_pass()):
-        return jsonify({"success": False, "error": "Current password is incorrect."}), 400
-
     if not new_pass or len(new_pass) < 8:
         return jsonify({"success": False, "error": "New password must be at least 8 characters long."}), 400
 
     cfg = load_runtime_config()
+    users = cfg.get('users')
+
+    if users:
+        # Multi-user mode: self-service only - this always targets whoever
+        # is actually logged in (g.forensic_user), never a username picked
+        # from the request body, so one user can never change another's
+        # password through this route (that's /api/users/reset_password,
+        # admin-only, with its own re-auth requirement).
+        username = getattr(g, 'forensic_user', None)
+        user = find_user(username, users)
+        if not user or not check_password_hash(user.get('password_hash', ''), curr_pass):
+            return jsonify({"success": False, "error": "Current password is incorrect."}), 400
+        user['password_hash'] = generate_password_hash(new_pass)
+        save_runtime_config(cfg)
+        return jsonify({"success": True, "message": "Password changed successfully. This takes effect immediately."})
+
+    # Legacy single-shared-account path - unchanged.
+    if not hmac.compare_digest(curr_pass, get_active_admin_pass()):
+        return jsonify({"success": False, "error": "Current password is incorrect."}), 400
     cfg['pass'] = new_pass
     save_runtime_config(cfg)
     return jsonify({"success": True, "message": "Password changed successfully. This takes effect immediately."})
+
+@app.route('/api/whoami', methods=['GET'])
+@requires_auth
+def whoami():
+    username = getattr(g, 'forensic_user', None)
+    return jsonify({"username": username, "role": get_current_user_role()})
+
+@app.route('/api/users/list', methods=['GET'])
+@requires_auth
+@requires_admin
+def users_list():
+    users = load_runtime_config().get('users') or []
+    return jsonify({"success": True, "users": [
+        {"username": u.get('username'), "role": u.get('role', 'standard'), "created_at": u.get('created_at')}
+        for u in users
+    ]})
+
+@app.route('/api/users/create', methods=['POST'])
+@requires_auth
+@requires_admin
+def users_create():
+    req = request.get_json() or {}
+    username = (req.get('username') or '').strip()
+    password = req.get('password') or ''
+    role = req.get('role') or 'standard'
+
+    if not username:
+        return jsonify({"success": False, "error": "Username is required."}), 400
+    if not password or len(password) < 8:
+        return jsonify({"success": False, "error": "Password must be at least 8 characters long."}), 400
+    if role not in ('admin', 'standard'):
+        return jsonify({"success": False, "error": "Role must be 'admin' or 'standard'."}), 400
+
+    cfg = load_runtime_config()
+    users = cfg.setdefault('users', [])
+    if find_user(username, users):
+        return jsonify({"success": False, "error": f"A user named '{username}' already exists."}), 409
+
+    users.append({
+        "username": username,
+        "password_hash": generate_password_hash(password),
+        "role": role,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    save_runtime_config(cfg)
+    log_chain_of_custody("user_create", {"username": username, "role": role})
+    return jsonify({"success": True, "message": f"User '{username}' created."})
+
+@app.route('/api/users/delete', methods=['POST'])
+@requires_auth
+@requires_admin
+def users_delete():
+    req = request.get_json() or {}
+    username = (req.get('username') or '').strip()
+    current_password = req.get('current_password') or ''
+
+    if not caller_reauth_ok(current_password):
+        return jsonify({"success": False, "error": "Your current password is incorrect."}), 400
+
+    cfg = load_runtime_config()
+    users = cfg.get('users') or []
+
+    target = find_user(username, users)
+    if not target:
+        return jsonify({"success": False, "error": f"No user named '{username}' exists."}), 404
+
+    admin_count = sum(1 for u in users if u.get('role') == 'admin')
+    if target.get('role') == 'admin' and admin_count <= 1:
+        return jsonify({"success": False, "error": "Cannot delete the last remaining admin account."}), 409
+
+    cfg['users'] = [u for u in users if not hmac.compare_digest(u.get('username', ''), username)]
+    save_runtime_config(cfg)
+    log_chain_of_custody("user_delete", {"username": username})
+    return jsonify({"success": True, "message": f"User '{username}' deleted."})
+
+@app.route('/api/users/reset_password', methods=['POST'])
+@requires_auth
+@requires_admin
+def users_reset_password():
+    req = request.get_json() or {}
+    username = (req.get('username') or '').strip()
+    new_password = req.get('new_password') or ''
+    current_password = req.get('current_password') or ''
+
+    if not new_password or len(new_password) < 8:
+        return jsonify({"success": False, "error": "New password must be at least 8 characters long."}), 400
+
+    if not caller_reauth_ok(current_password):
+        return jsonify({"success": False, "error": "Your current password is incorrect."}), 400
+
+    cfg = load_runtime_config()
+    users = cfg.get('users') or []
+
+    target = find_user(username, users)
+    if not target:
+        return jsonify({"success": False, "error": f"No user named '{username}' exists."}), 404
+
+    target['password_hash'] = generate_password_hash(new_password)
+    save_runtime_config(cfg)
+    log_chain_of_custody("user_reset_password", {"username": username})
+    return jsonify({"success": True, "message": f"Password for '{username}' reset."})
+
+@app.route('/api/system/tls_status', methods=['GET'])
+@requires_auth
+def tls_status():
+    if not os.path.exists(TLS_CERT_PATH):
+        return jsonify({"success": True, "configured": False})
+    try:
+        res = subprocess.run(
+            ["openssl", "x509", "-in", TLS_CERT_PATH, "-noout", "-subject", "-issuer", "-dates", "-fingerprint", "-sha256"],
+            capture_output=True, text=True, timeout=10
+        )
+        if res.returncode != 0:
+            return jsonify({"success": False, "error": res.stderr.strip() or "Failed to read certificate."}), 500
+
+        # openssl's -subject/-issuer/-dates/-fingerprint output is one
+        # "key=value" line per field, but the exact key casing has drifted
+        # across OpenSSL versions (e.g. "SHA256 Fingerprint" vs "sha256
+        # Fingerprint") - normalize to lowercase for a stable lookup.
+        fields = {}
+        for line in res.stdout.splitlines():
+            if '=' not in line:
+                continue
+            key, _, value = line.partition('=')
+            fields[key.strip().lower()] = value.strip()
+
+        return jsonify({
+            "success": True,
+            "configured": True,
+            "subject": fields.get("subject"),
+            "issuer": fields.get("issuer"),
+            "not_before": fields.get("notbefore"),
+            "not_after": fields.get("notafter"),
+            "fingerprint_sha256": fields.get("sha256 fingerprint"),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/system/tls_upload', methods=['POST'])
+@requires_auth
+def tls_upload():
+    cert_file = request.files.get('cert_file')
+    key_file = request.files.get('key_file')
+    if not cert_file or not key_file:
+        return jsonify({"success": False, "error": "Both a certificate file and a private key file are required."}), 400
+
+    tmp_cert_fd, tmp_cert_path = tempfile.mkstemp(prefix="pif_tls_cert_")
+    tmp_key_fd, tmp_key_path = tempfile.mkstemp(prefix="pif_tls_key_")
+    try:
+        os.close(tmp_cert_fd)
+        os.close(tmp_key_fd)
+        cert_file.save(tmp_cert_path)
+        key_file.save(tmp_key_path)
+        os.chmod(tmp_cert_path, 0o600)
+        os.chmod(tmp_key_path, 0o600)
+
+        parse_res = subprocess.run(["openssl", "x509", "-noout", "-in", tmp_cert_path], capture_output=True, text=True)
+        if parse_res.returncode != 0:
+            return jsonify({"success": False, "error": f"Invalid certificate file: {parse_res.stderr.strip()}"}), 400
+
+        # Cert/key must be a genuinely matching pair BEFORE anything gets
+        # installed - compare RSA modulus hashes rather than trusting the
+        # two uploaded files at face value. RSA only for v1 (matches what
+        # install.py's own self-signed generation produces); an EC key
+        # here fails this check cleanly rather than silently mismatching.
+        cert_mod = subprocess.run(["openssl", "x509", "-noout", "-modulus", "-in", tmp_cert_path], capture_output=True, text=True)
+        key_mod = subprocess.run(["openssl", "rsa", "-noout", "-modulus", "-in", tmp_key_path], capture_output=True, text=True)
+        if cert_mod.returncode != 0 or key_mod.returncode != 0:
+            return jsonify({"success": False, "error": "Could not read an RSA modulus from the certificate/key - only RSA key/cert pairs are supported."}), 400
+        if cert_mod.stdout.strip() != key_mod.stdout.strip():
+            return jsonify({"success": False, "error": "Certificate and private key do not match - nothing was installed."}), 400
+
+        cp_cert = subprocess.run(["sudo", "cp", tmp_cert_path, TLS_CERT_PATH], capture_output=True, text=True)
+        if cp_cert.returncode != 0:
+            return jsonify({"success": False, "error": f"Failed to install certificate: {cp_cert.stderr.strip()}"}), 500
+        cp_key = subprocess.run(["sudo", "cp", tmp_key_path, TLS_KEY_PATH], capture_output=True, text=True)
+        if cp_key.returncode != 0:
+            return jsonify({"success": False, "error": f"Failed to install private key: {cp_key.stderr.strip()}"}), 500
+        subprocess.run(["sudo", "chmod", "600", TLS_KEY_PATH], capture_output=True)
+
+        log_chain_of_custody("tls_cert_replaced", {})
+
+        # "TLS never configured" is a normal, expected state (TLS setup is
+        # optional at install time) - install the cert/key regardless (useful
+        # prep work) but don't try to reload a proxy that was never enabled.
+        if not os.path.exists("/etc/nginx/sites-enabled/pi-forensics"):
+            return jsonify({"success": True, "message": "Certificate installed. nginx is not currently configured as a "
+                             "reverse proxy for this station - run install.py's TLS setup or configure nginx manually "
+                             "for this to take effect."})
+
+        reload_res = subprocess.run(["sudo", "systemctl", "reload", "nginx"], capture_output=True, text=True)
+        if reload_res.returncode != 0:
+            return jsonify({"success": True, "message": f"Certificate installed, but reloading nginx failed: "
+                             f"{reload_res.stderr.strip()}. Reload it manually."})
+
+        return jsonify({"success": True, "message": "Certificate installed and nginx reloaded successfully."})
+    finally:
+        for p in (tmp_cert_path, tmp_key_path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+@app.route('/api/settings/case_reporting', methods=['GET', 'POST'])
+@requires_auth
+def settings_case_reporting():
+    if request.method == 'GET':
+        cfg = load_runtime_config()
+        return jsonify({
+            "success": True,
+            "report_defaults": cfg.get('report_defaults', {}),
+            "custom_case_fields": cfg.get('custom_case_fields', []),
+        })
+
+    req = request.get_json() or {}
+    cfg = load_runtime_config()
+
+    if 'report_defaults' in req:
+        incoming = req['report_defaults'] or {}
+        # logo_path is deliberately not settable here - it's managed only
+        # by /api/settings/report_logo (upload) and its /clear counterpart,
+        # so this save path can never point it at an arbitrary path string.
+        existing_logo = cfg.get('report_defaults', {}).get('branding', {}).get('logo_path', '')
+        cfg['report_defaults'] = {
+            "sections": {k: bool(v) for k, v in (incoming.get('sections') or {}).items()},
+            "job_fields": {k: bool(v) for k, v in (incoming.get('job_fields') or {}).items()},
+            "branding": {
+                "header_text": (incoming.get('branding', {}).get('header_text') or '').strip()[:200],
+                "logo_path": existing_logo,
+            },
+        }
+
+    if 'custom_case_fields' in req:
+        # Each field's key is derived from its label (whitelisted charset,
+        # matching sanitize_case_slug()'s approach elsewhere) rather than
+        # accepted from the client directly, and de-duplicated - this is
+        # what every case record's custom_fields dict gets keyed by, so it
+        # must stay a safe, stable identifier even if two examiners pick
+        # the same display label.
+        fields = []
+        seen_keys = set()
+        for f in (req['custom_case_fields'] or []):
+            label = (f.get('label') or '').strip()[:60]
+            if not label:
+                continue
+            base_key = re.sub(r'[^a-z0-9_]+', '_', label.lower()).strip('_') or 'field'
+            key = base_key
+            n = 2
+            while key in seen_keys:
+                key = f"{base_key}_{n}"
+                n += 1
+            seen_keys.add(key)
+            fields.append({"key": key, "label": label})
+        cfg['custom_case_fields'] = fields
+
+    save_runtime_config(cfg)
+    return jsonify({"success": True})
+
+REPORT_LOGO_MAX_BYTES = 2_000_000
+
+@app.route('/api/settings/report_logo', methods=['POST'])
+@requires_auth
+def upload_report_logo():
+    logo_file = request.files.get('logo')
+    if not logo_file or not logo_file.filename:
+        return jsonify({"success": False, "error": "No logo file provided."}), 400
+
+    ext = os.path.splitext(logo_file.filename)[1].lower()
+    if ext not in ATTACHMENT_IMAGE_EXT:
+        return jsonify({"success": False, "error": f"Unsupported image type '{ext}'. Use one of: {', '.join(sorted(ATTACHMENT_IMAGE_EXT))}"}), 400
+
+    logo_file.seek(0, os.SEEK_END)
+    size = logo_file.tell()
+    logo_file.seek(0)
+    if size > REPORT_LOGO_MAX_BYTES:
+        return jsonify({"success": False, "error": f"Logo file too large ({size} bytes) - max {REPORT_LOGO_MAX_BYTES} bytes."}), 400
+
+    logo_path = os.path.join(INSTALL_DIR, f"report_logo{ext}")
+    # Remove any previously-saved logo under a different extension so
+    # switching image types doesn't leave a stale, unreferenced file behind.
+    for other_ext in ATTACHMENT_IMAGE_EXT:
+        stale_path = os.path.join(INSTALL_DIR, f"report_logo{other_ext}")
+        if stale_path != logo_path and os.path.exists(stale_path):
+            try:
+                os.remove(stale_path)
+            except OSError:
+                pass
+
+    logo_file.save(logo_path)
+
+    cfg = load_runtime_config()
+    cfg.setdefault('report_defaults', {}).setdefault('branding', {})['logo_path'] = logo_path
+    save_runtime_config(cfg)
+    return jsonify({"success": True, "message": "Logo uploaded."})
+
+@app.route('/api/settings/report_logo/clear', methods=['POST'])
+@requires_auth
+def clear_report_logo():
+    cfg = load_runtime_config()
+    logo_path = cfg.get('report_defaults', {}).get('branding', {}).get('logo_path', '')
+    if logo_path and os.path.exists(logo_path):
+        try:
+            os.remove(logo_path)
+        except OSError:
+            pass
+    if 'report_defaults' in cfg and 'branding' in cfg['report_defaults']:
+        cfg['report_defaults']['branding']['logo_path'] = ''
+    save_runtime_config(cfg)
+    return jsonify({"success": True})
 
 @app.route('/api/system/power', methods=['POST'])
 @requires_auth
@@ -3811,6 +4290,11 @@ def create_case():
             "created_at": now,
             "updated_at": now,
             "attachments": {"files": [], "reference_urls": []},
+            # Pre-populated (empty values) from the station's currently
+            # configured custom-field *definitions* (Settings > Case &
+            # Reporting) so this dict is always fully shaped rather than
+            # sparse - definitions live station-wide, values live per-case.
+            "custom_fields": {f["key"]: "" for f in get_custom_case_fields()},
             "events": [],
         }
         _write_case_file(os.path.join(case_dir, f"{slug}_case.json"), case_record)
@@ -3826,7 +4310,8 @@ def list_cases():
     cases = []
     try:
         for root, dirs, files in os.walk(EVIDENCE_ROOT):
-            # Same bounded-depth pattern as /api/reports/index below.
+            # Bound the scan depth so this can't turn into a very slow crawl
+            # of a huge or deeply-mounted evidence tree.
             depth = root[len(EVIDENCE_ROOT):].count(os.sep)
             if depth >= 6:
                 dirs[:] = []
@@ -4013,73 +4498,6 @@ def migrate_case_apply():
 
     log_chain_of_custody("case_migrate", {"case_folder": case_dir, "events_migrated": len(events), "skipped": len(unreadable)})
     return jsonify({"success": True, "case_file": case_file, "events_migrated": len(events), "skipped": unreadable})
-
-@app.route('/api/reports/index', methods=['GET'])
-@requires_auth
-def get_reports_index():
-    # One row per CASE for cases on the consolidated schema (summarized
-    # from their events, not walked into further - nothing report-related
-    # lives in a case's job subfolders anymore once it's on this schema).
-    # Standalone *_report.json files are still walked and listed exactly as
-    # before - this covers both genuine no-case/ad-hoc jobs (a permanent,
-    # not just transitional, code path) and any case not yet migrated,
-    # which stays visible here as a signal that it still needs migrating.
-    reports = []
-    try:
-        for root, dirs, files in os.walk(EVIDENCE_ROOT):
-            # Bound the scan depth so this can't turn into a very slow crawl
-            # of a huge or deeply-mounted evidence tree.
-            depth = root[len(EVIDENCE_ROOT):].count(os.sep)
-            if depth >= 6:
-                dirs[:] = []
-                continue
-
-            consolidated_name = f"{os.path.basename(root)}_case.json"
-            if consolidated_name in files:
-                try:
-                    with open(os.path.join(root, consolidated_name), 'r') as f:
-                        data = json.load(f)
-                    events = data.get('events', [])
-                    latest = max(events, key=lambda e: e.get('timestamp_start', ''), default=None)
-                    reports.append({
-                        "path": os.path.join(root, consolidated_name),
-                        "case_number": data.get('case_number', '--'),
-                        "evidence_id": f"{len(events)} item(s)" if events else "--",
-                        "examiner": data.get('examiner', '--'),
-                        "status": latest.get('acquisition_status', '--') if latest else '--',
-                        "timestamp_start": (latest.get('timestamp_start') if latest else None) or data.get('created_at', '--'),
-                        "method": "case (consolidated)",
-                        "is_case": True,
-                    })
-                except (json.JSONDecodeError, OSError):
-                    pass
-                dirs[:] = []  # a case folder never contains another case folder
-                continue
-
-            for fname in files:
-                if fname.endswith('_report.json'):
-                    fpath = os.path.join(root, fname)
-                    try:
-                        with open(fpath, 'r') as f:
-                            data = json.load(f)
-                        meta = data.get('case_metadata', {})
-                        reports.append({
-                            "path": fpath,
-                            "case_number": meta.get('case_number', '--'),
-                            "evidence_id": meta.get('evidence_id', '--'),
-                            "examiner": meta.get('examiner', '--'),
-                            "status": data.get('acquisition_status', '--'),
-                            "timestamp_start": data.get('timestamp_start', '--'),
-                            "method": data.get('acquisition_parameters', {}).get('method', data.get('acquisition_parameters', {}).get('output_format', '--')),
-                            "is_case": False,
-                        })
-                    except (json.JSONDecodeError, OSError):
-                        continue
-
-        reports.sort(key=lambda r: r.get('timestamp_start', ''), reverse=True)
-        return jsonify({"success": True, "reports": reports})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
 
 # --- Sleuth Kit (pytsk3): Browse/Search/Timeline Filesystems Inside Acquired Images ---
 # Everything here only ever reads the image file - nothing writes to evidence.
@@ -4483,7 +4901,15 @@ def _draw_pdf_header(c, header):
     c.drawString(50, y, f"Created: {header['created_at']}")
     y -= 20
     c.drawString(50, y, f"Notes: {header['notes'] or 'None'}")
-    y -= 30
+    y -= 20
+    for field in header.get('custom_fields', []):
+        if y < 60:
+            c.showPage()
+            c.setFont("Helvetica", 10)
+            y = 750
+        c.drawString(50, y, f"{field['label']}: {field['value']}"[:110])
+        y -= 15
+    y -= 15
     return y
 
 def _draw_pdf_audit_trail(c, y, entries):
@@ -4664,10 +5090,30 @@ def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, sect
     c = canvas.Canvas(pdf_path, pagesize=letter)
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, 750, "ARM FORENSIC ACQUISITION AUDIT REPORT")
-    c.setLineWidth(1)
-    c.line(50, 740, 550, 740)
 
-    y = _draw_pdf_header(c, header) if sections.get('case_info', True) else 710
+    # Station branding (Settings > Case & Reporting) renders as an ADDED
+    # subtitle line and/or a small top-right logo, never replacing the
+    # fixed title above - keeps every report immediately recognizable as
+    # coming from this app regardless of what a station has customized.
+    branding = header.get('branding', {})
+    title_bottom = 740
+    header_text = (branding.get('header_text') or '').strip()
+    if header_text:
+        c.setFont("Helvetica", 10)
+        c.drawString(50, 730, header_text[:120])
+        title_bottom = 720
+    logo_path = branding.get('logo_path') or ''
+    if logo_path and os.path.exists(logo_path):
+        try:
+            from reportlab.lib.utils import ImageReader
+            c.drawImage(ImageReader(logo_path), 470, 725, width=80, height=40, preserveAspectRatio=True, anchor='ne')
+        except Exception:
+            pass
+
+    c.setLineWidth(1)
+    c.line(50, title_bottom, 550, title_bottom)
+
+    y = (_draw_pdf_header(c, header) if sections.get('case_info', True) else title_bottom - 30)
 
     for i, event in enumerate(events):
         if i > 0:
@@ -4710,15 +5156,43 @@ def _build_html_report(header, events, urls, files, audit_entries, sections, job
         '.attach-item{margin-top:1em;padding:.7em;border:1px solid #ddd;border-radius:6px;}',
         '.attach-item img{max-width:100%;border:1px solid #ccc;display:block;margin-top:.4em;}',
         '.attach-item pre{background:#f5f5f5;padding:.6em;overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:.8em;margin-top:.4em;}',
+        '.branding-header{display:flex;justify-content:space-between;align-items:flex-start;gap:1em;border-bottom:2px solid #333;padding-bottom:.3em;}',
+        '.branding-header h1{border-bottom:none;padding-bottom:0;margin:0;}',
+        '.branding-header img{max-height:50px;max-width:160px;}',
+        '.branding-subtitle{color:#444;font-size:.9em;margin:.2em 0 1em;}',
         '</style></head><body>',
-        '<h1>ARM Forensic Acquisition Audit Report</h1>',
     ]
+
+    # Station branding (Settings > Case & Reporting) - an added subtitle
+    # line and/or a small logo, never a replacement of the fixed title, so
+    # every export stays immediately recognizable as coming from this app.
+    branding = header.get('branding', {})
+    logo_path = branding.get('logo_path') or ''
+    logo_html = ''
+    if logo_path and os.path.exists(logo_path):
+        ext = os.path.splitext(logo_path)[1].lower()
+        mime = {
+            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+            '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp',
+        }.get(ext, 'application/octet-stream')
+        try:
+            with open(logo_path, 'rb') as lf:
+                logo_b64 = base64.b64encode(lf.read()).decode('ascii')
+            logo_html = f'<img src="data:{mime};base64,{logo_b64}" alt="station logo">'
+        except OSError:
+            logo_html = ''
+    parts.append(f'<div class="branding-header"><h1>ARM Forensic Acquisition Audit Report</h1>{logo_html}</div>')
+    header_text = (branding.get('header_text') or '').strip()
+    if header_text:
+        parts.append(f'<div class="branding-subtitle">{esc(header_text)}</div>')
 
     if sections.get('case_info', True):
         parts.append('<table>')
         parts.append(f'<tr><th>Case Number</th><td>{esc(str(header["case_number"]))}</td><th>Examiner</th><td>{esc(str(header["examiner"]))}</td></tr>')
         parts.append(f'<tr><th>Created</th><td>{esc(str(header["created_at"]))}</td><th>Evidence Items</th><td>{len(events)}</td></tr>')
         parts.append(f'<tr><th>Notes</th><td colspan="3">{esc(str(header["notes"] or "None"))}</td></tr>')
+        for field in header.get('custom_fields', []):
+            parts.append(f'<tr><th>{esc(str(field["label"]))}</th><td colspan="3">{esc(str(field["value"]))}</td></tr>')
         parts.append('</table>')
 
     for event in events:
@@ -4820,8 +5294,14 @@ def export_report():
     if fmt not in ('pdf', 'html'):
         return jsonify({"error": "format must be 'pdf' or 'html'."}), 400
 
-    sections = req.get('sections') or {}
-    job_fields = req.get('job_fields') or {}
+    # Every consumer downstream already does sections.get(key, True) /
+    # job_fields.get(key, True), defensively defaulting to included when a
+    # key is absent - so falling back to the station's configured defaults
+    # only when the caller omits the dict entirely (not per-key) is safe
+    # and requires no changes to that downstream code.
+    report_defaults = get_report_defaults()
+    sections = req.get('sections') or report_defaults.get('sections') or {}
+    job_fields = req.get('job_fields') or report_defaults.get('job_fields') or {}
     requested_event_ids = req.get('event_ids')
     attachment_selection = req.get('attachment_selection')
 
@@ -4830,6 +5310,23 @@ def export_report():
             data = json.load(f)
     except Exception as e:
         return jsonify({"error": f"Could not read report: {e}"}), 500
+
+    # Custom-field *definitions* are station-wide; a case's custom-field
+    # *values* live on the case record itself (top-level for consolidated,
+    # nested under case_metadata for legacy - same split every other
+    # per-case field already uses). Join the two here into simple
+    # label/value pairs so the drawing functions don't need to know
+    # anything about where definitions are stored - empty values are
+    # skipped rather than rendered blank.
+    field_defs = get_custom_case_fields()
+
+    def _custom_field_pairs(values_dict):
+        values_dict = values_dict or {}
+        return [
+            {"label": f["label"], "value": values_dict[f["key"]]}
+            for f in field_defs
+            if values_dict.get(f["key"])
+        ]
 
     # A consolidated case file (has "events") exposes a case-level header +
     # a filterable list of job events; a legacy single-job report (no
@@ -4846,6 +5343,7 @@ def export_report():
             "examiner": data.get('examiner', 'N/A'),
             "notes": data.get('notes', ''),
             "created_at": data.get('created_at', 'N/A'),
+            "custom_fields": _custom_field_pairs(data.get('custom_fields')),
         }
         attachments = data.get('attachments', {})
     else:
@@ -4856,8 +5354,11 @@ def export_report():
             "examiner": meta.get('examiner', 'N/A'),
             "notes": meta.get('notes', ''),
             "created_at": data.get('timestamp_start', 'N/A'),
+            "custom_fields": _custom_field_pairs(meta.get('custom_fields')),
         }
         attachments = data.get('attachments', {})
+
+    header["branding"] = report_defaults.get('branding', {})
 
     # attachment_selection lets the export modal pick a subset of
     # explicitly-attached files/URLs plus any extra files discovered in the

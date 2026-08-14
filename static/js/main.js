@@ -10,8 +10,6 @@ const maxGraphPoints = 30;
 const graphData = Array(maxGraphPoints).fill(0);
 const graphLabels = Array(maxGraphPoints).fill('');
 
-let savedNetUser = '';
-let savedNetPass = '';
 let currentDrivesList = [];
 
 let currentBrowsePath = '/mnt';
@@ -1609,6 +1607,211 @@ function openFilePickerModal(mode) {
     openFolderModal(modalPickerMode);
 }
 
+// Station-wide custom case-field *definitions* (Settings > Case &
+// Reporting) - cached at page load so Reporting's Case Information block
+// can render input rows without a fetch every time a case is loaded.
+// Refetched whenever Settings saves new definitions, so the current
+// session's cache never goes stale after an edit.
+let customFieldDefsCache = [];
+
+async function fetchCustomFieldDefs() {
+    try {
+        const res = await fetch('/api/settings/case_reporting');
+        const data = await res.json();
+        if (data.success) customFieldDefsCache = data.custom_case_fields || [];
+    } catch (err) { /* non-fatal - Case Information just shows no custom fields */ }
+}
+
+// Renders one label+input pair per configured custom-field definition,
+// pre-filled from this specific case's stored values (a case's values dict
+// only ever has keys for fields that existed when it was created/last
+// saved - a field added to the station AFTER this case existed simply
+// starts blank here, exactly like any other new field would).
+function renderCustomFieldsForCase(values) {
+    const container = document.getElementById("customFieldsContainer");
+    if (!container) return;
+    container.innerHTML = '';
+    values = values || {};
+    customFieldDefsCache.forEach(def => {
+        const col = document.createElement('div');
+        col.className = 'col-md-6';
+        const label = document.createElement('label');
+        label.className = 'telemetry-grid-label d-block mb-1';
+        label.textContent = def.label;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'form-control form-control-sm custom-field-input';
+        input.dataset.fieldKey = def.key;
+        input.value = values[def.key] || '';
+        col.appendChild(label);
+        col.appendChild(input);
+        container.appendChild(col);
+    });
+}
+
+function gatherCustomFieldValues() {
+    const values = {};
+    document.querySelectorAll('#customFieldsContainer .custom-field-input').forEach(input => {
+        values[input.dataset.fieldKey] = input.value;
+    });
+    return values;
+}
+
+// --- Case & Reporting (Settings) ---
+// caseReportingFieldsEditing is a separate working copy from the shared
+// customFieldDefsCache Reporting reads - editing/adding a row here (before
+// Save) must never leak an incomplete/empty-key entry into Reporting's
+// Case Information rendering if a case happens to get loaded mid-edit.
+let caseReportingFieldsEditing = [];
+
+async function loadCaseReportingSettings() {
+    try {
+        const res = await fetch('/api/settings/case_reporting');
+        const data = await res.json();
+        if (!data.success) return;
+
+        const sections = data.report_defaults?.sections || {};
+        const jobFields = data.report_defaults?.job_fields || {};
+        const branding = data.report_defaults?.branding || {};
+
+        const setChecked = (id, obj, key) => {
+            const el = document.getElementById(id);
+            if (el) el.checked = Object.prototype.hasOwnProperty.call(obj, key) ? !!obj[key] : true;
+        };
+        setChecked('defSecCaseInfo', sections, 'case_info');
+        setChecked('defSecAttachments', sections, 'attachments');
+        setChecked('defSecAuditTrail', sections, 'audit_trail');
+        setChecked('defFieldTelemetry', jobFields, 'telemetry');
+        setChecked('defFieldParams', jobFields, 'params');
+        setChecked('defFieldHashes', jobFields, 'hashes');
+
+        const brandingText = document.getElementById("reportBrandingText");
+        if (brandingText) brandingText.value = branding.header_text || '';
+
+        const logoStatus = document.getElementById("reportLogoStatus");
+        if (logoStatus) logoStatus.textContent = branding.logo_path
+            ? `Current logo: ${branding.logo_path.split('/').pop()}`
+            : 'No logo set.';
+
+        caseReportingFieldsEditing = (data.custom_case_fields || []).map(f => ({ ...f }));
+        renderCustomFieldDefsEditor();
+    } catch (err) { /* non-fatal - card just shows its default markup state */ }
+}
+
+function renderCustomFieldDefsEditor() {
+    const container = document.getElementById("customFieldDefsContainer");
+    if (!container) return;
+    container.innerHTML = '';
+    if (caseReportingFieldsEditing.length === 0) {
+        const msg = document.createElement('div');
+        msg.className = 'small text-subtle';
+        msg.textContent = 'No custom fields configured yet.';
+        container.appendChild(msg);
+        return;
+    }
+    caseReportingFieldsEditing.forEach((def, idx) => {
+        const row = document.createElement('div');
+        row.className = 'd-flex gap-2 mb-2';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'form-control form-control-sm';
+        input.placeholder = 'Field label (e.g. Agency)';
+        input.value = def.label || '';
+        input.oninput = () => { caseReportingFieldsEditing[idx].label = input.value; };
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-sm btn-outline-danger';
+        delBtn.type = 'button';
+        delBtn.innerHTML = '<i class="bi bi-trash3"></i>';
+        delBtn.onclick = () => { caseReportingFieldsEditing.splice(idx, 1); renderCustomFieldDefsEditor(); };
+        row.appendChild(input);
+        row.appendChild(delBtn);
+        container.appendChild(row);
+    });
+}
+
+function addCustomFieldDefRow() {
+    caseReportingFieldsEditing.push({ key: '', label: '' });
+    renderCustomFieldDefsEditor();
+}
+
+async function saveCaseReportingSettings() {
+    const statusEl = document.getElementById("caseReportingStatus");
+
+    const sections = {
+        case_info: document.getElementById("defSecCaseInfo")?.checked ?? true,
+        attachments: document.getElementById("defSecAttachments")?.checked ?? true,
+        audit_trail: document.getElementById("defSecAuditTrail")?.checked ?? true,
+    };
+    const jobFields = {
+        telemetry: document.getElementById("defFieldTelemetry")?.checked ?? true,
+        params: document.getElementById("defFieldParams")?.checked ?? true,
+        hashes: document.getElementById("defFieldHashes")?.checked ?? true,
+    };
+    const headerText = document.getElementById("reportBrandingText")?.value || '';
+    const labels = caseReportingFieldsEditing.map(f => (f.label || '').trim()).filter(v => v.length > 0);
+
+    try {
+        const res = await fetch('/api/settings/case_reporting', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                report_defaults: { sections, job_fields: jobFields, branding: { header_text: headerText } },
+                custom_case_fields: labels.map(label => ({ label }))
+            })
+        });
+        const data = await res.json();
+        if (statusEl) {
+            statusEl.className = data.success ? 'small mt-2 text-success' : 'small mt-2 text-danger';
+            statusEl.innerText = data.success ? 'Settings saved.' : data.error;
+        }
+        if (data.success) {
+            // Refresh the shared cache Reporting reads, and reload this
+            // card's own editor from the server-confirmed (deduplicated,
+            // key-assigned) result rather than trusting the local working copy.
+            await fetchCustomFieldDefs();
+            loadCaseReportingSettings();
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.className = 'small mt-2 text-danger'; statusEl.innerText = 'Request failed.'; }
+    }
+}
+
+async function uploadReportLogo() {
+    const fileInput = document.getElementById("reportLogoFile");
+    const file = fileInput?.files[0];
+    const statusEl = document.getElementById("reportLogoStatus");
+    if (!file) return alert("Select a logo image file first.");
+
+    const formData = new FormData();
+    formData.append('logo', file);
+
+    try {
+        const res = await fetch('/api/settings/report_logo', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (data.success && fileInput) fileInput.value = '';
+        if (statusEl) {
+            statusEl.className = data.success ? 'small text-success' : 'small text-danger';
+            statusEl.innerText = data.success ? `Logo uploaded: ${file.name}` : data.error;
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.innerText = 'Request failed.'; }
+    }
+}
+
+async function clearReportLogo() {
+    const statusEl = document.getElementById("reportLogoStatus");
+    try {
+        const res = await fetch('/api/settings/report_logo/clear', { method: 'POST' });
+        const data = await res.json();
+        if (statusEl) {
+            statusEl.className = data.success ? 'small text-subtle' : 'small text-danger';
+            statusEl.innerText = data.success ? 'No logo set.' : data.error;
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.innerText = 'Request failed.'; }
+    }
+}
+
 async function loadCaseForEditing() {
     const reportPathEl = document.getElementById("editReportPath");
     const reportPath = reportPathEl ? reportPathEl.value.trim() : "";
@@ -1643,6 +1846,8 @@ async function loadCaseForEditing() {
             if (editNotes) editNotes.value = (isConsolidated ? currentLoadedReportData.notes : legacyMeta.notes) || "";
             if (legacyNotice) legacyNotice.style.display = isConsolidated ? 'none' : 'block';
 
+            renderCustomFieldsForCase(isConsolidated ? currentLoadedReportData.custom_fields : legacyMeta.custom_fields);
+
             loadCaseHistory();
             renderCaseJobs();
 
@@ -1668,57 +1873,6 @@ async function loadCaseForEditing() {
     }
 }
 
-// --- Case Index ---
-async function loadCaseIndex() {
-    const tbody = document.getElementById("caseIndexBody");
-    if (!tbody) return;
-    tbody.innerHTML = '<tr><td colspan="5" class="text-subtle">Loading...</td></tr>';
-
-    try {
-        const res = await fetch('/api/reports/index');
-        const data = await res.json();
-
-        if (!data.success) {
-            tbody.innerHTML = '';
-            const row = document.createElement('tr');
-            const cell = document.createElement('td');
-            cell.colSpan = 5;
-            cell.className = 'text-danger';
-            cell.textContent = data.error;
-            row.appendChild(cell);
-            tbody.appendChild(row);
-            return;
-        }
-
-        tbody.innerHTML = '';
-        if (data.reports.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-subtle">No reports found under the evidence root.</td></tr>';
-            return;
-        }
-
-        data.reports.forEach(r => {
-            const row = document.createElement('tr');
-            row.style.cursor = 'pointer';
-            row.title = r.path;
-
-            [r.case_number, r.evidence_id, r.method, r.status, r.timestamp_start].forEach(val => {
-                const cell = document.createElement('td');
-                cell.textContent = val; // untrusted report data - text node only
-                row.appendChild(cell);
-            });
-
-            row.onclick = () => {
-                const reportPathEl = document.getElementById("editReportPath");
-                if (reportPathEl) reportPathEl.value = r.path;
-                loadCaseForEditing();
-            };
-            tbody.appendChild(row);
-        });
-    } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-danger">Request failed.</td></tr>';
-    }
-}
-
 // --- Case Jobs (consolidated-schema case files only) ---
 // Renders currentLoadedReportData.events directly - already in memory from
 // loadCaseForEditing(), no extra fetch. A legacy single-job report has no
@@ -1734,7 +1888,7 @@ function renderCaseJobs() {
     }
     const events = currentLoadedReportData.events;
     if (!Array.isArray(events)) {
-        container.innerHTML = '<span class="text-subtle">This is a single-job legacy report with no separate job history - migrate it (Case Index or Case Manager) to see jobs listed individually.</span>';
+        container.innerHTML = '<span class="text-subtle">This is a single-job legacy report with no separate job history - migrate it via the Case Manager to see jobs listed individually.</span>';
         return;
     }
     if (events.length === 0) {
@@ -1806,6 +1960,12 @@ function renderCocEntries(container, entries) {
         actionSpan.textContent = entry.action;
         line1.appendChild(tsSpan);
         line1.appendChild(actionSpan);
+        if (entry.user) {
+            const userSpan = document.createElement('span');
+            userSpan.className = 'text-warning ms-2';
+            userSpan.textContent = `[${entry.user}]`; // examiner-chosen username - text node only
+            line1.appendChild(userSpan);
+        }
         row.appendChild(line1);
 
         const detailsStr = Object.entries(entry.details || {}).map(([k, v]) => `${k}=${v}`).join(', ');
@@ -1821,10 +1981,17 @@ function renderCocEntries(container, entries) {
     });
 }
 
-async function loadChainOfCustodyLog() {
+// force=true (manual Refresh click, or the initial load) always renders.
+// force=false (the auto-refresh timer) skips the render entirely if the
+// examiner has scrolled down to read older entries - renderCocEntries does
+// a full wipe-and-rebuild, not a diff, so re-rendering under them would
+// yank their scroll position back to the top every 20 seconds.
+async function loadChainOfCustodyLog(force = true) {
     const container = document.getElementById("cocLogContainer");
     if (!container) return;
-    container.innerHTML = '<span class="text-subtle">Loading...</span>';
+    if (!force && container.scrollTop > 20) return;
+
+    if (force) container.innerHTML = '<span class="text-subtle">Loading...</span>';
 
     try {
         const res = await fetch('/api/coc/log?limit=200');
@@ -1837,9 +2004,41 @@ async function loadChainOfCustodyLog() {
             container.appendChild(err);
             return;
         }
-        renderCocEntries(container, data.entries);
+        cocEntriesCache = data.entries;
+        applyCocSearchFilter();
     } catch (err) {
-        container.innerHTML = '<span class="text-danger">Request failed.</span>';
+        if (force) container.innerHTML = '<span class="text-danger">Request failed.</span>';
+    }
+}
+
+// Client-side only, against the already-fetched 200-entry cache - matches
+// the on-screen view already being an intentionally capped window (full-log
+// search stays CSV export's job, which reads the complete file separately
+// and needs no changes here).
+let cocEntriesCache = [];
+
+function applyCocSearchFilter() {
+    const container = document.getElementById("cocLogContainer");
+    if (!container) return;
+    const query = (document.getElementById("cocSearchInput")?.value || '').trim().toLowerCase();
+    const filtered = !query ? cocEntriesCache : cocEntriesCache.filter(entry => {
+        const haystack = `${entry.timestamp} ${entry.action} ${JSON.stringify(entry.details || {})} ${entry.user || ''}`.toLowerCase();
+        return haystack.includes(query);
+    });
+    renderCocEntries(container, filtered);
+}
+
+let cocAutoRefreshTimer = null;
+
+function startCocAutoRefresh() {
+    if (cocAutoRefreshTimer) return;
+    cocAutoRefreshTimer = setInterval(() => loadChainOfCustodyLog(false), 20000);
+}
+
+function stopCocAutoRefresh() {
+    if (cocAutoRefreshTimer) {
+        clearInterval(cocAutoRefreshTimer);
+        cocAutoRefreshTimer = null;
     }
 }
 
@@ -1898,6 +2097,8 @@ async function saveReportMetadata() {
     const examiner = document.getElementById("editExaminer")?.value || "";
     const notes = document.getElementById("editNotes")?.value || "";
 
+    const customFieldValues = gatherCustomFieldValues();
+
     if (Array.isArray(currentLoadedReportData.events)) {
         // Consolidated case file - case_number/examiner/notes are top-level
         // fields; events[] is left completely untouched so a metadata save
@@ -1905,6 +2106,7 @@ async function saveReportMetadata() {
         currentLoadedReportData.case_number = caseNumber;
         currentLoadedReportData.examiner = examiner;
         currentLoadedReportData.notes = notes;
+        currentLoadedReportData.custom_fields = customFieldValues;
     } else {
         // Legacy single-job report - preserve evidence_id (no longer
         // editable here, but still part of this report's own data).
@@ -1912,7 +2114,8 @@ async function saveReportMetadata() {
             ...(currentLoadedReportData.case_metadata || {}),
             case_number: caseNumber,
             examiner: examiner,
-            notes: notes
+            notes: notes,
+            custom_fields: customFieldValues
         };
     }
 
@@ -1952,12 +2155,36 @@ async function saveReportMetadata() {
 // exportEditedPdf did after its own auto-save), so unsaved edits in the
 // form are not silently included. If the examiner wants their edits in the
 // exported file, Save Report Changes first, same as before.
-function openExportReportModal() {
+async function openExportReportModal() {
     const reportPath = document.getElementById("editReportPath")?.value.trim();
     if (!reportPath || !currentLoadedReportData) {
         alert("Load a report/case first.");
         return;
     }
+
+    // Pre-set the section/field checkboxes from the station's configured
+    // defaults (Settings > Case & Reporting) before showing - still fully
+    // adjustable per-export from here, this only changes what starts checked.
+    try {
+        const res = await fetch('/api/settings/case_reporting');
+        const data = await res.json();
+        if (data.success) {
+            const sections = data.report_defaults?.sections || {};
+            const jobFields = data.report_defaults?.job_fields || {};
+            const setIfKnown = (id, obj, key) => {
+                if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                    const el = document.getElementById(id);
+                    if (el) el.checked = !!obj[key];
+                }
+            };
+            setIfKnown('expSecCaseInfo', sections, 'case_info');
+            setIfKnown('expSecAttachments', sections, 'attachments');
+            setIfKnown('expSecAuditTrail', sections, 'audit_trail');
+            setIfKnown('expFieldTelemetry', jobFields, 'telemetry');
+            setIfKnown('expFieldParams', jobFields, 'params');
+            setIfKnown('expFieldHashes', jobFields, 'hashes');
+        }
+    } catch (err) { /* non-fatal - modal just keeps its current checkbox state */ }
 
     renderExportItemsList();
     renderExportFilesList();
@@ -2310,11 +2537,27 @@ document.addEventListener('show.bs.collapse', (ev) => {
     const btn = document.querySelector(`[data-bs-target="#${ev.target.id}"]`);
     const icon = btn ? btn.querySelector('i') : null;
     if (icon) { icon.classList.remove('bi-chevron-down'); icon.classList.add('bi-chevron-up'); }
+    if (ev.target.id === 'collapse-set-audit') startCocAutoRefresh();
 });
 document.addEventListener('hide.bs.collapse', (ev) => {
     const btn = document.querySelector(`[data-bs-target="#${ev.target.id}"]`);
     const icon = btn ? btn.querySelector('i') : null;
     if (icon) { icon.classList.remove('bi-chevron-up'); icon.classList.add('bi-chevron-down'); }
+    if (ev.target.id === 'collapse-set-audit') stopCocAutoRefresh();
+});
+// Tab-panes just toggle a display class rather than firing collapse events,
+// so switching away from Settings to a different top-level tab while the
+// Audit Log card happens to still be expanded underneath would otherwise
+// leave the auto-refresh interval silently polling forever in the
+// background - stop it here too, and only restart it on return if the
+// card is still actually expanded.
+document.addEventListener('hidden.bs.tab', (ev) => {
+    if (ev.target.id === 'settings-tab') stopCocAutoRefresh();
+});
+document.addEventListener('shown.bs.tab', (ev) => {
+    if (ev.target.id === 'settings-tab' && document.getElementById('collapse-set-audit')?.classList.contains('show')) {
+        startCocAutoRefresh();
+    }
 });
 
 // --- Active Case Management ---
@@ -2533,7 +2776,6 @@ async function migrateCase(c) {
 
         alert(`Migrated ${applyData.events_migrated} job(s) into ${applyData.case_file}.`);
         loadExistingCases();
-        if (document.getElementById('caseIndexBody')) loadCaseIndex();
     } catch (err) {
         alert(`Migration request failed: ${err.message}`);
     }
@@ -2908,12 +3150,36 @@ async function loadNetworkHistory() {
     } catch (err) {}
 }
 
+// Shows/hides the credential fields, SSH-key textarea, and the
+// share-dropdown-vs-free-text-path toggle based on the selected protocol.
+// NFS: neither credentials nor a key, share comes from Query Shares.
+// SMB: optional credentials (guest fallback if blank, see app.py), share
+// comes from Query Shares. SFTP: credentials required (no anonymous SFTP)
+// plus an optional key instead of a password, and there's no share-listing
+// equivalent to query - the examiner types the remote path directly.
+function updateNetworkMountControls() {
+    const protocol = document.getElementById("netProtocol")?.value || "smb";
+    const credRow = document.getElementById("netCredentialsRow");
+    const keyRow = document.getElementById("netSftpKeyRow");
+    const shareSelect = document.getElementById("serverShareSelect");
+    const sftpPath = document.getElementById("netSftpPath");
+    const queryBtn = document.getElementById("btnQueryShares");
+
+    if (credRow) credRow.style.display = (protocol === 'smb' || protocol === 'sftp') ? '' : 'none';
+    if (keyRow) keyRow.style.display = (protocol === 'sftp') ? '' : 'none';
+    if (shareSelect) shareSelect.style.display = (protocol === 'sftp') ? 'none' : '';
+    if (sftpPath) sftpPath.style.display = (protocol === 'sftp') ? '' : 'none';
+    if (queryBtn) queryBtn.style.display = (protocol === 'sftp') ? 'none' : '';
+}
+
 async function queryNetworkShares(hostId, protocolId, shareSelectId, mountStatusId) {
     const hostEl = document.getElementById(hostId);
     const host = hostEl ? hostEl.value.trim() : "";
     const protocol = document.getElementById(protocolId)?.value || "smb";
     const shareSelect = document.getElementById(shareSelectId);
     const mountStatus = document.getElementById(mountStatusId);
+    const user = document.getElementById("netUser")?.value.trim() || "";
+    const pass = document.getElementById("netPass")?.value || "";
 
     if (!host) return alert("Please enter a server IP address.");
 
@@ -2924,7 +3190,7 @@ async function queryNetworkShares(hostId, protocolId, shareSelectId, mountStatus
         const res = await fetch('/api/list_server_shares', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ protocol, host, user: savedNetUser, pass: savedNetPass })
+            body: JSON.stringify({ protocol, host, user, pass })
         });
         const data = await res.json();
 
@@ -2951,11 +3217,18 @@ async function queryNetworkShares(hostId, protocolId, shareSelectId, mountStatus
 async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusId) {
     const host = document.getElementById(hostId)?.value.trim() || "";
     const protocol = document.getElementById(protocolId)?.value || "smb";
-    const shareSelect = document.getElementById(shareSelectId);
-    const share = shareSelect ? shareSelect.value : "";
+    // SFTP has no share-listing dropdown to pick from - the examiner types
+    // the remote path directly (see updateNetworkMountControls()).
+    const share = protocol === 'sftp'
+        ? (document.getElementById("netSftpPath")?.value.trim() || "")
+        : (document.getElementById(shareSelectId)?.value || "");
     const mountStatus = document.getElementById(mountStatusId);
+    const user = document.getElementById("netUser")?.value.trim() || "";
+    const pass = document.getElementById("netPass")?.value || "";
+    const key = protocol === 'sftp' ? (document.getElementById("netSftpKey")?.value || "") : "";
 
-    if (!share) return alert("Please select or enter an exported share name first.");
+    if (!share) return alert(protocol === 'sftp' ? "Please enter a remote path first." : "Please select or enter an exported share name first.");
+    if (protocol === 'sftp' && !user) return alert("SFTP requires a username.");
 
     if (mountStatus) mountStatus.innerText = "Mounting share...";
 
@@ -2963,7 +3236,7 @@ async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusI
         const res = await fetch('/api/mount_network', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ protocol, host, share, user: savedNetUser, pass: savedNetPass })
+            body: JSON.stringify({ protocol, host, share, user, pass, key })
         });
         const data = await res.json();
 
@@ -3421,6 +3694,300 @@ async function changeAdminPassword() {
     }
 }
 
+// --- User Accounts (Security & Privacy) ---
+// Basic Auth has no real session/logout, so "who's logged in" is only ever
+// known by asking the backend what the current request's credentials
+// resolved to (see /api/whoami, app.py's g.forensic_user) - there is no
+// client-side concept of a logged-in user beyond this cached role, which
+// only exists to gray out admin-only controls, never to actually enforce
+// anything (the backend re-checks role on every request regardless).
+let currentUsername = null;
+let currentUserRole = null;
+
+async function fetchWhoami() {
+    try {
+        const res = await fetch('/api/whoami');
+        const data = await res.json();
+        currentUsername = data.username;
+        currentUserRole = data.role;
+        const indicator = document.getElementById("whoamiIndicator");
+        if (indicator && currentUsername) {
+            indicator.style.display = '';
+            indicator.textContent = `Logged in as: ${currentUsername} (${currentUserRole})`;
+        }
+        applyUserMgmtRoleGating();
+    } catch (err) { /* non-fatal - indicator just stays hidden */ }
+}
+
+function applyUserMgmtRoleGating() {
+    const isAdmin = currentUserRole === 'admin';
+    const notice = document.getElementById("userMgmtStandardNotice");
+    if (notice) notice.style.display = isAdmin ? 'none' : '';
+    ['newUserUsername', 'newUserPassword', 'newUserRole', 'btnCreateUser'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !isAdmin;
+    });
+}
+
+async function loadUserList() {
+    const container = document.getElementById("userListContainer");
+    if (!container) return;
+    container.innerHTML = '';
+    const loading = document.createElement('span');
+    loading.className = 'text-subtle';
+    loading.textContent = 'Loading...';
+    container.appendChild(loading);
+
+    try {
+        const res = await fetch('/api/users/list');
+        const data = await res.json();
+        container.innerHTML = '';
+        if (!data.success) {
+            const msg = document.createElement('span');
+            msg.className = 'text-subtle';
+            msg.textContent = res.status === 403
+                ? 'Only admins can view the account list.'
+                : (data.error || 'Failed to load accounts.');
+            container.appendChild(msg);
+            return;
+        }
+        if (data.users.length === 0) {
+            const msg = document.createElement('span');
+            msg.className = 'text-subtle';
+            msg.textContent = 'No accounts found.';
+            container.appendChild(msg);
+            return;
+        }
+        const isAdmin = currentUserRole === 'admin';
+        data.users.forEach(u => {
+            const row = document.createElement('div');
+            row.className = 'd-flex justify-content-between align-items-center mb-1 pb-1 border-bottom border-secondary';
+
+            const left = document.createElement('div');
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'text-info fw-bold';
+            nameSpan.textContent = u.username; // untrusted (examiner-chosen) - text node only
+            const roleBadge = document.createElement('span');
+            roleBadge.className = `badge ms-2 ${u.role === 'admin' ? 'bg-warning text-dark' : 'bg-secondary'}`;
+            roleBadge.textContent = u.role;
+            left.appendChild(nameSpan);
+            left.appendChild(roleBadge);
+
+            const right = document.createElement('div');
+            const resetBtn = document.createElement('button');
+            resetBtn.className = 'btn btn-xs btn-outline-warning py-0 px-2 me-1';
+            resetBtn.textContent = 'Reset Password';
+            resetBtn.disabled = !isAdmin;
+            resetBtn.onclick = () => openUserActionModal('reset', u.username);
+            const delBtn = document.createElement('button');
+            delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-2';
+            delBtn.textContent = 'Delete';
+            delBtn.disabled = !isAdmin;
+            delBtn.onclick = () => openUserActionModal('delete', u.username);
+            right.appendChild(resetBtn);
+            right.appendChild(delBtn);
+
+            row.appendChild(left);
+            row.appendChild(right);
+            container.appendChild(row);
+        });
+    } catch (err) {
+        container.innerHTML = '';
+        const err_el = document.createElement('span');
+        err_el.className = 'text-danger';
+        err_el.textContent = 'Request failed.';
+        container.appendChild(err_el);
+    }
+}
+
+async function createUser() {
+    const username = document.getElementById("newUserUsername")?.value.trim() || '';
+    const password = document.getElementById("newUserPassword")?.value || '';
+    const role = document.getElementById("newUserRole")?.value || 'standard';
+    const statusEl = document.getElementById("userMgmtStatus");
+
+    if (!username || !password) {
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.innerText = 'Enter a username and password.'; }
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/users/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, role })
+        });
+        const data = await res.json();
+        if (statusEl) {
+            statusEl.className = data.success ? 'small text-success' : 'small text-danger';
+            statusEl.innerText = data.success ? data.message : data.error;
+        }
+        if (data.success) {
+            document.getElementById("newUserUsername").value = '';
+            document.getElementById("newUserPassword").value = '';
+            loadUserList();
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.innerText = 'Request failed.'; }
+    }
+}
+
+// Shared modal for the two admin actions that require re-entering the
+// caller's own current password (delete / reset another user's password) -
+// both are irreversible/account-takeover-equivalent, so both get the same
+// extra confirmation friction self-service password changes already have.
+let userActionModalInstance = null;
+let userActionPendingMode = null;
+let userActionPendingTarget = null;
+
+function openUserActionModal(mode, username) {
+    userActionPendingMode = mode;
+    userActionPendingTarget = username;
+
+    document.getElementById("userActionModalTitle").textContent = mode === 'delete'
+        ? `Delete user: ${username}`
+        : `Reset password for: ${username}`;
+    document.getElementById("userActionTargetName2").textContent = username;
+    document.getElementById("userActionNewPassRow").style.display = mode === 'reset' ? '' : 'none';
+    document.getElementById("userActionNewPass").value = '';
+    document.getElementById("userActionCurrentPass").value = '';
+    document.getElementById("userActionModalStatus").innerHTML = '';
+
+    const warning = document.getElementById("userActionModalWarning");
+    warning.style.display = '';
+    warning.textContent = mode === 'delete'
+        ? 'This permanently removes the account. This cannot be undone.'
+        : 'This immediately replaces their password - they will need the new one to log in.';
+
+    const confirmBtn = document.getElementById("userActionConfirmBtn");
+    confirmBtn.textContent = mode === 'delete' ? 'Delete User' : 'Reset Password';
+
+    if (!userActionModalInstance) {
+        userActionModalInstance = new bootstrap.Modal(document.getElementById('userActionModal'));
+    }
+    userActionModalInstance.show();
+}
+
+async function submitUserAction() {
+    const currentPassword = document.getElementById("userActionCurrentPass")?.value || '';
+    const statusEl = document.getElementById("userActionModalStatus");
+    if (!currentPassword) {
+        statusEl.className = 'small mt-2 text-danger';
+        statusEl.innerText = 'Enter your current password to confirm.';
+        return;
+    }
+
+    let url, body;
+    if (userActionPendingMode === 'delete') {
+        url = '/api/users/delete';
+        body = { username: userActionPendingTarget, current_password: currentPassword };
+    } else {
+        const newPassword = document.getElementById("userActionNewPass")?.value || '';
+        if (!newPassword || newPassword.length < 8) {
+            statusEl.className = 'small mt-2 text-danger';
+            statusEl.innerText = 'New password must be at least 8 characters.';
+            return;
+        }
+        url = '/api/users/reset_password';
+        body = { username: userActionPendingTarget, new_password: newPassword, current_password: currentPassword };
+    }
+
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!data.success) {
+            statusEl.className = 'small mt-2 text-danger';
+            statusEl.innerText = data.error;
+            return;
+        }
+        userActionModalInstance.hide();
+        loadUserList();
+    } catch (err) {
+        statusEl.className = 'small mt-2 text-danger';
+        statusEl.innerText = 'Request failed.';
+    }
+}
+
+// --- TLS Certificate (Security & Privacy) ---
+async function loadTlsStatus() {
+    const container = document.getElementById("tlsStatusContainer");
+    if (!container) return;
+    container.innerHTML = '<span class="text-subtle">Loading...</span>';
+
+    try {
+        const res = await fetch('/api/system/tls_status');
+        const data = await res.json();
+        container.innerHTML = '';
+        if (!data.success) {
+            const err_el = document.createElement('span');
+            err_el.className = 'text-danger';
+            err_el.textContent = data.error || 'Failed to read certificate status.';
+            container.appendChild(err_el);
+            return;
+        }
+        if (!data.configured) {
+            const msg = document.createElement('span');
+            msg.className = 'text-subtle';
+            msg.textContent = 'TLS is not configured on this station. A certificate can still be installed below, but nginx must be set up (via install.py or manually) for it to take effect.';
+            container.appendChild(msg);
+            return;
+        }
+        [['Subject', data.subject], ['Issuer', data.issuer], ['Valid From', data.not_before],
+         ['Valid Until', data.not_after], ['SHA-256 Fingerprint', data.fingerprint_sha256]].forEach(([label, value]) => {
+            const row = document.createElement('div');
+            row.className = 'd-flex justify-content-between mb-1';
+            const labelSpan = document.createElement('span');
+            labelSpan.className = 'text-subtle';
+            labelSpan.textContent = label;
+            const valueSpan = document.createElement('span');
+            valueSpan.className = 'text-info text-break ms-2';
+            valueSpan.textContent = value || '--';
+            row.appendChild(labelSpan);
+            row.appendChild(valueSpan);
+            container.appendChild(row);
+        });
+    } catch (err) {
+        container.innerHTML = '<span class="text-danger">Request failed.</span>';
+    }
+}
+
+async function uploadTlsCertificate() {
+    const certFile = document.getElementById("tlsCertFile")?.files[0];
+    const keyFile = document.getElementById("tlsKeyFile")?.files[0];
+    const statusEl = document.getElementById("tlsUploadStatus");
+
+    if (!certFile || !keyFile) {
+        if (statusEl) { statusEl.className = 'small mt-2 text-danger'; statusEl.innerText = 'Select both a certificate file and a private key file.'; }
+        return;
+    }
+
+    if (statusEl) { statusEl.className = 'small mt-2 text-subtle'; statusEl.innerText = 'Validating and installing...'; }
+
+    const formData = new FormData();
+    formData.append('cert_file', certFile);
+    formData.append('key_file', keyFile);
+
+    try {
+        const res = await fetch('/api/system/tls_upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (statusEl) {
+            statusEl.className = data.success ? 'small mt-2 text-success' : 'small mt-2 text-danger';
+            statusEl.innerText = data.success ? data.message : data.error;
+        }
+        if (data.success) {
+            document.getElementById("tlsCertFile").value = '';
+            document.getElementById("tlsKeyFile").value = '';
+            loadTlsStatus();
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.className = 'small mt-2 text-danger'; statusEl.innerText = 'Request failed.'; }
+    }
+}
+
 // --- Shared Service Controls & Diagnostics right pane (Advanced Settings) ---
 // Every button in that card reports here instead of alert() popups, so the
 // examiner has a running record of what was run and what it returned. The
@@ -3768,6 +4335,8 @@ document.addEventListener("DOMContentLoaded", () => {
     updateAndroidModeHelp();
     initHelpTooltips();
     initActiveCaseBar();
+    fetchWhoami();
+    fetchCustomFieldDefs();
 
     fetchNetworkInterfaces();
 
