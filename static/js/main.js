@@ -2522,42 +2522,27 @@ document.addEventListener('shown.bs.modal', (ev) => {
     if (topBackdrop) topBackdrop.style.zIndex = zBase;
 });
 
-// --- Collapsible Settings Cards ---
-// Settings is a plain stacked list (.settings-list), not a GridStack grid
-// like every other tab - see templates/index.html and CLAUDE.md for why.
-// Bootstrap's .collapse toggling a card-body in normal document flow just
-// works here with zero extra height-tracking: nothing reserves space for
-// hidden content the way a GridStack grid-stack-item's fixed gs-h did.
-//
-// Generic chevron-flip for any Bootstrap .collapse toggle - finds whichever
-// button targets the collapse element that just opened/closed and flips its
-// icon, rather than wiring a dedicated handler per card. Works for any
-// collapsible card in the app, not just Settings.
-document.addEventListener('show.bs.collapse', (ev) => {
-    const btn = document.querySelector(`[data-bs-target="#${ev.target.id}"]`);
-    const icon = btn ? btn.querySelector('i') : null;
-    if (icon) { icon.classList.remove('bi-chevron-down'); icon.classList.add('bi-chevron-up'); }
-    if (ev.target.id === 'collapse-set-audit') startCocAutoRefresh();
-});
-document.addEventListener('hide.bs.collapse', (ev) => {
-    const btn = document.querySelector(`[data-bs-target="#${ev.target.id}"]`);
-    const icon = btn ? btn.querySelector('i') : null;
-    if (icon) { icon.classList.remove('bi-chevron-up'); icon.classList.add('bi-chevron-down'); }
-    if (ev.target.id === 'collapse-set-audit') stopCocAutoRefresh();
-});
-// Tab-panes just toggle a display class rather than firing collapse events,
-// so switching away from Settings to a different top-level tab while the
-// Audit Log card happens to still be expanded underneath would otherwise
-// leave the auto-refresh interval silently polling forever in the
-// background - stop it here too, and only restart it on return if the
-// card is still actually expanded.
-document.addEventListener('hidden.bs.tab', (ev) => {
-    if (ev.target.id === 'settings-tab') stopCocAutoRefresh();
-});
+// --- Settings: left-nav category list + single right-hand content pane ---
+// The left column (#settingsNavList) is a Bootstrap list-group used as tabs
+// (data-bs-toggle="list"), which reuses the exact same Tab component/events
+// as this app's regular horizontal tabs (shown.bs.tab/hidden.bs.tab) - no
+// separate wiring needed for the nav-switching itself, only for the one
+// side effect that cares which category is active: the Audit Log's
+// auto-refresh interval.
 document.addEventListener('shown.bs.tab', (ev) => {
-    if (ev.target.id === 'settings-tab' && document.getElementById('collapse-set-audit')?.classList.contains('show')) {
+    if (ev.target.id === 'settingsNavAudit') startCocAutoRefresh();
+    // Returning to the whole Settings sidebar tab while Audit Log happens
+    // to still be the active category underneath - top-level tab-panes just
+    // toggle a display class, they don't refire shown.bs.tab on a nested
+    // list-group's own children when a different top-level tab takes back
+    // over, so this is the only way to know refresh should resume.
+    if (ev.target.id === 'settings-tab' && document.getElementById('settingsNavAudit')?.classList.contains('active')) {
         startCocAutoRefresh();
     }
+});
+document.addEventListener('hidden.bs.tab', (ev) => {
+    if (ev.target.id === 'settingsNavAudit') stopCocAutoRefresh();
+    if (ev.target.id === 'settings-tab') stopCocAutoRefresh();
 });
 
 // --- Active Case Management ---
@@ -2995,14 +2980,8 @@ async function fetchSystemInfo() {
 // lives inside that card, scoped to whichever drive is selected there.
 function goToDriveManagement() {
     switchToTab('settings-tab');
-    const collapseEl = document.getElementById('collapse-set-eject');
-    if (collapseEl && !collapseEl.classList.contains('show')) {
-        new bootstrap.Collapse(collapseEl, { show: true });
-    }
-    setTimeout(() => {
-        const card = collapseEl?.closest('.card');
-        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 350);
+    const navBtn = document.getElementById('settingsNavEject');
+    if (navBtn) new bootstrap.Tab(navBtn).show();
 }
 
 // Shows the write-block status of whichever drive is selected in Drive

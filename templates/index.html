@@ -168,13 +168,25 @@
         .folder-icon { color: var(--folder-gold); }
 
         .grid-stack-item-content { overflow: hidden !important; }
-        /* Settings tab: a plain stacked accordion list, not a draggable/resizable
-           GridStack dashboard like every other tab - Settings cards aren't meant to
-           be repositioned, so there's no drag-handle/lock-state interaction here,
-           just a continuous list that expands/collapses in place. */
-        .settings-list { border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
-        .settings-list .card { border: none; border-radius: 0; border-bottom: 1px solid var(--border-color); box-shadow: none; height: auto; }
-        .settings-list .card:last-child { border-bottom: none; }
+        /* Settings tab: a left nav (category list) + single right-hand content
+           pane, not a draggable/resizable GridStack dashboard like every other
+           tab, and not the plain stacked accordion this used to be either -
+           clicking a category swaps what's shown on the right, matching a
+           typical Settings-app layout. */
+        .settings-shell { display: flex; align-items: stretch; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.4); background-color: var(--card-bg); }
+        .settings-nav { flex: 0 0 auto; width: max-content; min-width: 200px; border-right: 1px solid var(--border-color); background: rgba(255,255,255,0.02); padding: 6px 0; }
+        .settings-nav .list-group-item {
+            display: flex; align-items: center; gap: 10px;
+            background: transparent; color: var(--text-subtle); font-weight: 600; font-size: 0.88rem;
+            border: none; border-left: 3px solid transparent; border-radius: 0;
+            padding: 12px 18px; white-space: nowrap; text-align: left;
+        }
+        .settings-nav .list-group-item i { font-size: 1.05rem; flex-shrink: 0; }
+        .settings-nav .list-group-item:hover { color: var(--text-bright); background: rgba(255,255,255,0.03); }
+        .settings-nav .list-group-item.active {
+            color: var(--accent-cyan); font-weight: 700; background: rgba(0, 242, 254, 0.07); border-left-color: var(--accent-cyan);
+        }
+        .settings-content { flex: 1; min-width: 0; padding: 20px; }
         .ui-resizable-handle { filter: invert(100%); }
         .accordion-button { background-color: var(--card-bg); color: var(--text-bright); box-shadow: none; }
         .accordion-button:not(.collapsed) { background-color: var(--card-bg); color: var(--accent-cyan); box-shadow: none; }
@@ -933,16 +945,21 @@
 
             <!-- APP 5: SETTINGS -->
             <div class="tab-pane fade" id="settings-app" role="tabpanel">
-                <div class="settings-list">
+                <div class="settings-shell">
+                    <div class="settings-nav list-group" id="settingsNavList" role="tablist">
+                        <button class="list-group-item list-group-item-action active" id="settingsNavAuth" data-bs-toggle="list" data-bs-target="#settings-pane-auth" type="button" role="tab"><i class="bi bi-shield-lock-fill"></i>Security & Privacy</button>
+                        <button class="list-group-item list-group-item-action" id="settingsNavEject" data-bs-toggle="list" data-bs-target="#settings-pane-eject" type="button" role="tab"><i class="bi bi-usb-drive-fill"></i>Drive Management</button>
+                        <button class="list-group-item list-group-item-action" id="settingsNavDiag" data-bs-toggle="list" data-bs-target="#settings-pane-diag" type="button" role="tab"><i class="bi bi-terminal-fill"></i>Service Controls & Diagnostics</button>
+                        <button class="list-group-item list-group-item-action" id="settingsNavAudit" data-bs-toggle="list" data-bs-target="#settings-pane-audit" type="button" role="tab"><i class="bi bi-journal-text"></i>Audit Log</button>
+                        <button class="list-group-item list-group-item-action" id="settingsNavCaseReporting" data-bs-toggle="list" data-bs-target="#settings-pane-casereporting" type="button" role="tab"><i class="bi bi-collection"></i>Case & Reporting</button>
+                        <button class="list-group-item list-group-item-action" id="settingsNavNetwork" data-bs-toggle="list" data-bs-target="#settings-pane-network" type="button" role="tab"><i class="bi bi-diagram-3"></i>Network Drive Mounting</button>
+                    </div>
 
-                    <!-- Section 1: Security & Privacy -->
-                    <div class="card" id="set-card-auth">
-                        <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                            <span><i class="bi bi-shield-lock-fill me-2"></i>Security & Privacy</span>
-                            <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-auth" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
-                        </div>
-                        <div class="collapse" id="collapse-set-auth">
-                        <div class="card-body py-3">
+                    <div class="settings-content tab-content" id="settingsTabContent">
+
+                        <!-- Security & Privacy -->
+                        <div class="tab-pane fade show active" id="settings-pane-auth" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-shield-lock-fill me-2"></i>Security & Privacy</h6>
                             <div class="telemetry-grid-label mb-2">Change My Password</div>
                             <div class="mb-2">
                                 <label class="telemetry-grid-label d-block mb-1">Current Password</label>
@@ -1008,17 +1025,10 @@
                             </button>
                             <div id="tlsUploadStatus" class="small mt-2"></div>
                         </div>
-                        </div>
-                    </div>
 
-                    <!-- Section 2: Hardware Eject & Buffer Purge -->
-                    <div class="card" id="set-card-eject">
-                        <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                            <span><i class="bi bi-usb-drive-fill me-2"></i>Drive Management</span>
-                            <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-eject" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
-                        </div>
-                        <div class="collapse" id="collapse-set-eject">
-                        <div class="card-body py-3">
+                        <!-- Drive Management -->
+                        <div class="tab-pane fade" id="settings-pane-eject" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-usb-drive-fill me-2"></i>Drive Management</h6>
                             <label class="telemetry-grid-label d-block mb-1">Select Connected Target Drive:</label>
                             <select id="ejectDriveSelect" class="form-select form-select-sm drive-select mb-2" onchange="refreshDriveManagementStatus()">
                                 <option value="">-- Choose Connected Drive --</option>
@@ -1032,17 +1042,10 @@
                                 <button class="btn btn-danger btn-sm flex-fill fw-bold" onclick="ejectTargetDrive()"><i class="bi bi-eject-fill me-1"></i>Safe Detach</button>
                             </div>
                         </div>
-                        </div>
-                    </div>
 
-                    <!-- Section 3: Service Controls, Updates, Power & Diagnostics (combined) -->
-                    <div class="card" id="set-card-diag">
-                        <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                            <span><i class="bi bi-terminal-fill me-2"></i>Service Controls & Diagnostics</span>
-                            <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-diag" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
-                        </div>
-                        <div class="collapse" id="collapse-set-diag">
-                        <div class="card-body py-2">
+                        <!-- Service Controls, Updates, Power & Diagnostics (combined) -->
+                        <div class="tab-pane fade" id="settings-pane-diag" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-terminal-fill me-2"></i>Service Controls & Diagnostics</h6>
                             <div class="row g-2">
                                 <div class="col-md-3">
                                     <div class="d-grid gap-1">
@@ -1114,44 +1117,32 @@
                                 </div>
                             </div>
                         </div>
-                        </div>
-                    </div>
 
-                    <!-- Audit Log (moved from Reporting) -->
-                    <div class="card" id="set-card-audit">
-                        <div class="card-header d-flex justify-content-between align-items-center py-2">
-                            <span><i class="bi bi-journal-text me-2"></i>Audit Log</span>
-                            <div class="d-flex gap-1">
-                                <button class="btn btn-sm btn-outline-success fw-bold py-0" onclick="exportAuditLogCsv()"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Export to CSV</button>
-                                <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadChainOfCustodyLog()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-                                <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-audit" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
+                        <!-- Audit Log -->
+                        <div class="tab-pane fade" id="settings-pane-audit" role="tabpanel">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <h6 class="text-info fw-bold mb-0"><i class="bi bi-journal-text me-2"></i>Audit Log</h6>
+                                <div class="d-flex gap-1">
+                                    <button class="btn btn-sm btn-outline-success fw-bold py-0" onclick="exportAuditLogCsv()"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Export to CSV</button>
+                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadChainOfCustodyLog()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                </div>
                             </div>
-                        </div>
-                        <div class="collapse" id="collapse-set-audit">
-                        <div class="card-body py-2">
                             <div class="small text-subtle mb-2">
                                 Station-wide action log (most recent first, this view capped at 200 entries and
-                                auto-refreshes every 20 seconds while expanded - Export to CSV always includes the
-                                full log). Entries are attributed to the logged-in user once real accounts exist
-                                (Security & Privacy above); stations still on the legacy shared login only get a
-                                timestamp and source IP.
+                                auto-refreshes every 20 seconds while this tab is open - Export to CSV always
+                                includes the full log). Entries are attributed to the logged-in user once real
+                                accounts exist (Security & Privacy); stations still on the legacy shared login
+                                only get a timestamp and source IP.
                             </div>
                             <input type="text" id="cocSearchInput" class="form-control form-control-sm mb-2" placeholder="Search these entries..." oninput="applyCocSearchFilter()">
                             <div id="cocLogContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
                                 <span class="text-subtle">Tap Refresh to load recent entries.</span>
                             </div>
                         </div>
-                        </div>
-                    </div>
 
-                    <!-- Case & Reporting: report export defaults/branding + custom case-field definitions (replaces the old Case Index table) -->
-                    <div class="card" id="set-card-casereporting">
-                        <div class="card-header d-flex justify-content-between align-items-center py-2">
-                            <span><i class="bi bi-collection me-2"></i>Case & Reporting</span>
-                            <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-casereporting" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
-                        </div>
-                        <div class="collapse" id="collapse-set-casereporting">
-                        <div class="card-body py-2">
+                        <!-- Case & Reporting: report export defaults/branding + custom case-field definitions -->
+                        <div class="tab-pane fade" id="settings-pane-casereporting" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-collection me-2"></i>Case & Reporting</h6>
                             <div class="telemetry-grid-label mb-2">Report Export Defaults</div>
                             <div class="small text-subtle mb-2">Pre-checks these sections/fields when opening the Export Report modal from Reporting - still adjustable per-export there.</div>
                             <div class="row g-2 mb-2">
@@ -1191,20 +1182,13 @@
                             <button class="btn btn-sm btn-success fw-bold w-100" onclick="saveCaseReportingSettings()"><i class="bi bi-check2-circle me-1"></i>Save Settings</button>
                             <div id="caseReportingStatus" class="small mt-2"></div>
                         </div>
-                        </div>
-                    </div>
 
-                    <!-- Network Drive Mounting (moved from Acquisition - a mount is a system-wide
-                         resource, not specific to any one tool, so it lives here now. Mounting
-                         just produces a path under /mnt; use any tab's own destination field +
-                         Browse button to point at it, the same way you'd browse to any local path. -->
-                    <div class="card" id="set-card-network">
-                        <div class="card-header d-flex justify-content-between align-items-center py-2">
-                            <span><i class="bi bi-diagram-3 me-2"></i>Network Drive Mounting</span>
-                            <button class="btn btn-sm btn-link text-info p-0" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-set-network" aria-expanded="false"><i class="bi bi-chevron-down"></i></button>
-                        </div>
-                        <div class="collapse" id="collapse-set-network">
-                        <div class="card-body py-2">
+                        <!-- Network Drive Mounting (moved from Acquisition - a mount is a system-wide
+                             resource, not specific to any one tool, so it lives here now. Mounting
+                             just produces a path under /mnt; use any tab's own destination field +
+                             Browse button to point at it, the same way you'd browse to any local path. -->
+                        <div class="tab-pane fade" id="settings-pane-network" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-diagram-3 me-2"></i>Network Drive Mounting</h6>
                             <div class="small text-subtle mb-2">Mount an NFS, SMB/CIFS, or SFTP share once here - every tool's own destination field can then Browse into it, the same as any local path under the evidence root.</div>
                             <div class="row g-2 mb-2">
                                 <div class="col-md-3">
@@ -1234,7 +1218,7 @@
                             </div>
                             <div id="mountStatus" class="small text-light"></div>
                         </div>
-                        </div>
+
                     </div>
                 </div>
             </div>
