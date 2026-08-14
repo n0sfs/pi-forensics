@@ -2734,6 +2734,11 @@ function openCaseManagerModal() {
     }
     const statusEl = document.getElementById("createCaseStatus");
     if (statusEl) statusEl.textContent = '';
+    // Examiner is no longer free-typed - it's whoever is currently logged
+    // in (readonly field, see #newCaseExaminer), so a case's examiner of
+    // record always matches its real chain-of-custody attribution.
+    const examinerEl = document.getElementById("newCaseExaminer");
+    if (examinerEl) examinerEl.value = currentUsername || '';
     caseManagerModalInstance.show();
     loadExistingCases();
 }
@@ -3073,12 +3078,13 @@ async function fetchSystemInfo() {
         isWriteBlockActive = data.write_blocker_active;
         const wbBadgeBtn = document.getElementById("wbBadgeBtn");
         if (wbBadgeBtn) {
+            wbBadgeBtn.title = `${activeDrive} - go to Settings > Drive Management to change this`;
             if (isWriteBlockActive) {
-                wbBadgeBtn.className = "btn btn-sm btn-danger fw-bold";
-                wbBadgeBtn.innerHTML = `<i class="bi bi-lock-fill me-1"></i>Write Blocker: PROTECTED (${activeDrive})`;
+                wbBadgeBtn.className = "btn btn-sm btn-success fw-bold ms-auto";
+                wbBadgeBtn.innerHTML = '<i class="bi bi-lock-fill me-1"></i>Write Blocker: On';
             } else {
-                wbBadgeBtn.className = "btn btn-sm btn-warning text-dark fw-bold";
-                wbBadgeBtn.innerHTML = `<i class="bi bi-unlock-fill me-1"></i>Write Blocker: UNLOCKED (${activeDrive})`;
+                wbBadgeBtn.className = "btn btn-sm btn-danger fw-bold ms-auto";
+                wbBadgeBtn.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Write Blocker: Off';
             }
         }
     } catch (err) {}
@@ -3857,6 +3863,60 @@ async function fetchWhoami() {
         }
         applyUserMgmtRoleGating();
     } catch (err) { /* non-fatal - indicator just stays hidden */ }
+}
+
+let switchUserModalInstance = null;
+
+function openSwitchUserModal() {
+    if (!switchUserModalInstance) {
+        switchUserModalInstance = new bootstrap.Modal(document.getElementById('switchUserModal'));
+    }
+    const statusEl = document.getElementById("switchUserStatus");
+    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'small'; }
+    const userEl = document.getElementById("switchUserUsername");
+    const passEl = document.getElementById("switchUserPassword");
+    if (userEl) userEl.value = '';
+    if (passEl) passEl.value = '';
+    switchUserModalInstance.show();
+}
+
+// Basic Auth has no server-side session to swap, so there's no real
+// "logout" - the standard client-side technique is: validate the new
+// credentials directly with a manual Authorization header (bypassing
+// whatever the browser already has cached for this origin), then navigate
+// to a same-origin URL with those credentials embedded so the browser
+// adopts them as its new cached credential going forward. Best-effort:
+// most Chromium/Firefox-based browsers honor this, but it's not a
+// guaranteed mechanism in every browser (see CLAUDE.md).
+async function submitSwitchUser() {
+    const username = document.getElementById("switchUserUsername")?.value.trim();
+    const password = document.getElementById("switchUserPassword")?.value || '';
+    const statusEl = document.getElementById("switchUserStatus");
+
+    if (!username || !password) {
+        if (statusEl) { statusEl.textContent = 'Enter both a username and password.'; statusEl.className = 'small text-danger'; }
+        return;
+    }
+
+    if (statusEl) { statusEl.textContent = 'Checking credentials...'; statusEl.className = 'small text-info'; }
+
+    try {
+        const res = await fetch('/api/whoami', {
+            headers: { 'Authorization': 'Basic ' + btoa(`${username}:${password}`) }
+        });
+        if (res.status === 401) {
+            if (statusEl) { statusEl.textContent = 'Incorrect username or password.'; statusEl.className = 'small text-danger'; }
+            return;
+        }
+        if (!res.ok) {
+            if (statusEl) { statusEl.textContent = 'Request failed - try again.'; statusEl.className = 'small text-danger'; }
+            return;
+        }
+        if (statusEl) { statusEl.textContent = 'Switching...'; statusEl.className = 'small text-success'; }
+        location.href = `${location.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(password)}@${location.host}${location.pathname}`;
+    } catch (err) {
+        if (statusEl) { statusEl.textContent = `Failed: ${err.message}`; statusEl.className = 'small text-danger'; }
+    }
 }
 
 function applyUserMgmtRoleGating() {
