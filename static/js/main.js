@@ -1892,10 +1892,8 @@ async function loadCaseForEditing() {
         const isConsolidated = Array.isArray(currentLoadedReportData.events);
         const legacyMeta = currentLoadedReportData.case_metadata || {};
 
-        const editNotes = document.getElementById("editNotes");
         const legacyNotice = document.getElementById("repLegacyNotice");
 
-        if (editNotes) editNotes.value = (isConsolidated ? currentLoadedReportData.notes : legacyMeta.notes) || "";
         if (legacyNotice) legacyNotice.style.display = isConsolidated ? 'none' : 'block';
 
         renderCustomFieldsForCase(isConsolidated ? currentLoadedReportData.custom_fields : legacyMeta.custom_fields);
@@ -2335,8 +2333,6 @@ async function saveReportMetadata() {
         return;
     }
 
-    const notes = document.getElementById("editNotes")?.value || "";
-
     const customFieldValues = gatherCustomFieldValues();
 
     const narrativeFields = {
@@ -2348,20 +2344,19 @@ async function saveReportMetadata() {
     };
 
     if (Array.isArray(currentLoadedReportData.events)) {
-        // Consolidated case file - notes/narrative are top-level fields;
-        // case_number/examiner are no longer editable here (they come
-        // read-only from the Active Case Bar) so they're left untouched,
-        // same as events[] and case_notes[] already are.
-        currentLoadedReportData.notes = notes;
+        // Consolidated case file - narrative fields are top-level;
+        // case_number/examiner/notes are no longer editable here (notes
+        // is set once at case creation, the other two come read-only from
+        // the Active Case Bar) so all three are left untouched, same as
+        // events[] and case_notes[] already are.
         currentLoadedReportData.custom_fields = customFieldValues;
         Object.assign(currentLoadedReportData, narrativeFields);
     } else {
-        // Legacy single-job report - preserve case_number/examiner/
+        // Legacy single-job report - preserve case_number/examiner/notes/
         // evidence_id (no longer editable here, but still part of this
         // report's own data).
         currentLoadedReportData.case_metadata = {
             ...(currentLoadedReportData.case_metadata || {}),
-            notes: notes,
             custom_fields: customFieldValues,
             ...narrativeFields
         };
