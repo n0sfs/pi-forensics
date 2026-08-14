@@ -26,6 +26,7 @@ let activeSelectedIsDir = false;
 
 let currentLoadedReportData = null;
 let currentAttachedFilesList = [];
+let exportReportModalInstance = null;
 
 // activeCase shape: {case_number, examiner, case_folder} | null
 let activeCase = null;
@@ -1646,21 +1647,212 @@ async function saveReportMetadata() {
     }
 }
 
-async function exportEditedPdf() {
-    await saveReportMetadata();
-    const reportPathEl = document.getElementById("editReportPath");
-    const reportPath = reportPathEl ? reportPathEl.value.trim() : "";
-    if (reportPath) {
-        triggerPdfDownload(reportPath);
+// --- Export Report Modal ---
+// Deliberately a separate action from "Save Report Changes" - Export always
+// reads whatever is currently on disk at editReportPath (same as the old
+// exportEditedPdf did after its own auto-save), so unsaved edits in the
+// form are not silently included. If the examiner wants their edits in the
+// exported file, Save Report Changes first, same as before.
+function openExportReportModal() {
+    const reportPath = document.getElementById("editReportPath")?.value.trim();
+    if (!reportPath || !currentLoadedReportData) {
+        alert("Load a report/case first.");
+        return;
+    }
+
+    renderExportItemsList();
+    renderExportFilesList();
+
+    const statusEl = document.getElementById("exportReportStatus");
+    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'small text-subtle'; }
+
+    if (!exportReportModalInstance) {
+        exportReportModalInstance = new bootstrap.Modal(document.getElementById('exportReportModal'));
+    }
+    exportReportModalInstance.show();
+}
+
+function renderExportItemsList() {
+    const listEl = document.getElementById("exportItemsList");
+    if (!listEl) return;
+    listEl.innerHTML = '';
+
+    const events = Array.isArray(currentLoadedReportData?.events) ? currentLoadedReportData.events : null;
+
+    if (!events) {
+        listEl.innerHTML = '<div class="text-subtle small p-2">Single-job legacy report - always fully included, nothing to pick.</div>';
+        return;
+    }
+    if (events.length === 0) {
+        listEl.innerHTML = '<div class="text-subtle small p-2">No jobs recorded against this case yet.</div>';
+        return;
+    }
+
+    [...events].sort((a, b) => (b.timestamp_start || '').localeCompare(a.timestamp_start || '')).forEach(ev => {
+        const meta = ev.case_metadata || {};
+        const row = document.createElement('label');
+        row.className = 'list-group-item list-group-item-action bg-dark text-light border-secondary py-2 d-flex align-items-start gap-2';
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input export-item-check mt-1';
+        cb.checked = true;
+        cb.dataset.eventId = ev.event_id || '';
+
+        const textWrap = document.createElement('div');
+        const line1 = document.createElement('div');
+        line1.className = 'small';
+        line1.appendChild(document.createTextNode(`${(ev.tool || '--').toUpperCase()}  ${meta.evidence_id || '--'}`)); // untrusted evidence data - text node only
+        const line2 = document.createElement('div');
+        line2.className = 'text-subtle small';
+        line2.textContent = `${ev.timestamp_start || '--'} · ${ev.acquisition_status || '--'}`;
+        textWrap.appendChild(line1);
+        textWrap.appendChild(line2);
+
+        row.appendChild(cb);
+        row.appendChild(textWrap);
+        listEl.appendChild(row);
+    });
+}
+
+// Combines this case's explicit attachments (files added via "Add File
+// Attachment" and reference URLs, both from currentLoadedReportData) with
+// anything else physically sitting in the case folder that /api/cases/
+// discover_files finds (e.g. dropped in via File Explorer's Copy-to
+// action, or left behind by a recovery/analysis tool) - the latter start
+// unchecked since they weren't deliberately attached, unlike the former.
+async function renderExportFilesList() {
+    const listEl = document.getElementById("exportFilesList");
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="text-subtle small p-2">Loading...</div>';
+
+    const attach = currentLoadedReportData?.attachments || {};
+    const urls = attach.reference_urls || [];
+    let explicitFiles = attach.files || [];
+    if (!explicitFiles.length && attach.image_path) explicitFiles = [attach.image_path];
+
+    const reportPath = document.getElementById("editReportPath")?.value.trim() || "";
+    const caseFolder = reportPath.substring(0, reportPath.lastIndexOf('/'));
+
+    let discovered = [];
+    let truncated = false;
+    if (caseFolder) {
+        try {
+            const res = await fetch(`/api/cases/discover_files?case_folder=${encodeURIComponent(caseFolder)}`);
+            const data = await res.json();
+            if (data.success) {
+                discovered = data.files || [];
+                truncated = !!data.truncated;
+            }
+        } catch (err) {}
+    }
+
+    const explicitSet = new Set(explicitFiles);
+    const extraFiles = discovered.filter(f => !explicitSet.has(f.path));
+
+    listEl.innerHTML = '';
+
+    if (urls.length === 0 && explicitFiles.length === 0 && extraFiles.length === 0) {
+        listEl.innerHTML = '<div class="text-subtle small p-2">No attached files, notes, or reference URLs found for this case.</div>';
+        return;
+    }
+
+    const addRow = (label, sublabel, kind, value, checked) => {
+        const row = document.createElement('label');
+        row.className = 'list-group-item list-group-item-action bg-dark text-light border-secondary py-2 d-flex align-items-start gap-2';
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input export-attach-check mt-1';
+        cb.checked = checked;
+        cb.dataset.kind = kind;
+        cb.dataset.value = value;
+
+        const textWrap = document.createElement('div');
+        const line1 = document.createElement('div');
+        line1.className = 'small text-break';
+        line1.textContent = label; // untrusted (url/filename) - text node only
+        textWrap.appendChild(line1);
+        if (sublabel) {
+            const line2 = document.createElement('div');
+            line2.className = 'text-subtle small';
+            line2.textContent = sublabel;
+            textWrap.appendChild(line2);
+        }
+
+        row.appendChild(cb);
+        row.appendChild(textWrap);
+        listEl.appendChild(row);
+    };
+
+    urls.forEach(u => addRow(u, 'Reference URL', 'url', u, true));
+    explicitFiles.forEach(fp => addRow(fp.split('/').pop(), `Attached · ${fp}`, 'file', fp, true));
+    extraFiles.forEach(f => {
+        const kindLabel = f.kind === 'image' ? 'Image' : f.kind === 'text' ? 'Text' : 'File';
+        const sizeKb = f.size_bytes ? ` · ${(f.size_bytes / 1024).toFixed(1)} KB` : '';
+        addRow(f.name, `Found in case folder · ${kindLabel}${sizeKb}`, 'file', f.path, false);
+    });
+
+    if (truncated) {
+        const note = document.createElement('div');
+        note.className = 'text-subtle small p-2';
+        note.textContent = 'Showing the first 200 discovered files - some case-folder files were not listed.';
+        listEl.appendChild(note);
     }
 }
 
-async function triggerPdfDownload(reportPath) {
+function setExportCheckboxes(checked) {
+    document.querySelectorAll('.export-section-check, .export-field-check').forEach(cb => { cb.checked = checked; });
+}
+
+function setExportItemCheckboxes(checked) {
+    document.querySelectorAll('.export-item-check').forEach(cb => { cb.checked = checked; });
+}
+
+function setExportFileCheckboxes(checked) {
+    document.querySelectorAll('.export-attach-check').forEach(cb => { cb.checked = checked; });
+}
+
+async function runExportReport() {
+    const reportPathEl = document.getElementById("editReportPath");
+    const reportPath = reportPathEl ? reportPathEl.value.trim() : "";
+    if (!reportPath) return alert("Load a report/case first.");
+
+    const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
+    const sections = {
+        case_info: !!document.getElementById("expSecCaseInfo")?.checked,
+        attachments: !!document.getElementById("expSecAttachments")?.checked,
+        audit_trail: !!document.getElementById("expSecAuditTrail")?.checked,
+    };
+    const job_fields = {
+        telemetry: !!document.getElementById("expFieldTelemetry")?.checked,
+        params: !!document.getElementById("expFieldParams")?.checked,
+        hashes: !!document.getElementById("expFieldHashes")?.checked,
+    };
+
+    const itemChecks = document.querySelectorAll('.export-item-check');
+    let event_ids = null;
+    if (itemChecks.length > 0) {
+        event_ids = Array.from(itemChecks).filter(cb => cb.checked).map(cb => cb.dataset.eventId);
+        if (event_ids.length === 0) {
+            alert("Select at least one evidence item to include.");
+            return;
+        }
+    }
+
+    const attachment_selection = { urls: [], files: [] };
+    document.querySelectorAll('.export-attach-check:checked').forEach(cb => {
+        (cb.dataset.kind === 'url' ? attachment_selection.urls : attachment_selection.files).push(cb.dataset.value);
+    });
+
+    const statusEl = document.getElementById("exportReportStatus");
+    if (statusEl) { statusEl.textContent = 'Generating...'; statusEl.className = 'small text-info'; }
+
     try {
-        const res = await fetch('/api/export_pdf', {
+        const res = await fetch('/api/export_report', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ report_path: reportPath })
+            body: JSON.stringify({ report_path: reportPath, format, sections, job_fields, event_ids, attachment_selection })
         });
 
         if (res.ok) {
@@ -1668,16 +1860,19 @@ async function triggerPdfDownload(reportPath) {
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = reportPath.split('/').pop().replace('.json', '.pdf');
+            const ext = format === 'html' ? '.html' : '.pdf';
+            a.download = reportPath.split('/').pop().replace('.json', ext);
             document.body.appendChild(a);
             a.click();
             a.remove();
+            if (statusEl) { statusEl.textContent = 'Export complete.'; statusEl.className = 'small text-success'; }
+            if (exportReportModalInstance) exportReportModalInstance.hide();
         } else {
             const data = await res.json();
-            alert(`PDF Export Failed: ${data.error}`);
+            if (statusEl) { statusEl.textContent = `Export failed: ${data.error}`; statusEl.className = 'small text-danger'; }
         }
     } catch (err) {
-        console.error("PDF Export error:", err);
+        if (statusEl) { statusEl.textContent = `Export failed: ${err.message}`; statusEl.className = 'small text-danger'; }
     }
 }
 
