@@ -194,6 +194,12 @@ current_job = {
 
 active_proc = None
 last_net_check = {"time": time.time(), "bytes_sent": 0, "bytes_recv": 0}
+# Per-interface equivalent of last_net_check above, keyed by interface name -
+# used by get_network_interfaces() so each interface's hover tooltip shows
+# its own real throughput instead of the station-wide aggregate repeated
+# identically on every pill (including a down interface, which was showing
+# the same nonzero figures as whichever interface was actually active).
+last_pernic_check = {}
 
 # --- Persistence Helpers ---
 def load_mount_history():
@@ -3863,9 +3869,13 @@ def eject_usb_drive():
 @app.route('/api/system/interfaces', methods=['GET'])
 @requires_auth
 def get_network_interfaces():
+    global last_pernic_check
     interfaces = []
     addrs = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
+    pernic_counters = psutil.net_io_counters(pernic=True)
+    now = time.time()
+    new_pernic_check = {}
 
     for iface, addr_list in addrs.items():
         ip_addr = "Unassigned"
@@ -3877,16 +3887,40 @@ def get_network_interfaces():
                 mac_addr = addr.address
 
         is_up = stats[iface].isup if iface in stats else False
-        speed = stats[iface].speed if iface in stats else 0
+
+        # Real per-interface throughput, computed the same delta-over-time
+        # way system_info()'s station-wide network_speed already is, just
+        # keyed per interface instead of summed across all of them - a down
+        # interface naturally deltas to ~0 since its counters stop moving,
+        # but is forced to exactly 0 below regardless as a safety net against
+        # any driver quirk reporting phantom traffic on a down link.
+        upload_mbps = 0.0
+        download_mbps = 0.0
+        counters = pernic_counters.get(iface)
+        if counters is not None:
+            prev = last_pernic_check.get(iface)
+            if prev is not None:
+                time_delta = max(now - prev["time"], 0.001)
+                sent_delta = max(counters.bytes_sent - prev["bytes_sent"], 0)
+                recv_delta = max(counters.bytes_recv - prev["bytes_recv"], 0)
+                upload_mbps = round((sent_delta / (1024 * 1024)) / time_delta, 2)
+                download_mbps = round((recv_delta / (1024 * 1024)) / time_delta, 2)
+            new_pernic_check[iface] = {"time": now, "bytes_sent": counters.bytes_sent, "bytes_recv": counters.bytes_recv}
+
+        if not is_up:
+            upload_mbps = 0.0
+            download_mbps = 0.0
 
         interfaces.append({
             "interface": iface,
             "ip": ip_addr,
             "mac": mac_addr,
             "active": is_up,
-            "speed_mbps": speed
+            "upload_mbps": upload_mbps,
+            "download_mbps": download_mbps
         })
 
+    last_pernic_check = new_pernic_check
     return jsonify({"success": True, "interfaces": interfaces})
 
 @app.route('/api/system/maintenance/purge_logs', methods=['POST'])

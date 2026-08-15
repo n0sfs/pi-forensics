@@ -1,8 +1,4 @@
 let isWriteBlockActive = true;
-// Station-wide throughput (not per-interface), refreshed every 2s by
-// fetchSystemInfo() - read by fetchNetworkInterfaces() to fold into each
-// interface pill's tooltip instead of two always-visible navbar spans.
-let lastNetworkSpeed = { download_mbps: 0, upload_mbps: 0 };
 let throughputChart = null;
 const maxGraphPoints = 30;
 const graphData = Array(maxGraphPoints).fill(0);
@@ -3217,27 +3213,40 @@ function getActiveTargetDrive() {
     return document.getElementById("driveSelect")?.value || "/dev/sda";
 }
 
+// Writes to both the navbar's telemetry element (desktop-only, hidden
+// below 768px) and its Settings > Service Controls & Diagnostics mirror
+// (mobile-only) - one poll, two display targets, whichever is actually
+// visible at the current viewport width just reflects the same fetch.
+function setTelemetryText(baseId, text) {
+    const el = document.getElementById(baseId);
+    if (el) el.innerText = text;
+    const mobileEl = document.getElementById(baseId + "Settings");
+    if (mobileEl) mobileEl.innerText = text;
+}
+function setTelemetryWidth(baseId, percent) {
+    const el = document.getElementById(baseId);
+    if (el) el.style.width = `${percent}%`;
+    const mobileEl = document.getElementById(baseId + "Settings");
+    if (mobileEl) mobileEl.style.width = `${percent}%`;
+}
+
 async function fetchSystemInfo() {
     const activeDrive = getActiveTargetDrive();
     try {
         const res = await fetch(`/api/system_info?drive=${encodeURIComponent(activeDrive)}`);
         const data = await res.json();
 
-        if (document.getElementById("cpuVal")) document.getElementById("cpuVal").innerText = `${data.cpu_percent}%`;
-        if (document.getElementById("cpuBar")) document.getElementById("cpuBar").style.width = `${data.cpu_percent}%`;
+        setTelemetryText("cpuVal", `${data.cpu_percent}%`);
+        setTelemetryWidth("cpuBar", data.cpu_percent);
 
         if (data.local_storage) {
-            if (document.getElementById("storageVal")) document.getElementById("storageVal").innerText = `${data.local_storage.used_gb} / ${data.local_storage.total_gb} GB`;
-            if (document.getElementById("storageBar")) document.getElementById("storageBar").style.width = `${data.local_storage.percent_used}%`;
+            setTelemetryText("storageVal", `${data.local_storage.used_gb} / ${data.local_storage.total_gb} GB`);
+            setTelemetryWidth("storageBar", data.local_storage.percent_used);
         }
 
         if (data.memory) {
-            if (document.getElementById("memVal")) document.getElementById("memVal").innerText = `${data.memory.used_gb} / ${data.memory.total_gb} GB (${data.memory.percent_used}%)`;
-            if (document.getElementById("memBar")) document.getElementById("memBar").style.width = `${data.memory.percent_used}%`;
-        }
-
-        if (data.network_speed) {
-            lastNetworkSpeed = data.network_speed;
+            setTelemetryText("memVal", `${data.memory.used_gb} / ${data.memory.total_gb} GB (${data.memory.percent_used}%)`);
+            setTelemetryWidth("memBar", data.memory.percent_used);
         }
 
         isWriteBlockActive = data.write_blocker_active;
@@ -4618,45 +4627,57 @@ async function triggerSystemPower(action) {
     }
 }
 
-async function fetchNetworkInterfaces() {
-    const container = document.getElementById("headerInterfacesContainer");
+// Shared by fetchNetworkInterfaces() below to build the same pill list
+// into whichever container is passed - the navbar's (desktop-only) and
+// its Settings > Service Controls & Diagnostics mirror (mobile-only) both
+// render from the one /api/system/interfaces fetch, not two separate polls.
+function renderInterfacePills(container, interfaces) {
     if (!container) return;
+    // Dispose any existing tooltips before rebuilding - otherwise
+    // Bootstrap's tooltip instances leak/stay attached to elements
+    // that no longer exist once we replace the container's contents.
+    container.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+        const existing = bootstrap.Tooltip.getInstance(el);
+        if (existing) existing.dispose();
+    });
+
+    container.innerHTML = '';
+    interfaces.forEach(iface => {
+        const pill = document.createElement('span');
+        pill.className = 'badge bg-dark border border-secondary text-light font-monospace fw-normal';
+        pill.style.cursor = 'default';
+        pill.setAttribute('data-bs-toggle', 'tooltip');
+        pill.setAttribute('data-bs-placement', 'bottom');
+        pill.setAttribute('data-bs-html', 'true');
+        pill.setAttribute('title', `Status: ${iface.active ? 'UP' : 'DOWN'}<br>IP: ${iface.ip}<br>MAC: ${iface.mac}<br>Download: ${iface.download_mbps} MB/s<br>Upload: ${iface.upload_mbps} MB/s`);
+
+        const dot = document.createElement('span');
+        dot.className = 'me-1';
+        dot.innerHTML = iface.active ? '<i class="bi bi-circle-fill text-success" style="font-size:8px"></i>' : '<i class="bi bi-circle-fill text-secondary" style="font-size:8px"></i>';
+        pill.appendChild(dot);
+        pill.appendChild(document.createTextNode(iface.interface));
+
+        container.appendChild(pill);
+        new bootstrap.Tooltip(pill, { trigger: 'hover focus' });
+    });
+}
+
+async function fetchNetworkInterfaces() {
+    const headerContainer = document.getElementById("headerInterfacesContainer");
+    const settingsContainer = document.getElementById("settingsInterfacesContainer");
+    if (!headerContainer && !settingsContainer) return;
 
     try {
         const res = await fetch('/api/system/interfaces');
         const data = await res.json();
 
         if (data.success && data.interfaces) {
-            // Dispose any existing tooltips before rebuilding - otherwise
-            // Bootstrap's tooltip instances leak/stay attached to elements
-            // that no longer exist once we replace the container's contents.
-            container.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
-                const existing = bootstrap.Tooltip.getInstance(el);
-                if (existing) existing.dispose();
-            });
-
-            container.innerHTML = '';
-            data.interfaces.forEach(iface => {
-                const pill = document.createElement('span');
-                pill.className = 'badge bg-dark border border-secondary text-light font-monospace fw-normal';
-                pill.style.cursor = 'default';
-                pill.setAttribute('data-bs-toggle', 'tooltip');
-                pill.setAttribute('data-bs-placement', 'bottom');
-                pill.setAttribute('data-bs-html', 'true');
-                pill.setAttribute('title', `Status: ${iface.active ? 'UP' : 'DOWN'}<br>IP: ${iface.ip}<br>MAC: ${iface.mac}<br>Speed: ${iface.speed_mbps} Mbps<br>Download: ${lastNetworkSpeed.download_mbps} MB/s<br>Upload: ${lastNetworkSpeed.upload_mbps} MB/s`);
-
-                const dot = document.createElement('span');
-                dot.className = 'me-1';
-                dot.innerHTML = iface.active ? '<i class="bi bi-circle-fill text-success" style="font-size:8px"></i>' : '<i class="bi bi-circle-fill text-secondary" style="font-size:8px"></i>';
-                pill.appendChild(dot);
-                pill.appendChild(document.createTextNode(iface.interface));
-
-                container.appendChild(pill);
-                new bootstrap.Tooltip(pill, { trigger: 'hover focus' });
-            });
+            renderInterfacePills(headerContainer, data.interfaces);
+            renderInterfacePills(settingsContainer, data.interfaces);
         }
     } catch (err) {
-        if (container) container.innerHTML = '<span class="text-danger small">Error</span>';
+        if (headerContainer) headerContainer.innerHTML = '<span class="text-danger small">Error</span>';
+        if (settingsContainer) settingsContainer.innerHTML = '<span class="text-danger small">Error</span>';
     }
 }
 
