@@ -475,6 +475,7 @@ async function loadExplorer(path) {
 
                 updateContextToolbar(item);
                 previewSelectedFile(item);
+                if (explorerRightView === 'metadata') loadExplorerMetadataPane();
             };
 
             itemDiv.ondblclick = () => {
@@ -639,7 +640,6 @@ document.addEventListener('DOMContentLoaded', () => {
 function updateContextToolbar(item) {
     const btnDelete = document.getElementById("btnDeleteFile");
     const btnCopy = document.getElementById("btnCopyFile");
-    const btnMetadata = document.getElementById("btnFileMetadata");
     const btnBrowseImage = document.getElementById("btnBrowseImage");
     const btnVerifyHash = document.getElementById("btnVerifyHash");
     const btnRecoverFromImage = document.getElementById("btnRecoverFromImage");
@@ -652,7 +652,6 @@ function updateContextToolbar(item) {
 
     if (btnDelete) btnDelete.disabled = false;
     if (btnCopy) btnCopy.disabled = false;
-    if (btnMetadata) btnMetadata.disabled = item.is_dir;
     if (btnBinwalk) btnBinwalk.disabled = item.is_dir;
     if (btnStrings) btnStrings.disabled = item.is_dir;
     if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
@@ -705,6 +704,7 @@ async function deleteSelectedFile() {
                 preview.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
                 preview.innerHTML = '<i class="bi bi-cursor fs-1 text-subtle mb-2"></i><span class="text-subtle small">Select a file on the left to preview it here.</span>';
             }
+            switchExplorerRightView('preview');
             loadExplorer(explorerPath);
         } else {
             alert(`Delete failed: ${data.error}`);
@@ -713,19 +713,52 @@ async function deleteSelectedFile() {
 }
 
 // --- File Metadata Viewer (ExifTool) ---
-let metadataModalInstance = null;
+// Lives inline in File Explorer's right panel as a second view alongside
+// Preview (#explorerPreview / #explorerMetadata, toggled by
+// switchExplorerRightView()) rather than a modal - switching files while
+// the Metadata view is active re-fetches automatically, same as Preview
+// already does.
+let explorerRightView = 'preview'; // 'preview' | 'metadata'
 
-async function viewSelectedMetadata() {
-    if (!activeSelectedFile) return;
+// Both panes can carry Bootstrap's .d-flex utility in their className at
+// various points (the default placeholder state, and previewSelectedFile()'s
+// is_dir branch never resets className at all) - .d-flex is !important in
+// Bootstrap, which silently beats a plain inline style.display='none' (the
+// same gotcha already documented elsewhere in this project re: the Image
+// Browser toolbar). Hiding must go through setProperty(..., 'important') to
+// reliably win regardless of whichever classes happen to be on the element
+// at toggle time; showing just clears the inline override entirely.
+function setPaneVisible(el, visible) {
+    if (!el) return;
+    if (visible) el.style.removeProperty('display');
+    else el.style.setProperty('display', 'none', 'important');
+}
 
-    if (!metadataModalInstance) {
-        metadataModalInstance = new bootstrap.Modal(document.getElementById('metadataModal'));
+function switchExplorerRightView(view) {
+    explorerRightView = view;
+    const previewPane = document.getElementById('explorerPreview');
+    const metadataPane = document.getElementById('explorerMetadata');
+    const previewBtn = document.getElementById('explorerViewPreviewBtn');
+    const metadataBtn = document.getElementById('explorerViewMetadataBtn');
+    setPaneVisible(previewPane, view === 'preview');
+    setPaneVisible(metadataPane, view === 'metadata');
+    if (previewBtn) previewBtn.className = `btn btn-xs py-0 px-2 ${view === 'preview' ? 'btn-info' : 'btn-outline-info'}`;
+    if (metadataBtn) metadataBtn.className = `btn btn-xs py-0 px-2 ${view === 'metadata' ? 'btn-info' : 'btn-outline-info'}`;
+    if (view === 'metadata') loadExplorerMetadataPane();
+}
+
+async function loadExplorerMetadataPane() {
+    const container = document.getElementById('explorerMetadata');
+    if (!container) return;
+
+    if (!activeSelectedFile || activeSelectedIsDir) {
+        container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+        container.innerHTML = '<i class="bi bi-info-circle fs-1 text-subtle mb-2"></i><span class="text-subtle small">Select a file on the left to view its metadata.</span>';
+        return;
     }
-    const container = document.getElementById("metadataContainer");
-    const nameEl = document.getElementById("metadataFileName");
-    if (container) container.innerHTML = '<span class="text-subtle">Loading...</span>';
-    if (nameEl) nameEl.textContent = activeSelectedFile.split('/').pop();
-    metadataModalInstance.show();
+
+    container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+    container.innerHTML = '<span class="text-subtle small">Loading metadata...</span>';
 
     try {
         const res = await fetch('/api/files/exif', {
@@ -735,16 +768,16 @@ async function viewSelectedMetadata() {
         });
         const data = await res.json();
 
-        if (!container) return;
         if (!data.success) {
             container.innerHTML = '';
             const err = document.createElement('div');
-            err.className = 'text-danger';
+            err.className = 'text-danger small';
             err.textContent = data.error;
             container.appendChild(err);
             return;
         }
 
+        container.className = 'file-pane p-2 d-block text-start';
         container.innerHTML = '';
         const table = document.createElement('table');
         table.className = 'table table-sm table-dark table-striped mb-0';
@@ -775,7 +808,8 @@ async function viewSelectedMetadata() {
         table.appendChild(tbody);
         container.appendChild(table);
     } catch (err) {
-        if (container) container.innerHTML = '<span class="text-danger">Request failed.</span>';
+        container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+        container.innerHTML = '<span class="text-danger small">Request failed.</span>';
     }
 }
 
@@ -1002,6 +1036,14 @@ function enterExplorerImageFor(item) {
         preview.innerHTML = '<span class="text-subtle small">Select a file to preview.</span>';
     }
 
+    // ExifTool needs a real path on disk, which a virtual in-image entry
+    // doesn't have (same restriction the context menu's image action set
+    // already enforces) - switch back to Preview and disable the Metadata
+    // tab for the duration of image mode.
+    switchExplorerRightView('preview');
+    const metadataBtn = document.getElementById('explorerViewMetadataBtn');
+    if (metadataBtn) metadataBtn.disabled = true;
+
     loadExplorerImagePartitions();
 }
 
@@ -1013,6 +1055,8 @@ function exitExplorerImage() {
     explorerImageMode = false;
     const toolbar = document.getElementById("explorerImageToolbar");
     if (toolbar) toolbar.style.display = 'none';
+    const metadataBtn = document.getElementById('explorerViewMetadataBtn');
+    if (metadataBtn) metadataBtn.disabled = false;
     loadExplorer(explorerPath);
 }
 
