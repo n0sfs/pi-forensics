@@ -1058,6 +1058,7 @@
                         <button class="list-group-item list-group-item-action" id="settingsNavAudit" data-bs-toggle="list" data-bs-target="#settings-pane-audit" type="button" role="tab"><i class="bi bi-journal-text"></i>Audit Log</button>
                         <button class="list-group-item list-group-item-action" id="settingsNavCaseReporting" data-bs-toggle="list" data-bs-target="#settings-pane-casereporting" type="button" role="tab"><i class="bi bi-collection"></i>Case & Reporting</button>
                         <button class="list-group-item list-group-item-action" id="settingsNavNetwork" data-bs-toggle="list" data-bs-target="#settings-pane-network" type="button" role="tab"><i class="bi bi-diagram-3"></i>Network Drive Mounting</button>
+                        <button class="list-group-item list-group-item-action" id="settingsNavIface" data-bs-toggle="list" data-bs-target="#settings-pane-iface" type="button" role="tab"><i class="bi bi-hdd-network"></i>Network Configuration</button>
                     </div>
 
                     <div class="settings-content tab-content" id="settingsTabContent">
@@ -1461,6 +1462,28 @@ sudo update-ca-certificates</pre>
                                 <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
                             </div>
                             <div id="mountStatus" class="small text-light"></div>
+                        </div>
+
+                        <!-- Network Configuration - the station's OWN IP addressing (DHCP or
+                             static) per interface, via NetworkManager. Distinct from Network
+                             Drive Mounting above, which mounts remote evidence shares, not this
+                             station's own interfaces. Added after a plain DHCP reassignment
+                             briefly locked an examiner out of this exact page on a reboot -
+                             Apply always includes an automatic revert-if-unconfirmed safety net
+                             (#networkRevertBanner) for exactly that reason, since a bad static
+                             IP/gateway here is the same lockout, just self-inflicted. -->
+                        <div class="tab-pane fade" id="settings-pane-iface" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-hdd-network me-2"></i>Network Configuration</h6>
+                            <div class="small text-subtle mb-3">Set this station's own IP addressing (DHCP or static) per network interface. <span class="text-warning fw-bold">Changing the interface you're currently connected through can disconnect this session.</span> A change is never permanent until you confirm it - if you don't, it automatically reverts to the previous working settings.</div>
+
+                            <div id="networkRevertBanner" class="alert alert-warning small mb-3" style="display:none;">
+                                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                    <span id="networkRevertBannerText"></span>
+                                    <button class="btn btn-sm btn-success fw-bold" onclick="confirmNetworkConfig()"><i class="bi bi-check-lg me-1"></i>Keep These Settings</button>
+                                </div>
+                            </div>
+
+                            <div id="networkIfaceDevices"><span class="text-subtle small">Loading network devices...</span></div>
                         </div>
 
                     </div>

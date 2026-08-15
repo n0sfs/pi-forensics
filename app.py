@@ -13,6 +13,7 @@ import time
 import json
 import fcntl
 import signal
+import ipaddress
 import psutil
 import pytsk3
 import shutil
@@ -87,13 +88,20 @@ runtime_config_lock = threading.Lock()
 COC_LOG_FILE = os.path.join(INSTALL_DIR, "chain_of_custody.log")
 coc_log_lock = threading.Lock()
 
-def log_chain_of_custody(action, details=None):
+def log_chain_of_custody(action, details=None, source_ip=None, user=None):
+    # source_ip/user let a caller running outside the original Flask request
+    # context (e.g. a background daemon thread, like network config's
+    # delayed auto-revert) supply values captured earlier - request/g are
+    # request-context-bound proxies and raise RuntimeError if touched from a
+    # thread that never received the HTTP request itself. Every existing
+    # call site is unaffected (both default to None, falling back to the
+    # live request context exactly as before).
     entry = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "action": action,
         "details": details or {},
-        "source_ip": request.headers.get('X-Real-IP', request.remote_addr) if request else None,
-        "user": getattr(g, 'forensic_user', None),
+        "source_ip": source_ip if source_ip is not None else (request.headers.get('X-Real-IP', request.remote_addr) if request else None),
+        "user": user if user is not None else getattr(g, 'forensic_user', None),
     }
     with coc_log_lock:
         try:
@@ -200,6 +208,18 @@ last_net_check = {"time": time.time(), "bytes_sent": 0, "bytes_recv": 0}
 # identically on every pill (including a down interface, which was showing
 # the same nonzero figures as whichever interface was actually active).
 last_pernic_check = {}
+
+# --- Network Configuration (static IP / DHCP) pending-revert state ---
+# Single shared state, station-wide, mirroring current_job's one-thing-at-a-
+# time pattern above - only one network change can be pending confirmation
+# at once. A background thread applies the change, a second background
+# thread reverts it automatically unless confirmed within the window, which
+# is the whole safety story for this feature: a bad static IP/gateway can
+# lock the examiner out of the very page they'd use to fix it, the same way
+# a plain DHCP reassignment already did once during development.
+network_config_lock = threading.Lock()
+pending_network_revert = None  # dict or None, see apply_network_config()
+REVERT_WINDOW_SECONDS = 60
 
 # --- Persistence Helpers ---
 def load_mount_history():
@@ -3922,6 +3942,223 @@ def get_network_interfaces():
 
     last_pernic_check = new_pernic_check
     return jsonify({"success": True, "interfaces": interfaces})
+
+# --- Network Configuration (static IP / DHCP via NetworkManager) ---
+# Confirmed live against the deployed station: NetworkManager (nmcli) is the
+# active network stack on Debian trixie here, not dhcpcd/systemd-networkd
+# (both inactive). Reading nmcli state works unprivileged (confirmed live);
+# only *modifying* a connection needs sudo ("Insufficient privileges"
+# without it) - so only apply_network_config() below runs anything via sudo.
+_NMCLI_DEVICE_TYPES = {"ethernet", "wifi"}
+
+def _nmcli_terse(args, timeout=15):
+    res = subprocess.run(['nmcli'] + args, capture_output=True, text=True, timeout=timeout)
+    return res.returncode, res.stdout, res.stderr
+
+def _nmcli_list_devices():
+    """Physical ethernet/wifi devices only - excludes loopback and the
+    wifi-p2p virtual device, neither of which an examiner would configure."""
+    rc, out, _ = _nmcli_terse(['-t', '-f', 'DEVICE,TYPE,STATE', 'device', 'status'])
+    devices = []
+    if rc != 0:
+        return devices
+    for line in out.strip().splitlines():
+        parts = line.split(':')
+        if len(parts) < 3:
+            continue
+        device, dtype, state = parts[0], parts[1], parts[2]
+        if dtype in _NMCLI_DEVICE_TYPES:
+            devices.append({"device": device, "type": dtype, "state": state})
+    return devices
+
+def _nmcli_resolve_connection(device):
+    """The connection profile name for a device - found via the currently
+    active device->connection mapping first, falling back to scanning every
+    saved profile's interface-name so a currently unavailable/unplugged
+    device (no active mapping) can still be configured ahead of time."""
+    rc, out, _ = _nmcli_terse(['-t', '-f', 'DEVICE,CONNECTION', 'device', 'status'])
+    if rc == 0:
+        for line in out.strip().splitlines():
+            parts = line.split(':', 1)
+            if len(parts) == 2 and parts[0] == device and parts[1]:
+                return parts[1]
+
+    rc, out, _ = _nmcli_terse(['-t', '-f', 'NAME', 'connection', 'show'])
+    if rc != 0:
+        return None
+    for name in out.strip().splitlines():
+        if not name:
+            continue
+        rc2, out2, _ = _nmcli_terse(['-g', 'connection.interface-name', 'connection', 'show', name])
+        if rc2 == 0 and out2.strip() == device:
+            return name
+    return None
+
+def _nmcli_get_ipv4(conn_name):
+    rc, out, _ = _nmcli_terse(['-t', '-f', 'ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns', 'connection', 'show', conn_name])
+    result = {"method": "auto", "address": "", "prefix": "", "gateway": "", "dns": []}
+    if rc != 0:
+        return result
+    for line in out.strip().splitlines():
+        if ':' not in line:
+            continue
+        field, _, value = line.partition(':')
+        if field == 'ipv4.method':
+            result["method"] = value or "auto"
+        elif field == 'ipv4.addresses' and value:
+            addr = re.split(r'[,\s]+', value)[0]
+            if '/' in addr:
+                ip_part, prefix_part = addr.split('/', 1)
+                result["address"], result["prefix"] = ip_part, prefix_part
+            else:
+                result["address"] = addr
+        elif field == 'ipv4.gateway':
+            result["gateway"] = value
+        elif field == 'ipv4.dns' and value:
+            result["dns"] = [d for d in re.split(r'[,\s]+', value) if d]
+    return result
+
+def _apply_network_ipv4(conn_name, method, address=None, prefix=None, gateway=None, dns=None):
+    """The actual sudo nmcli modify+up sequence - shared by both a real
+    examiner-requested apply and the auto-revert restoring a snapshot,
+    since both are just "set these ipv4.* properties and reactivate"."""
+    if method == 'manual':
+        cmd = ['sudo', 'nmcli', 'connection', 'modify', conn_name,
+               'ipv4.method', 'manual',
+               'ipv4.addresses', f"{address}/{prefix}",
+               'ipv4.gateway', gateway or '',
+               'ipv4.dns', " ".join(dns or [])]
+    else:
+        cmd = ['sudo', 'nmcli', 'connection', 'modify', conn_name,
+               'ipv4.method', 'auto',
+               'ipv4.addresses', '',
+               'ipv4.gateway', '',
+               'ipv4.dns', '']
+    res_modify = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    res_up = subprocess.run(['sudo', 'nmcli', 'connection', 'up', conn_name], capture_output=True, text=True, timeout=30)
+    return res_modify, res_up
+
+@app.route('/api/network/config', methods=['GET'])
+@requires_auth
+def get_network_config():
+    devices = []
+    for dev in _nmcli_list_devices():
+        conn_name = _nmcli_resolve_connection(dev["device"])
+        ipv4 = _nmcli_get_ipv4(conn_name) if conn_name else {"method": "auto", "address": "", "prefix": "", "gateway": "", "dns": []}
+        devices.append({**dev, "connection": conn_name, "ipv4": ipv4})
+
+    with network_config_lock:
+        pending = None
+        if pending_network_revert:
+            pending = {
+                "device": pending_network_revert["device"],
+                "revert_token": pending_network_revert["token"],
+                "revert_at": pending_network_revert["revert_at"],
+                "confirmed": pending_network_revert["confirmed"],
+            }
+
+    return jsonify({"success": True, "devices": devices, "pending_revert": pending, "revert_window_seconds": REVERT_WINDOW_SECONDS})
+
+@app.route('/api/network/apply', methods=['POST'])
+@requires_auth
+def apply_network_config():
+    global pending_network_revert
+    req = request.get_json() or {}
+    device = req.get('device', '').strip()
+    method = req.get('method', '').strip()
+
+    known_devices = {d["device"] for d in _nmcli_list_devices()}
+    if device not in known_devices:
+        return jsonify({"success": False, "error": "Unknown network device."}), 400
+    if method not in ('auto', 'manual'):
+        return jsonify({"success": False, "error": "Method must be 'auto' or 'manual'."}), 400
+
+    address = prefix = gateway = None
+    dns_list = []
+    if method == 'manual':
+        try:
+            address = str(ipaddress.ip_address(req.get('address', '').strip()))
+            prefix = int(req.get('prefix', ''))
+            if not (1 <= prefix <= 32):
+                raise ValueError("Prefix length must be between 1 and 32.")
+            gateway_raw = req.get('gateway', '').strip()
+            gateway = str(ipaddress.ip_address(gateway_raw)) if gateway_raw else ''
+            dns_raw = req.get('dns', '').strip()
+            if dns_raw:
+                for token in re.split(r'[,\s]+', dns_raw):
+                    if token:
+                        dns_list.append(str(ipaddress.ip_address(token)))
+        except (ValueError, TypeError) as e:
+            return jsonify({"success": False, "error": f"Invalid static IP configuration: {e}"}), 400
+
+    conn_name = _nmcli_resolve_connection(device)
+    if not conn_name:
+        return jsonify({"success": False, "error": f"No connection profile found for {device}."}), 404
+
+    snapshot = _nmcli_get_ipv4(conn_name)
+    token = uuid.uuid4().hex
+    revert_at = time.time() + REVERT_WINDOW_SECONDS
+
+    with network_config_lock:
+        pending_network_revert = {
+            "token": token, "device": device, "connection": conn_name,
+            "snapshot": snapshot, "revert_at": revert_at, "confirmed": False,
+        }
+
+    log_chain_of_custody("network_config_changed", {
+        "device": device, "connection": conn_name, "method": method,
+        "address": address, "prefix": prefix, "gateway": gateway, "dns": dns_list,
+    })
+
+    # Captured now, in the real request thread - delayed_revert() below runs
+    # in a background daemon thread with no Flask request context, where
+    # request/g would raise RuntimeError if touched directly.
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    def delayed_apply():
+        time.sleep(1)
+        _apply_network_ipv4(conn_name, method, address, prefix, gateway, dns_list)
+    threading.Thread(target=delayed_apply, daemon=True).start()
+
+    def delayed_revert():
+        global pending_network_revert
+        time.sleep(max(revert_at - time.time(), 0))
+        with network_config_lock:
+            current = pending_network_revert
+            if not current or current["token"] != token:
+                return
+            if current["confirmed"]:
+                # Confirmed - no revert needed, but still clear the pending
+                # state now that its window has passed, so GET /api/network/config
+                # stops reporting a stale "confirmed: true" entry forever.
+                pending_network_revert = None
+                return
+            snap = current["snapshot"]
+            pending_network_revert = None
+        _apply_network_ipv4(conn_name, snap["method"], snap["address"], snap["prefix"], snap["gateway"], snap["dns"])
+        log_chain_of_custody("network_config_reverted", {"device": device, "connection": conn_name}, source_ip=requester_ip, user=requester_user)
+    threading.Thread(target=delayed_revert, daemon=True).start()
+
+    return jsonify({
+        "success": True, "revert_token": token, "revert_at": revert_at,
+        "message": f"Applying new network settings to {device}. This station will automatically revert to its previous settings in {REVERT_WINDOW_SECONDS} seconds unless you confirm.",
+    })
+
+@app.route('/api/network/confirm', methods=['POST'])
+@requires_auth
+def confirm_network_config():
+    req = request.get_json() or {}
+    token = req.get('revert_token', '').strip()
+
+    with network_config_lock:
+        if not pending_network_revert or pending_network_revert["token"] != token:
+            return jsonify({"success": False, "error": "This confirmation has expired or no longer matches the current pending change."}), 404
+        pending_network_revert["confirmed"] = True
+        device = pending_network_revert["device"]
+
+    log_chain_of_custody("network_config_confirmed", {"device": device})
+    return jsonify({"success": True, "message": "Network settings confirmed - the automatic revert has been cancelled."})
 
 @app.route('/api/system/maintenance/purge_logs', methods=['POST'])
 @requires_auth

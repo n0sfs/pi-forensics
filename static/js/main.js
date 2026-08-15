@@ -3014,6 +3014,7 @@ document.addEventListener('shown.bs.tab', (ev) => {
     if (ev.target.id === 'settings-tab' && document.getElementById('settingsNavAudit')?.classList.contains('active')) {
         startCocAutoRefresh();
     }
+    if (ev.target.id === 'settingsNavIface') loadNetworkConfig();
 });
 document.addEventListener('hidden.bs.tab', (ev) => {
     if (ev.target.id === 'settingsNavAudit') stopCocAutoRefresh();
@@ -3730,6 +3731,220 @@ async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusI
     } catch (err) {
         if (mountStatus) mountStatus.innerText = `Mount Failed: ${err.message}`;
     }
+}
+
+// --- Network Configuration (station's own IPv4 addressing, DHCP or static) ---
+// Distinct from Network Drive Mounting above (mounts remote evidence
+// shares). Every Apply here goes through a server-side auto-revert: the
+// countdown/banner below is purely a UI reflection of that server-side
+// timer, not the safety mechanism itself - if this tab is closed, refreshed,
+// or the connection drops entirely, the station still reverts on schedule
+// regardless, since the actual revert runs from a background thread in
+// app.py, not from anything happening in this browser tab.
+let networkRevertToken = null;
+let networkRevertCountdownInterval = null;
+let networkRevertWindowSeconds = 60; // overwritten from the server's actual REVERT_WINDOW_SECONDS on first load
+
+function networkDeviceFieldId(device, field) {
+    return `networkIface_${device}_${field}`;
+}
+
+function renderNetworkDeviceCard(dev) {
+    const card = document.createElement('div');
+    card.className = 'border border-secondary rounded-2 p-3 mb-3';
+
+    const header = document.createElement('div');
+    header.className = 'd-flex justify-content-between align-items-center mb-2';
+    const title = document.createElement('div');
+    title.className = 'fw-bold text-light';
+    const icon = dev.type === 'wifi' ? 'bi-wifi' : 'bi-ethernet';
+    title.innerHTML = `<i class="bi ${icon} me-2"></i>`;
+    title.append(`${dev.device}${dev.connection ? ' (' + dev.connection + ')' : ''}`); // connection name may be examiner-set text on some systems - appended as a text node, not interpolated into innerHTML
+    const stateBadge = document.createElement('span');
+    const stateOk = dev.state === 'connected';
+    stateBadge.className = `badge ${stateOk ? 'bg-success' : 'bg-secondary'}`;
+    stateBadge.textContent = dev.state;
+    header.appendChild(title);
+    header.appendChild(stateBadge);
+    card.appendChild(header);
+
+    if (!dev.connection) {
+        const note = document.createElement('div');
+        note.className = 'text-subtle small';
+        note.textContent = 'No connection profile found for this device - nothing to configure.';
+        card.appendChild(note);
+        return card;
+    }
+
+    const methodId = networkDeviceFieldId(dev.device, 'method');
+    const addrId = networkDeviceFieldId(dev.device, 'address');
+    const prefixId = networkDeviceFieldId(dev.device, 'prefix');
+    const gwId = networkDeviceFieldId(dev.device, 'gateway');
+    const dnsId = networkDeviceFieldId(dev.device, 'dns');
+    const manualRowId = networkDeviceFieldId(dev.device, 'manualRow');
+
+    const methodRow = document.createElement('div');
+    methodRow.className = 'row g-2 mb-2';
+    const methodCol = document.createElement('div');
+    methodCol.className = 'col-md-4';
+    const methodSelect = document.createElement('select');
+    methodSelect.className = 'form-select form-select-sm';
+    methodSelect.id = methodId;
+    methodSelect.innerHTML = `<option value="auto">Automatic (DHCP)</option><option value="manual">Manual (Static)</option>`;
+    methodSelect.value = dev.ipv4.method === 'manual' ? 'manual' : 'auto';
+    methodSelect.onchange = () => updateNetworkMethodRow(dev.device);
+    methodCol.appendChild(methodSelect);
+    methodRow.appendChild(methodCol);
+
+    const currentCol = document.createElement('div');
+    currentCol.className = 'col-md-8 small text-subtle d-flex align-items-center';
+    currentCol.textContent = dev.ipv4.method === 'manual'
+        ? `Currently: ${dev.ipv4.address}/${dev.ipv4.prefix}${dev.ipv4.gateway ? ', gateway ' + dev.ipv4.gateway : ''}`
+        : 'Currently: DHCP (automatic)';
+    methodRow.appendChild(currentCol);
+    card.appendChild(methodRow);
+
+    const manualRow = document.createElement('div');
+    manualRow.id = manualRowId;
+    manualRow.className = 'row g-2 mb-2';
+    manualRow.style.display = dev.ipv4.method === 'manual' ? '' : 'none';
+    manualRow.innerHTML = `
+        <div class="col-md-4"><input type="text" id="${addrId}" class="form-control form-control-sm" placeholder="IP Address (e.g. 192.168.1.50)" value="${dev.ipv4.address || ''}"></div>
+        <div class="col-md-2"><input type="number" id="${prefixId}" class="form-control form-control-sm" placeholder="Prefix" min="1" max="32" value="${dev.ipv4.prefix || 24}"></div>
+        <div class="col-md-3"><input type="text" id="${gwId}" class="form-control form-control-sm" placeholder="Gateway" value="${dev.ipv4.gateway || ''}"></div>
+        <div class="col-md-3"><input type="text" id="${dnsId}" class="form-control form-control-sm" placeholder="DNS (comma-separated)" value="${(dev.ipv4.dns || []).join(', ')}"></div>
+    `; // dev.ipv4.* values come from this station's own nmcli config, not examiner/attacker-controlled input - safe to interpolate as attribute values here
+    card.appendChild(manualRow);
+
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'btn btn-sm btn-primary fw-bold';
+    applyBtn.innerHTML = '<i class="bi bi-check2-circle me-1"></i>Apply';
+    applyBtn.onclick = () => applyNetworkConfig(dev.device);
+    card.appendChild(applyBtn);
+
+    return card;
+}
+
+function updateNetworkMethodRow(device) {
+    const method = document.getElementById(networkDeviceFieldId(device, 'method'))?.value;
+    const row = document.getElementById(networkDeviceFieldId(device, 'manualRow'));
+    if (row) row.style.display = method === 'manual' ? '' : 'none';
+}
+
+async function loadNetworkConfig() {
+    const container = document.getElementById('networkIfaceDevices');
+    if (!container) return;
+
+    try {
+        const res = await fetch('/api/network/config');
+        const data = await res.json();
+        if (!data.success) {
+            container.innerHTML = '<span class="text-danger small">Failed to load network devices.</span>';
+            return;
+        }
+
+        if (data.revert_window_seconds) networkRevertWindowSeconds = data.revert_window_seconds;
+
+        container.innerHTML = '';
+        if (data.devices.length === 0) {
+            container.innerHTML = '<span class="text-subtle small">No configurable network devices found.</span>';
+        } else {
+            data.devices.forEach(dev => container.appendChild(renderNetworkDeviceCard(dev)));
+        }
+
+        if (data.pending_revert && !data.pending_revert.confirmed) {
+            networkRevertToken = data.pending_revert.revert_token;
+            showNetworkRevertBanner(data.pending_revert.device, data.pending_revert.revert_at);
+        } else {
+            hideNetworkRevertBanner();
+        }
+    } catch (err) {
+        container.innerHTML = `<span class="text-danger small">Failed to load network devices: ${err.message}</span>`;
+    }
+}
+
+async function applyNetworkConfig(device) {
+    const method = document.getElementById(networkDeviceFieldId(device, 'method'))?.value;
+    const body = { device, method };
+
+    if (method === 'manual') {
+        body.address = document.getElementById(networkDeviceFieldId(device, 'address'))?.value.trim() || '';
+        body.prefix = document.getElementById(networkDeviceFieldId(device, 'prefix'))?.value || '';
+        body.gateway = document.getElementById(networkDeviceFieldId(device, 'gateway'))?.value.trim() || '';
+        body.dns = document.getElementById(networkDeviceFieldId(device, 'dns'))?.value.trim() || '';
+    }
+
+    const warning = method === 'manual'
+        ? `Apply a static IP to ${device}? If any value is wrong, this may disconnect your session immediately. The station will automatically revert to its current settings in ${networkRevertWindowSeconds}s unless you confirm afterward.`
+        : `Switch ${device} back to DHCP? This may change its IP address and disconnect your session. The station will automatically revert to its current settings in ${networkRevertWindowSeconds}s unless you confirm afterward.`;
+    if (!confirm(warning)) return;
+
+    try {
+        const res = await fetch('/api/network/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.success) {
+            networkRevertToken = data.revert_token;
+            showNetworkRevertBanner(device, data.revert_at);
+        } else {
+            alert(`Apply failed: ${data.error}`);
+        }
+    } catch (err) {
+        alert(`Apply failed: ${err.message}`);
+    }
+}
+
+async function confirmNetworkConfig() {
+    if (!networkRevertToken) return;
+    try {
+        const res = await fetch('/api/network/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ revert_token: networkRevertToken })
+        });
+        const data = await res.json();
+        if (data.success) {
+            hideNetworkRevertBanner();
+        } else {
+            alert(data.error || 'Confirmation failed.');
+        }
+    } catch (err) {
+        alert(`Confirmation failed: ${err.message}`);
+    }
+}
+
+function showNetworkRevertBanner(device, revertAt) {
+    const banner = document.getElementById('networkRevertBanner');
+    const text = document.getElementById('networkRevertBannerText');
+    if (!banner || !text) return;
+    banner.style.display = '';
+
+    if (networkRevertCountdownInterval) clearInterval(networkRevertCountdownInterval);
+    const tick = () => {
+        const remaining = Math.max(0, Math.ceil(revertAt - (Date.now() / 1000)));
+        if (remaining <= 0) {
+            text.textContent = `Reverting ${device} to its previous settings now...`;
+            clearInterval(networkRevertCountdownInterval);
+            // Re-check server state shortly after the window closes, since the
+            // actual revert runs server-side regardless of this tab's state.
+            setTimeout(loadNetworkConfig, 3000);
+            return;
+        }
+        text.textContent = `New settings applied to ${device} - reverting automatically in ${remaining}s unless confirmed.`;
+    };
+    tick();
+    networkRevertCountdownInterval = setInterval(tick, 1000);
+}
+
+function hideNetworkRevertBanner() {
+    const banner = document.getElementById('networkRevertBanner');
+    if (banner) banner.style.display = 'none';
+    if (networkRevertCountdownInterval) clearInterval(networkRevertCountdownInterval);
+    networkRevertCountdownInterval = null;
+    networkRevertToken = null;
 }
 
 async function startAcquisition() {
