@@ -3503,6 +3503,36 @@ def tls_status():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+# Shared by tls_upload (examiner-provided files) and tls_generate (a freshly
+# openssl-generated pair) - both end up with a cert/key sitting at some temp
+# path that needs the same install-and-reload treatment. Assumes the caller
+# has already validated the cert/key are a genuinely matching pair.
+def _install_tls_pair(tmp_cert_path, tmp_key_path, coc_action, coc_details=None):
+    cp_cert = subprocess.run(["sudo", "cp", tmp_cert_path, TLS_CERT_PATH], capture_output=True, text=True)
+    if cp_cert.returncode != 0:
+        return jsonify({"success": False, "error": f"Failed to install certificate: {cp_cert.stderr.strip()}"}), 500
+    cp_key = subprocess.run(["sudo", "cp", tmp_key_path, TLS_KEY_PATH], capture_output=True, text=True)
+    if cp_key.returncode != 0:
+        return jsonify({"success": False, "error": f"Failed to install private key: {cp_key.stderr.strip()}"}), 500
+    subprocess.run(["sudo", "chmod", "600", TLS_KEY_PATH], capture_output=True)
+
+    log_chain_of_custody(coc_action, coc_details or {})
+
+    # "TLS never configured" is a normal, expected state (TLS setup is
+    # optional at install time) - install the cert/key regardless (useful
+    # prep work) but don't try to reload a proxy that was never enabled.
+    if not os.path.exists("/etc/nginx/sites-enabled/pi-forensics"):
+        return jsonify({"success": True, "message": "Certificate installed. nginx is not currently configured as a "
+                         "reverse proxy for this station - run install.py's TLS setup or configure nginx manually "
+                         "for this to take effect."})
+
+    reload_res = subprocess.run(["sudo", "systemctl", "reload", "nginx"], capture_output=True, text=True)
+    if reload_res.returncode != 0:
+        return jsonify({"success": True, "message": f"Certificate installed, but reloading nginx failed: "
+                         f"{reload_res.stderr.strip()}. Reload it manually."})
+
+    return jsonify({"success": True, "message": "Certificate installed and nginx reloaded successfully."})
+
 @app.route('/api/system/tls_upload', methods=['POST'])
 @requires_auth
 def tls_upload():
@@ -3537,36 +3567,83 @@ def tls_upload():
         if cert_mod.stdout.strip() != key_mod.stdout.strip():
             return jsonify({"success": False, "error": "Certificate and private key do not match - nothing was installed."}), 400
 
-        cp_cert = subprocess.run(["sudo", "cp", tmp_cert_path, TLS_CERT_PATH], capture_output=True, text=True)
-        if cp_cert.returncode != 0:
-            return jsonify({"success": False, "error": f"Failed to install certificate: {cp_cert.stderr.strip()}"}), 500
-        cp_key = subprocess.run(["sudo", "cp", tmp_key_path, TLS_KEY_PATH], capture_output=True, text=True)
-        if cp_key.returncode != 0:
-            return jsonify({"success": False, "error": f"Failed to install private key: {cp_key.stderr.strip()}"}), 500
-        subprocess.run(["sudo", "chmod", "600", TLS_KEY_PATH], capture_output=True)
-
-        log_chain_of_custody("tls_cert_replaced", {})
-
-        # "TLS never configured" is a normal, expected state (TLS setup is
-        # optional at install time) - install the cert/key regardless (useful
-        # prep work) but don't try to reload a proxy that was never enabled.
-        if not os.path.exists("/etc/nginx/sites-enabled/pi-forensics"):
-            return jsonify({"success": True, "message": "Certificate installed. nginx is not currently configured as a "
-                             "reverse proxy for this station - run install.py's TLS setup or configure nginx manually "
-                             "for this to take effect."})
-
-        reload_res = subprocess.run(["sudo", "systemctl", "reload", "nginx"], capture_output=True, text=True)
-        if reload_res.returncode != 0:
-            return jsonify({"success": True, "message": f"Certificate installed, but reloading nginx failed: "
-                             f"{reload_res.stderr.strip()}. Reload it manually."})
-
-        return jsonify({"success": True, "message": "Certificate installed and nginx reloaded successfully."})
+        return _install_tls_pair(tmp_cert_path, tmp_key_path, "tls_cert_replaced")
     finally:
         for p in (tmp_cert_path, tmp_key_path):
             try:
                 os.remove(p)
             except OSError:
                 pass
+
+# Same self-signed recipe install.py's own TLS setup uses (rsa:4096, 825
+# days, openssl req -x509), but runnable from the UI so an examiner doesn't
+# need a terminal to regenerate one - e.g. after the Pi's IP changes and the
+# SAN-less/wrong-IP cert install.py originally generated no longer matches,
+# or just to get a fresh cert without re-running the whole installer.
+# Includes real subjectAltName entries (install.py's CN-only cert predates
+# this and can trip stricter modern browsers that ignore CN entirely) -
+# every non-loopback IPv4 address psutil finds, plus pi-forensics.local and
+# any examiner-supplied extra hostname.
+_HOSTNAME_RE = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9\-\.]{0,251}[A-Za-z0-9])?$')
+
+@app.route('/api/system/tls_generate', methods=['POST'])
+@requires_auth
+def tls_generate():
+    data = request.get_json(silent=True) or {}
+    extra_hostname = (data.get('extra_hostname') or '').strip()
+
+    if extra_hostname and not _HOSTNAME_RE.match(extra_hostname):
+        return jsonify({"success": False, "error": "Additional hostname contains characters that aren't valid in a hostname."}), 400
+
+    san_entries = ["DNS:pi-forensics.local"]
+    if extra_hostname:
+        san_entries.append(f"DNS:{extra_hostname}")
+
+    seen_ips = set()
+    for addrs in psutil.net_if_addrs().values():
+        for addr in addrs:
+            if addr.family == 2 and addr.address != "127.0.0.1" and addr.address not in seen_ips:  # AF_INET (IPv4)
+                seen_ips.add(addr.address)
+                san_entries.append(f"IP:{addr.address}")
+
+    common_name = extra_hostname or (sorted(seen_ips)[0] if seen_ips else "pi-forensics.local")
+
+    tmp_cert_fd, tmp_cert_path = tempfile.mkstemp(prefix="pif_tls_gen_cert_")
+    tmp_key_fd, tmp_key_path = tempfile.mkstemp(prefix="pif_tls_gen_key_")
+    try:
+        os.close(tmp_cert_fd)
+        os.close(tmp_key_fd)
+
+        gen_res = subprocess.run([
+            "openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
+            "-keyout", tmp_key_path, "-out", tmp_cert_path,
+            "-days", "825", "-subj", f"/CN={common_name}",
+            "-addext", f"subjectAltName={','.join(san_entries)}"
+        ], capture_output=True, text=True, timeout=60)
+        if gen_res.returncode != 0:
+            return jsonify({"success": False, "error": f"Certificate generation failed: {gen_res.stderr.strip()}"}), 500
+
+        return _install_tls_pair(tmp_cert_path, tmp_key_path, "tls_cert_generated",
+                                  {"common_name": common_name, "subject_alt_names": san_entries})
+    finally:
+        for p in (tmp_cert_path, tmp_key_path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+# Public certificate only - the private key never leaves the station, by
+# design, regardless of who's authenticated. An examiner downloads this to
+# import into a client device's trust store (browser/OS), following the
+# instructions the frontend shows alongside this button - trusting the cert
+# locally is what actually removes the "not trusted" warning; nothing this
+# app does server-side can change what a client's own browser trusts.
+@app.route('/api/system/tls_download_cert', methods=['GET'])
+@requires_auth
+def tls_download_cert():
+    if not os.path.exists(TLS_CERT_PATH):
+        return jsonify({"success": False, "error": "No certificate is currently installed."}), 404
+    return send_file(TLS_CERT_PATH, as_attachment=True, download_name="pi-forensics.crt", mimetype="application/x-x509-ca-cert")
 
 @app.route('/api/settings/case_reporting', methods=['GET', 'POST'])
 @requires_auth

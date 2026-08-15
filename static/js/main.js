@@ -1,4 +1,8 @@
 let isWriteBlockActive = true;
+// Station-wide throughput (not per-interface), refreshed every 2s by
+// fetchSystemInfo() - read by fetchNetworkInterfaces() to fold into each
+// interface pill's tooltip instead of two always-visible navbar spans.
+let lastNetworkSpeed = { download_mbps: 0, upload_mbps: 0 };
 let throughputChart = null;
 const maxGraphPoints = 30;
 const graphData = Array(maxGraphPoints).fill(0);
@@ -94,22 +98,23 @@ const GUIDE_SCENARIOS = {
     healthy: {
         title: "Drive works fine - straightforward copy",
         steps: [
-            "Stay on this tab. Pick your drive from the dropdown in \"Target Source Selection\" above.",
+            "Optional first step: create or select a case from the \"Create / Select Case\" button at the top of the page - it auto-fills Case #, Examiner, and Destination on every tab below, including this one. Not required; every tool works fine with no case selected too.",
+            "On the Forensic Acquisition tab, pick your drive from the dropdown in \"Target Source Selection\".",
             "Optional but recommended: check the drive's health first (SMART status shown once selected).",
-            "Leave the write-blocker switched on (it's on by default) - this guarantees nothing can be written to the original drive.",
-            "Under \"Format\", the default (Raw / dc3dd) is a safe choice for most cases - hover the format menu for what each option means.",
-            "Fill in case number, evidence ID, and examiner name, then tap \"Start Acquisition\" and wait for it to finish.",
-            "Once done, go to Reporting and check the hash to confirm the copy matches the original.",
+            "Leave the write-blocker switched on (it's on by default) - this guarantees nothing can be written to the original drive. The top-right \"Write Blocker\" badge always shows the state of whichever drive is selected here.",
+            "Under \"Format\", the default (Raw / dc3dd) is a safe choice for most cases - hover the format dropdown for what each option means.",
+            "Fill in Case #, Evidence ID, and Examiner if you haven't already, then click \"Start Acquisition\" and wait for it to finish.",
+            "Once done, open Reporting - if a case was active, the job's hashes and telemetry are already there under the Jobs tab. Use Export to generate a PDF/HTML report.",
         ]
     },
     damaged: {
         title: "Damaged, clicking, or not detected properly",
         steps: [
-            "Stay on the Acquisition tab. Select your drive, then change Format to \"Recovery / ddrescue\".",
+            "Stay on the Forensic Acquisition tab. Select your drive, then change Format to \"ddrescue (Recovery)\".",
             "Start with strategy \"1. Fast Copy\" - it copies everything readable quickly without stressing a failing drive.",
-            "When it finishes, go to the File Recovery tab's Mapfile Inspector to check for bad sectors.",
+            "When it finishes, go to the File Recovery tab and use the Mapfile Inspector (right column) to check for bad sectors - it shows rescued/bad-sector/error counts as a structured summary, not raw text.",
             "If bad sectors remain, try strategy 2 (Edge Trimming), then 3 (Intensive Scraping) if needed - each is more thorough but harder on the drive, so go in order.",
-            "Once you have a copy, the File Recovery tab (PhotoRec, extundelete, foremost, scalpel) can recover files even from damaged or partly-corrupted areas.",
+            "Once you have a usable copy, the File Recovery tab's tool selector (PhotoRec, extundelete, foremost, scalpel) can recover files even from damaged or partly-corrupted areas of that image.",
         ],
         tabId: "acquisition-tab"
     },
@@ -117,9 +122,9 @@ const GUIDE_SCENARIOS = {
         title: "Need to recover deleted files",
         steps: [
             "If you don't have an image yet, acquire one first (see the \"drive works fine\" guide above).",
-            "Go to the File Recovery tab and find the PhotoRec card.",
-            "Point it at your image (or the drive directly) - PhotoRec finds files by matching known file signatures rather than trusting the file system, so it works even on formatted or damaged drives.",
-            "Recovered files lose their original names and folder structure. If you specifically need files with their original names/paths intact, try \"Browse Image\" (Sleuth Kit) from the file explorer's More Actions menu instead - it can show deleted-but-still-listed entries.",
+            "Go to the File Recovery tab, choose PhotoRec from the tool selector, and point it at your image (or the drive directly) as the source.",
+            "PhotoRec finds files by matching known file signatures rather than trusting the file system, so it works even on formatted or damaged drives - but recovered files lose their original names and folder structure.",
+            "If you specifically need files with their original names/paths intact, go to File Explorer instead, right-click (or press-and-hold) the image, and choose \"Browse as Image (Sleuth Kit)\" - it browses the real filesystem inline, including deleted-but-still-listed entries, and can search across the whole image or generate a MACB timeline.",
         ],
         tabId: "ddrescue-tab"
     },
@@ -127,11 +132,23 @@ const GUIDE_SCENARIOS = {
         title: "It's a phone, not a drive",
         steps: [
             "Go to the Mobile Forensics tab and connect the device with a USB cable.",
+            "Use the mode selector to pick iOS or Android - the matching device list, options, and detail fields (model, OS version, storage, serial, and more) appear on the left; Start/Stop and status/console are on the right.",
             "iPhone: tap \"Trust This Computer?\" on the phone's own screen when it appears, then select the device here and start a backup.",
             "Android: approve the USB debugging prompt on the phone's own screen, then select the device here. \"Pull Accessible Storage\" is the most reliable mode for most cases.",
-            "Once finished, check Reporting for the resulting report.",
+            "Once finished, an acquired backup can be scanned for spyware/compromise indicators - right-click it in File Explorer and choose the MVT scan matching its platform (iOS works cleanly against any backup this tab produces; Android is best-effort and needs a decrypted adb-backup-format folder).",
         ],
         tabId: "mobile-tab"
+    },
+    report: {
+        title: "Documenting findings / writing a report",
+        steps: [
+            "Make sure the case you're reporting on is the active case (top-left \"Case\" button), then open the Reporting tab - it loads that case automatically, no manual file browsing needed.",
+            "Use \"Case Notes\" as you work, not just at the end - it's a timestamped, append-only journal (each note gets an author and a local integrity hash; editing keeps the original text rather than overwriting it). This becomes the \"Forensic Analysis / Steps Taken\" section of the exported report.",
+            "\"Report Narrative\" holds the polished closing write-up (executive summary, objectives, findings, limitations, conclusion) - a separate, deliberately distinct thing from the running Case Notes journal.",
+            "\"Jobs\" shows every acquisition/recovery/mobile job run against this case with full telemetry and hashes; \"Audit Trail\" is the station-wide activity log filtered to this case number.",
+            "When ready, go to Export - pick PDF or HTML and choose which sections/evidence items to include, then export. Attached photos and text files get embedded directly in the output, not just listed by path.",
+        ],
+        tabId: "reports-tab"
     },
 };
 
@@ -198,113 +215,216 @@ document.addEventListener('click', (e) => {
     });
 });
 
-const FAQ_ITEMS = [
+// Grouped by which sidebar tab (or cross-cutting topic) each question
+// belongs to, rendered as a flat accordion with a non-collapsible group
+// label before each group's items - keeps the simple accordion component
+// but reads as organized instead of an unordered pile of questions.
+const FAQ_GROUPS = [
     {
-        q: "What does the write-blocker do, and should I leave it on?",
-        a: "It forces the source drive into read-only mode at the kernel level, so nothing - this app or anything else - can accidentally modify the original evidence. Leave it on for any drive you're imaging from. You'd only turn it off for a destination drive you're writing an image to."
+        group: "Forensic Acquisition",
+        items: [
+            {
+                q: "What does the write-blocker do, and should I leave it on?",
+                a: "It forces the source drive into read-only mode at the kernel level, so nothing - this app or anything else - can accidentally modify the original evidence. Leave it on for any drive you're imaging from. You'd only turn it off for a destination drive you're writing an image to. Settings > Drive Management lets you check or toggle it per-drive without going through the Forensic Acquisition tab."
+            },
+            {
+                q: "Which format should I use - dd, E01, or AFF?",
+                a: "Raw / dc3dd (the default) is a solid choice for most cases and includes built-in hashing. E01 is the standard if you need EnCase compatibility or want compression/splitting into segments. AFF is less common now but supported if your workflow needs it. Hover the Format dropdown on the Forensic Acquisition tab for a live explanation of whichever one is selected."
+            },
+            {
+                q: "What happened to ddrescue's own tab?",
+                a: "It's not a separate tab - select \"ddrescue (Recovery)\" as the Format on the Forensic Acquisition tab. It shares the exact same status/progress/console display as every other format, just with its own strategy/retry options underneath."
+            },
+            {
+                q: "How do I know my acquisition actually completed successfully?",
+                a: "Check the status text and console during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, if the job ran against an active case, open Reporting - its hashes and telemetry are already recorded under the Jobs tab. Otherwise, right-click the resulting image in File Explorer and use \"Verify Image Hash\"."
+            },
+        ]
     },
     {
-        q: "Which format should I use - dd, E01, or AFF?",
-        a: "Raw / dc3dd (the default) is a solid choice for most cases and includes built-in hashing. E01 is the standard if you need EnCase compatibility or want compression/splitting into segments. AFF is less common now but supported if your workflow needs it. Hover the format dropdown in the Acquisition tab for a live explanation of whichever one is selected."
+        group: "File Recovery & Analysis",
+        items: [
+            {
+                q: "What's the difference between PhotoRec and browsing an image with Sleuth Kit?",
+                a: "PhotoRec (File Recovery tab) finds files by matching known file signatures in the raw data - it works even on damaged or reformatted drives, but recovered files lose their original names and folder structure. Sleuth Kit's Image Browser (right-click an image in File Explorer → \"Browse as Image (Sleuth Kit)\") reads the actual filesystem structure inline, so it shows real file names and paths, including deleted-but-still-listed entries - but needs a filesystem it can understand."
+            },
+            {
+                q: "PhotoRec recovered files but with generic names like f0001234.jpg - is that normal?",
+                a: "Yes - PhotoRec identifies file types by content, not by reading filesystem metadata, so it has no way to know the original filename. If you need original names, right-click the image in File Explorer and choose \"Browse as Image (Sleuth Kit)\" instead (works only if the filesystem itself is still readable)."
+            },
+            {
+                q: "How do I view hidden metadata like GPS coordinates or camera info in a photo?",
+                a: "Select the file in File Explorer, then click the \"Metadata\" tab next to Preview in the right panel - it runs ExifTool and shows every field found, right there in place of the file preview."
+            },
+            {
+                q: "What does the MVT scan check for?",
+                a: "Amnesty International's Mobile Verification Toolkit checks an already-acquired mobile backup against known spyware/compromise indicators. Right-click a backup folder in File Explorer and choose the MVT scan for its platform. iOS matches this station's backup format directly; Android is best-effort, since it needs a decrypted adb-backup-format folder rather than the pull/bugreport formats Mobile Forensics normally produces here - it'll error clearly rather than silently produce nothing if the format doesn't match."
+            },
+        ]
     },
     {
-        q: "How do I know my acquisition actually completed successfully?",
-        a: "Check the status text and log during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, go to Reporting and use \"Verify Image Hash\" to confirm the acquired image's hash matches what was recorded during acquisition."
+        group: "Case Management & Reporting",
+        items: [
+            {
+                q: "What's an Active Case, and do I have to use one?",
+                a: "The \"Case\" button at the top of every page creates or selects a case, which then auto-fills Case #, Examiner, and Destination on every tool below - including Reporting, which loads that case's data automatically with no manual file browsing. It's entirely optional; every tool works the same with no case selected, you'll just fill those fields in by hand."
+            },
+            {
+                q: "Case Notes vs. Report Narrative - what's the difference?",
+                a: "Case Notes (Reporting tab) is a timestamped, append-only journal you add to as you work - each note gets an author and a local integrity hash, and editing keeps the original text rather than overwriting it. It becomes the exported report's \"Forensic Analysis / Steps Taken\" section. Report Narrative is the polished closing write-up (executive summary, objectives, findings, limitations, conclusion) you write once, near the end - a deliberately separate thing from the running notes journal."
+            },
+        ]
     },
     {
-        q: "What's the difference between PhotoRec and browsing an image with Sleuth Kit?",
-        a: "PhotoRec finds files by matching known file signatures in the raw data - it works even on damaged or reformatted drives, but recovered files lose their original names and folder structure. Sleuth Kit's Image Browser reads the actual filesystem structure, so it shows real file names and paths (including deleted-but-still-listed entries), but needs a filesystem it can understand."
+        group: "Accounts, Security & Remote Access",
+        items: [
+            {
+                q: "How do I change my login password?",
+                a: "Settings > Security & Privacy has a \"Change My Password\" form - you'll need your current password to set a new one. If this station has multiple accounts, an admin can also reset another user's password from the same card."
+            },
+            {
+                q: "Can more than one person have their own login on this station?",
+                a: "Yes - Settings > Security & Privacy lets an admin create real per-user accounts, each admin or standard role. Standard accounts can use every operational tool; only user management itself (creating/deleting accounts, resetting someone else's password) is admin-only. The \"Logged in as\" button in the top-right lets you switch accounts without a full logout, since HTTP Basic Auth has no real session to log out of."
+            },
+            {
+                q: "My browser says this site isn't secure or the certificate isn't trusted - what do I do?",
+                a: "This station uses a self-signed HTTPS certificate, so every browser warns on first visit until that specific device explicitly trusts it. Settings > Security & Privacy has a \"Generate & Install\" button if you need a fresh certificate (e.g. after the Pi's IP changed), a \"Download Certificate\" button, and step-by-step trust instructions for Windows, macOS, Linux, iOS, Android, and Firefox specifically."
+            },
+            {
+                q: "How do I access this station from another computer?",
+                a: "Navigate to the station's IP address (or hostname, if you set one up) on port 5000, or over HTTPS if a TLS reverse proxy was configured. Every remote connection requires a real login - there's no bypass for remote/LAN access, only for the physical kiosk touchscreen."
+            },
+        ]
     },
     {
-        q: "Does this station need an internet connection to work?",
-        a: "No - acquisition, recovery, and analysis tools all run locally and don't need internet access. Internet is only used for optional things: the initial software install, ClamAV virus definition updates, and the git-pull self-update feature in Advanced Settings."
-    },
-    {
-        q: "What happens if power is lost mid-acquisition?",
-        a: "The partial image file remains on disk, but it won't have a valid hash recorded, since the job never completed. Treat an interrupted acquisition as failed and start over once power is restored - don't rely on a partial image as evidence."
-    },
-    {
-        q: "How do I change the login password?",
-        a: "Advanced Settings tab, Security & Account Password card. You'll need the current password to set a new one."
-    },
-    {
-        q: "PhotoRec recovered files but with generic names like f0001234.jpg - is that normal?",
-        a: "Yes - PhotoRec identifies file types by content, not by reading filesystem metadata, so it has no way to know the original filename. If you need original names, try browsing the image with Sleuth Kit instead (works only if the filesystem itself is still readable)."
-    },
-    {
-        q: "How do I access this station from another computer?",
-        a: "Navigate to the station's IP address (or hostname, if you set one up) on port 5000, or over HTTPS if TLS was configured during install. Every remote connection requires the login you set - there's no bypass for remote/LAN access, only for the physical kiosk touchscreen."
+        group: "General",
+        items: [
+            {
+                q: "Does this station need an internet connection to work?",
+                a: "No - acquisition, recovery, and analysis tools all run locally and don't need internet access. Internet is only used for optional things: the initial software install, ClamAV virus definition updates, MVT indicator updates, and the git-pull self-update feature, all in Settings."
+            },
+            {
+                q: "What happens if power is lost mid-acquisition?",
+                a: "The partial image file remains on disk, but it won't have a valid hash recorded, since the job never completed. Treat an interrupted acquisition as failed and start over once power is restored - don't rely on a partial image as evidence."
+            },
+        ]
     },
 ];
 
 function populateFaq() {
     const container = document.getElementById("faqAccordion");
     if (!container || container.children.length > 0) return; // build once
-    FAQ_ITEMS.forEach((item, idx) => {
-        const wrap = document.createElement('div');
-        wrap.className = 'accordion-item bg-dark border-secondary';
+    let idx = 0;
+    FAQ_GROUPS.forEach(group => {
+        const groupLabel = document.createElement('div');
+        groupLabel.className = 'text-info fw-bold small text-uppercase mt-3 mb-1';
+        groupLabel.style.letterSpacing = '0.5px';
+        groupLabel.textContent = group.group;
+        container.appendChild(groupLabel);
 
-        const header = document.createElement('h2');
-        header.className = 'accordion-header';
-        const btn = document.createElement('button');
-        btn.className = 'accordion-button collapsed bg-dark text-light';
-        btn.type = 'button';
-        btn.setAttribute('data-bs-toggle', 'collapse');
-        btn.setAttribute('data-bs-target', `#faqCollapse${idx}`);
-        btn.textContent = item.q; // untrusted-safe habit even though this is static content
-        header.appendChild(btn);
-        wrap.appendChild(header);
+        group.items.forEach(item => {
+            const wrap = document.createElement('div');
+            wrap.className = 'accordion-item bg-dark border-secondary';
 
-        const collapse = document.createElement('div');
-        collapse.id = `faqCollapse${idx}`;
-        collapse.className = 'accordion-collapse collapse';
-        const body = document.createElement('div');
-        body.className = 'accordion-body small text-subtle';
-        body.textContent = item.a;
-        collapse.appendChild(body);
-        wrap.appendChild(collapse);
+            const header = document.createElement('h2');
+            header.className = 'accordion-header';
+            const btn = document.createElement('button');
+            btn.className = 'accordion-button collapsed bg-dark text-light';
+            btn.type = 'button';
+            btn.setAttribute('data-bs-toggle', 'collapse');
+            btn.setAttribute('data-bs-target', `#faqCollapse${idx}`);
+            btn.textContent = item.q; // untrusted-safe habit even though this is static content
+            header.appendChild(btn);
+            wrap.appendChild(header);
 
-        container.appendChild(wrap);
+            const collapse = document.createElement('div');
+            collapse.id = `faqCollapse${idx}`;
+            collapse.className = 'accordion-collapse collapse';
+            const body = document.createElement('div');
+            body.className = 'accordion-body small text-subtle';
+            body.textContent = item.a;
+            collapse.appendChild(body);
+            wrap.appendChild(collapse);
+
+            container.appendChild(wrap);
+            idx++;
+        });
     });
 }
 
-const TOOL_REFERENCE = [
-    ["dc3dd", "Forensic raw disk imaging with built-in hashing. The default acquisition engine."],
-    ["dcfldd", "Alternate raw imaging engine, similar to dc3dd - useful if you specifically need its output style."],
-    ["GNU dd", "Plain raw copy, no built-in hashing (computed separately). Supports true direct-I/O reads."],
-    ["ewfacquire", "Creates EnCase-compatible .E01 images with compression and segment splitting."],
-    ["affconvert", "Converts a raw image into AFF (.aff) format."],
-    ["ddrescue", "Recovery-focused imaging for damaged/failing drives - select it as a Format in the Acquisition tab. Works around bad sectors instead of stopping."],
-    ["extundelete", "Recovers deleted files from ext2/3/4 Linux filesystems by reading the filesystem journal - can restore original filenames/paths, unlike carving tools."],
-    ["foremost / scalpel", "Alternative file carvers to PhotoRec - narrower format support but sometimes faster. scalpel is multithreaded and uses a curated signature list (jpg/png/gif/pdf/zip by default)."],
-    ["TestDisk (partition analysis)", "Read-only listing of partitions TestDisk can find on a device or image - never writes anything back, unlike TestDisk's separate (and not exposed here) repair mode."],
-    ["PhotoRec", "Recovers files by matching known file signatures in raw data, even on damaged/reformatted media. Loses original filenames."],
-    ["Quick Triage Scan", "Scans a device or image for emails, URLs, IP addresses, card-like numbers, and phone numbers - built in, no external tool needed."],
-    ["ExifTool", "Reads hidden metadata inside a file - camera info, GPS coordinates, document properties."],
-    ["Sleuth Kit (mmls/fls/icat)", "Browses the real filesystem inside an acquired image, including deleted-but-listed entries, with original names/paths."],
-    ["Binwalk", "Looks for other files or filesystems hidden inside a binary - useful for firmware/router images."],
-    ["ClamAV", "Scans a file or folder against known malware signatures."],
-    ["hashdeep", "Generates a fingerprint (hash) for every file in a folder at once, as a single manifest."],
-    ["adb", "Android Debug Bridge - used to pull files, back up, or capture diagnostics from a connected Android device."],
-    ["idevicebackup2 / idevicepair", "Used to pair with and back up a connected iPhone/iPad, the same protocol iTunes/Finder use."],
-    ["smartctl", "Reads a drive's built-in health/diagnostic data (SMART) before committing to a long acquisition."],
+// Grouped by which sidebar tab each tool lives under (or "File Explorer &
+// Analysis" for the right-click actions there) - the same 19 tools this
+// list always had, now reorganized instead of an unordered flat list.
+const TOOL_REFERENCE_GROUPS = [
+    {
+        group: "Forensic Acquisition",
+        tools: [
+            ["dc3dd", "Forensic raw disk imaging with built-in hashing. The default acquisition engine."],
+            ["dcfldd", "Alternate raw imaging engine, similar to dc3dd - useful if you specifically need its output style."],
+            ["GNU dd", "Plain raw copy, no built-in hashing (computed separately). Supports true direct-I/O reads."],
+            ["ewfacquire", "Creates EnCase-compatible .E01 images with compression and segment splitting."],
+            ["affconvert", "Converts a raw image into AFF (.aff) format."],
+            ["ddrescue", "Recovery-focused imaging for damaged/failing drives - select it as a Format on the Forensic Acquisition tab. Works around bad sectors instead of stopping."],
+            ["smartctl", "Reads a drive's built-in health/diagnostic data (SMART) before committing to a long acquisition."],
+        ]
+    },
+    {
+        group: "File Recovery",
+        tools: [
+            ["PhotoRec", "Recovers files by matching known file signatures in raw data, even on damaged/reformatted media. Loses original filenames."],
+            ["extundelete", "Recovers deleted files from ext2/3/4 Linux filesystems by reading the filesystem journal - can restore original filenames/paths, unlike carving tools."],
+            ["foremost / scalpel", "Alternative file carvers to PhotoRec - narrower format support but sometimes faster. scalpel is multithreaded and uses a curated signature list (jpg/png/gif/pdf/zip by default)."],
+            ["TestDisk (partition analysis)", "Read-only listing of partitions TestDisk can find on a device or image - never writes anything back, unlike TestDisk's separate (and not exposed here) repair mode."],
+            ["Quick Triage Scan", "Scans a device or image for emails, URLs, IP addresses, card-like numbers, and phone numbers - built in, no external tool needed."],
+        ]
+    },
+    {
+        group: "File Explorer & Analysis",
+        tools: [
+            ["Sleuth Kit (Image Browser)", "Browses the real filesystem inside an acquired image inline, including deleted-but-listed entries, with original names/paths - plus recursive search and a MACB timeline. Right-click an image → \"Browse as Image (Sleuth Kit)\"."],
+            ["ExifTool", "Reads hidden metadata inside a file - camera info, GPS coordinates, document properties. Select a file, then use the \"Metadata\" tab next to Preview."],
+            ["Binwalk", "Looks for other files or filesystems hidden inside a binary - useful for firmware/router images."],
+            ["ClamAV", "Scans a file or folder against known malware signatures."],
+            ["hashdeep", "Generates a fingerprint (hash) for every file in a folder at once, as a single manifest."],
+            ["MVT (Mobile Verification Toolkit)", "Checks an already-acquired iOS or Android backup for spyware/compromise indicators. Right-click the backup folder and choose the scan for its platform."],
+        ]
+    },
+    {
+        group: "Mobile Forensics",
+        tools: [
+            ["adb", "Android Debug Bridge - used to pull files, back up, or capture diagnostics from a connected Android device."],
+            ["idevicebackup2 / idevicepair", "Used to pair with and back up a connected iPhone/iPad, the same protocol iTunes/Finder use."],
+        ]
+    },
 ];
 
 function populateToolReference() {
     const tbody = document.getElementById("toolReferenceBody");
     if (!tbody || tbody.children.length > 0) return; // build once
-    TOOL_REFERENCE.forEach(([name, desc]) => {
-        const row = document.createElement('tr');
-        const nameCell = document.createElement('td');
-        nameCell.className = 'text-info fw-bold text-nowrap';
-        nameCell.style.width = '22%';
-        nameCell.textContent = name;
-        const descCell = document.createElement('td');
-        descCell.className = 'text-light';
-        descCell.textContent = desc;
-        row.appendChild(nameCell);
-        row.appendChild(descCell);
-        tbody.appendChild(row);
+    TOOL_REFERENCE_GROUPS.forEach(group => {
+        const headerRow = document.createElement('tr');
+        const headerCell = document.createElement('td');
+        headerCell.colSpan = 2;
+        headerCell.className = 'text-info fw-bold small text-uppercase pt-3';
+        headerCell.style.letterSpacing = '0.5px';
+        headerCell.style.borderTop = 'none';
+        headerCell.textContent = group.group;
+        headerRow.appendChild(headerCell);
+        tbody.appendChild(headerRow);
+
+        group.tools.forEach(([name, desc]) => {
+            const row = document.createElement('tr');
+            const nameCell = document.createElement('td');
+            nameCell.className = 'text-info fw-bold text-nowrap';
+            nameCell.style.width = '22%';
+            nameCell.textContent = name;
+            const descCell = document.createElement('td');
+            descCell.className = 'text-light';
+            descCell.textContent = desc;
+            row.appendChild(nameCell);
+            row.appendChild(descCell);
+            tbody.appendChild(row);
+        });
     });
 }
 
@@ -313,10 +433,12 @@ function populateHelpInfo() {
     if (!container || container.children.length > 0) return; // build once
 
     const sections = [
-        ["Where does my data go?", "Acquisitions, recovered files, and reports are written under the evidence root (/mnt by default). Nothing is uploaded anywhere automatically."],
-        ["Chain of custody", "The Reporting tab keeps a station-wide log of significant actions (acquisitions, deletes, copies, report edits) with timestamp and source IP. This station has one shared login rather than per-examiner accounts, so the log shows what happened and when, reliably - not who, beyond the connecting IP."],
-        ["Physical kiosk vs. remote access", "The touchscreen kiosk skips the login prompt by default (a setting called FORENSIC_KIOSK_AUTH_BYPASS) - physical access to the device already implies a high level of trust. Remote/LAN access always requires the login you set, with no exceptions."],
-        ["Updating this station", "Advanced Settings has buttons to pull the latest app code (git) or update OS packages (apt) - both need internet access and pull from external sources, so only use them on a station where you trust those sources."],
+        ["Where does my data go?", "Acquisitions, recovered files, and reports are written under the evidence root (/mnt by default). A case's data (metadata, notes, job telemetry, attachments) consolidates into a single JSON file per case rather than scattered per-job files. Nothing is uploaded anywhere automatically."],
+        ["Chain of custody & user accounts", "Settings > Audit Log keeps a station-wide log of significant actions (acquisitions, deletes, copies, report edits, logins) with timestamp, source IP, and - since this station uses real per-user accounts rather than one shared login - which logged-in user did it. Reporting's \"Audit Trail\" sub-tab shows the same log filtered to one case."],
+        ["Case management", "The \"Case\" button at the top of every page creates or selects a case, storing its evidence under a real per-case folder instead of loosely filename-prefixed files scattered in one directory. An older case created before consolidated case files existed can be migrated to the new format from the Case Manager, non-destructively - the originals are kept, renamed with a backup suffix."],
+        ["Physical kiosk vs. remote access", "The touchscreen kiosk skips the login prompt by default (a setting called FORENSIC_KIOSK_AUTH_BYPASS) - physical access to the device already implies a high level of trust. Remote/LAN access always requires a real login, with no exceptions."],
+        ["HTTPS & certificates", "This station can run behind an nginx TLS reverse proxy with a self-signed certificate. Settings > Security & Privacy can generate a fresh one - including every IP address the station currently has, so browsers don't also flag a hostname mismatch on top of the expected self-signed warning - or you can install your own certificate (e.g. one signed by a real CA) instead. The self-signed warning itself only goes away once a client device explicitly trusts the certificate; step-by-step instructions per OS/browser are right there in Settings."],
+        ["Updating this station", "Settings > Service Controls & Diagnostics has buttons to pull the latest app code (git) or update OS packages (apt) - both need internet access and pull from external sources, so only use them on a station where you trust those sources."],
     ];
 
     sections.forEach(([title, body]) => {
@@ -3115,8 +3237,7 @@ async function fetchSystemInfo() {
         }
 
         if (data.network_speed) {
-            if (document.getElementById("netDlVal")) document.getElementById("netDlVal").innerText = `${data.network_speed.download_mbps} MB/s`;
-            if (document.getElementById("netUlVal")) document.getElementById("netUlVal").innerText = `${data.network_speed.upload_mbps} MB/s`;
+            lastNetworkSpeed = data.network_speed;
         }
 
         isWriteBlockActive = data.write_blocker_active;
@@ -4199,6 +4320,34 @@ async function loadTlsStatus() {
     }
 }
 
+async function generateTlsCertificate() {
+    const extraHostname = document.getElementById("tlsGenExtraHostname")?.value.trim() || '';
+    const statusEl = document.getElementById("tlsGenerateStatus");
+
+    if (!confirm("Generate a new self-signed certificate and install it now? This replaces the current certificate immediately.")) return;
+
+    if (statusEl) { statusEl.className = 'small mb-2 text-subtle'; statusEl.innerText = 'Generating and installing...'; }
+
+    try {
+        const res = await fetch('/api/system/tls_generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ extra_hostname: extraHostname })
+        });
+        const data = await res.json();
+        if (statusEl) {
+            statusEl.className = data.success ? 'small mb-2 text-success' : 'small mb-2 text-danger';
+            statusEl.innerText = data.success ? data.message : data.error;
+        }
+        if (data.success) {
+            document.getElementById("tlsGenExtraHostname").value = '';
+            loadTlsStatus();
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.className = 'small mb-2 text-danger'; statusEl.innerText = 'Request failed.'; }
+    }
+}
+
 async function uploadTlsCertificate() {
     const certFile = document.getElementById("tlsCertFile")?.files[0];
     const keyFile = document.getElementById("tlsKeyFile")?.files[0];
@@ -4494,7 +4643,7 @@ async function fetchNetworkInterfaces() {
                 pill.setAttribute('data-bs-toggle', 'tooltip');
                 pill.setAttribute('data-bs-placement', 'bottom');
                 pill.setAttribute('data-bs-html', 'true');
-                pill.setAttribute('title', `Status: ${iface.active ? 'UP' : 'DOWN'}<br>IP: ${iface.ip}<br>MAC: ${iface.mac}<br>Speed: ${iface.speed_mbps} Mbps`);
+                pill.setAttribute('title', `Status: ${iface.active ? 'UP' : 'DOWN'}<br>IP: ${iface.ip}<br>MAC: ${iface.mac}<br>Speed: ${iface.speed_mbps} Mbps<br>Download: ${lastNetworkSpeed.download_mbps} MB/s<br>Upload: ${lastNetworkSpeed.upload_mbps} MB/s`);
 
                 const dot = document.createElement('span');
                 dot.className = 'me-1';
