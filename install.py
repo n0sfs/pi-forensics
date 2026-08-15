@@ -263,7 +263,7 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/sbin/smartctl, \\
 /bin/mount, /bin/umount, /bin/mkdir, \\
 /usr/bin/udevil, /usr/bin/pkill, \\
-/usr/bin/smbclient, /usr/sbin/showmount, /usr/bin/sshfs, \\
+/usr/bin/smbclient, /usr/sbin/showmount, /usr/bin/sshfs, /usr/bin/nmcli, \\
 /usr/bin/dcfldd, /usr/bin/dc3dd, /usr/bin/ddrescue, \\
 /usr/bin/ewfacquire, /usr/bin/dd, /usr/bin/photorec, \\
 /usr/bin/extundelete, /usr/bin/foremost, /usr/bin/scalpel, /usr/bin/testdisk, \\
