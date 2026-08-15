@@ -75,6 +75,7 @@
         .app-sidebar .nav-link {
             display: flex;
             align-items: center;
+            width: 100%;
             gap: 10px;
             color: var(--text-subtle);
             font-weight: 600;
@@ -87,6 +88,14 @@
             overflow: hidden;
             transition: color 0.15s ease;
         }
+        /* Buttons default to shrink-to-fit width (display:flex doesn't imply
+           full-width like a plain block element would) - in expanded mode the
+           long tab-label text happens to fill most of the 190px anyway, but
+           once the label is hidden in compact mode the button shrank to just
+           the icon's size and sat flush against the sidebar's left edge
+           instead of being centered. width:100% above fixes this for both
+           modes; justify-content:center here then actually centers the icon
+           within the sidebar, not just within an undersized button box. */
         .app-sidebar.compact .nav-link { justify-content: center; padding: 12px 0; }
 
         .app-sidebar .nav-link i { font-size: 1.15rem; flex-shrink: 0; }
