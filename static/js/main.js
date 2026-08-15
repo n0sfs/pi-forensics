@@ -2317,6 +2317,13 @@ function exportAuditLogCsv() {
 // distinct from the station-wide Audit Log in Settings. Uses whichever
 // case is currently loaded (isConsolidated/legacyMeta split, same pattern
 // used throughout this file for currentLoadedReportData).
+//
+// caseHistoryEntriesCache holds the same entries this function just
+// rendered - runCaseSearch() (below) reads it directly rather than
+// re-fetching, the same "search the already-fetched cache" pattern
+// cocEntriesCache already established for the Settings Audit Log.
+let caseHistoryEntriesCache = [];
+
 async function loadCaseHistory() {
     const container = document.getElementById("caseHistoryContainer");
     if (!container) return;
@@ -2340,9 +2347,135 @@ async function loadCaseHistory() {
             container.appendChild(err);
             return;
         }
+        caseHistoryEntriesCache = data.entries;
         renderCocEntries(container, data.entries);
     } catch (err) {
         container.innerHTML = '<span class="text-danger">Request failed.</span>';
+    }
+}
+
+// --- Case Search: keyword search across Report Narrative, Jobs, Case
+// Notes, and Audit Trail for the currently loaded case, all client-side
+// against data already in memory - no dedicated backend endpoint needed,
+// same reasoning as the Settings Audit Log's search box. ---
+function caseSearchSnippet(text, query) {
+    if (!text) return '';
+    const idx = text.toLowerCase().indexOf(query);
+    if (idx === -1) return text.length > 120 ? text.slice(0, 120) + '...' : text;
+    const start = Math.max(0, idx - 40);
+    const end = Math.min(text.length, idx + query.length + 60);
+    return (start > 0 ? '...' : '') + text.slice(start, end) + (end < text.length ? '...' : '');
+}
+
+function appendCaseSearchGroup(container, title, jumpToTabId, items) {
+    const groupHeader = document.createElement('div');
+    groupHeader.className = 'text-info fw-bold small text-uppercase mt-2 mb-1';
+    groupHeader.textContent = `${title} (${items.length})`;
+    container.appendChild(groupHeader);
+
+    items.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'mb-1 pb-1 border-bottom border-secondary';
+        row.style.cursor = 'pointer';
+        row.title = `Jump to ${title}`;
+        row.onclick = () => {
+            const tabBtn = document.getElementById(jumpToTabId);
+            if (tabBtn) new bootstrap.Tab(tabBtn).show();
+        };
+
+        const labelEl = document.createElement('div');
+        labelEl.className = 'text-warning';
+        labelEl.textContent = item.label; // case-derived text, text node only
+        row.appendChild(labelEl);
+
+        if (item.snippet) {
+            const snippetEl = document.createElement('div');
+            snippetEl.className = 'text-light text-break';
+            snippetEl.style.fontSize = '0.85em';
+            snippetEl.textContent = item.snippet;
+            row.appendChild(snippetEl);
+        }
+
+        container.appendChild(row);
+    });
+}
+
+function runCaseSearch() {
+    const container = document.getElementById("repSearchResults");
+    if (!container) return;
+
+    const query = (document.getElementById("repSearchInput")?.value || '').trim().toLowerCase();
+    if (!query) {
+        container.innerHTML = '<span class="text-subtle">Type a keyword above to search.</span>';
+        return;
+    }
+    if (!currentLoadedReportData) {
+        container.innerHTML = '<span class="text-subtle">Select or create a case using the bar above first.</span>';
+        return;
+    }
+
+    container.innerHTML = '';
+    let totalMatches = 0;
+
+    // Report Narrative - searches the live form fields (so it also finds
+    // unsaved edits), the same ids loadCaseForEditing() already populates
+    // for both consolidated and legacy schemas, rather than re-deriving
+    // that split here too.
+    const narrativeFields = [
+        ['Executive Summary', 'editExecSummary'],
+        ['Objectives', 'editObjectives'],
+        ['Relevant Findings', 'editFindingsSummary'],
+        ['Limitations', 'editLimitations'],
+        ['Conclusion', 'editConclusion'],
+    ];
+    const narrativeMatches = narrativeFields
+        .map(([label, id]) => ({ label, value: document.getElementById(id)?.value || '' }))
+        .filter(f => f.value.toLowerCase().includes(query));
+    if (narrativeMatches.length > 0) {
+        totalMatches += narrativeMatches.length;
+        appendCaseSearchGroup(container, 'Report Narrative', 'repNarrativeTab', narrativeMatches.map(f => (
+            { label: f.label, snippet: caseSearchSnippet(f.value, query) }
+        )));
+    }
+
+    // Jobs - substring match against the same JSON dump each job's own
+    // expandable detail view already shows.
+    const events = Array.isArray(currentLoadedReportData.events) ? currentLoadedReportData.events : [];
+    const jobMatches = events.filter(ev => JSON.stringify(ev).toLowerCase().includes(query));
+    if (jobMatches.length > 0) {
+        totalMatches += jobMatches.length;
+        appendCaseSearchGroup(container, 'Jobs', 'repJobsTab', jobMatches.map(ev => {
+            const meta = ev.case_metadata || {};
+            return { label: `${(ev.tool || '--').toUpperCase()} · ${meta.evidence_id || '--'} · ${ev.timestamp_start || '--'}`, snippet: null };
+        }));
+    }
+
+    // Case Notes
+    const notes = currentLoadedReportData.case_notes || [];
+    const noteMatches = notes.filter(n => `${n.text || ''} ${n.category || ''} ${n.author || ''}`.toLowerCase().includes(query));
+    if (noteMatches.length > 0) {
+        totalMatches += noteMatches.length;
+        appendCaseSearchGroup(container, 'Case Notes', 'repCaseNotesTab', noteMatches.map(n => (
+            { label: `${n.category || 'General'} · ${n.timestamp || '--'} · ${n.author || 'unknown'}`, snippet: caseSearchSnippet(n.text || '', query) }
+        )));
+    }
+
+    // Audit Trail - against caseHistoryEntriesCache (populated by
+    // loadCaseHistory(), which loadCaseForEditing() already calls
+    // unconditionally on case load), not a fresh fetch.
+    const historyMatches = (caseHistoryEntriesCache || []).filter(entry => {
+        const haystack = `${entry.timestamp} ${entry.action} ${JSON.stringify(entry.details || {})} ${entry.user || ''}`.toLowerCase();
+        return haystack.includes(query);
+    });
+    if (historyMatches.length > 0) {
+        totalMatches += historyMatches.length;
+        appendCaseSearchGroup(container, 'Audit Trail', 'repHistoryTab', historyMatches.map(entry => (
+            { label: `${entry.timestamp || '--'} · ${entry.action || '--'}${entry.user ? ' · ' + entry.user : ''}`, snippet: null }
+        )));
+    }
+
+    if (totalMatches === 0) {
+        container.innerHTML = '<span class="text-subtle">No matches found.</span>';
     }
 }
 
