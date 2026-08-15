@@ -636,7 +636,9 @@ async function previewSelectedFile(item) {
 
     const ext = '.' + (item.name.split('.').pop() || '').toLowerCase();
     const IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
-    const TEXT_EXT = ['.txt', '.json', '.log', '.md', '.csv', '.xml', '.html', '.htm', '.py', '.js', '.sh', '.conf', '.ini', '.cfg', '.yaml', '.yml'];
+    const PDF_EXT = ['.pdf'];
+    const HTML_EXT = ['.html', '.htm'];
+    const TEXT_EXT = ['.txt', '.json', '.log', '.md', '.csv', '.xml', '.py', '.js', '.sh', '.conf', '.ini', '.cfg', '.yaml', '.yml'];
 
     preview.innerHTML = '<span class="text-subtle small">Loading preview...</span>';
 
@@ -650,6 +652,67 @@ async function previewSelectedFile(item) {
         img.style.objectFit = 'contain';
         img.alt = item.name; // filename is untrusted, but alt text isn't rendered as markup - safe as a plain attribute value
         preview.appendChild(img);
+        return;
+    }
+
+    if (PDF_EXT.includes(ext)) {
+        // Browser's own built-in PDF viewer renders this - no script-execution surface on
+        // this app's origin, unlike HTML below, so a plain iframe pointed at the raw file is fine.
+        preview.innerHTML = '';
+        preview.className = 'file-pane p-0';
+        const iframe = document.createElement('iframe');
+        iframe.src = `/api/files/raw?path=${encodeURIComponent(item.path)}`;
+        iframe.style.width = '100%';
+        iframe.style.height = '100%';
+        iframe.style.border = 'none';
+        iframe.title = 'PDF preview';
+        preview.appendChild(iframe);
+        return;
+    }
+
+    if (HTML_EXT.includes(ext)) {
+        // Rendered visually, but deliberately NOT via a raw same-origin URL (no route serves
+        // raw HTML as text/html - see get_raw_file()'s comment in app.py). Content comes from
+        // the same JSON-only preview_text endpoint plain text files use, then is set as
+        // srcdoc on a fully sandboxed iframe (sandbox="" - no allow-scripts, no
+        // allow-same-origin, no allow-forms/popups) so a hostile HTML file from a suspect
+        // drive can render its layout for review with zero ability to execute script, read
+        // this app's cookies/session, or navigate anywhere.
+        try {
+            const res = await fetch('/api/files/preview_text', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: item.path })
+            });
+            const data = await res.json();
+            preview.innerHTML = '';
+            if (!data.success) {
+                preview.className = 'file-pane p-2 d-block text-start';
+                const errSpan = document.createElement('span');
+                errSpan.className = 'text-danger small';
+                errSpan.textContent = `[ERROR] ${data.error}`;
+                preview.appendChild(errSpan);
+                return;
+            }
+            preview.className = 'file-pane p-0';
+            const iframe = document.createElement('iframe');
+            iframe.setAttribute('sandbox', '');
+            iframe.srcdoc = data.content;
+            iframe.style.width = '100%';
+            iframe.style.height = '100%';
+            iframe.style.border = 'none';
+            iframe.style.backgroundColor = '#fff';
+            iframe.title = 'HTML preview (sandboxed, scripts disabled)';
+            preview.appendChild(iframe);
+            if (data.truncated) {
+                const note = document.createElement('div');
+                note.className = 'text-subtle small p-1';
+                note.textContent = 'Note: file is larger than the preview limit, rendered content is truncated.';
+                preview.appendChild(note);
+            }
+        } catch (err) {
+            preview.innerHTML = '<span class="text-danger small">Preview failed to load.</span>';
+        }
         return;
     }
 
