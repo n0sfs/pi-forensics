@@ -256,7 +256,12 @@
             <i class="bi bi-shield-check text-cyan me-2"></i>Pi Forensics Suite
         </span>
 
-        <div class="d-flex flex-wrap align-items-center gap-3 text-nowrap">
+        <!-- Hidden below md (767.98px): pure system-health telemetry, not an
+             action - the single biggest contributor to top-of-page clutter
+             on a phone, and the case bar below already carries everything
+             actually actionable (case switching, write-blocker status).
+             Untouched at tablet/desktop width, where it's always shown. -->
+        <div class="d-none d-md-flex flex-wrap align-items-center gap-3 text-nowrap">
             <div class="d-flex align-items-center gap-2">
                 <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
                 <span id="cpuVal" class="telemetry-val">0%</span>
@@ -381,7 +386,10 @@
                 <button id="wbBadgeBtn" class="btn btn-sm btn-success fw-bold ms-auto" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to change this">
                     <i class="bi bi-lock-fill me-1"></i>Write Blocker: On
                 </button>
-                <button class="btn btn-sm btn-warning text-dark fw-bold" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to safely detach a drive">
+                <!-- Hidden below md: goes to the exact same place as the Write
+                     Blocker badge above (goToDriveManagement()), which stays
+                     visible - genuinely redundant on a phone, not a feature loss. -->
+                <button class="btn btn-sm btn-warning text-dark fw-bold d-none d-md-inline-block" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to safely detach a drive">
                     <i class="bi bi-eject-fill me-1"></i>Safe Detach
                 </button>
             </div>
@@ -1227,6 +1235,41 @@ sudo update-ca-certificates</pre>
                         <!-- Service Controls, Updates, Power & Diagnostics (combined) -->
                         <div class="tab-pane fade" id="settings-pane-diag" role="tabpanel">
                             <h6 class="text-info fw-bold mb-3"><i class="bi bi-terminal-fill me-2"></i>Service Controls & Diagnostics</h6>
+                            <!-- Mobile-only mirror of the navbar's system telemetry (hidden there
+                                 below 768px, see the d-none d-md-flex wrapper up in <nav>) - moving
+                                 it here instead of just deleting it keeps CPU/RAM/Storage/Network
+                                 reachable on a phone, one tap into Settings instead of permanently
+                                 occupying header space. Distinct *Settings-suffixed element ids -
+                                 fetchSystemInfo()/fetchNetworkInterfaces() populate both this and
+                                 the navbar version from the exact same single poll, two views of one
+                                 source of truth, not a second polling loop. -->
+                            <div class="d-flex d-md-none flex-wrap align-items-center gap-3 text-nowrap mb-3 p-2 bg-black border border-secondary rounded-2">
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
+                                    <span id="cpuValSettings" class="telemetry-val">0%</span>
+                                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                                        <div id="cpuBarSettings" class="progress-bar bg-info" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="telemetry-label"><i class="bi bi-memory text-primary me-1"></i>RAM:</span>
+                                    <span id="memValSettings" class="telemetry-val">0 / 0 GB (0%)</span>
+                                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                                        <div id="memBarSettings" class="progress-bar bg-primary" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="telemetry-label"><i class="bi bi-hdd text-warning me-1"></i>Pi Storage:</span>
+                                    <span id="storageValSettings" class="telemetry-val">0 / 0 GB</span>
+                                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                                        <div id="storageBarSettings" class="progress-bar bg-warning" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="telemetry-label"><i class="bi bi-ethernet me-1"></i>Network:</span>
+                                    <div id="settingsInterfacesContainer" class="d-flex align-items-center gap-1"></div>
+                                </div>
+                            </div>
                             <div class="row g-2">
                                 <div class="col-md-3">
                                     <div class="d-grid gap-1">
