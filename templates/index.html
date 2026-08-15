@@ -663,7 +663,11 @@
                                                 <i class="bi bi-cursor fs-1 text-subtle mb-2"></i>
                                                 <span class="text-subtle small">Select a file on the left to preview it here.</span>
                                             </div>
-                                            <div id="explorerMetadata" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="display:none; height: clamp(220px, 55vh, 620px);">
+                                            <!-- display:none needs !important from the start - this div's own
+                                                 d-flex class is !important in Bootstrap and would otherwise force
+                                                 it visible on the very first render, before switchExplorerRightView()
+                                                 ever runs to apply the same override dynamically (see main.js). -->
+                                            <div id="explorerMetadata" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="display:none !important; height: clamp(220px, 55vh, 620px);">
                                                 <i class="bi bi-info-circle fs-1 text-subtle mb-2"></i>
                                                 <span class="text-subtle small">Select a file on the left to view its metadata.</span>
                                             </div>
