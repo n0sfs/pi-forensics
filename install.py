@@ -346,10 +346,20 @@ if USE_TLS:
     os.makedirs(SSL_DIR, exist_ok=True)
     cert_path = os.path.join(SSL_DIR, "pi-forensics.crt")
     key_path = os.path.join(SSL_DIR, "pi-forensics.key")
+    # keyUsage/extendedKeyUsage=serverAuth: openssl req -x509 leaves these
+    # off by default (and marks the cert CA:TRUE), which real browsers -
+    # Chrome/Windows in particular - increasingly refuse to trust for TLS
+    # even after it's correctly imported into Trusted Root. Confirmed live
+    # as the actual cause of a "still not secure after installing the
+    # cert" report against the Settings > Security & Privacy "Generate"
+    # feature's own cert (same openssl req -x509 pattern); fixed there and
+    # mirrored here so a fresh install doesn't ship the same defect.
     subprocess.run([
         "openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
         "-keyout", key_path, "-out", cert_path,
-        "-days", "825", "-subj", "/CN=pi-forensics.local"
+        "-days", "825", "-subj", "/CN=pi-forensics.local",
+        "-addext", "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign",
+        "-addext", "extendedKeyUsage=serverAuth"
     ], check=True)
     os.chmod(key_path, 0o600)
     print(f"[+] Certificate written to {cert_path} / {key_path}")
