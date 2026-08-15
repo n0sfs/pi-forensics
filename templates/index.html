@@ -838,45 +838,52 @@
                                         </div>
                                         <div class="reports-shell">
                                             <div class="reports-nav list-group" id="reportsNavList" role="tablist">
-                                                <button class="list-group-item list-group-item-action active" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
-                                                <button class="list-group-item list-group-item-action" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
+                                                <button class="list-group-item list-group-item-action active" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
+                                                <button class="list-group-item list-group-item-action" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
                                                 <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab"><i class="bi bi-paperclip"></i>Files</button>
                                                 <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
                                                 <button class="list-group-item list-group-item-action" id="repHistoryTab" data-bs-toggle="list" data-bs-target="#repHistoryPane" type="button" role="tab" onclick="loadCaseHistory()"><i class="bi bi-clock-history"></i>Audit Trail</button>
-                                                <button class="list-group-item list-group-item-action" id="repDetailsTab" data-bs-toggle="list" data-bs-target="#repDetailsPane" type="button" role="tab"><i class="bi bi-info-circle"></i>Case Details</button>
+                                                <button class="list-group-item list-group-item-action" id="repSearchTab" data-bs-toggle="list" data-bs-target="#repSearchPane" type="button" role="tab"><i class="bi bi-search"></i>Search</button>
                                                 <button class="list-group-item list-group-item-action" id="repExportTab" data-bs-toggle="list" data-bs-target="#repExportPane" type="button" role="tab" onclick="prepareExportPane()"><i class="bi bi-file-earmark-arrow-down-fill"></i>Export</button>
                                                 <button class="list-group-item list-group-item-action" id="repRawJsonTab" data-bs-toggle="list" data-bs-target="#repRawJsonPane" type="button" role="tab"><i class="bi bi-code-slash"></i>Raw JSON</button>
                                             </div>
                                             <div class="reports-content tab-content" id="reportDetailTabContent">
-                                                <div class="tab-pane fade show active" id="repCaseNotesPane" role="tabpanel">
+                                                <div class="tab-pane fade" id="repCaseNotesPane" role="tabpanel">
                                                     <div class="small text-subtle mb-2">
                                                         A chronological, append-only journal of what was done and observed - this is the "Forensic Analysis / Steps Taken" section of the exported report. Each note gets a timestamp, author, and a local SHA-256 integrity hash computed at save time (a tamper-evidence check on this station only, not a legal timestamp authority). Editing a note keeps its original text in an "Edited" history rather than overwriting it.
                                                     </div>
+                                                    <!-- Add-note form stays first/fixed so it's always reachable without
+                                                         scrolling past a growing list - the notes list below it is what
+                                                         grows over the life of a case, not this form. -->
+                                                    <div class="row g-2 mb-2">
+                                                        <div class="col-md-4">
+                                                            <select id="newCaseNoteCategory" class="form-select form-select-sm">
+                                                                <option value="General">General</option>
+                                                                <option value="Objective">Objective</option>
+                                                                <option value="Acquisition">Acquisition</option>
+                                                                <option value="Analysis">Analysis</option>
+                                                                <option value="Finding">Finding</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-8">
+                                                            <input type="file" id="newCaseNoteFiles" class="form-control form-control-sm" multiple>
+                                                        </div>
+                                                    </div>
+                                                    <textarea id="newCaseNoteText" class="form-control form-control-sm mb-2" rows="3" placeholder="What did you do / observe just now?"></textarea>
+                                                    <button class="btn btn-sm btn-success fw-bold" onclick="addCaseNote()"><i class="bi bi-plus-lg me-1"></i>Add Note</button>
+                                                    <div id="caseNoteAddStatus" class="small mt-1"></div>
+                                                    <hr class="border-secondary my-3">
                                                     <div id="caseNotesContainer" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
                                                         <span class="text-subtle small italic">No case notes recorded yet.</span>
                                                     </div>
-                                                    <div class="border-top border-secondary pt-2">
-                                                        <div class="row g-2 mb-2">
-                                                            <div class="col-md-4">
-                                                                <select id="newCaseNoteCategory" class="form-select form-select-sm">
-                                                                    <option value="General">General</option>
-                                                                    <option value="Objective">Objective</option>
-                                                                    <option value="Acquisition">Acquisition</option>
-                                                                    <option value="Analysis">Analysis</option>
-                                                                    <option value="Finding">Finding</option>
-                                                                </select>
-                                                            </div>
-                                                            <div class="col-md-8">
-                                                                <input type="file" id="newCaseNoteFiles" class="form-control form-control-sm" multiple>
-                                                            </div>
-                                                        </div>
-                                                        <textarea id="newCaseNoteText" class="form-control form-control-sm mb-2" rows="3" placeholder="What did you do / observe just now?"></textarea>
-                                                        <button class="btn btn-sm btn-success fw-bold" onclick="addCaseNote()"><i class="bi bi-plus-lg me-1"></i>Add Note</button>
-                                                        <div id="caseNoteAddStatus" class="small mt-1"></div>
-                                                    </div>
                                                 </div>
-                                                <div class="tab-pane fade" id="repNarrativePane" role="tabpanel">
-                                                    <div class="small text-subtle mb-2">Examiner-authored narrative for the exported report - filled in once analysis is complete, distinct from the running Case Notes journal above.</div>
+                                                <div class="tab-pane fade show active" id="repNarrativePane" role="tabpanel">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-info-circle me-1"></i>Case Details</h6>
+                                                    <div class="small text-subtle mb-2">Station-configured extra fields (Settings &gt; Case &amp; Reporting) for this case. Saved via "Save Report Changes" in the case bar above.</div>
+                                                    <div id="customFieldsContainer" class="row g-2 mb-3"></div>
+                                                    <hr class="border-secondary my-3">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-file-text me-1"></i>Report Narrative</h6>
+                                                    <div class="small text-subtle mb-2">Examiner-authored narrative for the exported report - filled in once analysis is complete, distinct from the running Case Notes journal.</div>
                                                     <div class="mb-2">
                                                         <label class="telemetry-grid-label d-block mb-1">Executive Summary</label>
                                                         <textarea id="editExecSummary" class="form-control form-control-sm" rows="3" placeholder="High-level summary of the case, scope, and outcome for a non-technical reader..."></textarea>
@@ -924,9 +931,12 @@
                                                         <span class="text-subtle">Open this tab to see this case's history.</span>
                                                     </div>
                                                 </div>
-                                                <div class="tab-pane fade" id="repDetailsPane" role="tabpanel">
-                                                    <div class="small text-subtle mb-2">Station-configured extra fields (Settings &gt; Case &amp; Reporting) for this case. Saved via "Save Report Changes" in the case bar above.</div>
-                                                    <div id="customFieldsContainer" class="row g-2 mb-3"></div>
+                                                <div class="tab-pane fade" id="repSearchPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">Searches this case's Report Narrative, Jobs, Case Notes, and Audit Trail for a keyword - client-side, against what's already loaded for this case (Audit Trail is limited to the same 200 most recent entries the tab above shows). Click a result to jump to its tab.</div>
+                                                    <input type="text" id="repSearchInput" class="form-control form-control-sm mb-3" placeholder="Search keyword..." oninput="runCaseSearch()">
+                                                    <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
+                                                        <span class="text-subtle">Type a keyword above to search.</span>
+                                                    </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repExportPane" role="tabpanel">
                                                     <div class="row g-3">
