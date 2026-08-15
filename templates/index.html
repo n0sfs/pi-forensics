@@ -250,13 +250,8 @@
                 </div>
             </div>
 
-            <div class="d-flex align-items-center gap-3">
-                <span><span class="telemetry-label"><i class="bi bi-arrow-down-circle text-success me-1"></i>NET DL:</span> <span id="netDlVal" class="fw-bold text-success">0.0 MB/s</span></span>
-                <span><span class="telemetry-label"><i class="bi bi-arrow-up-circle text-warning me-1"></i>NET UL:</span> <span id="netUlVal" class="fw-bold text-warning">0.0 MB/s</span></span>
-            </div>
-
             <div class="d-flex align-items-center gap-2">
-                <span class="telemetry-label"><i class="bi bi-ethernet me-1"></i>Interfaces:</span>
+                <span class="telemetry-label"><i class="bi bi-ethernet me-1"></i>Network:</span>
                 <div id="headerInterfacesContainer" class="d-flex align-items-center gap-1"></div>
             </div>
         </div>
@@ -1066,7 +1061,105 @@
                             <div id="tlsStatusContainer" class="font-monospace small border border-secondary rounded-2 p-2 mb-2" style="background-color:#090b10;">
                                 <span class="text-subtle">Loading...</span>
                             </div>
-                            <div class="small text-subtle mb-2">Replace with a custom certificate + private key (RSA only). Both files are validated as a matching pair before anything is installed.</div>
+
+                            <div class="small text-subtle mb-2">This is a self-signed certificate, so every browser will warn on first visit until you import it as trusted on each device that connects here - the private key never leaves this station, only the public certificate is ever downloaded.</div>
+                            <a href="/api/system/tls_download_cert" class="btn btn-sm btn-outline-info fw-bold w-100 mb-2" download="pi-forensics.crt">
+                                <i class="bi bi-download me-1"></i>Download Certificate (.crt)
+                            </a>
+                            <div class="accordion accordion-flush mb-2" id="tlsTrustAccordion">
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustWindows">Windows</button>
+                                    </h2>
+                                    <div id="tlsTrustWindows" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                        <div class="accordion-body small text-subtle">
+                                            <ol class="mb-0 ps-3">
+                                                <li>Download the certificate above, then double-click the <span class="font-monospace text-info">pi-forensics.crt</span> file.</li>
+                                                <li>Click <strong>Install Certificate...</strong>, choose <strong>Local Machine</strong> (needs admin) or <strong>Current User</strong>, then Next.</li>
+                                                <li>Choose <strong>Place all certificates in the following store</strong> → Browse → <strong>Trusted Root Certification Authorities</strong> → OK → Next → Finish.</li>
+                                                <li>Restart your browser and reload this page.</li>
+                                            </ol>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustMac">macOS</button>
+                                    </h2>
+                                    <div id="tlsTrustMac" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                        <div class="accordion-body small text-subtle">
+                                            <ol class="mb-0 ps-3">
+                                                <li>Download the certificate above, then double-click it - it opens in <strong>Keychain Access</strong>.</li>
+                                                <li>Choose the <strong>System</strong> keychain (or <strong>login</strong> for just your account) and click Add.</li>
+                                                <li>Find the certificate in the list, double-click it, expand <strong>Trust</strong>, and set "When using this certificate" to <strong>Always Trust</strong>.</li>
+                                                <li>Close the panel, enter your password to confirm, then restart your browser and reload this page.</li>
+                                            </ol>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustLinux">Linux</button>
+                                    </h2>
+                                    <div id="tlsTrustLinux" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                        <div class="accordion-body small text-subtle">
+                                            <div class="mb-2">System-wide trust (Debian/Ubuntu-based, affects Chrome/Chromium/Edge and most other apps):</div>
+                                            <pre class="log-window mb-0" style="height:auto;">sudo cp pi-forensics.crt /usr/local/share/ca-certificates/pi-forensics.crt
+sudo update-ca-certificates</pre>
+                                            <div class="mt-2">Firefox keeps its own certificate store regardless of distro - see the Firefox note below.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustIos">iOS / iPadOS</button>
+                                    </h2>
+                                    <div id="tlsTrustIos" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                        <div class="accordion-body small text-subtle">
+                                            <ol class="mb-0 ps-3">
+                                                <li>Open this page in Safari on the device (or AirDrop the downloaded file to it) and download the certificate.</li>
+                                                <li>Go to <strong>Settings → General → VPN &amp; Device Management</strong>, tap the downloaded profile, then <strong>Install</strong> (enter your passcode).</li>
+                                                <li>Then go to <strong>Settings → General → About → Certificate Trust Settings</strong> and enable full trust for this certificate.</li>
+                                            </ol>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustAndroid">Android</button>
+                                    </h2>
+                                    <div id="tlsTrustAndroid" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                        <div class="accordion-body small text-subtle">
+                                            <ol class="mb-0 ps-3">
+                                                <li>Open this page in the device's browser and download the certificate.</li>
+                                                <li>Go to <strong>Settings → Security (or Security &amp; Privacy) → Encryption &amp; Credentials → Install a Certificate → CA Certificate</strong>.</li>
+                                                <li>Browse to the downloaded file and confirm. Exact menu names vary by Android version and manufacturer.</li>
+                                            </ol>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="small text-subtle mb-3"><strong>Firefox note (any OS):</strong> Firefox keeps its own certificate store, separate from the operating system's - the steps above don't apply to it. Instead go to Firefox Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities tab → Import → select the downloaded file → check "Trust this CA to identify websites".</div>
+
+                            <hr class="border-secondary my-3">
+
+                            <div class="small text-subtle mb-2">Generate a fresh self-signed certificate + private key (.pem/.key) directly on this station - no terminal needed. Automatically includes every network IP this Pi currently has (so browsers stop reporting a hostname mismatch), still shows a self-signed warning on first visit since nothing signed it.</div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-8">
+                                    <label class="telemetry-grid-label d-block mb-1">Additional Hostname (optional)</label>
+                                    <input type="text" id="tlsGenExtraHostname" class="form-control form-control-sm" placeholder="e.g. a custom DNS name pointing at this Pi">
+                                </div>
+                                <div class="col-md-4 d-flex align-items-end">
+                                    <button class="btn btn-sm btn-info fw-bold w-100" onclick="generateTlsCertificate()">
+                                        <i class="bi bi-magic me-1"></i>Generate &amp; Install
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="tlsGenerateStatus" class="small mb-2"></div>
+
+                            <hr class="border-secondary my-3">
+
+                            <div class="small text-subtle mb-2">Or replace with a custom certificate + private key of your own (RSA only, e.g. one signed by a real CA). Both files are validated as a matching pair before anything is installed.</div>
                             <div class="row g-2 mb-2">
                                 <div class="col-md-6">
                                     <label class="telemetry-grid-label d-block mb-1">Certificate File (.crt/.pem)</label>
@@ -1495,6 +1588,7 @@
                                 <button class="btn btn-sm btn-outline-warning fw-bold" onclick="showGuideStep('damaged')"><i class="bi bi-exclamation-triangle me-1"></i>Drive is damaged / clicking / not detected properly</button>
                                 <button class="btn btn-sm btn-outline-success fw-bold" onclick="showGuideStep('deleted')"><i class="bi bi-search me-1"></i>I need to recover deleted files</button>
                                 <button class="btn btn-sm btn-outline-primary fw-bold" onclick="showGuideStep('phone')"><i class="bi bi-phone me-1"></i>It's a phone, not a drive</button>
+                                <button class="btn btn-sm btn-outline-light fw-bold" onclick="showGuideStep('report')"><i class="bi bi-file-earmark-text me-1"></i>Documenting findings / writing a report</button>
                             </div>
                             <div id="guideStepsContainer"></div>
                         </div>
