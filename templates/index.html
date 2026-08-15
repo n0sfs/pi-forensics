@@ -40,7 +40,7 @@
         .app-layout {
             display: flex;
             align-items: stretch;
-            min-height: calc(100vh - 47px);
+            min-height: calc(100vh - 67px);
         }
 
         .app-sidebar {
@@ -51,22 +51,24 @@
             transition: width 0.18s ease;
             display: flex;
             flex-direction: column;
-            padding-top: 8px;
         }
 
         .app-sidebar.compact { width: 58px; }
 
+        /* Height matches #activeCaseBar's own rendered height (padding: 6px
+           20px around btn-sm content = 51px) so the collapse toggle lines up
+           edge-to-edge with the case bar sitting next to it, not just
+           approximately - confirmed via getBoundingClientRect(), not guessed. */
         .sidebar-toggle-btn {
             display: flex;
             align-items: center;
             justify-content: center;
             width: 100%;
-            padding: 8px 0;
+            height: 51px;
             background: transparent;
             border: none;
             border-bottom: 1px solid var(--border-color);
             color: var(--text-subtle);
-            margin-bottom: 6px;
         }
         .sidebar-toggle-btn:hover { color: var(--text-bright); }
 
@@ -213,6 +215,43 @@
         <span class="navbar-brand fw-bold text-info fs-6 d-flex align-items-center">
             <i class="bi bi-shield-check text-cyan me-2"></i>Pi Forensics Suite
         </span>
+
+        <div class="d-flex flex-wrap align-items-center gap-3 text-nowrap">
+            <div class="d-flex align-items-center gap-2">
+                <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
+                <span id="cpuVal" class="telemetry-val">0%</span>
+                <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                    <div id="cpuBar" class="progress-bar bg-info" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div class="d-flex align-items-center gap-2">
+                <span class="telemetry-label"><i class="bi bi-memory text-primary me-1"></i>RAM:</span>
+                <span id="memVal" class="telemetry-val">0 / 0 GB (0%)</span>
+                <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                    <div id="memBar" class="progress-bar bg-primary" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div class="d-flex align-items-center gap-2">
+                <span class="telemetry-label"><i class="bi bi-hdd text-warning me-1"></i>Pi Storage:</span>
+                <span id="storageVal" class="telemetry-val">0 / 0 GB</span>
+                <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                    <div id="storageBar" class="progress-bar bg-warning" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div class="d-flex align-items-center gap-3">
+                <span><span class="telemetry-label"><i class="bi bi-arrow-down-circle text-success me-1"></i>NET DL:</span> <span id="netDlVal" class="fw-bold text-success">0.0 MB/s</span></span>
+                <span><span class="telemetry-label"><i class="bi bi-arrow-up-circle text-warning me-1"></i>NET UL:</span> <span id="netUlVal" class="fw-bold text-warning">0.0 MB/s</span></span>
+            </div>
+
+            <div class="d-flex align-items-center gap-2">
+                <span class="telemetry-label"><i class="bi bi-ethernet me-1"></i>Interfaces:</span>
+                <div id="headerInterfacesContainer" class="d-flex align-items-center gap-1"></div>
+            </div>
+        </div>
+
         <div class="d-flex align-items-center gap-2">
             {% if is_local_kiosk and False %}
             {# Keyboard button disabled: wvkbd is currently disabled in install.py's
@@ -287,43 +326,9 @@
         </div>
 
         <div class="app-content-area">
-            <div class="top-telemetry-bar d-flex flex-wrap align-items-center justify-content-between gap-3 text-nowrap">
-                <div class="d-flex align-items-center gap-2">
-                    <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
-                    <span id="cpuVal" class="telemetry-val">0%</span>
-                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
-                        <div id="cpuBar" class="progress-bar bg-info" style="width: 0%"></div>
-                    </div>
-                </div>
-
-                <div class="d-flex align-items-center gap-2">
-                    <span class="telemetry-label"><i class="bi bi-memory text-primary me-1"></i>RAM:</span>
-                    <span id="memVal" class="telemetry-val">0 / 0 GB (0%)</span>
-                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
-                        <div id="memBar" class="progress-bar bg-primary" style="width: 0%"></div>
-                    </div>
-                </div>
-
-                <div class="d-flex align-items-center gap-2">
-                    <span class="telemetry-label"><i class="bi bi-hdd text-warning me-1"></i>Pi Storage:</span>
-                    <span id="storageVal" class="telemetry-val">0 / 0 GB</span>
-                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
-                        <div id="storageBar" class="progress-bar bg-warning" style="width: 0%"></div>
-                    </div>
-                </div>
-
-                <div class="d-flex align-items-center gap-3">
-                    <span><span class="telemetry-label"><i class="bi bi-arrow-down-circle text-success me-1"></i>NET DL:</span> <span id="netDlVal" class="fw-bold text-success">0.0 MB/s</span></span>
-                    <span><span class="telemetry-label"><i class="bi bi-arrow-up-circle text-warning me-1"></i>NET UL:</span> <span id="netUlVal" class="fw-bold text-warning">0.0 MB/s</span></span>
-                </div>
-
-                <div class="d-flex align-items-center gap-2">
-                    <span class="telemetry-label"><i class="bi bi-ethernet me-1"></i>Interfaces:</span>
-                    <div id="headerInterfacesContainer" class="d-flex align-items-center gap-1"></div>
-                </div>
-            </div>
-
-            <!-- Active Case Bar: persists across every tab below, unlike everything in .container-fluid -->
+            <!-- Active Case Bar: persists across every tab below, unlike everything in .container-fluid.
+                 Now the first row in .app-content-area (telemetry moved into the navbar above), so
+                 the sidebar's align-items:stretch aligns its top edge with this bar's top edge. -->
             <div id="activeCaseBar" class="top-telemetry-bar d-flex flex-wrap align-items-center gap-3 text-nowrap">
                 <button id="btnCaseAction" class="btn btn-sm btn-outline-info fw-bold" onclick="openCaseManagerModal()">
                     <i class="bi bi-folder-plus me-1"></i><span id="btnCaseActionLabel">Create / Select Case</span>
