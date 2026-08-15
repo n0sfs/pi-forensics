@@ -4025,23 +4025,40 @@ def delete_file():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-# --- File Preview (image src / text content) ---
+# --- File Preview (image/PDF src / text content) ---
 _PREVIEWABLE_IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
 _PREVIEWABLE_TEXT_EXT = {'.txt', '.json', '.log', '.md', '.csv', '.xml', '.html', '.htm', '.py', '.js', '.sh', '.conf', '.ini', '.cfg', '.yaml', '.yml'}
+# PDF is deliberately in its own set, not merged into _PREVIEWABLE_IMAGE_EXT - it's still
+# served raw (needs the real bytes for the browser's native PDF viewer, can't be inlined as
+# text), but unlike images it's never routed through innerHTML-adjacent code, and its
+# eventual rendering context (a plain <iframe src=...>, browser's built-in PDF viewer) has no
+# script-execution surface, unlike HTML - see the note on get_raw_file() below for why HTML
+# preview deliberately does NOT go through this same raw-serving endpoint.
+_PREVIEWABLE_PDF_EXT = {'.pdf'}
 _PREVIEW_TEXT_MAX_BYTES = 200 * 1024  # 200 KB - enough for a meaningful preview without loading huge files into memory
 
 @app.route('/api/files/raw', methods=['GET'])
 @requires_auth
 def get_raw_file():
+    # Deliberately excludes HTML: serving a suspect-drive HTML file at a directly-navigable,
+    # same-origin URL with a real text/html Content-Type would let it execute script with this
+    # app's own origin/session if ever opened outside the sandboxed-iframe preview (bookmarked,
+    # pasted into another tab, etc.) - the exact stored-XSS risk this app's "never innerHTML
+    # untrusted content" discipline exists to prevent, just via a URL instead of the DOM. HTML
+    # preview instead reuses the existing JSON-only preview_text_file() below and is rendered
+    # into a fully sandboxed iframe (sandbox="", no allow-scripts/allow-same-origin) client-side
+    # - see previewSelectedFile() in main.js - so no route ever serves raw HTML bytes as HTML.
     path = safe_path(request.args.get('path', ''))
     if not path or not os.path.isfile(path):
         return jsonify({"error": "File not found or outside the permitted evidence directory."}), 404
 
     ext = os.path.splitext(path)[1].lower()
-    if ext not in _PREVIEWABLE_IMAGE_EXT:
-        return jsonify({"error": "Only image files can be served this way."}), 400
+    if ext not in _PREVIEWABLE_IMAGE_EXT and ext not in _PREVIEWABLE_PDF_EXT:
+        return jsonify({"error": "Only image and PDF files can be served this way."}), 400
 
-    return send_file(path)
+    resp = send_file(path)
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    return resp
 
 @app.route('/api/files/preview_text', methods=['POST'])
 @requires_auth
