@@ -111,6 +111,22 @@
             border-left-color: var(--accent-cyan);
         }
 
+        /* Below tablet width, the sidebar's expanded 190px eats over a third
+           of a phone screen and there's no way to know a visitor's viewport
+           at render time - force the same icon-only layout `.compact`
+           already provides, regardless of the manually-toggled class, and
+           hide the now-redundant toggle button. Equal-specificity rules
+           here beat the non-compact base rules above via source order
+           (this block comes later) once the media query matches; they never
+           need to beat `.compact`'s own rules since those already produce
+           the same result. */
+        @media (max-width: 767.98px) {
+            .app-sidebar { width: 58px; }
+            .app-sidebar .nav-link { justify-content: center; padding: 12px 0; }
+            .app-sidebar .tab-label { display: none; }
+            .sidebar-toggle-btn { display: none; }
+        }
+
         .app-content-area { flex: 1; min-width: 0; display: flex; flex-direction: column; }
         .app-content-area .container-fluid { flex: 1; min-height: 0; }
 
@@ -213,6 +229,21 @@
             color: var(--accent-cyan); font-weight: 700; background: rgba(0, 242, 254, 0.07); border-left-color: var(--accent-cyan);
         }
         .reports-content { flex: 1; min-width: 0; padding: 20px; }
+
+        /* Both shells' nav column has a 200px floor, meant to fit the
+           longest label ("Service Controls & Diagnostics") - fine
+           side-by-side on a real screen, but on a phone that floor alone
+           can exceed the whole viewport width, pushing .settings-content/
+           .reports-content off-screen entirely (min-width:0 lets it shrink,
+           but not below what its own form fields need). Stack nav above
+           content instead of forcing them into one row that doesn't fit. */
+        @media (max-width: 767.98px) {
+            .settings-shell, .reports-shell { flex-direction: column; }
+            .settings-nav, .reports-nav {
+                width: 100%; min-width: 0;
+                border-right: none; border-bottom: 1px solid var(--border-color);
+            }
+        }
         .accordion-button { background-color: var(--card-bg); color: var(--text-bright); box-shadow: none; }
         .accordion-button:not(.collapsed) { background-color: var(--card-bg); color: var(--accent-cyan); box-shadow: none; }
         .accordion-button::after { filter: invert(1) grayscale(1) brightness(1.5); }
@@ -381,15 +412,15 @@
                                             </div>
                                             <div class="p-2 bg-dark border border-secondary rounded-2 mb-3">
                                                 <div class="row g-2">
-                                                    <div class="col-4"><span class="telemetry-grid-label d-block">Device Path</span><span id="lblDevicePath" class="telemetry-grid-val text-truncate d-block">--</span></div>
-                                                    <div class="col-4"><span class="telemetry-grid-label d-block">Media Type</span><span id="lblMediaType" class="telemetry-grid-val text-truncate d-block">--</span></div>
-                                                    <div class="col-4"><span class="telemetry-grid-label d-block">Capacity Size</span><span id="lblCapacity" class="telemetry-grid-val text-truncate d-block">--</span></div>
-                                                    <div class="col-4"><span class="telemetry-grid-label d-block">Model / Vendor</span><span id="lblModel" class="telemetry-grid-val text-truncate d-block">--</span></div>
-                                                    <div class="col-4"><span class="telemetry-grid-label d-block">Serial Number</span><span id="lblSerial" class="telemetry-grid-val text-warning font-monospace text-truncate d-block">--</span></div>
-                                                    <div class="col-4"><span class="telemetry-grid-label d-block">Temperature</span><span id="lblTemp" class="telemetry-grid-val d-block">--</span></div>
-                                                    <div class="col-4"><span class="telemetry-grid-label d-block">Reallocated Sectors</span><span id="lblReallocated" class="telemetry-grid-val d-block">--</span></div>
-                                                    <div class="col-4"><span class="telemetry-grid-label d-block">Pending Bad Sectors</span><span id="lblPending" class="telemetry-grid-val d-block">--</span></div>
-                                                    <div class="col-4"><span class="telemetry-grid-label d-block">Power-On Hours</span><span id="lblPowerHours" class="telemetry-grid-val d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Device Path</span><span id="lblDevicePath" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Media Type</span><span id="lblMediaType" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Capacity Size</span><span id="lblCapacity" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Model / Vendor</span><span id="lblModel" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Serial Number</span><span id="lblSerial" class="telemetry-grid-val text-warning font-monospace text-truncate d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Temperature</span><span id="lblTemp" class="telemetry-grid-val d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Reallocated Sectors</span><span id="lblReallocated" class="telemetry-grid-val d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Pending Bad Sectors</span><span id="lblPending" class="telemetry-grid-val d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Power-On Hours</span><span id="lblPowerHours" class="telemetry-grid-val d-block">--</span></div>
                                                 </div>
                                             </div>
 
@@ -504,9 +535,9 @@
                                                 <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
                                             </div>
                                             <div class="row text-center align-items-center mb-2">
-                                                <div class="col-4"><small class="telemetry-label d-block">Speed</small><span id="speedVal" class="fw-bold text-warning">0.0 MB/s</span></div>
-                                                <div class="col-4"><div class="chart-container-mini"><canvas id="throughputChart"></canvas></div></div>
-                                                <div class="col-4"><small class="telemetry-label d-block">Bytes</small><span id="bytesVal" class="fw-bold text-light">0 / 0 GB</span></div>
+                                                <div class="col-6 col-md-4"><small class="telemetry-label d-block">Speed</small><span id="speedVal" class="fw-bold text-warning">0.0 MB/s</span></div>
+                                                <div class="col-6 col-md-4"><div class="chart-container-mini"><canvas id="throughputChart"></canvas></div></div>
+                                                <div class="col-6 col-md-4"><small class="telemetry-label d-block">Bytes</small><span id="bytesVal" class="fw-bold text-light">0 / 0 GB</span></div>
                                             </div>
                                             <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
                                             <pre id="logOutput" class="log-window" style="height: clamp(140px, 30vh, 260px);">[System initialized and idle. Ready for disk acquisition job.]</pre>
@@ -560,9 +591,9 @@
                                             </div>
 
                                             <div id="recoveryMetadataRow" class="row g-2 mb-3">
-                                                <div class="col-4"><input type="text" id="recoveryCaseNum" class="form-control form-control-sm" placeholder="Case #"></div>
-                                                <div class="col-4"><input type="text" id="recoveryEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID"></div>
-                                                <div class="col-4"><input type="text" id="recoveryExaminer" class="form-control form-control-sm" placeholder="Examiner"></div>
+                                                <div class="col-6 col-md-4"><input type="text" id="recoveryCaseNum" class="form-control form-control-sm" placeholder="Case #"></div>
+                                                <div class="col-6 col-md-4"><input type="text" id="recoveryEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID"></div>
+                                                <div class="col-6 col-md-4"><input type="text" id="recoveryExaminer" class="form-control form-control-sm" placeholder="Examiner"></div>
                                             </div>
 
                                             <div class="d-flex gap-2">
@@ -591,7 +622,7 @@
             <!-- APP 2b: FORENSIC FILE EXPLORER (its own tab - moved out of File Recovery) -->
             <div class="tab-pane fade" id="explorer-app" role="tabpanel">
                             <div class="card">
-                                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-1 py-2">
                                     <span><i class="bi bi-folder-check me-2"></i>Forensic File Explorer</span>
                                     <span class="small text-subtle fw-normal">Tap to preview | Double-tap folder/image to enter | Right-click (or press-and-hold) for actions</span>
                                 </div>
@@ -689,12 +720,12 @@
 
                                                 <div id="mobileIosDetailsPanel" class="p-2 bg-dark border border-secondary rounded-2 mb-2">
                                                     <div class="row g-2">
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">Model</span><span id="mobileIosModel" class="telemetry-grid-val text-truncate d-block">--</span></div>
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">iOS Version</span><span id="mobileIosVersion" class="telemetry-grid-val d-block">--</span></div>
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">Build</span><span id="mobileIosBuild" class="telemetry-grid-val d-block">--</span></div>
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">Storage</span><span id="mobileIosStorage" class="telemetry-grid-val d-block">--</span></div>
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">Activation</span><span id="mobileIosActivation" class="telemetry-grid-val d-block">--</span></div>
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">Serial</span><span id="mobileIosSerial" class="telemetry-grid-val text-warning font-monospace text-truncate d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Model</span><span id="mobileIosModel" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">iOS Version</span><span id="mobileIosVersion" class="telemetry-grid-val d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Build</span><span id="mobileIosBuild" class="telemetry-grid-val d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Storage</span><span id="mobileIosStorage" class="telemetry-grid-val d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Activation</span><span id="mobileIosActivation" class="telemetry-grid-val d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Serial</span><span id="mobileIosSerial" class="telemetry-grid-val text-warning font-monospace text-truncate d-block">--</span></div>
                                                         <div class="col-6"><span class="telemetry-grid-label d-block">IMEI</span><span id="mobileIosImei" class="telemetry-grid-val font-monospace text-truncate d-block">--</span></div>
                                                         <div class="col-6"><span class="telemetry-grid-label d-block">WiFi MAC</span><span id="mobileIosWifiMac" class="telemetry-grid-val font-monospace text-truncate d-block">--</span></div>
                                                         <div class="col-12"><span class="telemetry-grid-label d-block">Bluetooth MAC</span><span id="mobileIosBtMac" class="telemetry-grid-val font-monospace d-block">--</span></div>
@@ -721,12 +752,12 @@
 
                                                 <div id="mobileAndroidDetailsPanel" class="p-2 bg-dark border border-secondary rounded-2 mb-2">
                                                     <div class="row g-2">
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">Model</span><span id="mobileAndroidModel" class="telemetry-grid-val text-truncate d-block">--</span></div>
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">Manufacturer</span><span id="mobileAndroidManufacturer" class="telemetry-grid-val text-truncate d-block">--</span></div>
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">State</span><span id="mobileAndroidState" class="telemetry-grid-val d-block">--</span></div>
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">Android Ver.</span><span id="mobileAndroidVersion" class="telemetry-grid-val d-block">--</span></div>
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">API Level</span><span id="mobileAndroidApiLevel" class="telemetry-grid-val d-block">--</span></div>
-                                                        <div class="col-4"><span class="telemetry-grid-label d-block">Build ID</span><span id="mobileAndroidBuildId" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Model</span><span id="mobileAndroidModel" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Manufacturer</span><span id="mobileAndroidManufacturer" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">State</span><span id="mobileAndroidState" class="telemetry-grid-val d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Android Ver.</span><span id="mobileAndroidVersion" class="telemetry-grid-val d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">API Level</span><span id="mobileAndroidApiLevel" class="telemetry-grid-val d-block">--</span></div>
+                                                        <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Build ID</span><span id="mobileAndroidBuildId" class="telemetry-grid-val text-truncate d-block">--</span></div>
                                                         <div class="col-12"><span class="telemetry-grid-label d-block">Serial</span><span id="mobileAndroidSerial" class="telemetry-grid-val text-warning font-monospace text-truncate d-block">--</span></div>
                                                     </div>
                                                 </div>
@@ -779,7 +810,7 @@
             <!-- APP 3: REPORTS & VERIFICATION TAB -->
             <div class="tab-pane fade" id="reports-app" role="tabpanel">
                             <div class="card">
-                                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-1 py-2">
                                     <span><i class="bi bi-journal-richtext me-2"></i>Case Report</span>
                                     <span class="small text-subtle fw-normal">Follows the case selected in the bar above - select or create one there to populate this</span>
                                 </div>

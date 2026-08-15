@@ -3618,7 +3618,19 @@ def tls_generate():
             "openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
             "-keyout", tmp_key_path, "-out", tmp_cert_path,
             "-days", "825", "-subj", f"/CN={common_name}",
-            "-addext", f"subjectAltName={','.join(san_entries)}"
+            "-addext", f"subjectAltName={','.join(san_entries)}",
+            # openssl req -x509 leaves these off by default, which is fine
+            # for a cert only ever inspected by openssl itself but not for
+            # real browsers - Chrome/Windows increasingly enforce that a
+            # certificate presented for TLS carries an Extended Key Usage
+            # with serverAuth, and reject (or silently distrust) one that's
+            # also marked CA:TRUE (the openssl req -x509 default) without
+            # it, even after it's correctly imported into Trusted Root.
+            # Confirmed as the actual cause of a real "still shows not
+            # secure after installing the cert on Windows" report - adding
+            # these two fixed it.
+            "-addext", "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign",
+            "-addext", "extendedKeyUsage=serverAuth"
         ], capture_output=True, text=True, timeout=60)
         if gen_res.returncode != 0:
             return jsonify({"success": False, "error": f"Certificate generation failed: {gen_res.stderr.strip()}"}), 500
