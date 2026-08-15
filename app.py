@@ -3818,18 +3818,31 @@ def restart_forensic_service():
 @app.route('/api/system/restart_kiosk', methods=['POST'])
 @requires_auth
 def restart_touch_kiosk():
-    # install.py sets up the kiosk via a labwc autostart script in this
-    # account's home directory, not a systemd unit - the web service
-    # already runs as that same account, so no sudo/su is needed here.
+    # install.py's labwc autostart script (started once, automatically, at
+    # kiosk desktop login - not by this route) already runs its own
+    # persistent "while true; relaunch chromium whenever it exits" respawn
+    # loop in the background for the lifetime of the kiosk session. Killing
+    # chromium is enough on its own to make that already-running loop
+    # relaunch it fresh within a few seconds - the exact same recovery path
+    # a real chromium crash already goes through.
+    #
+    # This route must NOT also re-launch the whole autostart script (a
+    # previous version did, via subprocess.Popen(['bash', autostart_path])
+    # after the pkill below) - doing so starts a SECOND, fully independent
+    # copy of that same respawn loop (plus its own 30-minute watchdog loop),
+    # racing the original. Both loops then repeatedly kill and relaunch
+    # chromium against each other forever, which is what a rapid white-
+    # flash/flicker back to the UI on the touchscreen actually was - a real
+    # bug, not a hypothetical, found live 2026-08-15. Every click of this
+    # button used to add yet another competing loop into that race, making
+    # it worse each time rather than fixing anything.
     autostart_path = os.path.join(os.path.expanduser('~'), '.config', 'labwc', 'autostart')
     if not os.path.exists(autostart_path):
         return jsonify({"success": False, "error": f"Kiosk autostart script not found at {autostart_path}."}), 404
 
     try:
         subprocess.run(['pkill', '-9', '-f', 'chromium'], capture_output=True, timeout=10)
-        time.sleep(1)
-        subprocess.Popen(['bash', autostart_path])
-        return jsonify({"success": True, "message": "Touchscreen kiosk display restarting..."})
+        return jsonify({"success": True, "message": "Touchscreen kiosk display restarting - the running autostart watchdog will relaunch it within a few seconds."})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
