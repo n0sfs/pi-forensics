@@ -47,37 +47,37 @@ https://commons.erau.edu/jdfsl/vol11/iss1/3/
 <p align="center">
   <img src="docs/images/PIF1.JPG" width="100%" alt="Forensic Acquisition" />
   <br>
-  <em>Figure 1: Forensic Acquisition Dashboard with the active-case bar (auto-fills Case#/Examiner/Destination), Drive Check, Write Blocker Toggle, Raw/EWF/ddrescue Output, MD5/SHA1/SHA256 Hashes, and Native Network Discovery, Drive Mapping and Telemetry.</em>
+  <em>Figure 1: Forensic Acquisition - the active-case bar (Case#/Examiner auto-filled, Write Blocker status, Safe Detach) above a single two-column card: target drive selection with live SMART telemetry, destination directory, case metadata, and format/hash controls sharing one status/progress/console output.</em>
 </p>
 
 <p align="center">
   <img src="docs/images/PIF2.JPG" width="100%" alt="File Recovery Tools" />
   <br>
-  <em>Figure 2: File Recovery tab - one unified tool selector (PhotoRec, extundelete, foremost, scalpel, Quick Triage Scan, TestDisk Partition Analysis, ddrescue Mapfile Inspector) sharing a single source/destination/metadata layout and live terminal output.</em>
+  <em>Figure 2: File Recovery - one unified tool selector (PhotoRec shown here, alongside extundelete, foremost, scalpel, TestDisk analysis, and the ddrescue Mapfile Inspector) in a left/right split: source/destination/case fields on the left, live status and terminal output on the right.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF3.JPG" width="100%" alt="Forensic File Explorer" />
+  <img src="docs/images/PIF3.JPG" width="100%" alt="Mobile Forensics" />
   <br>
-  <em>Figure 3: Forensic File Explorer, now its own tab - single-pane browser with a live preview pane, shown here previewing a case's <code>case_info.json</code> marker file inside its real per-case evidence folder.</em>
+  <em>Figure 3: Mobile Forensics - a single iOS/Android mode selector driving one device-detail panel (model, OS version, build, storage, IMEI, WiFi/Bluetooth MAC, activation state) and one Start/Stop + console, instead of separate per-platform cards.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF4.JPG" width="100%" alt="Mobile Forensics" />
+  <img src="docs/images/PIF4.JPG" width="100%" alt="Forensic File Explorer" />
   <br>
-  <em>Figure 4: Mobile Forensics - device detection plus iOS full backup (idevicebackup2) and Android acquisition (adb pull/backup/bugreport) side by side, with an MVT spyware/IOC scan available afterward from the File Explorer's Actions menu.</em>
+  <em>Figure 4: Forensic File Explorer browsing directly inside an acquired image via the inline Sleuth Kit Image Browser (pytsk3) - no mounting or extraction needed to list files, preview one, or pull it out to the case folder.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF5.JPG" width="100%" alt="Reporting & Verification" />
+  <img src="docs/images/PIF5.JPG" width="100%" alt="Reporting" />
   <br>
-  <em>Figure 5: Reporting - case metadata editor, file/URL attachments, PDF export, and Evidence Image Integrity Verification with hash matching.</em>
+  <em>Figure 5: Reporting - the left-nav case workspace (Report Narrative, Case Notes, Files, Jobs, Audit Trail, Search, Export, Raw JSON), shown here on Report Narrative with station-configured Case Details fields and the DFIR-style Executive Summary/Objectives/Findings/Limitations/Conclusion narrative.</em>
 </p>
 
 <p align="center">
   <img src="docs/images/PIF6.JPG" width="100%" alt="Settings" />
   <br>
-  <em>Figure 6: Settings - Security & Account Password, Safe Hardware Detach, the Audit Log (with one-click Export to CSV), and the combined Service Controls & Diagnostics panel (restart/update/power controls, a fixed-allowlist diagnostics dropdown, and Check Tool Versions) all reporting into one shared output pane.</em>
+  <em>Figure 6: Settings - one of six left-nav categories, shown here on Case & Reporting: per-station report export defaults, report branding (header text and logo), and custom case fields that appear on every case's Case Information block.</em>
 </p>
 
 ---
