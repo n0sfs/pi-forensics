@@ -165,7 +165,7 @@
 
   /* ---------- Spec strip ---------- */
   .spec-strip { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.012); }
-  .spec-grid { display: grid; grid-template-columns: repeat(4, 1fr); }
+  .spec-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
   .spec-item { padding: 30px 24px; text-align: center; border-left: 1px solid var(--border); }
   .spec-item:first-child { border-left: none; }
   .spec-item b { display: block; font-family: var(--mono); font-size: 30px; color: var(--gold-hi); font-variant-numeric: tabular-nums; }
@@ -258,14 +258,14 @@
 
   @media (max-width: 900px) {
     .nav-links { display: none; }
-    .spec-grid { grid-template-columns: 1fr 1fr; }
-    .spec-item:nth-child(3) { border-left: none; }
     .why-grid, .feat-grid, .shot-grid, .sec-strip-grid, .install-card { grid-template-columns: 1fr; }
     .feat-grid { grid-template-columns: 1fr 1fr; }
   }
-  @media (max-width: 560px) {
+  @media (max-width: 640px) {
     .feat-grid { grid-template-columns: 1fr; }
-    .spec-grid { grid-template-columns: 1fr 1fr; }
+    .spec-grid { grid-template-columns: 1fr; }
+    .spec-item { border-left: none !important; border-top: 1px solid var(--border); }
+    .spec-item:first-child { border-top: none; }
   }
 </style>
 
@@ -311,10 +311,9 @@
 
 <div class="spec-strip">
   <div class="wrap spec-grid">
-    <div class="spec-item"><b>6</b><span>Acquisition formats &mdash; dc3dd, dcfldd, dd, E01, AFF, ddrescue</span></div>
-    <div class="spec-item"><b>5</b><span>Recovery tools &mdash; PhotoRec, extundelete, foremost, scalpel, TestDisk</span></div>
+    <div class="spec-item"><b>10</b><span>Acquisition formats &mdash; dc3dd, dcfldd, dd, E01, AFF, ddrescue, plus iOS backup and Android pull/backup/bugreport</span></div>
+    <div class="spec-item"><b>21</b><span>Forensic tools integrated &mdash; from dc3dd to The Sleuth Kit to MVT, version-checked from Settings</span></div>
     <div class="spec-item"><b>3</b><span>Hash algorithms verified on every acquisition &mdash; MD5 / SHA-1 / SHA-256</span></div>
-    <div class="spec-item"><b>0</b><span>Cloud dependency &mdash; evidence never leaves the device you control</span></div>
   </div>
 </div>
 
