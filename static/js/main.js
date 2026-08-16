@@ -2916,6 +2916,37 @@ function onExportTemplateChange() {
     }
 }
 
+// Raw JSON is just the case file as-is - no template/sections/job_fields/
+// evidence-item filtering applies to it (those are all PDF/HTML rendering
+// concerns), so selecting it hides that whole side of the pane and shows
+// the same live JSON preview that used to live in its own "Raw JSON" tab.
+function onExportFormatChange() {
+    const sel = document.getElementById("exportFormatSelect");
+    const templateGroup = document.getElementById("exportTemplateGroup");
+    const optionsRow = document.getElementById("exportPdfHtmlOptionsRow");
+    const jsonGroup = document.getElementById("exportJsonPreviewGroup");
+    if (!sel) return;
+    const isJson = sel.value === 'json';
+
+    if (templateGroup) templateGroup.style.display = isJson ? 'none' : '';
+    if (optionsRow) optionsRow.style.display = isJson ? 'none' : '';
+    if (jsonGroup) jsonGroup.style.display = isJson ? 'block' : 'none';
+
+    if (isJson) {
+        const previewEl = document.getElementById("jsonPreview");
+        if (previewEl && currentLoadedReportData) {
+            previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
+        }
+    } else {
+        // Restore whatever the Sections/Fields group's own visibility
+        // should be for the currently-selected template (standard vs.
+        // fixed-structure vs. custom) - format and template toggle
+        // overlapping UI, so switching back to pdf/html needs to re-run
+        // the template-driven logic, not just blindly show everything.
+        onExportTemplateChange();
+    }
+}
+
 async function prepareExportPane() {
     const reportPath = currentReportPath;
     if (!reportPath || !currentLoadedReportData) {
@@ -2936,6 +2967,7 @@ async function prepareExportPane() {
             const templateSel = document.getElementById("exportTemplateSelect");
             if (templateSel) templateSel.value = data.report_defaults?.template || 'standard';
             onExportTemplateChange();
+            onExportFormatChange();
 
             const sections = data.report_defaults?.sections || {};
             const jobFields = data.report_defaults?.job_fields || {};
@@ -3123,6 +3155,30 @@ async function runExportReport() {
     if (!reportPath) return alert("Select an active case first.");
 
     const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
+
+    // Raw JSON never touches /api/export_report - it's just the case file
+    // already loaded client-side (the same data jsonPreview already shows),
+    // downloaded directly as a Blob. No template/sections/job_fields
+    // filtering applies to a raw dump.
+    if (format === 'json') {
+        const statusEl = document.getElementById("exportReportStatus");
+        if (!currentLoadedReportData) {
+            if (statusEl) { statusEl.textContent = 'No case data loaded.'; statusEl.className = 'small text-danger'; }
+            return;
+        }
+        const blob = new Blob([JSON.stringify(currentLoadedReportData, null, 2)], { type: 'application/json' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = reportPath.split('/').pop();
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        if (statusEl) { statusEl.textContent = 'Export complete.'; statusEl.className = 'small text-success'; }
+        return;
+    }
+
     const template = document.getElementById("exportTemplateSelect")?.value || 'standard';
 
     // sections/job_fields only ever apply to the 'standard' template - the
