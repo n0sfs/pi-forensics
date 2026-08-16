@@ -1718,6 +1718,217 @@ async function fetchCustomFieldDefs() {
     } catch (err) { /* non-fatal - Case Information just shows no custom fields */ }
 }
 
+// --- Report Template Builder (custom templates built from the same
+// sections Standard uses - see REPORT_SECTION_BLOCKS in app.py) ---
+// Station-wide, cached the same way customFieldDefsCache is - both
+// selectors that offer a template choice (Settings' station default,
+// Reporting's Export pane) read from this cache rather than fetching
+// independently, so they always agree on what templates currently exist.
+let customReportTemplatesCache = [];
+let reportSectionBlocksCache = []; // [{key, default_title}, ...] - server truth for the builder's palette
+let reportTemplateBuilderEditing = null; // array of {key, title, enabled} while the modal is open, else null
+let reportTemplateBuilderEditingId = null; // null = creating new, else the id being edited
+let currentExportCustomTemplateId = null; // read by #exportEditTemplateBtn's onclick in index.html
+
+async function fetchCustomReportTemplates() {
+    try {
+        const res = await fetch('/api/report_templates/custom');
+        const data = await res.json();
+        if (data.success) {
+            customReportTemplatesCache = data.templates || [];
+            reportSectionBlocksCache = data.blocks || [];
+        }
+    } catch (err) { /* non-fatal - both selects just show the 3 built-in templates */ }
+    populateTemplateSelectOptions(document.getElementById("defReportTemplate"));
+    populateTemplateSelectOptions(document.getElementById("exportTemplateSelect"));
+    renderCustomReportTemplatesList();
+}
+
+// Appends one <option value="custom:ID"> per saved template after the 3
+// built-in ones, preserving the select's current value if it's still
+// valid - shared by both the Settings default select and the Export pane
+// select so neither hardcodes the custom-template list itself.
+function populateTemplateSelectOptions(selectEl) {
+    if (!selectEl) return;
+    const previousValue = selectEl.value;
+    selectEl.querySelectorAll('option[value^="custom:"]').forEach(opt => opt.remove());
+    customReportTemplatesCache.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = `custom:${t.id}`;
+        opt.textContent = t.name; // set via textContent, not innerHTML - template names are examiner-entered
+        selectEl.appendChild(opt);
+    });
+    if ([...selectEl.options].some(o => o.value === previousValue)) {
+        selectEl.value = previousValue;
+    }
+}
+
+function renderCustomReportTemplatesList() {
+    const container = document.getElementById("customReportTemplatesList");
+    if (!container) return;
+    container.innerHTML = '';
+    if (customReportTemplatesCache.length === 0) {
+        const msg = document.createElement('span');
+        msg.className = 'text-subtle small italic';
+        msg.textContent = 'No custom templates yet.';
+        container.appendChild(msg);
+        return;
+    }
+    customReportTemplatesCache.forEach(t => {
+        const row = document.createElement('div');
+        row.className = 'd-flex justify-content-between align-items-center mb-1';
+        const name = document.createElement('span');
+        name.className = 'small';
+        name.textContent = t.name; // examiner-entered - text node only
+        const btns = document.createElement('div');
+        btns.className = 'd-flex gap-1';
+        const editBtn = document.createElement('button');
+        editBtn.className = 'btn btn-xs btn-outline-info py-0 px-2';
+        editBtn.innerHTML = '<i class="bi bi-pencil-square"></i>';
+        editBtn.onclick = () => openReportTemplateBuilder(t.id);
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-2';
+        delBtn.innerHTML = '<i class="bi bi-trash3"></i>';
+        delBtn.onclick = () => deleteCustomReportTemplate(t.id);
+        btns.appendChild(editBtn);
+        btns.appendChild(delBtn);
+        row.appendChild(name);
+        row.appendChild(btns);
+        container.appendChild(row);
+    });
+}
+
+function openReportTemplateBuilder(existingId = null) {
+    reportTemplateBuilderEditingId = existingId;
+    const nameEl = document.getElementById("rtbName");
+    const statusEl = document.getElementById("rtbStatus");
+    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'small mt-2'; }
+
+    if (existingId) {
+        const record = customReportTemplatesCache.find(t => t.id === existingId);
+        if (!record) return;
+        if (nameEl) nameEl.value = record.name;
+        reportTemplateBuilderEditing = record.sections.map(s => ({ ...s }));
+    } else {
+        if (nameEl) nameEl.value = '';
+        reportTemplateBuilderEditing = reportSectionBlocksCache.map(b => ({ key: b.key, title: '', enabled: true }));
+    }
+    renderReportTemplateBuilderRows();
+
+    const modalEl = document.getElementById('reportTemplateBuilderModal');
+    (bootstrap.Modal.getOrCreateInstance(modalEl)).show();
+}
+
+function renderReportTemplateBuilderRows() {
+    const container = document.getElementById("rtbRowsContainer");
+    if (!container || !reportTemplateBuilderEditing) return;
+    container.innerHTML = '';
+    const blockByKey = Object.fromEntries(reportSectionBlocksCache.map(b => [b.key, b]));
+
+    reportTemplateBuilderEditing.forEach((row, idx) => {
+        const block = blockByKey[row.key];
+        const wrap = document.createElement('div');
+        wrap.className = 'd-flex align-items-center gap-2 mb-1 pb-1 border-bottom border-secondary';
+
+        const moveWrap = document.createElement('div');
+        moveWrap.className = 'd-flex flex-column';
+        const upBtn = document.createElement('button');
+        upBtn.type = 'button';
+        upBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-1';
+        upBtn.innerHTML = '<i class="bi bi-caret-up-fill"></i>';
+        upBtn.disabled = idx === 0;
+        upBtn.onclick = () => moveTemplateBuilderRow(idx, -1);
+        const downBtn = document.createElement('button');
+        downBtn.type = 'button';
+        downBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-1';
+        downBtn.innerHTML = '<i class="bi bi-caret-down-fill"></i>';
+        downBtn.disabled = idx === reportTemplateBuilderEditing.length - 1;
+        downBtn.onclick = () => moveTemplateBuilderRow(idx, 1);
+        moveWrap.appendChild(upBtn);
+        moveWrap.appendChild(downBtn);
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'form-check-input flex-shrink-0';
+        checkbox.checked = row.enabled !== false;
+        checkbox.onchange = () => { reportTemplateBuilderEditing[idx].enabled = checkbox.checked; };
+
+        const titleInput = document.createElement('input');
+        titleInput.type = 'text';
+        titleInput.className = 'form-control form-control-sm';
+        titleInput.placeholder = block ? block.default_title : row.key;
+        titleInput.value = row.title || '';
+        titleInput.maxLength = 120;
+        titleInput.oninput = () => { reportTemplateBuilderEditing[idx].title = titleInput.value; };
+
+        wrap.appendChild(moveWrap);
+        wrap.appendChild(checkbox);
+        wrap.appendChild(titleInput);
+        container.appendChild(wrap);
+    });
+}
+
+function moveTemplateBuilderRow(idx, direction) {
+    const target = idx + direction;
+    if (target < 0 || target >= reportTemplateBuilderEditing.length) return;
+    const [row] = reportTemplateBuilderEditing.splice(idx, 1);
+    reportTemplateBuilderEditing.splice(target, 0, row);
+    renderReportTemplateBuilderRows();
+}
+
+async function saveReportTemplateBuilder() {
+    const statusEl = document.getElementById("rtbStatus");
+    const name = document.getElementById("rtbName")?.value.trim();
+    if (!name) {
+        if (statusEl) { statusEl.textContent = 'Template name is required.'; statusEl.className = 'small mt-2 text-danger'; }
+        return;
+    }
+
+    const payload = {
+        name,
+        sections: reportTemplateBuilderEditing.map(r => ({ key: r.key, title: r.title || '', enabled: r.enabled !== false })),
+        job_fields: { telemetry: true, params: true, hashes: true },
+    };
+    const isEdit = !!reportTemplateBuilderEditingId;
+    const url = isEdit ? `/api/report_templates/custom/${reportTemplateBuilderEditingId}` : '/api/report_templates/custom';
+
+    try {
+        const res = await fetch(url, {
+            method: isEdit ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (data.success) {
+            await fetchCustomReportTemplates();
+            const modalEl = document.getElementById('reportTemplateBuilderModal');
+            bootstrap.Modal.getInstance(modalEl)?.hide();
+        } else if (statusEl) {
+            statusEl.textContent = data.error || 'Save failed.';
+            statusEl.className = 'small mt-2 text-danger';
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.textContent = 'Request failed.'; statusEl.className = 'small mt-2 text-danger'; }
+    }
+}
+
+async function deleteCustomReportTemplate(id) {
+    const record = customReportTemplatesCache.find(t => t.id === id);
+    if (!record) return;
+    if (!confirm(`Delete the custom report template "${record.name}"? Any station default or per-export selection pointing at it will fall back to Standard.`)) return;
+    try {
+        const res = await fetch(`/api/report_templates/custom/${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+            await fetchCustomReportTemplates();
+        } else {
+            alert(data.error || 'Delete failed.');
+        }
+    } catch (err) {
+        alert('Request failed.');
+    }
+}
+
 // Renders one label+input pair per configured custom-field definition,
 // pre-filled from this specific case's stored values (a case's values dict
 // only ever has keys for fields that existed when it was created/last
@@ -1761,6 +1972,12 @@ function gatherCustomFieldValues() {
 let caseReportingFieldsEditing = [];
 
 async function loadCaseReportingSettings() {
+    // Custom template options must exist in the <select> BEFORE setting its
+    // value below - otherwise assigning a 'custom:<id>' value the browser
+    // doesn't recognize yet silently no-ops, leaving the select stuck on
+    // whatever its first option is.
+    await fetchCustomReportTemplates();
+
     try {
         const res = await fetch('/api/settings/case_reporting');
         const data = await res.json();
@@ -1807,7 +2024,19 @@ async function loadCaseReportingSettings() {
 function onDefReportTemplateChange() {
     const sel = document.getElementById("defReportTemplate");
     const hint = document.getElementById("defTemplateHint");
-    if (hint) hint.style.display = (sel && sel.value !== 'standard') ? 'block' : 'none';
+    if (!sel || !hint) return;
+    const value = sel.value;
+    if (value === 'standard') {
+        hint.style.display = 'none';
+        return;
+    }
+    hint.style.display = 'block';
+    if (value.startsWith('custom:')) {
+        const record = customReportTemplatesCache.find(t => `custom:${t.id}` === value);
+        hint.textContent = `This is a custom template - its structure is edited via Manage Custom Templates above${record ? ` ("${record.name}")` : ''}.`;
+    } else {
+        hint.textContent = "This template has a fixed structure - the section/field checkboxes below only apply to Standard exports. The Forensics Report's Administrative Information section pulls from Case Number/Examiner plus whatever you configure under Custom Case Fields below (e.g. Agency, Badge Number, Requesting Authority).";
+    }
 }
 
 function renderCustomFieldDefsEditor() {
@@ -2662,9 +2891,29 @@ function onExportTemplateChange() {
     const sel = document.getElementById("exportTemplateSelect");
     const hint = document.getElementById("exportTemplateHint");
     const group = document.getElementById("exportSectionsFieldsGroup");
-    const isStandard = !sel || sel.value === 'standard';
-    if (hint) hint.style.display = isStandard ? 'none' : 'block';
+    const editBtn = document.getElementById("exportEditTemplateBtn");
+    if (!sel) return;
+    const value = sel.value;
+    const isStandard = value === 'standard';
     if (group) group.style.display = isStandard ? '' : 'none';
+
+    if (isStandard) {
+        if (hint) hint.style.display = 'none';
+        if (editBtn) editBtn.style.display = 'none';
+        currentExportCustomTemplateId = null;
+        return;
+    }
+    if (hint) hint.style.display = 'block';
+    if (value.startsWith('custom:')) {
+        currentExportCustomTemplateId = value.slice('custom:'.length);
+        const record = customReportTemplatesCache.find(t => t.id === currentExportCustomTemplateId);
+        if (hint) hint.textContent = `This is a custom template - it always includes exactly the sections it was built with, in that order. ${record ? `"${record.name}"` : 'Edit it'} via the button below.`;
+        if (editBtn) editBtn.style.display = 'inline-block';
+    } else {
+        currentExportCustomTemplateId = null;
+        if (hint) hint.textContent = "This template has a fixed structure and always includes every section - the checkboxes below don't apply. It reuses this case's existing data under the reference template's section labels; see the Report Narrative tab for the Indicators of Compromise / Recommendations fields it draws on.";
+        if (editBtn) editBtn.style.display = 'none';
+    }
 }
 
 async function prepareExportPane() {
@@ -2672,6 +2921,10 @@ async function prepareExportPane() {
     if (!reportPath || !currentLoadedReportData) {
         return; // Reporting's own no-case empty state already covers this
     }
+
+    // Same ordering requirement as loadCaseReportingSettings() - custom
+    // template options must exist before the select's value is set below.
+    await fetchCustomReportTemplates();
 
     // Pre-set the section/field checkboxes from the station's configured
     // defaults (Settings > Case & Reporting) before showing - still fully
@@ -2871,22 +3124,34 @@ async function runExportReport() {
 
     const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
     const template = document.getElementById("exportTemplateSelect")?.value || 'standard';
-    const sections = {
-        case_info: !!document.getElementById("expSecCaseInfo")?.checked,
-        executive_summary: !!document.getElementById("expSecExecSummary")?.checked,
-        evidence_inventory: !!document.getElementById("expSecEvidenceInventory")?.checked,
-        forensic_analysis: !!document.getElementById("expSecForensicAnalysis")?.checked,
-        relevant_findings: !!document.getElementById("expSecFindings")?.checked,
-        limitations: !!document.getElementById("expSecLimitations")?.checked,
-        conclusion: !!document.getElementById("expSecConclusion")?.checked,
-        attachments: !!document.getElementById("expSecAttachments")?.checked,
-        audit_trail: !!document.getElementById("expSecAuditTrail")?.checked,
-    };
-    const job_fields = {
-        telemetry: !!document.getElementById("expFieldTelemetry")?.checked,
-        params: !!document.getElementById("expFieldParams")?.checked,
-        hashes: !!document.getElementById("expFieldHashes")?.checked,
-    };
+
+    // sections/job_fields only ever apply to the 'standard' template - the
+    // checkboxes are only hidden (via CSS), not cleared or disabled, when a
+    // different template is selected, so they'd otherwise still hold
+    // whatever they were last checked to and silently leak into a
+    // custom/DFIR/Police export. The backend also ignores these for
+    // anything but 'standard' (defense in depth), but not sending them at
+    // all here is the more honest signal of what this export actually uses.
+    let sections = null;
+    let job_fields = null;
+    if (template === 'standard') {
+        sections = {
+            case_info: !!document.getElementById("expSecCaseInfo")?.checked,
+            executive_summary: !!document.getElementById("expSecExecSummary")?.checked,
+            evidence_inventory: !!document.getElementById("expSecEvidenceInventory")?.checked,
+            forensic_analysis: !!document.getElementById("expSecForensicAnalysis")?.checked,
+            relevant_findings: !!document.getElementById("expSecFindings")?.checked,
+            limitations: !!document.getElementById("expSecLimitations")?.checked,
+            conclusion: !!document.getElementById("expSecConclusion")?.checked,
+            attachments: !!document.getElementById("expSecAttachments")?.checked,
+            audit_trail: !!document.getElementById("expSecAuditTrail")?.checked,
+        };
+        job_fields = {
+            telemetry: !!document.getElementById("expFieldTelemetry")?.checked,
+            params: !!document.getElementById("expFieldParams")?.checked,
+            hashes: !!document.getElementById("expFieldHashes")?.checked,
+        };
+    }
 
     const itemChecks = document.querySelectorAll('.export-item-check');
     let event_ids = null;
@@ -5236,6 +5501,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initActiveCaseBar();
     fetchWhoami();
     fetchCustomFieldDefs();
+    fetchCustomReportTemplates();
 
     fetchNetworkInterfaces();
 

@@ -3703,9 +3703,23 @@ def settings_case_reporting():
         # by /api/settings/report_logo (upload) and its /clear counterpart,
         # so this save path can never point it at an arbitrary path string.
         existing_logo = cfg.get('report_defaults', {}).get('branding', {}).get('logo_path', '')
+        # A station default must never persist a dangling custom:<id>
+        # reference (e.g. the template was deleted, or the value is just
+        # garbage) - _resolve_template_ref() is the single source of truth
+        # for what a template string resolves to, shared with export_report().
         incoming_template = incoming.get('template')
+        if incoming_template in REPORT_TEMPLATES:
+            stored_template = incoming_template
+        elif isinstance(incoming_template, str) and incoming_template.startswith('custom:'):
+            try:
+                _resolve_template_ref(incoming_template, cfg)
+                stored_template = incoming_template
+            except ValueError:
+                stored_template = 'standard'
+        else:
+            stored_template = 'standard'
         cfg['report_defaults'] = {
-            "template": incoming_template if incoming_template in REPORT_TEMPLATES else 'standard',
+            "template": stored_template,
             "sections": {k: bool(v) for k, v in (incoming.get('sections') or {}).items()},
             "job_fields": {k: bool(v) for k, v in (incoming.get('job_fields') or {}).items()},
             "branding": {
@@ -3739,6 +3753,127 @@ def settings_case_reporting():
 
     save_runtime_config(cfg)
     return jsonify({"success": True})
+
+CUSTOM_REPORT_TEMPLATE_NAME_MAX = 80
+
+def _custom_report_template_from_payload(req):
+    """Validates and normalizes a create/update payload for a custom report
+    template into the stored record shape (minus id/created_at, which the
+    caller fills in - id in particular never changes across an update, see
+    the PUT handler below). Returns (record_dict, None) or (None,
+    error_message) - caller decides the HTTP status for an error.
+
+    Unknown section keys are rejected outright (400) rather than silently
+    dropped, since accepting them would let stale/malformed client state
+    corrupt storage. Any of the 13 known blocks missing from the payload is
+    defensively auto-filled (default title, enabled) rather than rejected -
+    every stored record is expected to always cover all 13 keys (what the
+    builder UI edits, and what _resolve_section_order() reads), so this is
+    a self-healing default a slightly-out-of-date client shouldn't be
+    punished for."""
+    name = (req.get('name') or '').strip()[:CUSTOM_REPORT_TEMPLATE_NAME_MAX]
+    if not name:
+        return None, "Template name is required."
+
+    by_key = {}
+    for entry in (req.get('sections') or []):
+        key = entry.get('key')
+        if key not in _REPORT_SECTION_BLOCK_MAP:
+            return None, f"Unknown report section '{key}'."
+        by_key[key] = {
+            "key": key,
+            "title": (entry.get('title') or '').strip()[:120],
+            "enabled": bool(entry.get('enabled', True)),
+        }
+    # Preserve the payload's own order for keys it included, then append
+    # any of the 13 registry blocks it left out, in the registry's own
+    # default order.
+    sections = list(by_key.values())
+    for block in REPORT_SECTION_BLOCKS:
+        if block['key'] not in by_key:
+            sections.append({"key": block['key'], "title": block['default_title'], "enabled": True})
+
+    job_fields_in = req.get('job_fields') or {}
+    job_fields = {
+        "telemetry": bool(job_fields_in.get('telemetry', True)),
+        "params": bool(job_fields_in.get('params', True)),
+        "hashes": bool(job_fields_in.get('hashes', True)),
+    }
+
+    return {
+        "name": name,
+        "sections": sections,
+        "job_fields": job_fields,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }, None
+
+@app.route('/api/report_templates/custom', methods=['GET', 'POST'])
+@requires_auth
+def report_templates_custom():
+    cfg = load_runtime_config()
+    if request.method == 'GET':
+        return jsonify({
+            "success": True,
+            "templates": cfg.get('custom_report_templates', []),
+            # Single source of truth for the frontend builder's palette -
+            # it never hardcodes the 13-block list itself.
+            "blocks": [{"key": b["key"], "default_title": b["default_title"]} for b in REPORT_SECTION_BLOCKS],
+        })
+
+    req = request.get_json() or {}
+    record, error = _custom_report_template_from_payload(req)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+
+    templates = cfg.setdefault('custom_report_templates', [])
+    # Soft-dedupe on name collision (numeric suffix), not a hard 409 like
+    # case-folder creation - there's no on-disk artifact at stake for a
+    # duplicate template *name*, just a cosmetic label.
+    base_id = re.sub(r'[^a-z0-9_]+', '_', record['name'].lower()).strip('_') or 'template'
+    existing_ids = {r['id'] for r in templates}
+    template_id = base_id
+    n = 2
+    while template_id in existing_ids:
+        template_id = f"{base_id}_{n}"
+        n += 1
+
+    record['id'] = template_id
+    record['created_at'] = record['updated_at']
+    templates.append(record)
+    save_runtime_config(cfg)
+    return jsonify({"success": True, "template": record})
+
+@app.route('/api/report_templates/custom/<template_id>', methods=['PUT', 'DELETE'])
+@requires_auth
+def report_templates_custom_detail(template_id):
+    cfg = load_runtime_config()
+    templates = cfg.get('custom_report_templates', [])
+    idx = next((i for i, r in enumerate(templates) if r.get('id') == template_id), None)
+    if idx is None:
+        return jsonify({"success": False, "error": "Custom report template not found."}), 404
+
+    if request.method == 'DELETE':
+        templates.pop(idx)
+        # id never changes across an update (see below), so this exact
+        # match is reliable - a station default that was pointing at the
+        # just-deleted template must not be left dangling.
+        if cfg.get('report_defaults', {}).get('template') == f'custom:{template_id}':
+            cfg.setdefault('report_defaults', {})['template'] = 'standard'
+        save_runtime_config(cfg)
+        return jsonify({"success": True})
+
+    req = request.get_json() or {}
+    record, error = _custom_report_template_from_payload(req)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+    # id is fixed at creation and never regenerated from a new name - a
+    # rename must not silently invalidate a station default (or a bookmarked
+    # per-export selection) already pointing at 'custom:<id>'.
+    record['id'] = template_id
+    record['created_at'] = templates[idx].get('created_at', record['updated_at'])
+    templates[idx] = record
+    save_runtime_config(cfg)
+    return jsonify({"success": True, "template": record})
 
 REPORT_LOGO_MAX_BYTES = 2_000_000
 
@@ -5373,6 +5508,35 @@ def _draw_pdf_job_section(c, y, event, job_fields=None):
         y -= 5
     return y
 
+def _draw_pdf_acquisition_method(c, y, events, job_fields, title="Acquisition Method"):
+    """Renders the per-event acquisition loop - factored out of what used to
+    be inlined directly in _build_pdf_report_standard so the registry-driven
+    draw loop (see REPORT_SECTION_BLOCKS/_resolve_section_order) can treat
+    it as one dispatchable block like every other section. `title` is used
+    only for the block's bookmark/Report Contents label - there is no
+    on-page heading for the block as a whole, each event draws its own
+    "Evidence Item: ..." heading, matching this block's existing behavior.
+    Every event after the first always starts on a fresh page (unchanged
+    from before); the *first* event does NOT force its own page break here -
+    the caller (the registry-driven loop) is responsible for that via this
+    block's force_page_break=True registry entry, since _draw_pdf_job_section
+    has no internal pagination guard of its own and would otherwise risk
+    drawing past the bottom margin if this block isn't first in a custom
+    template's order."""
+    for i, event in enumerate(events):
+        if i > 0:
+            c.showPage()
+            y = 750
+        meta = event.get('case_metadata', {})
+        c.setFont("Helvetica-Bold", 13)
+        c.drawString(50, y, f"Evidence Item: {meta.get('evidence_id', 'N/A')} ({event.get('tool', 'N/A')})")
+        y -= 20
+        c.setFont("Helvetica", 10)
+        c.drawString(50, y, f"Date: {event.get('timestamp_start', 'N/A')}")
+        y -= 25
+        y = _draw_pdf_job_section(c, y, event, job_fields)
+    return y
+
 def _draw_pdf_header(c, header, title="Case Information"):
     c.setFont("Helvetica-Bold", 12)
     y = 730
@@ -5773,13 +5937,13 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory"):
     y -= 12
     return y
 
-def _draw_pdf_case_notes(c, y, notes):
+def _draw_pdf_case_notes(c, y, notes, title="Forensic Analysis / Steps Taken (Case Notes)"):
     if y < 150:
         c.showPage()
         y = 730
     y -= 15
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "Forensic Analysis / Steps Taken (Case Notes)")
+    c.drawString(50, y, title)
     y -= 16
     c.setFont("Helvetica-Oblique", 7)
     c.setFillColorRGB(0.4, 0.4, 0.4)
@@ -5813,7 +5977,7 @@ def _draw_pdf_case_notes(c, y, notes):
         y -= 10
     return y
 
-def _draw_pdf_attachments(c, y, urls, files):
+def _draw_pdf_attachments(c, y, urls, files, title="Exhibits"):
     if not (urls or files):
         return y
 
@@ -5823,7 +5987,7 @@ def _draw_pdf_attachments(c, y, urls, files):
 
     y -= 15
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "Exhibits")
+    c.drawString(50, y, title)
     y -= 20
     c.setFont("Helvetica", 10)
 
@@ -5961,7 +6125,7 @@ def _draw_pdf_signoff(c, y, examiner):
     y -= 25
     return y
 
-def _draw_pdf_contents_page(c, sections, event_count):
+def _draw_pdf_contents_page(c, resolved_sections, event_count):
     """A plain Report Contents listing, not page-number cross-referenced -
     this renderer draws in a single streaming pass with no forward
     knowledge of final page numbers, so a real "Executive Summary ... 4"
@@ -5969,38 +6133,25 @@ def _draw_pdf_contents_page(c, sections, event_count):
     section outline the DFIR report structure this feature was built
     against calls for; real point-and-click navigation is handled
     separately via the PDF outline/bookmarks added at each section below,
-    which don't need page numbers at all."""
+    which don't need page numbers at all.
+
+    `resolved_sections` is the already-filtered, already-ordered list from
+    _resolve_section_order() - this function only decides how to *display*
+    each entry (the one special case: acquisition_method gets an evidence-
+    item-count suffix here, matching its pre-existing behavior, while its
+    bookmark/on-page label elsewhere stays plain)."""
     y = 700
     c.setFont("Helvetica-Bold", 13)
     c.drawString(50, y, "Report Contents")
     y -= 25
     c.setFont("Helvetica", 10.5)
 
-    entries = []
-    if sections.get('case_info', True):
-        entries.append("Case Information")
-    if sections.get('executive_summary', True):
-        entries.append("Executive Summary & Objectives")
-    if sections.get('evidence_inventory', True) and event_count > 0:
-        entries.append("Evidence Inventory")
-    if event_count > 0:
-        plural = "s" if event_count != 1 else ""
-        entries.append(f"Acquisition Method ({event_count} evidence item{plural})")
-    if sections.get('forensic_analysis', True):
-        entries.append("Forensic Analysis / Steps Taken (Case Notes)")
-    if sections.get('relevant_findings', True):
-        entries.append("Relevant Findings")
-    if sections.get('limitations', True):
-        entries.append("Limitations & Statement of Uncertainty")
-    if sections.get('conclusion', True):
-        entries.append("Conclusion")
-    if sections.get('attachments', True):
-        entries.append("Exhibits (Attachments)")
-    if sections.get('audit_trail', True):
-        entries.append("Audit Trail")
-
-    for i, entry in enumerate(entries, start=1):
-        c.drawString(60, y, f"{i}.  {entry}")
+    for i, entry in enumerate(resolved_sections, start=1):
+        display = entry["title"]
+        if entry["key"] == "acquisition_method" and event_count > 0:
+            plural = "s" if event_count != 1 else ""
+            display = f"{display} ({event_count} evidence item{plural})"
+        c.drawString(60, y, f"{i}.  {display}")
         y -= 18
 
 def _numbered_canvas_class():
@@ -6045,13 +6196,14 @@ def _draw_pdf_fixed_contents_page(c, entries):
 # Registry of selectable report shapes (Settings > Case & Reporting sets a
 # station default; the Export pane can override it per-export). Only used
 # for display labels/descriptions and to validate incoming 'template'
-# values - the actual per-template rendering logic lives in the three
-# dedicated builder-function pairs above/below, not a generic data-driven
-# engine (clearer and lower-risk than forcing every template's differently-
-# shaped sections through one generic loop). 'standard' is the only shape
-# that honors the sections/job_fields toggles - dfir/police are fixed-
-# structure by definition, matching the reference templates they're built
-# from.
+# values - 'dfir'/'police' each still have their own dedicated, fixed-
+# structure builder-function pair (clearer and lower-risk than forcing an
+# intentionally rigid, reference-document-matched shape through a generic
+# loop). 'standard' and any user-defined 'custom:<id>' template (see
+# REPORT_SECTION_BLOCKS/_resolve_section_order below) share ONE
+# registry-driven builder pair instead - a custom template is really just a
+# saved, reordered/renamed/filtered configuration of the same building
+# blocks Standard's own section checkboxes already expose.
 REPORT_TEMPLATES = {
     'standard': {
         'label': 'Standard',
@@ -6067,7 +6219,151 @@ REPORT_TEMPLATES = {
     },
 }
 
-def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, sections, job_fields):
+# The building blocks available to the Standard template and to
+# user-defined custom templates (Report Template Builder, Settings > Case &
+# Reporting) - a custom template is a saved, ordered subset of these with
+# optional per-block title overrides. Every field below is REQUIRED (no
+# .get(key, True)-style implicit default anywhere this registry is read) so
+# a future 15th block that forgets a field fails loudly at import time
+# instead of silently drifting what every station's default report shows.
+#
+#   default_title     - shown on the page (where the block has an on-page
+#                        heading) and used as the Report Contents/TOC label
+#                        and PDF bookmark title unless a custom template
+#                        overrides it.
+#   in_legacy_default  - included when a report uses the plain sections:{key:
+#                        bool} dict (today's Export-modal checkboxes/Settings
+#                        station defaults, i.e. no custom template selected).
+#                        False for iocs/recommendations - Standard never
+#                        showed these before (only DFIR did), so they stay
+#                        opt-in-only via a custom template rather than
+#                        silently appearing in every station's existing
+#                        default export.
+#   requires_events    - skipped entirely (not merely rendered empty) when
+#                        the case has zero acquisition/recovery events,
+#                        regardless of whether it's enabled - there is
+#                        nothing to show either way.
+#   force_page_break   - the registry-driven draw loop unconditionally
+#                        starts this block on a fresh page (unless it's the
+#                        very first block rendered, which is already on one)
+#                        rather than trusting the block's own drawer to be
+#                        pagination-safe at an arbitrary position. Needed
+#                        because _draw_pdf_header ignores its y argument
+#                        entirely (always draws at a hardcoded y=730) and
+#                        _draw_pdf_job_section (the per-event acquisition
+#                        loop's first event) has no internal pagination
+#                        guard at all - both are safe today only because
+#                        case_info/acquisition_method are always drawn in a
+#                        fixed, page-fresh position; a reordered custom
+#                        template could otherwise silently overlap/clip
+#                        content.
+REPORT_SECTION_BLOCKS = [
+    {"key": "case_info", "default_title": "Case Information",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": True},
+    {"key": "executive_summary", "default_title": "Executive Summary",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+    {"key": "objectives", "default_title": "Objectives",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+    {"key": "evidence_inventory", "default_title": "Evidence Inventory",
+     "in_legacy_default": True, "requires_events": True, "force_page_break": False},
+    {"key": "acquisition_method", "default_title": "Acquisition Method",
+     "in_legacy_default": True, "requires_events": True, "force_page_break": True},
+    {"key": "forensic_analysis", "default_title": "Forensic Analysis / Steps Taken (Case Notes)",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+    {"key": "relevant_findings", "default_title": "Relevant Findings",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+    {"key": "limitations", "default_title": "Limitations & Statement of Uncertainty",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+    {"key": "conclusion", "default_title": "Conclusion",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+    {"key": "iocs", "default_title": "Indicators of Compromise",
+     "in_legacy_default": False, "requires_events": False, "force_page_break": False},
+    {"key": "recommendations", "default_title": "Recommendations / Next Steps",
+     "in_legacy_default": False, "requires_events": False, "force_page_break": False},
+    {"key": "attachments", "default_title": "Exhibits",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+    {"key": "audit_trail", "default_title": "Case Activity Log (Audit Trail)",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+]
+assert all(
+    {"key", "default_title", "in_legacy_default", "requires_events", "force_page_break"} <= b.keys()
+    for b in REPORT_SECTION_BLOCKS
+), "every REPORT_SECTION_BLOCKS entry needs all 5 fields - see the docstring above"
+
+_REPORT_SECTION_BLOCK_MAP = {b["key"]: b for b in REPORT_SECTION_BLOCKS}
+
+def _expand_legacy_sections_dict(sections_dict):
+    """Converts the plain sections:{key: bool} dict (today's Export-modal
+    checkboxes / Settings station defaults, used only when no custom
+    template is selected) into the canonical ordered {key, title} list
+    _resolve_section_order()/the registry-driven builders consume - in
+    REPORT_SECTION_BLOCKS' own fixed order, default titles only (no
+    per-block custom titles are possible via this legacy checkbox path).
+    'objectives' has no checkbox of its own - the single existing
+    'executive_summary' checkbox continues to control both blocks together,
+    unchanged from before this refactor. iocs/recommendations are always
+    excluded here (in_legacy_default=False) - Standard's default output
+    never showed these before this feature, only DFIR/Police did; they're
+    opt-in-only via a custom template."""
+    sections_dict = sections_dict or {}
+    result = []
+    for block in REPORT_SECTION_BLOCKS:
+        if not block["in_legacy_default"]:
+            continue
+        legacy_key = "executive_summary" if block["key"] == "objectives" else block["key"]
+        if sections_dict.get(legacy_key, True):
+            result.append({"key": block["key"], "title": block["default_title"]})
+    return result
+
+def _resolve_section_order(mode, sections_dict, custom_record, event_count):
+    """Single source of truth for 'which blocks render, in what order, with
+    what title' - used by both the plain Standard export path (mode=
+    'legacy', driven by the checkbox dict) and any user-defined custom
+    template (mode='custom', driven by a saved runtime_config record). Also
+    the single place that filters out blocks needing events the case
+    doesn't have, so the draw loop / PDF Contents page / HTML TOC never
+    need to separately re-derive that condition (see REPORT_SECTION_BLOCKS'
+    requires_events docstring) - a future duplicated copy of this check
+    silently drifting out of sync is exactly the fragility this centralizes
+    away."""
+    if mode == "custom":
+        raw = [
+            {"key": e["key"], "title": (e.get("title") or "").strip() or _REPORT_SECTION_BLOCK_MAP[e["key"]]["default_title"]}
+            for e in custom_record.get("sections", [])
+            if e.get("enabled", True) and e.get("key") in _REPORT_SECTION_BLOCK_MAP
+        ]
+    else:
+        raw = _expand_legacy_sections_dict(sections_dict)
+    return [e for e in raw if not _REPORT_SECTION_BLOCK_MAP[e["key"]]["requires_events"] or event_count > 0]
+
+def _resolve_template_ref(value, cfg):
+    """Single source of truth for turning a 'template' string (from an
+    export request or a saved station default) into what to actually
+    render - used by both export_report() and settings_case_reporting(),
+    which previously each had their own copy of this check (and neither
+    knew about custom:<id> references at all). Returns ('standard'|'dfir'|
+    'police', None) or ('custom', <template record dict>). Raises
+    ValueError if value looks like a custom:<id> reference but that id
+    doesn't currently exist in cfg['custom_report_templates'] - callers
+    decide what that means for them (export_report() turns it into a 400
+    rather than silently rendering something else; settings_case_reporting()
+    catches it and stores 'standard' instead, since a station default
+    should never be allowed to persist a dangling reference). Any other
+    unrecognized value (missing, garbage, an old/bogus string) falls back
+    to ('standard', None) silently, matching this app's existing lenient
+    behavior for that case."""
+    value = value or 'standard'
+    if value in REPORT_TEMPLATES:
+        return value, None
+    if value.startswith('custom:'):
+        template_id = value[len('custom:'):]
+        for rec in cfg.get('custom_report_templates', []):
+            if rec.get('id') == template_id:
+                return 'custom', rec
+        raise ValueError(f"Selected custom template '{template_id}' no longer exists.")
+    return 'standard', None
+
+def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields):
     from reportlab.lib.pagesizes import letter
 
     c = _numbered_canvas_class()(pdf_path, pagesize=letter)
@@ -6100,68 +6396,43 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
     # title page reads as a title page and the outline reads as an outline,
     # rather than blending into the Case Information that follows.
     c.showPage()
-    _draw_pdf_contents_page(c, sections, len(events))
+    _draw_pdf_contents_page(c, resolved_sections, len(events))
     c.showPage()
     y = 750
 
-    if sections.get('case_info', True):
-        c.bookmarkPage('case_info')
-        c.addOutlineEntry("Case Information", 'case_info', level=0)
-        y = _draw_pdf_header(c, header)
+    # Per-key dispatch table - each entry knows how to draw its own block
+    # given the current y and its (possibly custom) title. Built fresh per
+    # call so each closure captures this call's own header/events/etc.
+    dispatch = {
+        "case_info": lambda y, title: _draw_pdf_header(c, header, title=title),
+        "executive_summary": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("executive_summary")),
+        "objectives": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("objectives")),
+        "evidence_inventory": lambda y, title: _draw_pdf_evidence_inventory(c, y, events, title=title),
+        "acquisition_method": lambda y, title: _draw_pdf_acquisition_method(c, y, events, job_fields, title=title),
+        "forensic_analysis": lambda y, title: _draw_pdf_case_notes(c, y, case_notes, title=title),
+        "relevant_findings": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("findings_summary")),
+        "limitations": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("limitations")),
+        "conclusion": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("conclusion")),
+        "iocs": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("iocs")),
+        "recommendations": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("recommendations_next_steps")),
+        "attachments": lambda y, title: _draw_pdf_attachments(c, y, urls, files, title=title),
+        "audit_trail": lambda y, title: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
+    }
 
-    if sections.get('executive_summary', True):
-        c.bookmarkPage('exec_summary')
-        c.addOutlineEntry("Executive Summary & Objectives", 'exec_summary', level=0)
-        y = _draw_pdf_narrative_section(c, y, "Executive Summary", header.get('executive_summary'))
-        y = _draw_pdf_narrative_section(c, y, "Objectives", header.get('objectives'))
-
-    if sections.get('evidence_inventory', True) and events:
-        c.bookmarkPage('evidence_inventory')
-        c.addOutlineEntry("Evidence Inventory", 'evidence_inventory', level=0)
-        y = _draw_pdf_evidence_inventory(c, y, events)
-
-    for i, event in enumerate(events):
-        if i > 0:
+    for i, entry in enumerate(resolved_sections):
+        key, title = entry["key"], entry["title"]
+        # Some blocks (case_info, acquisition_method) draw at a fixed
+        # y/page-fresh position internally and have no pagination guard of
+        # their own - safe today only because they're always drawn first,
+        # unsafe at an arbitrary custom-template position unless the loop
+        # itself forces a fresh page before them. See REPORT_SECTION_BLOCKS'
+        # force_page_break docstring.
+        if i > 0 and _REPORT_SECTION_BLOCK_MAP[key]["force_page_break"]:
             c.showPage()
             y = 750
-        if i == 0:
-            c.bookmarkPage('acquisition_method')
-            c.addOutlineEntry("Acquisition Method", 'acquisition_method', level=0)
-        meta = event.get('case_metadata', {})
-        c.setFont("Helvetica-Bold", 13)
-        c.drawString(50, y, f"Evidence Item: {meta.get('evidence_id', 'N/A')} ({event.get('tool', 'N/A')})")
-        y -= 20
-        c.setFont("Helvetica", 10)
-        c.drawString(50, y, f"Date: {event.get('timestamp_start', 'N/A')}")
-        y -= 25
-        y = _draw_pdf_job_section(c, y, event, job_fields)
-
-    if sections.get('forensic_analysis', True):
-        c.bookmarkPage('forensic_analysis')
-        c.addOutlineEntry("Forensic Analysis / Steps Taken", 'forensic_analysis', level=0)
-        y = _draw_pdf_case_notes(c, y, case_notes)
-
-    if sections.get('relevant_findings', True):
-        c.bookmarkPage('relevant_findings')
-        c.addOutlineEntry("Relevant Findings", 'relevant_findings', level=0)
-        y = _draw_pdf_narrative_section(c, y, "Relevant Findings", header.get('findings_summary'))
-    if sections.get('limitations', True):
-        c.bookmarkPage('limitations')
-        c.addOutlineEntry("Limitations & Statement of Uncertainty", 'limitations', level=0)
-        y = _draw_pdf_narrative_section(c, y, "Limitations & Statement of Uncertainty", header.get('limitations'))
-    if sections.get('conclusion', True):
-        c.bookmarkPage('conclusion')
-        c.addOutlineEntry("Conclusion", 'conclusion', level=0)
-        y = _draw_pdf_narrative_section(c, y, "Conclusion", header.get('conclusion'))
-
-    if sections.get('attachments', True):
-        c.bookmarkPage('exhibits')
-        c.addOutlineEntry("Exhibits", 'exhibits', level=0)
-        y = _draw_pdf_attachments(c, y, urls, files)
-    if sections.get('audit_trail', True):
-        c.bookmarkPage('audit_trail')
-        c.addOutlineEntry("Audit Trail", 'audit_trail', level=0)
-        y = _draw_pdf_audit_trail(c, y, audit_entries)
+        c.bookmarkPage(key)
+        c.addOutlineEntry(title, key, level=0)
+        y = dispatch[key](y, title)
 
     c.save()
 
@@ -6423,39 +6694,27 @@ def _html_narrative_block(title, text, anchor_id=None):
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     return f'<h2{id_attr}>{esc(title)}</h2><p>{body}</p>'
 
-def _build_html_toc(sections, event_count, has_exhibits):
+def _build_html_toc(resolved_sections, has_exhibits):
     """Mirrors the PDF's Report Contents page - a plain section list, but as
     real anchor links since HTML doesn't have the PDF's single-pass-render
-    page-number problem to work around. Conditions match exactly what each
-    section below actually renders under (e.g. Evidence Inventory/Acquisition
-    Method are skipped entirely when there are no events), so a TOC entry
-    never points at a heading that isn't actually there."""
+    page-number problem to work around. resolved_sections is the same
+    already-filtered/ordered list the draw loop below consumes (see
+    _resolve_section_order) - the one condition not modeled there, since
+    it's a property of this specific export's data rather than a fixed
+    property of the block itself, is 'attachments': skipped here (and in
+    the draw loop) when there's nothing to attach, matching this section's
+    pre-existing behavior."""
     esc = html.escape
     entries = []
-    if sections.get('case_info', True):
-        entries.append(('sec-case-info', 'Case Information'))
-    if sections.get('executive_summary', True):
-        entries.append(('sec-exec-summary', 'Executive Summary &amp; Objectives'))
-    if sections.get('evidence_inventory', True) and event_count > 0:
-        entries.append(('sec-evidence-inventory', 'Evidence Inventory'))
-    if event_count > 0:
-        entries.append(('sec-acquisition-method', 'Acquisition Method'))
-    if sections.get('forensic_analysis', True):
-        entries.append(('sec-forensic-analysis', 'Forensic Analysis / Steps Taken'))
-    if sections.get('relevant_findings', True):
-        entries.append(('sec-relevant-findings', 'Relevant Findings'))
-    if sections.get('limitations', True):
-        entries.append(('sec-limitations', 'Limitations &amp; Statement of Uncertainty'))
-    if sections.get('conclusion', True):
-        entries.append(('sec-conclusion', 'Conclusion'))
-    if sections.get('attachments', True) and has_exhibits:
-        entries.append(('sec-exhibits', 'Exhibits'))
-    if sections.get('audit_trail', True):
-        entries.append(('sec-audit-trail', 'Audit Trail'))
+    for entry in resolved_sections:
+        if entry["key"] == "attachments" and not has_exhibits:
+            continue
+        anchor = "sec-" + entry["key"].replace("_", "-")
+        entries.append((anchor, esc(entry["title"])))
 
     if not entries:
         return ''
-    items = ''.join(f'<li><a href="#{esc(anchor)}">{label}</a></li>' for anchor, label in entries)
+    items = ''.join(f'<li><a href="#{anchor}">{label}</a></li>' for anchor, label in entries)
     return f'<nav class="toc"><h2>Report Contents</h2><ol>{items}</ol></nav>'
 
 def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id=None):
@@ -6481,13 +6740,13 @@ def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id
     parts.append('</table>')
     return ''.join(parts)
 
-def _html_exhibits_block(urls, files, anchor_id=None):
+def _html_exhibits_block(urls, files, anchor_id=None, title="Exhibits"):
     """HTML counterpart to _draw_pdf_attachments - shared by all three
     templates' Exhibits section. Caller already checks whether there's
     anything to show (urls or files) before calling this."""
     esc = html.escape
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
-    parts = [f'<h2{id_attr}>Exhibits</h2>']
+    parts = [f'<h2{id_attr}>{esc(title)}</h2>']
     if urls:
         parts.append('<p><strong>Reference Links / URLs:</strong></p><ul>')
         for url in urls:
@@ -6576,41 +6835,28 @@ def _html_report_branding_header(header, title):
         parts.append(f'<div class="branding-subtitle">{esc(header_text)}</div>')
     return ''.join(parts)
 
-def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, sections, job_fields):
-    """Self-contained HTML report - every value is escaped since it may
-    contain examiner-entered text or evidence-derived strings (filenames,
-    device paths) that this file could later be reopened/served from disk."""
+def _html_case_info_block(header, event_count, anchor_id=None, title="Case Information"):
     esc = html.escape
-    parts = [
-        '<!doctype html><html><head><meta charset="utf-8">',
-        f'<title>Case Report - {esc(str(header["case_number"]))}</title>',
-        _html_report_style_block(),
-        '</head><body>',
-        _html_report_branding_header(header, "Pi Forensics Suite Acquisition Audit Report"),
-    ]
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [f'<h2{id_attr}>{esc(title)}</h2><table>']
+    parts.append(f'<tr><th>Case Number</th><td>{esc(str(header["case_number"]))}</td><th>Examiner</th><td>{esc(str(header["examiner"]))}</td></tr>')
+    parts.append(f'<tr><th>Created</th><td>{esc(str(header["created_at"]))}</td><th>Evidence Items</th><td>{event_count}</td></tr>')
+    parts.append(f'<tr><th>Notes</th><td colspan="3">{esc(str(header["notes"] or "None"))}</td></tr>')
+    for field in header.get('custom_fields', []):
+        parts.append(f'<tr><th>{esc(str(field["label"]))}</th><td colspan="3">{esc(str(field["value"]))}</td></tr>')
+    parts.append('</table>')
+    return ''.join(parts)
 
-    parts.append(_build_html_toc(sections, len(events), bool(urls or files)))
-
-    if sections.get('case_info', True):
-        parts.append('<h2 id="sec-case-info">Case Information</h2>')
-        parts.append('<table>')
-        parts.append(f'<tr><th>Case Number</th><td>{esc(str(header["case_number"]))}</td><th>Examiner</th><td>{esc(str(header["examiner"]))}</td></tr>')
-        parts.append(f'<tr><th>Created</th><td>{esc(str(header["created_at"]))}</td><th>Evidence Items</th><td>{len(events)}</td></tr>')
-        parts.append(f'<tr><th>Notes</th><td colspan="3">{esc(str(header["notes"] or "None"))}</td></tr>')
-        for field in header.get('custom_fields', []):
-            parts.append(f'<tr><th>{esc(str(field["label"]))}</th><td colspan="3">{esc(str(field["value"]))}</td></tr>')
-        parts.append('</table>')
-
-    if sections.get('executive_summary', True):
-        parts.append(_html_narrative_block('Executive Summary', header.get('executive_summary'), 'sec-exec-summary'))
-        parts.append(_html_narrative_block('Objectives', header.get('objectives')))
-
-    if sections.get('evidence_inventory', True) and events:
-        parts.append(_html_evidence_inventory_table(events, anchor_id='sec-evidence-inventory'))
-
+def _html_acquisition_method(events, job_fields, anchor_id=None):
+    """HTML counterpart to _draw_pdf_acquisition_method - no title param,
+    since (matching the PDF side) there's no single on-page heading for
+    this block, only per-event headings; the anchor lands on the first
+    event's div."""
+    esc = html.escape
+    parts = []
     for i, event in enumerate(events):
         meta = event.get('case_metadata', {})
-        anchor_attr = ' id="sec-acquisition-method"' if i == 0 else ''
+        anchor_attr = f' id="{esc(anchor_id)}"' if (i == 0 and anchor_id) else ''
         parts.append(f'<div class="job"{anchor_attr}>')
         parts.append(f'<h2>Evidence Item: {esc(str(meta.get("evidence_id", "N/A")))} ({esc(str(event.get("tool", "N/A")))})</h2>')
         parts.append(f'<div class="muted">Date: {esc(str(event.get("timestamp_start", "N/A")))} &middot; Status: {esc(str(event.get("acquisition_status", "N/A")))}</div>')
@@ -6640,37 +6886,70 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
             parts.append('</table>')
 
         parts.append('</div>')
+    return ''.join(parts)
 
-    if sections.get('forensic_analysis', True):
-        parts.append('<h2 id="sec-forensic-analysis">Forensic Analysis / Steps Taken (Case Notes)</h2>')
-        parts.append('<p class="muted">Chronological case notes, each with a local SHA-256 integrity hash (tamper-evidence only, not a legal timestamp authority).</p>')
-        if not case_notes:
-            parts.append('<p class="muted">No case notes recorded.</p>')
-        for note in case_notes:
-            parts.append('<div class="job">')
-            author = esc(str(note.get('author') or 'unknown'))
-            parts.append(f'<h3>[{esc(str(note.get("category", "General")))}] {esc(str(note.get("timestamp", "")))} &mdash; {author}</h3>')
-            if note.get('edited_at'):
-                parts.append(f'<div class="muted">(edited {esc(str(note["edited_at"]))})</div>')
-            parts.append(f'<p style="white-space:pre-wrap;">{esc(str(note.get("text", "")))}</p>')
-            for att in note.get('attachments', []):
-                file_path = safe_path(att.get('path', ''))
-                if file_path and os.path.exists(file_path):
-                    parts.append(_embed_file_into_html(file_path))
-            parts.append('</div>')
+def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis / Steps Taken (Case Notes)"):
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [f'<h2{id_attr}>{esc(title)}</h2>']
+    parts.append('<p class="muted">Chronological case notes, each with a local SHA-256 integrity hash (tamper-evidence only, not a legal timestamp authority).</p>')
+    if not case_notes:
+        parts.append('<p class="muted">No case notes recorded.</p>')
+    for note in case_notes:
+        parts.append('<div class="job">')
+        author = esc(str(note.get('author') or 'unknown'))
+        parts.append(f'<h3>[{esc(str(note.get("category", "General")))}] {esc(str(note.get("timestamp", "")))} &mdash; {author}</h3>')
+        if note.get('edited_at'):
+            parts.append(f'<div class="muted">(edited {esc(str(note["edited_at"]))})</div>')
+        parts.append(f'<p style="white-space:pre-wrap;">{esc(str(note.get("text", "")))}</p>')
+        for att in note.get('attachments', []):
+            file_path = safe_path(att.get('path', ''))
+            if file_path and os.path.exists(file_path):
+                parts.append(_embed_file_into_html(file_path))
+        parts.append('</div>')
+    return ''.join(parts)
 
-    if sections.get('relevant_findings', True):
-        parts.append(_html_narrative_block('Relevant Findings', header.get('findings_summary'), 'sec-relevant-findings'))
-    if sections.get('limitations', True):
-        parts.append(_html_narrative_block('Limitations & Statement of Uncertainty', header.get('limitations'), 'sec-limitations'))
-    if sections.get('conclusion', True):
-        parts.append(_html_narrative_block('Conclusion', header.get('conclusion'), 'sec-conclusion'))
+def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields):
+    """Self-contained HTML report - every value is escaped since it may
+    contain examiner-entered text or evidence-derived strings (filenames,
+    device paths) that this file could later be reopened/served from disk.
+    resolved_sections (see _resolve_section_order) is the already-filtered,
+    already-ordered {key, title} list this registry-driven loop dispatches
+    over - shared with the PDF builder's own version of this same loop."""
+    esc = html.escape
+    has_exhibits = bool(urls or files)
+    parts = [
+        '<!doctype html><html><head><meta charset="utf-8">',
+        f'<title>Case Report - {esc(str(header["case_number"]))}</title>',
+        _html_report_style_block(),
+        '</head><body>',
+        _html_report_branding_header(header, "Pi Forensics Suite Acquisition Audit Report"),
+    ]
 
-    if sections.get('attachments', True) and (urls or files):
-        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits'))
+    parts.append(_build_html_toc(resolved_sections, has_exhibits))
 
-    if sections.get('audit_trail', True):
-        parts.append(_html_audit_trail_block(audit_entries, anchor_id='sec-audit-trail'))
+    dispatch = {
+        "case_info": lambda anchor, title: _html_case_info_block(header, len(events), anchor_id=anchor, title=title),
+        "executive_summary": lambda anchor, title: _html_narrative_block(title, header.get("executive_summary"), anchor),
+        "objectives": lambda anchor, title: _html_narrative_block(title, header.get("objectives"), anchor),
+        "evidence_inventory": lambda anchor, title: _html_evidence_inventory_table(events, title=title, anchor_id=anchor),
+        "acquisition_method": lambda anchor, title: _html_acquisition_method(events, job_fields, anchor_id=anchor),
+        "forensic_analysis": lambda anchor, title: _html_case_notes_block(case_notes, anchor_id=anchor, title=title),
+        "relevant_findings": lambda anchor, title: _html_narrative_block(title, header.get("findings_summary"), anchor),
+        "limitations": lambda anchor, title: _html_narrative_block(title, header.get("limitations"), anchor),
+        "conclusion": lambda anchor, title: _html_narrative_block(title, header.get("conclusion"), anchor),
+        "iocs": lambda anchor, title: _html_narrative_block(title, header.get("iocs"), anchor),
+        "recommendations": lambda anchor, title: _html_narrative_block(title, header.get("recommendations_next_steps"), anchor),
+        "attachments": lambda anchor, title: _html_exhibits_block(urls, files, anchor_id=anchor, title=title),
+        "audit_trail": lambda anchor, title: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
+    }
+
+    for entry in resolved_sections:
+        key, title = entry["key"], entry["title"]
+        if key == "attachments" and not has_exhibits:
+            continue
+        anchor = "sec-" + key.replace("_", "-")
+        parts.append(dispatch[key](anchor, title))
 
     parts.append('</body></html>')
     return ''.join(parts)
@@ -6796,23 +7075,39 @@ def export_report():
     if fmt not in ('pdf', 'html'):
         return jsonify({"error": "format must be 'pdf' or 'html'."}), 400
 
-    # Every consumer downstream already does sections.get(key, True) /
-    # job_fields.get(key, True), defensively defaulting to included when a
-    # key is absent - so falling back to the station's configured defaults
-    # only when the caller omits the dict entirely (not per-key) is safe
-    # and requires no changes to that downstream code.
-    report_defaults = get_report_defaults()
-    sections = req.get('sections') or report_defaults.get('sections') or {}
-    job_fields = req.get('job_fields') or report_defaults.get('job_fields') or {}
+    cfg = load_runtime_config()
+    report_defaults = cfg.get('report_defaults', {})
     requested_event_ids = req.get('event_ids')
     attachment_selection = req.get('attachment_selection')
 
-    # DFIR/Police are fixed-structure by definition - sections/job_fields
-    # only ever apply to 'standard'. Falls back to the station's configured
-    # default template the same way sections/job_fields already do above.
-    template = req.get('template') or report_defaults.get('template') or 'standard'
-    if template not in REPORT_TEMPLATES:
-        template = 'standard'
+    # Falls back to the station's configured default template the same way
+    # sections/job_fields below fall back to their own station defaults. A
+    # custom:<id> reference that doesn't resolve is a hard error (400), not
+    # a silent substitution - re-rendering a report under a materially
+    # different structure than what was explicitly requested is exactly the
+    # kind of surprise this app avoids elsewhere (case-folder collisions are
+    # a 409, never an auto-rename).
+    template_value = req.get('template') or report_defaults.get('template') or 'standard'
+    try:
+        template, custom_record = _resolve_template_ref(template_value, cfg)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    # sections/job_fields (the Export modal's checkboxes / station defaults)
+    # only ever apply to the 'standard' template - reading them regardless
+    # of which template is selected let stale, CSS-hidden-but-still-checked
+    # checkbox state leak into a custom-template export. DFIR/Police never
+    # used these at all; 'custom' sources its own section list/job_fields
+    # exclusively from the saved template record instead.
+    if template == 'standard':
+        sections = req.get('sections') or report_defaults.get('sections') or {}
+        job_fields = req.get('job_fields') or report_defaults.get('job_fields') or {}
+    elif template == 'custom':
+        sections = None
+        job_fields = custom_record.get('job_fields') or {}
+    else:
+        sections = None
+        job_fields = {}
 
     try:
         with open(report_file, 'r') as f:
@@ -6902,10 +7197,19 @@ def export_report():
         if not sel_files and attachments.get('image_path'):
             sel_files = [attachments.get('image_path')]
 
-    # DFIR/Police always include an Audit Trail section (it's part of their
-    # fixed structure) - only 'standard' respects the sections toggle for it.
+    # DFIR/Police always include an Audit Trail section (part of their
+    # fixed structure); for 'standard'/'custom', consult the same resolved
+    # block list the draw loop itself will use, so this can never drift
+    # from what the export actually renders.
+    resolved_sections = None
+    if template in ('standard', 'custom'):
+        mode = 'legacy' if template == 'standard' else 'custom'
+        resolved_sections = _resolve_section_order(mode, sections, custom_record, len(events))
+        needs_audit_trail = any(e['key'] == 'audit_trail' for e in resolved_sections)
+    else:
+        needs_audit_trail = True
+
     audit_entries = []
-    needs_audit_trail = template != 'standard' or sections.get('audit_trail', True)
     if needs_audit_trail and header['case_number'] not in (None, '', 'N/A'):
         audit_entries = _case_history_entries(header['case_number'], limit=500)
 
@@ -6929,10 +7233,10 @@ def export_report():
         elif fmt == 'html':
             out_path = report_file.rsplit('.json', 1)[0] + '.html'
             with open(out_path, 'w') as f:
-                f.write(_build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, sections, job_fields))
+                f.write(_build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields))
         else:
             out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-            _build_pdf_report_standard(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, sections, job_fields)
+            _build_pdf_report_standard(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields)
         return send_file(out_path, as_attachment=True)
     except Exception as e:
         return jsonify({"error": f"Report export failed: {str(e)}"}), 500
