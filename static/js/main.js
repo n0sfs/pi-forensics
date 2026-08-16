@@ -1809,6 +1809,15 @@ function openReportTemplateBuilder(existingId = null) {
         if (!record) return;
         if (nameEl) nameEl.value = record.name;
         reportTemplateBuilderEditing = record.sections.map(s => ({ ...s }));
+        // A template saved before a new block existed in the registry (e.g. Timeline,
+        // added 2026-08-16) has no row for it - append any missing blocks, unchecked,
+        // so the examiner can opt in rather than never seeing the new block at all.
+        const knownKeys = new Set(reportTemplateBuilderEditing.map(s => s.key));
+        reportSectionBlocksCache.forEach(b => {
+            if (!knownKeys.has(b.key)) {
+                reportTemplateBuilderEditing.push({ key: b.key, title: '', enabled: false });
+            }
+        });
     } else {
         if (nameEl) nameEl.value = '';
         reportTemplateBuilderEditing = reportSectionBlocksCache.map(b => ({ key: b.key, title: '', enabled: true }));
