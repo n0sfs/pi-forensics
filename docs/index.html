@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<!--
+  Pi Forensics Suite landing page. Self-contained: this file plus the
+  existing docs/images/PIF*.JPG screenshots (already used by the repo
+  README). No build step, no external font/asset requests - served by
+  GitHub Pages from docs/ on `main`. Deliberately does not embed or link
+  to a live instance of the app itself; this is a static description of
+  the project only.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi Forensics Suite &mdash; Open-Source Forensic Imaging for Raspberry Pi</title>
+<meta name="description" content="Self-hosted forensic acquisition software for Raspberry Pi and ARM single-board computers &mdash; bit-for-bit imaging, write-blocking, mobile device acquisition, file recovery, and DFIR-structured reporting. GPLv3, no cloud dependency.">
+<meta name="keywords" content="digital forensics, Raspberry Pi forensics, ARM forensic imaging, write blocker, dc3dd, dcfldd, ddrescue, disk imaging, chain of custody, DFIR, open source forensics, low budget forensics">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://n0sfs.github.io/pi-forensics/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230a130e'/%3E%3Crect x='7' y='7' width='18' height='18' rx='3' fill='none' stroke='%23d7ab3e' stroke-width='2'/%3E%3Crect x='13' y='13' width='6' height='6' rx='1' fill='%23d7ab3e'/%3E%3C/svg%3E">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Pi Forensics Suite">
+<meta property="og:title" content="Pi Forensics Suite &mdash; Bit-for-bit imaging on commodity ARM hardware">
+<meta property="og:description" content="Self-hosted forensic acquisition software for Raspberry Pi and ARM boards. Write-blocking, mobile acquisition, file recovery, and DFIR-structured reporting. GPLv3.">
+<meta property="og:url" content="https://n0sfs.github.io/pi-forensics/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Pi Forensics Suite">
+<meta name="twitter:description" content="Open-source forensic acquisition software for Raspberry Pi and ARM single-board computers.">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "Pi Forensics Suite",
+  "description": "Self-hosted, open-source forensic acquisition software for Raspberry Pi and ARM single-board computers - bit-for-bit disk imaging, software write-blocking, mobile device acquisition, file recovery, and DFIR-structured case reporting.",
+  "url": "https://n0sfs.github.io/pi-forensics/",
+  "codeRepository": "https://github.com/n0sfs/pi-forensics",
+  "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+  "applicationCategory": "SecurityApplication",
+  "operatingSystem": "Raspberry Pi OS, Debian (ARM64)",
+  "keywords": "digital forensics, Raspberry Pi, ARM single-board computer, disk imaging, write blocker, chain of custody, DFIR"
+}
+</script>
+</head>
+<body>
+<style>
+  /* ============================================================
+     Pi Forensics Suite — landing page
+     Design: deep PCB solder-mask green ground, immersion-gold
+     accent, evidence-tag red as a strictly semantic "protected"
+     color. Monospace-as-display (case-number / hex-dump lineage),
+     humanist sans for reading copy. Deliberately committed dark
+     world — a lab-bench-under-work-light feel, not a SaaS gradient.
+     ============================================================ */
+  :root {
+    --bg: #0a130e;
+    --bg-2: #0c1712;
+    --panel: #101f18;
+    --panel-2: #16281f;
+    --border: #23372c;
+    --border-hi: #35503f;
+    --ink: #ece6d6;
+    --ink-dim: #b7c2b6;
+    --muted: #8ea094;
+    --muted-2: #64766a;
+    --gold: #d7ab3e;
+    --gold-hi: #eec565;
+    --gold-deep: #a97f24;
+    --tag-red: #c1453a;
+    --tag-red-hi: #e2685c;
+    --mono: "JetBrains Mono", "Fira Code", ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --radius: 10px;
+    --maxw: 1120px;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--gold-deep); color: #0a130e; }
+  a { color: inherit; text-decoration: none; }
+  img { max-width: 100%; display: block; }
+  h1, h2, h3 { font-family: var(--mono); font-weight: 700; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+  p { margin: 0; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 3px rgba(215,171,62,0.18); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px;
+    font-family: var(--sans); font-weight: 600; font-size: 15px;
+    padding: 12px 22px; border-radius: 7px; border: 1px solid transparent;
+    transition: transform .15s ease, border-color .15s ease, background .15s ease;
+  }
+  .btn-gold { background: linear-gradient(160deg, var(--gold-hi), var(--gold)); color: #1c1305; }
+  .btn-gold:hover { transform: translateY(-1px); }
+  .btn-outline { border-color: var(--border-hi); color: var(--ink); background: rgba(255,255,255,0.02); }
+  .btn-outline:hover { border-color: var(--gold); color: var(--gold-hi); }
+  code, .mono { font-family: var(--mono); }
+  .divider { height: 1px; background: var(--border); border: 0; }
+  section { position: relative; }
+  .pad { padding: 84px 0; }
+  .pad-sm { padding: 56px 0; }
+
+  /* ---------- Nav ---------- */
+  header.nav {
+    position: sticky; top: 0; z-index: 40;
+    background: rgba(10,19,14,0.86); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 62px; }
+  .brand { display: inline-flex; align-items: baseline; gap: 9px; font-family: var(--mono); font-weight: 700; font-size: 16px; }
+  .brand .chip {
+    display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+    background: var(--gold); box-shadow: 0 0 0 3px rgba(215,171,62,0.15);
+  }
+  .nav-links { display: flex; align-items: center; gap: 30px; }
+  .nav-links a { color: var(--muted); font-size: 14.5px; font-weight: 500; }
+  .nav-links a:hover { color: var(--ink); }
+  .nav-cta { display: flex; gap: 12px; }
+  .nav-cta .btn { padding: 9px 16px; font-size: 14px; }
+
+  /* ---------- Hero ---------- */
+  .hero { padding: 68px 0 0; }
+  .hero::before {
+    content: ""; position: absolute; inset: 0; z-index: -1;
+    background:
+      radial-gradient(640px 420px at 82% 8%, rgba(215,171,62,0.10), transparent 62%),
+      linear-gradient(180deg, var(--bg), var(--bg-2));
+  }
+  .hero-grid { display: grid; grid-template-columns: 1fr; gap: 20px; text-align: center; align-items: center; }
+  .hero h1 { font-size: clamp(34px, 5.4vw, 56px); line-height: 1.06; margin: 20px 0 22px; }
+  .hero h1 .hi { color: var(--gold-hi); }
+  .hero p.lede { font-size: 19px; color: var(--ink-dim); max-width: 640px; margin: 0 auto 34px; font-family: var(--sans); }
+  .hero-cta { display: flex; justify-content: center; gap: 14px; flex-wrap: wrap; margin-bottom: 54px; }
+
+  /* ---------- Device frame (hero screenshot) ---------- */
+  .device {
+    position: relative; border-radius: 16px; padding: 14px;
+    background: linear-gradient(160deg, #182c22, #0e1c15);
+    border: 1px solid var(--border-hi);
+    box-shadow: 0 40px 80px -30px rgba(0,0,0,0.65), inset 0 0 0 1px rgba(255,255,255,0.02);
+    max-width: 980px; margin: 0 auto;
+  }
+  .device .bezel-label {
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted-2);
+    padding: 0 6px 10px; letter-spacing: 0.06em;
+  }
+  .device .bezel-label .lights { display: inline-flex; gap: 6px; }
+  .device .bezel-label .lights i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--border-hi); }
+  .device .bezel-label .lights i:first-child { background: var(--tag-red); }
+  .device img { border-radius: 8px; border: 1px solid var(--border); }
+
+  /* ---------- Spec strip ---------- */
+  .spec-strip { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.012); }
+  .spec-grid { display: grid; grid-template-columns: repeat(4, 1fr); }
+  .spec-item { padding: 30px 24px; text-align: center; border-left: 1px solid var(--border); }
+  .spec-item:first-child { border-left: none; }
+  .spec-item b { display: block; font-family: var(--mono); font-size: 30px; color: var(--gold-hi); font-variant-numeric: tabular-nums; }
+  .spec-item span { display: block; margin-top: 6px; font-size: 13.5px; color: var(--muted); }
+
+  /* ---------- Section head ---------- */
+  .section-head { max-width: 680px; margin: 0 auto 46px; text-align: center; }
+  .section-head h2 { font-size: clamp(26px, 3.2vw, 36px); margin: 14px 0 12px; }
+  .section-head p { color: var(--muted); font-size: 16.5px; font-family: var(--sans); }
+
+  /* ---------- Why (comparison) ---------- */
+  .why-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  .why-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px 26px; }
+  .why-card.against { opacity: 0.82; }
+  .why-card .tag {
+    display: inline-block; font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 4px 10px; border-radius: 4px; margin-bottom: 16px;
+  }
+  .why-card.against .tag { background: rgba(193,69,58,0.14); color: var(--tag-red-hi); border: 1px solid rgba(193,69,58,0.3); }
+  .why-card.for .tag { background: rgba(215,171,62,0.14); color: var(--gold-hi); border: 1px solid rgba(215,171,62,0.32); }
+  .why-card h3 { font-family: var(--sans); font-size: 19px; font-weight: 700; margin-bottom: 14px; }
+  .why-card ul { margin: 0; padding: 0; list-style: none; }
+  .why-card li { position: relative; padding: 8px 0 8px 22px; color: var(--ink-dim); font-size: 15px; border-bottom: 1px solid var(--border); }
+  .why-card li:last-child { border-bottom: none; }
+  .why-card.for li::before { content: "+"; position: absolute; left: 0; top: 8px; color: var(--gold); font-family: var(--mono); font-weight: 700; }
+  .why-card.against li::before { content: "\2212"; position: absolute; left: 2px; top: 8px; color: var(--tag-red-hi); font-family: var(--mono); font-weight: 700; }
+
+  /* ---------- Feature grid ---------- */
+  .feat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .feat-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 26px 24px; transition: border-color .18s ease, transform .18s ease, background .18s ease; }
+  .feat-card:hover { border-color: var(--border-hi); background: var(--panel-2); transform: translateY(-3px); }
+  .feat-card .tag { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gold); margin-bottom: 12px; display: block; }
+  .feat-card h3 { font-family: var(--sans); font-size: 18px; font-weight: 700; margin-bottom: 10px; }
+  .feat-card p { color: var(--muted); font-size: 14.5px; line-height: 1.6; }
+
+  /* ---------- Screens (gallery) ---------- */
+  .shot { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .shot img { border-bottom: 1px solid var(--border); }
+  .shot figcaption { padding: 16px 18px; font-size: 13.5px; color: var(--muted); }
+  .shot figcaption b { color: var(--ink-dim); font-family: var(--mono); font-weight: 600; font-size: 12px; letter-spacing: 0.04em; display: block; margin-bottom: 4px; text-transform: uppercase; }
+  .shot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+
+  /* ---------- Security strip ---------- */
+  .sec-strip { background: linear-gradient(160deg, rgba(215,171,62,0.05), rgba(255,255,255,0.015)); border: 1px solid var(--border); border-radius: 16px; padding: 40px; }
+  .sec-strip-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
+  .sec-strip h2 { font-size: clamp(24px, 3vw, 30px); margin-bottom: 14px; }
+  .sec-strip p { color: var(--ink-dim); font-family: var(--sans); font-size: 15.5px; margin-bottom: 22px; }
+  ul.checklist { list-style: none; margin: 0; padding: 0; }
+  ul.checklist li { position: relative; padding: 11px 0 11px 30px; border-bottom: 1px solid var(--border); font-size: 14.5px; color: var(--ink-dim); }
+  ul.checklist li:last-child { border-bottom: none; }
+  ul.checklist li strong { color: var(--ink); font-family: var(--sans); }
+  ul.checklist li::before {
+    content: ""; position: absolute; left: 2px; top: 15px; width: 16px; height: 16px; border-radius: 4px;
+    background: rgba(215,171,62,0.14); border: 1px solid rgba(215,171,62,0.36);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23eec565' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+    background-size: 11px; background-repeat: no-repeat; background-position: center;
+  }
+
+  /* ---------- Install ---------- */
+  .install-card { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+  .install-card h2 { font-size: clamp(24px, 3vw, 30px); margin-bottom: 12px; }
+  .install-card p { color: var(--muted); font-size: 15.5px; font-family: var(--sans); margin-bottom: 20px; }
+  .terminal { background: #060d09; border: 1px solid var(--border); border-radius: 11px; overflow: hidden; box-shadow: 0 24px 50px -20px rgba(0,0,0,0.6); }
+  .terminal .bar { display: flex; align-items: center; gap: 7px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+  .terminal .bar i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .terminal .bar i:nth-child(1) { background: var(--tag-red); }
+  .terminal .bar i:nth-child(2) { background: var(--gold); }
+  .terminal .bar i:nth-child(3) { background: #4c7a5c; }
+  .terminal .bar span { margin-left: 6px; font-size: 12px; color: var(--muted-2); font-family: var(--mono); }
+  .terminal pre { margin: 0; padding: 20px 18px; font-family: var(--mono); font-size: 12.5px; line-height: 1.9; color: #cfe0d2; overflow-x: auto; }
+  .terminal .cmt { color: var(--muted-2); }
+  .terminal .pmt { color: var(--gold); user-select: none; }
+
+  /* ---------- CTA band ---------- */
+  .cta-band { text-align: center; padding: 76px 0; }
+  .cta-band h2 { font-size: clamp(28px, 3.6vw, 40px); max-width: 720px; margin: 0 auto 16px; }
+  .cta-band p { color: var(--muted); font-size: 16.5px; margin-bottom: 28px; font-family: var(--sans); }
+  .cta-band .hero-cta { margin-bottom: 0; }
+
+  /* ---------- Footer ---------- */
+  footer { border-top: 1px solid var(--border); background: var(--bg-2); padding: 46px 0 30px; }
+  .foot-grid { display: flex; justify-content: space-between; gap: 40px; flex-wrap: wrap; margin-bottom: 36px; }
+  .foot-brand { max-width: 320px; }
+  .foot-brand p { color: var(--muted); font-size: 13.5px; margin-top: 12px; font-family: var(--sans); }
+  .foot-cols { display: flex; gap: 56px; flex-wrap: wrap; }
+  .foot-col h4 { font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted-2); margin: 0 0 12px; }
+  .foot-col a { display: block; color: var(--muted); font-size: 14px; margin-bottom: 9px; }
+  .foot-col a:hover { color: var(--gold-hi); }
+  .foot-bottom { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding-top: 22px; border-top: 1px solid var(--border); color: var(--muted-2); font-size: 12px; font-family: var(--mono); }
+
+  @media (max-width: 900px) {
+    .nav-links { display: none; }
+    .spec-grid { grid-template-columns: 1fr 1fr; }
+    .spec-item:nth-child(3) { border-left: none; }
+    .why-grid, .feat-grid, .shot-grid, .sec-strip-grid, .install-card { grid-template-columns: 1fr; }
+    .feat-grid { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 560px) {
+    .feat-grid { grid-template-columns: 1fr; }
+    .spec-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top"><span class="chip"></span>PI_FORENSICS_SUITE</a>
+    <nav class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#features">Features</a>
+      <a href="#screens">Screens</a>
+      <a href="#security">Security</a>
+      <a href="#install">Install</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-outline" href="https://github.com/n0sfs/pi-forensics">GitHub</a>
+    </div>
+  </div>
+</header>
+
+<section class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="eyebrow"><span class="dot"></span>OPEN SOURCE &middot; GPLv3 &middot; RASPBERRY PI / ARM64</span>
+      <h1>Bit-for-bit imaging<br>on <span class="hi">$50 hardware.</span></h1>
+      <p class="lede">A self-hosted forensic acquisition station for Raspberry Pi and ARM boards &mdash; write-blocking, hashing, mobile device acquisition, and DFIR-structured reporting from a touchscreen kiosk or any browser on the LAN. No commercial appliance required.</p>
+      <div class="hero-cta">
+        <a class="btn btn-gold" href="https://github.com/n0sfs/pi-forensics">View on GitHub &rarr;</a>
+        <a class="btn btn-outline" href="#install">Installation guide</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap" style="padding-bottom: 0;">
+    <div class="device">
+      <div class="bezel-label">
+        <span class="lights"><i></i><i></i><i></i></span>
+        <span>PI-FORENSICS-01 &middot; FORENSIC ACQUISITION &middot; LIVE</span>
+      </div>
+      <img src="images/PIF1.JPG" alt="Pi Forensics Suite — Forensic Acquisition screen, showing active-case bar, drive telemetry, and format/hash controls">
+    </div>
+  </div>
+</section>
+
+<div class="spec-strip">
+  <div class="wrap spec-grid">
+    <div class="spec-item"><b>6</b><span>Acquisition formats &mdash; dc3dd, dcfldd, dd, E01, AFF, ddrescue</span></div>
+    <div class="spec-item"><b>5</b><span>Recovery tools &mdash; PhotoRec, extundelete, foremost, scalpel, TestDisk</span></div>
+    <div class="spec-item"><b>3</b><span>Hash algorithms verified on every acquisition &mdash; MD5 / SHA-1 / SHA-256</span></div>
+    <div class="spec-item"><b>0</b><span>Cloud dependency &mdash; evidence never leaves the device you control</span></div>
+  </div>
+</div>
+
+<section class="pad" id="why">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow"><span class="dot"></span>THE CASE FOR IT</span>
+      <h2>A write-blocker and imaging appliance shouldn't cost more than the drives you're imaging.</h2>
+      <p>Originally published as academic research &mdash; <a href="https://commons.erau.edu/jdfsl/vol11/iss1/3/" style="color: var(--gold-hi); border-bottom: 1px dotted var(--gold-deep);">"Low Budget Forensics using ARM Based Single Board Computers"</a> &mdash; and substantially extended since.</p>
+    </div>
+    <div class="why-grid">
+      <div class="why-card against">
+        <span class="tag">Dedicated appliance</span>
+        <h3>The traditional path</h3>
+        <ul>
+          <li>A commercial imaging workstation or hardware write-blocker, often priced out of reach for a student or a small shop</li>
+          <li>Fixed-function hardware you can't extend, field-repair, or repurpose</li>
+          <li>License renewals and vendor lock-in for a workflow that's fundamentally: image it, hash it, write a report</li>
+        </ul>
+      </div>
+      <div class="why-card for">
+        <span class="tag">Pi Forensics Suite</span>
+        <h3>An ARM board and this software</h3>
+        <ul>
+          <li>A Raspberry Pi or comparable ARM SBC, storage, and a USB write-blocker adapter &mdash; commodity hardware</li>
+          <li>The same acquisition engines examiners already trust (dc3dd, ewfacquire, ddrescue, PhotoRec, The Sleuth Kit, ExifTool, MVT) wired together, not reimplemented</li>
+          <li>Self-hosted and GPLv3 &mdash; inspect it, extend it, run it entirely offline</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<section class="pad" id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow"><span class="dot"></span>WHAT'S ON THE STATION</span>
+      <h2>One case, every tool.</h2>
+      <p>Create a case once; acquisition, recovery, mobile, and reporting all auto-fill against it.</p>
+    </div>
+    <div class="feat-grid">
+      <div class="feat-card">
+        <span class="tag">01 &mdash; ACQUISITION</span>
+        <h3>Bit-for-bit imaging</h3>
+        <p>dc3dd, dcfldd, plain dd, E01, and AFF, plus ddrescue for failing drives with pass-strategy selection and a Mapfile Inspector. MD5/SHA-1/SHA-256 verification on every job. A global udev rule write-blocks every connected USB device by default.</p>
+      </div>
+      <div class="feat-card">
+        <span class="tag">02 &mdash; RECOVERY</span>
+        <h3>File recovery suite</h3>
+        <p>PhotoRec, extundelete, foremost, scalpel, and read-only TestDisk partition analysis in one tool selector &mdash; one source/destination/case layout, one terminal, instead of a screen per tool.</p>
+      </div>
+      <div class="feat-card">
+        <span class="tag">03 &mdash; MOBILE</span>
+        <h3>iOS &amp; Android acquisition</h3>
+        <p>Full iOS backup via idevicebackup2 (with optional encrypted Keychain capture) and Android via adb pull/backup/bugreport. Reads real device detail &mdash; model, OS version, IMEI, MACs &mdash; before you start.</p>
+      </div>
+      <div class="feat-card">
+        <span class="tag">04 &mdash; FILE EXPLORER</span>
+        <h3>Browse inside an image</h3>
+        <p>An in-process Sleuth Kit engine (pytsk3) lists a filesystem's real MACB timestamps, runs recursive search, builds a timeline, and previews or extracts a file &mdash; no mount step, ever.</p>
+      </div>
+      <div class="feat-card">
+        <span class="tag">05 &mdash; REPORTING</span>
+        <h3>DFIR-structured case files</h3>
+        <p>A timestamped Case Notes journal, a separate Report Narrative, per-job records, and a station-wide audit trail &mdash; exported to PDF or HTML with configurable sections and embedded attachments.</p>
+      </div>
+      <div class="feat-card">
+        <span class="tag">06 &mdash; STATION</span>
+        <h3>Runs itself</h3>
+        <p>TLS certificate generation with correct SANs, one-click tool installs, SMB/NFS/SFTP mounting, and network IP configuration with an automatic revert if you lock yourself out.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<section class="pad" id="screens">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow"><span class="dot"></span>ON SCREEN</span>
+      <h2>Guided, not bare-metal.</h2>
+      <p>Every screen ships with inline help &mdash; nothing here requires memorizing dd flags.</p>
+    </div>
+    <div class="shot-grid">
+      <figure class="shot">
+        <img src="images/PIF3.JPG" alt="Mobile Forensics screen with device detail panel">
+        <figcaption><b>Mobile Forensics</b>One mode selector, one device-detail panel, one console &mdash; iOS and Android acquisition without separate screens per platform.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="images/PIF4.JPG" alt="Forensic File Explorer browsing inside an acquired disk image">
+        <figcaption><b>File Explorer</b>Browsing directly inside an acquired image via the inline Sleuth Kit engine &mdash; no mounting or extraction required.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="images/PIF2.JPG" alt="File Recovery screen with PhotoRec selected">
+        <figcaption><b>File Recovery</b>PhotoRec, extundelete, foremost, scalpel, and TestDisk sharing one source/destination layout and one live terminal.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="images/PIF5.JPG" alt="Reporting screen with Report Narrative open">
+        <figcaption><b>Reporting</b>Case Notes, Report Narrative, Jobs, and Audit Trail &mdash; a real DFIR report structure, not a JSON dump.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<section class="pad" id="security">
+  <div class="wrap">
+    <div class="sec-strip">
+      <div class="sec-strip-grid">
+        <div>
+          <span class="eyebrow"><span class="dot"></span>THREAT MODEL</span>
+          <h2>Built for evidence, not a demo.</h2>
+          <p>This station runs privileged disk commands and often sits on a network the examiner doesn't fully control. Security isn't an afterthought layered on top.</p>
+          <a class="btn btn-outline" href="https://github.com/n0sfs/pi-forensics#-security">Read the full security model &rarr;</a>
+        </div>
+        <ul class="checklist">
+          <li><strong>Unprivileged service account</strong> &mdash; root reached only via an exact-match sudoers allowlist, never a general shell</li>
+          <li><strong>Real per-examiner accounts</strong> &mdash; hashed passwords, admin/standard roles, brute-force lockout</li>
+          <li><strong>Software write-blocking</strong> &mdash; every USB storage device forced read-only at insertion by default</li>
+          <li><strong>Append-only chain-of-custody log</strong> &mdash; every action timestamped, with CSV export</li>
+          <li><strong>Network-change auto-revert</strong> &mdash; a bad IP setting rolls itself back before it can lock you out</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="pad" id="install">
+  <div class="wrap">
+    <div class="install-card">
+      <div>
+        <span class="eyebrow"><span class="dot"></span>ONE COMMAND</span>
+        <h2>From a fresh SD card to a running station.</h2>
+        <p>Flash Raspberry Pi OS (64-bit, with Desktop), boot, and run the installer &mdash; it configures the sudoers scope, systemd service, udev write-blocking, kiosk autostart, and an optional self-signed TLS reverse proxy.</p>
+        <a class="btn btn-outline" href="https://github.com/n0sfs/pi-forensics#-prerequisites-setup--usage">Full setup guide &rarr;</a>
+      </div>
+      <div class="terminal">
+        <div class="bar"><i></i><i></i><i></i><span>sh &mdash; nospi@pi-forensics</span></div>
+        <pre><span class="cmt"># clone and install in one line</span>
+<span class="pmt">$</span> sudo git clone https://github.com/n0sfs/pi-forensics.git \
+    /opt/pi-forensics && cd /opt/pi-forensics \
+    && sudo python3 install.py
+
+<span class="cmt"># reachable on the LAN once complete</span>
+<span class="pmt">$</span> open https://&lt;PI_IP_ADDRESS&gt;</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="cta-band">
+  <div class="wrap">
+    <span class="eyebrow" style="margin-bottom: 16px;"><span class="dot"></span>GET STARTED</span>
+    <h2>Read the source, run the installer, image a drive.</h2>
+    <p>GPLv3 &middot; no telemetry &middot; no account required to use it.</p>
+    <div class="hero-cta">
+      <a class="btn btn-gold" href="https://github.com/n0sfs/pi-forensics">View on GitHub &rarr;</a>
+      <a class="btn btn-outline" href="https://github.com/n0sfs/pi-forensics/blob/main/README.md">Read the README</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="#top"><span class="chip"></span>PI_FORENSICS_SUITE</a>
+        <p>Open-source forensic acquisition for Raspberry Pi and ARM single-board computers. Self-hosted, GPLv3, no cloud dependency.</p>
+      </div>
+      <div class="foot-cols">
+        <div class="foot-col">
+          <h4>Project</h4>
+          <a href="https://github.com/n0sfs/pi-forensics">Repository</a>
+          <a href="https://github.com/n0sfs/pi-forensics/blob/main/README.md">Documentation</a>
+          <a href="https://github.com/n0sfs/pi-forensics/issues">Issues</a>
+        </div>
+        <div class="foot-col">
+          <h4>Research</h4>
+          <a href="https://commons.erau.edu/jdfsl/vol11/iss1/3/">Original paper</a>
+        </div>
+        <div class="foot-col">
+          <h4>License</h4>
+          <a href="https://github.com/n0sfs/pi-forensics/blob/main/LICENSE">GPLv3</a>
+        </div>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>&copy; PI-FORENSICS &mdash; DISTRIBUTED UNDER GPLv3</span>
+      <span>PROVIDED AS-IS, WITHOUT WARRANTY</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
