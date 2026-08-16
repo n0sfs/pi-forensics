@@ -1770,6 +1770,10 @@ async function loadCaseReportingSettings() {
         const jobFields = data.report_defaults?.job_fields || {};
         const branding = data.report_defaults?.branding || {};
 
+        const templateSel = document.getElementById("defReportTemplate");
+        if (templateSel) templateSel.value = data.report_defaults?.template || 'standard';
+        onDefReportTemplateChange();
+
         const setChecked = (id, obj, key) => {
             const el = document.getElementById(id);
             if (el) el.checked = Object.prototype.hasOwnProperty.call(obj, key) ? !!obj[key] : true;
@@ -1798,6 +1802,12 @@ async function loadCaseReportingSettings() {
         caseReportingFieldsEditing = (data.custom_case_fields || []).map(f => ({ ...f }));
         renderCustomFieldDefsEditor();
     } catch (err) { /* non-fatal - card just shows its default markup state */ }
+}
+
+function onDefReportTemplateChange() {
+    const sel = document.getElementById("defReportTemplate");
+    const hint = document.getElementById("defTemplateHint");
+    if (hint) hint.style.display = (sel && sel.value !== 'standard') ? 'block' : 'none';
 }
 
 function renderCustomFieldDefsEditor() {
@@ -1839,6 +1849,7 @@ function addCustomFieldDefRow() {
 async function saveCaseReportingSettings() {
     const statusEl = document.getElementById("caseReportingStatus");
 
+    const template = document.getElementById("defReportTemplate")?.value || 'standard';
     const sections = {
         case_info: document.getElementById("defSecCaseInfo")?.checked ?? true,
         executive_summary: document.getElementById("defSecExecSummary")?.checked ?? true,
@@ -1863,7 +1874,7 @@ async function saveCaseReportingSettings() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                report_defaults: { sections, job_fields: jobFields, branding: { header_text: headerText } },
+                report_defaults: { template, sections, job_fields: jobFields, branding: { header_text: headerText } },
                 custom_case_fields: labels.map(label => ({ label }))
             })
         });
@@ -1990,11 +2001,15 @@ async function loadCaseForEditing() {
         const findingsEl = document.getElementById("editFindingsSummary");
         const limitationsEl = document.getElementById("editLimitations");
         const conclusionEl = document.getElementById("editConclusion");
+        const iocsEl = document.getElementById("editIocs");
+        const recommendationsEl = document.getElementById("editRecommendations");
         if (execSummaryEl) execSummaryEl.value = narrativeSrc.executive_summary || "";
         if (objectivesEl) objectivesEl.value = narrativeSrc.objectives || "";
         if (findingsEl) findingsEl.value = narrativeSrc.findings_summary || "";
         if (limitationsEl) limitationsEl.value = narrativeSrc.limitations || "";
         if (conclusionEl) conclusionEl.value = narrativeSrc.conclusion || "";
+        if (iocsEl) iocsEl.value = narrativeSrc.iocs || "";
+        if (recommendationsEl) recommendationsEl.value = narrativeSrc.recommendations_next_steps || "";
 
         renderCaseNotesList();
         loadCaseHistory();
@@ -2493,6 +2508,8 @@ function runCaseSearch() {
         ['Relevant Findings', 'editFindingsSummary'],
         ['Limitations', 'editLimitations'],
         ['Conclusion', 'editConclusion'],
+        ['Indicators of Compromise', 'editIocs'],
+        ['Recommendations / Next Steps', 'editRecommendations'],
     ];
     const customFieldMatches = Array.from(document.querySelectorAll('#customFieldsContainer .custom-field-input'))
         .map(input => ({
@@ -2581,6 +2598,8 @@ async function saveReportMetadata() {
         findings_summary: document.getElementById("editFindingsSummary")?.value || "",
         limitations: document.getElementById("editLimitations")?.value || "",
         conclusion: document.getElementById("editConclusion")?.value || "",
+        iocs: document.getElementById("editIocs")?.value || "",
+        recommendations_next_steps: document.getElementById("editRecommendations")?.value || "",
     };
 
     if (Array.isArray(currentLoadedReportData.events)) {
@@ -2639,6 +2658,15 @@ async function saveReportMetadata() {
 // form are not silently included. If the examiner wants their edits in the
 // exported file, Save Report Changes first, same as before. Called via the
 // Export nav button's onclick, mirroring the Jobs/Audit Trail pattern.
+function onExportTemplateChange() {
+    const sel = document.getElementById("exportTemplateSelect");
+    const hint = document.getElementById("exportTemplateHint");
+    const group = document.getElementById("exportSectionsFieldsGroup");
+    const isStandard = !sel || sel.value === 'standard';
+    if (hint) hint.style.display = isStandard ? 'none' : 'block';
+    if (group) group.style.display = isStandard ? '' : 'none';
+}
+
 async function prepareExportPane() {
     const reportPath = currentReportPath;
     if (!reportPath || !currentLoadedReportData) {
@@ -2652,6 +2680,10 @@ async function prepareExportPane() {
         const res = await fetch('/api/settings/case_reporting');
         const data = await res.json();
         if (data.success) {
+            const templateSel = document.getElementById("exportTemplateSelect");
+            if (templateSel) templateSel.value = data.report_defaults?.template || 'standard';
+            onExportTemplateChange();
+
             const sections = data.report_defaults?.sections || {};
             const jobFields = data.report_defaults?.job_fields || {};
             const setIfKnown = (id, obj, key) => {
@@ -2838,6 +2870,7 @@ async function runExportReport() {
     if (!reportPath) return alert("Select an active case first.");
 
     const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
+    const template = document.getElementById("exportTemplateSelect")?.value || 'standard';
     const sections = {
         case_info: !!document.getElementById("expSecCaseInfo")?.checked,
         executive_summary: !!document.getElementById("expSecExecSummary")?.checked,
@@ -2877,7 +2910,7 @@ async function runExportReport() {
         const res = await fetch('/api/export_report', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ report_path: reportPath, format, sections, job_fields, event_ids, attachment_selection })
+            body: JSON.stringify({ report_path: reportPath, format, template, sections, job_fields, event_ids, attachment_selection })
         });
 
         if (res.ok) {
