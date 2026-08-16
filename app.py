@@ -3703,7 +3703,9 @@ def settings_case_reporting():
         # by /api/settings/report_logo (upload) and its /clear counterpart,
         # so this save path can never point it at an arbitrary path string.
         existing_logo = cfg.get('report_defaults', {}).get('branding', {}).get('logo_path', '')
+        incoming_template = incoming.get('template')
         cfg['report_defaults'] = {
+            "template": incoming_template if incoming_template in REPORT_TEMPLATES else 'standard',
             "sections": {k: bool(v) for k, v in (incoming.get('sections') or {}).items()},
             "job_fields": {k: bool(v) for k, v in (incoming.get('job_fields') or {}).items()},
             "branding": {
@@ -5371,10 +5373,10 @@ def _draw_pdf_job_section(c, y, event, job_fields=None):
         y -= 5
     return y
 
-def _draw_pdf_header(c, header):
+def _draw_pdf_header(c, header, title="Case Information"):
     c.setFont("Helvetica-Bold", 12)
     y = 730
-    c.drawString(50, y, "Case Information")
+    c.drawString(50, y, title)
     y -= 20
     c.setFont("Helvetica", 10)
     c.drawString(50, y, f"Case Number: {header['case_number']}")
@@ -5394,13 +5396,13 @@ def _draw_pdf_header(c, header):
     y -= 15
     return y
 
-def _draw_pdf_audit_trail(c, y, entries):
+def _draw_pdf_audit_trail(c, y, entries, title="Case Activity Log (Audit Trail)"):
     if y < 150:
         c.showPage()
         y = 730
     y -= 15
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "Case Activity Log (Audit Trail)")
+    c.drawString(50, y, title)
     y -= 20
     c.setFont("Helvetica", 8)
     if not entries:
@@ -5730,7 +5732,7 @@ def _pick_display_hash(hashes):
     algo, value = next(iter(hashes.items()))
     return f"{algo.upper()}: {value}"
 
-def _draw_pdf_evidence_inventory(c, y, events):
+def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory"):
     if not events:
         return y
     if y < 150:
@@ -5738,7 +5740,7 @@ def _draw_pdf_evidence_inventory(c, y, events):
         y = 730
     y -= 15
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "Evidence Inventory")
+    c.drawString(50, y, title)
     y -= 20
     headers = ["Evidence ID", "Device", "Model", "Serial", "Capacity", "Acquisition Hash"]
     xpos = [50, 130, 225, 320, 400, 460]
@@ -5846,6 +5848,119 @@ def _draw_pdf_attachments(c, y, urls, files):
         y = _embed_file_into_pdf(c, y, file_path)
     return y
 
+# Shared by the DFIR and Police report templates below - not used by the
+# Standard template, which keeps its existing journal-style Case Notes
+# rendering (_draw_pdf_case_notes above) instead of a table.
+_METHODOLOGY_STATIC_TEXT = (
+    "This examination followed a standard write-blocked digital forensic acquisition and analysis "
+    "workflow: source media was write-protected before connection, imaged using a forensically "
+    "sound bit-for-bit acquisition tool with on-the-fly or post-acquisition cryptographic hashing, "
+    "and the resulting image verified against its recorded hash before analysis began."
+)
+_SIGNOFF_STATIC_TEXT = (
+    "I hereby affirm that the forensic examination detailed in this report was conducted in "
+    "accordance with established procedures and forensic standards. The findings presented above "
+    "are a true and accurate reflection of the data recovered from the submitted evidence."
+)
+
+def _draw_pdf_timeline_table(c, y, case_notes, title="Incident Timeline"):
+    """Renders case_notes as a Timestamp/Category/Description table instead
+    of the Standard template's narrative-journal style (_draw_pdf_case_notes)
+    - the DFIR and Police reference templates both ask for a chronological
+    timeline table, and the case notes journal is this app's only source of
+    examiner-authored chronological entries, so it's reused here in a
+    different shape rather than collecting a second, separate timeline."""
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, title)
+    y -= 16
+    c.setFont("Helvetica-Oblique", 7)
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.drawString(50, y, "Chronological entries from the examiner's case notes journal.")
+    c.setFillColorRGB(0, 0, 0)
+    y -= 14
+    if not case_notes:
+        c.setFont("Helvetica", 10)
+        c.drawString(50, y, "No timeline entries recorded.")
+        y -= 15
+        return y
+
+    headers = ["Timestamp", "Category", "Description"]
+    xpos = [50, 160, 230]
+    c.setFont("Helvetica-Bold", 8)
+    for label, x in zip(headers, xpos):
+        c.drawString(x, y, label)
+    y -= 4
+    c.line(50, y, 550, y)
+    y -= 12
+    c.setFont("Helvetica", 7.5)
+    for note in sorted(case_notes, key=lambda n: n.get('timestamp', '')):
+        if y < 60:
+            c.showPage()
+            y = 750
+            c.setFont("Helvetica", 7.5)
+        row = [
+            str(note.get('timestamp', 'N/A'))[:19],
+            str(note.get('category', 'General'))[:14],
+            str(note.get('text', '')).replace('\n', ' ')[:62],
+        ]
+        for val, x in zip(row, xpos):
+            c.drawString(x, y, val)
+        y -= 11
+    y -= 12
+    return y
+
+def _draw_pdf_methodology_tools(c, y, events):
+    """Static description of this app's standard acquisition workflow, plus
+    a 'tools used in this case' list derived from the distinct event.tool
+    values already recorded per job - zero new data entry, zero live
+    subprocess/version-check calls added to report export."""
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "Forensic Methodology & Tools")
+    y -= 18
+    c.setFont("Helvetica", 9.5)
+    y = _draw_pdf_wrapped_text(c, y, _METHODOLOGY_STATIC_TEXT, width_chars=95)
+    y -= 10
+
+    tools = sorted({str(e.get('tool')).upper() for e in events if e.get('tool')})
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(50, y, "Tools Used in This Case:")
+    y -= 14
+    c.setFont("Helvetica", 10)
+    c.drawString(60, y, ", ".join(tools) if tools else "No acquisition/recovery tool recorded.")
+    y -= 20
+    return y
+
+def _draw_pdf_signoff(c, y, examiner):
+    """Static sign-off block - examiner name (already-collected data) plus
+    blank signature/date lines. No new data entry."""
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "Sign-off & Signatures")
+    y -= 18
+    c.setFont("Helvetica", 9.5)
+    y = _draw_pdf_wrapped_text(c, y, _SIGNOFF_STATIC_TEXT, width_chars=95)
+    y -= 20
+    c.setFont("Helvetica", 10)
+    c.drawString(50, y, f"Examiner: {examiner}")
+    y -= 35
+    c.line(50, y, 250, y)
+    c.drawString(50, y - 12, "Signature")
+    c.line(320, y, 520, y)
+    c.drawString(320, y - 12, "Date")
+    y -= 25
+    return y
+
 def _draw_pdf_contents_page(c, sections, event_count):
     """A plain Report Contents listing, not page-number cross-referenced -
     this renderer draws in a single streaming pass with no forward
@@ -5888,18 +6003,21 @@ def _draw_pdf_contents_page(c, sections, event_count):
         c.drawString(60, y, f"{i}.  {entry}")
         y -= 18
 
-def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, case_notes, sections, job_fields):
-    from reportlab.lib.pagesizes import letter
+def _numbered_canvas_class():
+    """Returns a reportlab Canvas subclass that stamps a 'Page N' footer on
+    every page as it's flushed, without needing to touch every individual
+    showPage() call site scattered across the drawing helpers above -
+    showPage() is the one choke point they all already go through. save()
+    doesn't need its own override: reportlab's own Canvas.save() calls
+    showPage() internally for whatever page is still pending when save()
+    runs, so the last page gets stamped through this same override
+    automatically. Shared by all three report-template PDF builders below;
+    reportlab is imported here rather than at module level, matching this
+    file's existing lazy-import convention for it (routes that never touch
+    PDF generation shouldn't need the dependency)."""
     from reportlab.pdfgen import canvas
 
     class _NumberedCanvas(canvas.Canvas):
-        """Stamps a 'Page N' footer on every page as it's flushed, without
-        needing to touch every individual showPage() call site scattered
-        across the drawing helpers above - showPage() is the one choke
-        point they all already go through. save() doesn't need its own
-        override: reportlab's own Canvas.save() calls showPage() internally
-        for whatever page is still pending when save() runs, so the last
-        page gets stamped through this same override automatically."""
         def showPage(self):
             self.setFont("Helvetica", 8)
             self.setFillColorRGB(0.45, 0.45, 0.45)
@@ -5907,7 +6025,52 @@ def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, case
             self.setFillColorRGB(0, 0, 0)
             canvas.Canvas.showPage(self)
 
-    c = _NumberedCanvas(pdf_path, pagesize=letter)
+    return _NumberedCanvas
+
+def _draw_pdf_fixed_contents_page(c, entries):
+    """Simpler counterpart to _draw_pdf_contents_page for the DFIR/Police
+    templates below, which have a fixed section list (no per-section
+    sections dict to check) - entries is just the final ordered list of
+    section titles to print, already resolved by the caller (e.g.
+    conditionally including "Exhibits" only when there are attachments)."""
+    y = 700
+    c.setFont("Helvetica-Bold", 13)
+    c.drawString(50, y, "Report Contents")
+    y -= 25
+    c.setFont("Helvetica", 10.5)
+    for i, entry in enumerate(entries, start=1):
+        c.drawString(60, y, f"{i}.  {entry}")
+        y -= 18
+
+# Registry of selectable report shapes (Settings > Case & Reporting sets a
+# station default; the Export pane can override it per-export). Only used
+# for display labels/descriptions and to validate incoming 'template'
+# values - the actual per-template rendering logic lives in the three
+# dedicated builder-function pairs above/below, not a generic data-driven
+# engine (clearer and lower-risk than forcing every template's differently-
+# shaped sections through one generic loop). 'standard' is the only shape
+# that honors the sections/job_fields toggles - dfir/police are fixed-
+# structure by definition, matching the reference templates they're built
+# from.
+REPORT_TEMPLATES = {
+    'standard': {
+        'label': 'Standard',
+        'description': 'The default configurable report - toggle sections and job fields freely.',
+    },
+    'dfir': {
+        'label': 'DFIR Report',
+        'description': 'Fixed-structure incident response report: Executive Summary, Incident Timeline, Indicators of Compromise, Containment & Next Steps.',
+    },
+    'police': {
+        'label': 'Forensics Report',
+        'description': 'Fixed-structure law-enforcement examination report: Administrative Information, Evidence Collection & Chain of Custody, Sign-off & Signatures.',
+    },
+}
+
+def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, sections, job_fields):
+    from reportlab.lib.pagesizes import letter
+
+    c = _numbered_canvas_class()(pdf_path, pagesize=letter)
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, 750, "PI FORENSICS SUITE ACQUISITION AUDIT REPORT")
 
@@ -6002,6 +6165,178 @@ def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, case
 
     c.save()
 
+def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries, case_notes):
+    """Fixed-structure DFIR Incident Report - no sections/job_fields dict,
+    since a template's whole point is a defined shape. Reuses the same
+    low-level drawing helpers the Standard template uses; only the section
+    list, order, and labels differ, matching the reference DFIR report
+    structure this was built against (see the plan's field-mapping table -
+    most sections reuse existing narrative fields under a different label
+    for this template, only Indicators of Compromise and Containment/Next
+    Steps are genuinely new fields)."""
+    from reportlab.lib.pagesizes import letter
+
+    c = _numbered_canvas_class()(pdf_path, pagesize=letter)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, 750, "DIGITAL FORENSICS AND INCIDENT RESPONSE REPORT")
+
+    branding = header.get('branding', {})
+    title_bottom = 740
+    header_text = (branding.get('header_text') or '').strip()
+    if header_text:
+        c.setFont("Helvetica", 10)
+        c.drawString(50, 730, header_text[:120])
+        title_bottom = 720
+    logo_path = branding.get('logo_path') or ''
+    if logo_path and os.path.exists(logo_path):
+        try:
+            from reportlab.lib.utils import ImageReader
+            c.drawImage(ImageReader(logo_path), 470, 725, width=80, height=40, preserveAspectRatio=True, anchor='ne')
+        except Exception:
+            pass
+    c.setLineWidth(1)
+    c.line(50, title_bottom, 550, title_bottom)
+
+    entries = ["Case Information", "Executive Summary", "Incident Overview & Scope",
+               "Incident Timeline", "Technical Analysis & Forensic Findings",
+               "Indicators of Compromise", "Containment, Eradication & Next Steps"]
+    has_exhibits = bool(urls or files)
+    if has_exhibits:
+        entries.append("Exhibits")
+    entries.append("Audit Trail")
+
+    c.showPage()
+    _draw_pdf_fixed_contents_page(c, entries)
+    c.showPage()
+
+    c.bookmarkPage('case_info')
+    c.addOutlineEntry("Case Information", 'case_info', level=0)
+    y = _draw_pdf_header(c, header)
+
+    c.bookmarkPage('exec_summary')
+    c.addOutlineEntry("Executive Summary", 'exec_summary', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Executive Summary", header.get('executive_summary'))
+
+    c.bookmarkPage('overview_scope')
+    c.addOutlineEntry("Incident Overview & Scope", 'overview_scope', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Incident Overview & Scope", header.get('objectives'))
+
+    c.bookmarkPage('timeline')
+    c.addOutlineEntry("Incident Timeline", 'timeline', level=0)
+    y = _draw_pdf_timeline_table(c, y, case_notes, title="Incident Timeline")
+
+    c.bookmarkPage('technical_analysis')
+    c.addOutlineEntry("Technical Analysis & Forensic Findings", 'technical_analysis', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Technical Analysis & Forensic Findings", header.get('findings_summary'))
+
+    c.bookmarkPage('iocs')
+    c.addOutlineEntry("Indicators of Compromise", 'iocs', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Indicators of Compromise", header.get('iocs'))
+
+    c.bookmarkPage('containment')
+    c.addOutlineEntry("Containment, Eradication & Next Steps", 'containment', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Containment, Eradication & Next Steps", header.get('recommendations_next_steps'))
+
+    if has_exhibits:
+        c.bookmarkPage('exhibits')
+        c.addOutlineEntry("Exhibits", 'exhibits', level=0)
+        y = _draw_pdf_attachments(c, y, urls, files)
+
+    c.bookmarkPage('audit_trail')
+    c.addOutlineEntry("Audit Trail", 'audit_trail', level=0)
+    y = _draw_pdf_audit_trail(c, y, audit_entries)
+
+    c.save()
+
+def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entries, case_notes):
+    """Fixed-structure Forensics (Police) Report, modeled on the reference
+    law-enforcement examination report. Reuses the same low-level drawing
+    helpers as the other two templates - see the plan's field-mapping table
+    for what's reused vs. genuinely new.
+
+    One disclosed gap: the reference report's "Chain of Custody Log" is
+    about physical evidence handoffs between people (officer to analyst to
+    evidence vault) - this app has no concept of that. Reusing this app's
+    Audit Trail (a log of actions taken in the software) under that heading
+    is the closest real fit, not a literal personnel custody-transfer log -
+    labeled "Chain of Custody / Activity Log" rather than silently passed
+    off as the real thing."""
+    from reportlab.lib.pagesizes import letter
+
+    c = _numbered_canvas_class()(pdf_path, pagesize=letter)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, 750, "POLICE FORENSICS INVESTIGATION REPORT")
+
+    branding = header.get('branding', {})
+    title_bottom = 740
+    header_text = (branding.get('header_text') or '').strip()
+    if header_text:
+        c.setFont("Helvetica", 10)
+        c.drawString(50, 730, header_text[:120])
+        title_bottom = 720
+    logo_path = branding.get('logo_path') or ''
+    if logo_path and os.path.exists(logo_path):
+        try:
+            from reportlab.lib.utils import ImageReader
+            c.drawImage(ImageReader(logo_path), 470, 725, width=80, height=40, preserveAspectRatio=True, anchor='ne')
+        except Exception:
+            pass
+    c.setLineWidth(1)
+    c.line(50, title_bottom, 550, title_bottom)
+
+    has_exhibits = bool(urls or files)
+    entries = ["Administrative Information", "Executive Summary", "Case Background & Scope",
+               "Evidence Collection & Chain of Custody", "Forensic Methodology & Tools",
+               "Detailed Findings & Analysis", "Conclusion & Summary", "Sign-off & Signatures"]
+    if has_exhibits:
+        entries.append("Exhibits & Appendices")
+
+    c.showPage()
+    _draw_pdf_fixed_contents_page(c, entries)
+    c.showPage()
+
+    c.bookmarkPage('admin_info')
+    c.addOutlineEntry("Administrative Information", 'admin_info', level=0)
+    y = _draw_pdf_header(c, header, title="Administrative Information")
+
+    c.bookmarkPage('exec_summary')
+    c.addOutlineEntry("Executive Summary", 'exec_summary', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Executive Summary", header.get('executive_summary'))
+
+    c.bookmarkPage('background_scope')
+    c.addOutlineEntry("Case Background & Scope", 'background_scope', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Case Background & Scope", header.get('objectives'))
+
+    c.bookmarkPage('evidence_coc')
+    c.addOutlineEntry("Evidence Collection & Chain of Custody", 'evidence_coc', level=0)
+    y = _draw_pdf_evidence_inventory(c, y, events, title="Itemized Evidence & Integrity Hashing")
+    y = _draw_pdf_audit_trail(c, y, audit_entries, title="Chain of Custody / Activity Log")
+
+    c.bookmarkPage('methodology')
+    c.addOutlineEntry("Forensic Methodology & Tools", 'methodology', level=0)
+    y = _draw_pdf_methodology_tools(c, y, events)
+
+    c.bookmarkPage('findings')
+    c.addOutlineEntry("Detailed Findings & Analysis", 'findings', level=0)
+    y = _draw_pdf_timeline_table(c, y, case_notes, title="Chronological Timeline of Events")
+    y = _draw_pdf_narrative_section(c, y, "Artifact Analysis", header.get('findings_summary'))
+
+    c.bookmarkPage('conclusion')
+    c.addOutlineEntry("Conclusion & Summary", 'conclusion', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Conclusion", header.get('conclusion'))
+    y = _draw_pdf_narrative_section(c, y, "Recommendations", header.get('recommendations_next_steps'))
+
+    c.bookmarkPage('signoff')
+    c.addOutlineEntry("Sign-off & Signatures", 'signoff', level=0)
+    y = _draw_pdf_signoff(c, y, header['examiner'])
+
+    if has_exhibits:
+        c.bookmarkPage('exhibits')
+        c.addOutlineEntry("Exhibits & Appendices", 'exhibits', level=0)
+        y = _draw_pdf_attachments(c, y, urls, files)
+
+    c.save()
+
 def _embed_file_into_html(file_path):
     """HTML counterpart to _embed_file_into_pdf - shared by Exhibits (case
     attachments) and the Case Notes journal."""
@@ -6034,6 +6369,52 @@ def _embed_file_into_html(file_path):
     else:
         size_note = f" ({size:,} bytes)" if size else ""
         return f'<div class="attach-item"><h3>{esc(name)}</h3><p class="muted mono">{esc(file_path)}{esc(size_note)}</p></div>'
+
+def _html_timeline_table(case_notes, title="Incident Timeline", anchor_id=None):
+    """HTML counterpart to _draw_pdf_timeline_table - same case_notes source,
+    rendered as a table instead of the Standard template's journal style."""
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [
+        f'<h2{id_attr}>{esc(title)}</h2>',
+        '<p class="muted">Chronological entries from the examiner\'s case notes journal.</p>',
+    ]
+    if not case_notes:
+        parts.append('<p class="muted">No timeline entries recorded.</p>')
+        return ''.join(parts)
+    parts.append('<table><tr><th>Timestamp</th><th>Category</th><th>Description</th></tr>')
+    for note in sorted(case_notes, key=lambda n: n.get('timestamp', '')):
+        parts.append(
+            f'<tr><td>{esc(str(note.get("timestamp", "N/A")))}</td>'
+            f'<td>{esc(str(note.get("category", "General")))}</td>'
+            f'<td>{esc(str(note.get("text", "")))}</td></tr>'
+        )
+    parts.append('</table>')
+    return ''.join(parts)
+
+def _html_methodology_tools(events, anchor_id=None):
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    tools = sorted({str(e.get('tool')).upper() for e in events if e.get('tool')})
+    tools_str = ', '.join(tools) if tools else 'No acquisition/recovery tool recorded.'
+    return (
+        f'<h2{id_attr}>Forensic Methodology &amp; Tools</h2>'
+        f'<p>{esc(_METHODOLOGY_STATIC_TEXT)}</p>'
+        f'<p><strong>Tools Used in This Case:</strong> {esc(tools_str)}</p>'
+    )
+
+def _html_signoff(examiner, anchor_id=None):
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    return (
+        f'<h2{id_attr}>Sign-off &amp; Signatures</h2>'
+        f'<p>{esc(_SIGNOFF_STATIC_TEXT)}</p>'
+        f'<p>Examiner: {esc(str(examiner))}</p>'
+        '<div style="display:flex;gap:60px;margin-top:2em;max-width:600px;">'
+        '<div style="flex:1;border-top:1px solid #333;padding-top:4px;">Signature</div>'
+        '<div style="flex:1;border-top:1px solid #333;padding-top:4px;">Date</div>'
+        '</div>'
+    )
 
 def _html_narrative_block(title, text, anchor_id=None):
     esc = html.escape
@@ -6077,43 +6458,103 @@ def _build_html_toc(sections, event_count, has_exhibits):
     items = ''.join(f'<li><a href="#{esc(anchor)}">{label}</a></li>' for anchor, label in entries)
     return f'<nav class="toc"><h2>Report Contents</h2><ol>{items}</ol></nav>'
 
-def _build_html_report(header, events, urls, files, audit_entries, case_notes, sections, job_fields):
-    """Self-contained HTML report - every value is escaped since it may
-    contain examiner-entered text or evidence-derived strings (filenames,
-    device paths) that this file could later be reopened/served from disk."""
+def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id=None):
+    """HTML counterpart to _draw_pdf_evidence_inventory - shared by all
+    three templates. The Police template reuses this under a different
+    title ("Itemized Evidence & Integrity Hashing")."""
     esc = html.escape
-    parts = [
-        '<!doctype html><html><head><meta charset="utf-8">',
-        f'<title>Case Report - {esc(str(header["case_number"]))}</title>',
-        '<style>',
-        'body{font-family:Arial,Helvetica,sans-serif;color:#111;max-width:900px;margin:2em auto;padding:0 1em;}',
-        'h1{font-size:1.4em;border-bottom:2px solid #333;padding-bottom:.3em;}',
-        'h2{font-size:1.15em;margin-top:1.6em;border-bottom:1px solid #999;padding-bottom:.2em;}',
-        'h3{font-size:1em;margin:.8em 0 .3em;}',
-        'table{border-collapse:collapse;width:100%;margin:.4em 0;}',
-        'td,th{border:1px solid #ccc;padding:4px 8px;text-align:left;font-size:.9em;vertical-align:top;}',
-        '.job{margin-top:1.2em;padding:.8em;border:1px solid #ccc;border-radius:6px;}',
-        '.muted{color:#666;font-size:.85em;}',
-        '.mono{font-family:"Courier New",monospace;}',
-        '.attach-item{margin-top:1em;padding:.7em;border:1px solid #ddd;border-radius:6px;}',
-        '.attach-item img{max-width:100%;border:1px solid #ccc;display:block;margin-top:.4em;}',
-        '.attach-item pre{background:#f5f5f5;padding:.6em;overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:.8em;margin-top:.4em;}',
-        '.branding-header{display:flex;justify-content:space-between;align-items:flex-start;gap:1em;border-bottom:2px solid #333;padding-bottom:.3em;}',
-        '.branding-header h1{border-bottom:none;padding-bottom:0;margin:0;}',
-        '.branding-header img{max-height:50px;max-width:160px;}',
-        '.branding-subtitle{color:#444;font-size:.9em;margin:.2em 0 1em;}',
-        '.toc{background:#f7f7f7;border:1px solid #ddd;border-radius:6px;padding:.8em 1.2em;margin:1em 0;}',
-        '.toc h2{margin-top:0;font-size:1em;border-bottom:none;padding-bottom:0;}',
-        '.toc ol{margin:.3em 0 0;padding-left:1.4em;}',
-        '.toc li{margin:.25em 0;}',
-        '.toc a{color:#1a4d8f;text-decoration:none;}',
-        '.toc a:hover{text-decoration:underline;}',
-        '</style></head><body>',
-    ]
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [f'<h2{id_attr}>{esc(title)}</h2><table>']
+    parts.append('<tr><th>Evidence ID</th><th>Device</th><th>Model</th><th>Serial</th><th>Capacity</th><th>Acquisition Hash</th></tr>')
+    for event in events:
+        meta = event.get('case_metadata', {})
+        drive = event.get('source_drive_telemetry', {})
+        hash_display = _pick_display_hash(event.get('computed_verification_hashes', {}))
+        parts.append(
+            f'<tr><td>{esc(str(meta.get("evidence_id", "N/A")))}</td>'
+            f'<td>{esc(str(drive.get("device_path", "N/A")))}</td>'
+            f'<td>{esc(str(drive.get("vendor_model", "N/A")))}</td>'
+            f'<td>{esc(str(drive.get("serial_number", "N/A")))}</td>'
+            f'<td>{esc(str(drive.get("capacity_gb", "N/A")))} GB</td>'
+            f'<td class="mono">{esc(str(hash_display))}</td></tr>'
+        )
+    parts.append('</table>')
+    return ''.join(parts)
 
-    # Station branding (Settings > Case & Reporting) - an added subtitle
-    # line and/or a small logo, never a replacement of the fixed title, so
-    # every export stays immediately recognizable as coming from this app.
+def _html_exhibits_block(urls, files, anchor_id=None):
+    """HTML counterpart to _draw_pdf_attachments - shared by all three
+    templates' Exhibits section. Caller already checks whether there's
+    anything to show (urls or files) before calling this."""
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [f'<h2{id_attr}>Exhibits</h2>']
+    if urls:
+        parts.append('<p><strong>Reference Links / URLs:</strong></p><ul>')
+        for url in urls:
+            parts.append(f'<li><a href="{esc(str(url))}">{esc(str(url))}</a></li>')
+        parts.append('</ul>')
+    for raw_path in files:
+        file_path = safe_path(raw_path)
+        if not file_path or not os.path.exists(file_path):
+            continue
+        parts.append(_embed_file_into_html(file_path))
+    return ''.join(parts)
+
+def _html_audit_trail_block(audit_entries, anchor_id=None, title="Case Activity Log (Audit Trail)"):
+    """HTML counterpart to _draw_pdf_audit_trail - shared by all three
+    templates. The Police template reuses this under a different title
+    ("Chain of Custody / Activity Log") since this app's audit trail is the
+    closest real substitute it has for that section, not a literal personnel
+    custody-transfer log - see _build_pdf_report_police's own comment."""
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [f'<h2{id_attr}>{esc(title)}</h2>']
+    if audit_entries:
+        parts.append('<table><tr><th>Timestamp</th><th>Action</th><th>Details</th></tr>')
+        for entry in audit_entries:
+            details_str = ', '.join(f'{k}={v}' for k, v in (entry.get('details') or {}).items())
+            parts.append(f'<tr><td>{esc(str(entry.get("timestamp", "")))}</td><td>{esc(str(entry.get("action", "")))}</td><td>{esc(details_str)}</td></tr>')
+        parts.append('</table>')
+    else:
+        parts.append('<p class="muted">No activity log entries found for this case.</p>')
+    return ''.join(parts)
+
+def _html_report_style_block():
+    """Shared CSS for all three report-template HTML builders below - one
+    definition, so restyling the report format doesn't mean editing it in
+    three places."""
+    return (
+        '<style>'
+        'body{font-family:Arial,Helvetica,sans-serif;color:#111;max-width:900px;margin:2em auto;padding:0 1em;}'
+        'h1{font-size:1.4em;border-bottom:2px solid #333;padding-bottom:.3em;}'
+        'h2{font-size:1.15em;margin-top:1.6em;border-bottom:1px solid #999;padding-bottom:.2em;}'
+        'h3{font-size:1em;margin:.8em 0 .3em;}'
+        'table{border-collapse:collapse;width:100%;margin:.4em 0;}'
+        'td,th{border:1px solid #ccc;padding:4px 8px;text-align:left;font-size:.9em;vertical-align:top;}'
+        '.job{margin-top:1.2em;padding:.8em;border:1px solid #ccc;border-radius:6px;}'
+        '.muted{color:#666;font-size:.85em;}'
+        '.mono{font-family:"Courier New",monospace;}'
+        '.attach-item{margin-top:1em;padding:.7em;border:1px solid #ddd;border-radius:6px;}'
+        '.attach-item img{max-width:100%;border:1px solid #ccc;display:block;margin-top:.4em;}'
+        '.attach-item pre{background:#f5f5f5;padding:.6em;overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:.8em;margin-top:.4em;}'
+        '.branding-header{display:flex;justify-content:space-between;align-items:flex-start;gap:1em;border-bottom:2px solid #333;padding-bottom:.3em;}'
+        '.branding-header h1{border-bottom:none;padding-bottom:0;margin:0;}'
+        '.branding-header img{max-height:50px;max-width:160px;}'
+        '.branding-subtitle{color:#444;font-size:.9em;margin:.2em 0 1em;}'
+        '.toc{background:#f7f7f7;border:1px solid #ddd;border-radius:6px;padding:.8em 1.2em;margin:1em 0;}'
+        '.toc h2{margin-top:0;font-size:1em;border-bottom:none;padding-bottom:0;}'
+        '.toc ol{margin:.3em 0 0;padding-left:1.4em;}'
+        '.toc li{margin:.25em 0;}'
+        '.toc a{color:#1a4d8f;text-decoration:none;}'
+        '.toc a:hover{text-decoration:underline;}'
+        '</style>'
+    )
+
+def _html_report_branding_header(header, title):
+    """Renders the branding-header block (fixed template title + station's
+    optional added subtitle/logo from Settings > Case & Reporting) - shared
+    by all three HTML builders, only the title text differs per template."""
+    esc = html.escape
     branding = header.get('branding', {})
     logo_path = branding.get('logo_path') or ''
     logo_html = ''
@@ -6129,10 +6570,24 @@ def _build_html_report(header, events, urls, files, audit_entries, case_notes, s
             logo_html = f'<img src="data:{mime};base64,{logo_b64}" alt="station logo">'
         except OSError:
             logo_html = ''
-    parts.append(f'<div class="branding-header"><h1>Pi Forensics Suite Acquisition Audit Report</h1>{logo_html}</div>')
+    parts = [f'<div class="branding-header"><h1>{esc(title)}</h1>{logo_html}</div>']
     header_text = (branding.get('header_text') or '').strip()
     if header_text:
         parts.append(f'<div class="branding-subtitle">{esc(header_text)}</div>')
+    return ''.join(parts)
+
+def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, sections, job_fields):
+    """Self-contained HTML report - every value is escaped since it may
+    contain examiner-entered text or evidence-derived strings (filenames,
+    device paths) that this file could later be reopened/served from disk."""
+    esc = html.escape
+    parts = [
+        '<!doctype html><html><head><meta charset="utf-8">',
+        f'<title>Case Report - {esc(str(header["case_number"]))}</title>',
+        _html_report_style_block(),
+        '</head><body>',
+        _html_report_branding_header(header, "Pi Forensics Suite Acquisition Audit Report"),
+    ]
 
     parts.append(_build_html_toc(sections, len(events), bool(urls or files)))
 
@@ -6151,21 +6606,7 @@ def _build_html_report(header, events, urls, files, audit_entries, case_notes, s
         parts.append(_html_narrative_block('Objectives', header.get('objectives')))
 
     if sections.get('evidence_inventory', True) and events:
-        parts.append('<h2 id="sec-evidence-inventory">Evidence Inventory</h2><table>')
-        parts.append('<tr><th>Evidence ID</th><th>Device</th><th>Model</th><th>Serial</th><th>Capacity</th><th>Acquisition Hash</th></tr>')
-        for event in events:
-            meta = event.get('case_metadata', {})
-            drive = event.get('source_drive_telemetry', {})
-            hash_display = _pick_display_hash(event.get('computed_verification_hashes', {}))
-            parts.append(
-                f'<tr><td>{esc(str(meta.get("evidence_id", "N/A")))}</td>'
-                f'<td>{esc(str(drive.get("device_path", "N/A")))}</td>'
-                f'<td>{esc(str(drive.get("vendor_model", "N/A")))}</td>'
-                f'<td>{esc(str(drive.get("serial_number", "N/A")))}</td>'
-                f'<td>{esc(str(drive.get("capacity_gb", "N/A")))} GB</td>'
-                f'<td class="mono">{esc(str(hash_display))}</td></tr>'
-            )
-        parts.append('</table>')
+        parts.append(_html_evidence_inventory_table(events, anchor_id='sec-evidence-inventory'))
 
     for i, event in enumerate(events):
         meta = event.get('case_metadata', {})
@@ -6226,29 +6667,119 @@ def _build_html_report(header, events, urls, files, audit_entries, case_notes, s
         parts.append(_html_narrative_block('Conclusion', header.get('conclusion'), 'sec-conclusion'))
 
     if sections.get('attachments', True) and (urls or files):
-        parts.append('<h2 id="sec-exhibits">Exhibits</h2>')
-        if urls:
-            parts.append('<p><strong>Reference Links / URLs:</strong></p><ul>')
-            for url in urls:
-                parts.append(f'<li><a href="{esc(str(url))}">{esc(str(url))}</a></li>')
-            parts.append('</ul>')
-
-        for raw_path in files:
-            file_path = safe_path(raw_path)
-            if not file_path or not os.path.exists(file_path):
-                continue
-            parts.append(_embed_file_into_html(file_path))
+        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits'))
 
     if sections.get('audit_trail', True):
-        parts.append('<h2 id="sec-audit-trail">Case Activity Log (Audit Trail)</h2>')
-        if audit_entries:
-            parts.append('<table><tr><th>Timestamp</th><th>Action</th><th>Details</th></tr>')
-            for entry in audit_entries:
-                details_str = ', '.join(f'{k}={v}' for k, v in (entry.get('details') or {}).items())
-                parts.append(f'<tr><td>{esc(str(entry.get("timestamp", "")))}</td><td>{esc(str(entry.get("action", "")))}</td><td>{esc(details_str)}</td></tr>')
-            parts.append('</table>')
-        else:
-            parts.append('<p class="muted">No activity log entries found for this case.</p>')
+        parts.append(_html_audit_trail_block(audit_entries, anchor_id='sec-audit-trail'))
+
+    parts.append('</body></html>')
+    return ''.join(parts)
+
+def _build_html_report_dfir(header, events, urls, files, audit_entries, case_notes):
+    """HTML counterpart to _build_pdf_report_dfir - same fixed section list,
+    same reused data sources, see that function's docstring."""
+    esc = html.escape
+    has_exhibits = bool(urls or files)
+    toc_entries = [
+        ('sec-case-info', 'Case Information'), ('sec-exec-summary', 'Executive Summary'),
+        ('sec-overview-scope', 'Incident Overview &amp; Scope'), ('sec-timeline', 'Incident Timeline'),
+        ('sec-technical-analysis', 'Technical Analysis &amp; Forensic Findings'),
+        ('sec-iocs', 'Indicators of Compromise'),
+        ('sec-containment', 'Containment, Eradication &amp; Next Steps'),
+    ]
+    if has_exhibits:
+        toc_entries.append(('sec-exhibits', 'Exhibits'))
+    toc_entries.append(('sec-audit-trail', 'Audit Trail'))
+    toc_items = ''.join(f'<li><a href="#{esc(a)}">{t}</a></li>' for a, t in toc_entries)
+
+    parts = [
+        '<!doctype html><html><head><meta charset="utf-8">',
+        f'<title>DFIR Report - {esc(str(header["case_number"]))}</title>',
+        _html_report_style_block(),
+        '</head><body>',
+        _html_report_branding_header(header, "Digital Forensics and Incident Response Report"),
+        f'<nav class="toc"><h2>Report Contents</h2><ol>{toc_items}</ol></nav>',
+    ]
+
+    parts.append('<h2 id="sec-case-info">Case Information</h2><table>')
+    parts.append(f'<tr><th>Case Number</th><td>{esc(str(header["case_number"]))}</td><th>Examiner</th><td>{esc(str(header["examiner"]))}</td></tr>')
+    parts.append(f'<tr><th>Created</th><td colspan="3">{esc(str(header["created_at"]))}</td></tr>')
+    for field in header.get('custom_fields', []):
+        parts.append(f'<tr><th>{esc(str(field["label"]))}</th><td colspan="3">{esc(str(field["value"]))}</td></tr>')
+    parts.append('</table>')
+
+    parts.append(_html_narrative_block('Executive Summary', header.get('executive_summary'), 'sec-exec-summary'))
+    parts.append(_html_narrative_block('Incident Overview & Scope', header.get('objectives'), 'sec-overview-scope'))
+    parts.append(_html_timeline_table(case_notes, title="Incident Timeline", anchor_id='sec-timeline'))
+    parts.append(_html_narrative_block('Technical Analysis & Forensic Findings', header.get('findings_summary'), 'sec-technical-analysis'))
+    parts.append(_html_narrative_block('Indicators of Compromise', header.get('iocs'), 'sec-iocs'))
+    parts.append(_html_narrative_block('Containment, Eradication & Next Steps', header.get('recommendations_next_steps'), 'sec-containment'))
+
+    if has_exhibits:
+        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits'))
+
+    parts.append(_html_audit_trail_block(audit_entries, anchor_id='sec-audit-trail'))
+
+    parts.append('</body></html>')
+    return ''.join(parts)
+
+def _build_html_report_police(header, events, urls, files, audit_entries, case_notes):
+    """HTML counterpart to _build_pdf_report_police - same fixed section
+    list, same reused data sources, same disclosed Chain-of-Custody-vs-
+    Audit-Trail caveat, see that function's docstring."""
+    esc = html.escape
+    has_exhibits = bool(urls or files)
+    toc_entries = [
+        ('sec-admin-info', 'Administrative Information'), ('sec-exec-summary', 'Executive Summary'),
+        ('sec-background-scope', 'Case Background &amp; Scope'),
+        ('sec-evidence-coc', 'Evidence Collection &amp; Chain of Custody'),
+        ('sec-methodology', 'Forensic Methodology &amp; Tools'),
+        ('sec-findings', 'Detailed Findings &amp; Analysis'),
+        ('sec-conclusion', 'Conclusion &amp; Summary'),
+        ('sec-signoff', 'Sign-off &amp; Signatures'),
+    ]
+    if has_exhibits:
+        toc_entries.append(('sec-exhibits', 'Exhibits &amp; Appendices'))
+    toc_items = ''.join(f'<li><a href="#{esc(a)}">{t}</a></li>' for a, t in toc_entries)
+
+    parts = [
+        '<!doctype html><html><head><meta charset="utf-8">',
+        f'<title>Police Forensics Report - {esc(str(header["case_number"]))}</title>',
+        _html_report_style_block(),
+        '</head><body>',
+        _html_report_branding_header(header, "Police Forensics Investigation Report"),
+        f'<nav class="toc"><h2>Report Contents</h2><ol>{toc_items}</ol></nav>',
+    ]
+
+    parts.append('<h2 id="sec-admin-info">Administrative Information</h2><table>')
+    parts.append(f'<tr><th>Case Number</th><td>{esc(str(header["case_number"]))}</td><th>Examiner</th><td>{esc(str(header["examiner"]))}</td></tr>')
+    parts.append(f'<tr><th>Created</th><td colspan="3">{esc(str(header["created_at"]))}</td></tr>')
+    for field in header.get('custom_fields', []):
+        parts.append(f'<tr><th>{esc(str(field["label"]))}</th><td colspan="3">{esc(str(field["value"]))}</td></tr>')
+    parts.append('</table>')
+
+    parts.append(_html_narrative_block('Executive Summary', header.get('executive_summary'), 'sec-exec-summary'))
+    parts.append(_html_narrative_block('Case Background & Scope', header.get('objectives'), 'sec-background-scope'))
+
+    parts.append(f'<h2 id="sec-evidence-coc">Evidence Collection &amp; Chain of Custody</h2>')
+    if events:
+        parts.append(_html_evidence_inventory_table(events, title="Itemized Evidence & Integrity Hashing"))
+    parts.append(_html_audit_trail_block(audit_entries, title="Chain of Custody / Activity Log"))
+
+    parts.append(_html_methodology_tools(events, anchor_id='sec-methodology'))
+
+    parts.append(f'<h2 id="sec-findings">Detailed Findings &amp; Analysis</h2>')
+    parts.append(_html_timeline_table(case_notes, title="Chronological Timeline of Events"))
+    parts.append(_html_narrative_block('Artifact Analysis', header.get('findings_summary')))
+
+    parts.append(f'<h2 id="sec-conclusion">Conclusion &amp; Summary</h2>')
+    parts.append(_html_narrative_block('Conclusion', header.get('conclusion')))
+    parts.append(_html_narrative_block('Recommendations', header.get('recommendations_next_steps')))
+
+    parts.append(_html_signoff(header['examiner'], anchor_id='sec-signoff'))
+
+    if has_exhibits:
+        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits'))
 
     parts.append('</body></html>')
     return ''.join(parts)
@@ -6275,6 +6806,13 @@ def export_report():
     job_fields = req.get('job_fields') or report_defaults.get('job_fields') or {}
     requested_event_ids = req.get('event_ids')
     attachment_selection = req.get('attachment_selection')
+
+    # DFIR/Police are fixed-structure by definition - sections/job_fields
+    # only ever apply to 'standard'. Falls back to the station's configured
+    # default template the same way sections/job_fields already do above.
+    template = req.get('template') or report_defaults.get('template') or 'standard'
+    if template not in REPORT_TEMPLATES:
+        template = 'standard'
 
     try:
         with open(report_file, 'r') as f:
@@ -6320,6 +6858,8 @@ def export_report():
             "findings_summary": data.get('findings_summary', ''),
             "limitations": data.get('limitations', ''),
             "conclusion": data.get('conclusion', ''),
+            "iocs": data.get('iocs', ''),
+            "recommendations_next_steps": data.get('recommendations_next_steps', ''),
         }
         attachments = data.get('attachments', {})
     else:
@@ -6336,6 +6876,8 @@ def export_report():
             "findings_summary": meta.get('findings_summary', ''),
             "limitations": meta.get('limitations', ''),
             "conclusion": meta.get('conclusion', ''),
+            "iocs": meta.get('iocs', ''),
+            "recommendations_next_steps": meta.get('recommendations_next_steps', ''),
         }
         attachments = data.get('attachments', {})
 
@@ -6360,18 +6902,37 @@ def export_report():
         if not sel_files and attachments.get('image_path'):
             sel_files = [attachments.get('image_path')]
 
+    # DFIR/Police always include an Audit Trail section (it's part of their
+    # fixed structure) - only 'standard' respects the sections toggle for it.
     audit_entries = []
-    if sections.get('audit_trail', True) and header['case_number'] not in (None, '', 'N/A'):
+    needs_audit_trail = template != 'standard' or sections.get('audit_trail', True)
+    if needs_audit_trail and header['case_number'] not in (None, '', 'N/A'):
         audit_entries = _case_history_entries(header['case_number'], limit=500)
 
     try:
-        if fmt == 'html':
+        if template == 'dfir':
+            if fmt == 'html':
+                out_path = report_file.rsplit('.json', 1)[0] + '.html'
+                with open(out_path, 'w') as f:
+                    f.write(_build_html_report_dfir(header, events, sel_urls, sel_files, audit_entries, case_notes))
+            else:
+                out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
+                _build_pdf_report_dfir(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes)
+        elif template == 'police':
+            if fmt == 'html':
+                out_path = report_file.rsplit('.json', 1)[0] + '.html'
+                with open(out_path, 'w') as f:
+                    f.write(_build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes))
+            else:
+                out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
+                _build_pdf_report_police(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes)
+        elif fmt == 'html':
             out_path = report_file.rsplit('.json', 1)[0] + '.html'
             with open(out_path, 'w') as f:
-                f.write(_build_html_report(header, events, sel_urls, sel_files, audit_entries, case_notes, sections, job_fields))
+                f.write(_build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, sections, job_fields))
         else:
             out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-            _build_pdf_report(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, sections, job_fields)
+            _build_pdf_report_standard(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, sections, job_fields)
         return send_file(out_path, as_attachment=True)
     except Exception as e:
         return jsonify({"error": f"Report export failed: {str(e)}"}), 500
