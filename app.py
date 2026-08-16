@@ -295,9 +295,9 @@ def is_local_kiosk_request():
 
 def authenticate():
     return Response(
-        'Authentication required to access ARM Forensic Station.\n',
+        'Authentication required to access Pi Forensics Suite.\n',
         401,
-        {'WWW-Authenticate': 'Basic realm="Forensic Station Login Required"'}
+        {'WWW-Authenticate': 'Basic realm="Pi Forensics Suite Login Required"'}
     )
 
 def _is_locked_out(client_key):
@@ -5372,8 +5372,11 @@ def _draw_pdf_job_section(c, y, event, job_fields=None):
     return y
 
 def _draw_pdf_header(c, header):
+    c.setFont("Helvetica-Bold", 12)
+    y = 730
+    c.drawString(50, y, "Case Information")
+    y -= 20
     c.setFont("Helvetica", 10)
-    y = 710
     c.drawString(50, y, f"Case Number: {header['case_number']}")
     c.drawString(300, y, f"Examiner: {header['examiner']}")
     y -= 20
@@ -5708,6 +5711,25 @@ def _draw_pdf_narrative_section(c, y, title, text):
     y -= 8
     return y
 
+_HASH_DISPLAY_PRIORITY = ('sha256', 'sha1', 'md5')
+
+def _pick_display_hash(hashes):
+    """Evidence Inventory's summary table shows one hash per item - picking
+    silently via next(iter(hashes.values())) (the old behavior) shows a bare,
+    unlabeled value with no way to tell which algorithm it is, which defeats
+    the point of a verification hash. Always label the algorithm, and prefer
+    the strongest one actually computed rather than whichever happened to be
+    first in the dict. The full labeled set is always available in each
+    item's own Verification Hashes section further down - this is only the
+    at-a-glance summary column."""
+    if not hashes:
+        return "N/A"
+    for algo in _HASH_DISPLAY_PRIORITY:
+        if hashes.get(algo):
+            return f"{algo.upper()}: {hashes[algo]}"
+    algo, value = next(iter(hashes.items()))
+    return f"{algo.upper()}: {value}"
+
 def _draw_pdf_evidence_inventory(c, y, events):
     if not events:
         return y
@@ -5734,15 +5756,14 @@ def _draw_pdf_evidence_inventory(c, y, events):
             c.setFont("Helvetica", 7.5)
         meta = event.get('case_metadata', {})
         drive = event.get('source_drive_telemetry', {})
-        hashes = event.get('computed_verification_hashes', {})
-        hash_display = next(iter(hashes.values()), 'N/A') if hashes else 'N/A'
+        hash_display = _pick_display_hash(event.get('computed_verification_hashes', {}))
         row = [
             str(meta.get('evidence_id', 'N/A'))[:14],
             str(drive.get('device_path', 'N/A'))[:16],
             str(drive.get('vendor_model', 'N/A'))[:15],
             str(drive.get('serial_number', 'N/A'))[:13],
             f"{drive.get('capacity_gb', 'N/A')} GB",
-            str(hash_display)[:22],
+            str(hash_display)[:26],
         ]
         for val, x in zip(row, xpos):
             c.drawString(x, y, val)
@@ -5825,13 +5846,70 @@ def _draw_pdf_attachments(c, y, urls, files):
         y = _embed_file_into_pdf(c, y, file_path)
     return y
 
+def _draw_pdf_contents_page(c, sections, event_count):
+    """A plain Report Contents listing, not page-number cross-referenced -
+    this renderer draws in a single streaming pass with no forward
+    knowledge of final page numbers, so a real "Executive Summary ... 4"
+    style TOC would need a second pass. This still gives the upfront
+    section outline the DFIR report structure this feature was built
+    against calls for; real point-and-click navigation is handled
+    separately via the PDF outline/bookmarks added at each section below,
+    which don't need page numbers at all."""
+    y = 700
+    c.setFont("Helvetica-Bold", 13)
+    c.drawString(50, y, "Report Contents")
+    y -= 25
+    c.setFont("Helvetica", 10.5)
+
+    entries = []
+    if sections.get('case_info', True):
+        entries.append("Case Information")
+    if sections.get('executive_summary', True):
+        entries.append("Executive Summary & Objectives")
+    if sections.get('evidence_inventory', True) and event_count > 0:
+        entries.append("Evidence Inventory")
+    if event_count > 0:
+        plural = "s" if event_count != 1 else ""
+        entries.append(f"Acquisition Method ({event_count} evidence item{plural})")
+    if sections.get('forensic_analysis', True):
+        entries.append("Forensic Analysis / Steps Taken (Case Notes)")
+    if sections.get('relevant_findings', True):
+        entries.append("Relevant Findings")
+    if sections.get('limitations', True):
+        entries.append("Limitations & Statement of Uncertainty")
+    if sections.get('conclusion', True):
+        entries.append("Conclusion")
+    if sections.get('attachments', True):
+        entries.append("Exhibits (Attachments)")
+    if sections.get('audit_trail', True):
+        entries.append("Audit Trail")
+
+    for i, entry in enumerate(entries, start=1):
+        c.drawString(60, y, f"{i}.  {entry}")
+        y -= 18
+
 def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, case_notes, sections, job_fields):
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
 
-    c = canvas.Canvas(pdf_path, pagesize=letter)
+    class _NumberedCanvas(canvas.Canvas):
+        """Stamps a 'Page N' footer on every page as it's flushed, without
+        needing to touch every individual showPage() call site scattered
+        across the drawing helpers above - showPage() is the one choke
+        point they all already go through. save() doesn't need its own
+        override: reportlab's own Canvas.save() calls showPage() internally
+        for whatever page is still pending when save() runs, so the last
+        page gets stamped through this same override automatically."""
+        def showPage(self):
+            self.setFont("Helvetica", 8)
+            self.setFillColorRGB(0.45, 0.45, 0.45)
+            self.drawRightString(550, 30, f"Page {self.getPageNumber()}")
+            self.setFillColorRGB(0, 0, 0)
+            canvas.Canvas.showPage(self)
+
+    c = _NumberedCanvas(pdf_path, pagesize=letter)
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, 750, "ARM FORENSIC ACQUISITION AUDIT REPORT")
+    c.drawString(50, 750, "PI FORENSICS SUITE ACQUISITION AUDIT REPORT")
 
     # Station branding (Settings > Case & Reporting) renders as an ADDED
     # subtitle line and/or a small top-right logo, never replacing the
@@ -5855,19 +5933,37 @@ def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, case
     c.setLineWidth(1)
     c.line(50, title_bottom, 550, title_bottom)
 
-    y = (_draw_pdf_header(c, header) if sections.get('case_info', True) else title_bottom - 30)
+    # Report Contents gets its own page, right after the title - so the
+    # title page reads as a title page and the outline reads as an outline,
+    # rather than blending into the Case Information that follows.
+    c.showPage()
+    _draw_pdf_contents_page(c, sections, len(events))
+    c.showPage()
+    y = 750
+
+    if sections.get('case_info', True):
+        c.bookmarkPage('case_info')
+        c.addOutlineEntry("Case Information", 'case_info', level=0)
+        y = _draw_pdf_header(c, header)
 
     if sections.get('executive_summary', True):
+        c.bookmarkPage('exec_summary')
+        c.addOutlineEntry("Executive Summary & Objectives", 'exec_summary', level=0)
         y = _draw_pdf_narrative_section(c, y, "Executive Summary", header.get('executive_summary'))
         y = _draw_pdf_narrative_section(c, y, "Objectives", header.get('objectives'))
 
-    if sections.get('evidence_inventory', True):
+    if sections.get('evidence_inventory', True) and events:
+        c.bookmarkPage('evidence_inventory')
+        c.addOutlineEntry("Evidence Inventory", 'evidence_inventory', level=0)
         y = _draw_pdf_evidence_inventory(c, y, events)
 
     for i, event in enumerate(events):
         if i > 0:
             c.showPage()
             y = 750
+        if i == 0:
+            c.bookmarkPage('acquisition_method')
+            c.addOutlineEntry("Acquisition Method", 'acquisition_method', level=0)
         meta = event.get('case_metadata', {})
         c.setFont("Helvetica-Bold", 13)
         c.drawString(50, y, f"Evidence Item: {meta.get('evidence_id', 'N/A')} ({event.get('tool', 'N/A')})")
@@ -5878,18 +5974,30 @@ def _build_pdf_report(pdf_path, header, events, urls, files, audit_entries, case
         y = _draw_pdf_job_section(c, y, event, job_fields)
 
     if sections.get('forensic_analysis', True):
+        c.bookmarkPage('forensic_analysis')
+        c.addOutlineEntry("Forensic Analysis / Steps Taken", 'forensic_analysis', level=0)
         y = _draw_pdf_case_notes(c, y, case_notes)
 
     if sections.get('relevant_findings', True):
+        c.bookmarkPage('relevant_findings')
+        c.addOutlineEntry("Relevant Findings", 'relevant_findings', level=0)
         y = _draw_pdf_narrative_section(c, y, "Relevant Findings", header.get('findings_summary'))
     if sections.get('limitations', True):
+        c.bookmarkPage('limitations')
+        c.addOutlineEntry("Limitations & Statement of Uncertainty", 'limitations', level=0)
         y = _draw_pdf_narrative_section(c, y, "Limitations & Statement of Uncertainty", header.get('limitations'))
     if sections.get('conclusion', True):
+        c.bookmarkPage('conclusion')
+        c.addOutlineEntry("Conclusion", 'conclusion', level=0)
         y = _draw_pdf_narrative_section(c, y, "Conclusion", header.get('conclusion'))
 
     if sections.get('attachments', True):
+        c.bookmarkPage('exhibits')
+        c.addOutlineEntry("Exhibits", 'exhibits', level=0)
         y = _draw_pdf_attachments(c, y, urls, files)
     if sections.get('audit_trail', True):
+        c.bookmarkPage('audit_trail')
+        c.addOutlineEntry("Audit Trail", 'audit_trail', level=0)
         y = _draw_pdf_audit_trail(c, y, audit_entries)
 
     c.save()
@@ -5927,11 +6035,47 @@ def _embed_file_into_html(file_path):
         size_note = f" ({size:,} bytes)" if size else ""
         return f'<div class="attach-item"><h3>{esc(name)}</h3><p class="muted mono">{esc(file_path)}{esc(size_note)}</p></div>'
 
-def _html_narrative_block(title, text):
+def _html_narrative_block(title, text, anchor_id=None):
     esc = html.escape
     text = (text or '').strip()
     body = f'<span style="white-space:pre-wrap;">{esc(text)}</span>' if text else '<span class="muted">(Not provided)</span>'
-    return f'<h2>{esc(title)}</h2><p>{body}</p>'
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    return f'<h2{id_attr}>{esc(title)}</h2><p>{body}</p>'
+
+def _build_html_toc(sections, event_count, has_exhibits):
+    """Mirrors the PDF's Report Contents page - a plain section list, but as
+    real anchor links since HTML doesn't have the PDF's single-pass-render
+    page-number problem to work around. Conditions match exactly what each
+    section below actually renders under (e.g. Evidence Inventory/Acquisition
+    Method are skipped entirely when there are no events), so a TOC entry
+    never points at a heading that isn't actually there."""
+    esc = html.escape
+    entries = []
+    if sections.get('case_info', True):
+        entries.append(('sec-case-info', 'Case Information'))
+    if sections.get('executive_summary', True):
+        entries.append(('sec-exec-summary', 'Executive Summary &amp; Objectives'))
+    if sections.get('evidence_inventory', True) and event_count > 0:
+        entries.append(('sec-evidence-inventory', 'Evidence Inventory'))
+    if event_count > 0:
+        entries.append(('sec-acquisition-method', 'Acquisition Method'))
+    if sections.get('forensic_analysis', True):
+        entries.append(('sec-forensic-analysis', 'Forensic Analysis / Steps Taken'))
+    if sections.get('relevant_findings', True):
+        entries.append(('sec-relevant-findings', 'Relevant Findings'))
+    if sections.get('limitations', True):
+        entries.append(('sec-limitations', 'Limitations &amp; Statement of Uncertainty'))
+    if sections.get('conclusion', True):
+        entries.append(('sec-conclusion', 'Conclusion'))
+    if sections.get('attachments', True) and has_exhibits:
+        entries.append(('sec-exhibits', 'Exhibits'))
+    if sections.get('audit_trail', True):
+        entries.append(('sec-audit-trail', 'Audit Trail'))
+
+    if not entries:
+        return ''
+    items = ''.join(f'<li><a href="#{esc(anchor)}">{label}</a></li>' for anchor, label in entries)
+    return f'<nav class="toc"><h2>Report Contents</h2><ol>{items}</ol></nav>'
 
 def _build_html_report(header, events, urls, files, audit_entries, case_notes, sections, job_fields):
     """Self-contained HTML report - every value is escaped since it may
@@ -5958,6 +6102,12 @@ def _build_html_report(header, events, urls, files, audit_entries, case_notes, s
         '.branding-header h1{border-bottom:none;padding-bottom:0;margin:0;}',
         '.branding-header img{max-height:50px;max-width:160px;}',
         '.branding-subtitle{color:#444;font-size:.9em;margin:.2em 0 1em;}',
+        '.toc{background:#f7f7f7;border:1px solid #ddd;border-radius:6px;padding:.8em 1.2em;margin:1em 0;}',
+        '.toc h2{margin-top:0;font-size:1em;border-bottom:none;padding-bottom:0;}',
+        '.toc ol{margin:.3em 0 0;padding-left:1.4em;}',
+        '.toc li{margin:.25em 0;}',
+        '.toc a{color:#1a4d8f;text-decoration:none;}',
+        '.toc a:hover{text-decoration:underline;}',
         '</style></head><body>',
     ]
 
@@ -5979,12 +6129,15 @@ def _build_html_report(header, events, urls, files, audit_entries, case_notes, s
             logo_html = f'<img src="data:{mime};base64,{logo_b64}" alt="station logo">'
         except OSError:
             logo_html = ''
-    parts.append(f'<div class="branding-header"><h1>ARM Forensic Acquisition Audit Report</h1>{logo_html}</div>')
+    parts.append(f'<div class="branding-header"><h1>Pi Forensics Suite Acquisition Audit Report</h1>{logo_html}</div>')
     header_text = (branding.get('header_text') or '').strip()
     if header_text:
         parts.append(f'<div class="branding-subtitle">{esc(header_text)}</div>')
 
+    parts.append(_build_html_toc(sections, len(events), bool(urls or files)))
+
     if sections.get('case_info', True):
+        parts.append('<h2 id="sec-case-info">Case Information</h2>')
         parts.append('<table>')
         parts.append(f'<tr><th>Case Number</th><td>{esc(str(header["case_number"]))}</td><th>Examiner</th><td>{esc(str(header["examiner"]))}</td></tr>')
         parts.append(f'<tr><th>Created</th><td>{esc(str(header["created_at"]))}</td><th>Evidence Items</th><td>{len(events)}</td></tr>')
@@ -5994,17 +6147,16 @@ def _build_html_report(header, events, urls, files, audit_entries, case_notes, s
         parts.append('</table>')
 
     if sections.get('executive_summary', True):
-        parts.append(_html_narrative_block('Executive Summary', header.get('executive_summary')))
+        parts.append(_html_narrative_block('Executive Summary', header.get('executive_summary'), 'sec-exec-summary'))
         parts.append(_html_narrative_block('Objectives', header.get('objectives')))
 
     if sections.get('evidence_inventory', True) and events:
-        parts.append('<h2>Evidence Inventory</h2><table>')
+        parts.append('<h2 id="sec-evidence-inventory">Evidence Inventory</h2><table>')
         parts.append('<tr><th>Evidence ID</th><th>Device</th><th>Model</th><th>Serial</th><th>Capacity</th><th>Acquisition Hash</th></tr>')
         for event in events:
             meta = event.get('case_metadata', {})
             drive = event.get('source_drive_telemetry', {})
-            hashes = event.get('computed_verification_hashes', {})
-            hash_display = next(iter(hashes.values()), 'N/A') if hashes else 'N/A'
+            hash_display = _pick_display_hash(event.get('computed_verification_hashes', {}))
             parts.append(
                 f'<tr><td>{esc(str(meta.get("evidence_id", "N/A")))}</td>'
                 f'<td>{esc(str(drive.get("device_path", "N/A")))}</td>'
@@ -6015,9 +6167,10 @@ def _build_html_report(header, events, urls, files, audit_entries, case_notes, s
             )
         parts.append('</table>')
 
-    for event in events:
+    for i, event in enumerate(events):
         meta = event.get('case_metadata', {})
-        parts.append('<div class="job">')
+        anchor_attr = ' id="sec-acquisition-method"' if i == 0 else ''
+        parts.append(f'<div class="job"{anchor_attr}>')
         parts.append(f'<h2>Evidence Item: {esc(str(meta.get("evidence_id", "N/A")))} ({esc(str(event.get("tool", "N/A")))})</h2>')
         parts.append(f'<div class="muted">Date: {esc(str(event.get("timestamp_start", "N/A")))} &middot; Status: {esc(str(event.get("acquisition_status", "N/A")))}</div>')
 
@@ -6048,7 +6201,7 @@ def _build_html_report(header, events, urls, files, audit_entries, case_notes, s
         parts.append('</div>')
 
     if sections.get('forensic_analysis', True):
-        parts.append('<h2>Forensic Analysis / Steps Taken (Case Notes)</h2>')
+        parts.append('<h2 id="sec-forensic-analysis">Forensic Analysis / Steps Taken (Case Notes)</h2>')
         parts.append('<p class="muted">Chronological case notes, each with a local SHA-256 integrity hash (tamper-evidence only, not a legal timestamp authority).</p>')
         if not case_notes:
             parts.append('<p class="muted">No case notes recorded.</p>')
@@ -6066,14 +6219,14 @@ def _build_html_report(header, events, urls, files, audit_entries, case_notes, s
             parts.append('</div>')
 
     if sections.get('relevant_findings', True):
-        parts.append(_html_narrative_block('Relevant Findings', header.get('findings_summary')))
+        parts.append(_html_narrative_block('Relevant Findings', header.get('findings_summary'), 'sec-relevant-findings'))
     if sections.get('limitations', True):
-        parts.append(_html_narrative_block('Limitations & Statement of Uncertainty', header.get('limitations')))
+        parts.append(_html_narrative_block('Limitations & Statement of Uncertainty', header.get('limitations'), 'sec-limitations'))
     if sections.get('conclusion', True):
-        parts.append(_html_narrative_block('Conclusion', header.get('conclusion')))
+        parts.append(_html_narrative_block('Conclusion', header.get('conclusion'), 'sec-conclusion'))
 
     if sections.get('attachments', True) and (urls or files):
-        parts.append('<h2>Exhibits</h2>')
+        parts.append('<h2 id="sec-exhibits">Exhibits</h2>')
         if urls:
             parts.append('<p><strong>Reference Links / URLs:</strong></p><ul>')
             for url in urls:
@@ -6087,7 +6240,7 @@ def _build_html_report(header, events, urls, files, audit_entries, case_notes, s
             parts.append(_embed_file_into_html(file_path))
 
     if sections.get('audit_trail', True):
-        parts.append('<h2>Case Activity Log (Audit Trail)</h2>')
+        parts.append('<h2 id="sec-audit-trail">Case Activity Log (Audit Trail)</h2>')
         if audit_entries:
             parts.append('<table><tr><th>Timestamp</th><th>Action</th><th>Details</th></tr>')
             for entry in audit_entries:
