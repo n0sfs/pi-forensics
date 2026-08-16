@@ -904,6 +904,14 @@
                                                         <label class="telemetry-grid-label d-block mb-1">Conclusion</label>
                                                         <textarea id="editConclusion" class="form-control form-control-sm" rows="2" placeholder="Closing statement..."></textarea>
                                                     </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Indicators of Compromise <span class="text-subtle">(DFIR template)</span></label>
+                                                        <textarea id="editIocs" class="form-control form-control-sm" rows="2" placeholder="IPs, domains, file hashes, file paths, or other IOCs discovered during the investigation..."></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Recommendations / Next Steps <span class="text-subtle">(DFIR &amp; Forensics templates)</span></label>
+                                                        <textarea id="editRecommendations" class="form-control form-control-sm" rows="2" placeholder="Containment/eradication actions taken, remaining follow-up work, or evidence-handling recommendations..."></textarea>
+                                                    </div>
                                                     <div class="small text-subtle">Saved via "Save Report Changes" in the case bar above.</div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repFilesPane" role="tabpanel">
@@ -941,12 +949,21 @@
                                                 <div class="tab-pane fade" id="repExportPane" role="tabpanel">
                                                     <div class="row g-3">
                                                         <div class="col-md-4">
+                                                            <label class="telemetry-grid-label d-block mb-1">Report Template</label>
+                                                            <select id="exportTemplateSelect" class="form-select form-select-sm mb-2" onchange="onExportTemplateChange()">
+                                                                <option value="standard">Standard - configurable sections</option>
+                                                                <option value="dfir">DFIR Report - fixed incident-response structure</option>
+                                                                <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
+                                                            </select>
+                                                            <div id="exportTemplateHint" class="small text-subtle mb-3" style="display:none;">This template has a fixed structure and always includes every section - the checkboxes below don't apply. It reuses this case's existing data under the reference template's section labels; see the Report Narrative tab for the Indicators of Compromise / Recommendations fields it draws on.</div>
+
                                                             <label class="telemetry-grid-label d-block mb-1">Export Format</label>
                                                             <select id="exportFormatSelect" class="form-select form-select-sm mb-3">
                                                                 <option value="pdf">PDF Document (.pdf)</option>
                                                                 <option value="html">HTML Report (.html)</option>
                                                             </select>
 
+                                                            <div id="exportSectionsFieldsGroup">
                                                             <label class="telemetry-grid-label d-block mb-1">Sections to Include</label>
                                                             <div class="form-check">
                                                                 <input class="form-check-input export-section-check" type="checkbox" id="expSecCaseInfo" checked>
@@ -1002,6 +1019,7 @@
                                                             <div class="d-flex gap-2 mt-3">
                                                                 <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportCheckboxes(true)">Check All</button>
                                                                 <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportCheckboxes(false)">Uncheck All</button>
+                                                            </div>
                                                             </div>
                                                         </div>
                                                         <div class="col-md-4">
@@ -1382,8 +1400,18 @@ sudo update-ca-certificates</pre>
                         <!-- Case & Reporting: report export defaults/branding + custom case-field definitions -->
                         <div class="tab-pane fade" id="settings-pane-casereporting" role="tabpanel">
                             <h6 class="text-info fw-bold mb-3"><i class="bi bi-collection me-2"></i>Case & Reporting</h6>
+
+                            <div class="telemetry-grid-label mb-2">Default Report Template</div>
+                            <div class="small text-subtle mb-2">Pre-selected when opening the Export Report modal from Reporting - still changeable per-export there.</div>
+                            <select id="defReportTemplate" class="form-select form-select-sm mb-1" style="max-width:320px;" onchange="onDefReportTemplateChange()">
+                                <option value="standard">Standard - configurable sections (default)</option>
+                                <option value="dfir">DFIR Report - fixed incident-response structure</option>
+                                <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
+                            </select>
+                            <div id="defTemplateHint" class="small text-subtle mb-3" style="display:none;">This template has a fixed structure - the section/field checkboxes below only apply to Standard exports. The Forensics Report's Administrative Information section pulls from Case Number/Examiner plus whatever you configure under Custom Case Fields below (e.g. Agency, Badge Number, Requesting Authority).</div>
+
                             <div class="telemetry-grid-label mb-2">Report Export Defaults</div>
-                            <div class="small text-subtle mb-2">Pre-checks these sections/fields when opening the Export Report modal from Reporting - still adjustable per-export there.</div>
+                            <div class="small text-subtle mb-2">Pre-checks these sections/fields when opening the Export Report modal from Reporting - still adjustable per-export there. Applies to the Standard template only.</div>
                             <div class="row g-2 mb-2">
                                 <div class="col-md-6">
                                     <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecCaseInfo" checked><label class="form-check-label small" for="defSecCaseInfo">Case Information</label></div>
