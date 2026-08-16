@@ -279,7 +279,7 @@
             </div>
 
             <div class="d-flex align-items-center gap-2">
-                <span class="telemetry-label"><i class="bi bi-hdd text-warning me-1"></i>Pi Storage:</span>
+                <span class="telemetry-label"><i class="bi bi-hdd text-warning me-1"></i>Storage:</span>
                 <span id="storageVal" class="telemetry-val">0 / 0 GB</span>
                 <div class="progress bg-secondary" style="width: 70px; height: 6px;">
                     <div id="storageBar" class="progress-bar bg-warning" style="width: 0%"></div>
@@ -322,13 +322,13 @@
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab" title="File Recovery (PhotoRec, extundelete, foremost, scalpel, Image Browser)">
-                        <i class="bi bi-life-preserver"></i><span class="tab-label">File Recovery</span>
+                    <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()" title="Mobile Forensics">
+                        <i class="bi bi-phone"></i><span class="tab-label">Mobile Forensics</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()" title="Mobile Forensics">
-                        <i class="bi bi-phone"></i><span class="tab-label">Mobile Forensics</span>
+                    <button class="nav-link" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab" title="File Recovery (PhotoRec, extundelete, foremost, scalpel, Image Browser)">
+                        <i class="bi bi-life-preserver"></i><span class="tab-label">File Recovery</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
@@ -1274,7 +1274,7 @@ sudo update-ca-certificates</pre>
                                     </div>
                                 </div>
                                 <div class="d-flex align-items-center gap-2">
-                                    <span class="telemetry-label"><i class="bi bi-hdd text-warning me-1"></i>Pi Storage:</span>
+                                    <span class="telemetry-label"><i class="bi bi-hdd text-warning me-1"></i>Storage:</span>
                                     <span id="storageValSettings" class="telemetry-val">0 / 0 GB</span>
                                     <div class="progress bg-secondary" style="width: 70px; height: 6px;">
                                         <div id="storageBarSettings" class="progress-bar bg-warning" style="width: 0%"></div>
