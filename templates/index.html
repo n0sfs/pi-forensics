@@ -955,7 +955,8 @@
                                                                 <option value="dfir">DFIR Report - fixed incident-response structure</option>
                                                                 <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
                                                             </select>
-                                                            <div id="exportTemplateHint" class="small text-subtle mb-3" style="display:none;">This template has a fixed structure and always includes every section - the checkboxes below don't apply. It reuses this case's existing data under the reference template's section labels; see the Report Narrative tab for the Indicators of Compromise / Recommendations fields it draws on.</div>
+                                                            <div id="exportTemplateHint" class="small text-subtle mb-1" style="display:none;"></div>
+                                                            <button type="button" id="exportEditTemplateBtn" class="btn btn-xs btn-outline-info py-0 px-2 mb-3" style="display:none;" onclick="openReportTemplateBuilder(currentExportCustomTemplateId)"><i class="bi bi-pencil-square me-1"></i>Edit this template</button>
 
                                                             <label class="telemetry-grid-label d-block mb-1">Export Format</label>
                                                             <select id="exportFormatSelect" class="form-select form-select-sm mb-3">
@@ -1408,7 +1409,16 @@ sudo update-ca-certificates</pre>
                                 <option value="dfir">DFIR Report - fixed incident-response structure</option>
                                 <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
                             </select>
-                            <div id="defTemplateHint" class="small text-subtle mb-3" style="display:none;">This template has a fixed structure - the section/field checkboxes below only apply to Standard exports. The Forensics Report's Administrative Information section pulls from Case Number/Examiner plus whatever you configure under Custom Case Fields below (e.g. Agency, Badge Number, Requesting Authority).</div>
+                            <div id="defTemplateHint" class="small text-subtle mb-3" style="display:none;"></div>
+
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <div class="telemetry-grid-label mb-0">Custom Report Templates</div>
+                                <button class="btn btn-xs btn-outline-info py-0 px-2" onclick="openReportTemplateBuilder()"><i class="bi bi-plus-lg me-1"></i>New Template</button>
+                            </div>
+                            <div class="small text-subtle mb-2">Build your own report shape from the same sections Standard uses - pick which to include, reorder them, and rename their titles. Saved templates appear above and in the Export pane's Report Template list.</div>
+                            <div id="customReportTemplatesList" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 160px; overflow-y: auto;">
+                                <span class="text-subtle small italic">No custom templates yet.</span>
+                            </div>
 
                             <div class="telemetry-grid-label mb-2">Report Export Defaults</div>
                             <div class="small text-subtle mb-2">Pre-checks these sections/fields when opening the Export Report modal from Reporting - still adjustable per-export there. Applies to the Standard template only.</div>
@@ -1652,6 +1662,35 @@ sudo update-ca-certificates</pre>
                 </div>
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="reportTemplateBuilderModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-sliders me-2"></i>Report Template Builder</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Template Name</label>
+                        <input type="text" id="rtbName" class="form-control form-control-sm" placeholder="e.g. SOC Brief" maxlength="80">
+                    </div>
+                    <div class="small text-subtle mb-2">
+                        Check which sections to include, use the arrows to reorder, and optionally rename a
+                        section's title (leave blank to use the default). "Acquisition Method" has no on-page
+                        heading of its own - each evidence item draws its own heading - so its title only
+                        affects the table of contents and PDF bookmark.
+                    </div>
+                    <div id="rtbRowsContainer" class="mb-2"></div>
+                    <div id="rtbStatus" class="small mt-2"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-success fw-bold" onclick="saveReportTemplateBuilder()"><i class="bi bi-check2-circle me-1"></i>Save Template</button>
                 </div>
             </div>
         </div>
