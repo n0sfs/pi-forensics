@@ -2400,6 +2400,7 @@ def start_imaging():
         "acquisition_parameters": {
             "output_destination": dest_path,
             "output_format": fmt,
+            "output_image_path": out_file,
             "compression": compression if fmt == 'e01' else 'N/A',
             "split_size": split_size if fmt == 'e01' else 'N/A',
             "requested_hashes": hashes,
@@ -2562,6 +2563,7 @@ def start_ddrescue():
         "acquisition_parameters": {
             "output_destination": dest_path,
             "output_format": "ddrescue_raw",
+            "output_image_path": out_file,
             "mapfile": map_file,
             "strategy": strategy,
             "retry_passes": retry_passes,
@@ -5461,6 +5463,152 @@ def image_timeline():
     events.sort(key=lambda e: e['timestamp'], reverse=True)
     return jsonify({"success": True, "events": events[:TSK_MAX_TIMELINE_ENTRIES], "truncated": truncated})
 
+# --- Filesystem Timeline report block: reuses the pytsk3 walk above against
+# a case's already-acquired disk image(s), rather than the interactive,
+# single-image-at-a-time /api/image/timeline route. First real entry in the
+# "feature module" pattern discussed for this app - see REPORT_SECTION_BLOCKS
+# and FEATURE_MODULES further below.
+TIMELINE_MIN_PER_FS_BUDGET = 200
+
+def _tsk_resolve_filesystems(image_path):
+    """Returns [{'offset': sectors, 'label': str}, ...] for every ALLOCATED
+    partition (or the whole image, if unpartitioned) that opens as a real
+    filesystem via pytsk3.
+
+    Deliberately does NOT attempt to open every Volume_Info slot -
+    Volume_Info lists unallocated/meta placeholder regions alongside real
+    partitions (image_mmls() above shows all of them for a human-readable
+    listing, which is fine there), and a naive "try opening everything, keep
+    what succeeds" approach can pick up a stale filesystem signature left in
+    what's now unallocated space on media that was previously partitioned
+    differently (repartitioned/re-imaged evidence is not unusual) - that
+    would inject timeline entries from a filesystem that isn't actually part
+    of the evidence's current layout, a real accuracy problem for a
+    forensic report, not just noise. Filtering to TSK_VS_PART_FLAG_ALLOC
+    entries only avoids that."""
+    try:
+        img = pytsk3.Img_Info(image_path)
+    except Exception:
+        return []
+
+    try:
+        vol = pytsk3.Volume_Info(img)
+    except IOError:
+        # No partition table - normal for a single-filesystem image (phone/
+        # media card dd), same case image_mmls() already documents.
+        try:
+            _tsk_open_fs(image_path, 0)
+            return [{"offset": 0, "label": "Whole Image"}]
+        except Exception:
+            return []
+
+    filesystems = []
+    for part in vol:
+        if int(part.flags) != pytsk3.TSK_VS_PART_FLAG_ALLOC:
+            continue
+        try:
+            _tsk_open_fs(image_path, part.start)
+        except Exception:
+            continue
+        filesystems.append({"offset": part.start, "label": part.desc.decode('utf-8', errors='replace')})
+    return filesystems
+
+def _collect_case_timeline(events):
+    """Builds a combined MACB timeline across every acquired disk image in a
+    case's events, for the 'timeline' report block below. Returns
+    {"events": [...], "notes": [...], "truncated": bool}.
+
+    Three correctness fixes folded in here that a naive version of this
+    would not have had:
+
+    1. Status + existence gating: only a COMPLETED event's output_image_path
+       is considered, and only after routing it through safe_path() (matching
+       this file's existing pattern for every other image-path input) and
+       confirming the file still exists - a FAILED/IN_PROGRESS event's path
+       can point at a partial image that might still open "successfully" and
+       walk garbage without pytsk3 raising anything.
+    2. Dedup by resolved path, not by event: ddrescue's base_name has no
+       per-run component, and its own multi-pass design (stage1_fast/
+       stage2_trim/stage3_intensive/reverse, each a separate POST against the
+       same source/destination) means multiple distinct COMPLETED events can
+       legitimately share one on-disk file, each overwriting the last. Only
+       the event with the latest timestamp_start per unique resolved path is
+       kept; how many earlier events were superseded is recorded so the
+       report can disclose it rather than silently drop or (worse) triple-
+       walk the same bytes.
+    3. Per-(image, filesystem) budget, not one shared global cap:
+       image_timeline() above truncates in walk order, before sorting by
+       time - so a single real filesystem can consume the entire
+       TSK_MAX_TIMELINE_ENTRIES cap by itself. Splitting the budget across
+       every qualifying (image, filesystem) pair means one large acquired
+       image can't silently reduce every other evidence item in the case to
+       zero timeline entries."""
+    candidates = {}  # resolved image_path -> {"event": event, "superseded_count": int}
+    for event in events:
+        if event.get('acquisition_status') != 'COMPLETED':
+            continue
+        raw_path = event.get('acquisition_parameters', {}).get('output_image_path')
+        if not raw_path:
+            continue
+        image_path = safe_path(raw_path)
+        if not image_path or not os.path.isfile(image_path):
+            continue
+        existing = candidates.get(image_path)
+        if existing is None:
+            candidates[image_path] = {"event": event, "superseded_count": 0}
+        elif event.get('timestamp_start', '') > existing["event"].get('timestamp_start', ''):
+            existing["event"] = event
+            existing["superseded_count"] += 1
+        else:
+            existing["superseded_count"] += 1
+
+    notes = []
+    per_image_filesystems = {}
+    for image_path in candidates:
+        filesystems = _tsk_resolve_filesystems(image_path)
+        per_image_filesystems[image_path] = filesystems
+        evidence_id = candidates[image_path]["event"].get('case_metadata', {}).get('evidence_id', 'N/A')
+        if not filesystems:
+            notes.append(f"{evidence_id}: no recognized filesystem found in the acquired image - skipped.")
+        superseded = candidates[image_path]["superseded_count"]
+        if superseded:
+            plural = "es" if superseded != 1 else ""
+            verb = "share" if superseded != 1 else "shares"
+            notes.append(f"{evidence_id}: {superseded} earlier completed acquisition pass{plural} {verb} this "
+                         f"same output file; showing the most recent only.")
+
+    total_filesystems = sum(len(fss) for fss in per_image_filesystems.values())
+    if total_filesystems == 0:
+        return {"events": [], "notes": notes, "truncated": False}
+    per_fs_budget = max(TSK_MAX_TIMELINE_ENTRIES // total_filesystems, TIMELINE_MIN_PER_FS_BUDGET)
+
+    all_events = []
+    truncated = False
+    for image_path, filesystems in per_image_filesystems.items():
+        evidence_id = candidates[image_path]["event"].get('case_metadata', {}).get('evidence_id', 'N/A')
+        for fs_info in filesystems:
+            try:
+                fs = _tsk_open_fs(image_path, fs_info['offset'])
+            except Exception as e:
+                notes.append(f"{evidence_id} ({fs_info['label']}): could not open filesystem - {e}")
+                continue
+            count = 0
+            for entry, path in _tsk_walk(fs):
+                for ts_field, label in (('mtime', 'M'), ('atime', 'A'), ('ctime', 'C'), ('crtime', 'B')):
+                    ts = entry.get(ts_field)
+                    if ts:
+                        all_events.append({"timestamp": ts, "activity": label, "path": path,
+                                            "evidence_id": evidence_id, "filesystem": fs_info['label']})
+                        count += 1
+                if count >= per_fs_budget:
+                    truncated = True
+                    break
+
+    all_events.sort(key=lambda e: e['timestamp'], reverse=True)
+    if len(all_events) > TSK_MAX_TIMELINE_ENTRIES:
+        truncated = True
+    return {"events": all_events[:TSK_MAX_TIMELINE_ENTRIES], "notes": notes, "truncated": truncated}
+
 # --- Forensic Audit Report Exporter (PDF / HTML, configurable sections) ---
 def _draw_pdf_job_section(c, y, event, job_fields=None):
     """Draws one job/event's telemetry + acquisition params + hashes block,
@@ -6077,6 +6225,88 @@ def _draw_pdf_timeline_table(c, y, case_notes, title="Incident Timeline"):
     y -= 12
     return y
 
+def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)"):
+    """Renders a real filesystem MACB timeline for the case's acquired
+    disk image(s) - see _collect_case_timeline() for how the underlying
+    events are gathered (dedup/status-gating/per-image budget). Unlike
+    _draw_pdf_timeline_table() above (a much shorter, case-notes-sourced
+    table reused by the DFIR/Police templates), this table can legitimately
+    run to thousands of rows across many pages, so - deliberately, not by
+    silently copying that function's behavior - the column headers are
+    redrawn after every page break rather than only once at the top."""
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, title)
+    y -= 18
+
+    result = _collect_case_timeline(events)
+    timeline_events = result["events"]
+
+    headers = ["Timestamp", "Act.", "Evidence ID", "Path"]
+    xpos = [50, 155, 195, 270]
+
+    def _draw_header_row(y):
+        c.setFont("Helvetica-Bold", 8)
+        for label, x in zip(headers, xpos):
+            c.drawString(x, y, label)
+        y -= 4
+        c.line(50, y, 550, y)
+        y -= 12
+        c.setFont("Helvetica", 7.5)
+        return y
+
+    if not timeline_events:
+        c.setFont("Helvetica", 10)
+        c.drawString(50, y, "No filesystem timeline available for this case's evidence items.")
+        y -= 15
+    else:
+        y = _draw_header_row(y)
+        for entry in timeline_events:
+            if y < 60:
+                c.showPage()
+                y = 750
+                y = _draw_header_row(y)
+            row = [
+                str(entry.get('timestamp', 'N/A'))[:19],
+                str(entry.get('activity', '')),
+                str(entry.get('evidence_id', 'N/A'))[:14],
+                str(entry.get('path', ''))[:58],
+            ]
+            for val, x in zip(row, xpos):
+                c.drawString(x, y, val)
+            y -= 11
+        y -= 6
+        if result["truncated"]:
+            c.setFont("Helvetica-Oblique", 7)
+            c.setFillColorRGB(0.4, 0.4, 0.4)
+            c.drawString(50, y, "Timeline truncated - not every timestamped filesystem event fit within the report's size limits.")
+            c.setFillColorRGB(0, 0, 0)
+            y -= 12
+
+    if result["notes"]:
+        if y < 100:
+            c.showPage()
+            y = 750
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(50, y, "Notes:")
+        y -= 12
+        c.setFont("Helvetica-Oblique", 7)
+        c.setFillColorRGB(0.4, 0.4, 0.4)
+        for note in result["notes"]:
+            if y < 60:
+                c.showPage()
+                y = 750
+                c.setFont("Helvetica-Oblique", 7)
+                c.setFillColorRGB(0.4, 0.4, 0.4)
+            y = _draw_pdf_wrapped_text(c, y, note, x=55, width_chars=100, font="Helvetica-Oblique", size=7, leading=10)
+        c.setFillColorRGB(0, 0, 0)
+
+    y -= 12
+    return y
+
 def _draw_pdf_methodology_tools(c, y, events):
     """Static description of this app's standard acquisition workflow, plus
     a 'tools used in this case' list derived from the distinct event.tool
@@ -6284,6 +6514,8 @@ REPORT_SECTION_BLOCKS = [
      "in_legacy_default": True, "requires_events": False, "force_page_break": False},
     {"key": "audit_trail", "default_title": "Case Activity Log (Audit Trail)",
      "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+    {"key": "timeline", "default_title": "Filesystem Timeline (MACB)",
+     "in_legacy_default": False, "requires_events": True, "force_page_break": True},
 ]
 assert all(
     {"key", "default_title", "in_legacy_default", "requires_events", "force_page_break"} <= b.keys()
@@ -6291,6 +6523,30 @@ assert all(
 ), "every REPORT_SECTION_BLOCKS entry needs all 5 fields - see the docstring above"
 
 _REPORT_SECTION_BLOCK_MAP = {b["key"]: b for b in REPORT_SECTION_BLOCKS}
+
+# Lightweight capability registry - documents what a "feature module" needs
+# (apt packages, sudo, where its UI lives) without any dynamic loading,
+# dependency isolation, or versioning machinery. Nothing in this app reads
+# this dict yet; it exists to establish one consistent shape for describing
+# a module's requirements, so install.py can eventually turn a module with
+# real optional apt_packages into an install-time checklist item (falling
+# back to the existing Settings > Tool Versions "Install" button for anyone
+# who skips it - that mechanism already exists and needs no changes).
+# Timeline is a deliberately light first entry: it needs no new packages
+# (pytsk3/sleuthkit/libewf-dev are already required for the Sleuth Kit
+# Image Browser this reuses), so this entry mostly documents linkage
+# rather than driving any new install-time gating - that part of the
+# pattern will actually get exercised by a future module with real
+# optional dependencies (e.g. video thumbnail extraction needing ffmpeg).
+FEATURE_MODULES = {
+    "timeline": {
+        "label": "Filesystem Timeline",
+        "category": "analysis",
+        "apt_packages": [],
+        "needs_sudo": False,
+        "ui_hooks": ["file_explorer_image_browser", "report_block:timeline"],
+    },
+}
 
 def _expand_legacy_sections_dict(sections_dict):
     """Converts the plain sections:{key: bool} dict (today's Export-modal
@@ -6417,6 +6673,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
         "recommendations": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("recommendations_next_steps")),
         "attachments": lambda y, title: _draw_pdf_attachments(c, y, urls, files, title=title),
         "audit_trail": lambda y, title: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
+        "timeline": lambda y, title: _draw_pdf_timeline_block(c, y, events, title=title),
     }
 
     for i, entry in enumerate(resolved_sections):
@@ -6661,6 +6918,39 @@ def _html_timeline_table(case_notes, title="Incident Timeline", anchor_id=None):
             f'<td>{esc(str(note.get("text", "")))}</td></tr>'
         )
     parts.append('</table>')
+    return ''.join(parts)
+
+def _html_timeline_block(events, title="Filesystem Timeline (MACB)", anchor_id=None):
+    """HTML counterpart to _draw_pdf_timeline_block - see
+    _collect_case_timeline() for how these events are gathered (dedup/
+    status-gating/per-image budget)."""
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    result = _collect_case_timeline(events)
+    timeline_events = result["events"]
+
+    parts = [f'<h2{id_attr}>{esc(title)}</h2>']
+    if not timeline_events:
+        parts.append('<p class="muted">No filesystem timeline available for this case\'s evidence items.</p>')
+    else:
+        parts.append('<table><tr><th>Timestamp</th><th>Activity</th><th>Evidence ID</th><th>Path</th></tr>')
+        for entry in timeline_events:
+            parts.append(
+                f'<tr><td>{esc(str(entry.get("timestamp", "N/A")))}</td>'
+                f'<td>{esc(str(entry.get("activity", "")))}</td>'
+                f'<td>{esc(str(entry.get("evidence_id", "N/A")))}</td>'
+                f'<td class="mono">{esc(str(entry.get("path", "")))}</td></tr>'
+            )
+        parts.append('</table>')
+        if result["truncated"]:
+            parts.append('<p class="muted">Timeline truncated - not every timestamped filesystem event fit within the report\'s size limits.</p>')
+
+    if result["notes"]:
+        parts.append('<p class="muted"><strong>Notes:</strong></p><ul>')
+        for note in result["notes"]:
+            parts.append(f'<li class="muted">{esc(note)}</li>')
+        parts.append('</ul>')
+
     return ''.join(parts)
 
 def _html_methodology_tools(events, anchor_id=None):
@@ -6942,6 +7232,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         "recommendations": lambda anchor, title: _html_narrative_block(title, header.get("recommendations_next_steps"), anchor),
         "attachments": lambda anchor, title: _html_exhibits_block(urls, files, anchor_id=anchor, title=title),
         "audit_trail": lambda anchor, title: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
+        "timeline": lambda anchor, title: _html_timeline_block(events, title=title, anchor_id=anchor),
     }
 
     for entry in resolved_sections:
