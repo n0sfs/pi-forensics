@@ -2483,7 +2483,10 @@ function runCaseSearch() {
     // Report Narrative - searches the live form fields (so it also finds
     // unsaved edits), the same ids loadCaseForEditing() already populates
     // for both consolidated and legacy schemas, rather than re-deriving
-    // that split here too.
+    // that split here too. Custom Case Details fields render at the top of
+    // this same pane (see the Reporting layout reorg), so they're searched
+    // and grouped alongside the narrative fields rather than as a separate
+    // source - a match in either one jumps to the one pane that has both.
     const narrativeFields = [
         ['Executive Summary', 'editExecSummary'],
         ['Objectives', 'editObjectives'],
@@ -2491,14 +2494,34 @@ function runCaseSearch() {
         ['Limitations', 'editLimitations'],
         ['Conclusion', 'editConclusion'],
     ];
+    const customFieldMatches = Array.from(document.querySelectorAll('#customFieldsContainer .custom-field-input'))
+        .map(input => ({
+            label: `Case Details: ${input.closest('.col-md-6')?.querySelector('label')?.textContent || input.dataset.fieldKey}`,
+            value: input.value || '',
+        }))
+        .filter(f => f.value.toLowerCase().includes(query));
     const narrativeMatches = narrativeFields
         .map(([label, id]) => ({ label, value: document.getElementById(id)?.value || '' }))
-        .filter(f => f.value.toLowerCase().includes(query));
+        .filter(f => f.value.toLowerCase().includes(query))
+        .concat(customFieldMatches);
     if (narrativeMatches.length > 0) {
         totalMatches += narrativeMatches.length;
         appendCaseSearchGroup(container, 'Report Narrative', 'repNarrativeTab', narrativeMatches.map(f => (
             { label: f.label, snippet: caseSearchSnippet(f.value, query) }
         )));
+    }
+
+    // Files - explicit attachments (files/reference URLs) currently saved
+    // on the case. Matches on filename or URL text; jumps to the Files tab.
+    const attach = currentLoadedReportData.attachments || {};
+    const fileMatches = (attach.files || []).filter(p => p.toLowerCase().includes(query));
+    const urlMatches = (attach.reference_urls || []).filter(u => u.toLowerCase().includes(query));
+    if (fileMatches.length > 0 || urlMatches.length > 0) {
+        totalMatches += fileMatches.length + urlMatches.length;
+        appendCaseSearchGroup(container, 'Files', 'repFilesTab', [
+            ...fileMatches.map(p => ({ label: p.split('/').pop(), snippet: null })),
+            ...urlMatches.map(u => ({ label: u, snippet: null })),
+        ]);
     }
 
     // Jobs - substring match against the same JSON dump each job's own
