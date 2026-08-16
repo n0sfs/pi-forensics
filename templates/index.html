@@ -845,7 +845,6 @@
                                                 <button class="list-group-item list-group-item-action" id="repHistoryTab" data-bs-toggle="list" data-bs-target="#repHistoryPane" type="button" role="tab" onclick="loadCaseHistory()"><i class="bi bi-clock-history"></i>Audit Trail</button>
                                                 <button class="list-group-item list-group-item-action" id="repSearchTab" data-bs-toggle="list" data-bs-target="#repSearchPane" type="button" role="tab"><i class="bi bi-search"></i>Search</button>
                                                 <button class="list-group-item list-group-item-action" id="repExportTab" data-bs-toggle="list" data-bs-target="#repExportPane" type="button" role="tab" onclick="prepareExportPane()"><i class="bi bi-file-earmark-arrow-down-fill"></i>Export</button>
-                                                <button class="list-group-item list-group-item-action" id="repRawJsonTab" data-bs-toggle="list" data-bs-target="#repRawJsonPane" type="button" role="tab"><i class="bi bi-code-slash"></i>Raw JSON</button>
                                             </div>
                                             <div class="reports-content tab-content" id="reportDetailTabContent">
                                                 <div class="tab-pane fade" id="repCaseNotesPane" role="tabpanel">
@@ -947,23 +946,28 @@
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repExportPane" role="tabpanel">
-                                                    <div class="row g-3">
+                                                    <div class="row g-2 mb-1">
                                                         <div class="col-md-4">
+                                                            <label class="telemetry-grid-label d-block mb-1">Export Format</label>
+                                                            <select id="exportFormatSelect" class="form-select form-select-sm" onchange="onExportFormatChange()">
+                                                                <option value="pdf">PDF Document (.pdf)</option>
+                                                                <option value="html">HTML Report (.html)</option>
+                                                                <option value="json">Raw JSON (.json)</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-8" id="exportTemplateGroup">
                                                             <label class="telemetry-grid-label d-block mb-1">Report Template</label>
-                                                            <select id="exportTemplateSelect" class="form-select form-select-sm mb-2" onchange="onExportTemplateChange()">
+                                                            <select id="exportTemplateSelect" class="form-select form-select-sm mb-1" onchange="onExportTemplateChange()">
                                                                 <option value="standard">Standard - configurable sections</option>
                                                                 <option value="dfir">DFIR Report - fixed incident-response structure</option>
                                                                 <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
                                                             </select>
                                                             <div id="exportTemplateHint" class="small text-subtle mb-1" style="display:none;"></div>
-                                                            <button type="button" id="exportEditTemplateBtn" class="btn btn-xs btn-outline-info py-0 px-2 mb-3" style="display:none;" onclick="openReportTemplateBuilder(currentExportCustomTemplateId)"><i class="bi bi-pencil-square me-1"></i>Edit this template</button>
-
-                                                            <label class="telemetry-grid-label d-block mb-1">Export Format</label>
-                                                            <select id="exportFormatSelect" class="form-select form-select-sm mb-3">
-                                                                <option value="pdf">PDF Document (.pdf)</option>
-                                                                <option value="html">HTML Report (.html)</option>
-                                                            </select>
-
+                                                            <button type="button" id="exportEditTemplateBtn" class="btn btn-xs btn-outline-info py-0 px-2" style="display:none;" onclick="openReportTemplateBuilder(currentExportCustomTemplateId)"><i class="bi bi-pencil-square me-1"></i>Edit this template</button>
+                                                        </div>
+                                                    </div>
+                                                    <div class="row g-3" id="exportPdfHtmlOptionsRow">
+                                                        <div class="col-md-4">
                                                             <div id="exportSectionsFieldsGroup">
                                                             <label class="telemetry-grid-label d-block mb-1">Sections to Include</label>
                                                             <div class="form-check">
@@ -1053,12 +1057,10 @@
                                                         <span id="exportReportStatus" class="small text-subtle"></span>
                                                         <button type="button" class="btn btn-sm btn-danger fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
                                                     </div>
-                                                </div>
-                                                <div class="tab-pane fade" id="repRawJsonPane" role="tabpanel">
-                                                    <div class="d-flex justify-content-between align-items-center mb-2">
-                                                        <div class="small text-subtle">Live raw JSON structure of the case report - auto-updates on load/save.</div>
+                                                    <div id="exportJsonPreviewGroup" class="mt-3" style="display:none;">
+                                                        <div class="small text-subtle mb-2">Live raw JSON structure of the case report - auto-updates on load/save. Export downloads exactly this.</div>
+                                                        <pre id="jsonPreview" class="log-window mb-0" style="height: clamp(180px, 40vh, 420px);">[Select or create a case above to view raw structured JSON data]</pre>
                                                     </div>
-                                                    <pre id="jsonPreview" class="log-window mb-0" style="height: clamp(180px, 40vh, 420px);">[Select or create a case above to view raw structured JSON data]</pre>
                                                 </div>
                                             </div>
                                         </div>
