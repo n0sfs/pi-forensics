@@ -6209,115 +6209,192 @@ def image_timeline():
 # how each candidate photo's bytes reach exiftool differs. Unlike that route
 # (one batch `exiftool -r` call for the whole directory), each candidate here
 # needs its own subprocess call, since exiftool can't be pointed at a path
-# inside an unmounted image - so this is capped much more tightly.
+# inside an unmounted image.
+#
+# Originally a synchronous route (like every other File Explorer in-image
+# tool), converted to a real background job for the same reason Triage Scan
+# was: up to IMAGE_GEO_MAX_FILES candidates each cost a real exiftool
+# subprocess spawn, which can genuinely take a while, and a silent multi-
+# minute browser hang is worse than a trackable job with a Stop button. Same
+# shared current_job system, same one-global-slot-at-a-time rule.
 IMAGE_GEO_MAX_FILES = 300
 IMAGE_GEO_MAX_FILE_BYTES = 32 * 1024 * 1024  # generous for JPEG/HEIC, skips oversized RAW/DNG
 
-@app.route('/api/image/geolocation_kml', methods=['POST'])
-@requires_auth
-@requires_permission('file_explorer')
-def image_geolocation_kml():
-    """Scans every real filesystem inside an acquired image for GPS-tagged
-    photos without extracting them to disk first - each candidate's bytes
-    are read directly out of the image via pytsk3 into a short-lived temp
-    file (exiftool needs a real file argument, not raw bytes), scanned, then
-    removed immediately. Reuses _tsk_resolve_filesystems()/_tsk_walk() from
-    the Filesystem Timeline report block for the same reasons documented
-    there (ALLOC-only partitions, no recursion into deleted directories).
-
-    Deliberately excludes deleted files too, extending _tsk_walk()'s own
+def execution_worker_image_geolocation_kml(image_path, dest_dir, source_ip=None, user=None):
+    """Deliberately excludes deleted files, extending _tsk_walk()'s own
     deleted-directory precedent: a deleted file's data blocks may already be
     partially overwritten by something unrelated on a live evidence
     filesystem, and presenting whatever garbage EXIF happens to parse out of
     that as real GPS evidence would be a forensic-accuracy problem, not just
     a missed opportunity."""
+    global current_job
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    try:
+        filesystems = _tsk_resolve_filesystems(image_path)
+        if not filesystems:
+            append_log("[-] No recognized filesystem found in this image.")
+            update_job(status="Failed")
+            return
+
+        update_job(format="image_geolocation_kml", status="Finding candidate photos...", progress_percent=0.0,
+                   transferred_bytes=0, total_bytes=0)
+        append_log(f"[*] Scanning {image_path} for GPS-tagged photos...")
+
+        # Collect candidates first (cheap - just directory-entry metadata),
+        # which also gives a real total for progress tracking below, so the
+        # per-file cap applies before any actual file reads/subprocess calls
+        # happen.
+        candidates = []
+        for fsinfo in filesystems:
+            if snapshot_job()["status"] == "Stopped":
+                break
+            try:
+                fs = _tsk_open_fs(image_path, fsinfo['offset'])
+            except Exception:
+                continue
+            for entry, path in _tsk_walk(fs):
+                if entry['is_dir'] or entry['deleted']:
+                    continue
+                ext = os.path.splitext(entry['name'])[1].lower().lstrip('.')
+                if ext not in GEO_IMAGE_EXTENSIONS:
+                    continue
+                candidates.append((fs, entry, path))
+                if len(candidates) >= IMAGE_GEO_MAX_FILES:
+                    break
+            if len(candidates) >= IMAGE_GEO_MAX_FILES:
+                break
+        truncated = len(candidates) >= IMAGE_GEO_MAX_FILES
+
+        update_job(status="Reading EXIF from candidate photos...", total_bytes=len(candidates))
+        append_log(f"[*] Found {len(candidates)} candidate photo(s) to check (capped at {IMAGE_GEO_MAX_FILES}).")
+
+        exif_entries = []
+        skipped_too_large = 0
+        files_checked = 0
+        last_update_time = time.time()
+        for fs, entry, path in candidates:
+            if snapshot_job()["status"] == "Stopped":
+                append_log("[!] Scan stopped by user.")
+                break
+            if entry['size'] and entry['size'] > IMAGE_GEO_MAX_FILE_BYTES:
+                skipped_too_large += 1
+                files_checked += 1
+                continue
+            suffix = os.path.splitext(entry['name'])[1]
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+            os.close(tmp_fd)
+            try:
+                tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
+                with open(tmp_path, 'wb') as out:
+                    _tsk_stream_file(tsk_file, out.write, max_bytes=IMAGE_GEO_MAX_FILE_BYTES)
+                res = subprocess.run(
+                    ['exiftool', '-j', '-n', '-GPSLatitude', '-GPSLongitude', '-GPSAltitude', '-DateTimeOriginal', tmp_path],
+                    capture_output=True, text=True, timeout=15
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    parsed = json.loads(res.stdout)
+                    if parsed:
+                        exif_entry = parsed[0]
+                        exif_entry['FileName'] = entry['name']
+                        exif_entry['Directory'] = path  # in-image path, for the KML description text
+                        exif_entries.append(exif_entry)
+            except Exception:
+                pass  # one unreadable/corrupt candidate shouldn't fail the whole scan
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+            files_checked += 1
+            if time.time() - last_update_time > 0.5:
+                updates = {"transferred_bytes": files_checked}
+                if len(candidates) > 0:
+                    updates["progress_percent"] = round((files_checked / len(candidates)) * 100, 1)
+                update_job(**updates)
+                last_update_time = time.time()
+
+        update_job(transferred_bytes=files_checked)
+
+        points = _geo_points_from_exiftool_entries(exif_entries)
+        image_base = os.path.splitext(os.path.basename(image_path))[0]
+        kml_doc = _build_geo_kml(points, f"{image_base} - Geolocation Export")
+
+        kml_path = None
+        if kml_doc:
+            kml_path = os.path.join(dest_dir, f"{image_base}_geolocation_export.kml")
+            with open(kml_path, 'w', encoding='utf-8') as f:
+                f.write(kml_doc)
+            append_log(f"[+] {len(points)} GPS-tagged point(s) found -> {kml_path}")
+        else:
+            append_log("[*] No GPS-tagged photos found - no KML file was written.")
+
+        if snapshot_job()["status"] == "Stopped":
+            pass  # already logged above
+        else:
+            update_job(status="Completed Successfully", progress_percent=100.0)
+
+        log_chain_of_custody("geolocation_kml_export_image", {
+            "image_path": image_path, "files_scanned": len(candidates), "points_found": len(points),
+            "files_skipped_too_large": skipped_too_large, "truncated": truncated
+        }, source_ip=source_ip, user=user)
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+@app.route('/api/image/start_geolocation_kml', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def start_image_geolocation_kml():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
     req = request.get_json() or {}
     image_path = safe_path(req.get('image_path'))
     dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
 
     if not image_path or not os.path.isfile(image_path):
+        update_job(active=False)
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     if not dest_dir or not os.path.isdir(dest_dir):
+        update_job(active=False)
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
 
-    filesystems = _tsk_resolve_filesystems(image_path)
-    if not filesystems:
-        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+    update_job(
+        format="image_geolocation_kml", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Initializing geolocation scan of {image_path}..."
+    )
 
-    # Collect candidates first (cheap - just directory-entry metadata) so the
-    # per-file cap applies before any actual file reads/subprocess calls happen.
-    candidates = []
-    for fsinfo in filesystems:
-        try:
-            fs = _tsk_open_fs(image_path, fsinfo['offset'])
-        except Exception:
-            continue
-        for entry, path in _tsk_walk(fs):
-            if entry['is_dir'] or entry['deleted']:
-                continue
-            ext = os.path.splitext(entry['name'])[1].lower().lstrip('.')
-            if ext not in GEO_IMAGE_EXTENSIONS:
-                continue
-            candidates.append((fs, entry, path))
-            if len(candidates) >= IMAGE_GEO_MAX_FILES:
-                break
-        if len(candidates) >= IMAGE_GEO_MAX_FILES:
-            break
-    truncated = len(candidates) >= IMAGE_GEO_MAX_FILES
+    # Captured now, in the real request thread - execution_worker_image_geolocation_kml()
+    # runs in a background daemon thread with no Flask request context, where
+    # request/g would raise RuntimeError if touched directly (the same
+    # gotcha the image triage scan job's own log_chain_of_custody() call hit
+    # once already, before it was fixed the same way as network config's
+    # delayed-revert thread).
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
 
-    exif_entries = []
-    skipped_too_large = 0
-    for fs, entry, path in candidates:
-        if entry['size'] and entry['size'] > IMAGE_GEO_MAX_FILE_BYTES:
-            skipped_too_large += 1
-            continue
-        suffix = os.path.splitext(entry['name'])[1]
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-        os.close(tmp_fd)
-        try:
-            tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
-            with open(tmp_path, 'wb') as out:
-                _tsk_stream_file(tsk_file, out.write, max_bytes=IMAGE_GEO_MAX_FILE_BYTES)
-            res = subprocess.run(
-                ['exiftool', '-j', '-n', '-GPSLatitude', '-GPSLongitude', '-GPSAltitude', '-DateTimeOriginal', tmp_path],
-                capture_output=True, text=True, timeout=15
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                parsed = json.loads(res.stdout)
-                if parsed:
-                    exif_entry = parsed[0]
-                    exif_entry['FileName'] = entry['name']
-                    exif_entry['Directory'] = path  # in-image path, for the KML description text
-                    exif_entries.append(exif_entry)
-        except Exception:
-            continue  # one unreadable/corrupt candidate shouldn't fail the whole scan
-        finally:
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+    thread = threading.Thread(
+        target=execution_worker_image_geolocation_kml,
+        args=(image_path, dest_dir, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
 
-    points = _geo_points_from_exiftool_entries(exif_entries)
-    image_base = os.path.splitext(os.path.basename(image_path))[0]
-    kml_doc = _build_geo_kml(points, f"{image_base} - Geolocation Export")
-
-    kml_path = None
-    if kml_doc:
-        kml_path = os.path.join(dest_dir, f"{image_base}_geolocation_export.kml")
-        try:
-            with open(kml_path, 'w', encoding='utf-8') as f:
-                f.write(kml_doc)
-        except Exception as e:
-            return jsonify({"success": False, "error": f"Failed to write KML file: {e}"}), 500
-
-    log_chain_of_custody("geolocation_kml_export_image", {
-        "image_path": image_path, "files_scanned": len(candidates), "points_found": len(points),
-        "files_skipped_too_large": skipped_too_large, "truncated": truncated
-    })
-    return jsonify({
-        "success": True, "kml_path": kml_path, "files_scanned": len(candidates), "points_found": len(points),
-        "files_skipped_too_large": skipped_too_large, "truncated": truncated
-    })
+    log_chain_of_custody("geolocation_kml_export_image_start", {"image_path": image_path, "destination": dest_dir})
+    return jsonify({"success": True, "message": "Geolocation scan started."})
 
 # --- Recursive hash manifest, computed directly inside an acquired image ---
 # Unlike the geolocation route above (which needs a real file for exiftool to
