@@ -25,11 +25,62 @@ let activeCase = null;
 let caseManagerModalInstance = null;
 const ACTIVE_CASE_STORAGE_KEY = 'pi_forensics_active_case';
 
+// Shared non-blocking status notification, replacing this app's old habit of plain alert()
+// popups for action results. alert() blocks the entire tab (including this app's own 2s telemetry
+// poll) until dismissed, doesn't match the dark Bootstrap theme, and isn't touch-friendly on the
+// kiosk - a real usability complaint, not a cosmetic one. Genuine yes/no gates before a destructive
+// action still use native confirm() elsewhere in this file (deliberately unchanged here) - a toast
+// can't block execution or return a boolean, so it was never a fit for those.
+function showToast(message, type) {
+    const container = document.getElementById('toastContainer');
+    if (!container) { alert(message); return; } // defensive fallback only - should never happen
+
+    const bgClass = {
+        success: 'text-bg-success',
+        danger: 'text-bg-danger',
+        warning: 'text-bg-warning',
+        info: 'text-bg-info',
+    }[type] || 'text-bg-secondary';
+
+    const toastEl = document.createElement('div');
+    toastEl.className = `toast align-items-center ${bgClass} border-0`;
+    toastEl.setAttribute('role', 'alert');
+    toastEl.setAttribute('aria-live', 'assertive');
+    toastEl.setAttribute('aria-atomic', 'true');
+
+    const flexDiv = document.createElement('div');
+    flexDiv.className = 'd-flex';
+
+    const body = document.createElement('div');
+    body.className = 'toast-body';
+    body.style.whiteSpace = 'pre-line';
+    body.style.wordBreak = 'break-word';
+    body.textContent = message; // untrusted (often embeds a filename/path/backend error) - text node only
+    flexDiv.appendChild(body);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'btn-close btn-close-white me-2 m-auto';
+    closeBtn.setAttribute('data-bs-dismiss', 'toast');
+    closeBtn.setAttribute('aria-label', 'Close');
+    flexDiv.appendChild(closeBtn);
+
+    toastEl.appendChild(flexDiv);
+    container.appendChild(toastEl);
+
+    // Errors/warnings stay up longer than a plain success/info confirmation - worth more of the
+    // examiner's attention, and often longer text (a backend error message).
+    const delay = (type === 'danger' || type === 'warning') ? 8000 : 4500;
+    const bsToast = new bootstrap.Toast(toastEl, { delay });
+    toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    bsToast.show();
+}
+
 async function toggleOnscreenKeyboard() {
     try {
         const res = await fetch('/api/system/toggle_keyboard', { method: 'POST' });
         const data = await res.json();
-        if (!data.success) alert(`Keyboard toggle failed: ${data.error}`);
+        if (!data.success) showToast(`Keyboard toggle failed: ${data.error}`, 'danger');
     } catch (err) {}
 }
 
@@ -1484,7 +1535,7 @@ async function performCopyTo(sourcePath, destDir) {
         if (data.success) {
             loadExplorer(explorerPath);
         } else {
-            alert(`Copy failed: ${data.error}`);
+            showToast(`Copy failed: ${data.error}`, 'danger');
         }
     } catch (err) {
         console.error("Error copying file:", err);
@@ -1512,7 +1563,7 @@ async function deleteSelectedFile() {
             switchExplorerRightView('preview');
             loadExplorer(explorerPath);
         } else {
-            alert(`Delete failed: ${data.error}`);
+            showToast(`Delete failed: ${data.error}`, 'danger');
         }
     } catch (err) {}
 }
@@ -1835,10 +1886,10 @@ async function runSelectedHashdeep() {
         });
         const data = await res.json();
         if (data.success) {
-            alert(`Hashed ${data.file_count} file(s).\nManifest written to:\n${data.manifest_path}`);
+            showToast(`Hashed ${data.file_count} file(s).\nManifest written to:\n${data.manifest_path}`, 'success');
             loadExplorer(explorerPath);
         } else {
-            alert(`hashdeep failed: ${data.error}`);
+            showToast(`hashdeep failed: ${data.error}`, 'danger');
         }
     } catch (err) {}
 }
@@ -1855,13 +1906,13 @@ async function runSelectedGeolocationExport() {
         const data = await res.json();
         if (data.success) {
             if (data.points_found === 0) {
-                alert(`Scanned ${data.files_scanned} photo(s) - none had GPS location data. No KML file was needed.`);
+                showToast(`Scanned ${data.files_scanned} photo(s) - none had GPS location data. No KML file was needed.`, 'success');
             } else {
-                alert(`Found location data in ${data.points_found} of ${data.files_scanned} photo(s).\nKML file written to:\n${data.kml_path}`);
+                showToast(`Found location data in ${data.points_found} of ${data.files_scanned} photo(s).\nKML file written to:\n${data.kml_path}`, 'info');
                 loadExplorer(explorerPath);
             }
         } else {
-            alert(`Geolocation export failed: ${data.error}`);
+            showToast(`Geolocation export failed: ${data.error}`, 'danger');
         }
     } catch (err) {}
 }
@@ -1901,12 +1952,12 @@ async function updateMvtIndicators(btnEl) {
         const data = await res.json();
         if (data.success) {
             const summary = Object.entries(data.results).map(([platform, msg]) => `${platform}: ${msg}`).join('\n\n');
-            alert(`MVT indicator update finished:\n\n${summary}`);
+            showToast(`MVT indicator update finished:\n\n${summary}`, 'info');
         } else {
-            alert(`Update failed: ${data.error}`);
+            showToast(`Update failed: ${data.error}`, 'danger');
         }
     } catch (err) {
-        alert('Update request failed.');
+        showToast('Update request failed.', 'danger');
     } finally {
         if (btnEl) {
             btnEl.disabled = false;
@@ -2617,7 +2668,7 @@ async function extractExplorerImageSelected() {
             })
         });
         const data = await res.json();
-        alert(data.success ? data.message : `Extraction failed: ${data.error}`);
+        showToast(data.success ? data.message : `Extraction failed: ${data.error}`, data.success ? 'success' : 'danger');
     } catch (err) {}
 }
 
@@ -2642,7 +2693,7 @@ async function extractAndAttachExplorerImageSelected() {
         });
         const extractData = await extractRes.json();
         if (!extractData.success) {
-            alert(`Extraction failed: ${extractData.error}`);
+            showToast(`Extraction failed: ${extractData.error}`, 'danger');
             return;
         }
 
@@ -2653,10 +2704,10 @@ async function extractAndAttachExplorerImageSelected() {
         });
         const attachData = await attachRes.json();
         if (attachData.success) {
-            alert(`Extracted and attached to ${activeCase.case_number} as a case exhibit (${attachData.file_count} file(s) now attached). Edit captions in Reporting > Files.`);
+            showToast(`Extracted and attached to ${activeCase.case_number} as a case exhibit (${attachData.file_count} file(s) now attached). Edit captions in Reporting > Files.`, 'success');
             if (currentReportPath) loadCaseForEditing();
         } else {
-            alert(`Extracted to ${extractData.path}, but attaching to the case failed: ${attachData.error}`);
+            showToast(`Extracted to ${extractData.path}, but attaching to the case failed: ${attachData.error}`, 'danger');
         }
     } catch (err) {}
 }
@@ -2720,12 +2771,12 @@ async function runImageGeolocationExport() {
         });
         const data = await res.json();
         if (!data.success) {
-            alert(`Could not start geolocation scan: ${data.error}`);
+            showToast(`Could not start geolocation scan: ${data.error}`, 'danger');
         }
         // No success alert - #explorerJobProgress + the completion
         // notification in fetchProgress() are the feedback.
     } catch (err) {
-        alert('Request failed.');
+        showToast('Request failed.', 'danger');
     }
 }
 
@@ -2740,7 +2791,7 @@ async function runImageHashManifest() {
         });
         const data = await res.json();
         if (!data.success) {
-            alert(`Hash manifest failed: ${data.error}`);
+            showToast(`Hash manifest failed: ${data.error}`, 'danger');
             return;
         }
         let msg = `Hashed ${data.files_hashed} file(s) inside the image.\nManifest written to:\n${data.manifest_path}`;
@@ -2750,7 +2801,7 @@ async function runImageHashManifest() {
         if (data.truncated) {
             msg += `\n\nNote: this image has more files than could be hashed in one pass - results are partial.`;
         }
-        alert(msg);
+        showToast(msg, 'success');
     } catch (err) {}
 }
 
@@ -2772,13 +2823,13 @@ async function startImageTriageScan() {
         });
         const data = await res.json();
         if (!data.success) {
-            alert(`Could not start triage scan: ${data.error}`);
+            showToast(`Could not start triage scan: ${data.error}`, 'danger');
         }
         // On success, no alert - #explorerJobProgress (updated by the
         // existing fetchProgress() poll) is the feedback; a completion
         // message would just be redundant with the progress log itself.
     } catch (err) {
-        alert('Request failed.');
+        showToast('Request failed.', 'danger');
     }
 }
 
@@ -2795,7 +2846,7 @@ async function runImageRecoverDeleted() {
         });
         const data = await res.json();
         if (!data.success) {
-            alert(`Recovery failed: ${data.error}`);
+            showToast(`Recovery failed: ${data.error}`, 'danger');
             return;
         }
         let msg;
@@ -2817,7 +2868,7 @@ async function runImageRecoverDeleted() {
         if (data.truncated) {
             msg += `\n\nNote: this image has more deleted files than could be recovered in one pass - results are partial.`;
         }
-        alert(msg);
+        showToast(msg, 'success');
     } catch (err) {}
 }
 
@@ -3252,10 +3303,10 @@ async function deleteCustomReportTemplate(id) {
         if (data.success) {
             await fetchCustomReportTemplates();
         } else {
-            alert(data.error || 'Delete failed.');
+            showToast(data.error || 'Delete failed.', 'danger');
         }
     } catch (err) {
-        alert('Request failed.');
+        showToast('Request failed.', 'danger');
     }
 }
 
@@ -3458,7 +3509,7 @@ async function uploadReportLogo() {
     const fileInput = document.getElementById("reportLogoFile");
     const file = fileInput?.files[0];
     const statusEl = document.getElementById("reportLogoStatus");
-    if (!file) return alert("Select a logo image file first.");
+    if (!file) return showToast("Select a logo image file first.", 'warning');
 
     const formData = new FormData();
     formData.append('logo', file);
@@ -3590,7 +3641,7 @@ async function loadCaseForEditing() {
             previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
         }
     } catch (err) {
-        alert(`Failed to load report: ${err.message}`);
+        showToast(`Failed to load report: ${err.message}`, 'danger');
     }
 }
 
@@ -3831,10 +3882,10 @@ async function saveCaseNoteEdit(noteId, newText) {
             editingCaseNoteId = null;
             await loadCaseForEditing();
         } else {
-            alert(`Edit failed: ${data.error}`);
+            showToast(`Edit failed: ${data.error}`, 'danger');
         }
     } catch (err) {
-        alert(`Edit failed: ${err.message}`);
+        showToast(`Edit failed: ${err.message}`, 'danger');
     }
 }
 
@@ -4146,7 +4197,7 @@ async function saveReportMetadata() {
     const reportPath = currentReportPath;
 
     if (!reportPath || !currentLoadedReportData) {
-        alert("Select or create a case using the bar above first.");
+        showToast("Select or create a case using the bar above first.", 'warning');
         return;
     }
 
@@ -4203,12 +4254,12 @@ async function saveReportMetadata() {
             if (previewEl) {
                 previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
             }
-            alert("Report JSON saved successfully!");
+            showToast("Report JSON saved successfully!", 'success');
         } else {
-            alert(`Save Error: ${data.error}`);
+            showToast(`Save Error: ${data.error}`, 'danger');
         }
     } catch (err) {
-        alert(`Save failed: ${err.message}`);
+        showToast(`Save failed: ${err.message}`, 'danger');
     }
 }
 
@@ -4488,7 +4539,7 @@ function setExportFileCheckboxes(checked) {
 
 async function runExportReport() {
     const reportPath = currentReportPath;
-    if (!reportPath) return alert("Select an active case first.");
+    if (!reportPath) return showToast("Select an active case first.", 'warning');
 
     const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
 
@@ -4595,7 +4646,7 @@ async function runExportReport() {
     if (itemChecks.length > 0) {
         event_ids = Array.from(itemChecks).filter(cb => cb.checked).map(cb => cb.dataset.eventId);
         if (event_ids.length === 0) {
-            alert("Select at least one evidence item to include.");
+            showToast("Select at least one evidence item to include.", 'warning');
             return;
         }
     }
@@ -4670,13 +4721,13 @@ async function attachSelectedFileToCase() {
         const data = await res.json();
         if (data.success) {
             if (data.already_attached) {
-                alert(`This file is already attached to ${activeCase.case_number}.`);
+                showToast(`This file is already attached to ${activeCase.case_number}.`, 'success');
             } else {
-                alert(`Attached to ${activeCase.case_number} as a case exhibit (${data.file_count} file(s) now attached). Edit captions or reorder exhibits in Reporting > Files.`);
+                showToast(`Attached to ${activeCase.case_number} as a case exhibit (${data.file_count} file(s) now attached). Edit captions or reorder exhibits in Reporting > Files.`, 'success');
                 if (currentReportPath) loadCaseForEditing();
             }
         } else {
-            alert(`Attach to case failed: ${data.error}`);
+            showToast(`Attach to case failed: ${data.error}`, 'danger');
         }
     } catch (err) {}
 }
@@ -4748,7 +4799,7 @@ async function runStandaloneHashVerification() {
     const badge = document.getElementById("hashMatchBadge");
     const output = document.getElementById("computedHashOutput");
 
-    if (!imagePath) return alert("Select a file first.");
+    if (!imagePath) return showToast("Select a file first.", 'warning');
 
     if (badge) {
         badge.className = "badge bg-info text-dark";
@@ -5056,9 +5107,9 @@ async function migrateCase(c) {
             body: JSON.stringify({ case_folder: c.case_folder })
         });
         const preview = await previewRes.json();
-        if (!preview.success) return alert(`Migration preview failed: ${preview.error}`);
+        if (!preview.success) return showToast(`Migration preview failed: ${preview.error}`, 'danger');
         if (preview.already_migrated) {
-            alert('This case is already on the consolidated format.');
+            showToast('This case is already on the consolidated format.', 'info');
             loadExistingCases();
             return;
         }
@@ -5074,12 +5125,12 @@ async function migrateCase(c) {
             body: JSON.stringify({ case_folder: c.case_folder })
         });
         const applyData = await applyRes.json();
-        if (!applyData.success) return alert(`Migration failed: ${applyData.error}`);
+        if (!applyData.success) return showToast(`Migration failed: ${applyData.error}`, 'danger');
 
-        alert(`Migrated ${applyData.events_migrated} job(s) into ${applyData.case_file}.`);
+        showToast(`Migrated ${applyData.events_migrated} job(s) into ${applyData.case_file}.`, 'success');
         loadExistingCases();
     } catch (err) {
-        alert(`Migration request failed: ${err.message}`);
+        showToast(`Migration request failed: ${err.message}`, 'danger');
     }
 }
 
@@ -5338,7 +5389,7 @@ async function refreshDriveManagementStatus() {
 
 async function toggleWriteBlockForSelectedDrive() {
     const drive = document.getElementById("ejectDriveSelect")?.value;
-    if (!drive) return alert("Select a connected drive first.");
+    if (!drive) return showToast("Select a connected drive first.", 'warning');
 
     try {
         // Check this specific drive's current status first, rather than
@@ -5357,9 +5408,9 @@ async function toggleWriteBlockForSelectedDrive() {
         if (data.success) {
             await refreshDriveManagementStatus();
             await fetchSystemInfo(); // keeps the top-right badge in sync if it's the same drive
-            alert(`Drive ${drive} Write-Blocker status set to: ${newEnableState ? 'PROTECTED (Read-Only)' : 'UNLOCKED (Read-Write)'}`);
+            showToast(`Drive ${drive} Write-Blocker status set to: ${newEnableState ? 'PROTECTED (Read-Only)' : 'UNLOCKED (Read-Write)'}`, 'info');
         } else {
-            alert(`Write Blocker Toggle Failed: ${data.error}`);
+            showToast(`Write Blocker Toggle Failed: ${data.error}`, 'danger');
         }
     } catch (err) {
         console.error("Write blocker toggle error:", err);
@@ -5481,7 +5532,7 @@ async function queryNetworkShares(hostId, protocolId, shareSelectId, mountStatus
     const user = document.getElementById("netUser")?.value.trim() || "";
     const pass = document.getElementById("netPass")?.value || "";
 
-    if (!host) return alert("Please enter a server IP address.");
+    if (!host) return showToast("Please enter a server IP address.", 'warning');
 
     if (mountStatus) mountStatus.innerText = "Querying available exports...";
     if (shareSelect) shareSelect.innerHTML = '<option value="">Querying...</option>';
@@ -5528,8 +5579,8 @@ async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusI
     const key = protocol === 'sftp' ? (document.getElementById("netSftpKey")?.value || "") : "";
     const autoConnect = document.getElementById("netAutoConnect")?.checked || false;
 
-    if (!share) return alert(protocol === 'sftp' ? "Please enter a remote path first." : "Please select or enter an exported share name first.");
-    if (protocol === 'sftp' && !user) return alert("SFTP requires a username.");
+    if (!share) return showToast(protocol === 'sftp' ? "Please enter a remote path first." : "Please select or enter an exported share name first.", 'warning');
+    if (protocol === 'sftp' && !user) return showToast("SFTP requires a username.", 'warning');
 
     if (mountStatus) mountStatus.innerText = "Mounting share...";
 
@@ -5564,7 +5615,7 @@ async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusI
             loadAutoMountShares();
         } else {
             if (mountStatus) mountStatus.innerText = `Mount Error: ${data.error}`;
-            alert(`Mount Failed: ${data.error}`);
+            showToast(`Mount Failed: ${data.error}`, 'danger');
         }
     } catch (err) {
         if (mountStatus) mountStatus.innerText = `Mount Failed: ${err.message}`;
@@ -5622,7 +5673,7 @@ async function removeAutoMountShare(id) {
     try {
         const res = await fetch(`/api/network/auto_mounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
         const data = await res.json();
-        if (!data.success) alert(`Failed to remove: ${data.error}`);
+        if (!data.success) showToast(`Failed to remove: ${data.error}`, 'danger');
         loadAutoMountShares();
     } catch (err) {}
 }
@@ -5784,10 +5835,10 @@ async function applyNetworkConfig(device) {
             networkRevertToken = data.revert_token;
             showNetworkRevertBanner(device, data.revert_at);
         } else {
-            alert(`Apply failed: ${data.error}`);
+            showToast(`Apply failed: ${data.error}`, 'danger');
         }
     } catch (err) {
-        alert(`Apply failed: ${err.message}`);
+        showToast(`Apply failed: ${err.message}`, 'danger');
     }
 }
 
@@ -5803,10 +5854,10 @@ async function confirmNetworkConfig() {
         if (data.success) {
             hideNetworkRevertBanner();
         } else {
-            alert(data.error || 'Confirmation failed.');
+            showToast(data.error || 'Confirmation failed.', 'danger');
         }
     } catch (err) {
-        alert(`Confirmation failed: ${err.message}`);
+        showToast(`Confirmation failed: ${err.message}`, 'danger');
     }
 }
 
@@ -5846,7 +5897,7 @@ async function startAcquisition() {
     const dest = document.getElementById("destPath")?.value;
     const fmt = document.getElementById("imageFormatSelect")?.value;
 
-    if (!source) return alert("Select target evidence drive first.");
+    if (!source) return showToast("Select target evidence drive first.", 'warning');
 
     const metadata = {
         case_number: document.getElementById("caseNum")?.value || "2026-UNASSIGNED",
@@ -5886,7 +5937,7 @@ async function startAcquisition() {
         if (data.success) {
             if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = true;
             if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = false;
-        } else alert(`Start Failed: ${data.error}`);
+        } else showToast(`Start Failed: ${data.error}`, 'danger');
     } catch (err) {}
 }
 
@@ -5960,7 +6011,7 @@ async function startRecoveryTool() {
     const source = sourcePath || sourceDrive;
 
     if (!source) {
-        alert("Select a source drive, or browse to a source image file, first.");
+        showToast("Select a source drive, or browse to a source image file, first.", 'warning');
         return;
     }
 
@@ -6011,7 +6062,7 @@ async function startRecoveryTool() {
             if (document.getElementById("btnRecoveryStart")) document.getElementById("btnRecoveryStart").disabled = true;
             if (document.getElementById("btnRecoveryStop")) document.getElementById("btnRecoveryStop").disabled = false;
         } else {
-            alert(`Start Failed: ${data.error}`);
+            showToast(`Start Failed: ${data.error}`, 'danger');
         }
     } catch (err) {
         console.error(`Error starting ${tool}:`, err);
@@ -6037,7 +6088,7 @@ async function inspectDdrescueMapfile() {
     const mapPath = mapPathEl ? mapPathEl.value.trim() : "";
 
     if (!mapPath) {
-        alert("Please enter or select a .map file path first.");
+        showToast("Please enter or select a .map file path first.", 'warning');
         return;
     }
 
@@ -6230,13 +6281,13 @@ function startMobileAcquisition() {
 
 async function startIosBackup() {
     const udid = document.getElementById("mobileIosSelect")?.value;
-    if (!udid) return alert("Select a trusted iOS device first.");
+    if (!udid) return showToast("Select a trusted iOS device first.", 'warning');
 
     const dest = document.getElementById("mobileDest")?.value || '/mnt';
     const encryptEnabled = document.getElementById("mobileIosEncryptToggle")?.checked;
     const encrypt_password = encryptEnabled ? (document.getElementById("mobileIosEncryptPassword")?.value || '') : '';
 
-    if (encryptEnabled && !encrypt_password) return alert("Enter an encryption password, or turn off the encrypted backup toggle.");
+    if (encryptEnabled && !encrypt_password) return showToast("Enter an encryption password, or turn off the encrypted backup toggle.", 'warning');
 
     const metadata = {
         case_number: document.getElementById("mobileCaseNum")?.value || "2026-UNASSIGNED",
@@ -6252,13 +6303,13 @@ async function startIosBackup() {
             body: JSON.stringify({ udid, destination: dest, encrypt_password, metadata })
         });
         const data = await res.json();
-        if (!data.success) alert(`Start Failed: ${data.error}`);
+        if (!data.success) showToast(`Start Failed: ${data.error}`, 'danger');
     } catch (err) {}
 }
 
 async function startAndroidAcquisition() {
     const serial = document.getElementById("mobileAndroidSelect")?.value;
-    if (!serial) return alert("Select an authorized Android device first.");
+    if (!serial) return showToast("Select an authorized Android device first.", 'warning');
 
     const mode = document.getElementById("mobileAndroidMode")?.value || 'pull';
     const dest = document.getElementById("mobileDest")?.value || '/mnt';
@@ -6277,7 +6328,7 @@ async function startAndroidAcquisition() {
             body: JSON.stringify({ serial, mode, destination: dest, metadata })
         });
         const data = await res.json();
-        if (!data.success) alert(`Start Failed: ${data.error}`);
+        if (!data.success) showToast(`Start Failed: ${data.error}`, 'danger');
     } catch (err) {}
 }
 
@@ -7094,17 +7145,17 @@ async function installTool(pkg, btnEl) {
             body: JSON.stringify({ package: pkg })
         });
         const data = await res.json();
-        if (!data.success) alert(`Install/update failed: ${data.error}`);
+        if (!data.success) showToast(`Install/update failed: ${data.error}`, 'danger');
         loadToolVersions(); // refresh the whole table either way
     } catch (err) {
-        alert('Install request failed.');
+        showToast('Install request failed.', 'danger');
         loadToolVersions();
     }
 }
 
 async function ejectTargetDrive() {
     const drive = document.getElementById("ejectDriveSelect")?.value;
-    if (!drive) return alert("Select a drive to detach first.");
+    if (!drive) return showToast("Select a drive to detach first.", 'warning');
     if (!confirm(`Safely unmount and flush ${drive}? Only do this once any acquisition using it has finished.`)) return;
 
     try {
@@ -7114,7 +7165,7 @@ async function ejectTargetDrive() {
             body: JSON.stringify({ drive })
         });
         const data = await res.json();
-        alert(data.success ? data.message : `Eject Failed: ${data.error}`);
+        showToast(data.success ? data.message : `Eject Failed: ${data.error}`, data.success ? 'success' : 'danger');
         if (data.success) refreshDrives();
     } catch (err) {}
 }
@@ -7314,7 +7365,7 @@ async function fetchProgress() {
         const completionMsgFn = IMAGE_JOB_COMPLETION_MESSAGES[data.format];
         if (completionMsgFn) {
             if (lastImageJobActiveByFormat[data.format] && !data.active) {
-                alert(completionMsgFn(data.status));
+                showToast(completionMsgFn(data.status), 'info');
             }
             lastImageJobActiveByFormat[data.format] = data.active;
         }
