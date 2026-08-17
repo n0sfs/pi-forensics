@@ -636,6 +636,57 @@ done &
 with open(autostart_path, "w") as f:
     f.write(autostart_content)
 os.chmod(autostart_path, 0o755)
+
+# 7a. Disable PCManFM's Autorun/Automount Prompts
+# The labwc autostart above launches chromium in kiosk mode ON TOP OF the
+# stock Raspberry Pi OS desktop session, not instead of it - pcmanfm --desktop
+# (the panel/desktop-icon manager) is still part of the normal boot sequence
+# underneath. That stock session ships PCManFM's autorun feature enabled by
+# default, which pops PCManFM's own "what would you like to do with this
+# drive?" dialog whenever removable media is inserted - confirmed live,
+# completely independent of and invisible to this app. That's a real
+# forensic-soundness gap, not just visual clutter: clicking through it
+# browses evidence media via PCManFM, outside this app's audit-logged
+# workflow entirely, and its automount can race the udev write-block rule
+# at the moment of insertion. Disabling all three of PCManFM's own
+# mount/autorun switches means nothing happens at the OS level on insert -
+# the only way to interact with a drive stays File Explorer/Acquisition
+# inside the app itself.
+print(f"\n[*] Disabling PCManFM autorun/automount prompts for '{SERVICE_USER}'...")
+pcmanfm_dir = os.path.join(USER_HOME, ".config", "pcmanfm", "default")
+os.makedirs(pcmanfm_dir, exist_ok=True)
+pcmanfm_conf_path = os.path.join(pcmanfm_dir, "pcmanfm.conf")
+PCMANFM_VOLUME_KEYS = ("mount_on_startup", "mount_removable", "autorun")
+
+pcmanfm_conf_text = ""
+if os.path.exists(pcmanfm_conf_path):
+    with open(pcmanfm_conf_path) as f:
+        pcmanfm_conf_text = f.read()
+
+if "[volume]" in pcmanfm_conf_text:
+    for key in PCMANFM_VOLUME_KEYS:
+        if re.search(rf"^{key}=.*$", pcmanfm_conf_text, re.MULTILINE):
+            pcmanfm_conf_text = re.sub(rf"^{key}=.*$", f"{key}=0", pcmanfm_conf_text, flags=re.MULTILINE)
+        else:
+            pcmanfm_conf_text = pcmanfm_conf_text.replace("[volume]", f"[volume]\n{key}=0", 1)
+else:
+    pcmanfm_conf_text += "\n[volume]\n" + "\n".join(f"{key}=0" for key in PCMANFM_VOLUME_KEYS) + "\n"
+
+with open(pcmanfm_conf_path, "w") as f:
+    f.write(pcmanfm_conf_text)
+
+# Verify rather than trust the write - read back what's actually on disk,
+# matching this file's established discipline for anything that silently
+# fails in a way that would leave the station worse off than assumed (see
+# the autologin verification right below).
+with open(pcmanfm_conf_path) as f:
+    pcmanfm_verify_text = f.read()
+pcmanfm_ok = all(re.search(rf"^{key}=0\s*$", pcmanfm_verify_text, re.MULTILINE) for key in PCMANFM_VOLUME_KEYS)
+if pcmanfm_ok:
+    print("[+] PCManFM autorun/automount disabled and verified.")
+else:
+    print(f"[!] Could not confirm PCManFM autorun settings were disabled - check {pcmanfm_conf_path} manually.")
+
 subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", os.path.join(USER_HOME, ".config")], check=True)
 
 # 7b. Enable Desktop Autologin for SERVICE_USER
