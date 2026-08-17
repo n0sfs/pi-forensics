@@ -4890,6 +4890,7 @@ _PREVIEWABLE_TEXT_EXT = {'.txt', '.json', '.log', '.md', '.csv', '.xml', '.html'
 # preview deliberately does NOT go through this same raw-serving endpoint.
 _PREVIEWABLE_PDF_EXT = {'.pdf'}
 _PREVIEW_TEXT_MAX_BYTES = 200 * 1024  # 200 KB - enough for a meaningful preview without loading huge files into memory
+_HEX_PREVIEW_MAX_BYTES = 64 * 1024  # 64 KB - rendered client-side as a classic hex dump (offset/hex/ASCII), kept smaller than the plain-text cap since hex output is far denser per byte
 
 @app.route('/api/files/raw', methods=['GET'])
 @requires_auth
@@ -4929,6 +4930,29 @@ def preview_text_file():
         text = raw.decode('utf-8', errors='replace')
         truncated = size > _PREVIEW_TEXT_MAX_BYTES
         return jsonify({"success": True, "content": text, "truncated": truncated, "size_bytes": size})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/files/hex', methods=['POST'])
+@requires_auth
+def get_file_hex():
+    """Capped raw-byte read for the Hex tab - returns base64, not a
+    pre-formatted dump; the client builds the offset/hex/ASCII columns
+    (matches how image_preview()/image_hex() already hand back base64 image
+    data for client-side rendering rather than doing layout server-side)."""
+    req = request.get_json() or {}
+    path = safe_path(req.get('path'))
+    if not path or not os.path.isfile(path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 404
+
+    try:
+        size = os.path.getsize(path)
+        with open(path, 'rb') as f:
+            raw = f.read(_HEX_PREVIEW_MAX_BYTES)
+        return jsonify({
+            "success": True, "data": base64.b64encode(raw).decode('ascii'),
+            "bytes_read": len(raw), "total_size": size, "truncated": size > len(raw),
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -5272,6 +5296,84 @@ def run_strings():
         return jsonify({"success": False, "error": "strings timed out."}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+# --- Quick Triage Scan: fast, capped IOC scan for a single right-clicked file ---
+# Reuses TRIAGE_PATTERNS/the same regex-per-chunk-with-overlap technique
+# execution_worker_triage_scan() (File Recovery's background job) already
+# uses - this is deliberately NOT a second scanning implementation, just a
+# capped, synchronous entry point into the same category matching, for a
+# quick right-click look at a .dd/.E01 image (or any other file) without
+# configuring and running the full background job. Only scans the first
+# QUICK_TRIAGE_MAX_BYTES of the file - large/exhaustive scans still belong
+# to the File Recovery tab's Triage Scan tool.
+QUICK_TRIAGE_MAX_BYTES = 32 * 1024 * 1024  # 32 MB - fast enough to stay synchronous within one request
+QUICK_TRIAGE_MAX_MATCHES_PER_CATEGORY = 500  # smaller than the background job's 50000 - this is a quick preview, not an exhaustive collection
+TRIAGE_CATEGORY_LABELS = {
+    "emails": "Email Addresses", "urls": "URLs", "ip_addresses": "IP Addresses",
+    "credit_card_numbers": "Credit Card-like Numbers", "phone_numbers": "Phone Numbers",
+}
+
+@app.route('/api/files/quick_triage_scan', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def quick_triage_scan():
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    CHUNK_SIZE = 8 * 1024 * 1024
+    OVERLAP = 256  # bytes carried over between chunks so a match spanning a chunk boundary isn't missed
+    results = {name: set() for name in TRIAGE_PATTERNS}
+    truncated = {name: False for name in TRIAGE_PATTERNS}
+
+    try:
+        total_size = os.path.getsize(file_path)
+        bytes_read = 0
+        tail = b""
+        with open(file_path, 'rb') as f:
+            while bytes_read < QUICK_TRIAGE_MAX_BYTES:
+                chunk = f.read(min(CHUNK_SIZE, QUICK_TRIAGE_MAX_BYTES - bytes_read))
+                if not chunk:
+                    break
+                data = tail + chunk
+                for name, pattern in TRIAGE_PATTERNS.items():
+                    if truncated[name]:
+                        continue
+                    for m in pattern.finditer(data):
+                        val = m.group(0)
+                        if len(val) > 4:  # skip trivial/near-empty matches
+                            results[name].add(val)
+                            if len(results[name]) >= QUICK_TRIAGE_MAX_MATCHES_PER_CATEGORY:
+                                truncated[name] = True
+                                break
+                tail = data[-OVERLAP:] if len(data) >= OVERLAP else data
+                bytes_read += len(chunk)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Scan failed: {e}"}), 500
+
+    scan_truncated_to_prefix = total_size > QUICK_TRIAGE_MAX_BYTES
+    total_hits = sum(len(v) for v in results.values())
+
+    lines = [f"Scanned {bytes_read / (1024*1024):.1f} MB of {total_size / (1024*1024):.1f} MB total."]
+    if scan_truncated_to_prefix:
+        lines.append("(First-32MB quick preview only - use the full Triage Scan tool in File Recovery for an exhaustive scan of the whole file.)")
+    lines.append("")
+    for name in TRIAGE_PATTERNS:
+        matches = sorted(results[name])
+        label = TRIAGE_CATEGORY_LABELS.get(name, name)
+        cap_note = " (capped)" if truncated[name] else ""
+        lines.append(f"{label} ({len(matches)} found{cap_note}):")
+        if matches:
+            for val in matches:
+                lines.append(f"  {val.decode('utf-8', errors='replace')}")
+        lines.append("")
+
+    log_chain_of_custody("quick_triage_scan", {"path": file_path, "bytes_scanned": bytes_read, "total_hits": total_hits})
+    return jsonify({
+        "success": True, "file_name": os.path.basename(file_path),
+        "output": "\n".join(lines).strip(), "total_hits": total_hits,
+    })
 
 # --- MVT (Mobile Verification Toolkit): Spyware/IOC Analysis ---
 # Analyzes an already-acquired mobile backup for indicators of compromise
@@ -5719,6 +5821,7 @@ TSK_MAX_WALK_DEPTH = 25
 TSK_PREVIEW_TEXT_MAX_BYTES = 200_000
 TSK_PREVIEW_IMAGE_MAX_BYTES = 8_000_000
 TSK_PREVIEW_IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
+TSK_HEX_PREVIEW_MAX_BYTES = 64 * 1024  # matches _HEX_PREVIEW_MAX_BYTES's rationale for the real-fs route
 TSK_PREVIEW_MIME = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
                      '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp'}
 
@@ -5971,6 +6074,45 @@ def image_preview():
                              "text": buf.getvalue().decode('utf-8', errors='replace')})
     except Exception as e:
         return jsonify({"success": False, "error": f"Preview failed: {e}"}), 500
+
+@app.route('/api/image/hex', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_hex():
+    """Capped raw-byte read of a single in-image file for the Hex tab -
+    counterpart to get_file_hex() above. Streams directly via
+    _tsk_stream_file(max_bytes=...), no temp-file extraction needed since
+    this doesn't shell out to anything (unlike Binwalk/Strings/ExifTool)."""
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tsk_file = fs.open_meta(inode=inode_num)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not open file: {e}"}), 500
+
+    size = tsk_file.info.meta.size if tsk_file.info.meta else 0
+    try:
+        buf = io.BytesIO()
+        _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_HEX_PREVIEW_MAX_BYTES)
+        raw = buf.getvalue()
+        return jsonify({
+            "success": True, "data": base64.b64encode(raw).decode('ascii'),
+            "bytes_read": len(raw), "total_size": size, "truncated": size > len(raw),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read file: {e}"}), 500
 
 @app.route('/api/image/search', methods=['POST'])
 @requires_auth
@@ -6273,6 +6415,210 @@ def image_hash_manifest():
         "files_errored": files_errored, "truncated": truncated
     })
 
+# --- Filesystem-aware triage scan, directly against an acquired image ---
+# Unlike quick_triage_scan() above (a single-file, 32MB-capped preview) and
+# execution_worker_triage_scan() (the background device/file-level job that
+# scans one continuous byte stream with no filesystem awareness at all),
+# this walks the image's real directory structure and scans each file's own
+# content, so results come back tied to real in-image paths. Same
+# TRIAGE_PATTERNS, same regex-matching logic - not a third scanning
+# implementation, just a third entry point into it. Long-running (walks
+# potentially thousands of files), so unlike every other File Explorer
+# in-image tool (which are synchronous, capped by a time/count budget) this
+# one goes through the app's single shared current_job system for real
+# progress tracking and a Stop button, the same way Acquisition/Recovery/
+# Mobile jobs already do - it competes for that same one global job slot,
+# which is correct: only one long-running operation should run at a time
+# station-wide, regardless of which tab started it.
+IMAGE_TRIAGE_MAX_FILES = 5000  # matches IMAGE_HASH_MAX_FILES's precedent
+IMAGE_TRIAGE_MAX_FILE_BYTES = 4 * 1024 * 1024  # 4 MB per file - smaller than quick_triage_scan()'s single-file 32MB cap, since this walks many files
+IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY = 2000  # between quick_triage_scan()'s 500 (one file) and the background job's 50000 (one whole device)
+
+def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, user=None):
+    global current_job
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    results = {name: [] for name in TRIAGE_PATTERNS}       # list of (path, value) tuples, in match order
+    seen = {name: set() for name in TRIAGE_PATTERNS}       # dedupe by (path, value)
+    truncated = {name: False for name in TRIAGE_PATTERNS}
+    files_scanned = 0
+    files_errored = 0
+    walk_truncated = False
+
+    try:
+        filesystems = _tsk_resolve_filesystems(image_path)
+        if not filesystems:
+            append_log("[-] No recognized filesystem found in this image.")
+            update_job(status="Failed")
+            return
+
+        update_job(format="image_triage_scan", status="Counting files...", progress_percent=0.0,
+                   transferred_bytes=0, total_bytes=0)
+        append_log(f"[*] Scanning {image_path} for structured data (emails, URLs, IPs, card-like numbers, phone numbers), file by file...")
+
+        # A cheap first pass (directory-entry metadata only, no file content
+        # read) so the real scanning pass below can report a true
+        # percentage instead of an indeterminate spinner.
+        total_files_estimate = 0
+        for fsinfo in filesystems:
+            try:
+                fs = _tsk_open_fs(image_path, fsinfo['offset'])
+            except Exception:
+                continue
+            for entry, _ in _tsk_walk(fs):
+                if not entry['is_dir'] and not entry['deleted'] and not entry['is_virtual']:
+                    total_files_estimate += 1
+                if total_files_estimate >= IMAGE_TRIAGE_MAX_FILES:
+                    break
+            if total_files_estimate >= IMAGE_TRIAGE_MAX_FILES:
+                break
+
+        update_job(status="Scanning files for structured data...", total_bytes=total_files_estimate)
+        append_log(f"[*] Found {total_files_estimate} file(s) to scan (capped at {IMAGE_TRIAGE_MAX_FILES}).")
+
+        last_update_time = time.time()
+        for fsinfo in filesystems:
+            if snapshot_job()["status"] == "Stopped":
+                break
+            try:
+                fs = _tsk_open_fs(image_path, fsinfo['offset'])
+            except Exception:
+                continue
+            for entry, path in _tsk_walk(fs):
+                if snapshot_job()["status"] == "Stopped":
+                    append_log("[!] Scan stopped by user.")
+                    break
+                if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
+                    continue
+                if files_scanned >= IMAGE_TRIAGE_MAX_FILES:
+                    walk_truncated = True
+                    break
+                try:
+                    tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
+                    buf = io.BytesIO()
+                    _tsk_stream_file(tsk_file, buf.write, max_bytes=IMAGE_TRIAGE_MAX_FILE_BYTES)
+                    data = buf.getvalue()
+                    for name, pattern in TRIAGE_PATTERNS.items():
+                        if truncated[name]:
+                            continue
+                        for m in pattern.finditer(data):
+                            val = m.group(0)
+                            if len(val) <= 4:  # skip trivial/near-empty matches
+                                continue
+                            key = (path, val)
+                            if key in seen[name]:
+                                continue
+                            seen[name].add(key)
+                            results[name].append((path, val))
+                            if len(results[name]) >= IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY:
+                                truncated[name] = True
+                                append_log(f"[!] {TRIAGE_CATEGORY_LABELS.get(name, name)}: hit the {IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY}-match cap, no longer collecting new ones.")
+                                break
+                    files_scanned += 1
+                except Exception:
+                    files_errored += 1
+
+                if time.time() - last_update_time > 0.5:
+                    updates = {"transferred_bytes": files_scanned}
+                    if total_files_estimate > 0:
+                        updates["progress_percent"] = round((files_scanned / total_files_estimate) * 100, 1)
+                    update_job(**updates)
+                    last_update_time = time.time()
+            if walk_truncated or snapshot_job()["status"] == "Stopped":
+                break
+
+        update_job(transferred_bytes=files_scanned)
+
+        image_base = os.path.splitext(os.path.basename(image_path))[0]
+        report_path = os.path.join(dest_dir, f"{image_base}_triage_scan_report.txt")
+        lines = [
+            "# Pi Forensics Suite - Filesystem-Aware Triage Scan Report",
+            f"# Image: {image_path}",
+            f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"# Files scanned: {files_scanned}" + (" (capped - more files remained unscanned)" if walk_truncated else ""),
+            f"# Files skipped (unreadable): {files_errored}",
+            "# Deleted files are excluded - their data blocks may already be partially overwritten.",
+            "",
+        ]
+        total_hits = 0
+        for name in TRIAGE_PATTERNS:
+            label = TRIAGE_CATEGORY_LABELS.get(name, name)
+            matches = results[name]
+            total_hits += len(matches)
+            cap_note = " (capped)" if truncated[name] else ""
+            lines.append(f"## {label} ({len(matches)} found{cap_note})")
+            for path, val in matches:
+                lines.append(f"{path}\t{val.decode('utf-8', errors='replace')}")
+            lines.append("")
+
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines).strip() + "\n")
+
+        if snapshot_job()["status"] == "Stopped":
+            pass  # already logged above
+        else:
+            update_job(status="Completed Successfully", progress_percent=100.0)
+            append_log(f"[+] Triage scan completed. {total_hits} total match(es) across {files_scanned} file(s) -> {report_path}")
+
+        log_chain_of_custody("image_triage_scan_complete", {
+            "image_path": image_path, "files_scanned": files_scanned,
+            "files_errored": files_errored, "total_hits": total_hits, "report_path": report_path,
+        }, source_ip=source_ip, user=user)
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+@app.route('/api/image/start_triage_scan', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def start_image_triage_scan():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+
+    if not image_path or not os.path.isfile(image_path):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    update_job(
+        format="image_triage_scan", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Initializing filesystem-aware triage scan of {image_path}..."
+    )
+
+    # Captured now, in the real request thread - the worker runs in a
+    # background daemon thread with no Flask request context, where
+    # request/g would raise RuntimeError if touched directly (the same
+    # gotcha network config's delayed-revert thread already hit once).
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_image_triage_scan,
+        args=(image_path, dest_dir, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("image_triage_scan_start", {"image_path": image_path, "destination": dest_dir})
+    return jsonify({"success": True, "message": "Filesystem-aware triage scan started."})
+
 # --- Binwalk / Strings, run directly against a single selected in-image file ---
 # Unlike the whole-image geolocation/hash-manifest routes above, these operate on
 # one already-selected file (matching how they already work in the real-filesystem
@@ -6369,6 +6715,62 @@ def image_strings():
 
     log_chain_of_custody("strings_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
     return jsonify({"success": True, "file_name": name_hint, "output": output or "[no printable strings found]"})
+
+@app.route('/api/image/exif', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_exif():
+    """Embedded metadata (EXIF/GPS/camera make-model, etc.) for a single
+    selected in-image file - the counterpart to /api/files/exif for the
+    real filesystem. Same extract-to-temp-then-run pattern as image_binwalk/
+    image_strings above, since exiftool needs a real path on disk."""
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    name_hint = req.get('name', '') or 'selected_file'
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix=os.path.splitext(name_hint)[1])
+        res = subprocess.run(['exiftool', '-j', '-a', '-G', tmp_path], capture_output=True, text=True, timeout=30)
+        if res.returncode != 0 and not res.stdout.strip():
+            return jsonify({"success": False, "error": res.stderr.strip() or "exiftool failed with no output."}), 500
+        parsed = json.loads(res.stdout)
+        metadata = parsed[0] if parsed else {}
+        # exiftool reports the temp file's own name/path back as separate
+        # File:FileName / File:Directory fields (not just embedded in
+        # SourceFile) - correct both to the real in-image name so the
+        # examiner never sees a meaningless tmp_xxxxx.jpg / /tmp instead of
+        # the evidence file's actual identity.
+        metadata.pop('SourceFile', None)
+        if 'File:FileName' in metadata:
+            metadata['File:FileName'] = name_hint
+        metadata.pop('File:Directory', None)
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "exiftool timed out."}), 500
+    except json.JSONDecodeError:
+        return jsonify({"success": False, "error": "Could not parse exiftool output."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read metadata: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    log_chain_of_custody("exif_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
+    return jsonify({"success": True, "file_name": name_hint, "metadata": metadata})
 
 # --- Filesystem-aware deleted file recovery, directly inside an acquired image ---
 # Unlike PhotoRec/foremost/scalpel/extundelete (raw signature-based carving, no

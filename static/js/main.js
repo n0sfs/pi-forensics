@@ -629,7 +629,7 @@ function buildFileTableRow(tbody, item) {
 
         updateContextToolbar(item);
         previewSelectedFile(item);
-        if (explorerRightView === 'metadata') loadExplorerMetadataPane();
+        refreshExplorerDetailsView();
     };
 
     tr.ondblclick = () => {
@@ -696,7 +696,7 @@ function explorerTreeRealAdapter() {
             activeSelectedIsDir = false;
             updateContextToolbar(node.raw);
             previewSelectedFile(node.raw);
-            if (explorerRightView === 'metadata') loadExplorerMetadataPane();
+            refreshExplorerDetailsView();
         },
         contextMenu: (ev, node) => showFileContextMenu(ev, node.raw),
     };
@@ -741,6 +741,7 @@ function explorerTreeImageAdapter() {
         selectFile: (node) => {
             explorerImageSelected = node.raw;
             if (!node.raw.is_dir) previewExplorerImageEntry(node.raw);
+            refreshExplorerDetailsView();
         },
         contextMenu: (ev, node) => showExplorerImageContextMenu(ev, node.raw),
     };
@@ -1255,6 +1256,7 @@ function updateContextToolbar(item) {
     const btnBinwalk = document.getElementById("btnRunBinwalk");
     const btnClamscan = document.getElementById("btnRunClamscan");
     const btnStrings = document.getElementById("btnRunStrings");
+    const btnQuickTriage = document.getElementById("btnQuickTriageScan");
     const btnHashdeep = document.getElementById("btnRunHashdeep");
     const btnGeolocation = document.getElementById("btnExtractGeolocation");
     const btnMvtIos = document.getElementById("btnRunMvtIos");
@@ -1264,6 +1266,7 @@ function updateContextToolbar(item) {
     if (btnCopy) btnCopy.disabled = false;
     if (btnBinwalk) btnBinwalk.disabled = item.is_dir;
     if (btnStrings) btnStrings.disabled = item.is_dir;
+    if (btnQuickTriage) btnQuickTriage.disabled = item.is_dir;
     if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
     if (btnGeolocation) btnGeolocation.disabled = !item.is_dir;  // scans a whole folder of photos at once
@@ -1330,7 +1333,7 @@ async function deleteSelectedFile() {
 // switchExplorerRightView()) rather than a modal - switching files while
 // the Metadata view is active re-fetches automatically, same as Preview
 // already does.
-let explorerRightView = 'preview'; // 'preview' | 'metadata'
+let explorerRightView = 'preview'; // 'preview' | 'hex' | 'metadata'
 
 // Both panes can carry Bootstrap's .d-flex utility in their className at
 // various points (the default placeholder state, and previewSelectedFile()'s
@@ -1349,14 +1352,116 @@ function setPaneVisible(el, visible) {
 function switchExplorerRightView(view) {
     explorerRightView = view;
     const previewPane = document.getElementById('explorerPreview');
+    const hexPane = document.getElementById('explorerHex');
     const metadataPane = document.getElementById('explorerMetadata');
     const previewBtn = document.getElementById('explorerViewPreviewBtn');
+    const hexBtn = document.getElementById('explorerViewHexBtn');
     const metadataBtn = document.getElementById('explorerViewMetadataBtn');
     setPaneVisible(previewPane, view === 'preview');
+    setPaneVisible(hexPane, view === 'hex');
     setPaneVisible(metadataPane, view === 'metadata');
     if (previewBtn) previewBtn.className = `btn btn-xs py-0 px-2 ${view === 'preview' ? 'btn-info' : 'btn-outline-info'}`;
+    if (hexBtn) hexBtn.className = `btn btn-xs py-0 px-2 ${view === 'hex' ? 'btn-info' : 'btn-outline-info'}`;
     if (metadataBtn) metadataBtn.className = `btn btn-xs py-0 px-2 ${view === 'metadata' ? 'btn-info' : 'btn-outline-info'}`;
-    if (view === 'metadata') loadExplorerMetadataPane();
+    // Preview doesn't need a load call here - previewSelectedFile()/
+    // previewExplorerImageEntry() already populated it at selection time.
+    // Hex/Metadata are fetched lazily instead, so switching to either one
+    // (after selecting a file while looking at Preview) needs its own load.
+    refreshExplorerDetailsView();
+}
+
+// Single dispatcher for "the currently selected file changed, or the
+// examiner switched tabs - make sure whichever non-Preview view is active
+// shows current data" - called both from switchExplorerRightView() and from
+// every selection point (table row click, tree click, timeline click) in
+// both real-fs and image mode, instead of each of those six call sites
+// repeating its own `if (explorerRightView === 'x') loadY()` check.
+function refreshExplorerDetailsView() {
+    if (explorerRightView === 'hex') {
+        if (explorerImageMode) loadExplorerImageHexPane();
+        else loadExplorerHexPane();
+    } else if (explorerRightView === 'metadata') {
+        if (explorerImageMode) loadExplorerImageMetadataPane();
+        else loadExplorerMetadataPane();
+    }
+}
+
+// Renders a base64 byte payload as a classic offset/hex/ASCII dump (xxd-
+// style, 16 bytes/row) - shared by the real-fs and in-image hex loaders
+// below. Formatting happens client-side so both backend routes can just
+// hand back raw base64 bytes, matching how image_preview() already does
+// for image data rather than doing layout server-side.
+function formatHexDump(base64Data) {
+    const binary = atob(base64Data);
+    const lines = [];
+    for (let offset = 0; offset < binary.length; offset += 16) {
+        const chunk = binary.slice(offset, offset + 16);
+        const hexParts = [];
+        let ascii = '';
+        for (let i = 0; i < 16; i++) {
+            if (i < chunk.length) {
+                const byte = chunk.charCodeAt(i);
+                hexParts.push(byte.toString(16).padStart(2, '0'));
+                ascii += (byte >= 0x20 && byte <= 0x7e) ? chunk[i] : '.';
+            } else {
+                hexParts.push('  ');
+            }
+            if (i === 7) hexParts.push(''); // extra gap between the two 8-byte groups
+        }
+        lines.push(`${offset.toString(16).padStart(8, '0')}  ${hexParts.join(' ')}  |${ascii}|`);
+    }
+    return lines.join('\n') || '(empty file)';
+}
+
+async function loadExplorerHexPane() {
+    const container = document.getElementById('explorerHex');
+    if (!container) return;
+
+    if (!activeSelectedFile || activeSelectedIsDir) {
+        container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+        container.innerHTML = '<i class="bi bi-code-square fs-1 text-subtle mb-2"></i><span class="text-subtle small">Select a file on the left to view its raw bytes.</span>';
+        return;
+    }
+
+    container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+    container.innerHTML = '<span class="text-subtle small">Loading hex view...</span>';
+
+    // Snapshot which file this fetch is for - a fast second click while the
+    // request is in flight shouldn't render stale bytes after the examiner
+    // has already moved on.
+    const requestedPath = activeSelectedFile;
+
+    try {
+        const res = await fetch('/api/files/hex', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile })
+        });
+        const data = await res.json();
+        if (activeSelectedFile !== requestedPath) return;
+
+        if (!data.success) {
+            container.innerHTML = '';
+            const err = document.createElement('div');
+            err.className = 'text-danger small';
+            err.textContent = data.error;
+            container.appendChild(err);
+            return;
+        }
+
+        container.className = 'file-pane p-2 d-block text-start';
+        container.innerHTML = '';
+        const pre = document.createElement('pre');
+        pre.className = 'log-window mb-0';
+        pre.style.height = '100%';
+        pre.textContent = formatHexDump(data.data) +
+            (data.truncated ? `\n\n[... truncated, showing first ${data.bytes_read.toLocaleString()} of ${data.total_size.toLocaleString()} bytes ...]` : '');
+        container.appendChild(pre);
+    } catch (err) {
+        if (activeSelectedFile !== requestedPath) return;
+        container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+        container.innerHTML = '<span class="text-danger small">Request failed.</span>';
+    }
 }
 
 async function loadExplorerMetadataPane() {
@@ -1403,19 +1508,7 @@ async function loadExplorerMetadataPane() {
             row.appendChild(cell);
             tbody.appendChild(row);
         } else {
-            for (const [key, value] of entries) {
-                const row = document.createElement('tr');
-                const keyCell = document.createElement('td');
-                keyCell.className = 'text-info fw-bold text-nowrap';
-                keyCell.style.width = '35%';
-                keyCell.textContent = key; // text node - metadata values come from the file itself, never innerHTML
-                const valCell = document.createElement('td');
-                valCell.className = 'text-break';
-                valCell.textContent = String(value);
-                row.appendChild(keyCell);
-                row.appendChild(valCell);
-                tbody.appendChild(row);
-            }
+            entries.forEach(([key, value]) => renderMetadataRow(tbody, key, value));
         }
         table.appendChild(tbody);
         container.appendChild(table);
@@ -1506,6 +1599,35 @@ async function runSelectedStrings() {
         const data = await res.json();
         const container = document.getElementById("toolOutputContainer");
         if (container) container.textContent = data.success ? data.output : `[ERROR] ${data.error}`;
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+// Fast, capped (first 32MB) scan for emails/URLs/IPs/card-like numbers/phone
+// numbers - a right-click quick look at a .dd/.E01 image (or any file)
+// reusing the same TRIAGE_PATTERNS the background Triage Scan job in File
+// Recovery uses, without needing to leave File Explorer to configure and
+// run that job.
+async function runSelectedQuickTriageScan() {
+    if (!activeSelectedFile) return;
+    showToolOutputModal(`Quick Triage Scan: ${activeSelectedFile.split('/').pop()}`, 'bi-binoculars');
+
+    try {
+        const res = await fetch('/api/files/quick_triage_scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) {
+            if (container) container.textContent = `[ERROR] ${data.error}`;
+            return;
+        }
+        setToolOutputBadge(`${data.total_hits} total match${data.total_hits === 1 ? '' : 'es'}`, data.total_hits > 0 ? 'bg-warning text-dark' : 'bg-success');
+        if (container) container.textContent = data.output;
     } catch (err) {
         const container = document.getElementById("toolOutputContainer");
         if (container) container.textContent = '[REQUEST FAILED]';
@@ -1608,6 +1730,7 @@ async function updateMvtIndicators(btnEl) {
 // #explorerPreview panes File Explorer already has for the real filesystem -
 // entering "image mode" just swaps what those two panes are driven by.
 let explorerImageMode = false;
+let lastImageTriageJobActive = false; // tracks the active->inactive transition specifically for the image_triage_scan job format, so fetchProgress() can notify on completion even though #explorerJobProgress itself hides as soon as the job goes inactive
 let explorerImagePath = null;
 let explorerImageOffset = 0;
 let explorerImagePathStack = [];  // [{inode, name}, ...] for breadcrumb + "up" navigation
@@ -1671,13 +1794,10 @@ function enterExplorerImageFor(item) {
         preview.innerHTML = '<span class="text-subtle small">Select a file to preview.</span>';
     }
 
-    // ExifTool needs a real path on disk, which a virtual in-image entry
-    // doesn't have (same restriction the context menu's image action set
-    // already enforces) - switch back to Preview and disable the Metadata
-    // tab for the duration of image mode.
+    // Metadata is available in image mode too (loadExplorerImageMetadataPane()
+    // extracts to a temp file for exiftool, same pattern as in-image Binwalk/
+    // Strings) - just reset to Preview as the default view on entry.
     switchExplorerRightView('preview');
-    const metadataBtn = document.getElementById('explorerViewMetadataBtn');
-    if (metadataBtn) metadataBtn.disabled = true;
 
     loadExplorerImagePartitions();
 }
@@ -1690,8 +1810,6 @@ function exitExplorerImage() {
     explorerImageMode = false;
     const toolbar = document.getElementById("explorerImageToolbar");
     if (toolbar) toolbar.style.display = 'none';
-    const metadataBtn = document.getElementById('explorerViewMetadataBtn');
-    if (metadataBtn) metadataBtn.disabled = false;
     initExplorerTree(); // restores the real-fs tree exactly as left, no re-fetch
     loadExplorer(explorerPath);
 }
@@ -1852,6 +1970,7 @@ function renderExplorerImageEntryRow(container, entry, displayName) {
         tr.classList.add('active');
         explorerImageSelected = entry;
         if (!entry.is_dir) previewExplorerImageEntry(entry);
+        refreshExplorerDetailsView();
     };
 
     tr.ondblclick = () => {
@@ -1918,6 +2037,182 @@ async function previewExplorerImageEntry(entry) {
     } catch (err) {
         preview.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
         preview.innerHTML = '<span class="text-danger small">Preview request failed.</span>';
+    }
+}
+
+// In-image counterpart to loadExplorerMetadataPane() - two sections, mirroring
+// Autopsy's own "File Metadata" tab: filesystem-level metadata (inode,
+// allocation status, MACB timestamps) is already in hand from whichever
+// directory listing/search/timeline row was clicked (explorerImageSelected),
+// so it renders instantly with no request; embedded metadata (EXIF/GPS/
+// camera info) is fetched from /api/image/exif, which extracts the file to a
+// short-lived temp file for exiftool - the same pattern already proven for
+// in-image Binwalk/Strings.
+function renderMetadataRow(tbody, key, value) {
+    const row = document.createElement('tr');
+    const keyCell = document.createElement('td');
+    keyCell.className = 'text-info fw-bold text-nowrap';
+    keyCell.style.width = '35%';
+    keyCell.textContent = key;
+    const valCell = document.createElement('td');
+    valCell.className = 'text-break';
+    valCell.textContent = String(value); // untrusted evidence value - text node, never innerHTML
+    row.appendChild(keyCell);
+    row.appendChild(valCell);
+    tbody.appendChild(row);
+}
+
+async function loadExplorerImageMetadataPane() {
+    const container = document.getElementById('explorerMetadata');
+    if (!container) return;
+
+    const entry = explorerImageSelected;
+    // entry.is_dir === true (not just truthy) so a timeline event - which
+    // has no is_dir field at all - doesn't get mistaken for a directory here.
+    if (!entry || entry.is_dir === true) {
+        container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+        container.innerHTML = '<i class="bi bi-info-circle fs-1 text-subtle mb-2"></i><span class="text-subtle small">Select a file on the left to view its metadata.</span>';
+        return;
+    }
+
+    container.className = 'file-pane p-2 d-block text-start';
+    container.innerHTML = '';
+
+    const fsHeading = document.createElement('div');
+    fsHeading.className = 'text-subtle small fw-bold mb-1';
+    fsHeading.textContent = 'Filesystem Metadata';
+    container.appendChild(fsHeading);
+
+    const fsTable = document.createElement('table');
+    fsTable.className = 'table table-sm table-dark table-striped mb-2';
+    const fsBody = document.createElement('tbody');
+    // A timeline-event-shaped entry only carries {inode, path, deleted,
+    // activity, timestamp} (see the Timeline results renderer) rather than a
+    // full directory-listing entry - skip whichever fields it doesn't have
+    // instead of showing "undefined" for them.
+    const entryName = entry.name || (entry.path ? entry.path.split('/').pop() : null);
+    [
+        ['Name', entryName],
+        ['Path', entry.path],
+        ['Inode', entry.inode],
+        ['Deleted', entry.deleted !== undefined ? (entry.deleted ? 'Yes' : 'No') : undefined],
+        ['TSK Virtual Entry', entry.is_virtual !== undefined ? (entry.is_virtual ? 'Yes' : 'No') : undefined],
+        ['Size', entry.size !== undefined ? imgFormatBytes(entry.size) : undefined],
+        ['Modified (M)', entry.mtime !== undefined ? imgFormatTimestamp(entry.mtime) : undefined],
+        ['Accessed (A)', entry.atime !== undefined ? imgFormatTimestamp(entry.atime) : undefined],
+        ['Changed (C)', entry.ctime !== undefined ? imgFormatTimestamp(entry.ctime) : undefined],
+        ['Born / Created (B)', entry.crtime !== undefined ? imgFormatTimestamp(entry.crtime) : undefined],
+    ].filter(([, v]) => v !== undefined && v !== null)
+     .forEach(([key, value]) => renderMetadataRow(fsBody, key, value));
+    fsTable.appendChild(fsBody);
+    container.appendChild(fsTable);
+
+    const exifHeading = document.createElement('div');
+    exifHeading.className = 'text-subtle small fw-bold mb-1';
+    exifHeading.textContent = 'Embedded Metadata (ExifTool)';
+    container.appendChild(exifHeading);
+    const exifStatus = document.createElement('div');
+    exifStatus.className = 'text-subtle small';
+    exifStatus.textContent = 'Loading...';
+    container.appendChild(exifStatus);
+
+    // Snapshot which entry this fetch is for - a fast second click while the
+    // first exiftool call is still in flight shouldn't render stale results
+    // into the pane after the examiner has already moved on to another file.
+    const requestedInode = entry.inode;
+
+    try {
+        const res = await fetch('/api/image/exif', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: explorerImagePath, offset: explorerImageOffset,
+                inode: entry.inode, name: entryName || 'selected_file',
+            })
+        });
+        const data = await res.json();
+        if (explorerImageSelected !== entry || explorerImageSelected.inode !== requestedInode) return;
+
+        exifStatus.remove();
+        if (!data.success) {
+            const err = document.createElement('div');
+            err.className = 'text-danger small';
+            err.textContent = data.error;
+            container.appendChild(err);
+            return;
+        }
+
+        const exifEntries = Object.entries(data.metadata || {});
+        const exifTable = document.createElement('table');
+        exifTable.className = 'table table-sm table-dark table-striped mb-0';
+        const exifBody = document.createElement('tbody');
+        if (exifEntries.length === 0) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.textContent = 'No embedded metadata found.';
+            cell.className = 'text-subtle';
+            row.appendChild(cell);
+            exifBody.appendChild(row);
+        } else {
+            exifEntries.forEach(([key, value]) => renderMetadataRow(exifBody, key, value));
+        }
+        exifTable.appendChild(exifBody);
+        container.appendChild(exifTable);
+    } catch (err) {
+        if (explorerImageSelected !== entry) return;
+        exifStatus.textContent = 'Request failed.';
+        exifStatus.className = 'text-danger small';
+    }
+}
+
+// In-image counterpart to loadExplorerHexPane() - reuses the same
+// formatHexDump() renderer, just fetches from /api/image/hex instead.
+async function loadExplorerImageHexPane() {
+    const container = document.getElementById('explorerHex');
+    if (!container) return;
+
+    const entry = explorerImageSelected;
+    if (!entry || entry.is_dir === true) {
+        container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+        container.innerHTML = '<i class="bi bi-code-square fs-1 text-subtle mb-2"></i><span class="text-subtle small">Select a file on the left to view its raw bytes.</span>';
+        return;
+    }
+
+    container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+    container.innerHTML = '<span class="text-subtle small">Loading hex view...</span>';
+
+    const requestedInode = entry.inode;
+
+    try {
+        const res = await fetch('/api/image/hex', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, offset: explorerImageOffset, inode: entry.inode })
+        });
+        const data = await res.json();
+        if (explorerImageSelected !== entry || explorerImageSelected.inode !== requestedInode) return;
+
+        if (!data.success) {
+            container.innerHTML = '';
+            const err = document.createElement('div');
+            err.className = 'text-danger small';
+            err.textContent = data.error;
+            container.appendChild(err);
+            return;
+        }
+
+        container.className = 'file-pane p-2 d-block text-start';
+        container.innerHTML = '';
+        const pre = document.createElement('pre');
+        pre.className = 'log-window mb-0';
+        pre.style.height = '100%';
+        pre.textContent = formatHexDump(data.data) +
+            (data.truncated ? `\n\n[... truncated, showing first ${data.bytes_read.toLocaleString()} of ${data.total_size.toLocaleString()} bytes ...]` : '');
+        container.appendChild(pre);
+    } catch (err) {
+        if (explorerImageSelected !== entry) return;
+        container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+        container.innerHTML = '<span class="text-danger small">Request failed.</span>';
     }
 }
 
@@ -2081,6 +2376,7 @@ async function runExplorerImageTimeline() {
                 document.querySelectorAll('.file-pane .file-item').forEach(el => el.classList.remove('active'));
                 row.classList.add('active');
                 explorerImageSelected = ev;
+                refreshExplorerDetailsView();
             };
 
             resultsEl.appendChild(row);
@@ -2257,6 +2553,34 @@ async function runImageHashManifest() {
         }
         alert(msg);
     } catch (err) {}
+}
+
+// Unlike every other in-image tool on this toolbar (which run synchronously
+// and just block the button click until done), this walks every real file
+// in the image and can genuinely take a while - it starts a trackable
+// background job instead (the same shared current_job system Acquisition/
+// Recovery/Mobile jobs use) rather than tying up the request. Progress is
+// shown via #explorerJobProgress, updated by the same fetchProgress() poll
+// that already drives every other tab's progress display.
+async function startImageTriageScan() {
+    if (!explorerImagePath) return;
+    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    try {
+        const res = await fetch('/api/image/start_triage_scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            alert(`Could not start triage scan: ${data.error}`);
+        }
+        // On success, no alert - #explorerJobProgress (updated by the
+        // existing fetchProgress() poll) is the feedback; a completion
+        // message would just be redundant with the progress log itself.
+    } catch (err) {
+        alert('Request failed.');
+    }
 }
 
 async function runImageRecoverDeleted() {
@@ -6653,6 +6977,31 @@ async function fetchProgress() {
                 mobileLogOutput.innerText = data.log;
                 mobileLogOutput.scrollTop = mobileLogOutput.scrollHeight;
             }
+        }
+
+        // File Explorer's in-image Triage Scan is the one in-image tool
+        // that's a real background job (every other one is synchronous) -
+        // mirrors whatever job is active station-wide, same as the Mobile
+        // block above does, not gated to just image_triage_scan jobs
+        // specifically (one shared current_job, shown from every tab that
+        // cares, regardless of which tab actually started it).
+        const explorerProgress = document.getElementById("explorerJobProgress");
+        if (explorerProgress) explorerProgress.style.display = data.active ? 'block' : 'none';
+        if (data.active) {
+            if (document.getElementById("explorerJobStatus")) document.getElementById("explorerJobStatus").innerText = `Status: ${data.status}`;
+            if (document.getElementById("explorerJobProgressBar")) document.getElementById("explorerJobProgressBar").style.width = `${data.progress_percent}%`;
+        }
+        if (document.getElementById("explorerImageTriageBtn")) document.getElementById("explorerImageTriageBtn").disabled = data.active;
+
+        // The progress row above hides the instant the job goes inactive,
+        // which could hide a "Completed Successfully"/"Failed"/"Stopped"
+        // result before it's ever seen - this catches that active->inactive
+        // transition specifically for this job format and surfaces it once.
+        if (data.format === 'image_triage_scan') {
+            if (lastImageTriageJobActive && !data.active) {
+                alert(`Filesystem-aware triage scan finished: ${data.status}\n\nCheck the case folder for the generated *_triage_scan_report.txt file.`);
+            }
+            lastImageTriageJobActive = data.active;
         }
 
         if (throughputChart) {
