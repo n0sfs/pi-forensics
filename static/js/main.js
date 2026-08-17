@@ -3102,9 +3102,13 @@ function onExportFormatChange() {
     const jsonGroup = document.getElementById("exportJsonPreviewGroup");
     if (!sel) return;
     const isJson = sel.value === 'json';
+    // CSV never touches /api/export_report either (same client-side-only
+    // reasoning as JSON - see runExportReport()), so it shares JSON's
+    // template/sections-hiding treatment, just without a live preview pane.
+    const isRawFormat = isJson || sel.value === 'csv';
 
-    if (templateGroup) templateGroup.style.display = isJson ? 'none' : '';
-    if (optionsRow) optionsRow.style.display = isJson ? 'none' : '';
+    if (templateGroup) templateGroup.style.display = isRawFormat ? 'none' : '';
+    if (optionsRow) optionsRow.style.display = isRawFormat ? 'none' : '';
     if (jsonGroup) jsonGroup.style.display = isJson ? 'block' : 'none';
 
     if (isJson) {
@@ -3112,7 +3116,7 @@ function onExportFormatChange() {
         if (previewEl && currentLoadedReportData) {
             previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
         }
-    } else {
+    } else if (!isRawFormat) {
         // Restore whatever the Sections/Fields group's own visibility
         // should be for the currently-selected template (standard vs.
         // fixed-structure vs. custom) - format and template toggle
@@ -3354,6 +3358,51 @@ async function runExportReport() {
         return;
     }
 
+    // Evidence Inventory CSV, same client-side-only reasoning as Raw JSON -
+    // the data's already loaded, no reason to round-trip through the backend
+    // just to reformat it. Mirrors export_report()'s own dual-schema handling:
+    // a consolidated case exposes .events; a legacy single-job report has no
+    // such array and is treated as its own single event.
+    if (format === 'csv') {
+        const statusEl = document.getElementById("exportReportStatus");
+        if (!currentLoadedReportData) {
+            if (statusEl) { statusEl.textContent = 'No case data loaded.'; statusEl.className = 'small text-danger'; }
+            return;
+        }
+        const data = currentLoadedReportData;
+        const events = Array.isArray(data.events) ? data.events : [data];
+        const csvCell = (val) => {
+            const s = (val === null || val === undefined) ? '' : String(val);
+            return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+        };
+        const header = ['Evidence ID', 'Device Path', 'Model', 'Serial Number', 'Capacity (GB)',
+                         'Tool', 'Status', 'Timestamp Start', 'MD5', 'SHA1', 'SHA256'];
+        const rows = [header];
+        events.forEach(event => {
+            const meta = event.case_metadata || {};
+            const drive = event.source_drive_telemetry || {};
+            const hashes = event.computed_verification_hashes || {};
+            rows.push([
+                meta.evidence_id ?? 'N/A', drive.device_path ?? 'N/A', drive.vendor_model ?? 'N/A',
+                drive.serial_number ?? 'N/A', drive.capacity_gb ?? 'N/A', event.tool ?? 'N/A',
+                event.acquisition_status ?? 'N/A', event.timestamp_start ?? 'N/A',
+                hashes.md5 ?? '', hashes.sha1 ?? '', hashes.sha256 ?? ''
+            ]);
+        });
+        const csvText = rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+        const blob = new Blob([csvText], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = reportPath.split('/').pop().replace('.json', '_evidence_inventory.csv');
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        if (statusEl) { statusEl.textContent = 'Export complete.'; statusEl.className = 'small text-success'; }
+        return;
+    }
+
     const template = document.getElementById("exportTemplateSelect")?.value || 'standard';
 
     // sections/job_fields only ever apply to the 'standard' template - the
@@ -3410,6 +3459,7 @@ async function runExportReport() {
         });
 
         if (res.ok) {
+            const reportHash = res.headers.get('X-Report-Sha256');
             const blob = await res.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -3419,7 +3469,10 @@ async function runExportReport() {
             document.body.appendChild(a);
             a.click();
             a.remove();
-            if (statusEl) { statusEl.textContent = 'Export complete.'; statusEl.className = 'small text-success'; }
+            if (statusEl) {
+                statusEl.textContent = reportHash ? `Export complete. SHA256: ${reportHash}` : 'Export complete.';
+                statusEl.className = 'small text-success';
+            }
         } else {
             const data = await res.json();
             if (statusEl) { statusEl.textContent = `Export failed: ${data.error}`; statusEl.className = 'small text-danger'; }
