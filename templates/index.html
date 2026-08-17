@@ -646,6 +646,8 @@
                                                 <div class="d-flex gap-1">
                                                     <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="explorerImageToggleSearch()" title="Search inside image"><i class="bi bi-search"></i></button>
                                                     <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="explorerImageToggleTimeline()" title="Generate timeline"><i class="bi bi-clock-history"></i></button>
+                                                    <button type="button" id="explorerImageGeoBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageGeolocationExport()" title="Scan the whole image for GPS-tagged photos and export a KML file"><i class="bi bi-geo-alt"></i></button>
+                                                    <button type="button" id="explorerImageHashBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageHashManifest()" title="Hash every file in the whole image (SHA256) and save a manifest"><i class="bi bi-list-check"></i></button>
                                                     <button type="button" class="btn btn-xs btn-outline-warning py-0 px-2" onclick="exitExplorerImage()" title="Exit image, return to file system"><i class="bi bi-x-lg me-1"></i>Exit Image</button>
                                                 </div>
                                             </div>
@@ -690,6 +692,7 @@
                             <button id="btnRunClamscan" class="dropdown-item" onclick="runSelectedClamscan()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks this file (or folder) against known virus/malware signatures."><i class="bi bi-shield-exclamation me-2"></i>Scan for Malware (ClamAV)</button>
                             <button id="btnRunStrings" class="dropdown-item" onclick="runSelectedStrings()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls out any readable text hiding inside a file that isn't normally text - like URLs or passwords buried in an executable."><i class="bi bi-fonts me-2"></i>Extract Strings</button>
                             <button id="btnRunHashdeep" class="dropdown-item" onclick="runSelectedHashdeep()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Creates a fingerprint (hash) for every file in a folder at once - useful for proving a whole set of recovered files hasn't been tampered with."><i class="bi bi-list-check me-2"></i>Hash Directory Tree (hashdeep)</button>
+                            <button id="btnExtractGeolocation" class="dropdown-item" onclick="runSelectedGeolocationExport()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Scans every photo in this folder for embedded GPS location data and saves a .kml file you can open in Google Earth or similar mapping software."><i class="bi bi-geo-alt me-2"></i>Extract Geolocation (KML)</button>
                             <button id="btnRunMvtIos" class="dropdown-item" onclick="runSelectedMvtScan('ios')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks an iOS backup folder (from Mobile Forensics) against known spyware indicators, using Amnesty International's Mobile Verification Toolkit."><i class="bi bi-phone me-2"></i>MVT Scan (iOS Backup)</button>
                             <button id="btnRunMvtAndroid" class="dropdown-item" onclick="runSelectedMvtScan('android')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Best-effort spyware/IOC scan of an Android backup folder using MVT. Only matches a decrypted adb-backup-format directory, not adb pull/bugreport output - errors clearly if the format doesn't match."><i class="bi bi-phone me-2"></i>MVT Scan (Android Backup)</button>
                             <div class="dropdown-divider"></div>
@@ -698,6 +701,8 @@
                         </div>
                         <div id="ctxMenuImageActions" style="display:none;">
                             <button id="ctxMenuImageExtract" class="dropdown-item" onclick="extractExplorerImageSelected()"><i class="bi bi-download me-2"></i>Extract to Evidence Root</button>
+                            <button id="ctxMenuImageBinwalk" class="dropdown-item" onclick="runImageBinwalk()"><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button>
+                            <button id="ctxMenuImageStrings" class="dropdown-item" onclick="runImageStrings()"><i class="bi bi-fonts me-2"></i>Extract Strings</button>
                         </div>
                     </div>
             </div>

@@ -794,6 +794,10 @@ function showExplorerImageContextMenu(ev, entry) {
     if (imageActions) imageActions.style.display = '';
     const extractBtn = document.getElementById('ctxMenuImageExtract');
     if (extractBtn) extractBtn.disabled = entry.is_dir;
+    const binwalkBtn = document.getElementById('ctxMenuImageBinwalk');
+    if (binwalkBtn) binwalkBtn.disabled = entry.is_dir;
+    const stringsBtn = document.getElementById('ctxMenuImageStrings');
+    if (stringsBtn) stringsBtn.disabled = entry.is_dir;
     positionContextMenu(ev);
 }
 
@@ -828,6 +832,7 @@ function updateContextToolbar(item) {
     const btnClamscan = document.getElementById("btnRunClamscan");
     const btnStrings = document.getElementById("btnRunStrings");
     const btnHashdeep = document.getElementById("btnRunHashdeep");
+    const btnGeolocation = document.getElementById("btnExtractGeolocation");
     const btnMvtIos = document.getElementById("btnRunMvtIos");
     const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
 
@@ -837,6 +842,7 @@ function updateContextToolbar(item) {
     if (btnStrings) btnStrings.disabled = item.is_dir;
     if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
+    if (btnGeolocation) btnGeolocation.disabled = !item.is_dir;  // scans a whole folder of photos at once
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
@@ -1096,6 +1102,29 @@ async function runSelectedHashdeep() {
             loadExplorer(explorerPath);
         } else {
             alert(`hashdeep failed: ${data.error}`);
+        }
+    } catch (err) {}
+}
+
+async function runSelectedGeolocationExport() {
+    if (!activeSelectedFile) return;
+
+    try {
+        const res = await fetch('/api/files/geolocation_kml', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile })
+        });
+        const data = await res.json();
+        if (data.success) {
+            if (data.points_found === 0) {
+                alert(`Scanned ${data.files_scanned} photo(s) - none had GPS location data. No KML file was needed.`);
+            } else {
+                alert(`Found location data in ${data.points_found} of ${data.files_scanned} photo(s).\nKML file written to:\n${data.kml_path}`);
+                loadExplorer(explorerPath);
+            }
+        } else {
+            alert(`Geolocation export failed: ${data.error}`);
         }
     } catch (err) {}
 }
@@ -1640,6 +1669,104 @@ async function extractExplorerImageSelected() {
         });
         const data = await res.json();
         alert(data.success ? data.message : `Extraction failed: ${data.error}`);
+    } catch (err) {}
+}
+
+async function runImageBinwalk() {
+    if (!explorerImageSelected) return;
+    showToolOutputModal(`Binwalk: ${explorerImageSelected.name}`, 'bi-cpu');
+    try {
+        const res = await fetch('/api/image/binwalk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: explorerImagePath, offset: explorerImageOffset,
+                inode: explorerImageSelected.inode, name: explorerImageSelected.name
+            })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = data.success ? data.output : `[ERROR] ${data.error}`;
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runImageStrings() {
+    if (!explorerImageSelected) return;
+    showToolOutputModal(`Strings: ${explorerImageSelected.name}`, 'bi-fonts');
+    try {
+        const res = await fetch('/api/image/strings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: explorerImagePath, offset: explorerImageOffset,
+                inode: explorerImageSelected.inode, name: explorerImageSelected.name
+            })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = data.success ? data.output : `[ERROR] ${data.error}`;
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runImageGeolocationExport() {
+    if (!explorerImagePath) return;
+    // Same active-case-folder-first destination as every other in-image action.
+    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    try {
+        const res = await fetch('/api/image/geolocation_kml', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            alert(`Geolocation export failed: ${data.error}`);
+            return;
+        }
+        let msg;
+        if (data.points_found === 0) {
+            msg = `Scanned ${data.files_scanned} photo(s) inside the image - none had GPS location data. No KML file was needed.`;
+        } else {
+            msg = `Found location data in ${data.points_found} of ${data.files_scanned} photo(s).\nKML file written to:\n${data.kml_path}`;
+        }
+        if (data.truncated) {
+            msg += `\n\nNote: this image has more candidate photos than could be scanned in one pass (capped at 300) - results are partial.`;
+        }
+        if (data.files_skipped_too_large > 0) {
+            msg += `\n\n${data.files_skipped_too_large} file(s) were skipped for being too large to scan.`;
+        }
+        alert(msg);
+    } catch (err) {}
+}
+
+async function runImageHashManifest() {
+    if (!explorerImagePath) return;
+    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    try {
+        const res = await fetch('/api/image/hash_manifest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir, algorithm: 'sha256' })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            alert(`Hash manifest failed: ${data.error}`);
+            return;
+        }
+        let msg = `Hashed ${data.files_hashed} file(s) inside the image.\nManifest written to:\n${data.manifest_path}`;
+        if (data.files_errored > 0) {
+            msg += `\n\n${data.files_errored} file(s) could not be read and were skipped.`;
+        }
+        if (data.truncated) {
+            msg += `\n\nNote: this image has more files than could be hashed in one pass - results are partial.`;
+        }
+        alert(msg);
     } catch (err) {}
 }
 
