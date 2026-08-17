@@ -689,6 +689,56 @@ else:
 
 subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", os.path.join(USER_HOME, ".config")], check=True)
 
+# 7b. Disable GVFS/udisks2 Automount at the dconf Level (Separate from PCManFM)
+# PCManFM's own [volume] autorun/mount switches (above) only control PCManFM's
+# reaction to a newly-inserted drive - they do NOT control gvfs-udisks2-volume-
+# monitor, a separate background daemon that automounts (and auto-opens a file
+# browser on) removable media based on the org.gnome.desktop.media-handling
+# gsettings schema. Confirmed live: even with PCManFM's autorun fully disabled,
+# this schema's automount/automount-open keys still default to true, so gvfs
+# would keep silently auto-mounting evidence media - a second, independent
+# path to exactly the same forensic-soundness problem the PCManFM fix above
+# addresses, just without even the courtesy of a prompt. Fixed the same way
+# any sysadmin permanently overrides a GNOME setting system-wide: a dconf
+# database override (not a per-user gsettings call, which only works against
+# an already-running session and wouldn't survive re-provisioning), locked so
+# it can't be silently re-enabled by any future per-user override. Verified
+# live to take effect immediately via `dconf update` with no reboot required
+# (unlike the ini-file-based PCManFM fix above, which needs PCManFM to restart
+# to reread it).
+print("\n[*] Disabling GVFS/udisks2 automount (dconf) globally...")
+dconf_locks_dir = "/etc/dconf/db/local.d/locks"
+os.makedirs(dconf_locks_dir, exist_ok=True)
+dconf_override_path = "/etc/dconf/db/local.d/00_media-handling"
+dconf_lock_path = os.path.join(dconf_locks_dir, "media-handling")
+
+with open(dconf_override_path, "w") as f:
+    f.write(
+        "[org/gnome/desktop/media-handling]\n"
+        "automount=false\n"
+        "automount-open=false\n"
+        "autorun-never=true\n"
+    )
+with open(dconf_lock_path, "w") as f:
+    f.write(
+        "/org/gnome/desktop/media-handling/automount\n"
+        "/org/gnome/desktop/media-handling/automount-open\n"
+        "/org/gnome/desktop/media-handling/autorun-never\n"
+    )
+subprocess.run(["dconf", "update"], check=True)
+
+# Verify rather than trust dconf update's exit code - read back what a real
+# client session would actually see, same discipline as the PCManFM check
+# above and the autologin check below.
+dconf_verify = subprocess.run(
+    ["dconf", "read", "/org/gnome/desktop/media-handling/automount"],
+    capture_output=True, text=True
+)
+if dconf_verify.stdout.strip() == "false":
+    print("[+] GVFS/udisks2 automount disabled and verified.")
+else:
+    print("[!] Could not confirm GVFS/udisks2 automount was disabled - check /etc/dconf/db/local.d/ manually.")
+
 # 7b. Enable Desktop Autologin for SERVICE_USER
 # labwc only runs ~/.config/labwc/autostart when SERVICE_USER's graphical
 # desktop session actually starts. On a stock image that requires desktop
