@@ -277,7 +277,7 @@ const FAQ_GROUPS = [
         items: [
             {
                 q: "How do I change my login password?",
-                a: "Settings > Security has a \"Change My Password\" form - you'll need your current password to set a new one. If this station has multiple accounts, an admin can also reset another user's password from the same card."
+                a: "Click \"Logged in as: ...\" in the top-right and choose \"Change My Password\" - you'll need your current password to set a new one. This works for every account regardless of user group. If this station has multiple accounts, someone with User & Group Management access can also reset another user's password from Settings > Security > User Accounts."
             },
             {
                 q: "Can more than one person have their own login on this station?",
@@ -5201,6 +5201,25 @@ async function startAndroidAcquisition() {
 
 // ===================== ADVANCED SETTINGS =====================
 
+// Change My Password lives in the "Logged in as" dropdown (navbar), not
+// Settings - every logged-in account needs to be able to change its own
+// password regardless of what its user group can otherwise access, so it
+// stays reachable from anywhere rather than behind a tab a limited group
+// might not see much reason to visit.
+let changePasswordModalInstance = null;
+
+function openChangePasswordModal() {
+    if (!changePasswordModalInstance) {
+        changePasswordModalInstance = new bootstrap.Modal(document.getElementById('changePasswordModal'));
+    }
+    document.getElementById("cfgCurrentPass").value = '';
+    document.getElementById("cfgNewPass").value = '';
+    document.getElementById("cfgConfirmPass").value = '';
+    const statusEl = document.getElementById("cfgPassStatus");
+    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'small'; }
+    changePasswordModalInstance.show();
+}
+
 async function changeAdminPassword() {
     const current = document.getElementById("cfgCurrentPass")?.value || '';
     const next = document.getElementById("cfgNewPass")?.value || '';
@@ -5208,11 +5227,11 @@ async function changeAdminPassword() {
     const statusEl = document.getElementById("cfgPassStatus");
 
     if (!current || !next) {
-        if (statusEl) { statusEl.className = 'small mt-2 text-danger'; statusEl.innerText = 'Enter your current and new password.'; }
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.innerText = 'Enter your current and new password.'; }
         return;
     }
     if (next !== confirm) {
-        if (statusEl) { statusEl.className = 'small mt-2 text-danger'; statusEl.innerText = 'New password and confirmation do not match.'; }
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.innerText = 'New password and confirmation do not match.'; }
         return;
     }
 
@@ -5223,17 +5242,16 @@ async function changeAdminPassword() {
             body: JSON.stringify({ current_password: current, new_password: next })
         });
         const data = await res.json();
-        if (statusEl) {
-            statusEl.className = data.success ? 'small mt-2 text-success' : 'small mt-2 text-danger';
-            statusEl.innerText = data.success ? data.message : data.error;
+        if (!data.success) {
+            if (statusEl) { statusEl.className = 'small text-danger'; statusEl.innerText = data.error; }
+            return;
         }
-        if (data.success) {
-            document.getElementById("cfgCurrentPass").value = '';
-            document.getElementById("cfgNewPass").value = '';
-            document.getElementById("cfgConfirmPass").value = '';
-        }
+        document.getElementById("cfgCurrentPass").value = '';
+        document.getElementById("cfgNewPass").value = '';
+        document.getElementById("cfgConfirmPass").value = '';
+        changePasswordModalInstance?.hide();
     } catch (err) {
-        if (statusEl) { statusEl.className = 'small mt-2 text-danger'; statusEl.innerText = 'Request failed.'; }
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.innerText = 'Request failed.'; }
     }
 }
 
@@ -5360,71 +5378,88 @@ function applyUserMgmtPermissionGating() {
     if (groupsItem) groupsItem.style.display = canManage ? '' : 'none';
 }
 
+// userListContainer is the <tbody> of the User Accounts table (columns:
+// User / Created / Last Login / Group / Reset Password / Delete) - every
+// state below (loading/error/empty/populated) renders one <tr> per row so
+// the column layout never collapses regardless of what's being shown.
+function _userListMessageRow(text, className) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.className = className;
+    cell.textContent = text;
+    row.appendChild(cell);
+    return row;
+}
+
 async function loadUserList() {
     const container = document.getElementById("userListContainer");
     if (!container) return;
     container.innerHTML = '';
-    const loading = document.createElement('span');
-    loading.className = 'text-subtle';
-    loading.textContent = 'Loading...';
-    container.appendChild(loading);
+    container.appendChild(_userListMessageRow('Loading...', 'text-subtle'));
 
     try {
         const res = await fetch('/api/users/list');
         const data = await res.json();
         container.innerHTML = '';
         if (!data.success) {
-            const msg = document.createElement('span');
-            msg.className = 'text-subtle';
-            msg.textContent = res.status === 403
+            const msg = res.status === 403
                 ? "Your account's group doesn't have User & Group Management access."
                 : (data.error || 'Failed to load accounts.');
-            container.appendChild(msg);
+            container.appendChild(_userListMessageRow(msg, 'text-subtle'));
             return;
         }
         if (data.users.length === 0) {
-            const msg = document.createElement('span');
-            msg.className = 'text-subtle';
-            msg.textContent = 'No accounts found.';
-            container.appendChild(msg);
+            container.appendChild(_userListMessageRow('No accounts found.', 'text-subtle'));
             return;
         }
         data.users.forEach(u => {
-            const row = document.createElement('div');
-            row.className = 'd-flex justify-content-between align-items-center mb-1 pb-1 border-bottom border-secondary';
+            const row = document.createElement('tr');
+            row.className = 'border-bottom border-secondary';
 
-            const left = document.createElement('div');
-            const nameSpan = document.createElement('span');
-            nameSpan.className = 'text-info fw-bold';
-            nameSpan.textContent = u.username; // untrusted (examiner-chosen) - text node only
+            const nameCell = document.createElement('td');
+            nameCell.className = 'text-info fw-bold';
+            nameCell.textContent = u.username; // untrusted (examiner-chosen) - text node only
+            row.appendChild(nameCell);
+
+            const createdCell = document.createElement('td');
+            createdCell.className = 'text-subtle';
+            createdCell.textContent = u.created_at || '--';
+            row.appendChild(createdCell);
+
+            const lastLoginCell = document.createElement('td');
+            lastLoginCell.className = 'text-subtle';
+            lastLoginCell.textContent = u.last_login || 'Never';
+            row.appendChild(lastLoginCell);
+
+            const groupCell = document.createElement('td');
             const groupBadge = document.createElement('span');
-            groupBadge.className = `badge ms-2 ${u.group_id === 'admin' ? 'bg-warning text-dark' : 'bg-secondary'}`;
+            groupBadge.className = `badge ${u.group_id === 'admin' ? 'bg-warning text-dark' : 'bg-secondary'}`;
             groupBadge.textContent = u.group_name; // group names are examiner-chosen too - text node only
-            left.appendChild(nameSpan);
-            left.appendChild(groupBadge);
+            groupCell.appendChild(groupBadge);
+            row.appendChild(groupCell);
 
-            const right = document.createElement('div');
+            const resetCell = document.createElement('td');
             const resetBtn = document.createElement('button');
-            resetBtn.className = 'btn btn-xs btn-outline-warning py-0 px-2 me-1';
+            resetBtn.className = 'btn btn-xs btn-outline-warning py-0 px-2';
             resetBtn.textContent = 'Reset Password';
             resetBtn.onclick = () => openUserActionModal('reset', u.username);
+            resetCell.appendChild(resetBtn);
+            row.appendChild(resetCell);
+
+            const delCell = document.createElement('td');
             const delBtn = document.createElement('button');
             delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-2';
             delBtn.textContent = 'Delete';
             delBtn.onclick = () => openUserActionModal('delete', u.username);
-            right.appendChild(resetBtn);
-            right.appendChild(delBtn);
+            delCell.appendChild(delBtn);
+            row.appendChild(delCell);
 
-            row.appendChild(left);
-            row.appendChild(right);
             container.appendChild(row);
         });
     } catch (err) {
         container.innerHTML = '';
-        const err_el = document.createElement('span');
-        err_el.className = 'text-danger';
-        err_el.textContent = 'Request failed.';
-        container.appendChild(err_el);
+        container.appendChild(_userListMessageRow('Request failed.', 'text-danger'));
     }
 }
 
