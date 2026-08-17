@@ -406,21 +406,128 @@ def requires_auth(f):
         return f(*args, **kwargs)
     return decorated
 
+# --- User Groups / Permissions ---
+# A group is {id, name, is_builtin, permissions: {key: bool}}. Two built-ins
+# always exist: "admin" (every key forced True, never persisted, never
+# editable - there must always be at least one group with full access that
+# no code path, bug, or accidental checkbox click can weaken) and "analyst"
+# (a sane operational-access default, persisted/editable like any custom
+# group once a station admin adjusts it, but not deletable/renamable - it's
+# meant to always exist as the sensible non-admin default new users land in).
+PERMISSION_KEYS = [
+    ("acquisition", "Forensic Acquisition"),
+    ("mobile", "Mobile Forensics"),
+    ("recovery", "File Recovery"),
+    ("file_explorer", "File Explorer"),
+    ("reporting", "Reporting"),
+    ("settings", "Settings (station configuration)"),
+    ("manage_users", "User & Group Management"),
+]
+
+def _all_permissions_true():
+    return {k: True for k, _ in PERMISSION_KEYS}
+
+def _normalize_permissions(raw):
+    raw = raw or {}
+    return {k: bool(raw.get(k, False)) for k, _ in PERMISSION_KEYS}
+
+def _default_analyst_permissions():
+    # Full day-to-day operational access, no station configuration and no
+    # ability to manage other accounts - matches this app's pre-groups
+    # "standard" role exactly, so nothing changes for an existing standard
+    # user migrated into this group (see get_user_group_id below).
+    return {
+        "acquisition": True, "mobile": True, "recovery": True,
+        "file_explorer": True, "reporting": True,
+        "settings": False, "manage_users": False,
+    }
+
+def get_user_groups():
+    """Full group list: the two built-ins merged with any custom groups from
+    runtime_config.json. Admin is synthesized fresh every call - it is never
+    read from or written to disk, so there is no code path that can persist
+    a weakened Admin group. Analyst is also always present even if never
+    explicitly saved, using its sane default permissions until a station
+    admin edits and saves it."""
+    cfg = load_runtime_config()
+    saved = {rec.get('id'): rec for rec in cfg.get('user_groups', [])}
+
+    groups = [{"id": "admin", "name": "Admin", "is_builtin": True, "permissions": _all_permissions_true()}]
+
+    analyst_saved = saved.get('analyst')
+    groups.append({
+        "id": "analyst", "name": "Analyst", "is_builtin": True,
+        "permissions": _normalize_permissions(analyst_saved.get('permissions')) if analyst_saved else _default_analyst_permissions(),
+    })
+
+    for rec in cfg.get('user_groups', []):
+        if rec.get('id') in ('admin', 'analyst'):
+            continue
+        groups.append({
+            "id": rec.get('id'), "name": rec.get('name'), "is_builtin": False,
+            "permissions": _normalize_permissions(rec.get('permissions')),
+        })
+    return groups
+
+def find_group(group_id, groups=None):
+    groups = groups if groups is not None else get_user_groups()
+    for grp in groups:
+        if grp['id'] == group_id:
+            return grp
+    return None
+
+def get_user_group_id(user):
+    """Resolves a user record's group id. A user created before groups
+    existed has no group_id, only the old role field - migrated on read
+    (not rewritten to disk) so this never needs an explicit migration step:
+    role 'admin' -> group 'admin', anything else (including the old
+    'standard' default) -> group 'analyst'."""
+    if not user:
+        return None
+    gid = user.get('group_id')
+    if gid:
+        return gid
+    return 'admin' if user.get('role') == 'admin' else 'analyst'
+
+def get_current_user_permissions():
+    """Full permission dict for whoever requires_auth() just authenticated.
+    Local kiosk access and the pre-multi-user single-shared-account mode
+    both resolve to full (Admin-equivalent) access - see
+    get_current_user_role()'s docstring below for why that's unchanged
+    behavior, not a new grant."""
+    username = getattr(g, 'forensic_user', None)
+    if username == 'local-kiosk':
+        return _all_permissions_true()
+    users = load_runtime_config().get('users')
+    if not users:
+        return _all_permissions_true()
+    user = find_user(username, users)
+    if not user:
+        return {k: False for k, _ in PERMISSION_KEYS}
+    group = find_group(get_user_group_id(user))
+    return dict(group['permissions']) if group else {k: False for k, _ in PERMISSION_KEYS}
+
 def get_current_user_role():
     """
-    Role of whoever requires_auth() just authenticated on this request.
-    Local kiosk access and the pre-multi-user single-shared-account mode
-    both behave as "admin" - they're the same one account this app has
-    always had, full station control, nothing new granted by this change.
+    Display-only label for whoever requires_auth() just authenticated on
+    this request (shown in the navbar's "Logged in as" indicator and the
+    user list). Local kiosk access and the pre-multi-user single-shared-
+    account mode both behave as "Admin" - they're the same one account this
+    app has always had, full station control, nothing new granted by this
+    change. Actual authorization decisions use get_current_user_permissions()
+    / requires_permission(), never this string.
     """
     username = getattr(g, 'forensic_user', None)
     if username == 'local-kiosk':
-        return 'admin'
+        return 'Admin'
     users = load_runtime_config().get('users')
     if not users:
-        return 'admin'
+        return 'Admin'
     user = find_user(username, users)
-    return user.get('role', 'standard') if user else None
+    if not user:
+        return None
+    group = find_group(get_user_group_id(user))
+    return group['name'] if group else 'Unknown'
 
 def caller_reauth_ok(current_password):
     """
@@ -439,14 +546,21 @@ def caller_reauth_ok(current_password):
     caller = find_user(caller_username)
     return bool(caller) and check_password_hash(caller.get('password_hash', ''), current_password)
 
-def requires_admin(f):
-    """Stack under @requires_auth - relies on it having already set g.forensic_user."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if get_current_user_role() != 'admin':
-            return jsonify({"success": False, "error": "Admin privileges required."}), 403
-        return f(*args, **kwargs)
-    return decorated
+def requires_permission(*keys):
+    """Stack under @requires_auth - relies on it having already set
+    g.forensic_user. Passes if the caller's group has ANY of the given
+    permission keys (most call sites pass exactly one; a few genuinely
+    cross-cutting routes - reachable from more than one tab's UI - pass more
+    than one so either tab's access is sufficient)."""
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            perms = get_current_user_permissions()
+            if not any(perms.get(k, False) for k in keys):
+                return jsonify({"success": False, "error": "Your account's user group doesn't have permission to perform this action."}), 403
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
 
 def safe_path(path_str):
     """
@@ -2248,6 +2362,7 @@ def attempt_startup_auto_mounts():
 
 @app.route('/api/mount_network', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def mount_network():
     req = request.get_json() or {}
     protocol = req.get('protocol', 'smb').lower()
@@ -2293,6 +2408,7 @@ def list_auto_mount_shares():
 
 @app.route('/api/network/auto_mounts/<entry_id>', methods=['DELETE'])
 @requires_auth
+@requires_permission('settings')
 def remove_auto_mount_share(entry_id):
     cfg = load_runtime_config()
     shares = cfg.get('auto_mount_shares', [])
@@ -2307,6 +2423,7 @@ def remove_auto_mount_share(entry_id):
 
 @app.route('/api/toggle_write_block', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def toggle_write_block():
     req = request.get_json() or {}
     enable = req.get('enable', True)
@@ -2341,6 +2458,7 @@ def toggle_write_block():
 
 @app.route('/api/start_imaging', methods=['POST'])
 @requires_auth
+@requires_permission('acquisition')
 def start_imaging():
     global current_job
 
@@ -2583,6 +2701,7 @@ def start_imaging():
 
 @app.route('/api/ddrescue/inspect_map', methods=['POST'])
 @requires_auth
+@requires_permission('acquisition')
 def inspect_ddrescue_map():
     req = request.get_json() or {}
     map_path = safe_path(req.get('map_path', ''))
@@ -2601,6 +2720,7 @@ def inspect_ddrescue_map():
 
 @app.route('/api/start_ddrescue', methods=['POST'])
 @requires_auth
+@requires_permission('acquisition')
 def start_ddrescue():
     global current_job
 
@@ -2740,6 +2860,7 @@ def get_mobile_devices():
 
 @app.route('/api/mobile/ios/pair', methods=['POST'])
 @requires_auth
+@requires_permission('mobile')
 def pair_ios_device():
     req = request.get_json() or {}
     udid = req.get('udid', '')
@@ -2759,6 +2880,7 @@ def pair_ios_device():
 
 @app.route('/api/mobile/start_ios_backup', methods=['POST'])
 @requires_auth
+@requires_permission('mobile')
 def start_ios_backup():
     global current_job
 
@@ -2827,6 +2949,7 @@ def start_ios_backup():
 
 @app.route('/api/mobile/start_android', methods=['POST'])
 @requires_auth
+@requires_permission('mobile')
 def start_android_acquisition():
     global current_job
 
@@ -2914,6 +3037,7 @@ def start_android_acquisition():
 # --- File Carving / Recovery (PhotoRec) ---
 @app.route('/api/recovery/start_photorec', methods=['POST'])
 @requires_auth
+@requires_permission('recovery')
 def start_photorec():
     global current_job
 
@@ -2987,6 +3111,7 @@ def start_photorec():
 
 @app.route('/api/recovery/start_extundelete', methods=['POST'])
 @requires_auth
+@requires_permission('recovery')
 def start_extundelete():
     global current_job
 
@@ -3059,6 +3184,7 @@ def start_extundelete():
 
 @app.route('/api/recovery/start_foremost', methods=['POST'])
 @requires_auth
+@requires_permission('recovery')
 def start_foremost():
     global current_job
 
@@ -3125,6 +3251,7 @@ def start_foremost():
 
 @app.route('/api/recovery/start_scalpel', methods=['POST'])
 @requires_auth
+@requires_permission('recovery')
 def start_scalpel():
     global current_job
 
@@ -3189,6 +3316,7 @@ def start_scalpel():
 
 @app.route('/api/recovery/start_triage_scan', methods=['POST'])
 @requires_auth
+@requires_permission('recovery')
 def start_triage_scan():
     global current_job
 
@@ -3334,6 +3462,7 @@ DIAGNOSTIC_COMMANDS = {
 
 @app.route('/api/system/diagnostics', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def run_diagnostic_command():
     req = request.get_json() or {}
     key = req.get('command', '')
@@ -3466,6 +3595,7 @@ def get_tool_versions():
 
 @app.route('/api/system/install_tool', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def install_tool():
     req = request.get_json() or {}
     package = req.get('package', '')
@@ -3544,33 +3674,46 @@ def change_password():
 @requires_auth
 def whoami():
     username = getattr(g, 'forensic_user', None)
-    return jsonify({"username": username, "role": get_current_user_role()})
+    perms = get_current_user_permissions()
+    return jsonify({
+        "username": username,
+        "role": get_current_user_role(),
+        "permissions": perms,
+    })
 
 @app.route('/api/users/list', methods=['GET'])
 @requires_auth
-@requires_admin
+@requires_permission('manage_users')
 def users_list():
     users = load_runtime_config().get('users') or []
-    return jsonify({"success": True, "users": [
-        {"username": u.get('username'), "role": u.get('role', 'standard'), "created_at": u.get('created_at')}
-        for u in users
-    ]})
+    groups_by_id = {grp['id']: grp for grp in get_user_groups()}
+    out = []
+    for u in users:
+        gid = get_user_group_id(u)
+        grp = groups_by_id.get(gid)
+        out.append({
+            "username": u.get('username'),
+            "group_id": gid,
+            "group_name": grp['name'] if grp else gid,
+            "created_at": u.get('created_at'),
+        })
+    return jsonify({"success": True, "users": out})
 
 @app.route('/api/users/create', methods=['POST'])
 @requires_auth
-@requires_admin
+@requires_permission('manage_users')
 def users_create():
     req = request.get_json() or {}
     username = (req.get('username') or '').strip()
     password = req.get('password') or ''
-    role = req.get('role') or 'standard'
+    group_id = req.get('group_id') or 'analyst'
 
     if not username:
         return jsonify({"success": False, "error": "Username is required."}), 400
     if not password or len(password) < 8:
         return jsonify({"success": False, "error": "Password must be at least 8 characters long."}), 400
-    if role not in ('admin', 'standard'):
-        return jsonify({"success": False, "error": "Role must be 'admin' or 'standard'."}), 400
+    if not find_group(group_id):
+        return jsonify({"success": False, "error": f"'{group_id}' is not a recognized user group."}), 400
 
     cfg = load_runtime_config()
     users = cfg.setdefault('users', [])
@@ -3580,16 +3723,20 @@ def users_create():
     users.append({
         "username": username,
         "password_hash": generate_password_hash(password),
-        "role": role,
+        "group_id": group_id,
+        # Kept in sync only for any external tooling that might still read
+        # the pre-groups field directly - nothing in this app reads it
+        # anymore (get_user_group_id() always prefers group_id when present).
+        "role": "admin" if group_id == "admin" else "standard",
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     })
     save_runtime_config(cfg)
-    log_chain_of_custody("user_create", {"username": username, "role": role})
+    log_chain_of_custody("user_create", {"username": username, "group_id": group_id})
     return jsonify({"success": True, "message": f"User '{username}' created."})
 
 @app.route('/api/users/delete', methods=['POST'])
 @requires_auth
-@requires_admin
+@requires_permission('manage_users')
 def users_delete():
     req = request.get_json() or {}
     username = (req.get('username') or '').strip()
@@ -3605,9 +3752,9 @@ def users_delete():
     if not target:
         return jsonify({"success": False, "error": f"No user named '{username}' exists."}), 404
 
-    admin_count = sum(1 for u in users if u.get('role') == 'admin')
-    if target.get('role') == 'admin' and admin_count <= 1:
-        return jsonify({"success": False, "error": "Cannot delete the last remaining admin account."}), 409
+    admin_count = sum(1 for u in users if get_user_group_id(u) == 'admin')
+    if get_user_group_id(target) == 'admin' and admin_count <= 1:
+        return jsonify({"success": False, "error": "Cannot delete the last remaining Admin-group account."}), 409
 
     cfg['users'] = [u for u in users if not hmac.compare_digest(u.get('username', ''), username)]
     save_runtime_config(cfg)
@@ -3616,7 +3763,7 @@ def users_delete():
 
 @app.route('/api/users/reset_password', methods=['POST'])
 @requires_auth
-@requires_admin
+@requires_permission('manage_users')
 def users_reset_password():
     req = request.get_json() or {}
     username = (req.get('username') or '').strip()
@@ -3640,6 +3787,116 @@ def users_reset_password():
     save_runtime_config(cfg)
     log_chain_of_custody("user_reset_password", {"username": username})
     return jsonify({"success": True, "message": f"Password for '{username}' reset."})
+
+@app.route('/api/user_groups', methods=['GET', 'POST'])
+@requires_auth
+@requires_permission('manage_users')
+def user_groups_collection():
+    if request.method == 'GET':
+        return jsonify({
+            "success": True,
+            "groups": get_user_groups(),
+            # Single source of truth for the frontend's checkbox list, so it
+            # never hardcodes the permission-key/label pairs itself.
+            "permission_keys": [{"key": k, "label": label} for k, label in PERMISSION_KEYS],
+        })
+
+    req = request.get_json() or {}
+    name = (req.get('name') or '').strip()[:60]
+    if not name:
+        return jsonify({"success": False, "error": "Group name is required."}), 400
+    if name.lower() in ('admin', 'analyst'):
+        return jsonify({"success": False, "error": "That name is reserved for a built-in group."}), 400
+
+    cfg = load_runtime_config()
+    groups = cfg.setdefault('user_groups', [])
+
+    # Soft-dedupe on id collision (numeric suffix), matching this app's
+    # existing precedent for custom report templates - there's no on-disk
+    # artifact at stake for a duplicate group *name*, just a cosmetic label.
+    base_id = re.sub(r'[^a-z0-9_]+', '_', name.lower()).strip('_') or 'group'
+    existing_ids = {g['id'] for g in get_user_groups()}
+    group_id = base_id
+    n = 2
+    while group_id in existing_ids:
+        group_id = f"{base_id}_{n}"
+        n += 1
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    record = {
+        "id": group_id, "name": name,
+        "permissions": _normalize_permissions(req.get('permissions')),
+        "created_at": now, "updated_at": now,
+    }
+    groups.append(record)
+    save_runtime_config(cfg)
+    log_chain_of_custody("user_group_create", {"group_id": group_id, "name": name, "permissions": record['permissions']})
+    return jsonify({"success": True, "group": dict(record, is_builtin=False)})
+
+@app.route('/api/user_groups/<group_id>', methods=['PUT', 'DELETE'])
+@requires_auth
+@requires_permission('manage_users')
+def user_groups_detail(group_id):
+    if group_id == 'admin':
+        return jsonify({"success": False, "error": "The Admin group always has full access and can't be modified or deleted."}), 400
+
+    cfg = load_runtime_config()
+    groups = cfg.setdefault('user_groups', [])
+
+    if request.method == 'DELETE':
+        if group_id == 'analyst':
+            return jsonify({"success": False, "error": "The built-in Analyst group can't be deleted."}), 400
+        idx = next((i for i, g_ in enumerate(groups) if g_.get('id') == group_id), None)
+        if idx is None:
+            return jsonify({"success": False, "error": "That group doesn't exist."}), 404
+        groups.pop(idx)
+        # Any user pointed at the deleted group falls back to Analyst rather
+        # than being left with a dangling group_id - matches this app's
+        # existing "reset to a sane default" precedent (e.g. deleting a
+        # custom report template resets the station default to 'standard').
+        reassigned = 0
+        for u in cfg.get('users', []):
+            if u.get('group_id') == group_id:
+                u['group_id'] = 'analyst'
+                reassigned += 1
+        save_runtime_config(cfg)
+        log_chain_of_custody("user_group_delete", {"group_id": group_id, "users_reassigned_to_analyst": reassigned})
+        return jsonify({"success": True})
+
+    # PUT (update name/permissions). Analyst's name is fixed (it's the
+    # built-in default new users land in) but its permissions ARE editable -
+    # a custom group's name and permissions are both fully editable.
+    req = request.get_json() or {}
+    permissions = _normalize_permissions(req.get('permissions'))
+
+    if group_id == 'analyst':
+        idx = next((i for i, g_ in enumerate(groups) if g_.get('id') == 'analyst'), None)
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        record = {"id": "analyst", "name": "Analyst", "permissions": permissions, "updated_at": now}
+        if idx is None:
+            record['created_at'] = now
+            groups.append(record)
+        else:
+            record['created_at'] = groups[idx].get('created_at', now)
+            groups[idx] = record
+        save_runtime_config(cfg)
+        log_chain_of_custody("user_group_update", {"group_id": "analyst", "permissions": permissions})
+        return jsonify({"success": True, "group": dict(record, is_builtin=True)})
+
+    idx = next((i for i, g_ in enumerate(groups) if g_.get('id') == group_id), None)
+    if idx is None:
+        return jsonify({"success": False, "error": "That group doesn't exist."}), 404
+
+    name = (req.get('name') or '').strip()[:60] or groups[idx].get('name')
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    record = {
+        "id": group_id, "name": name, "permissions": permissions,
+        "created_at": groups[idx].get('created_at', now), "updated_at": now,
+    }
+    groups[idx] = record
+    save_runtime_config(cfg)
+    log_chain_of_custody("user_group_update", {"group_id": group_id, "name": name, "permissions": permissions})
+    return jsonify({"success": True, "group": dict(record, is_builtin=False)})
 
 @app.route('/api/system/tls_status', methods=['GET'])
 @requires_auth
@@ -3709,6 +3966,7 @@ def _install_tls_pair(tmp_cert_path, tmp_key_path, coc_action, coc_details=None)
 
 @app.route('/api/system/tls_upload', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def tls_upload():
     cert_file = request.files.get('cert_file')
     key_file = request.files.get('key_file')
@@ -3762,6 +4020,7 @@ _HOSTNAME_RE = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9\-\.]{0,251}[A-Za-z0-9])?$'
 
 @app.route('/api/system/tls_generate', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def tls_generate():
     data = request.get_json(silent=True) or {}
     extra_hostname = (data.get('extra_hostname') or '').strip()
@@ -3841,6 +4100,12 @@ def settings_case_reporting():
             "report_defaults": cfg.get('report_defaults', {}),
             "custom_case_fields": cfg.get('custom_case_fields', []),
         })
+
+    # GET is left ungated above - Reporting's Export pane reads these
+    # defaults too, not just Settings - only the write path is
+    # Settings-exclusive.
+    if not get_current_user_permissions().get('settings', False):
+        return jsonify({"success": False, "error": "Your account's user group doesn't have permission to perform this action."}), 403
 
     req = request.get_json() or {}
     cfg = load_runtime_config()
@@ -3968,6 +4233,14 @@ def report_templates_custom():
             "blocks": [{"key": b["key"], "default_title": b["default_title"]} for b in REPORT_SECTION_BLOCKS],
         })
 
+    # GET is left ungated above - both the Reporting Export pane and
+    # Settings > Case & Reporting need the template list - only creating a
+    # new one is gated, and by either area since the builder is reachable
+    # from both.
+    perms = get_current_user_permissions()
+    if not (perms.get('settings', False) or perms.get('reporting', False)):
+        return jsonify({"success": False, "error": "Your account's user group doesn't have permission to perform this action."}), 403
+
     req = request.get_json() or {}
     record, error = _custom_report_template_from_payload(req)
     if error:
@@ -3993,6 +4266,7 @@ def report_templates_custom():
 
 @app.route('/api/report_templates/custom/<template_id>', methods=['PUT', 'DELETE'])
 @requires_auth
+@requires_permission('settings', 'reporting')
 def report_templates_custom_detail(template_id):
     cfg = load_runtime_config()
     templates = cfg.get('custom_report_templates', [])
@@ -4027,6 +4301,7 @@ REPORT_LOGO_MAX_BYTES = 2_000_000
 
 @app.route('/api/settings/report_logo', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def upload_report_logo():
     logo_file = request.files.get('logo')
     if not logo_file or not logo_file.filename:
@@ -4062,6 +4337,7 @@ def upload_report_logo():
 
 @app.route('/api/settings/report_logo/clear', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def clear_report_logo():
     cfg = load_runtime_config()
     logo_path = cfg.get('report_defaults', {}).get('branding', {}).get('logo_path', '')
@@ -4077,6 +4353,7 @@ def clear_report_logo():
 
 @app.route('/api/system/power', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def system_power_control():
     req = request.get_json() or {}
     action = req.get('action')
@@ -4092,6 +4369,7 @@ def system_power_control():
 
 @app.route('/api/system/restart_service', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def restart_forensic_service():
     def delayed_restart():
         time.sleep(1)
@@ -4102,6 +4380,7 @@ def restart_forensic_service():
 
 @app.route('/api/system/restart_kiosk', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def restart_touch_kiosk():
     # install.py's labwc autostart script (started once, automatically, at
     # kiosk desktop login - not by this route) already runs its own
@@ -4133,6 +4412,7 @@ def restart_touch_kiosk():
 
 @app.route('/api/system/git_update', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def git_update_application():
     try:
         res = subprocess.run(['git', 'pull', 'origin', 'main'], cwd=INSTALL_DIR, capture_output=True, text=True, timeout=60)
@@ -4153,6 +4433,7 @@ def git_update_application():
 
 @app.route('/api/system/os_update', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def update_operating_system():
     def run_update():
         try:
@@ -4166,6 +4447,7 @@ def update_operating_system():
 
 @app.route('/api/system/eject_drive', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def eject_usb_drive():
     req = request.get_json() or {}
     drive = req.get('drive', '').strip()
@@ -4359,6 +4641,7 @@ def get_network_config():
 
 @app.route('/api/network/apply', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def apply_network_config():
     global pending_network_revert
     req = request.get_json() or {}
@@ -4445,6 +4728,7 @@ def apply_network_config():
 
 @app.route('/api/network/confirm', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def confirm_network_config():
     req = request.get_json() or {}
     token = req.get('revert_token', '').strip()
@@ -4460,12 +4744,14 @@ def confirm_network_config():
 
 @app.route('/api/system/maintenance/purge_logs', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def purge_system_logs():
     update_job(log="[System log buffer purged by examiner.]")
     return jsonify({"success": True, "message": "Console log buffer cleared."})
 
 @app.route('/api/system/toggle_keyboard', methods=['POST'])
 @requires_auth
+@requires_permission('settings')
 def toggle_onscreen_keyboard():
     # wvkbd-mobintl starts VISIBLE (see install.py's kiosk autostart
     # script) so it's usable immediately for the browser's native Basic
@@ -4522,6 +4808,7 @@ def browse_files():
 
 @app.route('/api/files/copy', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def copy_file():
     req = request.get_json() or {}
     src = safe_path(req.get('source'))
@@ -4543,6 +4830,7 @@ def copy_file():
 
 @app.route('/api/files/delete', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def delete_file():
     req = request.get_json() or {}
     path = safe_path(req.get('path'))
@@ -4632,6 +4920,7 @@ def load_report_json():
 
 @app.route('/api/report/save', methods=['POST'])
 @requires_auth
+@requires_permission('reporting')
 def save_report_json():
     req = request.get_json() or {}
     report_file = safe_path(req.get('report_path'))
@@ -4651,6 +4940,7 @@ def save_report_json():
 # --- Post-Acquisition Hash Verifier ---
 @app.route('/api/verify_hash', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def verify_file_hash():
     req = request.get_json() or {}
     file_path = safe_path(req.get('file_path'))
@@ -4681,6 +4971,7 @@ def verify_file_hash():
 # --- File Metadata (ExifTool) ---
 @app.route('/api/files/exif', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def get_file_exif():
     req = request.get_json() or {}
     file_path = safe_path(req.get('path'))
@@ -4712,6 +5003,7 @@ def get_file_exif():
 # --- Binwalk: Embedded Filesystem / Firmware Signature Scan ---
 @app.route('/api/files/binwalk', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def run_binwalk():
     req = request.get_json() or {}
     file_path = safe_path(req.get('path'))
@@ -4736,6 +5028,7 @@ def run_binwalk():
 # --- TestDisk: Read-Only Partition Analysis ---
 @app.route('/api/recovery/testdisk_analyze', methods=['POST'])
 @requires_auth
+@requires_permission('recovery')
 def testdisk_analyze():
     req = request.get_json() or {}
     source_raw = req.get('source', '')
@@ -4766,6 +5059,7 @@ def testdisk_analyze():
 # --- ClamAV: Malware Scan ---
 @app.route('/api/files/clamscan', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def run_clamscan():
     req = request.get_json() or {}
     target_path = safe_path(req.get('path'))
@@ -4789,6 +5083,7 @@ def run_clamscan():
 # --- hashdeep: Recursive Directory Hash Manifest ---
 @app.route('/api/files/hashdeep', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def run_hashdeep():
     req = request.get_json() or {}
     target_dir = safe_path(req.get('path'))
@@ -4877,6 +5172,7 @@ def _build_geo_kml(points, doc_title):
 
 @app.route('/api/files/geolocation_kml', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def extract_geolocation_kml():
     req = request.get_json() or {}
     target_dir = safe_path(req.get('path'))
@@ -4926,6 +5222,7 @@ def extract_geolocation_kml():
 # --- strings: Extract Printable Text From a Binary File ---
 @app.route('/api/files/strings', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def run_strings():
     req = request.get_json() or {}
     file_path = safe_path(req.get('path'))
@@ -4957,6 +5254,7 @@ def run_strings():
 # nothing, so it's still exposed rather than blocked outright.
 @app.route('/api/files/mvt_scan', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def run_mvt_scan():
     req = request.get_json() or {}
     target_dir = safe_path(req.get('path'))
@@ -5490,6 +5788,7 @@ def _tsk_stream_file(tsk_file, write_fn, max_bytes=None):
 
 @app.route('/api/image/mmls', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_mmls():
     req = request.get_json() or {}
     image_path = safe_path(req.get('image_path'))
@@ -5519,6 +5818,7 @@ def image_mmls():
 
 @app.route('/api/image/fls', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_fls():
     req = request.get_json() or {}
     image_path = safe_path(req.get('image_path'))
@@ -5548,6 +5848,7 @@ def image_fls():
 
 @app.route('/api/image/extract', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_extract():
     req = request.get_json() or {}
     image_path = safe_path(req.get('image_path'))
@@ -5595,6 +5896,7 @@ def image_extract():
 
 @app.route('/api/image/preview', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_preview():
     """In-memory preview of a file still inside the image - no extract-to-
     disk step first, unlike the old icat-then-browse-in-File-Explorer flow."""
@@ -5641,6 +5943,7 @@ def image_preview():
 
 @app.route('/api/image/search', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_search():
     req = request.get_json() or {}
     image_path = safe_path(req.get('image_path'))
@@ -5682,6 +5985,7 @@ def image_search():
 
 @app.route('/api/image/timeline', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_timeline():
     """MACB timeline built directly from a pytsk3 walk - no dependency on
     the external mactime perl script fls -m output traditionally needs."""
@@ -5738,6 +6042,7 @@ IMAGE_GEO_MAX_FILE_BYTES = 32 * 1024 * 1024  # generous for JPEG/HEIC, skips ove
 
 @app.route('/api/image/geolocation_kml', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_geolocation_kml():
     """Scans every real filesystem inside an acquired image for GPS-tagged
     photos without extracting them to disk first - each candidate's bytes
@@ -5853,6 +6158,7 @@ IMAGE_HASH_MAX_SECONDS = 300
 
 @app.route('/api/image/hash_manifest', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_hash_manifest():
     """Recursively hashes every real, non-deleted file inside an acquired
     image without extracting anything to disk first. Deleted files are
@@ -5954,6 +6260,7 @@ def _tsk_extract_to_temp(fs, inode_num, suffix=''):
 
 @app.route('/api/image/binwalk', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_binwalk():
     req = request.get_json() or {}
     image_path = safe_path(req.get('image_path'))
@@ -5992,6 +6299,7 @@ def image_binwalk():
 
 @app.route('/api/image/strings', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_strings():
     req = request.get_json() or {}
     image_path = safe_path(req.get('image_path'))
@@ -6065,6 +6373,7 @@ IMAGE_RECOVER_MAX_SECONDS = 600
 
 @app.route('/api/image/recover_deleted', methods=['POST'])
 @requires_auth
+@requires_permission('file_explorer')
 def image_recover_deleted():
     req = request.get_json() or {}
     image_path = safe_path(req.get('image_path'))
@@ -6480,6 +6789,7 @@ def _discover_case_files(case_folder):
 
 @app.route('/api/cases/discover_files', methods=['GET'])
 @requires_auth
+@requires_permission('reporting')
 def discover_case_files():
     case_folder = safe_path(request.args.get('case_folder', ''))
     if not case_folder or not os.path.isdir(case_folder):
@@ -6489,6 +6799,7 @@ def discover_case_files():
 
 @app.route('/api/cases/attach_file', methods=['POST'])
 @requires_auth
+@requires_permission('reporting', 'file_explorer')
 def attach_file_to_case():
     """Lets File Explorer's "Attach to Case" context-menu action bookmark a
     file the moment an examiner is looking at it, rather than requiring a
@@ -6548,6 +6859,7 @@ def _hash_note_content(text, attachment_paths):
 
 @app.route('/api/cases/notes/add', methods=['POST'])
 @requires_auth
+@requires_permission('reporting')
 def add_case_note():
     report_file = safe_path(request.form.get('report_path', ''))
     if not report_file or not os.path.exists(report_file):
@@ -6617,6 +6929,7 @@ def add_case_note():
 
 @app.route('/api/cases/notes/edit', methods=['POST'])
 @requires_auth
+@requires_permission('reporting')
 def edit_case_note():
     req = request.get_json() or {}
     report_file = safe_path(req.get('report_path'))
@@ -8112,6 +8425,7 @@ def _build_html_report_police(header, events, urls, files, audit_entries, case_n
 
 @app.route('/api/export_report', methods=['POST'])
 @requires_auth
+@requires_permission('reporting')
 def export_report():
     req = request.get_json() or {}
     report_file = safe_path(req.get('report_path'))

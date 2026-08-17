@@ -209,6 +209,11 @@ else:
         runtime_cfg["users"].append({
             "username": FORENSIC_USER,
             "password_hash": hash_res.stdout.strip(),
+            "group_id": "admin",
+            # Kept in sync for any external tooling that might still read
+            # the pre-groups field directly - app.py's get_user_group_id()
+            # always prefers group_id when present, this is just a legacy
+            # mirror, not something app.py itself reads anymore.
             "role": "admin",
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         })
