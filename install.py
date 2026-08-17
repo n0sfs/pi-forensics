@@ -4,9 +4,11 @@ import re
 import sys
 import json
 import time
+import math
 import pwd
 import getpass
 import subprocess
+import urllib.request
 
 if os.geteuid() != 0:
     print("[!] Error: This installation script must be run with root privileges (sudo python3 install.py).")
@@ -448,6 +450,194 @@ server {
 else:
     print("    Skipping TLS setup. gunicorn will be reachable directly over plain HTTP.")
     print("    You can run this installer again later, or set up TLS manually - see README.md.")
+
+# 5c. Optional: offline OpenStreetMap tile cache
+# The Geolocation Viewer (File Explorer / Reporting) renders KML placemarks on a Leaflet map.
+# The map *library* is vendored locally (static/vendor/leaflet/ - works with zero internet), but
+# the map *imagery* itself is normally fetched live from tile.openstreetmap.org, which just shows
+# blank/gray squares (pins still render, just with no background map) on a station with no internet
+# after this install finishes. These helpers do a one-time, best-effort local tile cache, downloaded
+# now while there IS internet, for stations that will be offline later.
+
+
+def _latlon_to_tile_xy(lat, lon, zoom):
+    """Convert WGS84 lat/lon to slippy-map tile x/y at a zoom level (standard OSM XYZ scheme)."""
+    lat = max(min(lat, 85.05112878), -85.05112878)  # Web Mercator's valid latitude range
+    lat_rad = math.radians(lat)
+    n = 2 ** zoom
+    x = int((lon + 180.0) / 360.0 * n)
+    y = int((1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
+    return max(0, min(n - 1, x)), max(0, min(n - 1, y))
+
+
+def _tile_range_for_bbox(min_lon, min_lat, max_lon, max_lat, zoom):
+    """Inclusive (x_min, x_max, y_min, y_max) tile range covering a lon/lat box at a zoom level."""
+    x1, y1 = _latlon_to_tile_xy(max_lat, min_lon, zoom)  # north-west corner
+    x2, y2 = _latlon_to_tile_xy(min_lat, max_lon, zoom)  # south-east corner
+    return min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2)
+
+
+def _download_tile_set(base_dir, tiles, user_agent, delay_seconds):
+    """Download (z, x, y) tiles to base_dir/{z}/{x}/{y}.png, skipping ones already on disk.
+    A single failed/blocked tile is counted and skipped, never raised - a flaky connection mid-run
+    shouldn't abort the whole install, matching the MVT IOC download's non-fatal precedent above.
+
+    An outright BLOCK from the tile server is a different situation and is NOT treated as a
+    per-tile failure to just skip past: tile.openstreetmap.org returns a real HTTP 200 with a
+    generic placeholder image and an `X-Blocked` response header when it has denied a source
+    (confirmed live during development - a request from a flagged/shared-hosting IP got exactly
+    this, a real 200 OK carrying `X-Blocked: Access denied...` and a byte-identical placeholder
+    PNG for every distinct tile URL requested). Silently writing that placeholder to disk under
+    every tile's real filename would corrupt the whole cache into a pile of identical fake tiles
+    while claiming success - detected via the header and treated as an immediate stop instead."""
+    downloaded = skipped_existing = failed = 0
+    blocked = False
+    total = len(tiles)
+    for i, (z, x, y) in enumerate(tiles):
+        if blocked:
+            failed += 1
+            continue
+        out_dir = os.path.join(base_dir, str(z), str(x))
+        out_path = os.path.join(out_dir, f"{y}.png")
+        if os.path.exists(out_path):
+            skipped_existing += 1
+        else:
+            url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.headers.get("X-Blocked"):
+                        blocked = True
+                        failed += 1
+                        continue
+                    data = resp.read()
+                os.makedirs(out_dir, exist_ok=True)
+                with open(out_path, "wb") as f:
+                    f.write(data)
+                downloaded += 1
+            except Exception:
+                failed += 1
+        if blocked:
+            print(f"    ... stopped at tile {i + 1}/{total} - tile.openstreetmap.org returned "
+                  f"'X-Blocked: Access denied' for this network. See "
+                  f"https://operations.osmfoundation.org/policies/tiles/ - this can happen on "
+                  f"shared/hosting/VPN IPs; a normal home/office internet connection is usually fine.")
+        elif (i + 1) % 200 == 0 or (i + 1) == total:
+            print(f"    ... {i + 1}/{total} tiles processed ({downloaded} downloaded, "
+                  f"{skipped_existing} already cached, {failed} failed)")
+        time.sleep(delay_seconds)
+    return downloaded, skipped_existing, failed, blocked
+
+
+def download_offline_tiles(install_dir):
+    tiles_dir = os.path.join(install_dir, "static", "vendor", "osm_tiles")
+    os.makedirs(tiles_dir, exist_ok=True)
+    # A real, honest User-Agent and a per-request delay are both required/expected by
+    # OpenStreetMap's tile usage policy (operations.osmfoundation.org/policies/tiles/) - this
+    # stays a deliberately small, one-time cache, not a scripted bulk-download tool.
+    user_agent = "PiForensicsSuite/1.0 (offline tile cache; +https://github.com/n0sfs/pi-forensics)"
+    delay = 0.2
+
+    # Always cache a small global overview (zoom 0-5, 1,365 tiles, a few minutes) - enough on its
+    # own to place a pin's rough country/continent location on a real map background, regardless
+    # of where evidence coordinates turn out to be from.
+    print("\n[*] Downloading global overview tiles (zoom 0-5, 1,365 tiles, a few minutes)...")
+    overview_tiles = [(z, x, y) for z in range(0, 6) for x in range(2 ** z) for y in range(2 ** z)]
+    d, s, f, overview_blocked = _download_tile_set(tiles_dir, overview_tiles, user_agent, delay)
+    print(f"[+] Global overview: {d} downloaded, {s} already cached, {f} failed.")
+    max_zoom_achieved = 5
+
+    if d + s == 0:
+        print("\n[!] No tiles were actually obtained (blocked or unreachable) - not writing an "
+              "offline tile cache. The Geolocation Viewer will behave exactly as it did before "
+              "this step: pins with no map background when this station has no internet.")
+        return
+
+    if overview_blocked:
+        print("\n[!] tile.openstreetmap.org blocked further requests partway through - skipping "
+              "the optional regional download (it would be blocked too). What was already "
+              "downloaded/cached above is still saved and usable.")
+    else:
+        # Optional second tier: deeper zoom for one specific region, for stations that know
+        # roughly where they'll be used. Kept as a separate opt-in, not the default - most
+        # installs likely just want the fast/free global overview above.
+        print("\n[?] Optional: deeper zoom coverage for a specific region")
+        print("    If you know roughly where this station will be used, you can also cache more")
+        print("    detailed tiles (city/street level) for just that area. Get a bounding box from")
+        print("    a site like bboxfinder.com (draw a box there, copy the 4 numbers it shows).")
+        bbox_input = input("    Bounding box as 'min_lon,min_lat,max_lon,max_lat' (blank to skip): ").strip()
+
+        if not bbox_input:
+            print("    Skipped - global overview only.")
+        else:
+            try:
+                min_lon, min_lat, max_lon, max_lat = (float(v.strip()) for v in bbox_input.split(","))
+                if not (-180 <= min_lon < max_lon <= 180 and -90 <= min_lat < max_lat <= 90):
+                    raise ValueError("out of range")
+            except Exception:
+                print("[!] Could not parse that bounding box - skipping regional tile download.")
+            else:
+                zoom_input = input("    Max zoom for this region (6-16, higher = more detail/tiles) "
+                                    "[default: 13]: ").strip()
+                try:
+                    requested_max_zoom = max(6, min(16, int(zoom_input))) if zoom_input else 13
+                except ValueError:
+                    requested_max_zoom = 13
+
+                # Hard cap on regional tile count, independent of requested zoom - a large box at a
+                # high zoom could otherwise ask for millions of tiles. Builds up level-by-level and
+                # stops (rather than erroring) once the next zoom level would exceed the cap, so the
+                # install always finishes with whatever depth actually fit.
+                REGION_TILE_CAP = 20000
+                region_tiles = []
+                achieved_zoom = 5
+                for z in range(6, requested_max_zoom + 1):
+                    x_min, x_max, y_min, y_max = _tile_range_for_bbox(min_lon, min_lat, max_lon, max_lat, z)
+                    level_tiles = [(z, x, y) for x in range(x_min, x_max + 1) for y in range(y_min, y_max + 1)]
+                    if len(region_tiles) + len(level_tiles) > REGION_TILE_CAP:
+                        print(f"    Stopping at zoom {achieved_zoom} - zoom {z} would exceed the "
+                              f"{REGION_TILE_CAP}-tile regional cap for this box.")
+                        break
+                    region_tiles.extend(level_tiles)
+                    achieved_zoom = z
+
+                if not region_tiles:
+                    print("[!] That box didn't yield any tiles at zoom 6 - skipping regional download.")
+                else:
+                    est_minutes = round(len(region_tiles) * delay / 60, 1)
+                    print(f"\n[*] Downloading regional tiles (zoom 6-{achieved_zoom}, "
+                          f"{len(region_tiles)} tiles, ~{est_minutes} min)...")
+                    d, s, f, region_blocked = _download_tile_set(tiles_dir, region_tiles, user_agent, delay)
+                    print(f"[+] Regional coverage: {d} downloaded, {s} already cached, {f} failed.")
+                    if region_blocked:
+                        print("[!] Blocked partway through the regional download - the manifest will "
+                              "still only credit the global overview's zoom level, to stay honest "
+                              "about what's confirmed fully present (whatever regional tiles did "
+                              "download before the block are still saved and will still be used).")
+                    else:
+                        max_zoom_achieved = achieved_zoom
+
+    manifest = {
+        "max_zoom": max_zoom_achieved,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    with open(os.path.join(tiles_dir, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"\n[+] Offline tile cache ready (max zoom {max_zoom_achieved}). The Geolocation Viewer "
+          f"will fall back to it automatically whenever a live OpenStreetMap tile can't be reached.")
+
+
+print("\n[?] Offline Map Imagery for Geolocation Viewer")
+print("    If this station will have NO internet access after setup, you can pre-download a")
+print("    small cache of OpenStreetMap tile imagery now, while online, so the Geolocation")
+print("    Viewer still shows real map backgrounds later (not just placemark pins on a blank grid).")
+print("    Note: OpenStreetMap's tile usage policy discourages bulk downloading from its free")
+print("    public server, so this stays deliberately small by default. Skip if unsure.")
+tiles_choice = input("    Download offline map imagery now? [y/N]: ").strip().lower()
+if tiles_choice in ('y', 'yes'):
+    download_offline_tiles(INSTALL_DIR)
+else:
+    print("    Skipped - the Geolocation Viewer will show pins on a blank grid if this station is offline later.")
 
 # gunicorn only needs to be reachable from outside this host if nginx isn't
 # fronting it; with nginx handling TLS on 80/443, gunicorn should stay on
