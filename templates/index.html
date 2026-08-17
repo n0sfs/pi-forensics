@@ -6,6 +6,7 @@
     <title>Pi Forensics Suite</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -921,6 +922,7 @@
                                                 <button class="list-group-item list-group-item-action active" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
                                                 <button class="list-group-item list-group-item-action" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
                                                 <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab" onclick="renderReportFilesGallery()"><i class="bi bi-paperclip"></i>Files</button>
+                                                <button class="list-group-item list-group-item-action" id="repGeoTab" data-bs-toggle="list" data-bs-target="#repGeoPane" type="button" role="tab" onclick="renderReportGeolocationList()"><i class="bi bi-geo-alt"></i>Geolocation</button>
                                                 <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
                                                 <button class="list-group-item list-group-item-action" id="repHistoryTab" data-bs-toggle="list" data-bs-target="#repHistoryPane" type="button" role="tab" onclick="loadCaseHistory()"><i class="bi bi-clock-history"></i>Audit Trail</button>
                                                 <button class="list-group-item list-group-item-action" id="repSearchTab" data-bs-toggle="list" data-bs-target="#repSearchPane" type="button" role="tab"><i class="bi bi-search"></i>Search</button>
@@ -1005,6 +1007,13 @@
                                                     <div>
                                                         <label class="telemetry-grid-label d-block mb-1">Reference URLs / Links (Comma-separated or newline):</label>
                                                         <input type="text" id="editUrls" class="form-control form-control-sm font-monospace" placeholder="e.g. https://cve.mitre.org/..., https://case-tracker.local/id/102">
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repGeoPane" role="tabpanel">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-geo-alt me-1"></i>Geolocation</h6>
+                                                    <div class="small text-subtle mb-2">GPS locations extracted from this case's evidence, rendered from every KML file attached to the case or found in its case folder. Generate one via File Explorer's "Extract Geolocation (KML)" action on a folder of photos, or the geo-pin icon in the Sleuth Kit image toolbar when browsing an acquired image.</div>
+                                                    <div id="reportGeoContainer">
+                                                        <span class="text-subtle small italic">Loading...</span>
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repJobsPane" role="tabpanel">
@@ -1975,6 +1984,27 @@ sudo update-ca-certificates</pre>
         </div>
     </div>
 
+    <!-- Shared KML viewer - opened from Reporting's Files gallery for any
+         .kml attachment/exhibit; File Explorer renders the same shared
+         renderKmlViewer() inline in its own Preview pane instead of this
+         modal, since it already has a dedicated details pane to use. -->
+    <div class="modal fade" id="kmlViewerModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-geo-alt me-2"></i><span id="kmlViewerTitle">Geolocation Map</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div id="kmlViewerContainer"><span class="text-subtle small">Loading...</span></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="helpModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-xl">
             <div class="modal-content bg-dark text-light border-secondary" style="height: 85vh;">
@@ -2026,6 +2056,7 @@ sudo update-ca-certificates</pre>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         // Set server-side (see is_local_kiosk_request() in app.py) - true only
         // for the Pi's own local kiosk session, never for remote LAN/WiFi
