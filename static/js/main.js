@@ -510,6 +510,476 @@ function initThroughputGraph() {
 }
 
 // --- Dual Pane File Explorer ---
+// --- File Explorer: sortable listing table (shared by real-fs and image mode) ---
+// One small generic "current listing" pipeline: whoever populates
+// #explorerContainer (loadExplorer() for the real filesystem,
+// loadExplorerImageDir()/runExplorerImageSearch() for Sleuth Kit image
+// browsing) sets explorerActiveRows/explorerActiveRowRenderer/
+// explorerRenderUpRow and calls renderExplorerActiveTable() - clicking a
+// column header re-sorts and re-renders from the already-fetched array,
+// no new request. Timeline results are NOT part of this pipeline - they're
+// a genuinely different data shape (MACB events, not files) and keep their
+// own dedicated rendering, unchanged.
+let explorerSortField = 'name';
+let explorerSortDir = 'asc';
+let explorerActiveRows = [];          // [{name, size, modified, raw}, ...]
+let explorerActiveRowRenderer = null; // (tbody, rawItem) => appends one <tr>
+let explorerRenderUpRow = null;       // () => void, appends the context's "Up"/"Back" row, or null for none
+
+function buildExplorerListingTable() {
+    const table = document.createElement('table');
+    table.className = 'table table-dark table-sm table-hover mb-0';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    [['name', 'Name'], ['size', 'Size'], ['modified', 'Modified']].forEach(([field, label]) => {
+        const th = document.createElement('th');
+        th.className = 'explorer-sort-th';
+        th.onclick = () => sortExplorerRows(field);
+        let text = label;
+        if (explorerSortField === field) text += explorerSortDir === 'asc' ? ' ▲' : ' ▼';
+        th.textContent = text;
+        headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    tbody.id = 'explorerListBody';
+    table.appendChild(tbody);
+    return table;
+}
+
+function sortExplorerRows(field) {
+    if (explorerSortField === field) {
+        explorerSortDir = explorerSortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+        explorerSortField = field;
+        explorerSortDir = 'asc';
+    }
+    renderExplorerActiveTable();
+}
+
+function renderExplorerActiveTable() {
+    const container = document.getElementById('explorerContainer');
+    if (!container || !explorerActiveRowRenderer) return;
+    container.innerHTML = '';
+    if (explorerRenderUpRow) explorerRenderUpRow();
+
+    if (explorerActiveRows.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'p-2 text-subtle small';
+        empty.textContent = '(empty)';
+        container.appendChild(empty);
+        return;
+    }
+
+    const table = buildExplorerListingTable();
+    container.appendChild(table);
+    const tbody = table.querySelector('#explorerListBody');
+
+    const sorted = explorerActiveRows.slice().sort((a, b) => {
+        let av = a[explorerSortField], bv = b[explorerSortField];
+        if (av === null || av === undefined) av = '';
+        if (bv === null || bv === undefined) bv = '';
+        if (typeof av === 'string') av = av.toLowerCase();
+        if (typeof bv === 'string') bv = bv.toLowerCase();
+        if (av < bv) return explorerSortDir === 'asc' ? -1 : 1;
+        if (av > bv) return explorerSortDir === 'asc' ? 1 : -1;
+        return 0;
+    });
+    sorted.forEach(row => explorerActiveRowRenderer(tbody, row.raw));
+}
+
+function buildFileTableRow(tbody, item) {
+    const tr = document.createElement('tr');
+    tr.className = 'file-item';
+
+    const nameTd = document.createElement('td');
+    const icon = item.is_dir
+        ? '<i class="bi bi-folder-fill folder-icon me-2 fs-6"></i>'
+        : '<i class="bi bi-file-earmark-text text-info me-2 fs-6"></i>';
+    // Filenames come from browsing evidence/suspect media, i.e. they are
+    // attacker-controlled data. Build the label from DOM nodes (item.name as
+    // a text node) instead of interpolating it into innerHTML, so a crafted
+    // filename can't inject markup/script into the examiner's authenticated
+    // session.
+    const labelSpan = document.createElement('span');
+    labelSpan.className = item.is_dir ? 'folder-text' : 'text-light';
+    labelSpan.innerHTML = icon; // icon markup is static/trusted, not user data
+    labelSpan.appendChild(document.createTextNode(item.name));
+    nameTd.appendChild(labelSpan);
+
+    const sizeTd = document.createElement('td');
+    sizeTd.className = 'text-subtle font-monospace';
+    sizeTd.textContent = item.size_str;
+
+    const modTd = document.createElement('td');
+    modTd.className = 'text-subtle font-monospace';
+    modTd.textContent = item.modified || '--';
+
+    tr.appendChild(nameTd);
+    tr.appendChild(sizeTd);
+    tr.appendChild(modTd);
+
+    tr.onclick = () => {
+        document.querySelectorAll(`.file-pane .file-item`).forEach(el => el.classList.remove('active'));
+        tr.classList.add('active');
+
+        activeSelectedFile = item.path;
+        activeSelectedIsDir = item.is_dir;
+
+        updateContextToolbar(item);
+        previewSelectedFile(item);
+        if (explorerRightView === 'metadata') loadExplorerMetadataPane();
+    };
+
+    tr.ondblclick = () => {
+        if (item.is_dir) {
+            loadExplorer(item.path);
+        } else if (isImageFile(item.name)) {
+            enterExplorerImageFor(item);
+        }
+    };
+
+    tr.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        showFileContextMenu(ev, item);
+        return false;
+    };
+
+    tbody.appendChild(tr);
+}
+
+// --- File Explorer folder tree (left column) ---
+// A single generic, lazily-expanding tree renderer shared by both the real
+// filesystem and Sleuth Kit image browsing (see the two adapters below) -
+// this app had no tree/hierarchy UI component anywhere before this. Each
+// adapter supplies how to fetch a node's children, derive a stable
+// cache/DOM key, and what "navigate here" means for that context; the
+// renderer itself doesn't know or care which one it's driving.
+let explorerTreeChildrenCache = {};      // real-fs: path -> [{path,name}, ...] (folders only)
+let explorerImageTreeChildrenCache = {}; // image mode: "img:<inode>" -> [{inode,name}, ...]
+let explorerRealTreeRootEl = null;       // persisted <ul> DOM node - kept alive (with full expand state) across an image-mode excursion, not rebuilt on exit
+
+function explorerTreeRealAdapter() {
+    return {
+        cache: explorerTreeChildrenCache,
+        key: (node) => node.path,
+        label: (node) => node.name,
+        async fetchChildren(node) {
+            try {
+                const res = await fetch('/api/files/browse', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: node.path })
+                });
+                const data = await res.json();
+                if (data.error) return [];
+                // Files are included as leaf nodes (not just folders) so the
+                // tree mirrors the full hierarchy, matching Autopsy's Data
+                // Sources tree - a recognized forensic image gets its own
+                // 'image' kind so the renderer can make its chevron dive
+                // straight into Sleuth Kit browsing instead of a normal
+                // folder expand.
+                return data.items.map(it => ({
+                    path: it.path,
+                    name: it.name,
+                    kind: it.is_dir ? 'dir' : (isImageFile(it.name) ? 'image' : 'file'),
+                    raw: it,
+                }));
+            } catch (err) {
+                return [];
+            }
+        },
+        navigate: (node) => loadExplorer(node.path),
+        selectFile: (node) => {
+            activeSelectedFile = node.raw.path;
+            activeSelectedIsDir = false;
+            updateContextToolbar(node.raw);
+            previewSelectedFile(node.raw);
+            if (explorerRightView === 'metadata') loadExplorerMetadataPane();
+        },
+        contextMenu: (ev, node) => showFileContextMenu(ev, node.raw),
+    };
+}
+
+function explorerTreeImageAdapter() {
+    return {
+        cache: explorerImageTreeChildrenCache,
+        key: (node) => `img:${node.inode}`,
+        label: (node) => node.name,
+        async fetchChildren(node) {
+            try {
+                const res = await fetch('/api/image/fls', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image_path: explorerImagePath, offset: explorerImageOffset, inode: node.inode })
+                });
+                const data = await res.json();
+                if (!data.success) return [];
+                // Files (including deleted/virtual entries, matching what the
+                // Listing table already shows with a DELETED badge) are leaf
+                // nodes. Deleted/virtual directories are still listed but
+                // never expandable - their inode may already be reallocated
+                // on a live evidence filesystem, same exclusion this app
+                // already applies to recursive TSK walks elsewhere (the
+                // hash-manifest/timeline routes).
+                return data.entries.map(e => ({
+                    inode: e.inode,
+                    name: e.name,
+                    kind: (e.is_dir && !e.is_virtual && !e.deleted) ? 'dir' : 'file',
+                    raw: e,
+                }));
+            } catch (err) {
+                return [];
+            }
+        },
+        navigate: (node, ancestorPath) => {
+            explorerImagePathStack = ancestorPath.concat([node]);
+            explorerImageView = 'browse';
+            loadExplorerImageDir(node.inode);
+        },
+        selectFile: (node) => {
+            explorerImageSelected = node.raw;
+            if (!node.raw.is_dir) previewExplorerImageEntry(node.raw);
+        },
+        contextMenu: (ev, node) => showExplorerImageContextMenu(ev, node.raw),
+    };
+}
+
+// Renders one <li> for `node`. `ancestorPath` is the array of nodes from the
+// tree root down to (but not including) `node` itself - threaded through so
+// image-mode navigation can rebuild explorerImagePathStack without a
+// separate lookup table. `node.kind` ('dir' | 'image' | 'file') drives icon,
+// expand behavior, and click behavior - see the two adapters above for how
+// each kind is derived.
+function renderExplorerTreeNode(node, adapter, ancestorPath) {
+    const li = document.createElement('li');
+    li.dataset.treeKey = adapter.key(node);
+
+    const row = document.createElement('div');
+    row.className = 'explorer-tree-node';
+
+    const toggle = document.createElement('span');
+    toggle.className = 'explorer-tree-toggle';
+    toggle.innerHTML = '<i class="bi bi-caret-right-fill"></i>';
+    if (node.kind === 'file') toggle.classList.add('no-children'); // leaf, no expand affordance at all
+
+    const icon = document.createElement('i');
+    icon.className = node.kind === 'dir'
+        ? 'bi bi-folder-fill folder-icon me-1'
+        : (node.kind === 'image' ? 'bi bi-hdd-stack text-warning me-1' : 'bi bi-file-earmark-text text-info me-1');
+
+    const label = document.createElement('span');
+    label.className = node.kind === 'dir' ? 'folder-text' : 'text-light';
+    label.appendChild(document.createTextNode(adapter.label(node))); // untrusted evidence folder/file name, text-only
+
+    row.appendChild(toggle);
+    row.appendChild(icon);
+    row.appendChild(label);
+    li.appendChild(row);
+
+    let childrenUl = null;
+    let expanded = false;
+
+    // Exposed on the element (not just closed over) so external code -
+    // syncing the tree to whatever path/inode the table just navigated to -
+    // can force an ancestor open without simulating a click.
+    li._expand = async function () {
+        if (expanded || node.kind === 'file') return;
+        if (node.kind === 'image') {
+            // Diving into a recognized forensic image swaps the whole tree to
+            // Sleuth Kit browsing (enterExplorerImageFor already does this,
+            // matching the same entry point double-clicking the file in the
+            // Listing table uses) - "Exit Image" in the toolbar is the way
+            // back, there's no local collapse for this node once entered.
+            enterExplorerImageFor(node.raw);
+            return;
+        }
+        const cacheKey = adapter.key(node);
+        let children = adapter.cache[cacheKey];
+        if (!children) {
+            children = await adapter.fetchChildren(node);
+            adapter.cache[cacheKey] = children;
+        }
+        if (children.length === 0) {
+            toggle.classList.add('no-children');
+            return;
+        }
+        if (!childrenUl) {
+            childrenUl = document.createElement('ul');
+            const nextAncestors = ancestorPath.concat([node]);
+            children.forEach(child => childrenUl.appendChild(renderExplorerTreeNode(child, adapter, nextAncestors)));
+            li.appendChild(childrenUl);
+        }
+        childrenUl.style.display = '';
+        toggle.innerHTML = '<i class="bi bi-caret-down-fill"></i>';
+        expanded = true;
+    };
+
+    toggle.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (toggle.classList.contains('no-children')) return;
+        if (node.kind === 'image') { await li._expand(); return; } // always (re-)enters, no local collapse state
+        if (!expanded) {
+            await li._expand();
+        } else if (childrenUl) {
+            childrenUl.style.display = 'none';
+            toggle.innerHTML = '<i class="bi bi-caret-right-fill"></i>';
+            expanded = false;
+        }
+    };
+
+    row.onclick = () => {
+        document.querySelectorAll('#explorerTreeContainer .explorer-tree-node.active').forEach(el => el.classList.remove('active'));
+        row.classList.add('active');
+        if (node.kind === 'dir') {
+            adapter.navigate(node, ancestorPath);
+        } else {
+            adapter.selectFile(node);
+        }
+    };
+
+    row.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        adapter.contextMenu(ev, node);
+        return false;
+    };
+
+    return li;
+}
+
+// Case-scoped: rooted at the active case's own folder so the tree only ever
+// shows that case's evidence, matching every other job-launcher tab's
+// auto-fill; falls back to the full evidence root when no case is selected.
+function getExplorerRootPath() {
+    return (activeCase && activeCase.case_folder) ? activeCase.case_folder : '/mnt';
+}
+
+async function initExplorerTree(forceRebuild) {
+    const container = document.getElementById('explorerTreeContainer');
+    if (!container) return;
+    if (explorerRealTreeRootEl && !forceRebuild) {
+        // Re-attach the already-built tree, preserving whatever the examiner
+        // had expanded before an image-mode excursion swapped it out - no
+        // re-fetch, no lost state.
+        container.innerHTML = '';
+        container.appendChild(explorerRealTreeRootEl);
+        return;
+    }
+    explorerTreeChildrenCache = {}; // stale once the root changes (e.g. switching active case)
+    container.innerHTML = '';
+    const rootUl = document.createElement('ul');
+    rootUl.className = 'explorer-tree';
+    const rootPath = getExplorerRootPath();
+    const rootNode = { path: rootPath, name: rootPath, kind: 'dir' };
+    const rootLi = renderExplorerTreeNode(rootNode, explorerTreeRealAdapter(), []);
+    rootUl.appendChild(rootLi);
+    container.appendChild(rootUl);
+    explorerRealTreeRootEl = rootUl;
+    await rootLi._expand(); // show top-level contents immediately, matching the initial listing
+}
+
+async function initExplorerImageTree() {
+    const container = document.getElementById('explorerTreeContainer');
+    if (!container) return;
+    explorerImageTreeChildrenCache = {}; // fresh per image/partition - inode numbering is partition-specific
+    container.innerHTML = '';
+
+    // Mirrors the Listing table's own ".. [Up]" row at the image root
+    // (explorerImageGoUp() already calls exitExplorerImage() once the path
+    // stack is empty) - the tree itself had no way back out of image mode
+    // at all, only the toolbar's "Exit Image" button on the opposite side
+    // of the screen. Reported live: an examiner navigating primarily via
+    // the tree reaches for "Up" in whichever pane they're looking at.
+    const exitRow = document.createElement('div');
+    exitRow.className = 'explorer-tree-node text-warning fw-bold';
+    exitRow.innerHTML = '<i class="bi bi-arrow-up-left me-1"></i>.. Exit Image';
+    exitRow.onclick = () => exitExplorerImage();
+    container.appendChild(exitRow);
+
+    const rootUl = document.createElement('ul');
+    rootUl.className = 'explorer-tree';
+    const imageName = explorerImagePath ? explorerImagePath.split('/').pop() : 'Image';
+    const rootNode = { inode: '', name: imageName, kind: 'dir' };
+    const rootLi = renderExplorerTreeNode(rootNode, explorerTreeImageAdapter(), []);
+    rootUl.appendChild(rootLi);
+    container.appendChild(rootUl);
+    await rootLi._expand();
+}
+
+// Expands the tree down to `path` (relative to the real-fs tree's root) and
+// highlights the matching node - called from loadExplorer()'s own success
+// path, so the tree stays in sync no matter what triggered the navigation
+// (tree click, table double-click, Up Directory, error-recovery fallback).
+async function syncExplorerTreeSelection(path) {
+    const container = document.getElementById('explorerTreeContainer');
+    if (!container) return;
+    document.querySelectorAll('#explorerTreeContainer .explorer-tree-node.active').forEach(el => el.classList.remove('active'));
+
+    const rootLi = container.querySelector('li');
+    if (!rootLi || !rootLi.dataset.treeKey || !path.startsWith(rootLi.dataset.treeKey)) return;
+
+    let currentLi = rootLi;
+    let currentPath = rootLi.dataset.treeKey;
+    const remainder = path.slice(currentPath.length).split('/').filter(Boolean);
+
+    for (const segment of remainder) {
+        currentPath = currentPath.replace(/\/$/, '') + '/' + segment;
+        if (currentLi._expand) await currentLi._expand();
+        const childLi = currentLi.querySelector(`:scope > ul > li[data-tree-key="${CSS.escape(currentPath)}"]`);
+        if (!childLi) { currentLi = null; break; }
+        currentLi = childLi;
+    }
+    if (!currentLi) return;
+    const row = currentLi.querySelector(':scope > .explorer-tree-node');
+    if (row) row.classList.add('active');
+}
+
+// Same idea for image mode - explorerImagePathStack already IS the full
+// ancestor-plus-current-directory chain by the time loadExplorerImageDir()
+// finishes (see its own comment), so no separate path param is needed here.
+async function syncExplorerImageTreeSelection() {
+    const container = document.getElementById('explorerTreeContainer');
+    if (!container) return;
+    document.querySelectorAll('#explorerTreeContainer .explorer-tree-node.active').forEach(el => el.classList.remove('active'));
+
+    const rootLi = container.querySelector('li');
+    if (!rootLi) return;
+
+    let currentLi = rootLi;
+    for (const node of explorerImagePathStack) {
+        if (currentLi._expand) await currentLi._expand();
+        const childLi = currentLi.querySelector(`:scope > ul > li[data-tree-key="img:${CSS.escape(node.inode)}"]`);
+        if (!childLi) { currentLi = null; break; }
+        currentLi = childLi;
+    }
+    if (!currentLi) return;
+    const row = currentLi.querySelector(':scope > .explorer-tree-node');
+    if (row) row.classList.add('active');
+}
+
+function toggleExplorerTreeCol() {
+    const col = document.getElementById('explorerTreeCol');
+    if (col) col.classList.toggle('explorer-tree-shown');
+}
+
+// Called from applyActiveCaseToFields() whenever the active case changes
+// after the page's initial load (create/select a different case) - re-roots
+// an already-built tree/table to the new case folder. Deliberately a no-op
+// on the very first page load (explorerRealTreeRootEl is still null then) -
+// DOMContentLoaded's own initial initExplorerTree()/loadExplorer() calls
+// already build correctly rooted the first time, since they run after
+// initActiveCaseBar() has resolved activeCase.
+function resyncExplorerRootToActiveCase() {
+    if (!explorerRealTreeRootEl) return;
+    const newRoot = getExplorerRootPath();
+    const currentRootLi = explorerRealTreeRootEl.querySelector('li');
+    const currentRoot = currentRootLi ? currentRootLi.dataset.treeKey : null;
+    if (currentRoot === newRoot) return; // already scoped correctly
+    initExplorerTree(true);
+    loadExplorer(newRoot);
+}
+
 async function loadExplorer(path) {
     const container = document.getElementById('explorerContainer');
     const pathLabel = document.getElementById('explorerPath');
@@ -545,9 +1015,7 @@ async function loadExplorer(path) {
         explorerPath = data.path;
         if (pathLabel) pathLabel.innerText = data.path;
 
-        container.innerHTML = '';
-
-        if (data.path !== '/') {
+        explorerRenderUpRow = data.path !== '/' ? () => {
             const upDiv = document.createElement('div');
             upDiv.className = 'file-item text-warning fw-bold';
             upDiv.innerHTML = '<i class="bi bi-arrow-up-left me-1"></i>.. [Up Directory]';
@@ -556,63 +1024,15 @@ async function loadExplorer(path) {
                 loadExplorer(parent);
             };
             container.appendChild(upDiv);
-        }
+        } : null;
 
-        data.items.forEach(item => {
-            const itemDiv = document.createElement('div');
-            itemDiv.className = 'file-item d-flex justify-content-between align-items-center';
-            
-            const icon = item.is_dir 
-                ? '<i class="bi bi-folder-fill folder-icon me-2 fs-6"></i>' 
-                : '<i class="bi bi-file-earmark-text text-info me-2 fs-6"></i>';
-            
-            const labelClass = item.is_dir ? 'folder-text' : 'text-light';
+        explorerActiveRows = data.items.map(item => ({
+            name: item.name, size: item.size_bytes, modified: item.modified, raw: item
+        }));
+        explorerActiveRowRenderer = buildFileTableRow;
+        renderExplorerActiveTable();
 
-            // Filenames come from browsing evidence/suspect media, i.e. they
-            // are attacker-controlled data. Build the label from DOM nodes
-            // (item.name as a text node) instead of interpolating it into
-            // innerHTML, so a crafted filename can't inject markup/script
-            // into the examiner's authenticated session.
-            const labelSpan = document.createElement('span');
-            labelSpan.className = labelClass;
-            labelSpan.innerHTML = icon; // icon markup is static/trusted, not user data
-            labelSpan.appendChild(document.createTextNode(item.name));
-
-            const sizeEl = document.createElement('small');
-            sizeEl.className = 'text-subtle font-monospace';
-            sizeEl.textContent = item.size_str;
-
-            itemDiv.appendChild(labelSpan);
-            itemDiv.appendChild(sizeEl);
-
-            itemDiv.onclick = () => {
-                document.querySelectorAll(`.file-pane .file-item`).forEach(el => el.classList.remove('active'));
-                itemDiv.classList.add('active');
-
-                activeSelectedFile = item.path;
-                activeSelectedIsDir = item.is_dir;
-
-                updateContextToolbar(item);
-                previewSelectedFile(item);
-                if (explorerRightView === 'metadata') loadExplorerMetadataPane();
-            };
-
-            itemDiv.ondblclick = () => {
-                if (item.is_dir) {
-                    loadExplorer(item.path);
-                } else if (isImageFile(item.name)) {
-                    enterExplorerImageFor(item);
-                }
-            };
-
-            itemDiv.oncontextmenu = (ev) => {
-                ev.preventDefault();
-                showFileContextMenu(ev, item);
-                return false;
-            };
-
-            container.appendChild(itemDiv);
-        });
+        syncExplorerTreeSelection(data.path);
 
     } catch (err) {
         container.innerHTML = `<div class="p-2 text-danger small">Error loading files</div>`;
@@ -1272,6 +1692,7 @@ function exitExplorerImage() {
     if (toolbar) toolbar.style.display = 'none';
     const metadataBtn = document.getElementById('explorerViewMetadataBtn');
     if (metadataBtn) metadataBtn.disabled = false;
+    initExplorerTree(); // restores the real-fs tree exactly as left, no re-fetch
     loadExplorer(explorerPath);
 }
 
@@ -1307,6 +1728,7 @@ async function loadExplorerImagePartitions() {
         }
 
         explorerImagePathStack = [];
+        await initExplorerImageTree();
         await loadExplorerImageDir('');
     } catch (err) {
         if (select) select.innerHTML = '<option value="0">Error loading partitions</option>';
@@ -1315,6 +1737,7 @@ async function loadExplorerImagePartitions() {
 
 function explorerImageChangePartition() {
     explorerImagePathStack = [];
+    initExplorerImageTree(); // inode numbering is partition-specific, rebuild from scratch
     loadExplorerImageDir('');
 }
 
@@ -1345,9 +1768,9 @@ async function loadExplorerImageDir(inode) {
         });
         const data = await res.json();
         if (!container) return;
-        container.innerHTML = '';
 
         if (!data.success) {
+            container.innerHTML = '';
             const err = document.createElement('div');
             err.className = 'p-2 text-danger small';
             err.textContent = data.error;
@@ -1357,20 +1780,21 @@ async function loadExplorerImageDir(inode) {
 
         // "Up" pseudo-row: parent directory inside the image, or exit the
         // image entirely (back to the real filesystem) if already at its root.
-        const upDiv = document.createElement('div');
-        upDiv.className = 'file-item text-warning fw-bold';
-        upDiv.innerHTML = '<i class="bi bi-arrow-up-left me-1"></i>.. [Up]';
-        upDiv.onclick = () => explorerImageGoUp();
-        container.appendChild(upDiv);
+        explorerRenderUpRow = () => {
+            const upDiv = document.createElement('div');
+            upDiv.className = 'file-item text-warning fw-bold';
+            upDiv.innerHTML = '<i class="bi bi-arrow-up-left me-1"></i>.. [Up]';
+            upDiv.onclick = () => explorerImageGoUp();
+            container.appendChild(upDiv);
+        };
 
-        if (data.entries.length === 0) {
-            const empty = document.createElement('div');
-            empty.className = 'p-2 text-subtle small';
-            empty.textContent = '(empty)';
-            container.appendChild(empty);
-        }
+        explorerActiveRows = data.entries.map(entry => ({
+            name: entry.name, size: entry.size, modified: entry.mtime, raw: entry
+        }));
+        explorerActiveRowRenderer = (tbody, entry) => renderExplorerImageEntryRow(tbody, entry);
+        renderExplorerActiveTable();
 
-        data.entries.forEach(entry => renderExplorerImageEntryRow(container, entry));
+        syncExplorerImageTreeSelection();
     } catch (err) {
         if (container) container.innerHTML = '<div class="p-2 text-danger small">Request failed.</div>';
     }
@@ -1389,10 +1813,13 @@ function explorerImageGoUp() {
 
 // Shared row renderer for both directory listings and search results -
 // displayName lets search show a full path while browse shows a bare name.
+// `container` must be a <tbody> (or any element valid to hold a <tr>) -
+// both call sites now render into a table, matching the real-fs listing.
 function renderExplorerImageEntryRow(container, entry, displayName) {
-    const itemDiv = document.createElement('div');
-    itemDiv.className = 'file-item d-flex justify-content-between align-items-center';
+    const tr = document.createElement('tr');
+    tr.className = 'file-item';
 
+    const nameTd = document.createElement('td');
     const icon = entry.is_dir
         ? '<i class="bi bi-folder-fill folder-icon me-2 fs-6"></i>'
         : '<i class="bi bi-file-earmark-text text-info me-2 fs-6"></i>';
@@ -1406,35 +1833,41 @@ function renderExplorerImageEntryRow(container, entry, displayName) {
         delBadge.textContent = 'DELETED';
         labelSpan.appendChild(delBadge);
     }
+    nameTd.appendChild(labelSpan);
 
-    const sizeEl = document.createElement('small');
-    sizeEl.className = 'text-subtle font-monospace';
-    sizeEl.textContent = entry.is_dir ? '' : imgFormatBytes(entry.size);
+    const sizeTd = document.createElement('td');
+    sizeTd.className = 'text-subtle font-monospace';
+    sizeTd.textContent = entry.is_dir ? '' : imgFormatBytes(entry.size);
 
-    itemDiv.appendChild(labelSpan);
-    itemDiv.appendChild(sizeEl);
+    const modTd = document.createElement('td');
+    modTd.className = 'text-subtle font-monospace';
+    modTd.textContent = imgFormatTimestamp(entry.mtime);
 
-    itemDiv.onclick = () => {
+    tr.appendChild(nameTd);
+    tr.appendChild(sizeTd);
+    tr.appendChild(modTd);
+
+    tr.onclick = () => {
         document.querySelectorAll('.file-pane .file-item').forEach(el => el.classList.remove('active'));
-        itemDiv.classList.add('active');
+        tr.classList.add('active');
         explorerImageSelected = entry;
         if (!entry.is_dir) previewExplorerImageEntry(entry);
     };
 
-    itemDiv.ondblclick = () => {
+    tr.ondblclick = () => {
         if (entry.is_dir && explorerImageView === 'browse') {
             explorerImagePathStack.push({ inode: entry.inode, name: entry.name });
             loadExplorerImageDir(entry.inode);
         }
     };
 
-    itemDiv.oncontextmenu = (ev) => {
+    tr.oncontextmenu = (ev) => {
         ev.preventDefault();
         showExplorerImageContextMenu(ev, entry);
         return false;
     };
 
-    container.appendChild(itemDiv);
+    container.appendChild(tr);
 }
 
 // In-memory preview straight from the image - no extract-to-disk step
@@ -1554,7 +1987,18 @@ async function runExplorerImageSearch() {
             resultsEl.innerHTML = '<div class="p-2 text-subtle small">No matches found.</div>';
             return;
         }
-        data.results.forEach(entry => renderExplorerImageEntryRow(resultsEl, entry, entry.path));
+
+        // renderExplorerImageEntryRow() emits <tr>s - give it a real table
+        // to render into, matching the browse listing's row shape (plain,
+        // non-clickable headers here since search results aren't re-sorted
+        // client-side, unlike the browse table).
+        const table = document.createElement('table');
+        table.className = 'table table-dark table-sm table-hover mb-0';
+        table.innerHTML = '<thead><tr><th>Name</th><th>Size</th><th>Modified</th></tr></thead>';
+        const tbody = document.createElement('tbody');
+        table.appendChild(tbody);
+        resultsEl.appendChild(table);
+        data.results.forEach(entry => renderExplorerImageEntryRow(tbody, entry, entry.path));
 
         if (data.truncated) {
             const note = document.createElement('div');
@@ -3837,6 +4281,7 @@ function applyActiveCaseToFields() {
     // selectCase(), and initActiveCaseBar()'s page-load restore, all three
     // of which call this function already.
     loadCaseForEditing();
+    resyncExplorerRootToActiveCase();
 }
 
 function openCaseManagerModal() {
@@ -4023,6 +4468,7 @@ function clearActiveCase() {
     persistActiveCase();
     renderActiveCaseBar();
     loadCaseForEditing();
+    resyncExplorerRootToActiveCase(); // falls File Explorer back to /mnt
     if (caseManagerModalInstance) caseManagerModalInstance.hide();
 }
 
@@ -6241,14 +6687,15 @@ document.addEventListener("DOMContentLoaded", () => {
     refreshDrives();
     loadNetworkHistory();
     loadAutoMountShares();
-    loadExplorer('/mnt');
     toggleFormatControls();
     refreshMobileDevices();
     updateDdrescueStrategyHelp();
     updateRecoveryToolControls();
     updateAndroidModeHelp();
     initHelpTooltips();
-    initActiveCaseBar();
+    initActiveCaseBar(); // sets activeCase synchronously (if restored) - must run before File Explorer's first build below so it roots at the right case from the start, not '/mnt' then a moment later re-rooting
+    initExplorerTree();
+    loadExplorer(getExplorerRootPath());
     fetchWhoami();
     fetchCustomFieldDefs();
     fetchCustomReportTemplates();

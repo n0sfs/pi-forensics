@@ -193,6 +193,24 @@
         .folder-text { color: var(--accent-blue); font-weight: 600; }
         .folder-icon { color: var(--folder-gold); }
 
+        /* File Explorer's folder tree (left column) - a lightweight,
+           lazily-expanded <ul>/<li> tree, the first hierarchy widget in this
+           app. Nesting is plain browser-default <ul> indentation (overridden
+           to a smaller, consistent step), not a JS-computed depth offset. */
+        .explorer-tree, .explorer-tree ul { list-style: none; margin: 0; padding: 0; }
+        .explorer-tree ul { padding-left: 16px; }
+        .explorer-tree-node { display: flex; align-items: center; cursor: pointer; padding: 3px 4px; font-size: 0.82rem; border-radius: 3px; }
+        .explorer-tree-node:hover { background-color: #1e2638; }
+        .explorer-tree-node.active { background-color: #0284c7; color: white !important; }
+        .explorer-tree-node.active span { color: white !important; }
+        .explorer-tree-toggle { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex-shrink: 0; cursor: pointer; color: var(--text-subtle); }
+        .explorer-tree-toggle.no-children { visibility: hidden; cursor: default; }
+
+        /* Sortable column headers in File Explorer's listing table (real
+           filesystem and Sleuth Kit image browsing both use this). */
+        .explorer-sort-th { cursor: pointer; user-select: none; white-space: nowrap; }
+        .explorer-sort-th:hover { color: var(--accent-cyan); }
+
         /* Settings tab: a left nav (category list) + single right-hand content
            pane, not the plain stacked accordion this used to be - clicking a
            category swaps what's shown on the right, matching a typical
@@ -243,6 +261,13 @@
                 width: 100%; min-width: 0;
                 border-right: none; border-bottom: 1px solid var(--border-color);
             }
+            /* File Explorer's folder tree: hidden by default below this
+               breakpoint (matches the main sidebar's own narrow-screen
+               behavior) - explorerTreeToggleBtn adds .explorer-tree-shown
+               to reveal it on demand, same button is always present above
+               the breakpoint too but the tree is visible by default there. */
+            #explorerTreeCol { display: none; }
+            #explorerTreeCol.explorer-tree-shown { display: block; }
         }
         .accordion-button { background-color: var(--card-bg); color: var(--text-bright); box-shadow: none; }
         .accordion-button:not(.collapsed) { background-color: var(--card-bg); color: var(--accent-cyan); box-shadow: none; }
@@ -646,43 +671,52 @@
                                 </div>
                                 <div class="card-body py-2">
                                     <div class="row g-2">
-                                        <div class="col-md-6">
+                                        <div class="col-lg-3" id="explorerTreeCol">
                                             <div class="d-flex justify-content-between align-items-center mb-1">
-                                                <span class="telemetry-grid-label">Files</span>
-                                                <span id="explorerPath" class="font-monospace small text-info fw-bold text-truncate" style="max-width: 70%;">/mnt</span>
+                                                <span class="telemetry-grid-label">Folders &amp; Files</span>
+                                                <button type="button" id="explorerTreeToggleBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="toggleExplorerTreeCol()" title="Show/hide the folder tree"><i class="bi bi-diagram-3"></i></button>
                                             </div>
-                                            <div id="explorerImageToolbar" style="display:none; align-items:center; justify-content:space-between; margin-bottom:.25rem;">
-                                                <select id="explorerImagePartitionSelect" class="form-select form-select-sm" style="max-width: 55%;" onchange="explorerImageChangePartition()"></select>
-                                                <div class="d-flex gap-1">
-                                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="explorerImageToggleSearch()" title="Search inside image"><i class="bi bi-search"></i></button>
-                                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="explorerImageToggleTimeline()" title="Generate timeline"><i class="bi bi-clock-history"></i></button>
-                                                    <button type="button" id="explorerImageGeoBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageGeolocationExport()" title="Scan the whole image for GPS-tagged photos and export a KML file"><i class="bi bi-geo-alt"></i></button>
-                                                    <button type="button" id="explorerImageHashBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageHashManifest()" title="Hash every file in the whole image (SHA256) and save a manifest"><i class="bi bi-list-check"></i></button>
-                                                    <button type="button" id="explorerImageRecoverBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageRecoverDeleted()" title="Recover deleted files still referenced by an intact directory entry, preserving their original names and folder structure. Recovery odds vary by filesystem type - see documentation."><i class="bi bi-recycle"></i></button>
-                                                    <button type="button" class="btn btn-xs btn-outline-warning py-0 px-2" onclick="exitExplorerImage()" title="Exit image, return to file system"><i class="bi bi-x-lg me-1"></i>Exit Image</button>
-                                                </div>
-                                            </div>
-                                            <div id="explorerContainer" class="file-pane" style="height: clamp(220px, 55vh, 620px);"></div>
+                                            <div id="explorerTreeContainer" class="file-pane" style="height: clamp(320px, 74vh, 800px);"></div>
                                         </div>
-                                        <div class="col-md-6">
-                                            <div class="d-flex justify-content-between align-items-center mb-1">
-                                                <span class="telemetry-grid-label">Details</span>
-                                                <div class="d-flex gap-1">
-                                                    <button type="button" id="explorerViewPreviewBtn" class="btn btn-xs btn-info py-0 px-2" onclick="switchExplorerRightView('preview')">Preview</button>
-                                                    <button type="button" id="explorerViewMetadataBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="switchExplorerRightView('metadata')" title="Embedded file metadata via ExifTool">Metadata</button>
+                                        <div class="col-lg-9">
+                                            <div class="mb-2">
+                                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                                    <span class="telemetry-grid-label">Listing</span>
+                                                    <span id="explorerPath" class="font-monospace small text-info fw-bold text-truncate" style="max-width: 70%;">/mnt</span>
                                                 </div>
+                                                <div id="explorerImageToolbar" style="display:none; align-items:center; justify-content:space-between; margin-bottom:.25rem;">
+                                                    <select id="explorerImagePartitionSelect" class="form-select form-select-sm" style="max-width: 55%;" onchange="explorerImageChangePartition()"></select>
+                                                    <div class="d-flex gap-1">
+                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="explorerImageToggleSearch()" title="Search inside image"><i class="bi bi-search"></i></button>
+                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="explorerImageToggleTimeline()" title="Generate timeline"><i class="bi bi-clock-history"></i></button>
+                                                        <button type="button" id="explorerImageGeoBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageGeolocationExport()" title="Scan the whole image for GPS-tagged photos and export a KML file"><i class="bi bi-geo-alt"></i></button>
+                                                        <button type="button" id="explorerImageHashBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageHashManifest()" title="Hash every file in the whole image (SHA256) and save a manifest"><i class="bi bi-list-check"></i></button>
+                                                        <button type="button" id="explorerImageRecoverBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageRecoverDeleted()" title="Recover deleted files still referenced by an intact directory entry, preserving their original names and folder structure. Recovery odds vary by filesystem type - see documentation."><i class="bi bi-recycle"></i></button>
+                                                        <button type="button" class="btn btn-xs btn-outline-warning py-0 px-2" onclick="exitExplorerImage()" title="Exit image, return to file system"><i class="bi bi-x-lg me-1"></i>Exit Image</button>
+                                                    </div>
+                                                </div>
+                                                <div id="explorerContainer" class="file-pane" style="height: clamp(140px, 26vh, 300px);"></div>
                                             </div>
-                                            <div id="explorerPreview" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="height: clamp(220px, 55vh, 620px);">
-                                                <i class="bi bi-cursor fs-1 text-subtle mb-2"></i>
-                                                <span class="text-subtle small">Select a file on the left to preview it here.</span>
-                                            </div>
-                                            <!-- display:none needs !important from the start - this div's own
-                                                 d-flex class is !important in Bootstrap and would otherwise force
-                                                 it visible on the very first render, before switchExplorerRightView()
-                                                 ever runs to apply the same override dynamically (see main.js). -->
-                                            <div id="explorerMetadata" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="display:none !important; height: clamp(220px, 55vh, 620px);">
-                                                <i class="bi bi-info-circle fs-1 text-subtle mb-2"></i>
-                                                <span class="text-subtle small">Select a file on the left to view its metadata.</span>
+                                            <div>
+                                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                                    <span class="telemetry-grid-label">Details</span>
+                                                    <div class="d-flex gap-1">
+                                                        <button type="button" id="explorerViewPreviewBtn" class="btn btn-xs btn-info py-0 px-2" onclick="switchExplorerRightView('preview')">Preview</button>
+                                                        <button type="button" id="explorerViewMetadataBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="switchExplorerRightView('metadata')" title="Embedded file metadata via ExifTool">Metadata</button>
+                                                    </div>
+                                                </div>
+                                                <div id="explorerPreview" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="height: clamp(160px, 40vh, 460px);">
+                                                    <i class="bi bi-cursor fs-1 text-subtle mb-2"></i>
+                                                    <span class="text-subtle small">Select a file on the left to preview it here.</span>
+                                                </div>
+                                                <!-- display:none needs !important from the start - this div's own
+                                                     d-flex class is !important in Bootstrap and would otherwise force
+                                                     it visible on the very first render, before switchExplorerRightView()
+                                                     ever runs to apply the same override dynamically (see main.js). -->
+                                                <div id="explorerMetadata" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="display:none !important; height: clamp(160px, 40vh, 460px);">
+                                                    <i class="bi bi-info-circle fs-1 text-subtle mb-2"></i>
+                                                    <span class="text-subtle small">Select a file on the left to view its metadata.</span>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
@@ -695,11 +729,12 @@
                          since Metadata/Binwalk/ClamAV/etc. all need a real path on disk. -->
                     <div id="fileContextMenu" class="dropdown-menu dropdown-menu-dark" style="display:none; position:fixed; z-index:2000;">
                         <div id="ctxMenuRealActions">
+                            <h6 class="dropdown-header">Image &amp; Case</h6>
                             <button id="btnBrowseImage" class="dropdown-item" onclick="enterExplorerImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files right here, without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse as Image (Sleuth Kit)</button>
                             <button id="btnVerifyHash" class="dropdown-item" onclick="openVerifyHashModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Computes a cryptographic hash of this file and optionally compares it against a known reference hash - confirms an evidence image (or any file) hasn't been altered since acquisition."><i class="bi bi-hash me-2"></i>Verify Image Hash</button>
                             <button id="btnAttachToCase" class="dropdown-item" onclick="attachSelectedFileToCase()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Bookmarks this file as a case exhibit - it'll show up pre-checked in Reporting > Files, ready to include in an exported report. Requires an active, consolidated-format case."><i class="bi bi-bookmark-plus me-2"></i>Attach to Case</button>
                             <button id="btnRecoverFromImage" class="dropdown-item" onclick="recoverDeletedFilesFromImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Jumps to File Recovery with this image pre-filled as the source, ready to run PhotoRec, foremost, scalpel, or extundelete against it."><i class="bi bi-life-preserver me-2"></i>Recover Deleted Files...</button>
-                            <div class="dropdown-divider"></div>
+                            <h6 class="dropdown-header">Analyze</h6>
                             <button id="btnRunBinwalk" class="dropdown-item" onclick="runSelectedBinwalk()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Looks for other files or systems hidden inside this one - useful for firmware dumps, router images, or unknown binary files."><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button>
                             <button id="btnRunClamscan" class="dropdown-item" onclick="runSelectedClamscan()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks this file (or folder) against known virus/malware signatures."><i class="bi bi-shield-exclamation me-2"></i>Scan for Malware (ClamAV)</button>
                             <button id="btnRunStrings" class="dropdown-item" onclick="runSelectedStrings()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls out any readable text hiding inside a file that isn't normally text - like URLs or passwords buried in an executable."><i class="bi bi-fonts me-2"></i>Extract Strings</button>
@@ -707,11 +742,12 @@
                             <button id="btnExtractGeolocation" class="dropdown-item" onclick="runSelectedGeolocationExport()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Scans every photo in this folder for embedded GPS location data and saves a .kml file you can open in Google Earth or similar mapping software."><i class="bi bi-geo-alt me-2"></i>Extract Geolocation (KML)</button>
                             <button id="btnRunMvtIos" class="dropdown-item" onclick="runSelectedMvtScan('ios')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks an iOS backup folder (from Mobile Forensics) against known spyware indicators, using Amnesty International's Mobile Verification Toolkit."><i class="bi bi-phone me-2"></i>MVT Scan (iOS Backup)</button>
                             <button id="btnRunMvtAndroid" class="dropdown-item" onclick="runSelectedMvtScan('android')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Best-effort spyware/IOC scan of an Android backup folder using MVT. Only matches a decrypted adb-backup-format directory, not adb pull/bugreport output - errors clearly if the format doesn't match."><i class="bi bi-phone me-2"></i>MVT Scan (Android Backup)</button>
-                            <div class="dropdown-divider"></div>
+                            <h6 class="dropdown-header">File Operations</h6>
                             <button id="btnCopyFile" class="dropdown-item" onclick="promptCopySelected()" disabled><i class="bi bi-copy me-2"></i>Copy to...</button>
                             <button id="btnDeleteFile" class="dropdown-item text-danger" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-2"></i>Delete</button>
                         </div>
                         <div id="ctxMenuImageActions" style="display:none;">
+                            <h6 class="dropdown-header">In-Image Actions</h6>
                             <button id="ctxMenuImageExtract" class="dropdown-item" onclick="extractExplorerImageSelected()"><i class="bi bi-download me-2"></i>Extract to Evidence Root</button>
                             <button id="ctxMenuImageAttach" class="dropdown-item" onclick="extractAndAttachExplorerImageSelected()" data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls this file out of the image into the active case folder and bookmarks it as a report exhibit in one step. Requires an active, consolidated-format case."><i class="bi bi-bookmark-plus me-2"></i>Extract &amp; Attach to Case</button>
                             <button id="ctxMenuImageBinwalk" class="dropdown-item" onclick="runImageBinwalk()"><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button>
