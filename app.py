@@ -366,6 +366,21 @@ def is_local_kiosk_request():
     real_ip = request.headers.get('X-Real-IP', request.remote_addr)
     return real_ip in ('127.0.0.1', '::1', 'localhost')
 
+def get_offline_tiles_info():
+    """Read install.py's optional offline OSM tile cache manifest, if that setup step was run.
+    Returns {'max_zoom': N} or None - a tiny file, read fresh per page load rather than cached at
+    process start, since re-running install.py's tile step (or a future manual refresh) shouldn't
+    need a service restart to be picked up."""
+    manifest_path = os.path.join(app.static_folder, 'vendor', 'osm_tiles', 'manifest.json')
+    try:
+        with open(manifest_path) as f:
+            data = json.load(f)
+        if isinstance(data.get('max_zoom'), int):
+            return {'max_zoom': data['max_zoom']}
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
 def authenticate():
     return Response(
         'Authentication required to access Pi Forensics Suite.\n',
@@ -1973,7 +1988,11 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
 @app.route('/')
 @requires_auth
 def index():
-    return render_template('index.html', is_local_kiosk=is_local_kiosk_request())
+    return render_template(
+        'index.html',
+        is_local_kiosk=is_local_kiosk_request(),
+        offline_tiles_json=json.dumps(get_offline_tiles_info()),
+    )
 
 @app.route('/api/system_info', methods=['GET'])
 @requires_auth

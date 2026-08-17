@@ -1089,6 +1089,47 @@ function escapeHtmlForPopup(str) {
 // so a missing Leaflet/map-tile connection isn't a new dependency class,
 // just another instance of the same one, and the raw coordinate data stays
 // accessible either way.
+function _createGeoTileLayer() {
+    // If install.py's optional offline OSM tile cache step was run and found tiles
+    // (window.OFFLINE_TILES set from app.py's manifest read), prefer live OpenStreetMap tiles when
+    // reachable but silently fall back to the local cache per-tile on a load error - this is what
+    // makes the map still show real imagery on a station that's actually offline, while still
+    // showing fresher/wider live tiles whenever a connection IS available (e.g. a laptop reviewing
+    // the same case remotely over a real internet connection). maxZoom stays a normal 19 either way
+    // (zoom controls aren't restricted by what happens to be cached) - tiles beyond the offline
+    // cache's own max_zoom just render blank if both the live fetch and the fallback come up empty,
+    // same graceful-degradation the placemark table below the map already covers.
+    const onlineUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+    const attribution = '&copy; OpenStreetMap contributors';
+    const offlineInfo = (typeof window.OFFLINE_TILES !== 'undefined') ? window.OFFLINE_TILES : null;
+
+    if (!offlineInfo || !offlineInfo.max_zoom) {
+        return L.tileLayer(onlineUrl, { attribution, maxZoom: 19 });
+    }
+
+    const offlineMaxZoom = offlineInfo.max_zoom;
+    const OfflineFallbackTileLayer = L.TileLayer.extend({
+        createTile: function (coords, done) {
+            const tile = document.createElement('img');
+            const localUrl = coords.z <= offlineMaxZoom
+                ? L.Util.template('/static/vendor/osm_tiles/{z}/{x}/{y}.png', coords)
+                : null;
+            tile.onload = function () { done(null, tile); };
+            tile.onerror = function () {
+                if (localUrl && tile.src !== location.origin + localUrl) {
+                    tile.onerror = function () { done(null, tile); }; // no further fallback - blank tile
+                    tile.src = localUrl;
+                } else {
+                    done(null, tile);
+                }
+            };
+            tile.src = this.getTileUrl(coords);
+            return tile;
+        }
+    });
+    return new OfflineFallbackTileLayer(onlineUrl, { attribution, maxZoom: 19 });
+}
+
 function renderKmlViewer(container, kmlText, mapHeightCss) {
     container.innerHTML = '';
     const placemarks = parseKmlPlacemarks(kmlText);
@@ -1109,10 +1150,7 @@ function renderKmlViewer(container, kmlText, mapHeightCss) {
         container.appendChild(mapDiv);
         try {
             const map = L.map(mapDiv);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; OpenStreetMap contributors',
-                maxZoom: 19,
-            }).addTo(map);
+            _createGeoTileLayer().addTo(map);
             const bounds = [];
             placemarks.forEach(p => {
                 const marker = L.marker([p.lat, p.lon]).addTo(map);
