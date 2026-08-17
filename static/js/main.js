@@ -18,6 +18,7 @@ let activeSelectedIsDir = false;
 let currentLoadedReportData = null;
 let currentReportPath = null;
 let currentAttachedFilesList = [];
+let currentAttachmentCaptions = {};
 
 // activeCase shape: {case_number, examiner, case_folder} | null
 let activeCase = null;
@@ -794,6 +795,8 @@ function showExplorerImageContextMenu(ev, entry) {
     if (imageActions) imageActions.style.display = '';
     const extractBtn = document.getElementById('ctxMenuImageExtract');
     if (extractBtn) extractBtn.disabled = entry.is_dir;
+    const attachBtn = document.getElementById('ctxMenuImageAttach');
+    if (attachBtn) attachBtn.disabled = entry.is_dir || !activeCase;
     const binwalkBtn = document.getElementById('ctxMenuImageBinwalk');
     if (binwalkBtn) binwalkBtn.disabled = entry.is_dir;
     const stringsBtn = document.getElementById('ctxMenuImageStrings');
@@ -827,6 +830,7 @@ function updateContextToolbar(item) {
     const btnCopy = document.getElementById("btnCopyFile");
     const btnBrowseImage = document.getElementById("btnBrowseImage");
     const btnVerifyHash = document.getElementById("btnVerifyHash");
+    const btnAttachToCase = document.getElementById("btnAttachToCase");
     const btnRecoverFromImage = document.getElementById("btnRecoverFromImage");
     const btnBinwalk = document.getElementById("btnRunBinwalk");
     const btnClamscan = document.getElementById("btnRunClamscan");
@@ -847,6 +851,7 @@ function updateContextToolbar(item) {
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnVerifyHash) btnVerifyHash.disabled = item.is_dir;
+    if (btnAttachToCase) btnAttachToCase.disabled = item.is_dir || !activeCase;
     if (btnRecoverFromImage) btnRecoverFromImage.disabled = item.is_dir || !isImageFile(item.name);
 }
 
@@ -1672,6 +1677,46 @@ async function extractExplorerImageSelected() {
     } catch (err) {}
 }
 
+// A virtual in-image entry has no real on-disk path to attach directly, so
+// this pulls it out to the active case folder (the same extract route
+// extractExplorerImageSelected() uses) and then attaches the resulting real
+// file - one context-menu click instead of "Extract, then go find it in the
+// real File Explorer and Attach to Case separately."
+async function extractAndAttachExplorerImageSelected() {
+    if (!explorerImageSelected || !activeCase) return;
+    try {
+        const extractRes = await fetch('/api/image/extract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: explorerImagePath,
+                offset: explorerImageOffset,
+                inode: explorerImageSelected.inode,
+                output_name: explorerImageSelected.name,
+                destination_dir: activeCase.case_folder
+            })
+        });
+        const extractData = await extractRes.json();
+        if (!extractData.success) {
+            alert(`Extraction failed: ${extractData.error}`);
+            return;
+        }
+
+        const attachRes = await fetch('/api/cases/attach_file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder, file_path: extractData.path })
+        });
+        const attachData = await attachRes.json();
+        if (attachData.success) {
+            alert(`Extracted and attached to ${activeCase.case_number} as a case exhibit (${attachData.file_count} file(s) now attached). Edit captions in Reporting > Files.`);
+            if (currentReportPath) loadCaseForEditing();
+        } else {
+            alert(`Extracted to ${extractData.path}, but attaching to the case failed: ${attachData.error}`);
+        }
+    } catch (err) {}
+}
+
 async function runImageBinwalk() {
     if (!explorerImageSelected) return;
     showToolOutputModal(`Binwalk: ${explorerImageSelected.name}`, 'bi-cpu');
@@ -1809,57 +1854,123 @@ async function runImageRecoverDeleted() {
     } catch (err) {}
 }
 
-// --- Dynamic Attachments List Functions ---
-function renderAttachmentsList() {
-    const container = document.getElementById("attachmentsContainer");
+// --- Case Attachments Gallery (Reporting > Files) ---
+// Reuses the same discover_files + thumbnail pattern the Export pane's own
+// file picker already proved out (renderExportFilesList()), but for a
+// different purpose: here the checkbox state IS the persistent attachment
+// list (currentAttachedFilesList), not a one-time per-export selection, and
+// checked rows get an inline caption field. Toggling stays purely
+// client-side, staged like every other Reporting field, and only written to
+// disk when "Save Report Changes" is clicked - except files added via File
+// Explorer's "Attach to Case" shortcut, which commits straight to disk
+// immediately (no loaded-report state to stage through there). A long-lived
+// Reporting tab with unsaved edits could theoretically clobber a File-
+// Explorer-added attachment on its next save - the same "last write wins"
+// tradeoff this app already accepts everywhere /api/report/save is used,
+// not a new risk introduced here.
+async function renderReportFilesGallery() {
+    const container = document.getElementById("reportFilesGallery");
     if (!container) return;
+    container.innerHTML = '<div class="text-subtle small p-2">Loading...</div>';
 
-    if (currentAttachedFilesList.length === 0) {
-        container.innerHTML = '<span class="text-subtle small italic">No files attached yet. Click \'Add File Attachment\' to browse.</span>';
+    const caseFolder = activeCase ? activeCase.case_folder : "";
+    let discovered = [];
+    let truncated = false;
+    if (caseFolder) {
+        try {
+            const res = await fetch(`/api/cases/discover_files?case_folder=${encodeURIComponent(caseFolder)}`);
+            const data = await res.json();
+            if (data.success) {
+                discovered = data.files || [];
+                truncated = !!data.truncated;
+            }
+        } catch (err) {}
+    }
+
+    const attachedSet = new Set(currentAttachedFilesList);
+    const extraFiles = discovered.filter(f => !attachedSet.has(f.path));
+
+    container.innerHTML = '';
+
+    if (currentAttachedFilesList.length === 0 && extraFiles.length === 0) {
+        container.innerHTML = '<span class="text-subtle small">No files attached, and nothing else found in this case folder yet. Use "Browse Elsewhere..." below, or right-click a file in File Explorer and choose "Attach to Case".</span>';
         return;
     }
 
-    container.innerHTML = '';
-    currentAttachedFilesList.forEach((filePath, idx) => {
-        const itemDiv = document.createElement("div");
-        itemDiv.className = "d-flex justify-content-between align-items-center bg-dark text-light p-1 px-2 rounded mb-1 border border-secondary font-monospace small";
+    const addRow = (name, sublabel, filePath, checked) => {
+        const row = document.createElement('div');
+        row.className = 'd-flex align-items-start gap-2 bg-dark p-2 rounded mb-1 border border-secondary';
 
-        const fileName = filePath.split('/').pop();
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input mt-1 flex-shrink-0';
+        cb.checked = checked;
+        cb.addEventListener('change', () => toggleAttachmentFile(filePath, cb.checked));
+        row.appendChild(cb);
 
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'text-truncate me-2 d-flex align-items-center';
         if (isPhotoImagePath(filePath)) {
             const thumb = document.createElement('img');
             thumb.src = `/api/files/raw?path=${encodeURIComponent(filePath)}`;
-            thumb.className = 'me-2 rounded border border-secondary';
-            thumb.style.cssText = 'width:28px;height:28px;object-fit:cover;';
+            thumb.className = 'rounded border border-secondary flex-shrink-0';
+            thumb.style.cssText = 'width:36px;height:36px;object-fit:cover;';
             thumb.alt = '';
-            nameSpan.appendChild(thumb);
-        } else {
-            nameSpan.innerHTML = '<i class="bi bi-file-earmark-arrow-up text-info me-1"></i>'; // static/trusted markup
+            row.appendChild(thumb);
         }
-        nameSpan.appendChild(document.createTextNode(fileName)); // untrusted, appended as text only
 
-        const removeBtn = document.createElement('button');
-        removeBtn.className = 'btn btn-xs btn-outline-danger py-0 px-1';
-        removeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
-        removeBtn.addEventListener('click', () => removeAttachment(idx));
+        const textWrap = document.createElement('div');
+        textWrap.className = 'flex-grow-1';
+        const line1 = document.createElement('div');
+        line1.className = 'small text-break';
+        line1.textContent = name; // untrusted (filename) - text node only
+        textWrap.appendChild(line1);
+        if (sublabel) {
+            const line2 = document.createElement('div');
+            line2.className = 'text-subtle small';
+            line2.textContent = sublabel;
+            textWrap.appendChild(line2);
+        }
+        if (checked) {
+            const capInput = document.createElement('input');
+            capInput.type = 'text';
+            capInput.className = 'form-control form-control-sm mt-1';
+            capInput.placeholder = 'Optional caption for the exported report...';
+            capInput.value = currentAttachmentCaptions[filePath] || '';
+            capInput.addEventListener('input', () => { currentAttachmentCaptions[filePath] = capInput.value; });
+            textWrap.appendChild(capInput);
+        }
+        row.appendChild(textWrap);
+        container.appendChild(row);
+    };
 
-        itemDiv.appendChild(nameSpan);
-        itemDiv.appendChild(removeBtn);
-        container.appendChild(itemDiv);
+    currentAttachedFilesList.forEach(fp => addRow(fp.split('/').pop(), `Attached · ${fp}`, fp, true));
+    extraFiles.forEach(f => {
+        const kindLabel = f.kind === 'image' ? 'Image' : f.kind === 'text' ? 'Text' : 'File';
+        const sizeKb = f.size_bytes ? ` · ${(f.size_bytes / 1024).toFixed(1)} KB` : '';
+        addRow(f.name, `Found in case folder · ${kindLabel}${sizeKb}`, f.path, false);
     });
+
+    if (truncated) {
+        const note = document.createElement('div');
+        note.className = 'text-subtle small p-2';
+        note.textContent = 'Showing the first 200 discovered files - some case-folder files were not listed.';
+        container.appendChild(note);
+    }
 }
 
-function removeAttachment(index) {
-    currentAttachedFilesList.splice(index, 1);
-    renderAttachmentsList();
+function toggleAttachmentFile(filePath, checked) {
+    if (checked) {
+        if (!currentAttachedFilesList.includes(filePath)) currentAttachedFilesList.push(filePath);
+    } else {
+        currentAttachedFilesList = currentAttachedFilesList.filter(p => p !== filePath);
+        delete currentAttachmentCaptions[filePath];
+    }
+    renderReportFilesGallery();
 }
 
 function addFileAttachment(filePath) {
     if (filePath && !currentAttachedFilesList.includes(filePath)) {
         currentAttachedFilesList.push(filePath);
-        renderAttachmentsList();
+        renderReportFilesGallery();
     }
 }
 
@@ -2424,7 +2535,8 @@ async function loadCaseForEditing() {
         if (!currentAttachedFilesList.length && attach.image_path) {
             currentAttachedFilesList = [attach.image_path];
         }
-        renderAttachmentsList();
+        currentAttachmentCaptions = attach.file_captions || {};
+        renderReportFilesGallery();
 
         const editUrls = document.getElementById("editUrls");
         if (editUrls) editUrls.value = (attach.reference_urls || []).join(", ");
@@ -3030,7 +3142,8 @@ async function saveReportMetadata() {
 
     currentLoadedReportData.attachments = {
         files: currentAttachedFilesList,
-        reference_urls: urlArray
+        reference_urls: urlArray,
+        file_captions: currentAttachmentCaptions
     };
 
     try {
@@ -3495,6 +3608,33 @@ function recoverDeletedFilesFromImage() {
     const sourceEl = document.getElementById("recoverySourcePath");
     if (sourceEl) sourceEl.value = activeSelectedFile;
     switchToTab('ddrescue-tab');
+}
+
+// "Tag it where you find it" - bookmarks the right-clicked file as a case
+// exhibit immediately (commits straight to the case JSON on disk, same as
+// every other File Explorer action), rather than requiring a separate trip
+// to Reporting > Files to browse back to the same path.
+async function attachSelectedFileToCase() {
+    if (!activeSelectedFile || !activeCase) return;
+
+    try {
+        const res = await fetch('/api/cases/attach_file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder, file_path: activeSelectedFile })
+        });
+        const data = await res.json();
+        if (data.success) {
+            if (data.already_attached) {
+                alert(`This file is already attached to ${activeCase.case_number}.`);
+            } else {
+                alert(`Attached to ${activeCase.case_number} as a case exhibit (${data.file_count} file(s) now attached). Edit captions or reorder exhibits in Reporting > Files.`);
+                if (currentReportPath) loadCaseForEditing();
+            }
+        } else {
+            alert(`Attach to case failed: ${data.error}`);
+        }
+    } catch (err) {}
 }
 
 // --- Evidence Hash Verifier (context-menu action, scoped to the selected file) ---
