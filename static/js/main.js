@@ -1089,7 +1089,7 @@ function escapeHtmlForPopup(str) {
 // so a missing Leaflet/map-tile connection isn't a new dependency class,
 // just another instance of the same one, and the raw coordinate data stays
 // accessible either way.
-function renderKmlViewer(container, kmlText) {
+function renderKmlViewer(container, kmlText, mapHeightCss) {
     container.innerHTML = '';
     const placemarks = parseKmlPlacemarks(kmlText);
 
@@ -1103,7 +1103,7 @@ function renderKmlViewer(container, kmlText) {
 
     if (typeof L !== 'undefined') {
         const mapDiv = document.createElement('div');
-        mapDiv.style.height = '280px';
+        mapDiv.style.height = mapHeightCss || '280px';
         mapDiv.style.width = '100%';
         mapDiv.className = 'mb-2 rounded';
         container.appendChild(mapDiv);
@@ -2951,7 +2951,7 @@ async function renderReportGeolocationList() {
             });
             const data = await res.json();
             if (data.success) {
-                renderKmlViewer(mapHolder, data.content);
+                renderKmlViewer(mapHolder, data.content, 'clamp(360px, 60vh, 700px)');
             } else {
                 mapHolder.textContent = data.error || 'Failed to load this KML file.';
                 mapHolder.className = 'text-danger small';
