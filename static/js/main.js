@@ -595,7 +595,7 @@ function buildExplorerListingTable() {
     table.className = 'table table-dark table-sm table-hover mb-0';
     const thead = document.createElement('thead');
     const headRow = document.createElement('tr');
-    [['name', 'Name'], ['size', 'Size'], ['modified', 'Modified']].forEach(([field, label]) => {
+    [['name', 'Name'], ['size', 'Size'], ['modified', 'Modified'], ['accessed', 'Accessed'], ['changed', 'Changed'], ['created', 'Created']].forEach(([field, label]) => {
         const th = document.createElement('th');
         th.className = 'explorer-sort-th';
         th.onclick = () => sortExplorerRows(field);
@@ -681,9 +681,24 @@ function buildFileTableRow(tbody, item) {
     modTd.className = 'text-subtle font-monospace';
     modTd.textContent = item.modified || '--';
 
+    const accTd = document.createElement('td');
+    accTd.className = 'text-subtle font-monospace';
+    accTd.textContent = item.accessed || '--';
+
+    const chgTd = document.createElement('td');
+    chgTd.className = 'text-subtle font-monospace';
+    chgTd.textContent = item.changed || '--';
+
+    const createdTd = document.createElement('td');
+    createdTd.className = 'text-subtle font-monospace';
+    createdTd.textContent = item.created || '--';
+
     tr.appendChild(nameTd);
     tr.appendChild(sizeTd);
     tr.appendChild(modTd);
+    tr.appendChild(accTd);
+    tr.appendChild(chgTd);
+    tr.appendChild(createdTd);
 
     tr.onclick = () => {
         document.querySelectorAll(`.file-pane .file-item`).forEach(el => el.classList.remove('active'));
@@ -1120,7 +1135,8 @@ async function loadExplorer(path) {
         } : null;
 
         explorerActiveRows = data.items.map(item => ({
-            name: item.name, size: item.size_bytes, modified: item.modified, raw: item
+            name: item.name, size: item.size_bytes, modified: item.modified,
+            accessed: item.accessed, changed: item.changed, created: item.created, raw: item
         }));
         explorerActiveRowRenderer = buildFileTableRow;
         renderExplorerActiveTable();
@@ -2262,7 +2278,8 @@ async function loadExplorerImageDir(inode) {
         };
 
         explorerActiveRows = data.entries.map(entry => ({
-            name: entry.name, size: entry.size, modified: entry.mtime, raw: entry
+            name: entry.name, size: entry.size, modified: entry.mtime,
+            accessed: entry.atime, changed: entry.ctime, created: entry.crtime, raw: entry
         }));
         explorerActiveRowRenderer = (tbody, entry) => renderExplorerImageEntryRow(tbody, entry);
         renderExplorerActiveTable();
@@ -2316,9 +2333,24 @@ function renderExplorerImageEntryRow(container, entry, displayName) {
     modTd.className = 'text-subtle font-monospace';
     modTd.textContent = imgFormatTimestamp(entry.mtime);
 
+    const accTd = document.createElement('td');
+    accTd.className = 'text-subtle font-monospace';
+    accTd.textContent = imgFormatTimestamp(entry.atime);
+
+    const chgTd = document.createElement('td');
+    chgTd.className = 'text-subtle font-monospace';
+    chgTd.textContent = imgFormatTimestamp(entry.ctime);
+
+    const createdTd = document.createElement('td');
+    createdTd.className = 'text-subtle font-monospace';
+    createdTd.textContent = imgFormatTimestamp(entry.crtime);
+
     tr.appendChild(nameTd);
     tr.appendChild(sizeTd);
     tr.appendChild(modTd);
+    tr.appendChild(accTd);
+    tr.appendChild(chgTd);
+    tr.appendChild(createdTd);
 
     tr.onclick = () => {
         document.querySelectorAll('.file-pane .file-item').forEach(el => el.classList.remove('active'));
