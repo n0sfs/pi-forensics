@@ -25,6 +25,7 @@ import threading
 from functools import wraps
 from flask import Flask, render_template, jsonify, request, Response, send_file, g
 from werkzeug.security import generate_password_hash, check_password_hash
+from cryptography.fernet import Fernet, InvalidToken
 
 app = Flask(__name__)
 
@@ -73,6 +74,50 @@ TLS_KEY_PATH = "/etc/ssl/pi-forensics/pi-forensics.key"
 # FORENSIC_PASS above if this file doesn't exist yet.
 RUNTIME_CONFIG_FILE = os.path.join(INSTALL_DIR, "runtime_config.json")
 runtime_config_lock = threading.Lock()
+
+# Symmetric key for encrypting auto-mount share credentials at rest (see
+# "Auto-Connect Shares" below) - deliberately a separate file from
+# runtime_config.json itself, so the key and the ciphertext it protects
+# never sit in the same document. Lazily generated on first use (0600,
+# service-account owned) rather than requiring an install.py step, so a
+# station that only ever upgrades via `git pull` still gets one the first
+# time this feature is used.
+#
+# Honest scope of what this protects: an examiner reconnecting a share
+# unattended at boot means the decryption key MUST be locally readable by
+# the same account doing the mounting - there is no human typing a
+# passphrase at boot to gate access to it. This defends against casual
+# plaintext exposure (someone reading runtime_config.json directly, a
+# backup/screen-share leak, an accidental git-add), not against an
+# attacker who already has root or physical disk access to this station -
+# that limitation is inherent to any unattended auto-reconnect, not a gap
+# specific to this implementation.
+MOUNT_KEY_FILE = os.path.join(INSTALL_DIR, ".mount_key")
+mount_key_lock = threading.Lock()
+
+def _get_or_create_mount_key():
+    with mount_key_lock:
+        if os.path.exists(MOUNT_KEY_FILE):
+            with open(MOUNT_KEY_FILE, 'rb') as f:
+                return f.read().strip()
+        key = Fernet.generate_key()
+        with open(MOUNT_KEY_FILE, 'wb') as f:
+            f.write(key)
+        os.chmod(MOUNT_KEY_FILE, 0o600)
+        return key
+
+def _encrypt_secret(plaintext):
+    if not plaintext:
+        return None
+    return Fernet(_get_or_create_mount_key()).encrypt(plaintext.encode()).decode()
+
+def _decrypt_secret(token):
+    if not token:
+        return ""
+    try:
+        return Fernet(_get_or_create_mount_key()).decrypt(token.encode()).decode()
+    except (InvalidToken, ValueError):
+        return ""
 
 # Append-only chain-of-custody log: one JSON object per line, covering
 # acquisitions, file deletes/copies, hash verifications, PhotoRec runs,
@@ -2032,24 +2077,11 @@ def list_server_shares():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/mount_network', methods=['POST'])
-@requires_auth
-def mount_network():
-    req = request.get_json() or {}
-    protocol = req.get('protocol', 'smb').lower()
-    host = req.get('host', '').strip()
-    share = req.get('share', '').strip()
-    user = req.get('user', '').strip()
-    password = req.get('pass', '').strip()
-    ssh_key = req.get('key', '').strip()
-
-    if not host or not share:
-        return jsonify({"success": False, "error": "Server IP and Share/Path are required."}), 400
-
-    share_path = f"/{share.lstrip('/')}"
-    safe_folder_name = share_path.replace('/', '_').strip('_')
-    mount_point = f"/mnt/network_{protocol}_{safe_folder_name}"
-
+def _do_network_mount(protocol, host, share_path, mount_point, user, password, ssh_key):
+    """Actually performs the mount (NFS/SFTP/SMB), shared by the live
+    /api/mount_network route and attempt_startup_auto_mounts() below - one
+    real implementation so the two can never drift apart. Returns
+    (success: bool, error_message: str|None)."""
     # The service runs as an unprivileged user (see install.py), so
     # directories under /mnt must be created via sudo rather than
     # os.makedirs(), which would otherwise fail with a permission error.
@@ -2069,17 +2101,15 @@ def mount_network():
             res = subprocess.run(cmd_v3, capture_output=True, text=True)
 
             if res.returncode == 0:
-                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
-                return jsonify({"success": True, "mount_point": mount_point})
+                return True, None
 
             cmd_v4 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=4', nfs_source, mount_point]
             res_v4 = subprocess.run(cmd_v4, capture_output=True, text=True)
 
             if res_v4.returncode == 0:
-                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
-                return jsonify({"success": True, "mount_point": mount_point})
+                return True, None
 
-            return jsonify({"success": False, "error": f"NFS Mount Failed: {res_v4.stderr.strip() or res.stderr.strip()}"}), 500
+            return False, f"NFS Mount Failed: {res_v4.stderr.strip() or res.stderr.strip()}"
 
         elif protocol == 'sftp':
             # sshfs (FUSE) has no CIFS-style credentials=file option, so the
@@ -2122,10 +2152,9 @@ def mount_network():
                 res_sftp = subprocess.run(cmd_sftp, input=password, capture_output=True, text=True)
 
             if res_sftp.returncode == 0:
-                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
-                return jsonify({"success": True, "mount_point": mount_point})
+                return True, None
 
-            return jsonify({"success": False, "error": f"SFTP Mount Failed: {res_sftp.stderr.strip()}"}), 500
+            return False, f"SFTP Mount Failed: {res_sftp.stderr.strip()}"
 
         else:
             unc_source = f"//{host}/{share_path.lstrip('/')}"
@@ -2151,13 +2180,130 @@ def mount_network():
                     pass
 
             if res_smb.returncode == 0:
-                save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
-                return jsonify({"success": True, "mount_point": mount_point})
+                return True, None
 
-            return jsonify({"success": False, "error": f"SMB Mount Failed: {res_smb.stderr.strip()}"}), 500
+            return False, f"SMB Mount Failed: {res_smb.stderr.strip()}"
 
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return False, str(e)
+
+
+def _save_auto_mount_share(protocol, host, share_path, mount_point, user, password, ssh_key):
+    """Persists a share for automatic reconnection on every future app
+    startup (see attempt_startup_auto_mounts()). Only ever called after a
+    real successful mount, never speculatively - a broken/unreachable share
+    should never end up in this list. Any secret is Fernet-encrypted before
+    it touches disk (see _encrypt_secret's docstring above for the honest
+    scope of what that protects)."""
+    cfg = load_runtime_config()
+    shares = cfg.get('auto_mount_shares', [])
+    shares = [s for s in shares if s.get('mount_point') != mount_point]
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    shares.append({
+        "id": uuid.uuid4().hex,
+        "protocol": protocol,
+        "host": host,
+        "share": share_path,
+        "mount_point": mount_point,
+        "user": user or "",
+        "password_enc": _encrypt_secret(password),
+        "key_enc": _encrypt_secret(ssh_key),
+        "created_at": now,
+        "updated_at": now,
+    })
+    cfg['auto_mount_shares'] = shares
+    save_runtime_config(cfg)
+    log_chain_of_custody("auto_mount_share_added", {"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
+
+
+def attempt_startup_auto_mounts():
+    """Runs once when the app process starts (see the threading.Thread call
+    near the bottom of this file) - replays every saved auto-mount share so
+    a station reboot (or even just a `systemctl restart`) doesn't strand an
+    examiner's cases on a share that silently didn't come back, the exact
+    gap that prompted this feature. Runs in a background thread specifically
+    so a slow/unreachable NFS/SMB/SFTP server can't delay the whole app from
+    becoming ready."""
+    shares = load_runtime_config().get('auto_mount_shares', [])
+    if not shares:
+        return
+    for entry in shares:
+        password = _decrypt_secret(entry.get('password_enc'))
+        ssh_key = _decrypt_secret(entry.get('key_enc'))
+        success, error = _do_network_mount(
+            entry.get('protocol', 'nfs'), entry.get('host', ''), entry.get('share', ''),
+            entry.get('mount_point', ''), entry.get('user', ''), password, ssh_key
+        )
+        # Explicit source_ip/user overrides, not the request-context fallback -
+        # this runs in a background thread with no active Flask request, and
+        # log_chain_of_custody() would raise trying to read request/g outside
+        # one (the exact bug already fixed once for network-config's own
+        # delayed-revert thread - same pattern applied here from the start).
+        log_chain_of_custody(
+            "auto_mount_startup",
+            {"mount_point": entry.get('mount_point'), "host": entry.get('host'), "success": success, "error": error},
+            source_ip=None, user="system-startup"
+        )
+
+
+@app.route('/api/mount_network', methods=['POST'])
+@requires_auth
+def mount_network():
+    req = request.get_json() or {}
+    protocol = req.get('protocol', 'smb').lower()
+    host = req.get('host', '').strip()
+    share = req.get('share', '').strip()
+    user = req.get('user', '').strip()
+    password = req.get('pass', '').strip()
+    ssh_key = req.get('key', '').strip()
+    auto_connect = bool(req.get('auto_connect'))
+
+    if not host or not share:
+        return jsonify({"success": False, "error": "Server IP and Share/Path are required."}), 400
+
+    share_path = f"/{share.lstrip('/')}"
+    safe_folder_name = share_path.replace('/', '_').strip('_')
+    mount_point = f"/mnt/network_{protocol}_{safe_folder_name}"
+
+    success, error = _do_network_mount(protocol, host, share_path, mount_point, user, password, ssh_key)
+
+    if not success:
+        return jsonify({"success": False, "error": error}), 500
+
+    save_mount_history({"protocol": protocol, "host": host, "share": share_path, "mount_point": mount_point})
+    if auto_connect:
+        _save_auto_mount_share(protocol, host, share_path, mount_point, user, password, ssh_key)
+
+    return jsonify({"success": True, "mount_point": mount_point})
+
+
+@app.route('/api/network/auto_mounts', methods=['GET'])
+@requires_auth
+def list_auto_mount_shares():
+    shares = load_runtime_config().get('auto_mount_shares', [])
+    return jsonify({"success": True, "shares": [
+        {
+            "id": s.get('id'), "protocol": s.get('protocol'), "host": s.get('host'),
+            "share": s.get('share'), "mount_point": s.get('mount_point'), "user": s.get('user', ''),
+            "has_password": bool(s.get('password_enc')), "has_key": bool(s.get('key_enc')),
+            "created_at": s.get('created_at'),
+        } for s in shares
+    ]})
+
+
+@app.route('/api/network/auto_mounts/<entry_id>', methods=['DELETE'])
+@requires_auth
+def remove_auto_mount_share(entry_id):
+    cfg = load_runtime_config()
+    shares = cfg.get('auto_mount_shares', [])
+    remaining = [s for s in shares if s.get('id') != entry_id]
+    if len(remaining) == len(shares):
+        return jsonify({"success": False, "error": "No auto-connect share found with that id."}), 404
+    removed = next((s for s in shares if s.get('id') == entry_id), None)
+    cfg['auto_mount_shares'] = remaining
+    save_runtime_config(cfg)
+    log_chain_of_custody("auto_mount_share_removed", {"mount_point": removed.get('mount_point') if removed else None})
+    return jsonify({"success": True})
 
 @app.route('/api/toggle_write_block', methods=['POST'])
 @requires_auth
@@ -8166,6 +8312,13 @@ def export_report():
         return resp
     except Exception as e:
         return jsonify({"error": f"Report export failed: {str(e)}"}), 500
+
+# Replay saved auto-mount shares once per process start - module-level (not
+# inside the __main__ guard below) so this also runs under gunicorn, which
+# imports this module rather than executing it as __main__. Backgrounded so
+# a slow/unreachable share can't delay the app from becoming ready; harmless
+# no-op when no auto-mount shares are configured (the common case).
+threading.Thread(target=attempt_startup_auto_mounts, daemon=True).start()
 
 if __name__ == '__main__':
     # This dev-mode entrypoint is only used for `python3 app.py` directly.

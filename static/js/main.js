@@ -4437,6 +4437,7 @@ async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusI
     const user = document.getElementById("netUser")?.value.trim() || "";
     const pass = document.getElementById("netPass")?.value || "";
     const key = protocol === 'sftp' ? (document.getElementById("netSftpKey")?.value || "") : "";
+    const autoConnect = document.getElementById("netAutoConnect")?.checked || false;
 
     if (!share) return alert(protocol === 'sftp' ? "Please enter a remote path first." : "Please select or enter an exported share name first.");
     if (protocol === 'sftp' && !user) return alert("SFTP requires a username.");
@@ -4447,7 +4448,7 @@ async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusI
         const res = await fetch('/api/mount_network', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ protocol, host, share, user, pass, key })
+            body: JSON.stringify({ protocol, host, share, user, pass, key, auto_connect: autoConnect })
         });
         const data = await res.json();
 
@@ -4462,13 +4463,16 @@ async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusI
                 okLine.textContent = `Mounted: ${data.mount_point}`;
                 const hintLine = document.createElement('div');
                 hintLine.className = 'text-subtle';
-                hintLine.textContent = 'Use any tab\'s Browse button to navigate into this path.';
+                hintLine.textContent = autoConnect
+                    ? 'Use any tab\'s Browse button to navigate into this path. It will also reconnect automatically on every future reboot.'
+                    : 'Use any tab\'s Browse button to navigate into this path.';
                 mountStatus.appendChild(okLine);
                 mountStatus.appendChild(hintLine);
             }
 
             loadExplorer(data.mount_point);
             loadNetworkHistory();
+            loadAutoMountShares();
         } else {
             if (mountStatus) mountStatus.innerText = `Mount Error: ${data.error}`;
             alert(`Mount Failed: ${data.error}`);
@@ -4476,6 +4480,62 @@ async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusI
     } catch (err) {
         if (mountStatus) mountStatus.innerText = `Mount Failed: ${err.message}`;
     }
+}
+
+// --- Auto-Connect Shares (reconnect on every app/station start) ---
+async function loadAutoMountShares() {
+    const container = document.getElementById("autoMountSharesList");
+    if (!container) return;
+    try {
+        const res = await fetch('/api/network/auto_mounts');
+        const data = await res.json();
+        const shares = (data.success && data.shares) || [];
+
+        container.innerHTML = '';
+        if (shares.length === 0) {
+            container.innerHTML = '<span class="text-subtle small">No shares configured to auto-connect yet.</span>';
+            return;
+        }
+
+        shares.forEach(s => {
+            const row = document.createElement('div');
+            row.className = 'd-flex justify-content-between align-items-center bg-dark p-2 rounded mb-1 border border-secondary';
+
+            const info = document.createElement('div');
+            info.className = 'small';
+            const line1 = document.createElement('div');
+            line1.className = 'fw-bold text-info';
+            line1.textContent = `${s.protocol.toUpperCase()} - ${s.host}:${s.share}`;
+            const line2 = document.createElement('div');
+            line2.className = 'text-subtle';
+            const authNote = s.has_password ? ' - encrypted password stored' : (s.has_key ? ' - encrypted key stored' : '');
+            line2.textContent = `${s.mount_point}${s.user ? ' - user: ' + s.user : ''}${authNote}`;
+            info.appendChild(line1);
+            info.appendChild(line2);
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'btn btn-sm btn-outline-danger';
+            removeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+            removeBtn.title = 'Stop auto-connecting this share';
+            removeBtn.addEventListener('click', () => removeAutoMountShare(s.id));
+
+            row.appendChild(info);
+            row.appendChild(removeBtn);
+            container.appendChild(row);
+        });
+    } catch (err) {
+        container.innerHTML = '<span class="text-danger small">Failed to load auto-connect shares.</span>';
+    }
+}
+
+async function removeAutoMountShare(id) {
+    if (!confirm('Stop auto-connecting this share on future reboots? The current mount (if any) is left untouched.')) return;
+    try {
+        const res = await fetch(`/api/network/auto_mounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!data.success) alert(`Failed to remove: ${data.error}`);
+        loadAutoMountShares();
+    } catch (err) {}
 }
 
 // --- Network Configuration (station's own IPv4 addressing, DHCP or static) ---
@@ -5915,6 +5975,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initThroughputGraph();
     refreshDrives();
     loadNetworkHistory();
+    loadAutoMountShares();
     loadExplorer('/mnt');
     toggleFormatControls();
     refreshMobileDevices();
