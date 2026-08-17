@@ -1517,7 +1517,17 @@ sudo update-ca-certificates</pre>
                                 </div>
                                 <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
                             </div>
-                            <div id="mountStatus" class="small text-light"></div>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="netAutoConnect">
+                                <label class="form-check-label small" for="netAutoConnect"><i class="bi bi-shield-lock me-1"></i>Auto-connect this share on reboot</label>
+                            </div>
+                            <div class="small text-subtle mb-2">Any password or key is encrypted at rest on this station. That protects against the config file being casually read or leaked - it does not protect against someone with root or physical access to this device, since reconnecting unattended at boot means no one is there to type a passphrase.</div>
+                            <div id="mountStatus" class="small text-light mb-3"></div>
+                            <h6 class="text-info fw-bold mb-2 mt-3"><i class="bi bi-arrow-repeat me-2"></i>Auto-Connect Shares</h6>
+                            <div class="small text-subtle mb-2">Shares below reconnect automatically every time this station starts or restarts. Removing one here only stops future auto-reconnects - it does not unmount the share right now.</div>
+                            <div id="autoMountSharesList" class="bg-black border border-secondary p-2 rounded-2">
+                                <span class="text-subtle small">Loading...</span>
+                            </div>
                         </div>
 
                         <!-- Network Configuration - the station's OWN IP addressing (DHCP or
