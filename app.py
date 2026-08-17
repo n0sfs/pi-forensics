@@ -208,6 +208,34 @@ auth_fail_tracker = {}  # ip -> {"count": int, "locked_until": float|None}
 MAX_AUTH_FAILURES = 5
 LOCKOUT_SECONDS = 300
 
+# --- Last-login tracking (User Accounts list) ---
+# HTTP Basic Auth re-sends credentials on every single request, and this
+# app's own telemetry alone polls every 2 seconds per open tab - persisting
+# runtime_config.json (the whole file, not just this one field) on every
+# successful auth would mean a disk write several times a second for one
+# active user. Throttled instead: only actually written to disk once per
+# LAST_LOGIN_PERSIST_INTERVAL per username, tracked here in memory (resets
+# on restart, which just means one extra write next time that user is seen -
+# never wrong, only occasionally a little stale between restarts).
+_last_login_persist_times = {}  # username -> epoch seconds of last disk write
+LAST_LOGIN_PERSIST_INTERVAL = 300
+
+def _record_last_login(username):
+    if not username:
+        return
+    now = time.time()
+    if now - _last_login_persist_times.get(username, 0) < LAST_LOGIN_PERSIST_INTERVAL:
+        return
+    cfg = load_runtime_config()
+    user = find_user(username, cfg.get('users'))
+    if not user:
+        # Local-kiosk sentinel or the legacy single-shared-account login -
+        # neither has a real per-user record to update.
+        return
+    user['last_login'] = time.strftime("%Y-%m-%d %H:%M:%S")
+    save_runtime_config(cfg)
+    _last_login_persist_times[username] = now
+
 # Skips login for the physical kiosk touchscreen only (see requires_auth and
 # is_local_kiosk_request below) - remote/LAN/WiFi access always still
 # requires authentication regardless of this setting. Defaults on since a
@@ -398,6 +426,7 @@ def requires_auth(f):
             return authenticate()
 
         _record_auth_success(client_key)
+        _record_last_login(auth.username)
         # Stashed on Flask's request-scoped g object (not a new global - g
         # is reset per-request) so log_chain_of_custody() can attribute
         # entries to whoever is actually logged in, without threading a
@@ -3696,6 +3725,7 @@ def users_list():
             "group_id": gid,
             "group_name": grp['name'] if grp else gid,
             "created_at": u.get('created_at'),
+            "last_login": u.get('last_login'),
         })
     return jsonify({"success": True, "users": out})
 
