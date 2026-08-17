@@ -377,21 +377,6 @@
                     <span><span class="telemetry-label">Case #:</span> <span id="activeCaseNumVal" class="fw-bold text-info">--</span></span>
                     <span><span class="telemetry-label">Examiner:</span> <span id="activeCaseExaminerVal" class="fw-bold text-light">--</span></span>
                 </div>
-                <button id="btnSaveReportChanges" class="btn btn-sm btn-success fw-bold" onclick="saveReportMetadata()">
-                    <i class="bi bi-save me-1"></i>Save Report Changes
-                </button>
-                <!-- Write Blocker status + Safe Detach shortcut - both link to Settings >
-                     Drive Management rather than acting directly (too easy to flip/eject by
-                     accident from a compact top-bar button - see goToDriveManagement()). -->
-                <button id="wbBadgeBtn" class="btn btn-sm btn-success fw-bold ms-auto" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to change this">
-                    <i class="bi bi-lock-fill me-1"></i>Write Blocker: On
-                </button>
-                <!-- Hidden below md: goes to the exact same place as the Write
-                     Blocker badge above (goToDriveManagement()), which stays
-                     visible - genuinely redundant on a phone, not a feature loss. -->
-                <button class="btn btn-sm btn-warning text-dark fw-bold d-none d-md-inline-block" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to safely detach a drive">
-                    <i class="bi bi-eject-fill me-1"></i>Safe Detach
-                </button>
             </div>
 
             <div class="container-fluid px-4">
@@ -400,7 +385,23 @@
                     <!-- APP 1: FORENSIC ACQUISITION DASHBOARD -->
                     <div class="tab-pane fade show active" id="acquisition-app" role="tabpanel">
                             <div class="card">
-                                <div class="card-header py-2"><i class="bi bi-hdd-network me-2"></i>Forensic Acquisition</div>
+                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2 py-2">
+                                    <span><i class="bi bi-hdd-network me-2"></i>Forensic Acquisition</span>
+                                    <div class="d-flex flex-wrap align-items-center gap-2">
+                                        <!-- Write Blocker status + Safe Detach shortcut - both link to Settings >
+                                             Drive Management rather than acting directly (too easy to flip/eject
+                                             by accident from a compact header button - see goToDriveManagement()). -->
+                                        <button id="wbBadgeBtn" class="btn btn-sm btn-success fw-bold" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to change this">
+                                            <i class="bi bi-lock-fill me-1"></i>Write Blocker: On
+                                        </button>
+                                        <!-- Hidden below md: goes to the exact same place as the Write
+                                             Blocker badge above (goToDriveManagement()), which stays
+                                             visible - genuinely redundant on a phone, not a feature loss. -->
+                                        <button class="btn btn-sm btn-warning text-dark fw-bold d-none d-md-inline-block" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to safely detach a drive">
+                                            <i class="bi bi-eject-fill me-1"></i>Safe Detach
+                                        </button>
+                                    </div>
+                                </div>
                                 <div class="card-body py-2">
                                     <div class="row g-3">
                                         <div class="col-md-6">
@@ -830,9 +831,14 @@
             <!-- APP 3: REPORTS & VERIFICATION TAB -->
             <div class="tab-pane fade" id="reports-app" role="tabpanel">
                             <div class="card">
-                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-1 py-2">
+                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2 py-2">
                                     <span><i class="bi bi-journal-richtext me-2"></i>Case Report</span>
-                                    <span class="small text-subtle fw-normal">Follows the case selected in the bar above - select or create one there to populate this</span>
+                                    <div class="d-flex flex-wrap align-items-center gap-2">
+                                        <span class="small text-subtle fw-normal">Follows the case selected in the bar above - select or create one there to populate this</span>
+                                        <button id="btnSaveReportChanges" class="btn btn-sm btn-success fw-bold" onclick="saveReportMetadata()">
+                                            <i class="bi bi-save me-1"></i>Save Report Changes
+                                        </button>
+                                    </div>
                                 </div>
                                 <div class="card-body py-3">
                                     <div id="reportsNoCaseState" class="text-subtle small py-4 text-center">
@@ -886,7 +892,7 @@
                                                 </div>
                                                 <div class="tab-pane fade show active" id="repNarrativePane" role="tabpanel">
                                                     <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-info-circle me-1"></i>Case Details</h6>
-                                                    <div class="small text-subtle mb-2">Station-configured extra fields (Settings &gt; Case &amp; Reporting) for this case. Saved via "Save Report Changes" in the case bar above.</div>
+                                                    <div class="small text-subtle mb-2">Station-configured extra fields (Settings &gt; Case &amp; Reporting) for this case. Saved via "Save Report Changes" in the header above.</div>
                                                     <div id="customFieldsContainer" class="row g-2 mb-3"></div>
                                                     <hr class="border-secondary my-3">
                                                     <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-file-text me-1"></i>Report Narrative</h6>
@@ -919,7 +925,7 @@
                                                         <label class="telemetry-grid-label d-block mb-1">Recommendations / Next Steps <span class="text-subtle">(DFIR &amp; Forensics templates)</span></label>
                                                         <textarea id="editRecommendations" class="form-control form-control-sm" rows="2" placeholder="Containment/eradication actions taken, remaining follow-up work, or evidence-handling recommendations..."></textarea>
                                                     </div>
-                                                    <div class="small text-subtle">Saved via "Save Report Changes" in the case bar above.</div>
+                                                    <div class="small text-subtle">Saved via "Save Report Changes" in the header above.</div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repFilesPane" role="tabpanel">
                                                     <div class="d-flex justify-content-between align-items-center mb-2">
