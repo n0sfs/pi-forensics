@@ -5566,6 +5566,8 @@ def image_timeline():
     events = []
     truncated = False
     for entry, path in _tsk_walk(fs, start_inode_num):
+        if entry['is_virtual']:
+            continue  # TSK's own $MBR/$FAT1/$FAT2/$OrphanFiles pseudo-entries, not real evidence
         for ts_field, label in (('mtime', 'M'), ('atime', 'A'), ('ctime', 'C'), ('crtime', 'B')):
             ts = entry.get(ts_field)
             if ts:
@@ -6139,6 +6141,8 @@ def _collect_case_timeline(events):
                 continue
             count = 0
             for entry, path in _tsk_walk(fs):
+                if entry['is_virtual']:
+                    continue  # TSK's own $MBR/$FAT1/$FAT2/$OrphanFiles pseudo-entries, not real evidence
                 for ts_field, label in (('mtime', 'M'), ('atime', 'A'), ('ctime', 'C'), ('crtime', 'B')):
                     ts = entry.get(ts_field)
                     if ts:
@@ -8073,7 +8077,25 @@ def export_report():
         else:
             out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
             _build_pdf_report_standard(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields)
-        return send_file(out_path, as_attachment=True)
+
+        # A report-level integrity hash - computed over the exported file's
+        # actual bytes, not the source case JSON, so it verifies the specific
+        # PDF/HTML artifact an examiner hands off, not just the data behind
+        # it. Written as a standard sha256sum-format sidecar file (so
+        # `sha256sum -c` works directly against it later) and also returned
+        # as a response header so the examiner sees it immediately, not only
+        # by going and finding the sidecar file afterward.
+        report_hash = hashlib.sha256()
+        with open(out_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                report_hash.update(chunk)
+        digest = report_hash.hexdigest()
+        with open(out_path + '.sha256', 'w') as f:
+            f.write(f"{digest}  {os.path.basename(out_path)}\n")
+
+        resp = send_file(out_path, as_attachment=True)
+        resp.headers['X-Report-Sha256'] = digest
+        return resp
     except Exception as e:
         return jsonify({"error": f"Report export failed: {str(e)}"}), 500
 
