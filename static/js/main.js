@@ -656,6 +656,7 @@ function renderExplorerActiveTable() {
 function buildFileTableRow(tbody, item) {
     const tr = document.createElement('tr');
     tr.className = 'file-item';
+    tr.dataset.itemPath = item.path; // lets the tree's own file-click handler find and select this exact row
 
     const nameTd = document.createElement('td');
     const icon = item.is_dir
@@ -755,12 +756,33 @@ function explorerTreeRealAdapter() {
             }
         },
         navigate: (node) => loadExplorer(node.path),
-        selectFile: (node) => {
-            activeSelectedFile = node.raw.path;
-            activeSelectedIsDir = false;
-            updateContextToolbar(node.raw);
-            previewSelectedFile(node.raw);
-            refreshExplorerDetailsView();
+        // Clicking a file in the tree now navigates the Listing pane to that file's own folder
+        // (not just Details, as this originally shipped) - reported as confusing/broken, since the
+        // Listing pane could be showing a completely unrelated directory with no visible connection
+        // to the file just selected in the tree. Reuses the exact same row-click code path via a
+        // real .click() on the matching <tr> (see buildFileTableRow's data-item-path) rather than
+        // duplicating what a click already does.
+        selectFile: async (node) => {
+            const parentDir = node.raw.path.split('/').slice(0, -1).join('/') || '/';
+            if (explorerPath !== parentDir) {
+                await loadExplorer(parentDir);
+            }
+            const row = document.querySelector(`#explorerListBody tr[data-item-path="${CSS.escape(node.raw.path)}"]`);
+            if (row) {
+                row.click();
+            } else {
+                // Fallback for the unusual case the file doesn't appear in its own directory's
+                // listing (e.g. a stale/filtered view) - Details still updates directly.
+                activeSelectedFile = node.raw.path;
+                activeSelectedIsDir = false;
+                updateContextToolbar(node.raw);
+                previewSelectedFile(node.raw);
+                refreshExplorerDetailsView();
+            }
+            // loadExplorer() above (if it ran) already re-synced the tree's own highlight to the
+            // parent DIRECTORY it just navigated to, not this file - move it back onto the file
+            // itself so the tree's selection state matches what's actually selected.
+            syncExplorerTreeSelection(node.raw.path);
         },
         contextMenu: (ev, node) => showFileContextMenu(ev, node.raw),
     };
@@ -1080,7 +1102,13 @@ async function loadExplorer(path) {
         explorerPath = data.path;
         if (pathLabel) pathLabel.innerText = data.path;
 
-        explorerRenderUpRow = data.path !== '/' ? () => {
+        // With a case active, the case folder is the effective floor for "Up Directory" - stepping
+        // out of it landed the examiner in /mnt with no indication they'd left the case at all
+        // (reported directly: "up directory... takes me out of the case which should not happen
+        // unless i'm not connected to a case"). No case active still browses the full evidence root
+        // as before - this boundary only exists once a case is actually selected.
+        const atCaseRoot = activeCase && activeCase.case_folder && data.path === activeCase.case_folder;
+        explorerRenderUpRow = (data.path !== '/' && !atCaseRoot) ? () => {
             const upDiv = document.createElement('div');
             upDiv.className = 'file-item text-warning fw-bold';
             upDiv.innerHTML = '<i class="bi bi-arrow-up-left me-1"></i>.. [Up Directory]';
@@ -1718,55 +1746,120 @@ async function loadExplorerHexPane() {
     }
 }
 
+// Builds one labeled section (a small heading + a key/value table) - shared by the filesystem-info
+// block (works for files and folders alike) and the ExifTool embedded-metadata block (files only)
+// below it, so a selected file's Metadata pane shows both without two separate panes to switch
+// between.
+function _buildMetadataSection(title, rows) {
+    const wrap = document.createElement('div');
+    wrap.className = 'mb-3';
+    const heading = document.createElement('div');
+    heading.className = 'small text-info fw-bold mb-1';
+    heading.textContent = title;
+    wrap.appendChild(heading);
+
+    const table = document.createElement('table');
+    table.className = 'table table-sm table-dark table-striped mb-0';
+    const tbody = document.createElement('tbody');
+    if (rows.length === 0) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.textContent = 'None found.';
+        cell.className = 'text-subtle';
+        row.appendChild(cell);
+        tbody.appendChild(row);
+    } else {
+        rows.forEach(([key, value]) => renderMetadataRow(tbody, key, value));
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+}
+
+// Filesystem-level facts (works for both files and folders) - always shown first. ExifTool's
+// embedded-metadata table (file-only) is layered below it, so folders now get a real Metadata view
+// instead of the placeholder this used to show unconditionally for anything but a file.
 async function loadExplorerMetadataPane() {
     const container = document.getElementById('explorerMetadata');
     if (!container) return;
 
-    if (!activeSelectedFile || activeSelectedIsDir) {
+    if (!activeSelectedFile) {
         container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
-        container.innerHTML = '<i class="bi bi-info-circle fs-1 text-subtle mb-2"></i><span class="text-subtle small">Select a file on the left to view its metadata.</span>';
+        container.innerHTML = '<i class="bi bi-info-circle fs-1 text-subtle mb-2"></i><span class="text-subtle small">Select a file or folder on the left to view its details.</span>';
         return;
     }
 
     container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
-    container.innerHTML = '<span class="text-subtle small">Loading metadata...</span>';
+    container.innerHTML = '<span class="text-subtle small">Loading details...</span>';
 
+    const isDir = activeSelectedIsDir;
+    const requestedPath = activeSelectedFile; // snapshot - a fast second click shouldn't render stale data
     try {
-        const res = await fetch('/api/files/exif', {
+        const statRes = await fetch('/api/files/stat_info', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile })
+            body: JSON.stringify({ path: requestedPath })
         });
-        const data = await res.json();
+        const statData = await statRes.json();
+        if (activeSelectedFile !== requestedPath) return; // selection moved on while this was in flight
 
-        if (!data.success) {
+        if (!statData.success) {
+            container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
             container.innerHTML = '';
             const err = document.createElement('div');
             err.className = 'text-danger small';
-            err.textContent = data.error;
+            err.textContent = statData.error;
             container.appendChild(err);
             return;
         }
 
+        const fsRows = [
+            ['Name', statData.name],
+            ['Location', statData.path],
+            ['Type', isDir ? 'Folder' : 'File'],
+        ];
+        if (!isDir) {
+            fsRows.push(['Size', `${statData.size_str} (${statData.size_bytes.toLocaleString()} bytes)`]);
+            if (statData.extension) fsRows.push(['Extension', statData.extension]);
+            fsRows.push(['MIME Type', statData.mime_type || 'Unknown']);
+        }
+        fsRows.push(['Created', statData.created || 'Unknown (not exposed by this filesystem)']);
+        fsRows.push(['Modified', statData.modified || 'Unknown']);
+        fsRows.push(['Accessed', statData.accessed || 'Unknown']);
+        fsRows.push(['Permissions', `${statData.permissions} (${statData.permissions_octal})`]);
+        fsRows.push(['Owner / Group', `${statData.owner} / ${statData.group}`]);
+
         container.className = 'file-pane p-2 d-block text-start';
         container.innerHTML = '';
-        const table = document.createElement('table');
-        table.className = 'table table-sm table-dark table-striped mb-0';
-        const tbody = document.createElement('tbody');
-        const entries = Object.entries(data.metadata || {});
-        if (entries.length === 0) {
-            const row = document.createElement('tr');
-            const cell = document.createElement('td');
-            cell.textContent = 'No metadata found.';
-            cell.className = 'text-subtle';
-            row.appendChild(cell);
-            tbody.appendChild(row);
-        } else {
-            entries.forEach(([key, value]) => renderMetadataRow(tbody, key, value));
+        container.appendChild(_buildMetadataSection('Filesystem Info', fsRows));
+
+        if (isDir) {
+            const hint = document.createElement('div');
+            hint.className = 'text-subtle small';
+            hint.textContent = 'Embedded (EXIF-style) metadata only applies to individual files. Right-click a file for a hash, or use Hash Directory Tree on this folder for a full manifest.';
+            container.appendChild(hint);
+            return;
         }
-        table.appendChild(tbody);
-        container.appendChild(table);
+
+        const exifRes = await fetch('/api/files/exif', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: requestedPath })
+        });
+        const exifData = await exifRes.json();
+        if (activeSelectedFile !== requestedPath) return;
+
+        if (!exifData.success) {
+            const err = document.createElement('div');
+            err.className = 'text-danger small';
+            err.textContent = exifData.error;
+            container.appendChild(err);
+            return;
+        }
+        const exifRows = Object.entries(exifData.metadata || {});
+        container.appendChild(_buildMetadataSection('Embedded Metadata (ExifTool)', exifRows));
     } catch (err) {
+        if (activeSelectedFile !== requestedPath) return;
         container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
         container.innerHTML = '<span class="text-danger small">Request failed.</span>';
     }
