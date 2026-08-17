@@ -136,7 +136,25 @@ for anything missing. All from a left-nav Settings screen, not a shell.
 <p align="center">
   <img src="docs/images/PIF6.JPG" width="100%" alt="Settings" />
   <br>
-  <em>Settings — one of seven left-nav categories, shown here on Case & Reporting: per-station report export defaults, report branding (header text and logo), and custom case fields that appear on every case's Case Information block.</em>
+  <em>Settings — one of five left-nav categories, shown here on Case & Reporting: per-station report export defaults, report branding (header text and logo), and custom case fields that appear on every case's Case Information block.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF7.JPG" width="100%" alt="File Explorer Geolocation Preview" />
+  <br>
+  <em>File Explorer — a KML geolocation export previewed inline as a live map (no separate GIS tool needed to see where evidence photos were taken), alongside the Listing table's Accessed/Changed/Created timestamp columns.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF8.JPG" width="100%" alt="File Explorer Hex View" />
+  <br>
+  <em>File Explorer's Hex tab — a classic offset/hex/ASCII dump of the selected file, rendered client-side from a capped read for a quick byte-level look with no separate tool.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF9.JPG" width="100%" alt="File Explorer Metadata" />
+  <br>
+  <em>File Explorer's Metadata tab — real filesystem facts (size, extension, MIME type, timestamps, permissions, owner/group) for any file or folder, with ExifTool's embedded metadata layered below for files.</em>
 </p>
 
 ---
