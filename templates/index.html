@@ -1874,11 +1874,17 @@ sudo update-ca-certificates</pre>
                 </div>
                 <div class="modal-body py-2">
                     <div id="userActionModalWarning" class="small text-warning mb-3" style="display:none;"></div>
-                    <div class="mb-3" id="userActionNewPassRow" style="display:none;">
-                        <label class="telemetry-grid-label d-block mb-1">New Password for <span id="userActionTargetName2" class="font-monospace"></span></label>
-                        <input type="password" id="userActionNewPass" class="form-control form-control-sm" placeholder="New password (min 8 chars)">
+                    <div id="userActionNewPassRow" style="display:none;">
+                        <div class="mb-2">
+                            <label class="telemetry-grid-label d-block mb-1">New Password for <span id="userActionTargetName2" class="font-monospace"></span></label>
+                            <input type="password" id="userActionNewPass" class="form-control form-control-sm" placeholder="New password (min 8 chars)">
+                        </div>
+                        <div class="mb-3">
+                            <label class="telemetry-grid-label d-block mb-1">Confirm New Password</label>
+                            <input type="password" id="userActionConfirmNewPass" class="form-control form-control-sm" placeholder="Confirm new password">
+                        </div>
                     </div>
-                    <div class="mb-2">
+                    <div class="mb-2" id="userActionCurrentPassRow" style="display:none;">
                         <label class="telemetry-grid-label d-block mb-1">Your Current Password (to confirm)</label>
                         <input type="password" id="userActionCurrentPass" class="form-control form-control-sm" placeholder="Re-enter your own password">
                     </div>

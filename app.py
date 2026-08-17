@@ -3795,16 +3795,17 @@ def users_delete():
 @requires_auth
 @requires_permission('manage_users')
 def users_reset_password():
+    # Deliberately does NOT require the caller's own password (unlike
+    # users_delete(), which still does) - the manage_users permission check
+    # above is already the real access-control boundary here, and deleting
+    # an account is a materially more consequential/irreversible action
+    # than resetting a password, so the two don't need identical friction.
     req = request.get_json() or {}
     username = (req.get('username') or '').strip()
     new_password = req.get('new_password') or ''
-    current_password = req.get('current_password') or ''
 
     if not new_password or len(new_password) < 8:
         return jsonify({"success": False, "error": "New password must be at least 8 characters long."}), 400
-
-    if not caller_reauth_ok(current_password):
-        return jsonify({"success": False, "error": "Your current password is incorrect."}), 400
 
     cfg = load_runtime_config()
     users = cfg.get('users') or []
