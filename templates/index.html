@@ -2064,6 +2064,10 @@ sudo update-ca-certificates</pre>
         // which controls a physical overlay on the Pi's own screen that a
         // remote client can't see or use.
         window.IS_LOCAL_KIOSK = {{ 'true' if is_local_kiosk else 'false' }};
+        // {'max_zoom': N} if install.py's optional offline OSM tile cache step was run and found
+        // tiles, else null - renderKmlViewer() (main.js) uses this to fall back to locally-cached
+        // map imagery instead of blank tiles when tile.openstreetmap.org can't be reached.
+        window.OFFLINE_TILES = {{ offline_tiles_json | safe }};
     </script>
     <script src="/static/js/main.js"></script>
 </body>
