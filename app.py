@@ -4669,6 +4669,114 @@ def run_hashdeep():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+# --- Geolocation: Extract GPS EXIF Data as a KML File ---
+# Scoped to camera-native still-image formats that reliably carry GPS EXIF tags -
+# not every file in a case folder (raw acquisition images, logs, etc. would just be
+# wasted exiftool calls). Video GPS extraction is a real gap but out of scope for v1.
+GEO_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'tiff', 'tif', 'dng', 'heic', 'heif']
+
+
+def _kml_escape(text):
+    return html.escape(str(text), quote=True)
+
+
+def _geo_points_from_exiftool_entries(entries):
+    """Shared by both the real-directory and in-image geolocation routes -
+    turns exiftool -j -n JSON output into a filtered list of GPS points."""
+    points = []
+    for entry in entries:
+        lat, lon = entry.get('GPSLatitude'), entry.get('GPSLongitude')
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            continue  # most photos have no GPS tags at all - normal, not an error
+        points.append({
+            "name": entry.get('FileName', '(unknown)'),
+            "directory": entry.get('Directory', ''),
+            "lat": lat, "lon": lon,
+            "alt": entry.get('GPSAltitude') if isinstance(entry.get('GPSAltitude'), (int, float)) else None,
+            "timestamp": entry.get('DateTimeOriginal'),
+        })
+    return points
+
+
+def _build_geo_kml(points, doc_title):
+    """Builds a KML document from a list of {name, directory, lat, lon, alt,
+    timestamp} points - built in Python rather than exiftool's own -kml/
+    kml.fmt template mechanism, which is a separate example asset in
+    exiftool's upstream distribution not guaranteed present in the Debian
+    package. Returns None if there are no points - an empty KML with zero
+    placemarks isn't a meaningful forensic artifact worth writing."""
+    if not points:
+        return None
+    placemarks = []
+    for p in points:
+        alt_str = f"{p['alt']:.1f} m" if p['alt'] is not None else "Unknown"
+        desc = f"File: {p['name']}\nPath: {p['directory']}\nCaptured: {p['timestamp'] or 'Unknown'}\nAltitude: {alt_str}"
+        # KML <coordinates> order is lon,lat,alt - the reverse of how
+        # latitude/longitude are normally said out loud, easy to get backwards.
+        placemarks.append(
+            "<Placemark>"
+            f"<name>{_kml_escape(p['name'])}</name>"
+            f"<description>{_kml_escape(desc)}</description>"
+            f"<Point><coordinates>{p['lon']:.7f},{p['lat']:.7f},{p['alt'] or 0}</coordinates></Point>"
+            "</Placemark>"
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+        f'<name>{_kml_escape(doc_title)}</name>'
+        + "".join(placemarks) +
+        '</Document></kml>'
+    )
+
+
+@app.route('/api/files/geolocation_kml', methods=['POST'])
+@requires_auth
+def extract_geolocation_kml():
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    # -n: signed decimal degrees for GPSLatitude/GPSLongitude (exiftool applies the
+    # N/S/E/W hemisphere sign automatically) instead of a "39 deg 21' N" DMS string -
+    # this is what makes the values directly usable as KML <coordinates>.
+    cmd = ['exiftool', '-j', '-n', '-r']
+    for ext in GEO_IMAGE_EXTENSIONS:
+        cmd += ['-ext', ext]
+    cmd += ['-GPSLatitude', '-GPSLongitude', '-GPSAltitude', '-DateTimeOriginal', '-FileName', '-Directory', target_dir]
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if res.returncode != 0 and not res.stdout.strip():
+            return jsonify({"success": False, "error": res.stderr.strip() or "exiftool failed with no output."}), 500
+        entries = json.loads(res.stdout) if res.stdout.strip() else []
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "exiftool timed out (large directory - consider a subdirectory instead)."}), 500
+    except json.JSONDecodeError:
+        return jsonify({"success": False, "error": "Could not parse exiftool output."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    points = _geo_points_from_exiftool_entries(entries)
+    kml_doc = _build_geo_kml(points, f"{os.path.basename(target_dir)} - Geolocation Export")
+
+    kml_path = None
+    if kml_doc:
+        # Only written when at least one point is found - this action is expected
+        # to be run on plenty of folders with no GPS-tagged photos at all, and a
+        # dead empty file every time would just be clutter, not documentation.
+        kml_path = os.path.join(target_dir, "_geolocation_export.kml")
+        try:
+            with open(kml_path, 'w', encoding='utf-8') as f:
+                f.write(kml_doc)
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Failed to write KML file: {e}"}), 500
+
+    log_chain_of_custody("geolocation_kml_export", {
+        "directory": target_dir, "files_scanned": len(entries), "points_found": len(points)
+    })
+    return jsonify({"success": True, "kml_path": kml_path, "files_scanned": len(entries), "points_found": len(points)})
+
 # --- strings: Extract Printable Text From a Binary File ---
 @app.route('/api/files/strings', methods=['POST'])
 @requires_auth
@@ -5169,6 +5277,13 @@ def _tsk_entry_dict(entry):
         "inode": str(entry.info.name.meta_addr),
         "is_dir": entry.info.name.type == pytsk3.TSK_FS_NAME_TYPE_DIR,
         "deleted": bool(entry.info.name.flags & pytsk3.TSK_FS_NAME_FLAG_UNALLOC),
+        # TSK synthesizes its own pseudo-entries for filesystem-metadata regions -
+        # $MBR/$FAT1/$FAT2 (TSK_FS_NAME_TYPE_VIRT) and $OrphanFiles (a virtual
+        # *directory* of recovered-but-unlinked inodes, TSK_FS_NAME_TYPE_VIRT_DIR).
+        # These aren't real evidence files a user created - a hash manifest or
+        # similar "here are the files on this evidence" listing that included them
+        # unfiltered would misrepresent what's actually on the filesystem.
+        "is_virtual": entry.info.name.type in (pytsk3.TSK_FS_NAME_TYPE_VIRT, pytsk3.TSK_FS_NAME_TYPE_VIRT_DIR),
         "size": meta.size if meta else None,
         "mtime": meta.mtime if meta else None,
         "atime": meta.atime if meta else None,
@@ -5462,6 +5577,311 @@ def image_timeline():
 
     events.sort(key=lambda e: e['timestamp'], reverse=True)
     return jsonify({"success": True, "events": events[:TSK_MAX_TIMELINE_ENTRIES], "truncated": truncated})
+
+# --- Geolocation KML export, scanned directly inside an acquired image ---
+# Same GEO_IMAGE_EXTENSIONS/_geo_points_from_exiftool_entries()/_build_geo_kml()
+# helpers the real-directory /api/files/geolocation_kml route above uses - only
+# how each candidate photo's bytes reach exiftool differs. Unlike that route
+# (one batch `exiftool -r` call for the whole directory), each candidate here
+# needs its own subprocess call, since exiftool can't be pointed at a path
+# inside an unmounted image - so this is capped much more tightly.
+IMAGE_GEO_MAX_FILES = 300
+IMAGE_GEO_MAX_FILE_BYTES = 32 * 1024 * 1024  # generous for JPEG/HEIC, skips oversized RAW/DNG
+
+@app.route('/api/image/geolocation_kml', methods=['POST'])
+@requires_auth
+def image_geolocation_kml():
+    """Scans every real filesystem inside an acquired image for GPS-tagged
+    photos without extracting them to disk first - each candidate's bytes
+    are read directly out of the image via pytsk3 into a short-lived temp
+    file (exiftool needs a real file argument, not raw bytes), scanned, then
+    removed immediately. Reuses _tsk_resolve_filesystems()/_tsk_walk() from
+    the Filesystem Timeline report block for the same reasons documented
+    there (ALLOC-only partitions, no recursion into deleted directories).
+
+    Deliberately excludes deleted files too, extending _tsk_walk()'s own
+    deleted-directory precedent: a deleted file's data blocks may already be
+    partially overwritten by something unrelated on a live evidence
+    filesystem, and presenting whatever garbage EXIF happens to parse out of
+    that as real GPS evidence would be a forensic-accuracy problem, not just
+    a missed opportunity."""
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    filesystems = _tsk_resolve_filesystems(image_path)
+    if not filesystems:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    # Collect candidates first (cheap - just directory-entry metadata) so the
+    # per-file cap applies before any actual file reads/subprocess calls happen.
+    candidates = []
+    for fsinfo in filesystems:
+        try:
+            fs = _tsk_open_fs(image_path, fsinfo['offset'])
+        except Exception:
+            continue
+        for entry, path in _tsk_walk(fs):
+            if entry['is_dir'] or entry['deleted']:
+                continue
+            ext = os.path.splitext(entry['name'])[1].lower().lstrip('.')
+            if ext not in GEO_IMAGE_EXTENSIONS:
+                continue
+            candidates.append((fs, entry, path))
+            if len(candidates) >= IMAGE_GEO_MAX_FILES:
+                break
+        if len(candidates) >= IMAGE_GEO_MAX_FILES:
+            break
+    truncated = len(candidates) >= IMAGE_GEO_MAX_FILES
+
+    exif_entries = []
+    skipped_too_large = 0
+    for fs, entry, path in candidates:
+        if entry['size'] and entry['size'] > IMAGE_GEO_MAX_FILE_BYTES:
+            skipped_too_large += 1
+            continue
+        suffix = os.path.splitext(entry['name'])[1]
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+        os.close(tmp_fd)
+        try:
+            tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
+            with open(tmp_path, 'wb') as out:
+                _tsk_stream_file(tsk_file, out.write, max_bytes=IMAGE_GEO_MAX_FILE_BYTES)
+            res = subprocess.run(
+                ['exiftool', '-j', '-n', '-GPSLatitude', '-GPSLongitude', '-GPSAltitude', '-DateTimeOriginal', tmp_path],
+                capture_output=True, text=True, timeout=15
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                parsed = json.loads(res.stdout)
+                if parsed:
+                    exif_entry = parsed[0]
+                    exif_entry['FileName'] = entry['name']
+                    exif_entry['Directory'] = path  # in-image path, for the KML description text
+                    exif_entries.append(exif_entry)
+        except Exception:
+            continue  # one unreadable/corrupt candidate shouldn't fail the whole scan
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    points = _geo_points_from_exiftool_entries(exif_entries)
+    image_base = os.path.splitext(os.path.basename(image_path))[0]
+    kml_doc = _build_geo_kml(points, f"{image_base} - Geolocation Export")
+
+    kml_path = None
+    if kml_doc:
+        kml_path = os.path.join(dest_dir, f"{image_base}_geolocation_export.kml")
+        try:
+            with open(kml_path, 'w', encoding='utf-8') as f:
+                f.write(kml_doc)
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Failed to write KML file: {e}"}), 500
+
+    log_chain_of_custody("geolocation_kml_export_image", {
+        "image_path": image_path, "files_scanned": len(candidates), "points_found": len(points),
+        "files_skipped_too_large": skipped_too_large, "truncated": truncated
+    })
+    return jsonify({
+        "success": True, "kml_path": kml_path, "files_scanned": len(candidates), "points_found": len(points),
+        "files_skipped_too_large": skipped_too_large, "truncated": truncated
+    })
+
+# --- Recursive hash manifest, computed directly inside an acquired image ---
+# Unlike the geolocation route above (which needs a real file for exiftool to
+# open), hashing needs nothing but bytes - _tsk_stream_file() can feed a
+# hashlib object's .update() directly as its write_fn, so this needs no
+# subprocess calls and no temp files at all, and isn't limited to a specific
+# file extension the way geolocation is (matches the real-directory hashdeep
+# route's own unrestricted scope - every file gets hashed, not just photos).
+IMAGE_HASH_MAX_FILES = 5000
+IMAGE_HASH_MAX_SECONDS = 300
+
+@app.route('/api/image/hash_manifest', methods=['POST'])
+@requires_auth
+def image_hash_manifest():
+    """Recursively hashes every real, non-deleted file inside an acquired
+    image without extracting anything to disk first. Deleted files are
+    excluded for the same reason the geolocation/timeline routes exclude
+    them - a deleted file's data blocks may already be partially overwritten
+    on a live evidence filesystem, and a hash computed over that isn't a
+    trustworthy fingerprint of the original file, so including it in a
+    manifest meant to prove integrity would be actively misleading rather
+    than just incomplete."""
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    algo = req.get('algorithm', 'sha256').lower()
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    if algo not in ALLOWED_HASH_ALGOS:
+        return jsonify({"success": False, "error": f"Unsupported algorithm '{algo}'. Use one of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
+
+    filesystems = _tsk_resolve_filesystems(image_path)
+    if not filesystems:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    start_time = time.time()
+    rows = []  # (hash_hex, size, in-image path)
+    files_hashed = 0
+    files_errored = 0
+    truncated = False
+    for fsinfo in filesystems:
+        try:
+            fs = _tsk_open_fs(image_path, fsinfo['offset'])
+        except Exception:
+            continue
+        for entry, path in _tsk_walk(fs):
+            if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
+                continue
+            if files_hashed >= IMAGE_HASH_MAX_FILES or (time.time() - start_time) > IMAGE_HASH_MAX_SECONDS:
+                truncated = True
+                break
+            try:
+                tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
+                h = hashlib.new(algo)
+                size = _tsk_stream_file(tsk_file, h.update)
+                rows.append((h.hexdigest(), size, path))
+                files_hashed += 1
+            except Exception:
+                files_errored += 1
+                continue  # one unreadable/corrupt file shouldn't fail the whole manifest
+        if truncated:
+            break
+
+    image_base = os.path.splitext(os.path.basename(image_path))[0]
+    manifest_path = os.path.join(dest_dir, f"{image_base}_hash_manifest_{algo}.txt")
+    lines = [
+        "# Pi Forensics Suite - In-Image File Hash Manifest",
+        f"# Image: {image_path}",
+        f"# Algorithm: {algo.upper()}",
+        f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"# Files hashed: {files_hashed}" + (f" (capped - more files remained unscanned)" if truncated else ""),
+        f"# Files skipped (unreadable): {files_errored}",
+        "# Deleted files are excluded - see route documentation for why.",
+        "#",
+        f"# {'hash'.ljust(len(rows[0][0]) if rows else 64)}  size(bytes)  path",
+    ]
+    for digest, size, path in rows:
+        lines.append(f"{digest}  {size}  {path}")
+    try:
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Failed to write manifest file: {e}"}), 500
+
+    log_chain_of_custody("hash_manifest_export_image", {
+        "image_path": image_path, "algorithm": algo, "files_hashed": files_hashed,
+        "files_errored": files_errored, "truncated": truncated
+    })
+    return jsonify({
+        "success": True, "manifest_path": manifest_path, "files_hashed": files_hashed,
+        "files_errored": files_errored, "truncated": truncated
+    })
+
+# --- Binwalk / Strings, run directly against a single selected in-image file ---
+# Unlike the whole-image geolocation/hash-manifest routes above, these operate on
+# one already-selected file (matching how they already work in the real-filesystem
+# context menu) - no walk needed, just read that one file out of the image.
+
+def _tsk_extract_to_temp(fs, inode_num, suffix=''):
+    """Reads a file out of an image into a short-lived temp file - binwalk/
+    strings (like exiftool for geolocation) need a real file path on disk,
+    not raw bytes. Caller must remove the returned path when done."""
+    tsk_file = fs.open_meta(inode=inode_num)
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    os.close(tmp_fd)
+    with open(tmp_path, 'wb') as out:
+        _tsk_stream_file(tsk_file, out.write)
+    return tmp_path
+
+@app.route('/api/image/binwalk', methods=['POST'])
+@requires_auth
+def image_binwalk():
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    name_hint = req.get('name', '') or 'selected_file'
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix=os.path.splitext(name_hint)[1])
+        res = subprocess.run(['binwalk', tmp_path], capture_output=True, text=True, timeout=120)
+        output = res.stdout.strip() or res.stderr.strip() or "[no output]"
+        output = output.replace(tmp_path, name_hint)  # don't leak the temp path to the examiner
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "binwalk timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not scan file: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    log_chain_of_custody("binwalk_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
+    return jsonify({"success": True, "file_name": name_hint, "output": output})
+
+@app.route('/api/image/strings', methods=['POST'])
+@requires_auth
+def image_strings():
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    name_hint = req.get('name', '') or 'selected_file'
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix=os.path.splitext(name_hint)[1])
+        res = subprocess.run(['strings', '-n', '6', tmp_path], capture_output=True, text=True, timeout=60)
+        lines = res.stdout.splitlines()
+        truncated = len(lines) > 1000
+        output = "\n".join(lines[:1000])
+        if truncated:
+            output += f"\n\n[... truncated, {len(lines) - 1000} more lines not shown ...]"
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "strings timed out."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not scan file: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    log_chain_of_custody("strings_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
+    return jsonify({"success": True, "file_name": name_hint, "output": output or "[no printable strings found]"})
 
 # --- Filesystem Timeline report block: reuses the pytsk3 walk above against
 # a case's already-acquired disk image(s), rather than the interactive,
