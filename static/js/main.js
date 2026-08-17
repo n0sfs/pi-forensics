@@ -4196,10 +4196,10 @@ async function fetchSystemInfo() {
         if (wbBadgeBtn) {
             wbBadgeBtn.title = `${activeDrive} - go to Settings > Drive Management to change this`;
             if (isWriteBlockActive) {
-                wbBadgeBtn.className = "btn btn-sm btn-success fw-bold ms-auto";
+                wbBadgeBtn.className = "btn btn-sm btn-success fw-bold";
                 wbBadgeBtn.innerHTML = '<i class="bi bi-lock-fill me-1"></i>Write Blocker: On';
             } else {
-                wbBadgeBtn.className = "btn btn-sm btn-danger fw-bold ms-auto";
+                wbBadgeBtn.className = "btn btn-sm btn-danger fw-bold";
                 wbBadgeBtn.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Write Blocker: Off';
             }
         }
