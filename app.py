@@ -7,12 +7,15 @@ import base64
 import sys
 import uuid
 import pwd
+import grp
+import stat
 import glob
 import hmac
 import time
 import json
 import fcntl
 import signal
+import mimetypes
 import ipaddress
 import psutil
 import pytsk3
@@ -5071,6 +5074,90 @@ def get_file_exif():
         return jsonify({"success": False, "error": "exiftool timed out."}), 500
     except json.JSONDecodeError:
         return jsonify({"success": False, "error": "Could not parse exiftool output."}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _human_size(num_bytes):
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.2f} {unit}"
+        size /= 1024
+
+
+def _format_epoch(ts):
+    # time.localtime(None) silently defaults to the CURRENT time rather than raising - a falsy/
+    # missing timestamp must be rejected explicitly here, not left to the caller to remember to
+    # guard against, or a genuinely-unknown timestamp would render as "right now" instead of
+    # "Unknown".
+    if not ts:
+        return None
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+# Real filesystem facts (size, timestamps, permissions, owner) for whatever is currently selected
+# in File Explorer - works for both files and directories, unlike /api/files/exif above (ExifTool-
+# only, file-only, embedded metadata). Deliberately does NOT compute a hash here - that's a
+# dedicated, already-existing right-click action (Verify Image Hash) precisely because hashing a
+# large file is slow and shouldn't happen as a side effect of just clicking to look at something.
+@app.route('/api/files/stat_info', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def get_file_stat_info():
+    req = request.get_json() or {}
+    target_path = safe_path(req.get('path'))
+    if not target_path or not os.path.exists(target_path):
+        return jsonify({"success": False, "error": "Path not found or outside the permitted evidence directory."}), 400
+
+    try:
+        st = os.stat(target_path)
+        is_dir = os.path.isdir(target_path)
+        name = os.path.basename(target_path)
+
+        try:
+            owner = pwd.getpwuid(st.st_uid).pw_name
+        except KeyError:
+            owner = str(st.st_uid)
+        try:
+            group = grp.getgrgid(st.st_gid).gr_name
+        except KeyError:
+            group = str(st.st_gid)
+
+        extension = None
+        mime_type = None
+        if not is_dir:
+            _, ext = os.path.splitext(name)
+            extension = ext[1:].lower() if ext else None
+            mime_type, _ = mimetypes.guess_type(name)
+
+        # "Created" is honestly best-effort, not guaranteed - st_ctime is inode-change time on the
+        # ext4/XFS filesystems this app actually targets, NOT a real creation time, and Python's
+        # st_birthtime attribute (a genuine creation time, via statx()) is only populated when both
+        # the Python version and the underlying filesystem support it. Reported as null/"Unknown"
+        # rather than silently mislabeling ctime as a creation date when birthtime isn't available.
+        created_epoch = getattr(st, 'st_birthtime', None)
+
+        return jsonify({
+            "success": True,
+            "name": name,
+            "path": target_path,
+            "is_dir": is_dir,
+            "size_bytes": st.st_size,
+            "size_str": _human_size(st.st_size) if not is_dir else None,
+            "extension": extension,
+            "mime_type": mime_type,
+            "created": _format_epoch(created_epoch) if created_epoch else None,
+            "modified": _format_epoch(st.st_mtime),
+            "accessed": _format_epoch(st.st_atime),
+            "permissions": stat.filemode(st.st_mode),
+            "permissions_octal": oct(stat.S_IMODE(st.st_mode))[2:].zfill(4),
+            "owner": owner,
+            "group": group,
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
