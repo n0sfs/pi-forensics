@@ -277,15 +277,15 @@ const FAQ_GROUPS = [
         items: [
             {
                 q: "How do I change my login password?",
-                a: "Settings > Security & Privacy has a \"Change My Password\" form - you'll need your current password to set a new one. If this station has multiple accounts, an admin can also reset another user's password from the same card."
+                a: "Settings > Security has a \"Change My Password\" form - you'll need your current password to set a new one. If this station has multiple accounts, an admin can also reset another user's password from the same card."
             },
             {
                 q: "Can more than one person have their own login on this station?",
-                a: "Yes - Settings > Security & Privacy lets an admin create real per-user accounts, each admin or standard role. Standard accounts can use every operational tool; only user management itself (creating/deleting accounts, resetting someone else's password) is admin-only. The \"Logged in as\" button in the top-right lets you switch accounts without a full logout, since HTTP Basic Auth has no real session to log out of."
+                a: "Yes - Settings > Security lets an account with User & Group Management access create real per-user accounts, each assigned to a group. Admin always has full access to everything; Analyst is the default operational group (every tool, no station configuration or user management); you can also create custom groups with checkboxes for exactly which tabs/actions they can access. The \"Logged in as\" button in the top-right lets you switch accounts without a full logout, since HTTP Basic Auth has no real session to log out of."
             },
             {
                 q: "My browser says this site isn't secure or the certificate isn't trusted - what do I do?",
-                a: "This station uses a self-signed HTTPS certificate, so every browser warns on first visit until that specific device explicitly trusts it. Settings > Security & Privacy has a \"Generate & Install\" button if you need a fresh certificate (e.g. after the Pi's IP changed), a \"Download Certificate\" button, and step-by-step trust instructions for Windows, macOS, Linux, iOS, Android, and Firefox specifically."
+                a: "This station uses a self-signed HTTPS certificate, so every browser warns on first visit until that specific device explicitly trusts it. Settings > Security has a \"Generate & Install\" button if you need a fresh certificate (e.g. after the Pi's IP changed), a \"Download Certificate\" button, and step-by-step trust instructions for Windows, macOS, Linux, iOS, Android, and Firefox specifically."
             },
             {
                 q: "How do I access this station from another computer?",
@@ -434,7 +434,7 @@ function populateHelpInfo() {
         ["Chain of custody & user accounts", "Settings > Audit Log keeps a station-wide log of significant actions (acquisitions, deletes, copies, report edits, logins) with timestamp, source IP, and - since this station uses real per-user accounts rather than one shared login - which logged-in user did it. Reporting's \"Audit Trail\" sub-tab shows the same log filtered to one case."],
         ["Case management", "The \"Case\" button at the top of every page creates or selects a case, storing its evidence under a real per-case folder instead of loosely filename-prefixed files scattered in one directory. An older case created before consolidated case files existed can be migrated to the new format from the Case Manager, non-destructively - the originals are kept, renamed with a backup suffix."],
         ["Physical kiosk vs. remote access", "The touchscreen kiosk skips the login prompt by default (a setting called FORENSIC_KIOSK_AUTH_BYPASS) - physical access to the device already implies a high level of trust. Remote/LAN access always requires a real login, with no exceptions."],
-        ["HTTPS & certificates", "This station can run behind an nginx TLS reverse proxy with a self-signed certificate. Settings > Security & Privacy can generate a fresh one - including every IP address the station currently has, so browsers don't also flag a hostname mismatch on top of the expected self-signed warning - or you can install your own certificate (e.g. one signed by a real CA) instead. The self-signed warning itself only goes away once a client device explicitly trusts the certificate; step-by-step instructions per OS/browser are right there in Settings."],
+        ["HTTPS & certificates", "This station can run behind an nginx TLS reverse proxy with a self-signed certificate. Settings > Security can generate a fresh one - including every IP address the station currently has, so browsers don't also flag a hostname mismatch on top of the expected self-signed warning - or you can install your own certificate (e.g. one signed by a real CA) instead. The self-signed warning itself only goes away once a client device explicitly trusts the certificate; step-by-step instructions per OS/browser are right there in Settings."],
         ["Updating this station", "Settings > Service Controls & Diagnostics has buttons to pull the latest app code (git) or update OS packages (apt) - both need internet access and pull from external sources, so only use them on a station where you trust those sources."],
     ];
 
@@ -2319,7 +2319,7 @@ function onDefReportTemplateChange() {
     hint.style.display = 'block';
     if (value.startsWith('custom:')) {
         const record = customReportTemplatesCache.find(t => `custom:${t.id}` === value);
-        hint.textContent = `This is a custom template - its structure is edited via Manage Custom Templates above${record ? ` ("${record.name}")` : ''}.`;
+        hint.textContent = `This is a custom template - its structure is edited via Custom Report Templates below${record ? ` ("${record.name}")` : ''}.`;
     } else {
         hint.textContent = "This template has a fixed structure - the section/field checkboxes below only apply to Standard exports. The Forensics Report's Administrative Information section pulls from Case Number/Examiner plus whatever you configure under Custom Case Fields below (e.g. Agency, Badge Number, Requesting Authority).";
     }
@@ -3746,23 +3746,30 @@ document.addEventListener('shown.bs.modal', (ev) => {
 // The left column (#settingsNavList) is a Bootstrap list-group used as tabs
 // (data-bs-toggle="list"), which reuses the exact same Tab component/events
 // as this app's regular horizontal tabs (shown.bs.tab/hidden.bs.tab) - no
-// separate wiring needed for the nav-switching itself, only for the one
-// side effect that cares which category is active: the Audit Log's
-// auto-refresh interval.
+// separate wiring needed for the nav-switching itself. Every pane's own
+// sub-sections are now individually collapsible (default collapsed, to keep
+// a merged pane like Security or Network from being one long wall of
+// controls) - two side effects care specifically about their OWN section's
+// expand/collapse state, not just which top-level category is active:
+// Audit Log's auto-refresh interval, and Network Configuration's device
+// list fetch (a live nmcli query per device - shouldn't run just because
+// the examiner opened Network to look at Drive Mounting instead).
+document.getElementById('secAuditLog')?.addEventListener('shown.bs.collapse', () => startCocAutoRefresh());
+document.getElementById('secAuditLog')?.addEventListener('hidden.bs.collapse', () => stopCocAutoRefresh());
+document.getElementById('secNetConfig')?.addEventListener('shown.bs.collapse', () => loadNetworkConfig());
+
 document.addEventListener('shown.bs.tab', (ev) => {
-    if (ev.target.id === 'settingsNavAudit') startCocAutoRefresh();
-    // Returning to the whole Settings sidebar tab while Audit Log happens
-    // to still be the active category underneath - top-level tab-panes just
-    // toggle a display class, they don't refire shown.bs.tab on a nested
-    // list-group's own children when a different top-level tab takes back
-    // over, so this is the only way to know refresh should resume.
-    if (ev.target.id === 'settings-tab' && document.getElementById('settingsNavAudit')?.classList.contains('active')) {
+    // Returning to the whole Settings sidebar tab while the Audit Log
+    // accordion section happens to still be expanded underneath - a nested
+    // Bootstrap .collapse keeps its own shown/hidden state even while its
+    // ancestor tab-pane is hidden (display:none doesn't fire hidden.bs.collapse),
+    // so this is the only way to know refresh should resume rather than stay
+    // silently stopped while the section still displays as expanded.
+    if (ev.target.id === 'settings-tab' && document.getElementById('secAuditLog')?.classList.contains('show')) {
         startCocAutoRefresh();
     }
-    if (ev.target.id === 'settingsNavIface') loadNetworkConfig();
 });
 document.addEventListener('hidden.bs.tab', (ev) => {
-    if (ev.target.id === 'settingsNavAudit') stopCocAutoRefresh();
     if (ev.target.id === 'settings-tab') stopCocAutoRefresh();
 });
 
@@ -5230,15 +5237,49 @@ async function changeAdminPassword() {
     }
 }
 
-// --- User Accounts (Security & Privacy) ---
+// --- User Accounts & Groups (Security) ---
 // Basic Auth has no real session/logout, so "who's logged in" is only ever
 // known by asking the backend what the current request's credentials
 // resolved to (see /api/whoami, app.py's g.forensic_user) - there is no
-// client-side concept of a logged-in user beyond this cached role, which
-// only exists to gray out admin-only controls, never to actually enforce
-// anything (the backend re-checks role on every request regardless).
+// client-side concept of a logged-in user beyond this cached role/permission
+// set, which only exists to hide/gray out controls the caller's group can't
+// use anyway, never to actually enforce anything (the backend re-checks
+// permissions on every request regardless).
 let currentUsername = null;
 let currentUserRole = null;
+let currentUserPermissions = {};
+
+// Maps each gated sidebar <li> to the permission key that must be true for
+// it to stay visible - see PERMISSION_KEYS in app.py, the single source of
+// truth this mapping has to stay in sync with by hand (there's no API call
+// on every page load just to fetch a key->tab mapping for 5 fixed items).
+const SIDEBAR_TAB_PERMISSIONS = {
+    navItemAcquisition: 'acquisition',
+    navItemMobile: 'mobile',
+    navItemRecovery: 'recovery',
+    navItemExplorer: 'file_explorer',
+    navItemReports: 'reporting',
+};
+
+function applySidebarPermissionGating() {
+    let activeTabHidden = false;
+    for (const [navId, permKey] of Object.entries(SIDEBAR_TAB_PERMISSIONS)) {
+        const li = document.getElementById(navId);
+        if (!li) continue;
+        const allowed = !!currentUserPermissions[permKey];
+        li.style.display = allowed ? '' : 'none';
+        if (!allowed && li.querySelector('.nav-link.active')) activeTabHidden = true;
+    }
+    // Settings/Help are never gated (self-service password change and
+    // account switching live in Settings, which must stay reachable
+    // regardless of group) - if the tab that happened to be active got
+    // hidden, land on the first tab this account can actually see instead
+    // of a blank pane.
+    if (activeTabHidden) {
+        const firstVisibleLink = document.querySelector('#forensicAppTabs > li:not([style*="display: none"]) > .nav-link[data-bs-toggle="tab"]');
+        if (firstVisibleLink) new bootstrap.Tab(firstVisibleLink).show();
+    }
+}
 
 async function fetchWhoami() {
     try {
@@ -5246,12 +5287,14 @@ async function fetchWhoami() {
         const data = await res.json();
         currentUsername = data.username;
         currentUserRole = data.role;
+        currentUserPermissions = data.permissions || {};
         const indicator = document.getElementById("whoamiIndicator");
         if (indicator && currentUsername) {
             indicator.style.display = '';
             indicator.textContent = `Logged in as: ${currentUsername} (${currentUserRole})`;
         }
-        applyUserMgmtRoleGating();
+        applyUserMgmtPermissionGating();
+        applySidebarPermissionGating();
     } catch (err) { /* non-fatal - indicator just stays hidden */ }
 }
 
@@ -5309,14 +5352,12 @@ async function submitSwitchUser() {
     }
 }
 
-function applyUserMgmtRoleGating() {
-    const isAdmin = currentUserRole === 'admin';
-    const notice = document.getElementById("userMgmtStandardNotice");
-    if (notice) notice.style.display = isAdmin ? 'none' : '';
-    ['newUserUsername', 'newUserPassword', 'newUserRole', 'btnCreateUser'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.disabled = !isAdmin;
-    });
+function applyUserMgmtPermissionGating() {
+    const canManage = !!currentUserPermissions.manage_users;
+    const accountsItem = document.getElementById("userAccountsAccordionItem");
+    const groupsItem = document.getElementById("userGroupsAccordionItem");
+    if (accountsItem) accountsItem.style.display = canManage ? '' : 'none';
+    if (groupsItem) groupsItem.style.display = canManage ? '' : 'none';
 }
 
 async function loadUserList() {
@@ -5336,7 +5377,7 @@ async function loadUserList() {
             const msg = document.createElement('span');
             msg.className = 'text-subtle';
             msg.textContent = res.status === 403
-                ? 'Only admins can view the account list.'
+                ? "Your account's group doesn't have User & Group Management access."
                 : (data.error || 'Failed to load accounts.');
             container.appendChild(msg);
             return;
@@ -5348,7 +5389,6 @@ async function loadUserList() {
             container.appendChild(msg);
             return;
         }
-        const isAdmin = currentUserRole === 'admin';
         data.users.forEach(u => {
             const row = document.createElement('div');
             row.className = 'd-flex justify-content-between align-items-center mb-1 pb-1 border-bottom border-secondary';
@@ -5357,22 +5397,20 @@ async function loadUserList() {
             const nameSpan = document.createElement('span');
             nameSpan.className = 'text-info fw-bold';
             nameSpan.textContent = u.username; // untrusted (examiner-chosen) - text node only
-            const roleBadge = document.createElement('span');
-            roleBadge.className = `badge ms-2 ${u.role === 'admin' ? 'bg-warning text-dark' : 'bg-secondary'}`;
-            roleBadge.textContent = u.role;
+            const groupBadge = document.createElement('span');
+            groupBadge.className = `badge ms-2 ${u.group_id === 'admin' ? 'bg-warning text-dark' : 'bg-secondary'}`;
+            groupBadge.textContent = u.group_name; // group names are examiner-chosen too - text node only
             left.appendChild(nameSpan);
-            left.appendChild(roleBadge);
+            left.appendChild(groupBadge);
 
             const right = document.createElement('div');
             const resetBtn = document.createElement('button');
             resetBtn.className = 'btn btn-xs btn-outline-warning py-0 px-2 me-1';
             resetBtn.textContent = 'Reset Password';
-            resetBtn.disabled = !isAdmin;
             resetBtn.onclick = () => openUserActionModal('reset', u.username);
             const delBtn = document.createElement('button');
             delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-2';
             delBtn.textContent = 'Delete';
-            delBtn.disabled = !isAdmin;
             delBtn.onclick = () => openUserActionModal('delete', u.username);
             right.appendChild(resetBtn);
             right.appendChild(delBtn);
@@ -5393,7 +5431,7 @@ async function loadUserList() {
 async function createUser() {
     const username = document.getElementById("newUserUsername")?.value.trim() || '';
     const password = document.getElementById("newUserPassword")?.value || '';
-    const role = document.getElementById("newUserRole")?.value || 'standard';
+    const group_id = document.getElementById("newUserGroupId")?.value || 'analyst';
     const statusEl = document.getElementById("userMgmtStatus");
 
     if (!username || !password) {
@@ -5405,7 +5443,7 @@ async function createUser() {
         const res = await fetch('/api/users/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password, role })
+            body: JSON.stringify({ username, password, group_id })
         });
         const data = await res.json();
         if (statusEl) {
@@ -5419,6 +5457,182 @@ async function createUser() {
         }
     } catch (err) {
         if (statusEl) { statusEl.className = 'small text-danger'; statusEl.innerText = 'Request failed.'; }
+    }
+}
+
+// --- User Groups (Security) ---
+let userGroupsCache = [];
+let permissionKeysCache = [];
+let userGroupModalInstance = null;
+
+async function loadUserGroups() {
+    const container = document.getElementById("userGroupsListContainer");
+    const groupSelect = document.getElementById("newUserGroupId");
+    if (container) container.innerHTML = '<span class="text-subtle">Loading groups...</span>';
+
+    try {
+        const res = await fetch('/api/user_groups');
+        const data = await res.json();
+        if (!data.success) {
+            if (container) {
+                const msg = res.status === 403
+                    ? "Your account's group doesn't have User & Group Management access."
+                    : (data.error || 'Failed to load groups.');
+                container.innerHTML = '';
+                const span = document.createElement('span');
+                span.className = 'text-subtle';
+                span.textContent = msg;
+                container.appendChild(span);
+            }
+            return;
+        }
+        userGroupsCache = data.groups;
+        permissionKeysCache = data.permission_keys;
+
+        if (groupSelect) {
+            const prevValue = groupSelect.value;
+            groupSelect.innerHTML = '';
+            userGroupsCache.forEach(grp => {
+                const opt = document.createElement('option');
+                opt.value = grp.id;
+                opt.textContent = grp.name; // group names are examiner-chosen - text node only
+                groupSelect.appendChild(opt);
+            });
+            groupSelect.value = userGroupsCache.some(g => g.id === prevValue) ? prevValue : 'analyst';
+        }
+
+        if (container) {
+            container.innerHTML = '';
+            userGroupsCache.forEach(grp => {
+                const row = document.createElement('div');
+                row.className = 'd-flex justify-content-between align-items-center mb-1 pb-1 border-bottom border-secondary';
+
+                const left = document.createElement('div');
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'text-info fw-bold';
+                nameSpan.textContent = grp.name; // examiner-chosen for custom groups - text node only
+                left.appendChild(nameSpan);
+                const grantedCount = Object.values(grp.permissions).filter(Boolean).length;
+                const countSpan = document.createElement('span');
+                countSpan.className = 'text-subtle small ms-2';
+                countSpan.textContent = `(${grantedCount}/${permissionKeysCache.length} access)`;
+                left.appendChild(countSpan);
+
+                const right = document.createElement('div');
+                const editBtn = document.createElement('button');
+                editBtn.className = 'btn btn-xs btn-outline-info py-0 px-2';
+                editBtn.textContent = grp.id === 'admin' ? 'Always Full Access' : 'Edit';
+                editBtn.disabled = grp.id === 'admin';
+                editBtn.onclick = () => openUserGroupModal(grp.id);
+                right.appendChild(editBtn);
+
+                row.appendChild(left);
+                row.appendChild(right);
+                container.appendChild(row);
+            });
+        }
+    } catch (err) {
+        if (container) {
+            container.innerHTML = '';
+            const span = document.createElement('span');
+            span.className = 'text-danger';
+            span.textContent = 'Request failed.';
+            container.appendChild(span);
+        }
+    }
+    loadUserList();
+}
+
+function openUserGroupModal(groupId) {
+    const group = groupId ? userGroupsCache.find(g => g.id === groupId) : null;
+    document.getElementById("userGroupEditingId").value = groupId || '';
+    document.getElementById("userGroupModalTitle").textContent = group ? `Edit Group: ${group.name}` : 'New Group';
+    const nameInput = document.getElementById("userGroupName");
+    nameInput.value = group ? group.name : '';
+    // Analyst's name is fixed (it's the built-in default new users land in);
+    // its permissions are still fully editable below. A brand-new custom
+    // group and an existing custom group both allow renaming.
+    nameInput.disabled = !!(group && group.id === 'analyst');
+    document.getElementById("userGroupModalStatus").innerHTML = '';
+
+    const permsContainer = document.getElementById("userGroupPermissionsContainer");
+    permsContainer.innerHTML = '';
+    const permissions = group ? group.permissions : {};
+    permissionKeysCache.forEach(pk => {
+        const wrap = document.createElement('div');
+        wrap.className = 'form-check';
+        const input = document.createElement('input');
+        input.className = 'form-check-input';
+        input.type = 'checkbox';
+        input.id = `grpPerm_${pk.key}`;
+        input.checked = !!permissions[pk.key];
+        const label = document.createElement('label');
+        label.className = 'form-check-label small';
+        label.setAttribute('for', input.id);
+        label.textContent = pk.label; // from the backend's fixed PERMISSION_KEYS registry, not user input
+        wrap.appendChild(input);
+        wrap.appendChild(label);
+        permsContainer.appendChild(wrap);
+    });
+
+    document.getElementById("btnDeleteUserGroup").style.display = (group && group.id !== 'admin' && group.id !== 'analyst') ? '' : 'none';
+
+    if (!userGroupModalInstance) {
+        userGroupModalInstance = new bootstrap.Modal(document.getElementById('userGroupModal'));
+    }
+    userGroupModalInstance.show();
+}
+
+async function saveUserGroup() {
+    const groupId = document.getElementById("userGroupEditingId").value;
+    const name = document.getElementById("userGroupName")?.value.trim() || '';
+    const statusEl = document.getElementById("userGroupModalStatus");
+    const permissions = {};
+    permissionKeysCache.forEach(pk => {
+        permissions[pk.key] = !!document.getElementById(`grpPerm_${pk.key}`)?.checked;
+    });
+
+    if (!name) {
+        statusEl.className = 'small text-danger'; statusEl.innerText = 'Group name is required.';
+        return;
+    }
+
+    try {
+        const url = groupId ? `/api/user_groups/${encodeURIComponent(groupId)}` : '/api/user_groups';
+        const res = await fetch(url, {
+            method: groupId ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, permissions })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            statusEl.className = 'small text-danger'; statusEl.innerText = data.error;
+            return;
+        }
+        userGroupModalInstance.hide();
+        loadUserGroups();
+    } catch (err) {
+        statusEl.className = 'small text-danger'; statusEl.innerText = 'Request failed.';
+    }
+}
+
+async function deleteUserGroupFromModal() {
+    const groupId = document.getElementById("userGroupEditingId").value;
+    if (!groupId) return;
+    if (!confirm('Delete this group? Any users currently in it will be moved to the Analyst group.')) return;
+
+    const statusEl = document.getElementById("userGroupModalStatus");
+    try {
+        const res = await fetch(`/api/user_groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!data.success) {
+            statusEl.className = 'small text-danger'; statusEl.innerText = data.error;
+            return;
+        }
+        userGroupModalInstance.hide();
+        loadUserGroups();
+    } catch (err) {
+        statusEl.className = 'small text-danger'; statusEl.innerText = 'Request failed.';
     }
 }
 
