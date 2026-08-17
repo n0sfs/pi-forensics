@@ -5689,6 +5689,12 @@ function openUserActionModal(mode, username) {
     document.getElementById("userActionTargetName2").textContent = username;
     document.getElementById("userActionNewPassRow").style.display = mode === 'reset' ? '' : 'none';
     document.getElementById("userActionNewPass").value = '';
+    document.getElementById("userActionConfirmNewPass").value = '';
+    // Re-entering your OWN password only applies to deleting an account -
+    // more consequential/irreversible than a password reset, which is
+    // already gated by the manage_users permission check alone (see
+    // submitUserAction()'s reset branch below for why it doesn't ask here).
+    document.getElementById("userActionCurrentPassRow").style.display = mode === 'delete' ? '' : 'none';
     document.getElementById("userActionCurrentPass").value = '';
     document.getElementById("userActionModalStatus").innerHTML = '';
 
@@ -5708,27 +5714,37 @@ function openUserActionModal(mode, username) {
 }
 
 async function submitUserAction() {
-    const currentPassword = document.getElementById("userActionCurrentPass")?.value || '';
     const statusEl = document.getElementById("userActionModalStatus");
-    if (!currentPassword) {
-        statusEl.className = 'small mt-2 text-danger';
-        statusEl.innerText = 'Enter your current password to confirm.';
-        return;
-    }
-
     let url, body;
+
     if (userActionPendingMode === 'delete') {
+        const currentPassword = document.getElementById("userActionCurrentPass")?.value || '';
+        if (!currentPassword) {
+            statusEl.className = 'small mt-2 text-danger';
+            statusEl.innerText = 'Enter your current password to confirm.';
+            return;
+        }
         url = '/api/users/delete';
         body = { username: userActionPendingTarget, current_password: currentPassword };
     } else {
         const newPassword = document.getElementById("userActionNewPass")?.value || '';
+        const confirmNewPassword = document.getElementById("userActionConfirmNewPass")?.value || '';
         if (!newPassword || newPassword.length < 8) {
             statusEl.className = 'small mt-2 text-danger';
             statusEl.innerText = 'New password must be at least 8 characters.';
             return;
         }
+        if (newPassword !== confirmNewPassword) {
+            statusEl.className = 'small mt-2 text-danger';
+            statusEl.innerText = 'New password and confirmation do not match.';
+            return;
+        }
+        // No re-auth field here on purpose - resetting another user's
+        // password is already gated by the manage_users permission check
+        // (server-side), unlike deleting an account which asks for your
+        // own password too as extra friction on top of that same check.
         url = '/api/users/reset_password';
-        body = { username: userActionPendingTarget, new_password: newPassword, current_password: currentPassword };
+        body = { username: userActionPendingTarget, new_password: newPassword };
     }
 
     try {
