@@ -142,6 +142,19 @@ function switchToTab(tabId) {
     if (el) new bootstrap.Tab(el).show();
 }
 
+// Persist and restore whichever top-level sidebar tab the examiner was last on, so refreshing the
+// page (or the kiosk browser restarting) doesn't always land back on Forensic Acquisition - a real
+// reported annoyance for anyone mid-review on Reporting/Settings/etc. Scoped to exactly these 6 real
+// tabs (not sub-navs like Reporting's/Settings' own list-group-as-tabs, which reuse the same
+// Bootstrap Tab component and would otherwise also fire this listener).
+const LAST_TAB_STORAGE_KEY = 'pi_forensics_last_tab';
+const TOP_LEVEL_TAB_IDS = ['acquisition-tab', 'mobile-tab', 'ddrescue-tab', 'explorer-tab', 'reports-tab', 'settings-tab'];
+document.addEventListener('shown.bs.tab', (ev) => {
+    if (TOP_LEVEL_TAB_IDS.includes(ev.target?.id)) {
+        localStorage.setItem(LAST_TAB_STORAGE_KEY, ev.target.id);
+    }
+});
+
 const GUIDE_SCENARIOS = {
     healthy: {
         title: "Drive works fine - straightforward copy",
@@ -7420,6 +7433,16 @@ document.addEventListener("DOMContentLoaded", () => {
     setInterval(fetchSystemInfo, 2000);
     setInterval(fetchProgress, 1000);
     setInterval(fetchNetworkInterfaces, 15000);
+
+    // Restore the last-visited top-level tab, placed last so every other init call above
+    // (activeCase, explorer tree, whoami/permissions, etc.) has already run before this tab's own
+    // onclick side effects (e.g. Settings' loadChainOfCustodyLog()) fire. Uses a real .click() -
+    // not switchToTab()'s bootstrap.Tab(...).show() - so those onclick handlers actually run too,
+    // matching a genuine click exactly (.show() alone would switch the pane but skip them).
+    const savedTabId = localStorage.getItem(LAST_TAB_STORAGE_KEY);
+    if (savedTabId && savedTabId !== 'acquisition-tab') {
+        document.getElementById(savedTabId)?.click();
+    }
 });
 
 function initHelpTooltips() {
