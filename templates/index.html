@@ -316,27 +316,27 @@
                 <i class="bi bi-chevron-double-left" id="sidebarToggleIcon"></i>
             </button>
             <ul class="nav flex-column" id="forensicAppTabs" role="tablist">
-                <li class="nav-item" role="presentation">
+                <li class="nav-item" role="presentation" id="navItemAcquisition">
                     <button class="nav-link active" id="acquisition-tab" data-bs-toggle="tab" data-bs-target="#acquisition-app" type="button" role="tab" title="Forensic Acquisition">
                         <i class="bi bi-hdd-stack"></i><span class="tab-label">Forensic Acquisition</span>
                     </button>
                 </li>
-                <li class="nav-item" role="presentation">
+                <li class="nav-item" role="presentation" id="navItemMobile">
                     <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()" title="Mobile Forensics">
                         <i class="bi bi-phone"></i><span class="tab-label">Mobile Forensics</span>
                     </button>
                 </li>
-                <li class="nav-item" role="presentation">
+                <li class="nav-item" role="presentation" id="navItemRecovery">
                     <button class="nav-link" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab" title="File Recovery (PhotoRec, extundelete, foremost, scalpel, Image Browser)">
                         <i class="bi bi-life-preserver"></i><span class="tab-label">File Recovery</span>
                     </button>
                 </li>
-                <li class="nav-item" role="presentation">
+                <li class="nav-item" role="presentation" id="navItemExplorer">
                     <button class="nav-link" id="explorer-tab" data-bs-toggle="tab" data-bs-target="#explorer-app" type="button" role="tab" title="Forensic File Explorer">
                         <i class="bi bi-folder-check"></i><span class="tab-label">File Explorer</span>
                     </button>
                 </li>
-                <li class="nav-item" role="presentation">
+                <li class="nav-item" role="presentation" id="navItemReports">
                     <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports-app" type="button" role="tab" title="Reporting & Verification">
                         <i class="bi bi-file-earmark-pdf"></i><span class="tab-label">Reporting</span>
                     </button>
@@ -350,7 +350,7 @@
                      a visual separator, positioned via a plain <li> so this can't regress that. -->
                 <li><hr class="border-secondary my-2 mx-2"></li>
                 <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-app" type="button" role="tab" onclick="loadChainOfCustodyLog(); loadUserList(); loadTlsStatus(); loadCaseReportingSettings();" title="Settings">
+                    <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-app" type="button" role="tab" onclick="loadChainOfCustodyLog(); loadUserGroups(); loadTlsStatus(); loadCaseReportingSettings();" title="Settings">
                         <i class="bi bi-gear-wide-connected"></i><span class="tab-label">Settings</span>
                     </button>
                 </li>
@@ -438,7 +438,7 @@
                                                 <input type="text" id="destPath" class="form-control" value="/mnt">
                                                 <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'destPath')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                             </div>
-                                            <div class="small text-subtle mb-3">Mounting a network share is now under Settings &gt; Network Drive Mounting - once mounted, Browse into it like any local path.</div>
+                                            <div class="small text-subtle mb-3">Mounting a network share is now under Settings &gt; Network - once mounted, Browse into it like any local path.</div>
 
                                             <span class="fw-bold text-info small d-block mb-1"><i class="bi bi-folder-symlink me-1"></i>Case & Evidence Metadata</span>
                                             <div class="row g-2 mb-2">
@@ -1089,13 +1089,11 @@
             <div class="tab-pane fade" id="settings-app" role="tabpanel">
                 <div class="settings-shell">
                     <div class="settings-nav list-group" id="settingsNavList" role="tablist">
-                        <button class="list-group-item list-group-item-action active" id="settingsNavAuth" data-bs-toggle="list" data-bs-target="#settings-pane-auth" type="button" role="tab"><i class="bi bi-shield-lock-fill"></i>Security & Privacy</button>
+                        <button class="list-group-item list-group-item-action active" id="settingsNavAuth" data-bs-toggle="list" data-bs-target="#settings-pane-auth" type="button" role="tab"><i class="bi bi-shield-lock-fill"></i>Security</button>
                         <button class="list-group-item list-group-item-action" id="settingsNavEject" data-bs-toggle="list" data-bs-target="#settings-pane-eject" type="button" role="tab"><i class="bi bi-usb-drive-fill"></i>Drive Management</button>
                         <button class="list-group-item list-group-item-action" id="settingsNavDiag" data-bs-toggle="list" data-bs-target="#settings-pane-diag" type="button" role="tab"><i class="bi bi-terminal-fill"></i>Service Controls & Diagnostics</button>
-                        <button class="list-group-item list-group-item-action" id="settingsNavAudit" data-bs-toggle="list" data-bs-target="#settings-pane-audit" type="button" role="tab"><i class="bi bi-journal-text"></i>Audit Log</button>
                         <button class="list-group-item list-group-item-action" id="settingsNavCaseReporting" data-bs-toggle="list" data-bs-target="#settings-pane-casereporting" type="button" role="tab"><i class="bi bi-collection"></i>Case & Reporting</button>
-                        <button class="list-group-item list-group-item-action" id="settingsNavNetwork" data-bs-toggle="list" data-bs-target="#settings-pane-network" type="button" role="tab"><i class="bi bi-diagram-3"></i>Network Drive Mounting</button>
-                        <button class="list-group-item list-group-item-action" id="settingsNavIface" data-bs-toggle="list" data-bs-target="#settings-pane-iface" type="button" role="tab"><i class="bi bi-hdd-network"></i>Network Configuration</button>
+                        <button class="list-group-item list-group-item-action" id="settingsNavNetwork" data-bs-toggle="list" data-bs-target="#settings-pane-network" type="button" role="tab"><i class="bi bi-diagram-3"></i>Network</button>
                     </div>
 
                     <div class="settings-content tab-content" id="settingsTabContent">
@@ -1103,168 +1101,228 @@
                         <!-- Security & Privacy -->
                         <div class="tab-pane fade show active" id="settings-pane-auth" role="tabpanel">
                             <h6 class="text-info fw-bold mb-3"><i class="bi bi-shield-lock-fill me-2"></i>Security & Privacy</h6>
-                            <div class="telemetry-grid-label mb-2">Change My Password</div>
-                            <div class="mb-2">
-                                <label class="telemetry-grid-label d-block mb-1">Current Password</label>
-                                <input type="password" id="cfgCurrentPass" class="form-control form-control-sm" placeholder="Enter active password">
-                            </div>
-                            <div class="row g-2 mb-3">
-                                <div class="col-6">
-                                    <label class="telemetry-grid-label d-block mb-1">New Password</label>
-                                    <input type="password" id="cfgNewPass" class="form-control form-control-sm" placeholder="New password (min 8 chars)">
-                                </div>
-                                <div class="col-6">
-                                    <label class="telemetry-grid-label d-block mb-1">Confirm New Password</label>
-                                    <input type="password" id="cfgConfirmPass" class="form-control form-control-sm" placeholder="Confirm new password">
-                                </div>
-                            </div>
-                            <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="changeAdminPassword()">
-                                <i class="bi bi-shield-lock-fill me-1"></i>Change My Password
-                            </button>
-                            <div id="cfgPassStatus" class="small mt-2"></div>
-
-                            <hr class="border-secondary my-3">
-
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <span class="telemetry-grid-label mb-0">Station User Accounts</span>
-                                <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadUserList()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-                            </div>
-                            <div id="userListContainer" class="font-monospace small border border-secondary rounded-2 p-2 mb-2" style="max-height: 220px; overflow-y: auto; background-color:#090b10;">
-                                <span class="text-subtle">Tap Refresh to load accounts.</span>
-                            </div>
-                            <div id="userMgmtStandardNotice" class="small text-subtle mb-2" style="display:none;">Only admins can create/delete users or reset another user's password. You can still change your own password above.</div>
-                            <div class="row g-2 mb-2">
-                                <div class="col-md-4"><input type="text" id="newUserUsername" class="form-control form-control-sm" placeholder="New username"></div>
-                                <div class="col-md-4"><input type="password" id="newUserPassword" class="form-control form-control-sm" placeholder="Password (min 8 chars)"></div>
-                                <div class="col-md-2">
-                                    <select id="newUserRole" class="form-select form-select-sm">
-                                        <option value="standard">Standard</option>
-                                        <option value="admin">Admin</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-2"><button class="btn btn-sm btn-success w-100 fw-bold" id="btnCreateUser" onclick="createUser()"><i class="bi bi-person-plus-fill me-1"></i>Add</button></div>
-                            </div>
-                            <div id="userMgmtStatus" class="small"></div>
-
-                            <hr class="border-secondary my-3">
-
-                            <div class="telemetry-grid-label mb-2">HTTPS Certificate</div>
-                            <div id="tlsStatusContainer" class="font-monospace small border border-secondary rounded-2 p-2 mb-2" style="background-color:#090b10;">
-                                <span class="text-subtle">Loading...</span>
-                            </div>
-
-                            <div class="small text-subtle mb-2">This is a self-signed certificate, so every browser will warn on first visit until you import it as trusted on each device that connects here - the private key never leaves this station, only the public certificate is ever downloaded.</div>
-                            <a href="/api/system/tls_download_cert" class="btn btn-sm btn-outline-info fw-bold w-100 mb-2" download="pi-forensics.crt">
-                                <i class="bi bi-download me-1"></i>Download Certificate (.crt)
-                            </a>
-                            <div class="accordion accordion-flush mb-2" id="tlsTrustAccordion">
+                            <div class="accordion accordion-flush" id="securityAccordion">
                                 <div class="accordion-item bg-dark border-secondary">
                                     <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustWindows">Windows</button>
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secPassword"><i class="bi bi-key-fill me-2"></i>Change My Password</button>
                                     </h2>
-                                    <div id="tlsTrustWindows" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
-                                        <div class="accordion-body small text-subtle">
-                                            <ol class="mb-0 ps-3">
-                                                <li>Download the certificate above, then double-click the <span class="font-monospace text-info">pi-forensics.crt</span> file.</li>
-                                                <li>Click <strong>Install Certificate...</strong>, choose <strong>Local Machine</strong> (needs admin) or <strong>Current User</strong>, then Next.</li>
-                                                <li>Choose <strong>Place all certificates in the following store</strong> → Browse → <strong>Trusted Root Certification Authorities</strong> → OK → Next → Finish.</li>
-                                                <li>Restart your browser and reload this page.</li>
-                                            </ol>
+                                    <div id="secPassword" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="mb-2">
+                                                <label class="telemetry-grid-label d-block mb-1">Current Password</label>
+                                                <input type="password" id="cfgCurrentPass" class="form-control form-control-sm" placeholder="Enter active password">
+                                            </div>
+                                            <div class="row g-2 mb-3">
+                                                <div class="col-6">
+                                                    <label class="telemetry-grid-label d-block mb-1">New Password</label>
+                                                    <input type="password" id="cfgNewPass" class="form-control form-control-sm" placeholder="New password (min 8 chars)">
+                                                </div>
+                                                <div class="col-6">
+                                                    <label class="telemetry-grid-label d-block mb-1">Confirm New Password</label>
+                                                    <input type="password" id="cfgConfirmPass" class="form-control form-control-sm" placeholder="Confirm new password">
+                                                </div>
+                                            </div>
+                                            <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="changeAdminPassword()">
+                                                <i class="bi bi-shield-lock-fill me-1"></i>Change My Password
+                                            </button>
+                                            <div id="cfgPassStatus" class="small mt-2"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary" id="userAccountsAccordionItem">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secUserAccounts"><i class="bi bi-people-fill me-2"></i>User Accounts</button>
+                                    </h2>
+                                    <div id="secUserAccounts" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="d-flex justify-content-end align-items-center mb-2">
+                                                <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadUserList()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                            </div>
+                                            <div id="userListContainer" class="font-monospace small border border-secondary rounded-2 p-2 mb-2" style="max-height: 220px; overflow-y: auto; background-color:#090b10;">
+                                                <span class="text-subtle">Tap Refresh to load accounts.</span>
+                                            </div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-4"><input type="text" id="newUserUsername" class="form-control form-control-sm" placeholder="New username"></div>
+                                                <div class="col-md-4"><input type="password" id="newUserPassword" class="form-control form-control-sm" placeholder="Password (min 8 chars)"></div>
+                                                <div class="col-md-2">
+                                                    <select id="newUserGroupId" class="form-select form-select-sm">
+                                                        <option value="">Loading groups...</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-2"><button class="btn btn-sm btn-success w-100 fw-bold" id="btnCreateUser" onclick="createUser()"><i class="bi bi-person-plus-fill me-1"></i>Add</button></div>
+                                            </div>
+                                            <div id="userMgmtStatus" class="small"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary" id="userGroupsAccordionItem">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secUserGroups"><i class="bi bi-diagram-2-fill me-2"></i>User Groups</button>
+                                    </h2>
+                                    <div id="secUserGroups" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Every user belongs to exactly one group. <strong>Admin</strong> always has full access to everything and can't be changed. <strong>Analyst</strong> is the default operational group (every tool, no station configuration or user management) - its permissions can be adjusted below. Create additional custom groups with whatever mix of access a role needs.</div>
+                                            <div class="d-flex justify-content-end align-items-center mb-2">
+                                                <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="openUserGroupModal(null)"><i class="bi bi-plus-lg me-1"></i>New Group</button>
+                                            </div>
+                                            <div id="userGroupsListContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 260px; overflow-y: auto; background-color:#090b10;">
+                                                <span class="text-subtle">Loading groups...</span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
                                 <div class="accordion-item bg-dark border-secondary">
                                     <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustMac">macOS</button>
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secHttpsCert"><i class="bi bi-file-earmark-lock-fill me-2"></i>HTTPS Certificate</button>
                                     </h2>
-                                    <div id="tlsTrustMac" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
-                                        <div class="accordion-body small text-subtle">
-                                            <ol class="mb-0 ps-3">
-                                                <li>Download the certificate above, then double-click it - it opens in <strong>Keychain Access</strong>.</li>
-                                                <li>Choose the <strong>System</strong> keychain (or <strong>login</strong> for just your account) and click Add.</li>
-                                                <li>Find the certificate in the list, double-click it, expand <strong>Trust</strong>, and set "When using this certificate" to <strong>Always Trust</strong>.</li>
-                                                <li>Close the panel, enter your password to confirm, then restart your browser and reload this page.</li>
-                                            </ol>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="accordion-item bg-dark border-secondary">
-                                    <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustLinux">Linux</button>
-                                    </h2>
-                                    <div id="tlsTrustLinux" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
-                                        <div class="accordion-body small text-subtle">
-                                            <div class="mb-2">System-wide trust (Debian/Ubuntu-based, affects Chrome/Chromium/Edge and most other apps):</div>
-                                            <pre class="log-window mb-0" style="height:auto;">sudo cp pi-forensics.crt /usr/local/share/ca-certificates/pi-forensics.crt
+                                    <div id="secHttpsCert" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div id="tlsStatusContainer" class="font-monospace small border border-secondary rounded-2 p-2 mb-2" style="background-color:#090b10;">
+                                                <span class="text-subtle">Loading...</span>
+                                            </div>
+
+                                            <div class="small text-subtle mb-2">This is a self-signed certificate, so every browser will warn on first visit until you import it as trusted on each device that connects here - the private key never leaves this station, only the public certificate is ever downloaded.</div>
+                                            <a href="/api/system/tls_download_cert" class="btn btn-sm btn-outline-info fw-bold w-100 mb-2" download="pi-forensics.crt">
+                                                <i class="bi bi-download me-1"></i>Download Certificate (.crt)
+                                            </a>
+                                            <div class="accordion accordion-flush mb-2" id="tlsTrustAccordion">
+                                                <div class="accordion-item bg-dark border-secondary">
+                                                    <h2 class="accordion-header">
+                                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustWindows">Windows</button>
+                                                    </h2>
+                                                    <div id="tlsTrustWindows" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                                        <div class="accordion-body small text-subtle">
+                                                            <ol class="mb-0 ps-3">
+                                                                <li>Download the certificate above, then double-click the <span class="font-monospace text-info">pi-forensics.crt</span> file.</li>
+                                                                <li>Click <strong>Install Certificate...</strong>, choose <strong>Local Machine</strong> (needs admin) or <strong>Current User</strong>, then Next.</li>
+                                                                <li>Choose <strong>Place all certificates in the following store</strong> → Browse → <strong>Trusted Root Certification Authorities</strong> → OK → Next → Finish.</li>
+                                                                <li>Restart your browser and reload this page.</li>
+                                                            </ol>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="accordion-item bg-dark border-secondary">
+                                                    <h2 class="accordion-header">
+                                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustMac">macOS</button>
+                                                    </h2>
+                                                    <div id="tlsTrustMac" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                                        <div class="accordion-body small text-subtle">
+                                                            <ol class="mb-0 ps-3">
+                                                                <li>Download the certificate above, then double-click it - it opens in <strong>Keychain Access</strong>.</li>
+                                                                <li>Choose the <strong>System</strong> keychain (or <strong>login</strong> for just your account) and click Add.</li>
+                                                                <li>Find the certificate in the list, double-click it, expand <strong>Trust</strong>, and set "When using this certificate" to <strong>Always Trust</strong>.</li>
+                                                                <li>Close the panel, enter your password to confirm, then restart your browser and reload this page.</li>
+                                                            </ol>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="accordion-item bg-dark border-secondary">
+                                                    <h2 class="accordion-header">
+                                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustLinux">Linux</button>
+                                                    </h2>
+                                                    <div id="tlsTrustLinux" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                                        <div class="accordion-body small text-subtle">
+                                                            <div class="mb-2">System-wide trust (Debian/Ubuntu-based, affects Chrome/Chromium/Edge and most other apps):</div>
+                                                            <pre class="log-window mb-0" style="height:auto;">sudo cp pi-forensics.crt /usr/local/share/ca-certificates/pi-forensics.crt
 sudo update-ca-certificates</pre>
-                                            <div class="mt-2">Firefox keeps its own certificate store regardless of distro - see the Firefox note below.</div>
+                                                            <div class="mt-2">Firefox keeps its own certificate store regardless of distro - see the Firefox note below.</div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="accordion-item bg-dark border-secondary">
+                                                    <h2 class="accordion-header">
+                                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustIos">iOS / iPadOS</button>
+                                                    </h2>
+                                                    <div id="tlsTrustIos" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                                        <div class="accordion-body small text-subtle">
+                                                            <ol class="mb-0 ps-3">
+                                                                <li>Open this page in Safari on the device (or AirDrop the downloaded file to it) and download the certificate.</li>
+                                                                <li>Go to <strong>Settings → General → VPN &amp; Device Management</strong>, tap the downloaded profile, then <strong>Install</strong> (enter your passcode).</li>
+                                                                <li>Then go to <strong>Settings → General → About → Certificate Trust Settings</strong> and enable full trust for this certificate.</li>
+                                                            </ol>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="accordion-item bg-dark border-secondary">
+                                                    <h2 class="accordion-header">
+                                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustAndroid">Android</button>
+                                                    </h2>
+                                                    <div id="tlsTrustAndroid" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                                        <div class="accordion-body small text-subtle">
+                                                            <ol class="mb-0 ps-3">
+                                                                <li>Open this page in the device's browser and download the certificate.</li>
+                                                                <li>Go to <strong>Settings → Security (or Security &amp; Privacy) → Encryption &amp; Credentials → Install a Certificate → CA Certificate</strong>.</li>
+                                                                <li>Browse to the downloaded file and confirm. Exact menu names vary by Android version and manufacturer.</li>
+                                                            </ol>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="small text-subtle mb-3"><strong>Firefox note (any OS):</strong> Firefox keeps its own certificate store, separate from the operating system's - the steps above don't apply to it. Instead go to Firefox Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities tab → Import → select the downloaded file → check "Trust this CA to identify websites".</div>
+
+                                            <hr class="border-secondary my-3">
+
+                                            <div class="small text-subtle mb-2">Generate a fresh self-signed certificate + private key (.pem/.key) directly on this station - no terminal needed. Automatically includes every network IP this Pi currently has (so browsers stop reporting a hostname mismatch), still shows a self-signed warning on first visit since nothing signed it.</div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-8">
+                                                    <label class="telemetry-grid-label d-block mb-1">Additional Hostname (optional)</label>
+                                                    <input type="text" id="tlsGenExtraHostname" class="form-control form-control-sm" placeholder="e.g. a custom DNS name pointing at this Pi">
+                                                </div>
+                                                <div class="col-md-4 d-flex align-items-end">
+                                                    <button class="btn btn-sm btn-info fw-bold w-100" onclick="generateTlsCertificate()">
+                                                        <i class="bi bi-magic me-1"></i>Generate &amp; Install
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div id="tlsGenerateStatus" class="small mb-2"></div>
+
+                                            <hr class="border-secondary my-3">
+
+                                            <div class="small text-subtle mb-2">Or replace with a custom certificate + private key of your own (RSA only, e.g. one signed by a real CA). Both files are validated as a matching pair before anything is installed.</div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-6">
+                                                    <label class="telemetry-grid-label d-block mb-1">Certificate File (.crt/.pem)</label>
+                                                    <input type="file" id="tlsCertFile" class="form-control form-control-sm" accept=".crt,.pem,.cer">
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label class="telemetry-grid-label d-block mb-1">Private Key File (.key)</label>
+                                                    <input type="file" id="tlsKeyFile" class="form-control form-control-sm" accept=".key,.pem">
+                                                </div>
+                                            </div>
+                                            <button class="btn btn-sm btn-warning text-dark fw-bold w-100" onclick="uploadTlsCertificate()">
+                                                <i class="bi bi-upload me-1"></i>Install Certificate
+                                            </button>
+                                            <div id="tlsUploadStatus" class="small mt-2"></div>
                                         </div>
                                     </div>
                                 </div>
                                 <div class="accordion-item bg-dark border-secondary">
                                     <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustIos">iOS / iPadOS</button>
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secAuditLog"><i class="bi bi-journal-text me-2"></i>Audit Log</button>
                                     </h2>
-                                    <div id="tlsTrustIos" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
-                                        <div class="accordion-body small text-subtle">
-                                            <ol class="mb-0 ps-3">
-                                                <li>Open this page in Safari on the device (or AirDrop the downloaded file to it) and download the certificate.</li>
-                                                <li>Go to <strong>Settings → General → VPN &amp; Device Management</strong>, tap the downloaded profile, then <strong>Install</strong> (enter your passcode).</li>
-                                                <li>Then go to <strong>Settings → General → About → Certificate Trust Settings</strong> and enable full trust for this certificate.</li>
-                                            </ol>
+                                    <div id="secAuditLog" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="d-flex justify-content-end align-items-center mb-3">
+                                                <div class="d-flex gap-1">
+                                                    <button class="btn btn-sm btn-outline-success fw-bold py-0" onclick="exportAuditLogCsv()"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Export to CSV</button>
+                                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadChainOfCustodyLog()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                                </div>
+                                            </div>
+                                            <div class="small text-subtle mb-2">
+                                                Station-wide action log (most recent first, this view capped at 200 entries and
+                                                auto-refreshes every 20 seconds while this section is expanded - Export to CSV always
+                                                includes the full log). Entries are attributed to the logged-in user once real
+                                                accounts exist (see User Accounts above); stations still on the legacy
+                                                shared login only get a timestamp and source IP.
+                                            </div>
+                                            <input type="text" id="cocSearchInput" class="form-control form-control-sm mb-2" placeholder="Search these entries..." oninput="applyCocSearchFilter()">
+                                            <div id="cocLogContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
+                                                <span class="text-subtle">Tap Refresh to load recent entries.</span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="accordion-item bg-dark border-secondary">
-                                    <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustAndroid">Android</button>
-                                    </h2>
-                                    <div id="tlsTrustAndroid" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
-                                        <div class="accordion-body small text-subtle">
-                                            <ol class="mb-0 ps-3">
-                                                <li>Open this page in the device's browser and download the certificate.</li>
-                                                <li>Go to <strong>Settings → Security (or Security &amp; Privacy) → Encryption &amp; Credentials → Install a Certificate → CA Certificate</strong>.</li>
-                                                <li>Browse to the downloaded file and confirm. Exact menu names vary by Android version and manufacturer.</li>
-                                            </ol>
-                                        </div>
-                                    </div>
-                                </div>
                             </div>
-                            <div class="small text-subtle mb-3"><strong>Firefox note (any OS):</strong> Firefox keeps its own certificate store, separate from the operating system's - the steps above don't apply to it. Instead go to Firefox Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities tab → Import → select the downloaded file → check "Trust this CA to identify websites".</div>
-
-                            <hr class="border-secondary my-3">
-
-                            <div class="small text-subtle mb-2">Generate a fresh self-signed certificate + private key (.pem/.key) directly on this station - no terminal needed. Automatically includes every network IP this Pi currently has (so browsers stop reporting a hostname mismatch), still shows a self-signed warning on first visit since nothing signed it.</div>
-                            <div class="row g-2 mb-2">
-                                <div class="col-md-8">
-                                    <label class="telemetry-grid-label d-block mb-1">Additional Hostname (optional)</label>
-                                    <input type="text" id="tlsGenExtraHostname" class="form-control form-control-sm" placeholder="e.g. a custom DNS name pointing at this Pi">
-                                </div>
-                                <div class="col-md-4 d-flex align-items-end">
-                                    <button class="btn btn-sm btn-info fw-bold w-100" onclick="generateTlsCertificate()">
-                                        <i class="bi bi-magic me-1"></i>Generate &amp; Install
-                                    </button>
-                                </div>
-                            </div>
-                            <div id="tlsGenerateStatus" class="small mb-2"></div>
-
-                            <hr class="border-secondary my-3">
-
-                            <div class="small text-subtle mb-2">Or replace with a custom certificate + private key of your own (RSA only, e.g. one signed by a real CA). Both files are validated as a matching pair before anything is installed.</div>
-                            <div class="row g-2 mb-2">
-                                <div class="col-md-6">
-                                    <label class="telemetry-grid-label d-block mb-1">Certificate File (.crt/.pem)</label>
-                                    <input type="file" id="tlsCertFile" class="form-control form-control-sm" accept=".crt,.pem,.cer">
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="telemetry-grid-label d-block mb-1">Private Key File (.key)</label>
-                                    <input type="file" id="tlsKeyFile" class="form-control form-control-sm" accept=".key,.pem">
-                                </div>
-                            </div>
-                            <button class="btn btn-sm btn-warning text-dark fw-bold w-100" onclick="uploadTlsCertificate()">
-                                <i class="bi bi-upload me-1"></i>Install Certificate
-                            </button>
-                            <div id="tlsUploadStatus" class="small mt-2"></div>
                         </div>
 
                         <!-- Drive Management -->
@@ -1394,91 +1452,102 @@ sudo update-ca-certificates</pre>
                             </div>
                         </div>
 
-                        <!-- Audit Log -->
-                        <div class="tab-pane fade" id="settings-pane-audit" role="tabpanel">
-                            <div class="d-flex justify-content-between align-items-center mb-3">
-                                <h6 class="text-info fw-bold mb-0"><i class="bi bi-journal-text me-2"></i>Audit Log</h6>
-                                <div class="d-flex gap-1">
-                                    <button class="btn btn-sm btn-outline-success fw-bold py-0" onclick="exportAuditLogCsv()"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Export to CSV</button>
-                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadChainOfCustodyLog()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-                                </div>
-                            </div>
-                            <div class="small text-subtle mb-2">
-                                Station-wide action log (most recent first, this view capped at 200 entries and
-                                auto-refreshes every 20 seconds while this tab is open - Export to CSV always
-                                includes the full log). Entries are attributed to the logged-in user once real
-                                accounts exist (Security & Privacy); stations still on the legacy shared login
-                                only get a timestamp and source IP.
-                            </div>
-                            <input type="text" id="cocSearchInput" class="form-control form-control-sm mb-2" placeholder="Search these entries..." oninput="applyCocSearchFilter()">
-                            <div id="cocLogContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
-                                <span class="text-subtle">Tap Refresh to load recent entries.</span>
-                            </div>
-                        </div>
-
                         <!-- Case & Reporting: report export defaults/branding + custom case-field definitions -->
                         <div class="tab-pane fade" id="settings-pane-casereporting" role="tabpanel">
                             <h6 class="text-info fw-bold mb-3"><i class="bi bi-collection me-2"></i>Case & Reporting</h6>
-
-                            <div class="telemetry-grid-label mb-2">Default Report Template</div>
-                            <div class="small text-subtle mb-2">Pre-selected when opening the Export Report modal from Reporting - still changeable per-export there.</div>
-                            <select id="defReportTemplate" class="form-select form-select-sm mb-1" style="max-width:320px;" onchange="onDefReportTemplateChange()">
-                                <option value="standard">Standard - configurable sections (default)</option>
-                                <option value="dfir">DFIR Report - fixed incident-response structure</option>
-                                <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
-                            </select>
-                            <div id="defTemplateHint" class="small text-subtle mb-3" style="display:none;"></div>
-
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <div class="telemetry-grid-label mb-0">Custom Report Templates</div>
-                                <button class="btn btn-xs btn-outline-info py-0 px-2" onclick="openReportTemplateBuilder()"><i class="bi bi-plus-lg me-1"></i>New Template</button>
-                            </div>
-                            <div class="small text-subtle mb-2">Build your own report shape from the same sections Standard uses - pick which to include, reorder them, and rename their titles. Saved templates appear above and in the Export pane's Report Template list.</div>
-                            <div id="customReportTemplatesList" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 160px; overflow-y: auto;">
-                                <span class="text-subtle small italic">No custom templates yet.</span>
-                            </div>
-
-                            <div class="telemetry-grid-label mb-2">Report Export Defaults</div>
-                            <div class="small text-subtle mb-2">Pre-checks these sections/fields when opening the Export Report modal from Reporting - still adjustable per-export there. Applies to the Standard template only.</div>
-                            <div class="row g-2 mb-2">
-                                <div class="col-md-6">
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecCaseInfo" checked><label class="form-check-label small" for="defSecCaseInfo">Case Information</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecExecSummary" checked><label class="form-check-label small" for="defSecExecSummary">Executive Summary &amp; Objectives</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecEvidenceInventory" checked><label class="form-check-label small" for="defSecEvidenceInventory">Evidence Inventory</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecForensicAnalysis" checked><label class="form-check-label small" for="defSecForensicAnalysis">Forensic Analysis (Case Notes)</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecFindings" checked><label class="form-check-label small" for="defSecFindings">Relevant Findings</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecLimitations" checked><label class="form-check-label small" for="defSecLimitations">Limitations &amp; Uncertainty</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecConclusion" checked><label class="form-check-label small" for="defSecConclusion">Conclusion</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAttachments" checked><label class="form-check-label small" for="defSecAttachments">Exhibits</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAuditTrail" checked><label class="form-check-label small" for="defSecAuditTrail">Audit Trail</label></div>
+                            <div class="accordion accordion-flush mb-3" id="caseReportingAccordion">
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secReportTemplate"><i class="bi bi-file-earmark-text me-2"></i>Default Report Template</button>
+                                    </h2>
+                                    <div id="secReportTemplate" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Pre-selected when opening the Export Report modal from Reporting - still changeable per-export there.</div>
+                                            <select id="defReportTemplate" class="form-select form-select-sm mb-1" style="max-width:320px;" onchange="onDefReportTemplateChange()">
+                                                <option value="standard">Standard - configurable sections (default)</option>
+                                                <option value="dfir">DFIR Report - fixed incident-response structure</option>
+                                                <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
+                                            </select>
+                                            <div id="defTemplateHint" class="small text-subtle" style="display:none;"></div>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="col-md-6">
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldTelemetry" checked><label class="form-check-label small" for="defFieldTelemetry">Evidence Telemetry</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldParams" checked><label class="form-check-label small" for="defFieldParams">Acquisition Parameters</label></div>
-                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldHashes" checked><label class="form-check-label small" for="defFieldHashes">Verification Hashes</label></div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secCustomTemplates"><i class="bi bi-file-earmark-ruled me-2"></i>Custom Report Templates</button>
+                                    </h2>
+                                    <div id="secCustomTemplates" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="d-flex justify-content-end align-items-center mb-2">
+                                                <button class="btn btn-xs btn-outline-info py-0 px-2" onclick="openReportTemplateBuilder()"><i class="bi bi-plus-lg me-1"></i>New Template</button>
+                                            </div>
+                                            <div class="small text-subtle mb-2">Build your own report shape from the same sections Standard uses - pick which to include, reorder them, and rename their titles. Saved templates appear above and in the Export pane's Report Template list.</div>
+                                            <div id="customReportTemplatesList" class="bg-black border border-secondary p-2 rounded-2" style="max-height: 160px; overflow-y: auto;">
+                                                <span class="text-subtle small italic">No custom templates yet.</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secExportDefaults"><i class="bi bi-list-check me-2"></i>Report Export Defaults</button>
+                                    </h2>
+                                    <div id="secExportDefaults" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Pre-checks these sections/fields when opening the Export Report modal from Reporting - still adjustable per-export there. Applies to the Standard template only.</div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-6">
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecCaseInfo" checked><label class="form-check-label small" for="defSecCaseInfo">Case Information</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecExecSummary" checked><label class="form-check-label small" for="defSecExecSummary">Executive Summary &amp; Objectives</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecEvidenceInventory" checked><label class="form-check-label small" for="defSecEvidenceInventory">Evidence Inventory</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecForensicAnalysis" checked><label class="form-check-label small" for="defSecForensicAnalysis">Forensic Analysis (Case Notes)</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecFindings" checked><label class="form-check-label small" for="defSecFindings">Relevant Findings</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecLimitations" checked><label class="form-check-label small" for="defSecLimitations">Limitations &amp; Uncertainty</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecConclusion" checked><label class="form-check-label small" for="defSecConclusion">Conclusion</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAttachments" checked><label class="form-check-label small" for="defSecAttachments">Exhibits</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAuditTrail" checked><label class="form-check-label small" for="defSecAuditTrail">Audit Trail</label></div>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldTelemetry" checked><label class="form-check-label small" for="defFieldTelemetry">Evidence Telemetry</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldParams" checked><label class="form-check-label small" for="defFieldParams">Acquisition Parameters</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldHashes" checked><label class="form-check-label small" for="defFieldHashes">Verification Hashes</label></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secBranding"><i class="bi bi-image me-2"></i>Report Branding</button>
+                                    </h2>
+                                    <div id="secBranding" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="mb-2">
+                                                <label class="telemetry-grid-label d-block mb-1">Header Text (shown as a subtitle under the report title)</label>
+                                                <input type="text" id="reportBrandingText" class="form-control form-control-sm" placeholder="e.g. Acme Digital Forensics Lab" maxlength="200">
+                                            </div>
+                                            <div class="row g-2 align-items-center mb-2">
+                                                <div class="col-md-6"><input type="file" id="reportLogoFile" class="form-control form-control-sm" accept=".jpg,.jpeg,.png,.gif,.bmp,.webp"></div>
+                                                <div class="col-md-3"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="uploadReportLogo()"><i class="bi bi-upload me-1"></i>Upload Logo</button></div>
+                                                <div class="col-md-3"><button class="btn btn-sm btn-outline-danger w-100 fw-bold" onclick="clearReportLogo()"><i class="bi bi-x-circle me-1"></i>Clear Logo</button></div>
+                                            </div>
+                                            <div id="reportLogoStatus" class="small text-subtle"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secCustomFields"><i class="bi bi-input-cursor-text me-2"></i>Custom Case Fields</button>
+                                    </h2>
+                                    <div id="secCustomFields" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Extra fields (e.g. "Agency", "Reference #") that appear on every case's Case Information block and in report exports.</div>
+                                            <div id="customFieldDefsContainer" class="mb-2"></div>
+                                            <button class="btn btn-sm btn-outline-info fw-bold" onclick="addCustomFieldDefRow()"><i class="bi bi-plus-lg me-1"></i>Add Field</button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
-
-                            <hr class="border-secondary my-3">
-
-                            <div class="telemetry-grid-label mb-2">Report Branding</div>
-                            <div class="mb-2">
-                                <label class="telemetry-grid-label d-block mb-1">Header Text (shown as a subtitle under the report title)</label>
-                                <input type="text" id="reportBrandingText" class="form-control form-control-sm" placeholder="e.g. Acme Digital Forensics Lab" maxlength="200">
-                            </div>
-                            <div class="row g-2 align-items-center mb-2">
-                                <div class="col-md-6"><input type="file" id="reportLogoFile" class="form-control form-control-sm" accept=".jpg,.jpeg,.png,.gif,.bmp,.webp"></div>
-                                <div class="col-md-3"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="uploadReportLogo()"><i class="bi bi-upload me-1"></i>Upload Logo</button></div>
-                                <div class="col-md-3"><button class="btn btn-sm btn-outline-danger w-100 fw-bold" onclick="clearReportLogo()"><i class="bi bi-x-circle me-1"></i>Clear Logo</button></div>
-                            </div>
-                            <div id="reportLogoStatus" class="small text-subtle mb-2"></div>
-
-                            <hr class="border-secondary my-3">
-
-                            <div class="telemetry-grid-label mb-2">Custom Case Fields</div>
-                            <div class="small text-subtle mb-2">Extra fields (e.g. "Agency", "Reference #") that appear on every case's Case Information block and in report exports.</div>
-                            <div id="customFieldDefsContainer" class="mb-2"></div>
-                            <button class="btn btn-sm btn-outline-info fw-bold mb-3" onclick="addCustomFieldDefRow()"><i class="bi bi-plus-lg me-1"></i>Add Field</button>
 
                             <button class="btn btn-sm btn-success fw-bold w-100" onclick="saveCaseReportingSettings()"><i class="bi bi-check2-circle me-1"></i>Save Settings</button>
                             <div id="caseReportingStatus" class="small mt-2"></div>
@@ -1489,67 +1558,83 @@ sudo update-ca-certificates</pre>
                              just produces a path under /mnt; use any tab's own destination field +
                              Browse button to point at it, the same way you'd browse to any local path. -->
                         <div class="tab-pane fade" id="settings-pane-network" role="tabpanel">
-                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-diagram-3 me-2"></i>Network Drive Mounting</h6>
-                            <div class="small text-subtle mb-2">Mount an NFS, SMB/CIFS, or SFTP share once here - every tool's own destination field can then Browse into it, the same as any local path under the evidence root.</div>
-                            <div class="row g-2 mb-2">
-                                <div class="col-md-3">
-                                    <select id="netProtocol" class="form-select form-select-sm" onchange="updateNetworkMountControls()">
-                                        <option value="nfs">NFS Share</option>
-                                        <option value="smb">SMB / CIFS</option>
-                                        <option value="sftp">SFTP</option>
-                                    </select>
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-diagram-3 me-2"></i>Network</h6>
+                            <div class="accordion accordion-flush" id="networkAccordion">
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secNetMount"><i class="bi bi-hdd-network-fill me-2"></i>Network Drive Mounting</button>
+                                    </h2>
+                                    <div id="secNetMount" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Mount an NFS, SMB/CIFS, or SFTP share once here - every tool's own destination field can then Browse into it, the same as any local path under the evidence root.</div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-3">
+                                                    <select id="netProtocol" class="form-select form-select-sm" onchange="updateNetworkMountControls()">
+                                                        <option value="nfs">NFS Share</option>
+                                                        <option value="smb">SMB / CIFS</option>
+                                                        <option value="sftp">SFTP</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-5"><input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)"></div>
+                                                <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" id="btnQueryShares" onclick="queryNetworkShares('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
+                                            </div>
+                                            <div class="row g-2 mb-2" id="netCredentialsRow" style="display:none;">
+                                                <div class="col-md-6"><input type="text" id="netUser" class="form-control form-control-sm" placeholder="Username"></div>
+                                                <div class="col-md-6"><input type="password" id="netPass" class="form-control form-control-sm" placeholder="Password"></div>
+                                            </div>
+                                            <div class="mb-2" id="netSftpKeyRow" style="display:none;">
+                                                <label class="telemetry-grid-label d-block mb-1">SSH Private Key (optional - paste instead of a password)</label>
+                                                <textarea id="netSftpKey" class="form-control form-control-sm font-monospace" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----..."></textarea>
+                                            </div>
+                                            <div class="row g-2 align-items-center mb-2">
+                                                <div class="col-md-8">
+                                                    <select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select>
+                                                    <input type="text" id="netSftpPath" class="form-control form-control-sm" placeholder="Remote path (e.g. /home/user/evidence)" style="display:none;">
+                                                </div>
+                                                <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
+                                            </div>
+                                            <div class="form-check mb-2">
+                                                <input class="form-check-input" type="checkbox" id="netAutoConnect">
+                                                <label class="form-check-label small" for="netAutoConnect"><i class="bi bi-shield-lock me-1"></i>Auto-connect this share on reboot</label>
+                                            </div>
+                                            <div class="small text-subtle mb-2">Any password or key is encrypted at rest on this station. That protects against the config file being casually read or leaked - it does not protect against someone with root or physical access to this device, since reconnecting unattended at boot means no one is there to type a passphrase.</div>
+                                            <div id="mountStatus" class="small text-light mb-3"></div>
+                                            <h6 class="text-info fw-bold mb-2 mt-3"><i class="bi bi-arrow-repeat me-2"></i>Auto-Connect Shares</h6>
+                                            <div class="small text-subtle mb-2">Shares below reconnect automatically every time this station starts or restarts. Removing one here only stops future auto-reconnects - it does not unmount the share right now.</div>
+                                            <div id="autoMountSharesList" class="bg-black border border-secondary p-2 rounded-2">
+                                                <span class="text-subtle small">Loading...</span>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="col-md-5"><input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)"></div>
-                                <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" id="btnQueryShares" onclick="queryNetworkShares('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
-                            </div>
-                            <div class="row g-2 mb-2" id="netCredentialsRow" style="display:none;">
-                                <div class="col-md-6"><input type="text" id="netUser" class="form-control form-control-sm" placeholder="Username"></div>
-                                <div class="col-md-6"><input type="password" id="netPass" class="form-control form-control-sm" placeholder="Password"></div>
-                            </div>
-                            <div class="mb-2" id="netSftpKeyRow" style="display:none;">
-                                <label class="telemetry-grid-label d-block mb-1">SSH Private Key (optional - paste instead of a password)</label>
-                                <textarea id="netSftpKey" class="form-control form-control-sm font-monospace" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----..."></textarea>
-                            </div>
-                            <div class="row g-2 align-items-center mb-2">
-                                <div class="col-md-8">
-                                    <select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select>
-                                    <input type="text" id="netSftpPath" class="form-control form-control-sm" placeholder="Remote path (e.g. /home/user/evidence)" style="display:none;">
-                                </div>
-                                <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
-                            </div>
-                            <div class="form-check mb-2">
-                                <input class="form-check-input" type="checkbox" id="netAutoConnect">
-                                <label class="form-check-label small" for="netAutoConnect"><i class="bi bi-shield-lock me-1"></i>Auto-connect this share on reboot</label>
-                            </div>
-                            <div class="small text-subtle mb-2">Any password or key is encrypted at rest on this station. That protects against the config file being casually read or leaked - it does not protect against someone with root or physical access to this device, since reconnecting unattended at boot means no one is there to type a passphrase.</div>
-                            <div id="mountStatus" class="small text-light mb-3"></div>
-                            <h6 class="text-info fw-bold mb-2 mt-3"><i class="bi bi-arrow-repeat me-2"></i>Auto-Connect Shares</h6>
-                            <div class="small text-subtle mb-2">Shares below reconnect automatically every time this station starts or restarts. Removing one here only stops future auto-reconnects - it does not unmount the share right now.</div>
-                            <div id="autoMountSharesList" class="bg-black border border-secondary p-2 rounded-2">
-                                <span class="text-subtle small">Loading...</span>
-                            </div>
-                        </div>
+                                <!-- Network Configuration - the station's OWN IP addressing (DHCP or
+                                     static) per interface, via NetworkManager. Distinct from Network
+                                     Drive Mounting above, which mounts remote evidence shares, not this
+                                     station's own interfaces. Added after a plain DHCP reassignment
+                                     briefly locked an examiner out of this exact page on a reboot -
+                                     Apply always includes an automatic revert-if-unconfirmed safety net
+                                     (#networkRevertBanner) for exactly that reason, since a bad static
+                                     IP/gateway here is the same lockout, just self-inflicted. -->
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secNetConfig"><i class="bi bi-hdd-network me-2"></i>Network Configuration</button>
+                                    </h2>
+                                    <div id="secNetConfig" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-3">Set this station's own IP addressing (DHCP or static) per network interface. <span class="text-warning fw-bold">Changing the interface you're currently connected through can disconnect this session.</span> A change is never permanent until you confirm it - if you don't, it automatically reverts to the previous working settings.</div>
 
-                        <!-- Network Configuration - the station's OWN IP addressing (DHCP or
-                             static) per interface, via NetworkManager. Distinct from Network
-                             Drive Mounting above, which mounts remote evidence shares, not this
-                             station's own interfaces. Added after a plain DHCP reassignment
-                             briefly locked an examiner out of this exact page on a reboot -
-                             Apply always includes an automatic revert-if-unconfirmed safety net
-                             (#networkRevertBanner) for exactly that reason, since a bad static
-                             IP/gateway here is the same lockout, just self-inflicted. -->
-                        <div class="tab-pane fade" id="settings-pane-iface" role="tabpanel">
-                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-hdd-network me-2"></i>Network Configuration</h6>
-                            <div class="small text-subtle mb-3">Set this station's own IP addressing (DHCP or static) per network interface. <span class="text-warning fw-bold">Changing the interface you're currently connected through can disconnect this session.</span> A change is never permanent until you confirm it - if you don't, it automatically reverts to the previous working settings.</div>
+                                            <div id="networkRevertBanner" class="alert alert-warning small mb-3" style="display:none;">
+                                                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                                    <span id="networkRevertBannerText"></span>
+                                                    <button class="btn btn-sm btn-success fw-bold" onclick="confirmNetworkConfig()"><i class="bi bi-check-lg me-1"></i>Keep These Settings</button>
+                                                </div>
+                                            </div>
 
-                            <div id="networkRevertBanner" class="alert alert-warning small mb-3" style="display:none;">
-                                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                                    <span id="networkRevertBannerText"></span>
-                                    <button class="btn btn-sm btn-success fw-bold" onclick="confirmNetworkConfig()"><i class="bi bi-check-lg me-1"></i>Keep These Settings</button>
+                                            <div id="networkIfaceDevices"><span class="text-subtle small">Loading network devices...</span></div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
-
-                            <div id="networkIfaceDevices"><span class="text-subtle small">Loading network devices...</span></div>
                         </div>
 
                     </div>
@@ -1618,6 +1703,36 @@ sudo update-ca-certificates</pre>
                 <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
                     <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearActiveCase()"><i class="bi bi-x-circle me-1"></i>Clear Active Case</button>
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="userGroupModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-diagram-2-fill me-2"></i><span id="userGroupModalTitle">New Group</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <input type="hidden" id="userGroupEditingId" value="">
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Group Name</label>
+                        <input type="text" id="userGroupName" class="form-control form-control-sm" placeholder="e.g. Lab Supervisor" maxlength="60">
+                    </div>
+                    <label class="telemetry-grid-label d-block mb-1">Access</label>
+                    <div id="userGroupPermissionsContainer" class="border border-secondary rounded-2 p-2 mb-2" style="background-color:#090b10;">
+                        <span class="text-subtle small">Loading...</span>
+                    </div>
+                    <div id="userGroupModalStatus" class="small"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
+                    <button type="button" class="btn btn-sm btn-outline-danger fw-bold" id="btnDeleteUserGroup" onclick="deleteUserGroupFromModal()" style="display:none;"><i class="bi bi-trash3-fill me-1"></i>Delete Group</button>
+                    <div class="ms-auto">
+                        <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-sm btn-info text-dark fw-bold" id="btnSaveUserGroup" onclick="saveUserGroup()">Save Group</button>
+                    </div>
                 </div>
             </div>
         </div>
