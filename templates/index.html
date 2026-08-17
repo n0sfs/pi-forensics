@@ -186,6 +186,11 @@
         .telemetry-grid-val { color: #ffffff !important; font-size: 0.92rem; font-weight: 700; }
 
         .file-pane { background-color: #06070a; border: 1px solid var(--border-color); border-radius: 6px; height: 350px; overflow-y: auto; }
+        /* The Listing table (real-fs and Sleuth Kit image mode) grew from 3 to 6 columns
+           (Name/Size/Modified/Accessed/Changed/Created) - wider than the pane at most widths, so it
+           scrolls horizontally inside its own pane rather than overflowing the page (matches this
+           app's existing convention for wide content, e.g. the Help modal's Tool Reference table). */
+        #explorerContainer { overflow-x: auto; }
         .file-item { cursor: pointer; padding: 6px 10px; font-size: 0.85rem; border-bottom: 1px solid rgba(255,255,255,0.04); font-weight: 500; }
         .file-item:hover { background-color: #1e2638; }
         .file-item.active { background-color: #0284c7; color: white !important; }

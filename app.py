@@ -4844,14 +4844,24 @@ def browse_files():
     try:
         for entry in os.scandir(path):
             try:
-                stat = entry.stat()
+                st = entry.stat()
+                is_dir = entry.is_dir()
+                # Full MACB timestamp set per entry (Modified/Accessed/Changed/Born), matching what
+                # the Sleuth Kit image-mode listing already exposes - "Created" stays honestly
+                # best-effort (see _format_epoch/_human_size above: st_ctime is inode-change time on
+                # the ext4/XFS filesystems this app targets, never mislabeled as a real creation
+                # time; a genuine st_birthtime is used only when the platform/filesystem actually
+                # provides one).
                 items.append({
                     "name": entry.name,
                     "path": entry.path,
-                    "is_dir": entry.is_dir(),
-                    "size_bytes": stat.st_size if not entry.is_dir() else 0,
-                    "size_str": f"{round(stat.st_size / (1024**2), 2)} MB" if not entry.is_dir() else "--",
-                    "modified": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
+                    "is_dir": is_dir,
+                    "size_bytes": st.st_size if not is_dir else 0,
+                    "size_str": _human_size(st.st_size) if not is_dir else "--",
+                    "modified": _format_epoch(st.st_mtime),
+                    "accessed": _format_epoch(st.st_atime),
+                    "changed": _format_epoch(st.st_ctime),
+                    "created": _format_epoch(getattr(st, 'st_birthtime', None)),
                 })
             except Exception:
                 pass
