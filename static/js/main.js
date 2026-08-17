@@ -1770,6 +1770,45 @@ async function runImageHashManifest() {
     } catch (err) {}
 }
 
+async function runImageRecoverDeleted() {
+    if (!explorerImagePath) return;
+    if (!confirm('Recover deleted files from this image? Recovery odds vary by filesystem type - NTFS/FAT usually work well, ext filesystems often do not, since data is frequently already gone by the time a file shows as deleted. A recovered file may also be partially overwritten if its space was reused - verify hashes where it matters.')) return;
+
+    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    try {
+        const res = await fetch('/api/image/recover_deleted', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            alert(`Recovery failed: ${data.error}`);
+            return;
+        }
+        let msg;
+        if (data.files_recovered === 0) {
+            msg = 'No recoverable deleted files were found (with an intact directory entry) in this image.';
+        } else {
+            const mb = (data.total_bytes / (1024 * 1024)).toFixed(1);
+            msg = `Recovered ${data.files_recovered} file(s), ${mb} MB total.\nOriginal names/folder structure preserved under:\n${data.output_dir}`;
+        }
+        if (data.files_skipped_too_large > 0) {
+            msg += `\n\n${data.files_skipped_too_large} file(s) were skipped for being too large or exceeding the total-size budget.`;
+        }
+        if (data.files_skipped_empty > 0) {
+            msg += `\n\n${data.files_skipped_empty} file(s) were skipped as empty/unrecoverable.`;
+        }
+        if (data.files_errored > 0) {
+            msg += `\n\n${data.files_errored} file(s) could not be read and were skipped.`;
+        }
+        if (data.truncated) {
+            msg += `\n\nNote: this image has more deleted files than could be recovered in one pass - results are partial.`;
+        }
+        alert(msg);
+    } catch (err) {}
+}
+
 // --- Dynamic Attachments List Functions ---
 function renderAttachmentsList() {
     const container = document.getElementById("attachmentsContainer");

@@ -5883,6 +5883,131 @@ def image_strings():
     log_chain_of_custody("strings_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
     return jsonify({"success": True, "file_name": name_hint, "output": output or "[no printable strings found]"})
 
+# --- Filesystem-aware deleted file recovery, directly inside an acquired image ---
+# Unlike PhotoRec/foremost/scalpel/extundelete (raw signature-based carving, no
+# filesystem awareness - recovered files get generic renamed filenames with zero
+# path context), this walks the filesystem's own directory structure the same way
+# every other in-image tool above does, and recovers files that are still
+# referenced by an intact (non-deleted) directory entry - preserving the file's
+# real original name and path. Same concept as Sleuth Kit's own tsk_recover
+# utility, built from the exact walk infrastructure the other four in-image
+# tools already proved out.
+#
+# Recovery odds are NOT uniform across filesystem types - disclosed here and in
+# the UI rather than oversold: NTFS keeps a deleted file's MFT entry (name,
+# size, data runs) largely intact until that MFT slot is reused, so recovery is
+# often good. FAT similarly retains the directory entry and starting cluster for
+# a recently-deleted file. ext-family filesystems are the weak case - the kernel
+# typically clears the inode's block pointers on deletion, so even though
+# _tsk_walk can still see the directory entry and filename, the actual file
+# data is very often already gone by the time an examiner gets to it. This tool
+# surfaces whatever TSK can read regardless of filesystem type; it doesn't and
+# can't claim recovery will succeed evenly across all of them.
+#
+# This is also the first in-image tool that writes real, potentially large file
+# data to disk rather than a small text/manifest artifact, so it's capped more
+# conservatively than the others: a hard file-count ceiling, a per-file size
+# ceiling, and a running total-bytes budget checked *before* each write starts
+# (a single oversized declared-size entry is skipped outright rather than
+# writing a truncated, misleading partial file).
+IMAGE_RECOVER_MAX_FILES = 1000
+IMAGE_RECOVER_MAX_FILE_BYTES = 500 * 1024 * 1024
+IMAGE_RECOVER_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+IMAGE_RECOVER_MAX_SECONDS = 600
+
+@app.route('/api/image/recover_deleted', methods=['POST'])
+@requires_auth
+def image_recover_deleted():
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    filesystems = _tsk_resolve_filesystems(image_path)
+    if not filesystems:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    image_base = os.path.splitext(os.path.basename(image_path))[0]
+    output_root = os.path.join(dest_dir, f"{image_base}_recovered_deleted")
+    multi_fs = len(filesystems) > 1
+
+    start_time = time.time()
+    files_recovered = 0
+    files_skipped_too_large = 0
+    files_skipped_empty = 0
+    files_errored = 0
+    total_bytes = 0
+    truncated = False
+
+    for fsinfo in filesystems:
+        try:
+            fs = _tsk_open_fs(image_path, fsinfo['offset'])
+        except Exception:
+            continue
+        # Only used to keep multiple filesystems' recovered output from colliding -
+        # sanitized the same conservative way sanitize_case_slug() treats untrusted
+        # strings elsewhere in this file, since the label comes from the volume
+        # table, not something this app generated itself.
+        fs_subdir = re.sub(r'[^A-Za-z0-9 ._-]+', '_', fsinfo['label']).strip() or 'filesystem' if multi_fs else None
+
+        for entry, path in _tsk_walk(fs):
+            if entry['is_dir'] or not entry['deleted'] or entry['is_virtual']:
+                continue
+            if files_recovered >= IMAGE_RECOVER_MAX_FILES or (time.time() - start_time) > IMAGE_RECOVER_MAX_SECONDS:
+                truncated = True
+                break
+            size = entry['size'] or 0
+            if size <= 0:
+                files_skipped_empty += 1
+                continue
+            if size > IMAGE_RECOVER_MAX_FILE_BYTES or total_bytes + size > IMAGE_RECOVER_MAX_TOTAL_BYTES:
+                files_skipped_too_large += 1
+                continue
+
+            rel_path = path.lstrip('/')
+            dest_file = os.path.join(output_root, fs_subdir, rel_path) if fs_subdir else os.path.join(output_root, rel_path)
+            if not safe_path(dest_file):
+                files_errored += 1
+                continue
+
+            try:
+                os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+                tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
+                with open(dest_file, 'wb') as out:
+                    written = _tsk_stream_file(tsk_file, out.write, max_bytes=IMAGE_RECOVER_MAX_FILE_BYTES)
+                if written == 0:
+                    os.remove(dest_file)
+                    files_skipped_empty += 1
+                    continue
+                total_bytes += written
+                files_recovered += 1
+            except Exception:
+                files_errored += 1
+                try:
+                    if os.path.exists(dest_file):
+                        os.remove(dest_file)
+                except OSError:
+                    pass
+                continue
+        if truncated:
+            break
+
+    log_chain_of_custody("recover_deleted_files_image", {
+        "image_path": image_path, "output_dir": output_root, "files_recovered": files_recovered,
+        "total_bytes": total_bytes, "files_skipped_too_large": files_skipped_too_large,
+        "files_skipped_empty": files_skipped_empty, "files_errored": files_errored, "truncated": truncated
+    })
+    return jsonify({
+        "success": True, "output_dir": output_root if files_recovered else None,
+        "files_recovered": files_recovered, "total_bytes": total_bytes,
+        "files_skipped_too_large": files_skipped_too_large, "files_skipped_empty": files_skipped_empty,
+        "files_errored": files_errored, "truncated": truncated
+    })
+
 # --- Filesystem Timeline report block: reuses the pytsk3 walk above against
 # a case's already-acquired disk image(s), rather than the interactive,
 # single-image-at-a-time /api/image/timeline route. First real entry in the
