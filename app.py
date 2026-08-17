@@ -6341,6 +6341,44 @@ def discover_case_files():
     files, truncated = _discover_case_files(case_folder)
     return jsonify({"success": True, "files": files, "truncated": truncated})
 
+@app.route('/api/cases/attach_file', methods=['POST'])
+@requires_auth
+def attach_file_to_case():
+    """Lets File Explorer's "Attach to Case" context-menu action bookmark a
+    file the moment an examiner is looking at it, rather than requiring a
+    separate trip to Reporting > Files to browse back to the same path -
+    the same "tag it where you find it" model AXIOM/Autopsy use, adapted to
+    this app's file-path-based attachment model. Writes straight to the
+    case JSON on disk (unlike Reporting's own attachment editing, which is
+    staged client-side and only persisted on "Save Report Changes") since
+    File Explorer has no loaded-report state or Save button to stage
+    through - matches how every other File Explorer action (hash, extract,
+    scan) already commits immediately rather than queuing a pending edit."""
+    req = request.get_json() or {}
+    case_folder = safe_path(req.get('case_folder'))
+    file_path = safe_path(req.get('file_path'))
+
+    if not case_folder or not os.path.isdir(case_folder):
+        return jsonify({"success": False, "error": "Case folder not found or outside the permitted evidence directory."}), 400
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    case_file = case_consolidated_path(case_folder)
+    if not case_file:
+        return jsonify({"success": False, "error": "This case hasn't been migrated to the consolidated report format yet - attach files from the Reporting tab instead."}), 400
+
+    data = _read_case_file(case_file)
+    attachments = data.setdefault('attachments', {})
+    files = attachments.setdefault('files', [])
+    already_attached = file_path in files
+    if not already_attached:
+        files.append(file_path)
+        data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _write_case_file(case_file, data)
+        log_chain_of_custody("file_attached_to_case", {"case_folder": case_folder, "file_path": file_path})
+
+    return jsonify({"success": True, "already_attached": already_attached, "file_count": len(files)})
+
 # --- Case Notes: timestamped, append-only journal entries ---
 # Inspired by forensicnotes.com's contemporaneous-notes model, adapted to
 # what this appliance can honestly provide: there's no real cryptographic
@@ -6480,11 +6518,14 @@ def edit_case_note():
     log_chain_of_custody("case_note_edit", {"report_path": report_file, "note_id": note_id})
     return jsonify({"success": True, "note": note})
 
-def _embed_file_into_pdf(c, y, file_path):
+def _embed_file_into_pdf(c, y, file_path, caption=None):
     """Draws one file's content (image/text embedded, or a path+size
     fallback) at the current y and returns the new y. Shared by Exhibits
     (case attachments) and the Case Notes journal so the per-extension
-    embedding dispatch isn't duplicated a third time."""
+    embedding dispatch isn't duplicated a third time. caption is
+    examiner-entered free text (an Exhibits-only concept - Case Notes
+    attachments don't have one), rendered as a small italic line under the
+    filename heading when present."""
     name = os.path.basename(file_path)
     ext = os.path.splitext(file_path)[1].lower()
     try:
@@ -6492,13 +6533,23 @@ def _embed_file_into_pdf(c, y, file_path):
     except OSError:
         size = 0
 
+    def _draw_caption(y):
+        if not caption:
+            return y
+        c.setFont("Helvetica-Oblique", 8)
+        y = _draw_pdf_wrapped_text(c, y, caption, x=50, width_chars=100, font="Helvetica-Oblique", size=8, leading=10)
+        c.setFont("Helvetica", 10)
+        return y
+
     if ext in ATTACHMENT_IMAGE_EXT and size <= ATTACHMENT_MAX_IMAGE_EMBED_BYTES:
         if y < 220:
             c.showPage()
             y = 750
         c.setFont("Helvetica-Bold", 10)
         c.drawString(50, y, f"Image: {name}"[:100])
-        y -= 145
+        y -= 14
+        y = _draw_caption(y)
+        y -= 131
         try:
             from reportlab.lib.utils import ImageReader
             c.drawImage(ImageReader(file_path), 60, y, width=220, height=140, preserveAspectRatio=True, anchor='sw')
@@ -6514,6 +6565,7 @@ def _embed_file_into_pdf(c, y, file_path):
         c.setFont("Helvetica-Bold", 10)
         c.drawString(50, y, f"Text File: {name}"[:100])
         y -= 14
+        y = _draw_caption(y)
         c.setFont("Courier", 7.5)
         try:
             with open(file_path, 'r', errors='replace') as tf:
@@ -6537,6 +6589,10 @@ def _embed_file_into_pdf(c, y, file_path):
         size_note = f" ({size:,} bytes)" if size else ""
         c.drawString(60, y, f"• Document: {name}{size_note} - {file_path}"[:130])
         y -= 15
+        if caption:
+            c.setFont("Helvetica-Oblique", 8)
+            y = _draw_pdf_wrapped_text(c, y, caption, x=60, width_chars=100, font="Helvetica-Oblique", size=8, leading=10)
+            c.setFont("Helvetica", 10)
     return y
 
 def _draw_pdf_wrapped_text(c, y, text, x=50, width_chars=95, font="Helvetica", size=9, leading=12):
@@ -6674,7 +6730,8 @@ def _draw_pdf_case_notes(c, y, notes, title="Forensic Analysis / Steps Taken (Ca
         y -= 10
     return y
 
-def _draw_pdf_attachments(c, y, urls, files, title="Exhibits"):
+def _draw_pdf_attachments(c, y, urls, files, title="Exhibits", captions=None):
+    captions = captions or {}
     if not (urls or files):
         return y
 
@@ -6706,7 +6763,7 @@ def _draw_pdf_attachments(c, y, urls, files, title="Exhibits"):
         file_path = safe_path(raw_path)
         if not file_path or not os.path.exists(file_path):
             continue
-        y = _embed_file_into_pdf(c, y, file_path)
+        y = _embed_file_into_pdf(c, y, file_path, caption=captions.get(raw_path))
     return y
 
 # Shared by the DFIR and Police report templates below - not used by the
@@ -7168,7 +7225,7 @@ def _resolve_template_ref(value, cfg):
         raise ValueError(f"Selected custom template '{template_id}' no longer exists.")
     return 'standard', None
 
-def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields):
+def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None):
     from reportlab.lib.pagesizes import letter
 
     c = _numbered_canvas_class()(pdf_path, pagesize=letter)
@@ -7220,7 +7277,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
         "conclusion": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("conclusion")),
         "iocs": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("iocs")),
         "recommendations": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("recommendations_next_steps")),
-        "attachments": lambda y, title: _draw_pdf_attachments(c, y, urls, files, title=title),
+        "attachments": lambda y, title: _draw_pdf_attachments(c, y, urls, files, title=title, captions=captions),
         "audit_trail": lambda y, title: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
         "timeline": lambda y, title: _draw_pdf_timeline_block(c, y, events, title=title),
     }
@@ -7242,7 +7299,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
 
     c.save()
 
-def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries, case_notes):
+def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None):
     """Fixed-structure DFIR Incident Report - no sections/job_fields dict,
     since a template's whole point is a defined shape. Reuses the same
     low-level drawing helpers the Standard template uses; only the section
@@ -7317,7 +7374,7 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
     if has_exhibits:
         c.bookmarkPage('exhibits')
         c.addOutlineEntry("Exhibits", 'exhibits', level=0)
-        y = _draw_pdf_attachments(c, y, urls, files)
+        y = _draw_pdf_attachments(c, y, urls, files, captions=captions)
 
     c.bookmarkPage('audit_trail')
     c.addOutlineEntry("Audit Trail", 'audit_trail', level=0)
@@ -7325,7 +7382,7 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
 
     c.save()
 
-def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entries, case_notes):
+def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None):
     """Fixed-structure Forensics (Police) Report, modeled on the reference
     law-enforcement examination report. Reuses the same low-level drawing
     helpers as the other two templates - see the plan's field-mapping table
@@ -7410,13 +7467,15 @@ def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entrie
     if has_exhibits:
         c.bookmarkPage('exhibits')
         c.addOutlineEntry("Exhibits & Appendices", 'exhibits', level=0)
-        y = _draw_pdf_attachments(c, y, urls, files)
+        y = _draw_pdf_attachments(c, y, urls, files, captions=captions)
 
     c.save()
 
-def _embed_file_into_html(file_path):
+def _embed_file_into_html(file_path, caption=None):
     """HTML counterpart to _embed_file_into_pdf - shared by Exhibits (case
-    attachments) and the Case Notes journal."""
+    attachments) and the Case Notes journal. caption is an Exhibits-only
+    concept (Case Notes attachments don't have one) - rendered as a small
+    italic line under the filename heading when present."""
     esc = html.escape
     name = os.path.basename(file_path)
     ext = os.path.splitext(file_path)[1].lower()
@@ -7424,6 +7483,7 @@ def _embed_file_into_html(file_path):
         size = os.path.getsize(file_path)
     except OSError:
         size = 0
+    caption_html = f'<p class="muted"><em>{esc(caption)}</em></p>' if caption else ''
 
     if ext in ATTACHMENT_IMAGE_EXT and size <= ATTACHMENT_MAX_IMAGE_EMBED_BYTES:
         mime = {
@@ -7433,19 +7493,19 @@ def _embed_file_into_html(file_path):
         try:
             with open(file_path, 'rb') as imf:
                 b64 = base64.b64encode(imf.read()).decode('ascii')
-            return f'<div class="attach-item"><h3>{esc(name)}</h3><img src="data:{mime};base64,{b64}"></div>'
+            return f'<div class="attach-item"><h3>{esc(name)}</h3>{caption_html}<img src="data:{mime};base64,{b64}"></div>'
         except OSError as e:
-            return f'<div class="attach-item"><h3>{esc(name)}</h3><p class="muted">Could not read image: {esc(str(e))}</p></div>'
+            return f'<div class="attach-item"><h3>{esc(name)}</h3>{caption_html}<p class="muted">Could not read image: {esc(str(e))}</p></div>'
     elif ext in ATTACHMENT_TEXT_EXT and size <= ATTACHMENT_MAX_TEXT_EMBED_BYTES:
         try:
             with open(file_path, 'r', errors='replace') as tf:
                 text_content = tf.read(ATTACHMENT_MAX_TEXT_EMBED_BYTES)
         except OSError as e:
             text_content = f"(could not read file: {e})"
-        return f'<div class="attach-item"><h3>{esc(name)}</h3><pre>{esc(text_content)}</pre></div>'
+        return f'<div class="attach-item"><h3>{esc(name)}</h3>{caption_html}<pre>{esc(text_content)}</pre></div>'
     else:
         size_note = f" ({size:,} bytes)" if size else ""
-        return f'<div class="attach-item"><h3>{esc(name)}</h3><p class="muted mono">{esc(file_path)}{esc(size_note)}</p></div>'
+        return f'<div class="attach-item"><h3>{esc(name)}</h3>{caption_html}<p class="muted mono">{esc(file_path)}{esc(size_note)}</p></div>'
 
 def _html_timeline_table(case_notes, title="Incident Timeline", anchor_id=None):
     """HTML counterpart to _draw_pdf_timeline_table - same case_notes source,
@@ -7579,10 +7639,11 @@ def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id
     parts.append('</table>')
     return ''.join(parts)
 
-def _html_exhibits_block(urls, files, anchor_id=None, title="Exhibits"):
+def _html_exhibits_block(urls, files, anchor_id=None, title="Exhibits", captions=None):
     """HTML counterpart to _draw_pdf_attachments - shared by all three
     templates' Exhibits section. Caller already checks whether there's
     anything to show (urls or files) before calling this."""
+    captions = captions or {}
     esc = html.escape
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     parts = [f'<h2{id_attr}>{esc(title)}</h2>']
@@ -7595,7 +7656,7 @@ def _html_exhibits_block(urls, files, anchor_id=None, title="Exhibits"):
         file_path = safe_path(raw_path)
         if not file_path or not os.path.exists(file_path):
             continue
-        parts.append(_embed_file_into_html(file_path))
+        parts.append(_embed_file_into_html(file_path, caption=captions.get(raw_path)))
     return ''.join(parts)
 
 def _html_audit_trail_block(audit_entries, anchor_id=None, title="Case Activity Log (Audit Trail)"):
@@ -7748,7 +7809,7 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         parts.append('</div>')
     return ''.join(parts)
 
-def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields):
+def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None):
     """Self-contained HTML report - every value is escaped since it may
     contain examiner-entered text or evidence-derived strings (filenames,
     device paths) that this file could later be reopened/served from disk.
@@ -7779,7 +7840,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         "conclusion": lambda anchor, title: _html_narrative_block(title, header.get("conclusion"), anchor),
         "iocs": lambda anchor, title: _html_narrative_block(title, header.get("iocs"), anchor),
         "recommendations": lambda anchor, title: _html_narrative_block(title, header.get("recommendations_next_steps"), anchor),
-        "attachments": lambda anchor, title: _html_exhibits_block(urls, files, anchor_id=anchor, title=title),
+        "attachments": lambda anchor, title: _html_exhibits_block(urls, files, anchor_id=anchor, title=title, captions=captions),
         "audit_trail": lambda anchor, title: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
         "timeline": lambda anchor, title: _html_timeline_block(events, title=title, anchor_id=anchor),
     }
@@ -7794,7 +7855,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
     parts.append('</body></html>')
     return ''.join(parts)
 
-def _build_html_report_dfir(header, events, urls, files, audit_entries, case_notes):
+def _build_html_report_dfir(header, events, urls, files, audit_entries, case_notes, captions=None):
     """HTML counterpart to _build_pdf_report_dfir - same fixed section list,
     same reused data sources, see that function's docstring."""
     esc = html.escape
@@ -7835,14 +7896,14 @@ def _build_html_report_dfir(header, events, urls, files, audit_entries, case_not
     parts.append(_html_narrative_block('Containment, Eradication & Next Steps', header.get('recommendations_next_steps'), 'sec-containment'))
 
     if has_exhibits:
-        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits'))
+        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits', captions=captions))
 
     parts.append(_html_audit_trail_block(audit_entries, anchor_id='sec-audit-trail'))
 
     parts.append('</body></html>')
     return ''.join(parts)
 
-def _build_html_report_police(header, events, urls, files, audit_entries, case_notes):
+def _build_html_report_police(header, events, urls, files, audit_entries, case_notes, captions=None):
     """HTML counterpart to _build_pdf_report_police - same fixed section
     list, same reused data sources, same disclosed Chain-of-Custody-vs-
     Audit-Trail caveat, see that function's docstring."""
@@ -7898,7 +7959,7 @@ def _build_html_report_police(header, events, urls, files, audit_entries, case_n
     parts.append(_html_signoff(header['examiner'], anchor_id='sec-signoff'))
 
     if has_exhibits:
-        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits'))
+        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits', captions=captions))
 
     parts.append('</body></html>')
     return ''.join(parts)
@@ -8020,6 +8081,13 @@ def export_report():
     # attachments) - not nested under case_metadata for the legacy branch.
     case_notes = data.get('case_notes', [])
 
+    # Examiner-entered per-attachment captions, keyed by the same path string
+    # used in attachments['files'] - looked up at render time regardless of
+    # whether a file came from the full explicit list or a per-export
+    # checked subset (attachment_selection.files below), since it's a
+    # superset lookup table either way.
+    captions = attachments.get('file_captions', {})
+
     header["branding"] = report_defaults.get('branding', {})
 
     # attachment_selection lets the export modal pick a subset of
@@ -8058,25 +8126,25 @@ def export_report():
             if fmt == 'html':
                 out_path = report_file.rsplit('.json', 1)[0] + '.html'
                 with open(out_path, 'w') as f:
-                    f.write(_build_html_report_dfir(header, events, sel_urls, sel_files, audit_entries, case_notes))
+                    f.write(_build_html_report_dfir(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions))
             else:
                 out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-                _build_pdf_report_dfir(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes)
+                _build_pdf_report_dfir(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions)
         elif template == 'police':
             if fmt == 'html':
                 out_path = report_file.rsplit('.json', 1)[0] + '.html'
                 with open(out_path, 'w') as f:
-                    f.write(_build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes))
+                    f.write(_build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions))
             else:
                 out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-                _build_pdf_report_police(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes)
+                _build_pdf_report_police(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions)
         elif fmt == 'html':
             out_path = report_file.rsplit('.json', 1)[0] + '.html'
             with open(out_path, 'w') as f:
-                f.write(_build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields))
+                f.write(_build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions))
         else:
             out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-            _build_pdf_report_standard(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields)
+            _build_pdf_report_standard(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions)
 
         # A report-level integrity hash - computed over the exported file's
         # actual bytes, not the source case JSON, so it verifies the specific
