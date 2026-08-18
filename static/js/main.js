@@ -4721,6 +4721,15 @@ async function loadCaseReportingSettings() {
         setChecked('defSecLimitations', sections, 'limitations');
         setChecked('defSecConclusion', sections, 'conclusion');
         setChecked('defSecAttachments', sections, 'attachments');
+        // Unlike every other section key here (all pre-existing, where a
+        // missing key means "saved before this field existed" and should
+        // default true), Geolocation is brand new - every station's
+        // already-saved config is missing this key, and the intended
+        // default is unchecked (a case with no GPS evidence shouldn't grow
+        // an empty section) - so this one defaults to false, not
+        // setChecked()'s usual true, when absent.
+        const geoDefEl = document.getElementById('defSecGeolocation');
+        if (geoDefEl) geoDefEl.checked = Object.prototype.hasOwnProperty.call(sections, 'geolocation') ? !!sections.geolocation : false;
         setChecked('defSecAuditTrail', sections, 'audit_trail');
         setChecked('defFieldTelemetry', jobFields, 'telemetry');
         setChecked('defFieldParams', jobFields, 'params');
@@ -4739,6 +4748,16 @@ async function loadCaseReportingSettings() {
     } catch (err) { /* non-fatal - card just shows its default markup state */ }
 }
 
+// Per-fixed-template hint text for the Settings > Case & Reporting default
+// selector - each template's section list/data sources differ enough that
+// one generic string (the old behavior) was actively inaccurate for some of
+// them (e.g. mentioning IOCs/Recommendations, which Police never uses).
+const DEF_FIXED_TEMPLATE_HINTS = {
+    dfir: "This template has a fixed structure - the section/field checkboxes below only apply to Standard exports. See the Report Narrative tab for the Indicators of Compromise / Recommendations fields it draws on.",
+    police: "This template has a fixed structure - the section/field checkboxes below only apply to Standard exports. Its Administrative Information section pulls from Case Number/Examiner plus whatever you configure under Custom Case Fields below (e.g. Agency, Badge Number, Requesting Authority).",
+    caseuco: "This template has a fixed structure aligned with the CASE/UCO forensic ontology - the section/field checkboxes below only apply to Standard exports. It always includes Geolocation/GPS evidence. Add Custom Case Fields below for Authorization Identifier/Type, Investigation Status, or Investigation Form if your station wants those captured.",
+};
+
 function onDefReportTemplateChange() {
     const sel = document.getElementById("defReportTemplate");
     const hint = document.getElementById("defTemplateHint");
@@ -4753,7 +4772,7 @@ function onDefReportTemplateChange() {
         const record = customReportTemplatesCache.find(t => `custom:${t.id}` === value);
         hint.textContent = `This is a custom template - its structure is edited via Custom Report Templates below${record ? ` ("${record.name}")` : ''}.`;
     } else {
-        hint.textContent = "This template has a fixed structure - the section/field checkboxes below only apply to Standard exports. The Forensics Report's Administrative Information section pulls from Case Number/Examiner plus whatever you configure under Custom Case Fields below (e.g. Agency, Badge Number, Requesting Authority).";
+        hint.textContent = DEF_FIXED_TEMPLATE_HINTS[value] || DEF_FIXED_TEMPLATE_HINTS.dfir;
     }
 }
 
@@ -4806,6 +4825,7 @@ async function saveCaseReportingSettings() {
         limitations: document.getElementById("defSecLimitations")?.checked ?? true,
         conclusion: document.getElementById("defSecConclusion")?.checked ?? true,
         attachments: document.getElementById("defSecAttachments")?.checked ?? true,
+        geolocation: document.getElementById("defSecGeolocation")?.checked ?? false,
         audit_trail: document.getElementById("defSecAuditTrail")?.checked ?? true,
     };
     const jobFields = {
@@ -5653,6 +5673,15 @@ async function saveReportMetadata() {
 // form are not silently included. If the examiner wants their edits in the
 // exported file, Save Report Changes first, same as before. Called via the
 // Export nav button's onclick, mirroring the Jobs/Audit Trail pattern.
+// Per-fixed-template hint text for the Export pane's template selector -
+// see DEF_FIXED_TEMPLATE_HINTS' comment (the Settings-side counterpart) for
+// why this isn't one generic string.
+const EXPORT_FIXED_TEMPLATE_HINTS = {
+    dfir: "This template has a fixed structure and always includes every section - the checkboxes below don't apply. It reuses this case's existing data under the reference template's section labels; see the Report Narrative tab for the Indicators of Compromise / Recommendations fields it draws on.",
+    police: "This template has a fixed structure and always includes every section - the checkboxes below don't apply. It reuses this case's existing data under the reference template's section labels.",
+    caseuco: "This template has a fixed structure aligned with the CASE/UCO forensic ontology and always includes every section, including Geolocation/GPS evidence. Add Custom Case Fields below for Authorization Identifier/Type, Investigation Status, or Investigation Form if your station wants those captured.",
+};
+
 function onExportTemplateChange() {
     const sel = document.getElementById("exportTemplateSelect");
     const hint = document.getElementById("exportTemplateHint");
@@ -5677,7 +5706,7 @@ function onExportTemplateChange() {
         if (editBtn) editBtn.style.display = 'inline-block';
     } else {
         currentExportCustomTemplateId = null;
-        if (hint) hint.textContent = "This template has a fixed structure and always includes every section - the checkboxes below don't apply. It reuses this case's existing data under the reference template's section labels; see the Report Narrative tab for the Indicators of Compromise / Recommendations fields it draws on.";
+        if (hint) hint.textContent = EXPORT_FIXED_TEMPLATE_HINTS[value] || EXPORT_FIXED_TEMPLATE_HINTS.dfir;
         if (editBtn) editBtn.style.display = 'none';
     }
 }
@@ -5691,6 +5720,7 @@ function onExportFormatChange() {
     const templateGroup = document.getElementById("exportTemplateGroup");
     const optionsRow = document.getElementById("exportPdfHtmlOptionsRow");
     const jsonGroup = document.getElementById("exportJsonPreviewGroup");
+    const previewGroup = document.getElementById("exportPreviewGroup");
     if (!sel) return;
     const isJson = sel.value === 'json';
     // CSV never touches /api/export_report either (same client-side-only
@@ -5701,6 +5731,14 @@ function onExportFormatChange() {
     if (templateGroup) templateGroup.style.display = isRawFormat ? 'none' : '';
     if (optionsRow) optionsRow.style.display = isRawFormat ? 'none' : '';
     if (jsonGroup) jsonGroup.style.display = isJson ? 'block' : 'none';
+    // The Refresh Preview button only ever renders PDF/HTML - json/csv have
+    // their own live/on-download previews instead. Switching format always
+    // clears any prior preview rather than leaving a stale PDF/HTML render
+    // up that no longer matches the newly-selected format - Preview is
+    // explicit-refresh-only, but a leftover render from a different format
+    // would be actively misleading, not just stale.
+    if (previewGroup) previewGroup.style.display = isRawFormat ? 'none' : '';
+    resetExportPreview();
 
     if (isJson) {
         const previewEl = document.getElementById("jsonPreview");
@@ -5722,6 +5760,11 @@ async function prepareExportPane() {
     if (!reportPath || !currentLoadedReportData) {
         return; // Reporting's own no-case empty state already covers this
     }
+
+    // Always start from a clean preview on entering this pane - regardless
+    // of whether the settings-defaults fetch below succeeds, a stale
+    // render from a previous visit/case should never linger.
+    resetExportPreview();
 
     // Same ordering requirement as loadCaseReportingSettings() - custom
     // template options must exist before the select's value is set below.
@@ -5755,6 +5798,7 @@ async function prepareExportPane() {
             setIfKnown('expSecLimitations', sections, 'limitations');
             setIfKnown('expSecConclusion', sections, 'conclusion');
             setIfKnown('expSecAttachments', sections, 'attachments');
+            setIfKnown('expSecGeolocation', sections, 'geolocation');
             setIfKnown('expSecAuditTrail', sections, 'audit_trail');
             setIfKnown('expFieldTelemetry', jobFields, 'telemetry');
             setIfKnown('expFieldParams', jobFields, 'params');
@@ -5994,50 +6038,8 @@ async function runExportReport() {
         return;
     }
 
-    const template = document.getElementById("exportTemplateSelect")?.value || 'standard';
-
-    // sections/job_fields only ever apply to the 'standard' template - the
-    // checkboxes are only hidden (via CSS), not cleared or disabled, when a
-    // different template is selected, so they'd otherwise still hold
-    // whatever they were last checked to and silently leak into a
-    // custom/DFIR/Police export. The backend also ignores these for
-    // anything but 'standard' (defense in depth), but not sending them at
-    // all here is the more honest signal of what this export actually uses.
-    let sections = null;
-    let job_fields = null;
-    if (template === 'standard') {
-        sections = {
-            case_info: !!document.getElementById("expSecCaseInfo")?.checked,
-            executive_summary: !!document.getElementById("expSecExecSummary")?.checked,
-            evidence_inventory: !!document.getElementById("expSecEvidenceInventory")?.checked,
-            forensic_analysis: !!document.getElementById("expSecForensicAnalysis")?.checked,
-            relevant_findings: !!document.getElementById("expSecFindings")?.checked,
-            limitations: !!document.getElementById("expSecLimitations")?.checked,
-            conclusion: !!document.getElementById("expSecConclusion")?.checked,
-            attachments: !!document.getElementById("expSecAttachments")?.checked,
-            audit_trail: !!document.getElementById("expSecAuditTrail")?.checked,
-        };
-        job_fields = {
-            telemetry: !!document.getElementById("expFieldTelemetry")?.checked,
-            params: !!document.getElementById("expFieldParams")?.checked,
-            hashes: !!document.getElementById("expFieldHashes")?.checked,
-        };
-    }
-
-    const itemChecks = document.querySelectorAll('.export-item-check');
-    let event_ids = null;
-    if (itemChecks.length > 0) {
-        event_ids = Array.from(itemChecks).filter(cb => cb.checked).map(cb => cb.dataset.eventId);
-        if (event_ids.length === 0) {
-            showToast("Select at least one evidence item to include.", 'warning');
-            return;
-        }
-    }
-
-    const attachment_selection = { urls: [], files: [] };
-    document.querySelectorAll('.export-attach-check:checked').forEach(cb => {
-        (cb.dataset.kind === 'url' ? attachment_selection.urls : attachment_selection.files).push(cb.dataset.value);
-    });
+    const body = gatherExportRequestBody();
+    if (!body) return;
 
     const statusEl = document.getElementById("exportReportStatus");
     if (statusEl) { statusEl.textContent = 'Generating...'; statusEl.className = 'small text-info'; }
@@ -6046,7 +6048,7 @@ async function runExportReport() {
         const res = await fetch('/api/export_report', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ report_path: reportPath, format, template, sections, job_fields, event_ids, attachment_selection })
+            body: JSON.stringify({ report_path: reportPath, ...body })
         });
 
         if (res.ok) {
@@ -6070,6 +6072,145 @@ async function runExportReport() {
         }
     } catch (err) {
         if (statusEl) { statusEl.textContent = `Export failed: ${err.message}`; statusEl.className = 'small text-danger'; }
+    }
+}
+
+// Gathers the exact {format, template, sections, job_fields, event_ids,
+// attachment_selection} request body from the Export pane's current
+// checkbox/select state - factored out of runExportReport() so the real
+// Export action and the Preview action (see refreshExportPreview() below)
+// can never send different data for the same visible checkbox state.
+// Returns null (after showing a toast) if a required selection is missing
+// (no evidence items checked) - both callers bail out the same way.
+function gatherExportRequestBody() {
+    const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
+    const template = document.getElementById("exportTemplateSelect")?.value || 'standard';
+
+    // sections/job_fields only ever apply to the 'standard' template - the
+    // checkboxes are only hidden (via CSS), not cleared or disabled, when a
+    // different template is selected, so they'd otherwise still hold
+    // whatever they were last checked to and silently leak into a
+    // custom/DFIR/Police export. The backend also ignores these for
+    // anything but 'standard' (defense in depth), but not sending them at
+    // all here is the more honest signal of what this export actually uses.
+    let sections = null;
+    let job_fields = null;
+    if (template === 'standard') {
+        sections = {
+            case_info: !!document.getElementById("expSecCaseInfo")?.checked,
+            executive_summary: !!document.getElementById("expSecExecSummary")?.checked,
+            evidence_inventory: !!document.getElementById("expSecEvidenceInventory")?.checked,
+            forensic_analysis: !!document.getElementById("expSecForensicAnalysis")?.checked,
+            relevant_findings: !!document.getElementById("expSecFindings")?.checked,
+            limitations: !!document.getElementById("expSecLimitations")?.checked,
+            conclusion: !!document.getElementById("expSecConclusion")?.checked,
+            attachments: !!document.getElementById("expSecAttachments")?.checked,
+            geolocation: !!document.getElementById("expSecGeolocation")?.checked,
+            audit_trail: !!document.getElementById("expSecAuditTrail")?.checked,
+        };
+        job_fields = {
+            telemetry: !!document.getElementById("expFieldTelemetry")?.checked,
+            params: !!document.getElementById("expFieldParams")?.checked,
+            hashes: !!document.getElementById("expFieldHashes")?.checked,
+        };
+    }
+
+    const itemChecks = document.querySelectorAll('.export-item-check');
+    let event_ids = null;
+    if (itemChecks.length > 0) {
+        event_ids = Array.from(itemChecks).filter(cb => cb.checked).map(cb => cb.dataset.eventId);
+        if (event_ids.length === 0) {
+            showToast("Select at least one evidence item to include.", 'warning');
+            return null;
+        }
+    }
+
+    const attachment_selection = { urls: [], files: [] };
+    document.querySelectorAll('.export-attach-check:checked').forEach(cb => {
+        (cb.dataset.kind === 'url' ? attachment_selection.urls : attachment_selection.files).push(cb.dataset.value);
+    });
+
+    return { format, template, sections, job_fields, event_ids, attachment_selection };
+}
+
+// Object URL for the currently-displayed PDF preview, if any - tracked so
+// each refresh can revoke the previous one instead of leaking blob URLs.
+let exportPreviewObjectUrl = null;
+
+function resetExportPreview() {
+    const iframe = document.getElementById("exportPreviewFrame");
+    const statusEl = document.getElementById("exportPreviewStatus");
+    if (exportPreviewObjectUrl) { URL.revokeObjectURL(exportPreviewObjectUrl); exportPreviewObjectUrl = null; }
+    if (iframe) { iframe.removeAttribute('src'); iframe.srcdoc = ''; iframe.removeAttribute('sandbox'); }
+    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'small text-subtle'; }
+}
+
+// Renders exactly what a real Export would currently produce into the
+// preview iframe, without writing anything to disk - reuses
+// gatherExportRequestBody() (the same state runExportReport() sends) plus
+// preview:true, which /api/export_report treats as "build the document,
+// return it inline, skip the disk write and the .sha256 sidecar" (see
+// export_report() in app.py). Explicit-refresh only, per design - never
+// called automatically on a checkbox/format/template change.
+async function refreshExportPreview() {
+    const reportPath = currentReportPath;
+    const iframe = document.getElementById("exportPreviewFrame");
+    const statusEl = document.getElementById("exportPreviewStatus");
+    if (!reportPath || !iframe) return;
+
+    const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
+    if (format !== 'pdf' && format !== 'html') return; // Refresh Preview is hidden for json/csv anyway
+
+    const body = gatherExportRequestBody();
+    if (!body) return;
+
+    if (statusEl) { statusEl.textContent = 'Rendering preview...'; statusEl.className = 'small text-info'; }
+
+    try {
+        const res = await fetch('/api/export_report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report_path: reportPath, ...body, preview: true })
+        });
+
+        if (!res.ok) {
+            const data = await res.json();
+            if (statusEl) { statusEl.textContent = `Preview failed: ${data.error}`; statusEl.className = 'small text-danger'; }
+            return;
+        }
+
+        if (exportPreviewObjectUrl) { URL.revokeObjectURL(exportPreviewObjectUrl); exportPreviewObjectUrl = null; }
+
+        if (format === 'pdf') {
+            // No sandbox at all for PDF - confirmed live that Chrome's native
+            // PDF viewer refuses to render inside a sandboxed iframe
+            // regardless of which tokens are set ("This page has been
+            // blocked by Chrome"). Matches this app's own existing pattern
+            // for previewing a real PDF file elsewhere (previewSelectedFile()
+            // in File Explorer) - the native viewer has no script-execution
+            // surface tied to this app's origin, so an unsandboxed iframe is
+            // the correct, already-established choice here too.
+            iframe.removeAttribute('sandbox');
+            const blob = await res.blob();
+            exportPreviewObjectUrl = URL.createObjectURL(blob);
+            iframe.removeAttribute('srcdoc');
+            iframe.src = exportPreviewObjectUrl;
+        } else {
+            // HTML previews may embed inline <script> (the Geolocation
+            // section's Leaflet map) - allow-scripts only, deliberately
+            // WITHOUT allow-same-origin, so the framed content runs in an
+            // opaque unique origin: scripts execute (the map renders) but
+            // can't read this app's cookies/session or reach the parent
+            // page's DOM, unlike a real download of this same file (which
+            // has no sandboxing at all once opened normally).
+            iframe.setAttribute('sandbox', 'allow-scripts');
+            const text = await res.text();
+            iframe.removeAttribute('src');
+            iframe.srcdoc = text;
+        }
+        if (statusEl) { statusEl.textContent = 'Preview updated.'; statusEl.className = 'small text-success'; }
+    } catch (err) {
+        if (statusEl) { statusEl.textContent = `Preview failed: ${err.message}`; statusEl.className = 'small text-danger'; }
     }
 }
 
