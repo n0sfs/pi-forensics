@@ -129,6 +129,10 @@ apt_packages = [
     # tool at all, so there's no external package needed for it anymore.
     "extundelete",  # deleted-file recovery for ext2/3/4 filesystems specifically
     "foremost", "scalpel",  # alternate signature-based file carvers to PhotoRec
+    "dislocker",  # unlocks BitLocker-encrypted volumes (given a recovery key) for acquisition
+                  # or File Explorer browsing - confirmed present on Debian trixie/arm64
+                  # (0.7.3+git20240607-3+b1) via apt-cache before adding here, per this
+                  # project's own hard-won "verify package existence first" rule.
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
@@ -274,6 +278,7 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/bin/dcfldd, /usr/bin/dc3dd, /usr/bin/ddrescue, \\
 /usr/bin/ewfacquire, /usr/bin/dd, /usr/bin/photorec, \\
 /usr/bin/extundelete, /usr/bin/foremost, /usr/bin/scalpel, /usr/bin/testdisk, \\
+/sbin/dislocker, /usr/bin/dislocker, /sbin/blkid, /usr/sbin/blkid, \\
 /bin/chown -R {SERVICE_USER} *, \\
 /bin/chgrp -R {SERVICE_USER} *, \\
 /sbin/reboot, /sbin/poweroff, \\
