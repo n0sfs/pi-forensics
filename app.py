@@ -634,6 +634,226 @@ def is_valid_block_device(path_str):
     """Whitelist check for whole-disk device paths (no partitions, no shell metacharacters)."""
     return bool(path_str) and bool(_DEVICE_RE.match(path_str))
 
+_PARTITION_RE = re.compile(r'^/dev/(sd[a-z]\d+|nvme\d+n\d+p\d+|mmcblk\d+p\d+)$')
+
+def is_valid_bitlocker_source(path_str):
+    """Whole-disk OR partition path - BitLocker most commonly encrypts a
+    single partition, but some BitLocker-To-Go USB media format the whole
+    device with no partition table at all, so both forms are accepted."""
+    return bool(path_str) and (bool(_DEVICE_RE.match(path_str)) or bool(_PARTITION_RE.match(path_str)))
+
+# --- BitLocker: unlock an encrypted source via dislocker, so it can be
+# imaged decrypted instead of as raw encrypted bytes. A dislocker mount
+# exposes the decrypted volume as a single virtual file ("dislocker-file")
+# inside a FUSE mountpoint - once mounted, that file is used as the
+# acquisition `source` exactly like a real block device would be (dc3dd/
+# dcfldd/ewfacquire/plain dd all just read from whatever path they're given,
+# real device or regular file). Recording the recovery key itself as case
+# documentation (separate from this unlock mechanism) is handled by
+# start_imaging()/start_ddrescue()'s own bitlocker_key field - see the
+# comment there for why that's stored in plaintext rather than encrypted at
+# rest, unlike network-mount credentials.
+DISLOCKER_MOUNT_ROOT = os.path.join(INSTALL_DIR, ".bitlocker_mounts")
+bitlocker_lock = threading.Lock()
+active_bitlocker_mounts = {}  # mount_id -> {mount_dir, device, source_path, unlocked_at}
+
+def _list_device_partitions(device):
+    """Real partitions of a whole-disk device via lsblk - JSON output, not
+    parsed text, so a device/label containing unusual characters can't
+    confuse column-based parsing."""
+    if not is_valid_block_device(device):
+        return []
+    try:
+        res = subprocess.run(
+            ['lsblk', '-J', '-o', 'NAME,SIZE,FSTYPE,TYPE', device],
+            capture_output=True, text=True, timeout=10
+        )
+        if res.returncode != 0:
+            return []
+        data = json.loads(res.stdout)
+        partitions = []
+        for dev in data.get('blockdevices', []):
+            for child in dev.get('children', []):
+                if child.get('type') == 'part':
+                    partitions.append({
+                        "path": f"/dev/{child['name']}",
+                        "size": child.get('size'),
+                        "fstype": child.get('fstype'),
+                    })
+        return partitions
+    except Exception:
+        return []
+
+def _detect_bitlocker(partition):
+    """Best-effort BitLocker signature check via blkid - not authoritative
+    (a wrong/no answer here doesn't block trying to unlock anyway), just a
+    helpful hint in the UI before the examiner types in a recovery key."""
+    if not is_valid_bitlocker_source(partition):
+        return None
+    try:
+        res = subprocess.run(
+            ['sudo', '/sbin/blkid', '-o', 'value', '-s', 'TYPE', partition],
+            capture_output=True, text=True, timeout=10
+        )
+        fstype = res.stdout.strip()
+        return {"fstype": fstype, "is_bitlocker": fstype.lower() == 'bitlocker'}
+    except Exception:
+        return {"fstype": None, "is_bitlocker": False}
+
+def _detect_bitlocker_image(image_path, offset=0):
+    """Best-effort BitLocker signature check for an already-acquired evidence
+    image (or a specific partition's byte offset within it) - a direct
+    read of the on-disk BitLocker boot-sector signature ("-FVE-FS-",
+    replacing NTFS's normal "NTFS    " signature at the same location, byte
+    3 of the boot sector) rather than shelling out to blkid. No sudo
+    needed: unlike a live device, an evidence image file is already owned
+    by this app's own unprivileged service account (reclaim_ownership()
+    already handed it back after acquisition), so a plain read is enough."""
+    validated = safe_path(image_path)
+    if not validated or not os.path.isfile(validated):
+        return None
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        return None
+    try:
+        with open(validated, 'rb') as f:
+            f.seek(offset + 3)
+            sig = f.read(8)
+        return {"is_bitlocker": sig == b'-FVE-FS-'}
+    except OSError:
+        return {"is_bitlocker": False}
+
+def _dislocker_unlock(source_path, recovery_key, offset=None):
+    """Mounts a BitLocker-encrypted volume via dislocker, given a 48-digit
+    recovery key (dashes optional - dislocker accepts either form).
+    Two modes, selected by whether `offset` is given:
+      - offset=None: `source_path` is a live device/partition path (the
+        pre-acquisition "unlock before imaging" flow) - validated via
+        is_valid_bitlocker_source().
+      - offset=<int>: `source_path` is an already-acquired evidence image
+        file, and the encrypted volume starts at the given byte offset
+        within it (dislocker's own -O/--offset flag - needed for a
+        multi-partition raw disk image, e.g. EFI + Recovery + an
+        encrypted C: partition all in one .dd file). Validated via
+        safe_path() like every other image-accepting route in this app,
+        not is_valid_bitlocker_source() (which only recognizes /dev/*
+        paths).
+    Returns (success, mount_id_or_None, source_path_or_None,
+    error_or_None). The mountpoint is entirely server-controlled (a fresh
+    directory under DISLOCKER_MOUNT_ROOT, never a client-supplied path) -
+    this is what lets _resolve_acquisition_source() below safely trust a
+    `source` path later: only a path this function itself just created and
+    registered can ever match an active_bitlocker_mounts entry."""
+    if offset is None:
+        if not is_valid_bitlocker_source(source_path):
+            return False, None, None, "Invalid or unrecognized device/partition path."
+    else:
+        validated = safe_path(source_path)
+        if not validated or not os.path.isfile(validated):
+            return False, None, None, "Image file not found or outside the permitted evidence directory."
+        source_path = validated
+        try:
+            offset = int(offset)
+        except (TypeError, ValueError):
+            return False, None, None, "Invalid partition offset."
+
+    recovery_key = (recovery_key or '').strip()
+    if not recovery_key:
+        return False, None, None, "Recovery key/password is required."
+
+    original_source = source_path  # captured before the local `source_path` name gets reused below for the *decrypted* file's path
+
+    os.makedirs(DISLOCKER_MOUNT_ROOT, exist_ok=True)
+    mount_id = uuid.uuid4().hex
+    mount_dir = os.path.join(DISLOCKER_MOUNT_ROOT, mount_id)
+    os.makedirs(mount_dir, exist_ok=False)
+
+    cmd = ["sudo", "/sbin/dislocker", "-V", original_source]
+    if offset:
+        cmd += ["-O", str(offset)]
+    cmd += [f"-p{recovery_key}", "--", mount_dir]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        try:
+            os.rmdir(mount_dir)
+        except OSError:
+            pass
+        return False, None, None, "dislocker timed out - the device may be unresponsive."
+    except FileNotFoundError:
+        try:
+            os.rmdir(mount_dir)
+        except OSError:
+            pass
+        return False, None, None, "dislocker is not installed on this station. Run 'sudo apt-get install dislocker' first."
+
+    decrypted_path = os.path.join(mount_dir, "dislocker-file")
+    if res.returncode != 0 or not os.path.exists(decrypted_path):
+        # dislocker's own FUSE mount can be left half-attached on failure -
+        # try to clean it up either way before reporting the error. Plain
+        # umount (not fusermount/fusermount3) works fine here since this
+        # always runs as root via sudo already - the fusermount helper's
+        # whole purpose is letting an *unprivileged* user unmount their own
+        # FUSE mount, which doesn't apply here, and this also sidesteps
+        # needing to guess whether this station's fuse3 package names the
+        # binary fusermount or fusermount3.
+        try:
+            subprocess.run(["sudo", "/bin/umount", mount_dir], capture_output=True, timeout=10)
+        except Exception:
+            pass
+        try:
+            os.rmdir(mount_dir)
+        except OSError:
+            pass
+        err = (res.stderr or res.stdout or "Unknown dislocker error.").strip()
+        return False, None, None, f"Unlock failed - check the recovery key/password: {err[:300]}"
+
+    with bitlocker_lock:
+        active_bitlocker_mounts[mount_id] = {
+            "mount_dir": mount_dir,
+            "device": original_source,
+            "source_path": decrypted_path,
+            "unlocked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    return True, mount_id, decrypted_path, None
+
+def _dislocker_lock(mount_id):
+    """Unmounts and cleans up a dislocker mount. Safe to call more than
+    once for the same id - a second call just finds nothing left to do."""
+    if not mount_id:
+        return True, None
+    with bitlocker_lock:
+        info = active_bitlocker_mounts.pop(mount_id, None)
+    if not info:
+        return True, None
+    mount_dir = info["mount_dir"]
+    try:
+        # See the matching comment in _dislocker_unlock() above - plain
+        # umount (already sudoers-granted, no new grant needed) instead of
+        # fusermount/fusermount3, since this always runs as root.
+        subprocess.run(["sudo", "/bin/umount", mount_dir], capture_output=True, timeout=15)
+    except Exception as e:
+        return False, f"Failed to unmount: {e}"
+    try:
+        os.rmdir(mount_dir)
+    except OSError:
+        pass
+    return True, None
+
+def _resolve_acquisition_source(source):
+    """Returns (actual_source_path, is_real_block_device, bitlocker_mount_id).
+    If `source` exactly matches a currently-registered dislocker mount's own
+    decrypted virtual file path, it's trusted as a valid acquisition source
+    without needing to pass is_valid_block_device() - only a path this app's
+    own _dislocker_unlock() just created can ever match, since mountpoints
+    live under DISLOCKER_MOUNT_ROOT and are never client-supplied."""
+    with bitlocker_lock:
+        for mount_id, info in active_bitlocker_mounts.items():
+            if info["source_path"] == source:
+                return source, False, mount_id
+    return source, True, None
+
 # --- Case Folder Name Sanitization ---
 _CASE_SLUG_INVALID_RE = re.compile(r'[^A-Za-z0-9_-]+')
 
@@ -2634,6 +2854,87 @@ def toggle_write_block():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/bitlocker/partitions', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def bitlocker_partitions():
+    req = request.get_json() or {}
+    device = req.get('device', '')
+    if not is_valid_block_device(device):
+        return jsonify({"success": False, "error": "Not a recognized whole-disk device."}), 400
+    return jsonify({"success": True, "partitions": _list_device_partitions(device)})
+
+@app.route('/api/bitlocker/detect', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def bitlocker_detect():
+    req = request.get_json() or {}
+    partition = req.get('partition', '')
+    result = _detect_bitlocker(partition)
+    if result is None:
+        return jsonify({"success": False, "error": "Invalid or unrecognized device/partition path."}), 400
+    return jsonify({"success": True, **result})
+
+@app.route('/api/bitlocker/unlock', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def bitlocker_unlock():
+    req = request.get_json() or {}
+    partition = req.get('partition', '')
+    recovery_key = req.get('recovery_key', '')
+    success, mount_id, source_path, error = _dislocker_unlock(partition, recovery_key)
+    if not success:
+        return jsonify({"success": False, "error": error}), 400
+    log_chain_of_custody("bitlocker_unlock", {"device": partition, "mount_id": mount_id})
+    return jsonify({"success": True, "mount_id": mount_id, "source_path": source_path})
+
+@app.route('/api/bitlocker/detect_image', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def bitlocker_detect_image():
+    req = request.get_json() or {}
+    image_path = req.get('image_path', '')
+    offset = req.get('offset', 0)
+    result = _detect_bitlocker_image(image_path, offset)
+    if result is None:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    return jsonify({"success": True, **result})
+
+@app.route('/api/bitlocker/unlock_image', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def bitlocker_unlock_image():
+    req = request.get_json() or {}
+    image_path = req.get('image_path', '')
+    offset = req.get('offset', 0)
+    recovery_key = req.get('recovery_key', '')
+    success, mount_id, source_path, error = _dislocker_unlock(image_path, recovery_key, offset=offset)
+    if not success:
+        return jsonify({"success": False, "error": error}), 400
+    log_chain_of_custody("bitlocker_unlock_image", {"image_path": image_path, "offset": offset, "mount_id": mount_id})
+    return jsonify({"success": True, "mount_id": mount_id, "source_path": source_path})
+
+@app.route('/api/bitlocker/lock', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition', 'file_explorer')
+def bitlocker_lock_route():
+    req = request.get_json() or {}
+    mount_id = req.get('mount_id', '')
+    success, error = _dislocker_lock(mount_id)
+    if not success:
+        return jsonify({"success": False, "error": error}), 500
+    log_chain_of_custody("bitlocker_lock", {"mount_id": mount_id})
+    return jsonify({"success": True})
+
+@app.route('/api/bitlocker/status', methods=['GET'])
+@requires_auth
+@requires_permission('acquisition')
+def bitlocker_status():
+    with bitlocker_lock:
+        mounts = [{"mount_id": mid, **{k: v for k, v in info.items() if k != 'mount_dir'}}
+                  for mid, info in active_bitlocker_mounts.items()]
+    return jsonify({"success": True, "mounts": mounts})
+
 @app.route('/api/start_imaging', methods=['POST'])
 @requires_auth
 @requires_permission('acquisition')
@@ -2654,6 +2955,15 @@ def start_imaging():
     hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
     metadata = req.get('metadata', {})
     keep_raw = bool(req.get('keep_raw', True))  # only relevant when fmt == 'aff'
+    # Documentation only, never used to decrypt anything - imaging still
+    # captures the source exactly as found (encrypted or not). Recorded in
+    # plaintext in the case report (like every other case_metadata field),
+    # deliberately NOT Fernet-encrypted at rest the way network-mount
+    # credentials are - this key's whole value is traveling with the
+    # exported PDF/HTML report as documentation for whoever needs to
+    # decrypt the image later, so encrypting it with a station-local key
+    # would make it useless the moment the report leaves this station.
+    bitlocker_key = (req.get('bitlocker_key') or '').strip()
     
     compression = req.get('compression', 'fast')
     split_size = req.get('split_size', '2000M')
@@ -2663,9 +2973,19 @@ def start_imaging():
         update_job(active=False)
         return jsonify({"error": f"Unrecognized format '{fmt}'. Use one of {sorted(VALID_FORMATS)}."}), 400
 
-    if not is_valid_block_device(source) or not os.path.exists(source):
+    # A `source` matching a currently-registered dislocker mount (see
+    # /api/bitlocker/unlock) is a decrypted virtual file, not a real block
+    # device - trusted because only this app's own _dislocker_unlock() can
+    # ever create a path that matches (mountpoints live under the
+    # server-controlled DISLOCKER_MOUNT_ROOT, never client-supplied).
+    source, source_is_real_device, bitlocker_mount_id = _resolve_acquisition_source(source)
+    if source_is_real_device:
+        if not is_valid_block_device(source) or not os.path.exists(source):
+            update_job(active=False)
+            return jsonify({"error": f"Source device {source} not found or not a recognized whole-disk device."}), 400
+    elif not os.path.exists(source):
         update_job(active=False)
-        return jsonify({"error": f"Source device {source} not found or not a recognized whole-disk device."}), 400
+        return jsonify({"error": "The unlocked BitLocker volume is no longer available - it may have been locked/unmounted."}), 400
 
     invalid_hashes = set(hashes) - ALLOWED_HASH_ALGOS
     if invalid_hashes:
@@ -2684,12 +3004,20 @@ def start_imaging():
             return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
 
     total_bytes = 0
-    try:
-        res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
-        if res.returncode == 0:
-            total_bytes = int(res.stdout.strip())
-    except Exception:
-        pass
+    if source_is_real_device:
+        try:
+            res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
+            if res.returncode == 0:
+                total_bytes = int(res.stdout.strip())
+        except Exception:
+            pass
+    else:
+        # A dislocker-file is a regular file, not a block device - a plain
+        # stat gives its real decrypted size directly, no blockdev needed.
+        try:
+            total_bytes = os.path.getsize(source)
+        except OSError:
+            pass
 
     dest_disk_usage = shutil.disk_usage(dest_path)
     if total_bytes > 0 and dest_disk_usage.free < total_bytes:
@@ -2698,17 +3026,24 @@ def start_imaging():
         update_job(active=False)
         return jsonify({"error": f"Pre-flight storage check failed: Destination has only {free_gb} GB free, but source requires {required_gb} GB."}), 400
 
+    # SMART telemetry only exists for a real physical device - a decrypted
+    # dislocker-file has none of its own (it's a virtual file backed by the
+    # already-encrypted partition), so this is skipped entirely rather than
+    # querying smartctl against a path it was never meant to see.
     smart_data = {}
-    try:
-        res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True)
-        if res_smart.stdout:
-            smart_data = json.loads(res_smart.stdout)
-    except Exception:
-        pass
+    if source_is_real_device:
+        try:
+            res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True)
+            if res_smart.stdout:
+                smart_data = json.loads(res_smart.stdout)
+        except Exception:
+            pass
 
     model = smart_data.get('model_name') or smart_data.get('device', {}).get('name') or "Generic Storage Media"
     family = smart_data.get('model_family') or smart_data.get('family_name')
     vendor_model = f"{family} ({model})" if (family and family.lower() not in model.lower()) else model
+    if not source_is_real_device:
+        vendor_model = "BitLocker-Decrypted Volume (via dislocker)"
 
     serial = smart_data.get('serial_number', 'N/A')
     healthy = smart_data.get('smart_status', {}).get('passed', True)
@@ -2725,7 +3060,11 @@ def start_imaging():
             pending = attr.get('raw', {}).get('value', 0)
 
     drive_telemetry = {
-        "device_path": source,
+        # Displays the real encrypted device/partition path for a BitLocker
+        # acquisition, not the internal dislocker mountpoint - the mountpoint
+        # is implementation detail, the original device is what belongs in
+        # the case record.
+        "device_path": active_bitlocker_mounts.get(bitlocker_mount_id, {}).get("device", source) if bitlocker_mount_id else source,
         "vendor_model": vendor_model,
         "serial_number": serial,
         "capacity_bytes": total_bytes,
@@ -2790,8 +3129,14 @@ def start_imaging():
             "bs=4M",
             "conv=noerror,sync",
             "status=progress",
-            "iflag=direct",
         ]
+        # iflag=direct bypasses the page cache on the read side - meaningful
+        # for a real physical device, but O_DIRECT is frequently unsupported
+        # (or outright rejected) by FUSE-backed regular files, which a
+        # dislocker-unlocked BitLocker source is. Only add it for a real
+        # block device.
+        if source_is_real_device:
+            cmd.append("iflag=direct")
         # dd itself has no built-in hashing; computed_hashes is filled in
         # after completion by streaming the output file through hashlib.
 
@@ -2847,7 +3192,9 @@ def start_imaging():
             "split_size": split_size if fmt == 'e01' else 'N/A',
             "requested_hashes": hashes,
             "execution_command": " ".join(cmd),
-            **({"raw_image_retained": None} if fmt == 'aff' else {})
+            **({"raw_image_retained": None} if fmt == 'aff' else {}),
+            **({"bitlocker_key": bitlocker_key} if bitlocker_key else {}),
+            **({"bitlocker_decrypted": True} if bitlocker_mount_id else {}),
         },
         "attachments": {
             "files": [],
@@ -2874,7 +3221,32 @@ def start_imaging():
     thread.daemon = True
     thread.start()
 
-    log_chain_of_custody("acquisition_start", {"format": fmt, "source": source, "destination": dest_path})
+    # A dislocker mount must stay live for the whole acquisition (dc3dd/
+    # dcfldd/etc. read from it throughout the job), then gets torn down as
+    # soon as it's no longer needed - a decrypted mount is sensitive and
+    # shouldn't linger any longer than the job that actually needed it.
+    # This runs in its own thread (not execution_worker's own finally
+    # block) specifically to avoid threading a new parameter through that
+    # already-large, multi-caller function; thread.join() here blocks only
+    # this cleanup thread, not the request that already returned above.
+    if bitlocker_mount_id:
+        requester_ip = request.remote_addr
+        requester_user = getattr(g, 'forensic_user', None)
+
+        def _cleanup_bitlocker_after_job(worker_thread, mid, src_ip, user):
+            worker_thread.join()
+            _dislocker_lock(mid)
+            log_chain_of_custody("bitlocker_lock", {"mount_id": mid, "reason": "acquisition_complete"},
+                                 source_ip=src_ip, user=user)
+
+        cleanup_thread = threading.Thread(
+            target=_cleanup_bitlocker_after_job, args=(thread, bitlocker_mount_id, requester_ip, requester_user)
+        )
+        cleanup_thread.daemon = True
+        cleanup_thread.start()
+
+    log_chain_of_custody("acquisition_start", {"format": fmt, "source": source, "destination": dest_path,
+                                                **({"bitlocker_decrypted": True} if bitlocker_mount_id else {})})
     return jsonify({"success": True, "message": "Acquisition started."})
 
 @app.route('/api/ddrescue/inspect_map', methods=['POST'])
@@ -2917,6 +3289,20 @@ def start_ddrescue():
     input_pos = req.get('input_position', '')
     max_size = req.get('max_size', '')
     metadata = req.get('metadata', {})
+    # Documentation only here (see start_imaging()'s own comment on why
+    # plaintext) - ddrescue itself deliberately does NOT support acquiring
+    # from an unlocked dislocker mount the way start_imaging()'s other
+    # formats do. ddrescue exists specifically for physically failing
+    # drives - direct-I/O sector-level retry/skip logic against a raw
+    # block device - which doesn't apply to an already-decrypted FUSE
+    # virtual file sitting on top of a drive that (by definition, since it
+    # unlocked successfully) is already being read fine. `-d`/--idirect
+    # would likely just fail outright against a non-block-device source.
+    # If a genuinely failing BitLocker-encrypted drive ever needs
+    # sector-level recovery, that has to happen at the raw encrypted layer
+    # (ddrescue the raw partition first, decrypt the resulting image
+    # afterward with dislocker) - a different workflow than this route.
+    bitlocker_key = (req.get('bitlocker_key') or '').strip()
 
     # This runs ddrescue via a passwordless sudo rule (see install.py), so
     # source/destination MUST be tightly validated - otherwise any caller
@@ -3012,7 +3398,8 @@ def start_ddrescue():
             "strategy": strategy,
             "retry_passes": retry_passes,
             "direct_mode": direct_mode,
-            "execution_command": " ".join(cmd)
+            "execution_command": " ".join(cmd),
+            **({"bitlocker_key": bitlocker_key} if bitlocker_key else {}),
         },
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
@@ -7935,7 +8322,11 @@ def _draw_pdf_job_section(c, y, event, job_fields=None):
         params = event.get('acquisition_parameters', {})
         c.drawString(50, y, f"Format: {params.get('output_format', event.get('tool', 'N/A')).upper()}")
         c.drawString(300, y, f"Status: {event.get('acquisition_status')}")
-        y -= 25
+        y -= 15
+        if params.get('bitlocker_key'):
+            c.drawString(50, y, f"BitLocker Recovery Key/Password: {params['bitlocker_key']}")
+            y -= 15
+        y -= 10
 
     if job_fields.get('hashes', True):
         c.setFont("Helvetica-Bold", 12)
@@ -9525,6 +9916,8 @@ def _html_acquisition_method(events, job_fields, anchor_id=None):
             params = event.get('acquisition_parameters', {})
             parts.append('<h3>Acquisition Parameters</h3><table>')
             parts.append(f'<tr><th>Format</th><td>{esc(str(params.get("output_format", event.get("tool", "N/A"))).upper())}</td><th>Status</th><td>{esc(str(event.get("acquisition_status")))}</td></tr>')
+            if params.get('bitlocker_key'):
+                parts.append(f'<tr><th>BitLocker Recovery Key/Password</th><td class="mono" colspan="3">{esc(str(params["bitlocker_key"]))}</td></tr>')
             parts.append('</table>')
 
         if job_fields.get('hashes', True):
