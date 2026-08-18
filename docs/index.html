@@ -375,17 +375,17 @@
       <div class="feat-card">
         <span class="tag">04 &mdash; FILE EXPLORER</span>
         <h3>Browse inside an image</h3>
-        <p>An in-process Sleuth Kit engine (pytsk3) lists a filesystem's real MACB timestamps, runs recursive search, builds a timeline, and previews or extracts a file &mdash; no mount step, ever.</p>
+        <p>An in-process Sleuth Kit engine (pytsk3) walks a real folder tree down to individual files, runs recursive search, builds a MACB timeline, and previews, hex-dumps, or pulls EXIF/GPS metadata &mdash; no mount step, ever. A KML geolocation export renders as a live map inline.</p>
       </div>
       <div class="feat-card">
         <span class="tag">05 &mdash; REPORTING</span>
         <h3>DFIR-structured case files</h3>
-        <p>A timestamped Case Notes journal, a separate Report Narrative, per-job records, and a station-wide audit trail &mdash; exported to PDF or HTML with configurable sections and embedded attachments.</p>
+        <p>A timestamped Case Notes journal, a separate Report Narrative, per-job records, and a station-wide audit trail &mdash; exported to PDF or HTML as a Standard, DFIR, or law-enforcement report, or a template you build yourself.</p>
       </div>
       <div class="feat-card">
         <span class="tag">06 &mdash; STATION</span>
         <h3>Runs itself</h3>
-        <p>TLS certificate generation with correct SANs, one-click tool installs, SMB/NFS/SFTP mounting, and network IP configuration with an automatic revert if you lock yourself out.</p>
+        <p>TLS certificate generation with correct SANs, one-click tool installs, SMB/NFS/SFTP mounting with encrypted auto-reconnect on reboot, and network IP configuration with an automatic revert if you lock yourself out.</p>
       </div>
     </div>
   </div>
@@ -447,7 +447,7 @@
         </div>
         <ul class="checklist">
           <li><strong>Unprivileged service account</strong> &mdash; root reached only via an exact-match sudoers allowlist, never a general shell</li>
-          <li><strong>Real per-examiner accounts</strong> &mdash; hashed passwords, admin/standard roles, brute-force lockout</li>
+          <li><strong>Real per-examiner accounts</strong> &mdash; hashed passwords, group-based permissions across 7 gated capabilities, brute-force lockout</li>
           <li><strong>Software write-blocking</strong> &mdash; every USB storage device forced read-only at insertion by default</li>
           <li><strong>Append-only chain-of-custody log</strong> &mdash; every action timestamped, with CSV export</li>
           <li><strong>Network-change auto-revert</strong> &mdash; a bad IP setting rolls itself back before it can lock you out</li>
