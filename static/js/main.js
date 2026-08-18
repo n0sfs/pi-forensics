@@ -2413,6 +2413,25 @@ function positionContextMenu(ev) {
     menu.style.left = `${x}px`;
     menu.style.top = `${y}px`;
     menu.style.display = 'block';
+
+    // The menu has grown a lot of items over time (image/case actions,
+    // whole-image shortcuts, analyze tools, file operations) and can now be
+    // taller than a short viewport (the 480px kiosk touchscreen especially)
+    // or wider/taller than whatever's left of a normal window below/right
+    // of the click point. Clamp its position after it's actually rendered
+    // (so real dimensions are known) so it opens fully reachable instead of
+    // partially or entirely off-screen with no way to scroll to the rest -
+    // the CSS max-height/overflow-y on #fileContextMenu is the backstop for
+    // the case where even a fully top-aligned menu is still taller than the
+    // whole viewport.
+    const margin = 8;
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+        menu.style.left = `${Math.max(margin, window.innerWidth - rect.width - margin)}px`;
+    }
+    if (rect.bottom > window.innerHeight) {
+        menu.style.top = `${Math.max(margin, window.innerHeight - rect.height - margin)}px`;
+    }
 }
 
 function showFileContextMenu(ev, item) {
