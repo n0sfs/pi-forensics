@@ -706,6 +706,7 @@ function buildFileTableRow(tbody, item) {
 
         activeSelectedFile = item.path;
         activeSelectedIsDir = item.is_dir;
+        explorerDetailsIsImage = false;
 
         updateContextToolbar(item);
         previewSelectedFile(item);
@@ -790,6 +791,7 @@ function explorerTreeRealAdapter() {
                 // listing (e.g. a stale/filtered view) - Details still updates directly.
                 activeSelectedFile = node.raw.path;
                 activeSelectedIsDir = false;
+                explorerDetailsIsImage = false;
                 updateContextToolbar(node.raw);
                 previewSelectedFile(node.raw);
                 refreshExplorerDetailsView();
@@ -841,6 +843,7 @@ function explorerTreeImageAdapter() {
         },
         selectFile: (node) => {
             explorerImageSelected = node.raw;
+            explorerDetailsIsImage = true;
             if (!node.raw.is_dir) previewExplorerImageEntry(node.raw);
             refreshExplorerDetailsView();
         },
@@ -960,25 +963,30 @@ function getExplorerRootPath() {
 async function initExplorerTree(forceRebuild) {
     const container = document.getElementById('explorerTreeContainer');
     if (!container) return;
+    container.innerHTML = '';
     if (explorerRealTreeRootEl && !forceRebuild) {
         // Re-attach the already-built tree, preserving whatever the examiner
         // had expanded before an image-mode excursion swapped it out - no
         // re-fetch, no lost state.
-        container.innerHTML = '';
         container.appendChild(explorerRealTreeRootEl);
-        return;
+    } else {
+        explorerTreeChildrenCache = {}; // stale once the root changes (e.g. switching active case)
+        const rootUl = document.createElement('ul');
+        rootUl.className = 'explorer-tree';
+        const rootPath = getExplorerRootPath();
+        const rootNode = { path: rootPath, name: rootPath, kind: 'dir' };
+        const rootLi = renderExplorerTreeNode(rootNode, explorerTreeRealAdapter(), []);
+        rootUl.appendChild(rootLi);
+        container.appendChild(rootUl);
+        explorerRealTreeRootEl = rootUl;
+        await rootLi._expand(); // show top-level contents immediately, matching the initial listing
     }
-    explorerTreeChildrenCache = {}; // stale once the root changes (e.g. switching active case)
-    container.innerHTML = '';
-    const rootUl = document.createElement('ul');
-    rootUl.className = 'explorer-tree';
-    const rootPath = getExplorerRootPath();
-    const rootNode = { path: rootPath, name: rootPath, kind: 'dir' };
-    const rootLi = renderExplorerTreeNode(rootNode, explorerTreeRealAdapter(), []);
-    rootUl.appendChild(rootLi);
-    container.appendChild(rootUl);
-    explorerRealTreeRootEl = rootUl;
-    await rootLi._expand(); // show top-level contents immediately, matching the initial listing
+    // File Views is a second, case-wide root sitting alongside the real
+    // folder tree (not gated behind first entering one specific image) -
+    // appended AFTER the real-fs root so container.querySelector('li')
+    // elsewhere (syncExplorerTreeSelection et al) keeps finding the real-fs
+    // root first, unaffected by this addition.
+    await initFileViewsTree(forceRebuild);
 }
 
 async function initExplorerImageTree() {
@@ -1007,6 +1015,284 @@ async function initExplorerImageTree() {
     rootUl.appendChild(rootLi);
     container.appendChild(rootUl);
     await rootLi._expand();
+}
+
+// --- File Views (Autopsy-style analysis index tree) ---
+// A second, case-wide tree root mounted alongside the real folder tree
+// (see initExplorerTree() above) - By Extension / Deleted Files / Keyword
+// Hits, backed by the per-case SQLite index the filesystem-aware Triage
+// Scan (and Quick Triage Scan) populate. The tree *shape* is static -
+// only the counts are fetched, once, when the root is first expanded.
+// Deliberately reuses node.kind 'dir'/'file' from the generic renderer
+// unchanged (no new kind value) - a query leaf is just a 'file'-kind node
+// carrying an extra queryType/queryCategory the adapter's selectFile()
+// reads, so renderExplorerTreeNode() needed zero changes for this.
+let explorerFileViewsChildrenCache = {};
+let explorerFileViewsTreeRootEl = null;
+
+const FILE_VIEWS_EXTENSION_LABELS = {
+    images: 'Images', videos: 'Videos', audio: 'Audio', archives: 'Archives',
+    documents: 'Documents', executables: 'Executables', other: 'Other',
+};
+const FILE_VIEWS_HIT_LABELS = {
+    emails: 'Email Addresses', urls: 'URLs', ip_addresses: 'IP Addresses',
+    credit_card_numbers: 'Credit Card-like Numbers', phone_numbers: 'Phone Numbers',
+};
+
+function buildFileViewsHierarchy(summary) {
+    const byExtChildren = Object.keys(FILE_VIEWS_EXTENSION_LABELS).map(cat => ({
+        id: `fv-ext-${cat}`, name: `${FILE_VIEWS_EXTENSION_LABELS[cat]} (${summary.by_extension[cat] || 0})`,
+        kind: 'file', queryType: 'files', queryCategory: cat,
+    }));
+    const hitChildren = Object.keys(FILE_VIEWS_HIT_LABELS).map(cat => ({
+        id: `fv-hit-${cat}`, name: `${FILE_VIEWS_HIT_LABELS[cat]} (${summary.keyword_hits[cat] || 0})`,
+        kind: 'file', queryType: 'hits', queryCategory: cat,
+    }));
+    const children = [
+        {
+            id: 'fv-file-types', name: 'File Types', kind: 'dir',
+            staticChildren: [
+                { id: 'fv-by-ext', name: 'By Extension', kind: 'dir', staticChildren: byExtChildren },
+            ],
+        },
+        {
+            id: 'fv-deleted', name: `Deleted Files (${summary.deleted_files || 0})`, kind: 'file',
+            queryType: 'files', queryCategory: '__deleted__',
+        },
+        {
+            id: 'fv-analysis', name: 'Analysis Results', kind: 'dir',
+            staticChildren: [
+                { id: 'fv-keyword-hits', name: `Keyword Hits (${summary.keyword_hits.total || 0})`, kind: 'dir', staticChildren: hitChildren },
+            ],
+        },
+    ];
+    if (!summary.indexed) {
+        children.unshift({ id: 'fv-note', name: 'Not indexed yet - run Triage Scan on an image to populate this', kind: 'file' });
+    }
+    return children;
+}
+
+function explorerFileViewsAdapter(caseFolder) {
+    return {
+        cache: explorerFileViewsChildrenCache,
+        key: (node) => node.id,
+        label: (node) => node.name,
+        async fetchChildren(node) {
+            if (node.staticChildren) return node.staticChildren; // static category nodes never fetch
+            try {
+                const res = await fetch('/api/case_index/summary', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ case_folder: caseFolder })
+                });
+                const data = await res.json();
+                return data.success ? buildFileViewsHierarchy(data) : [];
+            } catch (err) {
+                return [];
+            }
+        },
+        navigate: () => {}, // 'dir' nodes here are pure category containers, never used - selectFile handles every leaf
+        selectFile: (node) => {
+            if (node.queryType) runFileViewsQuery(node, caseFolder);
+        },
+        contextMenu: () => {}, // no context menu on synthetic category/query nodes
+    };
+}
+
+async function initFileViewsTree(forceRebuild) {
+    const container = document.getElementById('explorerTreeContainer');
+    if (!container) return;
+    if (explorerFileViewsTreeRootEl && !forceRebuild) {
+        container.appendChild(explorerFileViewsTreeRootEl);
+        return;
+    }
+    explorerFileViewsChildrenCache = {};
+    const wrap = document.createElement('div');
+    wrap.className = 'explorer-fileviews-section mt-2 pt-2 border-top';
+
+    if (!activeCase || !activeCase.case_folder) {
+        const msg = document.createElement('div');
+        msg.className = 'text-subtle small px-2 py-1';
+        msg.textContent = 'Select or create a case to see File Views.';
+        wrap.appendChild(msg);
+        container.appendChild(wrap);
+        explorerFileViewsTreeRootEl = wrap;
+        return;
+    }
+
+    const rootUl = document.createElement('ul');
+    rootUl.className = 'explorer-tree';
+    const rootNode = { id: 'fv-root', name: 'File Views', kind: 'dir' };
+    const rootLi = renderExplorerTreeNode(rootNode, explorerFileViewsAdapter(activeCase.case_folder), []);
+    rootUl.appendChild(rootLi);
+    wrap.appendChild(rootUl);
+    container.appendChild(wrap);
+    explorerFileViewsTreeRootEl = wrap;
+    await rootLi._expand();
+}
+
+// Clicking a File Views leaf category fetches matching rows and renders them
+// into the Listing table - reusing the "swap the listing's content, add a
+// Back pseudo-row" mechanism the in-image Search feature already proved,
+// but via a dedicated renderer (renderFileViewsResults below) since these
+// rows carry a per-row image_path/fs_offset (results can span multiple
+// images) that the existing directory/search row renderers have no concept of.
+async function runFileViewsQuery(node, caseFolder) {
+    const container = document.getElementById('explorerContainer');
+    if (container) container.innerHTML = '<div class="p-2 text-subtle small">Loading...</div>';
+    const endpoint = node.queryType === 'hits' ? '/api/case_index/hits' : '/api/case_index/files';
+    try {
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: caseFolder, category: node.queryCategory })
+        });
+        const data = await res.json();
+        renderFileViewsResults(node, data.rows || []);
+    } catch (err) {
+        renderFileViewsResults(node, []);
+    }
+}
+
+function renderFileViewsResults(node, rows) {
+    const container = document.getElementById('explorerContainer');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const backDiv = document.createElement('div');
+    backDiv.className = 'file-item text-warning fw-bold';
+    backDiv.innerHTML = '<i class="bi bi-arrow-left me-1"></i>Back to Browse';
+    backDiv.onclick = () => loadExplorer(explorerPath);
+    container.appendChild(backDiv);
+
+    if (rows.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'p-2 text-subtle small';
+        empty.textContent = '(no matches)';
+        container.appendChild(empty);
+        return;
+    }
+
+    const isHits = node.queryType === 'hits';
+    const table = document.createElement('table');
+    table.className = 'table table-dark table-sm table-hover mb-0';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    const cols = isHits ? ['Value', 'File', 'Source Image', 'Path'] : ['Name', 'Size', 'Source Image', 'Path'];
+    cols.forEach(label => {
+        const th = document.createElement('th');
+        th.textContent = label;
+        headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    table.appendChild(tbody);
+    container.appendChild(table);
+
+    rows.forEach(row => renderFileViewsResultRow(tbody, row, isHits));
+}
+
+function renderFileViewsResultRow(tbody, row, isHits) {
+    const tr = document.createElement('tr');
+    tr.className = 'file-item';
+    const name = row.name || (row.path ? row.path.split('/').pop() : '(unknown)');
+    const sourceImage = row.image_path ? row.image_path.split('/').pop() : 'Real filesystem';
+
+    if (isHits) {
+        const valTd = document.createElement('td');
+        valTd.className = 'font-monospace text-warning';
+        valTd.textContent = row.value; // untrusted evidence content, text node only
+        tr.appendChild(valTd);
+    }
+
+    const nameTd = document.createElement('td');
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'text-light';
+    labelSpan.innerHTML = '<i class="bi bi-file-earmark-text text-info me-2 fs-6"></i>'; // static/trusted markup
+    labelSpan.appendChild(document.createTextNode(name)); // untrusted evidence filename, text-only
+    if (row.deleted) {
+        const delBadge = document.createElement('span');
+        delBadge.className = 'badge bg-danger ms-2';
+        delBadge.textContent = 'DELETED';
+        labelSpan.appendChild(delBadge);
+    }
+    nameTd.appendChild(labelSpan);
+    tr.appendChild(nameTd);
+
+    if (!isHits) {
+        const sizeTd = document.createElement('td');
+        sizeTd.className = 'text-subtle font-monospace';
+        sizeTd.textContent = row.size !== null && row.size !== undefined ? imgFormatBytes(row.size) : '--';
+        tr.appendChild(sizeTd);
+    }
+
+    const imgTd = document.createElement('td');
+    imgTd.className = 'text-subtle font-monospace';
+    imgTd.appendChild(document.createTextNode(sourceImage));
+    if (row.image_path) {
+        const browseBtn = document.createElement('button');
+        browseBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 ms-2';
+        browseBtn.title = 'Browse this image';
+        browseBtn.innerHTML = '<i class="bi bi-hdd-stack"></i>';
+        browseBtn.onclick = (ev) => { ev.stopPropagation(); browseFileViewsResultImage(row.image_path); };
+        imgTd.appendChild(browseBtn);
+    }
+    tr.appendChild(imgTd);
+
+    const pathTd = document.createElement('td');
+    pathTd.className = 'text-subtle font-monospace small';
+    pathTd.textContent = row.path; // untrusted evidence path, text node only
+    tr.appendChild(pathTd);
+
+    tr.onclick = () => {
+        document.querySelectorAll('.file-pane .file-item').forEach(el => el.classList.remove('active'));
+        tr.classList.add('active');
+        selectFileViewsResultRow(row, name);
+    };
+
+    tbody.appendChild(tr);
+}
+
+// Targets Preview/Hex/Metadata at this exact row's file WITHOUT entering
+// image mode - the backend routes behind those panes already take
+// image_path/offset per-request (not a server-side "current image"), so
+// temporarily pointing the existing explorerImagePath/explorerImageOffset/
+// explorerImageSelected globals at this row's image is enough to reuse
+// previewExplorerImageEntry()/loadExplorerImageHexPane()/
+// loadExplorerImageMetadataPane() completely unchanged - a File Views hit
+// can come from a different image than whatever (if anything) was last
+// browsed in image mode, and this works regardless, since entering image
+// mode for real later (enterExplorerImageFor()) always freshly overwrites
+// these same globals anyway.
+function selectFileViewsResultRow(row, displayName) {
+    if (row.image_path) {
+        explorerImagePath = row.image_path;
+        explorerImageOffset = row.fs_offset || 0;
+        explorerImageSelected = {
+            inode: row.inode, name: displayName, is_dir: false,
+            deleted: !!row.deleted, is_virtual: false,
+            size: row.size !== undefined ? row.size : null,
+        };
+        explorerDetailsIsImage = true;
+        previewExplorerImageEntry(explorerImageSelected);
+    } else {
+        // source_type 'real_fs' - a Quick Triage Scan hit against a real file,
+        // not anything living inside an acquired image.
+        activeSelectedFile = row.path;
+        activeSelectedIsDir = false;
+        explorerDetailsIsImage = false;
+        previewSelectedFile({ path: row.path, name: displayName, is_dir: false });
+    }
+    refreshExplorerDetailsView();
+}
+
+// "Browse this image" - jumps into full Sleuth Kit navigation for the row's
+// source image (its root, not deep-linked to the row's own directory/offset -
+// a reasonable best-effort for a first pass, not a hard requirement).
+function browseFileViewsResultImage(imagePath) {
+    if (!imagePath) return;
+    enterExplorerImageFor({ path: imagePath });
 }
 
 // Expands the tree down to `path` (relative to the real-fs tree's root) and
@@ -1632,6 +1918,13 @@ async function deleteSelectedFile() {
 // the Metadata view is active re-fetches automatically, same as Preview
 // already does.
 let explorerRightView = 'preview'; // 'preview' | 'hex' | 'metadata'
+// Which Hex/Metadata loader the current selection needs - real-fs or
+// in-image. Deliberately NOT the same thing as explorerImageMode: File Views
+// selects an image-backed file (see selectFileViewsResultRow()) without ever
+// entering full image-mode browsing, so refreshExplorerDetailsView() can't
+// use explorerImageMode to decide which loader to call. Every selection
+// point below sets this explicitly.
+let explorerDetailsIsImage = false;
 
 // Both panes can carry Bootstrap's .d-flex utility in their className at
 // various points (the default placeholder state, and previewSelectedFile()'s
@@ -1671,15 +1964,17 @@ function switchExplorerRightView(view) {
 // Single dispatcher for "the currently selected file changed, or the
 // examiner switched tabs - make sure whichever non-Preview view is active
 // shows current data" - called both from switchExplorerRightView() and from
-// every selection point (table row click, tree click, timeline click) in
-// both real-fs and image mode, instead of each of those six call sites
-// repeating its own `if (explorerRightView === 'x') loadY()` check.
+// every selection point (table row click, tree click, timeline click, File
+// Views result row) in both real-fs and image mode, instead of each of those
+// call sites repeating its own `if (explorerRightView === 'x') loadY()`
+// check. Branches on explorerDetailsIsImage, NOT explorerImageMode - see
+// that variable's own comment for why they're not interchangeable.
 function refreshExplorerDetailsView() {
     if (explorerRightView === 'hex') {
-        if (explorerImageMode) loadExplorerImageHexPane();
+        if (explorerDetailsIsImage) loadExplorerImageHexPane();
         else loadExplorerHexPane();
     } else if (explorerRightView === 'metadata') {
-        if (explorerImageMode) loadExplorerImageMetadataPane();
+        if (explorerDetailsIsImage) loadExplorerImageMetadataPane();
         else loadExplorerMetadataPane();
     }
 }
@@ -1981,7 +2276,7 @@ async function runSelectedQuickTriageScan() {
         const res = await fetch('/api/files/quick_triage_scan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile })
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
         });
         const data = await res.json();
         const container = document.getElementById("toolOutputContainer");
@@ -2155,6 +2450,7 @@ function enterExplorerImageFor(item) {
     explorerImagePathStack = [];
     explorerImageSelected = null;
     explorerImageView = 'browse';
+    explorerDetailsIsImage = true; // so switching to Hex/Metadata before selecting anything still uses the right (empty-state) loader
 
     const toolbar = document.getElementById("explorerImageToolbar");
     if (toolbar) toolbar.style.display = 'flex';
@@ -2179,6 +2475,7 @@ function enterExplorerImageFor(item) {
 // filesystem directory the image lives in, with no separate state needed.
 function exitExplorerImage() {
     explorerImageMode = false;
+    explorerDetailsIsImage = false;
     const toolbar = document.getElementById("explorerImageToolbar");
     if (toolbar) toolbar.style.display = 'none';
     initExplorerTree(); // restores the real-fs tree exactly as left, no re-fetch
@@ -2356,6 +2653,7 @@ function renderExplorerImageEntryRow(container, entry, displayName) {
         document.querySelectorAll('.file-pane .file-item').forEach(el => el.classList.remove('active'));
         tr.classList.add('active');
         explorerImageSelected = entry;
+        explorerDetailsIsImage = true;
         if (!entry.is_dir) previewExplorerImageEntry(entry);
         refreshExplorerDetailsView();
     };
@@ -2769,6 +3067,7 @@ async function runExplorerImageTimeline() {
                 document.querySelectorAll('.file-pane .file-item').forEach(el => el.classList.remove('active'));
                 row.classList.add('active');
                 explorerImageSelected = ev;
+                explorerDetailsIsImage = true;
                 refreshExplorerDetailsView();
             };
 
