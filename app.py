@@ -2,6 +2,7 @@ import os
 import re
 import io
 import csv
+import sqlite3
 import html
 import base64
 import sys
@@ -764,6 +765,95 @@ TRIAGE_PATTERNS = {
     "phone_numbers": re.compile(rb'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'),
 }
 TRIAGE_MAX_MATCHES_PER_CATEGORY = 50000  # protects memory on very large images
+
+# --- Per-case analysis index (SQLite) ---
+# A single small, queryable index living inside the case folder - what makes
+# Autopsy-style "File Views" (By Extension counts, Deleted Files, Keyword
+# Hits broken out per category) possible without re-walking every indexed
+# image on every File Explorer load. First SQLite/database usage in this
+# codebase; sqlite3 is stdlib, no new pip dependency. Path derivation
+# deliberately mirrors case_consolidated_path()'s pattern (fixed filename
+# derived from the case folder's own basename, living directly in the case
+# folder root) rather than build_report_target()'s per-job-event pattern -
+# this is one fixed, case-scoped artifact, not a per-job-run file.
+EXTENSION_CATEGORY_MAP = {
+    'jpg': 'images', 'jpeg': 'images', 'png': 'images', 'gif': 'images', 'bmp': 'images',
+    'webp': 'images', 'tif': 'images', 'tiff': 'images', 'heic': 'images', 'heif': 'images',
+    'mp4': 'videos', 'mov': 'videos', 'avi': 'videos', 'mkv': 'videos', 'wmv': 'videos',
+    'flv': 'videos', 'm4v': 'videos', '3gp': 'videos',
+    'mp3': 'audio', 'wav': 'audio', 'flac': 'audio', 'm4a': 'audio', 'aac': 'audio', 'ogg': 'audio',
+    'zip': 'archives', 'rar': 'archives', '7z': 'archives', 'tar': 'archives', 'gz': 'archives', 'bz2': 'archives',
+    'pdf': 'documents', 'doc': 'documents', 'docx': 'documents', 'xls': 'documents', 'xlsx': 'documents',
+    'ppt': 'documents', 'pptx': 'documents', 'txt': 'documents', 'rtf': 'documents', 'csv': 'documents',
+    'exe': 'executables', 'dll': 'executables', 'bat': 'executables', 'sh': 'executables',
+    'bin': 'executables', 'msi': 'executables', 'apk': 'executables',
+}
+FILE_VIEW_EXTENSION_CATEGORIES = ('images', 'videos', 'audio', 'archives', 'documents', 'executables', 'other')
+
+def classify_extension(name):
+    """Returns (category, extension) for a filename - extension is the bare,
+    lowercased suffix with no leading dot ('' if none); category is one of
+    FILE_VIEW_EXTENSION_CATEGORIES, defaulting to 'other' for anything not in
+    EXTENSION_CATEGORY_MAP. Deliberately not exhaustive - documented as a
+    reasonable, extensible starting set, not a claim of complete coverage."""
+    ext = os.path.splitext(name)[1].lstrip('.').lower()
+    return EXTENSION_CATEGORY_MAP.get(ext, 'other'), ext
+
+def case_index_db_path(case_dir):
+    """Fixed per-case SQLite index path, e.g. <case_dir>/<slug>_case_index.db -
+    same derivation as case_consolidated_path() (slug = the case folder's own
+    basename), but unconditional (doesn't check the file exists yet - the DB
+    is created lazily on first write via _case_index_connect()). The
+    safe_path() re-check here is belt-and-suspenders only, matching
+    create_case()'s own stated convention - `case_dir` is expected to already
+    be a validated case folder by the time any caller reaches this point."""
+    if not case_dir or not os.path.isdir(case_dir):
+        return None
+    slug = os.path.basename(case_dir.rstrip(os.sep))
+    return safe_path(os.path.join(case_dir, f"{slug}_case_index.db"))
+
+_CASE_INDEX_SCHEMA = """
+CREATE TABLE IF NOT EXISTS indexed_files (
+    id INTEGER PRIMARY KEY,
+    image_path TEXT NOT NULL,
+    fs_offset INTEGER NOT NULL,
+    inode TEXT NOT NULL,
+    path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    extension TEXT,
+    category TEXT NOT NULL,
+    size INTEGER,
+    deleted INTEGER NOT NULL,
+    is_virtual INTEGER NOT NULL,
+    mtime INTEGER, atime INTEGER, ctime INTEGER, crtime INTEGER,
+    indexed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_files_cat ON indexed_files(category, deleted);
+CREATE INDEX IF NOT EXISTS idx_files_image ON indexed_files(image_path);
+
+CREATE TABLE IF NOT EXISTS triage_hits (
+    id INTEGER PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    image_path TEXT,
+    fs_offset INTEGER,
+    inode TEXT,
+    path TEXT NOT NULL,
+    category TEXT NOT NULL,
+    value TEXT NOT NULL,
+    found_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hits_cat ON triage_hits(category);
+CREATE INDEX IF NOT EXISTS idx_hits_image ON triage_hits(image_path);
+"""
+
+def _case_index_connect(db_path):
+    """Opens (creating if absent) the per-case analysis index, in WAL mode
+    so a running scan job's writes and a concurrent File Explorer read don't
+    block each other. Caller is responsible for closing the connection."""
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript(_CASE_INDEX_SCHEMA)
+    return conn
 
 HASH_HEX_LEN = {'md5': 32, 'sha1': 40, 'sha256': 64}
 
@@ -5438,6 +5528,16 @@ def quick_triage_scan():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
 
+    # Optional - the frontend sends activeCase.case_folder when a case is
+    # selected (no server-side "active case" state, matching every other
+    # case-aware route in this app). If it resolves to a real, already-
+    # consolidated case folder, this scan's hits get recorded into that
+    # case's analysis index too, alongside whatever image-based scans have
+    # already indexed - a quick single-file scan never needs a full re-index.
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
     CHUNK_SIZE = 8 * 1024 * 1024
     OVERLAP = 256  # bytes carried over between chunks so a match spanning a chunk boundary isn't missed
     results = {name: set() for name in TRIAGE_PATTERNS}
@@ -5470,6 +5570,24 @@ def quick_triage_scan():
 
     scan_truncated_to_prefix = total_size > QUICK_TRIAGE_MAX_BYTES
     total_hits = sum(len(v) for v in results.values())
+
+    if case_folder and total_hits:
+        index_db_path = case_index_db_path(case_folder)
+        if index_db_path:
+            found_at = time.strftime("%Y-%m-%d %H:%M:%S")
+            hit_rows = [
+                ('real_fs', None, None, None, file_path, name, val.decode('utf-8', errors='replace'), found_at)
+                for name, matches in results.items() for val in matches
+            ]
+            try:
+                conn = _case_index_connect(index_db_path)
+                conn.executemany(
+                    "INSERT INTO triage_hits (source_type, image_path, fs_offset, inode, path, category, value, found_at) VALUES (?,?,?,?,?,?,?,?)",
+                    hit_rows)
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                print(f"Warning: quick_triage_scan could not write to case index: {e}")
 
     lines = [f"Scanned {bytes_read / (1024*1024):.1f} MB of {total_size / (1024*1024):.1f} MB total."]
     if scan_truncated_to_prefix:
@@ -6641,9 +6759,30 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
     truncated = {name: False for name in TRIAGE_PATTERNS}
     files_scanned = 0
     files_errored = 0
+    indexed_files_count = 0
     walk_truncated = False
 
+    # Per-case analysis index (SQLite) - only populated if dest_dir is a real
+    # active case folder, matching this app's "case selection optional,
+    # nothing breaks if none is active" convention elsewhere. index_conn
+    # stays None otherwise, and every index_conn-gated block below is a
+    # no-op in that case - the flat .txt report (below) is written either way.
+    index_conn = None
+    index_rows_buf = []
+    hit_rows_buf = []
+    indexed_at = time.strftime("%Y-%m-%d %H:%M:%S")
+
     try:
+        if case_consolidated_path(dest_dir):
+            index_db_path = case_index_db_path(dest_dir)
+            if index_db_path:
+                index_conn = _case_index_connect(index_db_path)
+                # Re-scan safety: replace this image's prior rows rather than
+                # duplicating them - other images' rows in the same case DB
+                # (a case-wide index) are untouched.
+                index_conn.execute("DELETE FROM indexed_files WHERE image_path=?", (image_path,))
+                index_conn.execute("DELETE FROM triage_hits WHERE image_path=?", (image_path,))
+                index_conn.commit()
         filesystems = _tsk_resolve_filesystems(image_path)
         if not filesystems:
             append_log("[-] No recognized filesystem found in this image.")
@@ -6664,7 +6803,10 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
             except Exception:
                 continue
             for entry, _ in _tsk_walk(fs):
-                if not entry['is_dir'] and not entry['deleted'] and not entry['is_virtual']:
+                # Deleted (but not virtual) entries are now counted too - they
+                # get indexed for the Deleted Files category even though their
+                # content is never read/regex-scanned below.
+                if not entry['is_dir'] and not entry['is_virtual']:
                     total_files_estimate += 1
                 if total_files_estimate >= IMAGE_TRIAGE_MAX_FILES:
                     break
@@ -6686,35 +6828,70 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
                 if snapshot_job()["status"] == "Stopped":
                     append_log("[!] Scan stopped by user.")
                     break
-                if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
+                if entry['is_dir'] or entry['is_virtual']:
                     continue
                 if files_scanned >= IMAGE_TRIAGE_MAX_FILES:
                     walk_truncated = True
                     break
-                try:
-                    tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
-                    buf = io.BytesIO()
-                    _tsk_stream_file(tsk_file, buf.write, max_bytes=IMAGE_TRIAGE_MAX_FILE_BYTES)
-                    data = buf.getvalue()
-                    for name, pattern in TRIAGE_PATTERNS.items():
-                        if truncated[name]:
-                            continue
-                        for m in pattern.finditer(data):
-                            val = m.group(0)
-                            if len(val) <= 4:  # skip trivial/near-empty matches
-                                continue
-                            key = (path, val)
-                            if key in seen[name]:
-                                continue
-                            seen[name].add(key)
-                            results[name].append((path, val))
-                            if len(results[name]) >= IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY:
-                                truncated[name] = True
-                                append_log(f"[!] {TRIAGE_CATEGORY_LABELS.get(name, name)}: hit the {IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY}-match cap, no longer collecting new ones.")
-                                break
+
+                # Index this entry's metadata regardless of deletion status -
+                # "Deleted Files" needs real data too. Only content-scanning
+                # (below) still skips deleted entries - their data blocks may
+                # already be partially overwritten, same reasoning as before.
+                if index_conn is not None:
+                    category, ext = classify_extension(entry['name'])
+                    index_rows_buf.append((
+                        image_path, fsinfo['offset'], entry['inode'], path, entry['name'],
+                        ext, category, entry['size'], int(entry['deleted']), int(entry['is_virtual']),
+                        entry['mtime'], entry['atime'], entry['ctime'], entry['crtime'], indexed_at,
+                    ))
+                    indexed_files_count += 1
+
+                if entry['deleted']:
                     files_scanned += 1
-                except Exception:
-                    files_errored += 1
+                else:
+                    try:
+                        tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
+                        buf = io.BytesIO()
+                        _tsk_stream_file(tsk_file, buf.write, max_bytes=IMAGE_TRIAGE_MAX_FILE_BYTES)
+                        data = buf.getvalue()
+                        for name, pattern in TRIAGE_PATTERNS.items():
+                            if truncated[name]:
+                                continue
+                            for m in pattern.finditer(data):
+                                val = m.group(0)
+                                if len(val) <= 4:  # skip trivial/near-empty matches
+                                    continue
+                                key = (path, val)
+                                if key in seen[name]:
+                                    continue
+                                seen[name].add(key)
+                                results[name].append((path, val))
+                                if index_conn is not None:
+                                    hit_rows_buf.append((
+                                        'image', image_path, fsinfo['offset'], entry['inode'], path,
+                                        name, val.decode('utf-8', errors='replace'), indexed_at,
+                                    ))
+                                if len(results[name]) >= IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY:
+                                    truncated[name] = True
+                                    append_log(f"[!] {TRIAGE_CATEGORY_LABELS.get(name, name)}: hit the {IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY}-match cap, no longer collecting new ones.")
+                                    break
+                        files_scanned += 1
+                    except Exception:
+                        files_errored += 1
+
+                if index_conn is not None and (len(index_rows_buf) >= 200 or len(hit_rows_buf) >= 200):
+                    if index_rows_buf:
+                        index_conn.executemany(
+                            "INSERT INTO indexed_files (image_path, fs_offset, inode, path, name, extension, category, size, deleted, is_virtual, mtime, atime, ctime, crtime, indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            index_rows_buf)
+                        index_rows_buf = []
+                    if hit_rows_buf:
+                        index_conn.executemany(
+                            "INSERT INTO triage_hits (source_type, image_path, fs_offset, inode, path, category, value, found_at) VALUES (?,?,?,?,?,?,?,?)",
+                            hit_rows_buf)
+                        hit_rows_buf = []
+                    index_conn.commit()
 
                 if time.time() - last_update_time > 0.5:
                     updates = {"transferred_bytes": files_scanned}
@@ -6724,6 +6901,17 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
                     last_update_time = time.time()
             if walk_truncated or snapshot_job()["status"] == "Stopped":
                 break
+
+        if index_conn is not None:
+            if index_rows_buf:
+                index_conn.executemany(
+                    "INSERT INTO indexed_files (image_path, fs_offset, inode, path, name, extension, category, size, deleted, is_virtual, mtime, atime, ctime, crtime, indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    index_rows_buf)
+            if hit_rows_buf:
+                index_conn.executemany(
+                    "INSERT INTO triage_hits (source_type, image_path, fs_offset, inode, path, category, value, found_at) VALUES (?,?,?,?,?,?,?,?)",
+                    hit_rows_buf)
+            index_conn.commit()
 
         update_job(transferred_bytes=files_scanned)
 
@@ -6761,11 +6949,17 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
         log_chain_of_custody("image_triage_scan_complete", {
             "image_path": image_path, "files_scanned": files_scanned,
             "files_errored": files_errored, "total_hits": total_hits, "report_path": report_path,
+            "indexed_files_count": indexed_files_count,
         }, source_ip=source_ip, user=user)
     except Exception as e:
         update_job(status="Failed")
         append_log(f"[-] Execution Exception: {str(e)}")
     finally:
+        if index_conn is not None:
+            try:
+                index_conn.close()
+            except Exception:
+                pass
         update_job(active=False)
 
 @app.route('/api/image/start_triage_scan', methods=['POST'])
@@ -6811,6 +7005,102 @@ def start_image_triage_scan():
 
     log_chain_of_custody("image_triage_scan_start", {"image_path": image_path, "destination": dest_dir})
     return jsonify({"success": True, "message": "Filesystem-aware triage scan started."})
+
+# --- Case analysis index queries (read-only, File Explorer's File Views tree) ---
+# Case-wide - deliberately query across every image_path in the case's index
+# rather than filtering to one, so results cover every image that's ever been
+# triage-scanned in the case, not just whichever one happens to be open right
+# now. All three return graceful zero/empty results if the case has never
+# been indexed (no DB file yet) rather than erroring - matches this app's
+# "case selection optional, nothing breaks if none is active" convention.
+
+def _case_index_open_readonly(case_folder):
+    """Returns an open connection for read-only querying, or None if
+    case_folder isn't a real consolidated case or has never been indexed
+    (no DB file exists yet - not an error, just nothing to show)."""
+    case_folder = safe_path(case_folder) if case_folder else None
+    if not case_folder or not case_consolidated_path(case_folder):
+        return None
+    db_path = case_index_db_path(case_folder)
+    if not db_path or not os.path.isfile(db_path):
+        return None
+    return _case_index_connect(db_path)
+
+@app.route('/api/case_index/summary', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def case_index_summary():
+    req = request.get_json() or {}
+    conn = _case_index_open_readonly(req.get('case_folder'))
+    by_extension = {cat: 0 for cat in FILE_VIEW_EXTENSION_CATEGORIES}
+    keyword_hits = {name: 0 for name in TRIAGE_PATTERNS}
+    deleted_files = 0
+    total_files = 0
+    if conn:
+        try:
+            for row in conn.execute("SELECT category, COUNT(*) FROM indexed_files WHERE deleted=0 GROUP BY category"):
+                if row[0] in by_extension:
+                    by_extension[row[0]] = row[1]
+            deleted_files = conn.execute("SELECT COUNT(*) FROM indexed_files WHERE deleted=1").fetchone()[0]
+            total_files = conn.execute("SELECT COUNT(*) FROM indexed_files WHERE deleted=0").fetchone()[0]
+            for row in conn.execute("SELECT category, COUNT(*) FROM triage_hits GROUP BY category"):
+                if row[0] in keyword_hits:
+                    keyword_hits[row[0]] = row[1]
+        finally:
+            conn.close()
+    return jsonify({
+        "success": True,
+        "indexed": conn is not None,
+        "total_files": total_files,
+        "by_extension": by_extension,
+        "deleted_files": deleted_files,
+        "keyword_hits": {"total": sum(keyword_hits.values()), **keyword_hits},
+    })
+
+@app.route('/api/case_index/files', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def case_index_files():
+    req = request.get_json() or {}
+    category = req.get('category', '')
+    conn = _case_index_open_readonly(req.get('case_folder'))
+    rows = []
+    if conn:
+        try:
+            if category == '__deleted__':
+                cur = conn.execute(
+                    "SELECT image_path, fs_offset, inode, path, name, size, deleted FROM indexed_files WHERE deleted=1 ORDER BY path LIMIT 2000")
+            elif category in FILE_VIEW_EXTENSION_CATEGORIES:
+                cur = conn.execute(
+                    "SELECT image_path, fs_offset, inode, path, name, size, deleted FROM indexed_files WHERE category=? AND deleted=0 ORDER BY path LIMIT 2000",
+                    (category,))
+            else:
+                cur = None
+            if cur:
+                for r in cur:
+                    rows.append({"image_path": r[0], "fs_offset": r[1], "inode": r[2], "path": r[3], "name": r[4], "size": r[5], "deleted": bool(r[6])})
+        finally:
+            conn.close()
+    return jsonify({"success": True, "rows": rows})
+
+@app.route('/api/case_index/hits', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def case_index_hits():
+    req = request.get_json() or {}
+    category = req.get('category', '')
+    conn = _case_index_open_readonly(req.get('case_folder'))
+    rows = []
+    if conn and category in TRIAGE_PATTERNS:
+        try:
+            cur = conn.execute(
+                "SELECT image_path, fs_offset, inode, path, value, source_type FROM triage_hits WHERE category=? ORDER BY path LIMIT 2000",
+                (category,))
+            for r in cur:
+                rows.append({"image_path": r[0], "fs_offset": r[1], "inode": r[2], "path": r[3], "value": r[4], "source_type": r[5]})
+        finally:
+            conn.close()
+    return jsonify({"success": True, "rows": rows})
 
 # --- Binwalk / Strings, run directly against a single selected in-image file ---
 # Unlike the whole-image geolocation/hash-manifest routes above, these operate on
