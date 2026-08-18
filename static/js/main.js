@@ -2502,6 +2502,41 @@ function updateContextToolbar(item) {
     if (btnAttachToCase) btnAttachToCase.disabled = item.is_dir || !activeCase;
     if (btnTagFile) btnTagFile.disabled = item.is_dir || !activeCase;
     if (btnRecoverFromImage) btnRecoverFromImage.disabled = item.is_dir || !isImageFile(item.name);
+
+    // Whole-Image Analysis shortcuts - same gate as Browse as Image, since
+    // each of these just enters full image mode first (see
+    // contextMenuBrowseImageAnd()) before running its own tool.
+    const wholeImageDisabled = item.is_dir || !isImageFile(item.name);
+    ['btnEnterSearchImage', 'btnEnterTimelineImage', 'btnEnterGeoImage', 'btnEnterHashImage',
+     'btnEnterTriageImage', 'btnEnterRecoverImage'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) btn.disabled = wholeImageDisabled;
+    });
+}
+
+// Right-click "Whole-Image Analysis" shortcuts: enters full Sleuth Kit image
+// mode for the right-clicked .dd/E01/AFF (exactly like double-clicking it,
+// or "Browse as Image") and then immediately runs the requested tool -
+// closing the gap where these tools only worked once already browsing
+// inside an image, previously reachable only via the toolbar shown there.
+// Awaits enterExplorerImageFor() (which now returns its own partition/
+// initial-directory load) before running the follow-up action - Search and
+// Timeline render their own view into #explorerContainer, and firing them
+// before that load resolves would just have them get silently overwritten
+// a moment later when the initial directory listing finishes loading.
+async function contextMenuBrowseImageAnd(action) {
+    if (!contextMenuTargetItem) return;
+    hideFileContextMenu();
+    await enterExplorerImageFor(contextMenuTargetItem);
+    const actions = {
+        search: explorerImageToggleSearch,
+        timeline: explorerImageToggleTimeline,
+        geo: runImageGeolocationExport,
+        hash: runImageHashManifest,
+        triage: startImageTriageScan,
+        recover: runImageRecoverDeleted,
+    };
+    if (actions[action]) actions[action]();
 }
 
 function promptCopySelected() {
@@ -3108,7 +3143,17 @@ function enterExplorerImageFor(item) {
     // Strings) - just reset to Preview as the default view on entry.
     switchExplorerRightView('preview');
 
-    loadExplorerImagePartitions();
+    // Returning this (rather than a fire-and-forget call) lets a caller that
+    // needs the initial partition/directory load to actually finish first -
+    // e.g. contextMenuBrowseImageAnd()'s Search/Timeline shortcuts, which
+    // render their own view into #explorerContainer right after entering;
+    // without awaiting this, loadExplorerImagePartitions()'s own trailing
+    // loadExplorerImageDir('') call resolves a moment later and clobbers
+    // that view back to a plain directory listing. Every existing caller
+    // (double-click, "Browse as Image", etc.) already ignored this return
+    // value, so returning a promise instead of undefined changes nothing
+    // for them.
+    return loadExplorerImagePartitions();
 }
 
 // explorerPath (the JS variable, not the #explorerPath DOM label) is never
