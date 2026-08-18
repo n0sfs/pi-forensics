@@ -759,6 +759,7 @@
                             <button id="btnBrowseImage" class="dropdown-item" onclick="enterExplorerImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files right here, without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse as Image (Sleuth Kit)</button>
                             <button id="btnVerifyHash" class="dropdown-item" onclick="openVerifyHashModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Computes a cryptographic hash of this file and optionally compares it against a known reference hash - confirms an evidence image (or any file) hasn't been altered since acquisition."><i class="bi bi-hash me-2"></i>Verify Image Hash</button>
                             <button id="btnAttachToCase" class="dropdown-item" onclick="attachSelectedFileToCase()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Bookmarks this file as a case exhibit - it'll show up pre-checked in Reporting > Files, ready to include in an exported report. Requires an active, consolidated-format case."><i class="bi bi-bookmark-plus me-2"></i>Attach to Case</button>
+                            <button id="btnTagFile" class="dropdown-item" onclick="openTagItemModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Flags this file with a tag (Bookmark, Follow Up, Notable Item, or a custom tag) - shows up under File Views > Tagged Files. Requires an active, consolidated-format case."><i class="bi bi-tag me-2"></i>Tag...</button>
                             <button id="btnRecoverFromImage" class="dropdown-item" onclick="recoverDeletedFilesFromImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Jumps to File Recovery with this image pre-filled as the source, ready to run PhotoRec, foremost, scalpel, or extundelete against it."><i class="bi bi-life-preserver me-2"></i>Recover Deleted Files...</button>
                             <h6 class="dropdown-header">Analyze</h6>
                             <button id="btnRunBinwalk" class="dropdown-item" onclick="runSelectedBinwalk()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Looks for other files or systems hidden inside this one - useful for firmware dumps, router images, or unknown binary files."><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button>
@@ -777,6 +778,7 @@
                             <h6 class="dropdown-header">In-Image Actions</h6>
                             <button id="ctxMenuImageExtract" class="dropdown-item" onclick="extractExplorerImageSelected()"><i class="bi bi-download me-2"></i>Extract to Evidence Root</button>
                             <button id="ctxMenuImageAttach" class="dropdown-item" onclick="extractAndAttachExplorerImageSelected()" data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls this file out of the image into the active case folder and bookmarks it as a report exhibit in one step. Requires an active, consolidated-format case."><i class="bi bi-bookmark-plus me-2"></i>Extract &amp; Attach to Case</button>
+                            <button id="ctxMenuImageTag" class="dropdown-item" onclick="openTagItemModal()" data-bs-toggle="tooltip" data-bs-placement="left" title="Flags this file with a tag (Bookmark, Follow Up, Notable Item, or a custom tag) - shows up under File Views > Tagged Files. Requires an active, consolidated-format case."><i class="bi bi-tag me-2"></i>Tag...</button>
                             <button id="ctxMenuImageBinwalk" class="dropdown-item" onclick="runImageBinwalk()"><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button>
                             <button id="ctxMenuImageStrings" class="dropdown-item" onclick="runImageStrings()"><i class="bi bi-fonts me-2"></i>Extract Strings</button>
                         </div>
@@ -1614,6 +1616,26 @@ sudo update-ca-certificates</pre>
                                         </div>
                                     </div>
                                 </div>
+                                <!-- Tags themselves live per-case (the same SQLite analysis index File
+                                     Views reads/writes), not as a station-wide default like the other
+                                     sections in this accordion - this is a management tool scoped to
+                                     whichever case is currently active, not a setting applied to every
+                                     future case. -->
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secManageTags"><i class="bi bi-tags me-2"></i>Manage Tags</button>
+                                    </h2>
+                                    <div id="secManageTags" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Tags belong to the active case (each case keeps its own tag list) - create, rename, recolor, or delete them here. Deleting a tag also removes it from every file it was applied to; the default tags (Bookmark/Follow Up/Notable Item) can be edited but not deleted.</div>
+                                            <div id="manageTagsCaseNote" class="small mb-2">--</div>
+                                            <div id="manageTagsListContainer" class="mb-2">
+                                                <div class="text-subtle small p-2">Loading tags...</div>
+                                            </div>
+                                            <button class="btn btn-sm btn-outline-info fw-bold" onclick="openCreateTagModal()"><i class="bi bi-plus-lg me-1"></i>New Tag</button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
 
                             <button class="btn btn-sm btn-success fw-bold w-100" onclick="saveCaseReportingSettings()"><i class="bi bi-check2-circle me-1"></i>Save Settings</button>
@@ -1902,6 +1924,102 @@ sudo update-ca-certificates</pre>
                 </div>
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="tagItemModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-tag me-2"></i>Tag: <span id="tagItemFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Comment (optional, applied when you tag with a new tag below):</label>
+                        <textarea id="tagItemComment" class="form-control form-control-sm" rows="2" placeholder="e.g. why this file matters to the case..."></textarea>
+                    </div>
+                    <div id="tagItemExistingList" class="list-group list-group-flush mb-2" style="max-height: 220px; overflow-y: auto;">
+                        <div class="text-subtle small p-2">Loading tags...</div>
+                    </div>
+                    <div class="border-top border-secondary pt-2">
+                        <button class="btn btn-sm btn-outline-info w-100" type="button" data-bs-toggle="collapse" data-bs-target="#tagItemNewTagForm">
+                            <i class="bi bi-plus-lg me-1"></i>Create New Tag
+                        </button>
+                        <div class="collapse mt-2" id="tagItemNewTagForm">
+                            <div class="row g-2 align-items-end">
+                                <div class="col-6">
+                                    <label class="telemetry-grid-label d-block mb-1">Tag Name:</label>
+                                    <input type="text" id="newTagName" class="form-control form-control-sm" maxlength="60" placeholder="e.g. Contraband">
+                                </div>
+                                <div class="col-3">
+                                    <label class="telemetry-grid-label d-block mb-1">Color:</label>
+                                    <select id="newTagColor" class="form-select form-select-sm">
+                                        <option value="secondary" selected>Gray</option>
+                                        <option value="info">Blue</option>
+                                        <option value="success">Green</option>
+                                        <option value="warning">Yellow</option>
+                                        <option value="danger">Red</option>
+                                        <option value="primary">Purple</option>
+                                    </select>
+                                </div>
+                                <div class="col-3">
+                                    <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="createAndApplyNewTag()">Create</button>
+                                </div>
+                            </div>
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="newTagNotable">
+                                <label class="form-check-label small telemetry-grid-label" for="newTagNotable">
+                                    Notable (flags this tag as evidence of interest, like Autopsy's "Notable Item")
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="tagItemModalStatus" class="small mt-2"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="manageTagModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-tag me-2"></i><span id="manageTagModalTitle">New Tag</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Tag Name:</label>
+                        <input type="text" id="manageTagName" class="form-control form-control-sm" maxlength="60">
+                    </div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Color:</label>
+                        <select id="manageTagColor" class="form-select form-select-sm">
+                            <option value="secondary">Gray</option>
+                            <option value="info">Blue</option>
+                            <option value="success">Green</option>
+                            <option value="warning">Yellow</option>
+                            <option value="danger">Red</option>
+                            <option value="primary">Purple</option>
+                        </select>
+                    </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="manageTagNotable">
+                        <label class="form-check-label small telemetry-grid-label" for="manageTagNotable">
+                            Notable (flags this tag as evidence of interest, like Autopsy's "Notable Item")
+                        </label>
+                    </div>
+                    <div id="manageTagModalStatus" class="small mt-2"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-info text-dark fw-bold" onclick="saveManageTagModal()">Save</button>
                 </div>
             </div>
         </div>
