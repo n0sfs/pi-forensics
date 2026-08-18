@@ -2,6 +2,7 @@ import os
 import re
 import io
 import csv
+import math
 import sqlite3
 import html
 import base64
@@ -18,6 +19,8 @@ import fcntl
 import signal
 import mimetypes
 import ipaddress
+import urllib.request
+import xml.etree.ElementTree as ET
 import psutil
 import pytsk3
 import shutil
@@ -8636,6 +8639,101 @@ def _discover_case_files(case_folder):
                 return results, True
     return results, truncated
 
+
+def _kml_find_local(elem, tag_name):
+    """First descendant of elem whose tag's local name (namespace prefix
+    stripped) matches tag_name, in document order - the closest ElementTree
+    equivalent of a namespace-agnostic querySelector() lookup, since KML's
+    default namespace makes exact-tag matching fragile."""
+    for child in elem.iter():
+        if child is elem:
+            continue
+        if child.tag.rsplit('}', 1)[-1] == tag_name:
+            return child
+    return None
+
+
+def _parse_kml_placemarks(kml_text):
+    """Mirrors parseKmlPlacemarks() (main.js) - stdlib ElementTree,
+    namespace-agnostic tag matching, Placemark -> Point -> coordinates
+    (lon,lat[,alt]) + name + description. Skips any Placemark without valid
+    parseable coordinates. Returns [] (never raises) on malformed/
+    unparseable XML, matching the JS side's own try/except-and-return-
+    whatever-was-collected behavior - this may be a hand-edited or
+    third-party KML file, not necessarily one this app generated itself."""
+    placemarks = []
+    try:
+        root = ET.fromstring(kml_text)
+    except ET.ParseError:
+        return placemarks
+
+    for elem in root.iter():
+        if elem.tag.rsplit('}', 1)[-1] != 'Placemark':
+            continue
+        point = _kml_find_local(elem, 'Point')
+        coords_el = _kml_find_local(point, 'coordinates') if point is not None else None
+        if coords_el is None or not (coords_el.text or '').strip():
+            continue
+        parts = coords_el.text.strip().split(',')
+        if len(parts) < 2:
+            continue
+        try:
+            lon, lat = float(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        name_el = _kml_find_local(elem, 'name')
+        desc_el = _kml_find_local(elem, 'description')
+        placemarks.append({
+            "name": (name_el.text or '').strip() if name_el is not None else '',
+            "description": (desc_el.text or '').strip() if desc_el is not None else '',
+            "lat": lat, "lon": lon,
+        })
+    return placemarks
+
+
+def _collect_case_kml_files(case_folder, attachment_files):
+    """Mirrors renderReportGeolocationList()'s (main.js) union logic: every
+    .kml path already in the case's explicit attachments.files list, plus
+    every .kml file _discover_case_files() finds sitting in the case folder
+    that wasn't necessarily added through the explicit attach flow. Returns
+    a de-duplicated, sorted list of absolute paths."""
+    paths = set()
+    for p in (attachment_files or []):
+        if str(p).lower().endswith('.kml'):
+            paths.add(p)
+    if case_folder and os.path.isdir(case_folder):
+        discovered, _truncated = _discover_case_files(case_folder)
+        for f in discovered:
+            if f['path'].lower().endswith('.kml'):
+                paths.add(f['path'])
+    return sorted(paths)
+
+
+def _collect_case_geolocation(case_folder, attachment_files):
+    """Reads every case KML file (_collect_case_kml_files) and parses its
+    placemarks (_parse_kml_placemarks), returning one entry per file that
+    has at least one valid placemark. A KML with zero parseable points
+    contributes nothing to a 'map with pins' export section, so it's
+    silently skipped here - the same reasoning _build_geo_kml() already
+    applies to its own KML *generation* (refuses to write an empty KML with
+    zero placemarks in the first place)."""
+    results = []
+    for path in _collect_case_kml_files(case_folder, attachment_files):
+        real_path = safe_path(path)
+        if not real_path or not os.path.isfile(real_path):
+            continue
+        try:
+            with open(real_path, 'r', encoding='utf-8', errors='replace') as f:
+                kml_text = f.read()
+        except OSError:
+            continue
+        placemarks = _parse_kml_placemarks(kml_text)
+        if not placemarks:
+            continue
+        results.append({"name": os.path.basename(real_path), "path": real_path, "placemarks": placemarks})
+    return results
+
+
 @app.route('/api/cases/discover_files', methods=['GET'])
 @requires_auth
 @requires_permission('reporting')
@@ -9357,6 +9455,221 @@ def _draw_pdf_signoff(c, y, examiner):
     y -= 25
     return y
 
+# --- Geolocation report section: static tile-mosaic map image + placemark table ---
+# Tile math ported (not imported) from install.py's _latlon_to_tile_xy/_tile_range_for_bbox -
+# this file and install.py deliberately never import from each other (separate deployment
+# contexts, e.g. TOOL_INSTALLABLE_PACKAGES is already duplicated the same way), so this is a
+# second, independent copy of the same standard slippy-map-tilenames formula, not a shared import.
+GEO_MAP_PX_WIDTH = 480
+GEO_MAP_PX_HEIGHT = 300
+GEO_MAP_ZOOM_MIN = 1
+GEO_MAP_ZOOM_MAX = 16
+GEO_TILE_FETCH_TIMEOUT = 6
+GEO_TILE_MAX_COUNT = 40
+GEO_TILE_USER_AGENT = "PiForensicsSuite/1.0 (report export map; +https://github.com/n0sfs/pi-forensics)"
+
+def _latlon_to_global_pixel(lat, lon, zoom):
+    """WGS84 lat/lon -> continuous (not tile-floored) global pixel coordinates
+    at a zoom level, standard OSM 256px-tile Web Mercator projection - used
+    both to size/position the tile grid and to project each placemark onto
+    it at the exact same scale."""
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    lat_rad = math.radians(lat)
+    n = 2 ** zoom
+    x = (lon + 180.0) / 360.0 * n * 256.0
+    y = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * n * 256.0
+    return x, y
+
+def _choose_geo_map_zoom(placemarks):
+    """Picks the highest zoom level (most detail) at which this placemark
+    set's bounding box still fits within the target map image size (minus a
+    small margin) - starts at the max and steps down, matching how a normal
+    map viewer auto-fits a bounds. Falls back to the minimum zoom for a
+    genuinely widescattered set (e.g. evidence from two continents)."""
+    lats = [p['lat'] for p in placemarks]
+    lons = [p['lon'] for p in placemarks]
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+    for zoom in range(GEO_MAP_ZOOM_MAX, GEO_MAP_ZOOM_MIN - 1, -1):
+        x1, y1 = _latlon_to_global_pixel(max_lat, min_lon, zoom)
+        x2, y2 = _latlon_to_global_pixel(min_lat, max_lon, zoom)
+        if abs(x2 - x1) <= GEO_MAP_PX_WIDTH - 40 and abs(y2 - y1) <= GEO_MAP_PX_HEIGHT - 40:
+            return zoom
+    return GEO_MAP_ZOOM_MIN
+
+def _fetch_osm_tile(z, x, y):
+    """Fetches one 256x256 OSM tile's raw PNG bytes - live first (with a
+    real, honest User-Agent per OSM's tile usage policy), falling back to
+    install.py's optional local offline-tile cache per tile if present -
+    mirrors the live app's own online-first/offline-fallback tile behavior
+    (_createGeoTileLayer() in main.js), just server-side and per-request
+    instead of a persistent map widget. Returns None (never raises) if both
+    sources come up empty or the server signals a policy block (the same
+    X-Blocked detection install.py's own bulk tile-cache downloader already
+    uses) - the map image simply leaves that tile blank, matching the
+    interactive viewer's own graceful per-tile degradation."""
+    try:
+        req = urllib.request.Request(
+            f"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+            headers={"User-Agent": GEO_TILE_USER_AGENT})
+        with urllib.request.urlopen(req, timeout=GEO_TILE_FETCH_TIMEOUT) as resp:
+            if not resp.headers.get("X-Blocked"):
+                return resp.read()
+    except Exception:
+        pass
+    local_path = os.path.join(app.static_folder, 'vendor', 'osm_tiles', str(z), str(x), f"{y}.png")
+    if os.path.exists(local_path):
+        try:
+            with open(local_path, 'rb') as f:
+                return f.read()
+        except OSError:
+            pass
+    return None
+
+def _draw_pdf_geo_map_image(c, x0, y0, placemarks):
+    """Draws a static tile-mosaic map (live-fetched or offline-cache-
+    fallback tiles, see _fetch_osm_tile) with small pin markers at (x0, y0)
+    (bottom-left corner, PDF points) sized GEO_MAP_PX_WIDTH x
+    GEO_MAP_PX_HEIGHT - a reference-quality on-page map, not a print-
+    resolution figure. Each 256x256 tile is drawn individually via
+    reportlab's own drawImage (which decodes the PNG via Pillow internally,
+    already a working dependency in this app via existing photo-exhibit
+    embedding) at its correct projected position - reportlab composites the
+    mosaic on the page itself, no separate image-compositing library
+    needed. Returns True if at least one tile was actually drawn, so the
+    caller can fall back to a disclosed 'map imagery unavailable' note
+    instead of leaving a silently blank box when every tile fetch/fallback
+    came up empty (no internet, no offline cache)."""
+    from reportlab.lib.utils import ImageReader
+
+    zoom = _choose_geo_map_zoom(placemarks)
+    lats = [p['lat'] for p in placemarks]
+    lons = [p['lon'] for p in placemarks]
+    center_px, center_py = _latlon_to_global_pixel((min(lats) + max(lats)) / 2.0, (min(lons) + max(lons)) / 2.0, zoom)
+    window_left = center_px - GEO_MAP_PX_WIDTH / 2.0
+    window_top = center_py - GEO_MAP_PX_HEIGHT / 2.0
+    n = 2 ** zoom
+
+    c.saveState()
+    clip = c.beginPath()
+    clip.rect(x0, y0, GEO_MAP_PX_WIDTH, GEO_MAP_PX_HEIGHT)
+    c.clipPath(clip, stroke=0, fill=0)
+
+    any_drawn = False
+    tile_count = 0
+    tile_x_min = int(window_left // 256)
+    tile_x_max = int((window_left + GEO_MAP_PX_WIDTH) // 256)
+    tile_y_min = int(window_top // 256)
+    tile_y_max = int((window_top + GEO_MAP_PX_HEIGHT) // 256)
+    for tx in range(tile_x_min, tile_x_max + 1):
+        for ty in range(tile_y_min, tile_y_max + 1):
+            tile_count += 1
+            if tile_count > GEO_TILE_MAX_COUNT or tx < 0 or ty < 0 or tx >= n or ty >= n:
+                continue
+            tile_bytes = _fetch_osm_tile(zoom, tx, ty)
+            if not tile_bytes:
+                continue
+            try:
+                img = ImageReader(io.BytesIO(tile_bytes))
+                draw_x = x0 + (tx * 256 - window_left)
+                draw_y = y0 + (GEO_MAP_PX_HEIGHT - (ty * 256 - window_top) - 256)
+                c.drawImage(img, draw_x, draw_y, width=256, height=256, mask='auto')
+                any_drawn = True
+            except Exception:
+                continue
+
+    if any_drawn:
+        for placemark in placemarks:
+            px, py = _latlon_to_global_pixel(placemark['lat'], placemark['lon'], zoom)
+            mx = x0 + (px - window_left)
+            my = y0 + (GEO_MAP_PX_HEIGHT - (py - window_top))
+            c.setFillColorRGB(0.85, 0.15, 0.1)
+            c.setStrokeColorRGB(1, 1, 1)
+            c.circle(mx, my, 4, stroke=1, fill=1)
+
+    c.restoreState()
+    c.setStrokeColorRGB(0.6, 0.6, 0.6)
+    c.rect(x0, y0, GEO_MAP_PX_WIDTH, GEO_MAP_PX_HEIGHT, stroke=1, fill=0)
+    return any_drawn
+
+def _draw_pdf_geolocation_block(c, y, kml_data, title="Geolocation / GPS Evidence"):
+    """Renders each case KML file with >=1 valid placemark (see
+    _collect_case_geolocation) as a static tile-mosaic map image with pin
+    markers, followed by a Name/Latitude/Longitude/Description placemark
+    table - the PDF counterpart to the live app's interactive Leaflet
+    viewer. A file whose tile fetch comes up completely empty still gets
+    its table, just with a disclosed note in place of the map image - the
+    underlying coordinate data is never hidden behind a map that failed to
+    render."""
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, title)
+    y -= 18
+
+    if not kml_data:
+        c.setFont("Helvetica-Oblique", 9)
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(50, y, "No geolocation (KML) evidence with GPS placemarks found for this case.")
+        c.setFillColorRGB(0, 0, 0)
+        y -= 14
+        return y
+
+    for entry in kml_data:
+        min_needed = GEO_MAP_PX_HEIGHT + 30 + 40
+        if y < min_needed:
+            c.showPage()
+            y = 750
+
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(50, y, entry['name'][:90])
+        y -= 13
+        c.setFont("Helvetica-Oblique", 7.5)
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(50, y, entry['path'][:115])
+        c.setFillColorRGB(0, 0, 0)
+        y -= 14
+
+        map_y0 = y - GEO_MAP_PX_HEIGHT
+        drawn = _draw_pdf_geo_map_image(c, 50, map_y0, entry['placemarks'])
+        if not drawn:
+            c.setFont("Helvetica-Oblique", 8)
+            c.setFillColorRGB(0.5, 0.5, 0.5)
+            c.drawCentredString(50 + GEO_MAP_PX_WIDTH / 2.0, map_y0 + GEO_MAP_PX_HEIGHT / 2.0,
+                                 "Map imagery unavailable for this evidence item - showing coordinates only.")
+            c.setFillColorRGB(0, 0, 0)
+        y = map_y0 - 12
+
+        headers = ["Name", "Latitude", "Longitude", "Description"]
+        xpos = [50, 200, 270, 340]
+
+        def _draw_geo_header_row(y):
+            c.setFont("Helvetica-Bold", 8)
+            for label, x in zip(headers, xpos):
+                c.drawString(x, y, label)
+            y -= 4
+            c.line(50, y, 550, y)
+            y -= 12
+            c.setFont("Helvetica", 7.5)
+            return y
+
+        y = _draw_geo_header_row(y)
+        for p in entry['placemarks']:
+            if y < 60:
+                c.showPage()
+                y = 750
+                y = _draw_geo_header_row(y)
+            c.drawString(xpos[0], y, (p['name'] or '(unnamed)')[:26])
+            c.drawString(xpos[1], y, f"{p['lat']:.6f}")
+            c.drawString(xpos[2], y, f"{p['lon']:.6f}")
+            c.drawString(xpos[3], y, (p['description'] or '').replace('\n', ' ')[:38])
+            y -= 10
+        y -= 14
+
+    return y
+
 def _draw_pdf_contents_page(c, resolved_sections, event_count):
     """A plain Report Contents listing, not page-number cross-referenced -
     this renderer draws in a single streaming pass with no forward
@@ -9449,6 +9762,10 @@ REPORT_TEMPLATES = {
         'label': 'Forensics Report',
         'description': 'Fixed-structure law-enforcement examination report: Administrative Information, Evidence Collection & Chain of Custody, Sign-off & Signatures.',
     },
+    'caseuco': {
+        'label': 'CASE/UCO Report',
+        'description': 'Fixed-structure investigation report aligned with the CASE/UCO cyber-forensic ontology (Investigation, Observable Objects, Investigative Actions, Provenance Records) - the only built-in template that also includes Geolocation/GPS evidence.',
+    },
 }
 
 # The building blocks available to the Standard template and to
@@ -9513,6 +9830,16 @@ REPORT_SECTION_BLOCKS = [
     {"key": "recommendations", "default_title": "Recommendations / Next Steps",
      "in_legacy_default": False, "requires_events": False, "force_page_break": False},
     {"key": "attachments", "default_title": "Exhibits",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+    # Unlike timeline/iocs/recommendations (in_legacy_default=False, custom-
+    # template-only - _expand_legacy_sections_dict() unconditionally skips
+    # any False-flagged block, so there is no other way for a block to be
+    # checkbox-controlled on the Standard template), Geolocation deliberately
+    # gets a real checkbox on the plain Export pane / Settings station
+    # defaults - the actual <input> elements just start unchecked in the
+    # markup, so a case with no GPS evidence doesn't grow an empty section
+    # by default.
+    {"key": "geolocation", "default_title": "Geolocation / GPS Evidence",
      "in_legacy_default": True, "requires_events": False, "force_page_break": False},
     {"key": "audit_trail", "default_title": "Case Activity Log (Audit Trail)",
      "in_legacy_default": True, "requires_events": False, "force_page_break": False},
@@ -9621,7 +9948,7 @@ def _resolve_template_ref(value, cfg):
         raise ValueError(f"Selected custom template '{template_id}' no longer exists.")
     return 'standard', None
 
-def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
+def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None):
     from reportlab.lib.pagesizes import letter
 
     c = _numbered_canvas_class()(pdf_path, pagesize=letter)
@@ -9678,6 +10005,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
                                                                 exhibit_numbers=exhibit_numbers),
         "audit_trail": lambda y, title: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
         "timeline": lambda y, title: _draw_pdf_timeline_block(c, y, events, title=title),
+        "geolocation": lambda y, title: _draw_pdf_geolocation_block(c, y, geo_data or [], title=title),
     }
 
     for i, entry in enumerate(resolved_sections):
@@ -9871,6 +10199,137 @@ def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entrie
 
     c.save()
 
+def _build_pdf_report_caseuco(pdf_path, header, events, urls, files, audit_entries, case_notes, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None):
+    """Fixed-structure report aligned with the CASE/UCO cyber-forensic
+    ontology (caseontology.org) - Investigation, ObservableObject,
+    InvestigativeAction, ProvenanceRecord, Analysis, Tool, Location. Reuses
+    the same low-level drawing helpers as the other two fixed templates;
+    every section maps onto an existing data source or shared helper, no
+    new schema fields were needed - see the plan's section-mapping table.
+
+    Two disclosed simplifications, matching the honesty already established
+    for DFIR/Police: (1) the ontology models distinct Examiner/Investigator/
+    Subject/Attorney roles - this app has one Examiner field, not separate
+    per-role records, so "Investigation Overview" only ever shows the one
+    Examiner; a station that wants Authorization/Investigation Status/Form
+    captured can add them as Custom Case Fields, the same mechanism Police's
+    Administrative Information already relies on. (2) "Provenance Record /
+    Chain of Custody" reuses this app's Audit Trail (a software-action log),
+    not a literal ProvenanceRecord graph of wasDerivedFrom/wasInformedBy
+    relationships - same substitution reasoning as Police's own Chain of
+    Custody section.
+
+    Unlike DFIR/Police, this template always includes a Geolocation section
+    (maps directly onto the ontology's Location module) - geo_data is
+    computed unconditionally for this template in export_report(), not
+    gated behind a checkbox like Standard's opt-in version.
+
+    Pagination note: _draw_pdf_header has no internal page-break guard, but
+    it's always safe here as the very first section drawn right after the
+    contents page's own showPage(). _draw_pdf_acquisition_method also has
+    no internal guard and is NOT first, so it needs an explicit showPage()
+    immediately before it - see _draw_pdf_acquisition_method's own
+    docstring for why. Every other helper below already guards its own
+    pagination internally."""
+    from reportlab.lib.pagesizes import letter
+
+    c = _numbered_canvas_class()(pdf_path, pagesize=letter)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, 750, "CASE/UCO CYBER-INVESTIGATION REPORT")
+
+    branding = header.get('branding', {})
+    title_bottom = 740
+    header_text = (branding.get('header_text') or '').strip()
+    if header_text:
+        c.setFont("Helvetica", 10)
+        c.drawString(50, 730, header_text[:120])
+        title_bottom = 720
+    logo_path = branding.get('logo_path') or ''
+    if logo_path and os.path.exists(logo_path):
+        try:
+            from reportlab.lib.utils import ImageReader
+            c.drawImage(ImageReader(logo_path), 470, 725, width=80, height=40, preserveAspectRatio=True, anchor='ne')
+        except Exception:
+            pass
+    c.setLineWidth(1)
+    c.line(50, title_bottom, 550, title_bottom)
+
+    has_exhibits = bool(urls or files)
+    entries = ["Investigation Overview", "Investigation Focus & Scope", "Executive Summary",
+               "Observable Objects (Digital Evidence)", "Investigative Actions",
+               "Analysis & Analytic Results (Case Notes)", "Relevant Findings",
+               "Tools & Configured Tools", "Geolocation / Location Evidence", "Conclusion",
+               "Limitations & Data Handling Markings", "Provenance Record / Chain of Custody"]
+    if has_exhibits:
+        entries.append("Exhibits (Evidence Provenance Records)")
+    entries.append("Sign-off & Signatures")
+
+    c.showPage()
+    _draw_pdf_fixed_contents_page(c, entries)
+    c.showPage()
+
+    c.bookmarkPage('investigation_overview')
+    c.addOutlineEntry("Investigation Overview", 'investigation_overview', level=0)
+    y = _draw_pdf_header(c, header, title="Investigation Overview")
+
+    c.bookmarkPage('focus_scope')
+    c.addOutlineEntry("Investigation Focus & Scope", 'focus_scope', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Investigation Focus & Scope", header.get('objectives'))
+
+    c.bookmarkPage('exec_summary')
+    c.addOutlineEntry("Executive Summary", 'exec_summary', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Executive Summary", header.get('executive_summary'))
+
+    c.bookmarkPage('observable_objects')
+    c.addOutlineEntry("Observable Objects (Digital Evidence)", 'observable_objects', level=0)
+    y = _draw_pdf_evidence_inventory(c, y, events, title="Observable Objects (Digital Evidence)")
+
+    c.showPage()
+    y = 750
+    c.bookmarkPage('investigative_actions')
+    c.addOutlineEntry("Investigative Actions", 'investigative_actions', level=0)
+    y = _draw_pdf_acquisition_method(c, y, events, job_fields, title="Investigative Actions")
+
+    c.bookmarkPage('analysis_findings')
+    c.addOutlineEntry("Analysis & Analytic Results (Case Notes)", 'analysis_findings', level=0)
+    y = _draw_pdf_case_notes(c, y, case_notes, title="Analysis & Analytic Results (Case Notes)", exhibit_numbers=exhibit_numbers)
+
+    c.bookmarkPage('relevant_findings')
+    c.addOutlineEntry("Relevant Findings", 'relevant_findings', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Relevant Findings", header.get('findings_summary'))
+
+    c.bookmarkPage('tools')
+    c.addOutlineEntry("Tools & Configured Tools", 'tools', level=0)
+    y = _draw_pdf_methodology_tools(c, y, events)
+
+    c.bookmarkPage('geolocation')
+    c.addOutlineEntry("Geolocation / Location Evidence", 'geolocation', level=0)
+    y = _draw_pdf_geolocation_block(c, y, geo_data or [], title="Geolocation / Location Evidence")
+
+    c.bookmarkPage('conclusion')
+    c.addOutlineEntry("Conclusion", 'conclusion', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Conclusion", header.get('conclusion'))
+
+    c.bookmarkPage('limitations')
+    c.addOutlineEntry("Limitations & Data Handling Markings", 'limitations', level=0)
+    y = _draw_pdf_narrative_section(c, y, "Limitations & Data Handling Markings", header.get('limitations'))
+
+    c.bookmarkPage('provenance_coc')
+    c.addOutlineEntry("Provenance Record / Chain of Custody", 'provenance_coc', level=0)
+    y = _draw_pdf_audit_trail(c, y, audit_entries, title="Provenance Record / Chain of Custody")
+
+    if has_exhibits:
+        c.bookmarkPage('exhibits')
+        c.addOutlineEntry("Exhibits (Evidence Provenance Records)", 'exhibits', level=0)
+        y = _draw_pdf_attachments(c, y, urls, files, title="Exhibits (Evidence Provenance Records)", captions=captions,
+                                   tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
+
+    c.bookmarkPage('signoff')
+    c.addOutlineEntry("Sign-off & Signatures", 'signoff', level=0)
+    y = _draw_pdf_signoff(c, y, header['examiner'])
+
+    c.save()
+
 def _embed_file_into_html(file_path, caption=None, exhibit_number=None, category=None, tags=None, analysis_summary=None):
     """HTML counterpart to _embed_file_into_pdf - shared by Exhibits (case
     attachments) and the Case Notes journal. caption is examiner-entered
@@ -9976,6 +10435,103 @@ def _html_timeline_block(events, title="Filesystem Timeline (MACB)", anchor_id=N
             parts.append(f'<li class="muted">{esc(note)}</li>')
         parts.append('</ul>')
 
+    return ''.join(parts)
+
+_LEAFLET_CSS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'vendor', 'leaflet', 'leaflet.css')
+_LEAFLET_JS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'vendor', 'leaflet', 'leaflet.js')
+
+def _html_leaflet_assets_block():
+    """Inlines the vendored Leaflet library as literal <style>/<script>
+    content - not a <link>/<script src> pointing at a server-relative path
+    - so an exported HTML report stays genuinely self-contained and
+    reopenable months later with this app's server long gone, matching
+    every other embedded asset in this export (attachment images, the
+    branding logo). Live OSM tile *imagery* still needs a real network
+    connection at view time regardless - that part can't be vendored into a
+    static file, the same already-accepted tradeoff the live in-app
+    Leaflet viewer has. Only called when the Geolocation section is
+    actually being rendered (see _build_html_report_standard), so every
+    export that doesn't use it stays exactly as small as before this
+    feature. Leaflet's own CSS references its default marker-icon PNGs via
+    relative url(...) paths that won't resolve once inlined this way - not
+    fixed here since _html_geolocation_block below only ever uses
+    L.circleMarker pins, which never need those default icons."""
+    try:
+        with open(_LEAFLET_CSS_PATH, 'r', encoding='utf-8') as f:
+            css = f.read()
+        with open(_LEAFLET_JS_PATH, 'r', encoding='utf-8') as f:
+            js = f.read()
+    except OSError:
+        return ''
+    return f'<style>{css}</style><script>{js}</script>'
+
+def _html_geolocation_block(kml_data, title="Geolocation / GPS Evidence", anchor_id=None):
+    """HTML counterpart to _draw_pdf_geolocation_block - a real interactive
+    Leaflet map (live OSM tiles only; no offline-cache fallback attempt,
+    since this exported file may be reopened completely disconnected from
+    this app's own server, where a /static/vendor/osm_tiles/... URL
+    wouldn't resolve anyway) per KML file, followed by the same
+    Name/Latitude/Longitude/Description placemark table PDF renders.
+    Placemark name/description are untrusted KML content (an examiner can
+    open ANY .kml, not just one this app generated) - the table cells go
+    through html.escape() like every other field in this document, and the
+    popup content is built via textContent (never innerHTML) in the inline
+    script below, matching this app's existing untrusted-content discipline
+    for the live Leaflet viewer (escapeHtmlForPopup() in main.js)."""
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [f'<h2{id_attr}>{esc(title)}</h2>']
+
+    if not kml_data:
+        parts.append('<p class="muted">No geolocation (KML) evidence with GPS placemarks found for this case.</p>')
+        return ''.join(parts)
+
+    for i, entry in enumerate(kml_data):
+        map_id = f'geomap_{i}'
+        parts.append('<div class="job">')
+        parts.append(f'<h3>{esc(entry["name"])}</h3>')
+        parts.append(f'<div class="muted mono">{esc(entry["path"])}</div>')
+        parts.append(f'<div id="{esc(map_id)}" style="height:340px;width:100%;margin:.6em 0;border:1px solid #ccc;border-radius:6px;"></div>')
+
+        parts.append('<table><tr><th>Name</th><th>Latitude</th><th>Longitude</th><th>Description</th></tr>')
+        for p in entry['placemarks']:
+            parts.append(
+                f'<tr><td>{esc(p["name"] or "(unnamed)")}</td>'
+                f'<td class="mono">{p["lat"]:.6f}</td><td class="mono">{p["lon"]:.6f}</td>'
+                f'<td>{esc(p["description"])}</td></tr>'
+            )
+        parts.append('</table>')
+
+        # Placemark data is passed to the browser as a JSON literal, not raw
+        # JS interpolation - untrusted name/description text could otherwise
+        # contain a literal </script> sequence that would prematurely close
+        # this tag, so every '</' is escaped to '<\/' (a standard, safe fix
+        # for embedding arbitrary JSON inside an inline <script> block).
+        points = [{"lat": p["lat"], "lon": p["lon"], "name": p["name"], "description": p["description"]} for p in entry['placemarks']]
+        points_json = json.dumps(points).replace('</', '<\\/')
+        parts.append(
+            '<script>(function(){'
+            f'var pts={points_json};'
+            f'var mapDiv=document.getElementById("{map_id}");'
+            'if(!mapDiv||typeof L==="undefined"||!pts.length)return;'
+            'var map=L.map(mapDiv);'
+            'L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",'
+            '{attribution:"&copy; OpenStreetMap contributors",maxZoom:19}).addTo(map);'
+            'var bounds=[];'
+            'pts.forEach(function(p){'
+            'var m=L.circleMarker([p.lat,p.lon],{radius:7,color:"#c0392b",weight:2,fillColor:"#e74c3c",fillOpacity:0.9}).addTo(map);'
+            'var div=document.createElement("div");'
+            'var b=document.createElement("b");b.textContent=p.name||"(unnamed)";div.appendChild(b);'
+            'div.appendChild(document.createElement("br"));'
+            'var span=document.createElement("span");span.textContent=p.description||"";div.appendChild(span);'
+            'm.bindPopup(div);'
+            'bounds.push([p.lat,p.lon]);'
+            '});'
+            'if(bounds.length===1){map.setView(bounds[0],14);}else{map.fitBounds(bounds,{padding:[20,20]});}'
+            'setTimeout(function(){map.invalidateSize();},50);'
+            '})();</script>'
+        )
+        parts.append('</div>')
     return ''.join(parts)
 
 def _html_methodology_tools(events, anchor_id=None):
@@ -10243,7 +10799,7 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         parts.append('</div>')
     return ''.join(parts)
 
-def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
+def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None):
     """Self-contained HTML report - every value is escaped since it may
     contain examiner-entered text or evidence-derived strings (filenames,
     device paths) that this file could later be reopened/served from disk.
@@ -10252,10 +10808,16 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
     over - shared with the PDF builder's own version of this same loop."""
     esc = html.escape
     has_exhibits = bool(urls or files)
+    # The vendored Leaflet library is only inlined into <head> when the
+    # Geolocation section is both selected AND actually has real placemark
+    # data to render - every export that doesn't use it stays exactly as
+    # small as before this feature (see _html_leaflet_assets_block).
+    needs_leaflet = bool(geo_data) and any(e["key"] == "geolocation" for e in resolved_sections)
     parts = [
         '<!doctype html><html><head><meta charset="utf-8">',
         f'<title>Case Report - {esc(str(header["case_number"]))}</title>',
         _html_report_style_block(),
+        _html_leaflet_assets_block() if needs_leaflet else '',
         '</head><body>',
         _html_report_branding_header(header, "Pi Forensics Suite Acquisition Audit Report"),
     ]
@@ -10279,6 +10841,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
                                                                     exhibit_numbers=exhibit_numbers),
         "audit_trail": lambda anchor, title: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
         "timeline": lambda anchor, title: _html_timeline_block(events, title=title, anchor_id=anchor),
+        "geolocation": lambda anchor, title: _html_geolocation_block(geo_data or [], title=title, anchor_id=anchor),
     }
 
     for entry in resolved_sections:
@@ -10398,6 +10961,77 @@ def _build_html_report_police(header, events, urls, files, audit_entries, case_n
     if has_exhibits:
         parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits', captions=captions,
                                            tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers))
+
+    parts.append('</body></html>')
+    return ''.join(parts)
+
+def _build_html_report_caseuco(header, events, urls, files, audit_entries, case_notes, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None):
+    """HTML counterpart to _build_pdf_report_caseuco - same fixed section
+    list, same reused data sources, same disclosed role/provenance
+    simplifications, see that function's docstring.
+
+    Deliberate departure from DFIR/Police's HTML builders: reuses
+    _html_case_info_block() wholesale for "Investigation Overview" instead
+    of hand-inlining a stripped-down case-info table like they do - this
+    template's Investigation Overview benefits from that helper's existing
+    Notes row (investigation description) and Evidence Items count, and
+    reusing it outright is less code than a third hand-inlined copy of the
+    same loop."""
+    esc = html.escape
+    has_exhibits = bool(urls or files)
+    toc_entries = [
+        ('sec-investigation-overview', 'Investigation Overview'),
+        ('sec-focus-scope', 'Investigation Focus &amp; Scope'),
+        ('sec-exec-summary', 'Executive Summary'),
+        ('sec-observable-objects', 'Observable Objects (Digital Evidence)'),
+        ('sec-investigative-actions', 'Investigative Actions'),
+        ('sec-analysis-findings', 'Analysis &amp; Analytic Results (Case Notes)'),
+        ('sec-relevant-findings', 'Relevant Findings'),
+        ('sec-tools', 'Tools &amp; Configured Tools'),
+        ('sec-geolocation', 'Geolocation / Location Evidence'),
+        ('sec-conclusion', 'Conclusion'),
+        ('sec-limitations', 'Limitations &amp; Data Handling Markings'),
+        ('sec-provenance-coc', 'Provenance Record / Chain of Custody'),
+    ]
+    if has_exhibits:
+        toc_entries.append(('sec-exhibits', 'Exhibits (Evidence Provenance Records)'))
+    toc_entries.append(('sec-signoff', 'Sign-off &amp; Signatures'))
+    toc_items = ''.join(f'<li><a href="#{esc(a)}">{t}</a></li>' for a, t in toc_entries)
+
+    # Only inlined when this export actually has real placemark data to
+    # render - every export that doesn't use it stays exactly as small as
+    # before, matching _build_html_report_standard's own condition.
+    needs_leaflet = bool(geo_data)
+
+    parts = [
+        '<!doctype html><html><head><meta charset="utf-8">',
+        f'<title>CASE/UCO Report - {esc(str(header["case_number"]))}</title>',
+        _html_report_style_block(),
+        _html_leaflet_assets_block() if needs_leaflet else '',
+        '</head><body>',
+        _html_report_branding_header(header, "CASE/UCO Cyber-Investigation Report"),
+        f'<nav class="toc"><h2>Report Contents</h2><ol>{toc_items}</ol></nav>',
+    ]
+
+    parts.append(_html_case_info_block(header, len(events), anchor_id='sec-investigation-overview', title="Investigation Overview"))
+    parts.append(_html_narrative_block('Investigation Focus & Scope', header.get('objectives'), 'sec-focus-scope'))
+    parts.append(_html_narrative_block('Executive Summary', header.get('executive_summary'), 'sec-exec-summary'))
+    parts.append(_html_evidence_inventory_table(events, title="Observable Objects (Digital Evidence)", anchor_id='sec-observable-objects'))
+    parts.append(f'<h2 id="sec-investigative-actions">Investigative Actions</h2>')
+    parts.append(_html_acquisition_method(events, job_fields))
+    parts.append(_html_case_notes_block(case_notes, anchor_id='sec-analysis-findings', title="Analysis & Analytic Results (Case Notes)", exhibit_numbers=exhibit_numbers))
+    parts.append(_html_narrative_block('Relevant Findings', header.get('findings_summary'), 'sec-relevant-findings'))
+    parts.append(_html_methodology_tools(events, anchor_id='sec-tools'))
+    parts.append(_html_geolocation_block(geo_data or [], title="Geolocation / Location Evidence", anchor_id='sec-geolocation'))
+    parts.append(_html_narrative_block('Conclusion', header.get('conclusion'), 'sec-conclusion'))
+    parts.append(_html_narrative_block('Limitations & Data Handling Markings', header.get('limitations'), 'sec-limitations'))
+    parts.append(_html_audit_trail_block(audit_entries, anchor_id='sec-provenance-coc', title="Provenance Record / Chain of Custody"))
+
+    if has_exhibits:
+        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits', title="Exhibits (Evidence Provenance Records)", captions=captions,
+                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers))
+
+    parts.append(_html_signoff(header['examiner'], anchor_id='sec-signoff'))
 
     parts.append('</body></html>')
     return ''.join(parts)
@@ -10573,49 +11207,82 @@ def export_report():
     analysis_by_path = _analysis_results_for_paths(case_folder, sel_files)
     exhibit_numbers = {p: i for i, p in enumerate(attachments.get('files', []), start=1)}
 
+    # Geolocation section data (KML files + parsed placemarks) - walked/
+    # parsed when the section is either always-on (the caseuco template,
+    # which has no opt-out checkbox - Geolocation is a fixed part of its
+    # structure, mapping onto the ontology's Location module) or reachable
+    # and selected (standard/custom templates via their checkbox; DFIR/
+    # Police never include it at all, matching their fixed structure), same
+    # "compute once before dispatch" pattern as tags_by_path/
+    # analysis_by_path/exhibit_numbers above.
+    geo_data = None
+    if template == 'caseuco' or (resolved_sections is not None and any(e['key'] == 'geolocation' for e in resolved_sections)):
+        geo_data = _collect_case_geolocation(case_folder, attachments.get('files', []))
+
+    # preview=True renders the exact same document a real export would
+    # produce, but returns it inline (no Content-Disposition, so a browser
+    # shows it in an iframe rather than downloading it) and skips writing
+    # anything to disk - no out_path write, no .sha256 sidecar. Every other
+    # part of this route above (template resolution, sections, event
+    # filtering, attachment selection, tags/analysis/exhibit numbers,
+    # geolocation data) is identical for both modes.
+    preview = bool(req.get('preview'))
+
     try:
+        pdf_buf = io.BytesIO() if fmt == 'pdf' else None
+        html_content = None
+
         if template == 'dfir':
             if fmt == 'html':
-                out_path = report_file.rsplit('.json', 1)[0] + '.html'
-                with open(out_path, 'w') as f:
-                    f.write(_build_html_report_dfir(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
-                                                     tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers))
+                html_content = _build_html_report_dfir(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
+                                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
             else:
-                out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-                _build_pdf_report_dfir(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
-                                       tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
+                _build_pdf_report_dfir(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
+                                        tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
         elif template == 'police':
             if fmt == 'html':
-                out_path = report_file.rsplit('.json', 1)[0] + '.html'
-                with open(out_path, 'w') as f:
-                    f.write(_build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
-                                                       tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers))
+                html_content = _build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
+                                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
             else:
-                out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-                _build_pdf_report_police(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
-                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
+                _build_pdf_report_police(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
+                                          tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
+        elif template == 'caseuco':
+            if fmt == 'html':
+                html_content = _build_html_report_caseuco(header, events, sel_urls, sel_files, audit_entries, case_notes, job_fields, captions=captions,
+                                                            tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data)
+            else:
+                _build_pdf_report_caseuco(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, job_fields, captions=captions,
+                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data)
         elif fmt == 'html':
-            out_path = report_file.rsplit('.json', 1)[0] + '.html'
-            with open(out_path, 'w') as f:
-                f.write(_build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
-                                                     tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers))
+            html_content = _build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
+                                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data)
         else:
-            out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-            _build_pdf_report_standard(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
-                                       tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
+            _build_pdf_report_standard(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
+                                        tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data)
+
+        if fmt == 'html':
+            content_bytes = html_content.encode('utf-8')
+            mimetype = 'text/html; charset=utf-8'
+        else:
+            content_bytes = pdf_buf.getvalue()
+            mimetype = 'application/pdf'
+
+        if preview:
+            return Response(content_bytes, mimetype=mimetype)
+
+        out_path = report_file.rsplit('.json', 1)[0] + ('.html' if fmt == 'html' else '.pdf')
+        with open(out_path, 'wb') as f:
+            f.write(content_bytes)
 
         # A report-level integrity hash - computed over the exported file's
-        # actual bytes, not the source case JSON, so it verifies the specific
+        # actual bytes (already in memory, the same bytes just written to
+        # disk above), not the source case JSON, so it verifies the specific
         # PDF/HTML artifact an examiner hands off, not just the data behind
         # it. Written as a standard sha256sum-format sidecar file (so
         # `sha256sum -c` works directly against it later) and also returned
         # as a response header so the examiner sees it immediately, not only
         # by going and finding the sidecar file afterward.
-        report_hash = hashlib.sha256()
-        with open(out_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(65536), b''):
-                report_hash.update(chunk)
-        digest = report_hash.hexdigest()
+        digest = hashlib.sha256(content_bytes).hexdigest()
         with open(out_path + '.sha256', 'w') as f:
             f.write(f"{digest}  {os.path.basename(out_path)}\n")
 
