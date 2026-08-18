@@ -157,6 +157,18 @@ for anything missing. All from a left-nav Settings screen, not a shell.
   <em>File Explorer's Metadata tab — real filesystem facts (size, extension, MIME type, timestamps, permissions, owner/group) for any file or folder, with ExifTool's embedded metadata layered below for files.</em>
 </p>
 
+<p align="center">
+  <img src="docs/images/PIF10.JPG" width="100%" alt="Service Controls & Diagnostics" />
+  <br>
+  <em>Settings — Service Controls & Diagnostics: restart the service, reload the kiosk, pull app/OS updates, check tool versions, run a fixed diagnostics allowlist, and reboot or power off the station.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF11.JPG" width="100%" alt="User Accounts and User Groups" />
+  <br>
+  <em>Settings — Security: per-examiner accounts with Created/Last Login tracking, and User Groups for real role-based access control — Admin always has full access, Analyst is the adjustable default, and custom groups can be built from any mix of the 7 permission keys.</em>
+</p>
+
 ---
 
 ## 📋 Prerequisites, Setup & Usage
