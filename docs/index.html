@@ -207,6 +207,14 @@
   .shot figcaption { padding: 16px 18px; font-size: 13.5px; color: var(--muted); }
   .shot figcaption b { color: var(--ink-dim); font-family: var(--mono); font-weight: 600; font-size: 12px; letter-spacing: 0.04em; display: block; margin-bottom: 4px; text-transform: uppercase; }
   .shot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .shot.featured {
+    grid-column: 1 / -1;
+    border-color: var(--gold-deep);
+    box-shadow: 0 0 0 1px rgba(215,171,62,0.22), 0 34px 70px -34px rgba(215,171,62,0.32);
+  }
+  .shot.featured figcaption { padding: 22px 26px 24px; }
+  .shot.featured figcaption b { color: var(--gold-hi); font-size: 13px; }
+  .shot.featured figcaption p { font-size: 15px; color: var(--ink-dim); margin-top: 4px; max-width: 620px; }
 
   /* ---------- Security strip ---------- */
   .sec-strip { background: linear-gradient(160deg, rgba(215,171,62,0.05), rgba(255,255,255,0.015)); border: 1px solid var(--border); border-radius: 16px; padding: 40px; }
@@ -418,10 +426,6 @@
         <figcaption><b>Reporting</b>Case Notes, Report Narrative, Jobs, and Audit Trail &mdash; a real DFIR report structure, not a JSON dump.</figcaption>
       </figure>
       <figure class="shot">
-        <img src="images/PIF7.JPG" alt="File Explorer previewing a KML geolocation export as a live map">
-        <figcaption><b>Geolocation Preview</b>A KML export rendered inline as a live map &mdash; no separate GIS tool needed to see where evidence photos were taken.</figcaption>
-      </figure>
-      <figure class="shot">
         <img src="images/PIF8.JPG" alt="File Explorer Hex tab showing an offset/hex/ASCII dump">
         <figcaption><b>Hex View</b>A classic offset/hex/ASCII dump of the selected file, right in the Details panel.</figcaption>
       </figure>
@@ -436,6 +440,10 @@
       <figure class="shot">
         <img src="images/PIF11.JPG" alt="Settings User Accounts and User Groups panel">
         <figcaption><b>User Groups</b>Real per-examiner accounts with role-based access control &mdash; Admin, an adjustable Analyst default, and custom groups built from any mix of permissions.</figcaption>
+      </figure>
+      <figure class="shot featured">
+        <img src="images/PIF7.JPG" alt="File Explorer previewing a KML geolocation export as a live map">
+        <figcaption><b>Geolocation Preview</b><p>A KML export rendered inline as a live map, right next to the folder tree &mdash; no separate GIS tool needed to see where evidence photos were taken.</p></figcaption>
       </figure>
     </div>
   </div>
