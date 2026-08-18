@@ -589,6 +589,7 @@ let explorerSortDir = 'asc';
 let explorerActiveRows = [];          // [{name, size, modified, raw}, ...]
 let explorerActiveRowRenderer = null; // (tbody, rawItem) => appends one <tr>
 let explorerRenderUpRow = null;       // () => void, appends the context's "Up"/"Back" row, or null for none
+let explorerListingExtraCols = [];    // extra non-sortable column labels appended after the standard 6 (File Views only - reset to [] by every other populator)
 
 function buildExplorerListingTable() {
     const table = document.createElement('table');
@@ -602,6 +603,11 @@ function buildExplorerListingTable() {
         let text = label;
         if (explorerSortField === field) text += explorerSortDir === 'asc' ? ' ▲' : ' ▼';
         th.textContent = text;
+        headRow.appendChild(th);
+    });
+    explorerListingExtraCols.forEach(label => {
+        const th = document.createElement('th');
+        th.textContent = label;
         headRow.appendChild(th);
     });
     thead.appendChild(headRow);
@@ -740,13 +746,111 @@ function buildFileTableRow(tbody, item) {
 let explorerTreeChildrenCache = {};      // real-fs: path -> [{path,name}, ...] (folders only)
 let explorerImageTreeChildrenCache = {}; // image mode: "img:<inode>" -> [{inode,name}, ...]
 let explorerRealTreeRootEl = null;       // persisted <ul> DOM node - kept alive (with full expand state) across an image-mode excursion, not rebuilt on exit
+let explorerImageFsRootsCache = {};      // image_path -> [{offset,label}, ...] from /api/image/mmls, so expanding a .dd inline doesn't re-run mmls on every re-expand
+
+// Resolves what an image's root filesystem(s) are: a single pass-through
+// entry (no partition table, or exactly one partition - the common case,
+// including this project's own primary test image) or one entry per
+// partition when there are several. Mirrors the same "no partition table ->
+// whole image at offset 0" fallback loadExplorerImagePartitions() already
+// uses for the full image-mode toolbar's own partition dropdown - this is
+// the inline-tree-nesting equivalent, reusing the same /api/image/mmls route.
+async function resolveImageFsRoots(imagePath) {
+    if (explorerImageFsRootsCache[imagePath]) return explorerImageFsRootsCache[imagePath];
+    let roots;
+    try {
+        const res = await fetch('/api/image/mmls', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: imagePath })
+        });
+        const data = await res.json();
+        if (!data.success || !data.partitions || data.partitions.length === 0) {
+            roots = [{ offset: 0, label: 'Whole image (offset 0)' }];
+        } else {
+            roots = data.partitions.map(p => ({
+                offset: p.start_sector,
+                label: data.partitions.length === 1 ? p.description : `Slot ${p.slot}: ${p.description}`,
+            }));
+        }
+    } catch (err) {
+        roots = [{ offset: 0, label: 'Whole image (offset 0)' }];
+    }
+    explorerImageFsRootsCache[imagePath] = roots;
+    return roots;
+}
+
+// In-image entry -> tree-node mapping, shared between a freshly-resolved
+// filesystem root and any deeper directory inside it - identical filter to
+// explorerTreeImageAdapter's own fetchChildren (deleted/virtual directories
+// never expandable, same "don't walk a possibly-reallocated inode" rule used
+// everywhere else in this app TSK-walks), just additionally carrying
+// imageCtx on every child instead of relying on the module-level
+// explorerImagePath/explorerImageOffset globals - this is what lets an
+// inline-nested image subtree keep working correctly regardless of whatever
+// else the examiner does elsewhere in the tree/Listing at the same time.
+function mapImageEntriesToNodes(entries, imageCtx) {
+    return entries.map(e => ({
+        imageCtx, inode: e.inode, name: e.name,
+        kind: (e.is_dir && !e.is_virtual && !e.deleted) ? 'dir' : 'file',
+        raw: e,
+    }));
+}
+
+async function fetchImageFls(imageCtx, inode) {
+    const res = await fetch('/api/image/fls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_path: imageCtx.image_path, offset: imageCtx.offset, inode: inode || '' })
+    });
+    const data = await res.json();
+    return data.success ? data.entries : [];
+}
 
 function explorerTreeRealAdapter() {
     return {
         cache: explorerTreeChildrenCache,
-        key: (node) => node.path,
+        key: (node) => node.imageCtx ? `img:${node.imageCtx.image_path}:${node.imageCtx.offset}:${node.inode}` : node.path,
         label: (node) => node.name,
         async fetchChildren(node) {
+            // In-image node (a resolved filesystem root, or anything deeper inside
+            // one) - expands inline as real nested tree children instead of
+            // swapping the whole panel to full image mode, using the same
+            // /api/image/fls route full image-mode's own tree already uses.
+            if (node.imageCtx) {
+                try {
+                    return mapImageEntriesToNodes(await fetchImageFls(node.imageCtx, node.inode), node.imageCtx);
+                } catch (err) {
+                    return [];
+                }
+            }
+            // The image FILE itself (.dd/.e01/.aff), first expand - resolve its
+            // filesystem(s) via mmls; a single filesystem (the common case, incl.
+            // this project's own primary test image) skips straight to that
+            // filesystem's root entries as this node's children, so expanding a
+            // typical image goes directly to its real folders with no extra
+            // "Partition 1" pseudo-level in between. Multiple filesystems each
+            // become their own expandable child node instead.
+            if (node.kind === 'image') {
+                try {
+                    const roots = await resolveImageFsRoots(node.path);
+                    if (roots.length === 1) {
+                        const imageCtx = { image_path: node.path, offset: roots[0].offset };
+                        return mapImageEntriesToNodes(await fetchImageFls(imageCtx, ''), imageCtx);
+                    }
+                    return roots.map(r => ({
+                        imageCtx: { image_path: node.path, offset: r.offset },
+                        // raw is a synthetic entry-dict-shaped stand-in (no real inode/size -
+                        // this node represents "a whole filesystem", not a file or folder
+                        // inside one) so context-menu/is_dir-based logic elsewhere doesn't
+                        // choke on a null entry if this node is ever right-clicked.
+                        inode: '', name: r.label, kind: 'dir',
+                        raw: { name: r.label, inode: '', is_dir: true, deleted: false, is_virtual: false, size: null },
+                    }));
+                } catch (err) {
+                    return [];
+                }
+            }
             try {
                 const res = await fetch('/api/files/browse', {
                     method: 'POST',
@@ -758,9 +862,8 @@ function explorerTreeRealAdapter() {
                 // Files are included as leaf nodes (not just folders) so the
                 // tree mirrors the full hierarchy, matching Autopsy's Data
                 // Sources tree - a recognized forensic image gets its own
-                // 'image' kind so the renderer can make its chevron dive
-                // straight into Sleuth Kit browsing instead of a normal
-                // folder expand.
+                // 'image' kind so it expands inline into its own filesystem
+                // (above) instead of a normal real-fs folder expand.
                 return data.items.map(it => ({
                     path: it.path,
                     name: it.name,
@@ -771,7 +874,10 @@ function explorerTreeRealAdapter() {
                 return [];
             }
         },
-        navigate: (node) => loadExplorer(node.path),
+        navigate: (node, ancestorPath) => {
+            if (node.imageCtx || node.kind === 'image') return loadInlineImageDir(node, ancestorPath);
+            return loadExplorer(node.path);
+        },
         // Clicking a file in the tree now navigates the Listing pane to that file's own folder
         // (not just Details, as this originally shipped) - reported as confusing/broken, since the
         // Listing pane could be showing a completely unrelated directory with no visible connection
@@ -779,6 +885,10 @@ function explorerTreeRealAdapter() {
         // real .click() on the matching <tr> (see buildFileTableRow's data-item-path) rather than
         // duplicating what a click already does.
         selectFile: async (node) => {
+            if (node.imageCtx) {
+                selectImageBackedFile(node.imageCtx, node.raw);
+                return;
+            }
             const parentDir = node.raw.path.split('/').slice(0, -1).join('/') || '/';
             if (explorerPath !== parentDir) {
                 await loadExplorer(parentDir);
@@ -801,7 +911,111 @@ function explorerTreeRealAdapter() {
             // itself so the tree's selection state matches what's actually selected.
             syncExplorerTreeSelection(node.raw.path);
         },
-        contextMenu: (ev, node) => showFileContextMenu(ev, node.raw),
+        contextMenu: (ev, node) => {
+            if (node.imageCtx) {
+                // showExplorerImageContextMenu() itself sets explorerImageSelected,
+                // but the actual action buttons (Extract, Attach to Case, etc.) read
+                // explorerImagePath/explorerImageOffset when clicked later, not at
+                // menu-open time - repoint those first, same as a real selection would.
+                explorerImagePath = node.imageCtx.image_path;
+                explorerImageOffset = node.imageCtx.offset;
+                showExplorerImageContextMenu(ev, node.raw);
+                return;
+            }
+            showFileContextMenu(ev, node.raw);
+        },
+    };
+}
+
+// Populates the Listing table with an in-image directory's contents WITHOUT
+// entering full image mode - reuses the exact same sortable-table pipeline
+// (explorerActiveRows/explorerActiveRowRenderer/explorerRenderUpRow/
+// renderExplorerActiveTable()) real-fs folders and full image-mode browsing
+// both already use, not a third bespoke rendering path. `node` is the
+// tree node just navigated to (either the image file itself, kind:'image',
+// or a deeper node carrying imageCtx); `ancestorPath` is threaded through
+// from the tree renderer the same way real-fs navigation already gets it.
+async function loadInlineImageDir(node, ancestorPath) {
+    const container = document.getElementById("explorerContainer");
+    if (container) container.innerHTML = '<div class="p-2 text-subtle small">Loading...</div>';
+
+    let childNodes;
+    try {
+        childNodes = await explorerTreeRealAdapter().fetchChildren(node);
+    } catch (err) {
+        if (container) container.innerHTML = '<div class="p-2 text-danger small">Request failed.</div>';
+        return;
+    }
+    if (!container) return;
+
+    const childAncestors = ancestorPath.concat([node]);
+
+    // "Up" always recurses back through the SAME adapter.navigate() dispatch
+    // that got us here - ancestorPath's last entry is either another
+    // in-image directory, the image file itself (re-resolves its filesystem
+    // root/partition chooser, cached), or - once fully unwound - the real
+    // folder the image lives in (a plain 'dir' node with no imageCtx, so
+    // navigate() correctly falls through to the ordinary loadExplorer() path).
+    // No separate "exit" concept needed - it's the same tree ancestry the
+    // real-fs side already threads through for exactly this purpose.
+    explorerRenderUpRow = () => {
+        const upDiv = document.createElement('div');
+        upDiv.className = 'file-item text-warning fw-bold';
+        upDiv.innerHTML = '<i class="bi bi-arrow-up-left me-1"></i>.. [Up]';
+        const parent = ancestorPath[ancestorPath.length - 1];
+        const grandparents = ancestorPath.slice(0, -1);
+        upDiv.onclick = () => explorerTreeRealAdapter().navigate(parent, grandparents);
+        container.appendChild(upDiv);
+    };
+
+    explorerActiveRows = childNodes.map(child => ({
+        name: child.raw.name, size: child.raw.size, modified: child.raw.mtime,
+        accessed: child.raw.atime, changed: child.raw.ctime, created: child.raw.crtime, raw: child,
+    }));
+    explorerListingExtraCols = [];
+    explorerActiveRowRenderer = (tbody, child) => renderInlineImageEntryRow(tbody, child, childAncestors);
+    renderExplorerActiveTable();
+}
+
+// Row for one entry inside an inline-nested image directory - reuses
+// renderExplorerImageEntryRow()'s visual construction (icon, DELETED badge,
+// size/MACB columns) but overrides the click handlers afterward to close
+// over this row's own imageCtx instead of the module-level
+// explorerImagePath/explorerImageOffset globals renderExplorerImageEntryRow's
+// own handlers read - avoids duplicating the DOM-building code for what's
+// visually the same row. `childNode` is a tree-node ({imageCtx, inode, name,
+// kind, raw}), not a bare entry-dict - `childNode.raw` is what
+// renderExplorerImageEntryRow() itself expects.
+function renderInlineImageEntryRow(tbody, childNode, childAncestors) {
+    renderExplorerImageEntryRow(tbody, childNode.raw);
+    const tr = tbody.lastElementChild;
+    tr.onclick = () => {
+        document.querySelectorAll('.file-pane .file-item').forEach(el => el.classList.remove('active'));
+        tr.classList.add('active');
+        if (!childNode.raw.is_dir) {
+            selectImageBackedFile(childNode.imageCtx, childNode.raw);
+        } else {
+            // Matches renderExplorerImageEntryRow's own convention: a single
+            // click on a folder row just selects/highlights it; double-click
+            // (below) descends into it.
+            explorerImageSelected = childNode.raw;
+            explorerDetailsIsImage = true;
+            refreshExplorerDetailsView();
+        }
+    };
+    tr.ondblclick = () => {
+        if (childNode.kind === 'dir') {
+            explorerTreeRealAdapter().navigate(childNode, childAncestors);
+        }
+    };
+    tr.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        if (childNode.imageCtx) {
+            explorerImagePath = childNode.imageCtx.image_path;
+            explorerImageOffset = childNode.imageCtx.offset;
+        }
+        showExplorerImageContextMenu(ev, childNode.raw);
+        return false;
     };
 }
 
@@ -891,15 +1105,12 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
     // can force an ancestor open without simulating a click.
     li._expand = async function () {
         if (expanded || node.kind === 'file') return;
-        if (node.kind === 'image') {
-            // Diving into a recognized forensic image swaps the whole tree to
-            // Sleuth Kit browsing (enterExplorerImageFor already does this,
-            // matching the same entry point double-clicking the file in the
-            // Listing table uses) - "Exit Image" in the toolbar is the way
-            // back, there's no local collapse for this node once entered.
-            enterExplorerImageFor(node.raw);
-            return;
-        }
+        // 'image'-kind nodes (a .dd/.e01/.aff) and any node carrying imageCtx
+        // (something already inside one) expand inline exactly like a normal
+        // folder - the real branching (mmls/fls, single-fs vs multi-partition)
+        // lives in explorerTreeRealAdapter's fetchChildren(), not here. Full
+        // Sleuth Kit browsing (the dedicated toolbar) is still reached
+        // separately, via double-click or "Browse as Image" - unaffected.
         const cacheKey = adapter.key(node);
         let children = adapter.cache[cacheKey];
         if (!children) {
@@ -924,7 +1135,6 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
     toggle.onclick = async (ev) => {
         ev.stopPropagation();
         if (toggle.classList.contains('no-children')) return;
-        if (node.kind === 'image') { await li._expand(); return; } // always (re-)enters, no local collapse state
         if (!expanded) {
             await li._expand();
         } else if (childrenUl) {
@@ -937,7 +1147,10 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
     row.onclick = () => {
         document.querySelectorAll('#explorerTreeContainer .explorer-tree-node.active').forEach(el => el.classList.remove('active'));
         row.classList.add('active');
-        if (node.kind === 'dir') {
+        // 'image' nodes and any in-image directory (imageCtx set, kind !== 'file')
+        // navigate the Listing table too, matching how a real folder's row
+        // already behaves - only true file leaves go to adapter.selectFile().
+        if (node.kind === 'dir' || node.kind === 'image') {
             adapter.navigate(node, ancestorPath);
         } else {
             adapter.selectFile(node);
@@ -1048,6 +1261,14 @@ function buildFileViewsHierarchy(summary) {
         id: `fv-hit-${cat}`, name: `${FILE_VIEWS_HIT_LABELS[cat]} (${summary.keyword_hits[cat] || 0})`,
         kind: 'file', queryType: 'hits', queryCategory: cat,
     }));
+    // A star prefix flags "notable" tags (Autopsy's convention for
+    // examiner-flagged evidence of interest) - simple text, not a real icon,
+    // so this doesn't need any change to the generic tree renderer's
+    // kind-based icon logic.
+    const tagChildren = (summary.tags || []).map(t => ({
+        id: `fv-tag-${t.id}`, name: `${t.notable ? '★ ' : ''}${t.name} (${t.count})`,
+        kind: 'file', queryType: 'tags', tagId: t.id, tagColor: t.color, tagNotable: t.notable,
+    }));
     const children = [
         {
             id: 'fv-file-types', name: 'File Types', kind: 'dir',
@@ -1058,6 +1279,12 @@ function buildFileViewsHierarchy(summary) {
         {
             id: 'fv-deleted', name: `Deleted Files (${summary.deleted_files || 0})`, kind: 'file',
             queryType: 'files', queryCategory: '__deleted__',
+        },
+        {
+            id: 'fv-tagged', name: 'Tagged Files', kind: 'dir',
+            staticChildren: tagChildren.length ? tagChildren : [
+                { id: 'fv-tagged-empty', name: 'No tags yet - right-click a file and choose Tag...', kind: 'file' },
+            ],
         },
         {
             id: 'fv-analysis', name: 'Analysis Results', kind: 'dir',
@@ -1106,6 +1333,13 @@ async function initFileViewsTree(forceRebuild) {
         container.appendChild(explorerFileViewsTreeRootEl);
         return;
     }
+    // A forced rebuild (tagging invalidates the tree this way so counts stay
+    // current) must remove the OLD section before building a new one -
+    // appendChild() alone would just add a second, stale-duplicate File
+    // Views section next to the fresh one instead of replacing it.
+    if (explorerFileViewsTreeRootEl && explorerFileViewsTreeRootEl.parentNode) {
+        explorerFileViewsTreeRootEl.remove();
+    }
     explorerFileViewsChildrenCache = {};
     const wrap = document.createElement('div');
     wrap.className = 'explorer-fileviews-section mt-2 pt-2 border-top';
@@ -1140,12 +1374,17 @@ async function initFileViewsTree(forceRebuild) {
 async function runFileViewsQuery(node, caseFolder) {
     const container = document.getElementById('explorerContainer');
     if (container) container.innerHTML = '<div class="p-2 text-subtle small">Loading...</div>';
-    const endpoint = node.queryType === 'hits' ? '/api/case_index/hits' : '/api/case_index/files';
+    const endpoint = node.queryType === 'hits' ? '/api/case_index/hits'
+        : node.queryType === 'tags' ? '/api/case_index/tagged_files'
+        : '/api/case_index/files';
+    const body = node.queryType === 'tags'
+        ? { case_folder: caseFolder, tag_id: node.tagId }
+        : { case_folder: caseFolder, category: node.queryCategory };
     try {
         const res = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ case_folder: caseFolder, category: node.queryCategory })
+            body: JSON.stringify(body)
         });
         const data = await res.json();
         renderFileViewsResults(node, data.rows || []);
@@ -1154,83 +1393,67 @@ async function runFileViewsQuery(node, caseFolder) {
     }
 }
 
+// Routes File Views results through the exact same sortable-Listing pipeline
+// (explorerActiveRows/explorerActiveRowRenderer/renderExplorerActiveTable)
+// every other Listing view already uses, so results get the identical
+// standard Name/Size/Modified/Accessed/Changed/Created columns (with real
+// sorting) instead of a bespoke, narrower column set - plus a few extra
+// columns (Source Image, and for hits, the matched Value) appended after
+// them, since File Views results can span every image indexed in the case,
+// something a normal single-directory listing never needs to show.
 function renderFileViewsResults(node, rows) {
-    const container = document.getElementById('explorerContainer');
-    if (!container) return;
-    container.innerHTML = '';
-
-    const backDiv = document.createElement('div');
-    backDiv.className = 'file-item text-warning fw-bold';
-    backDiv.innerHTML = '<i class="bi bi-arrow-left me-1"></i>Back to Browse';
-    backDiv.onclick = () => loadExplorer(explorerPath);
-    container.appendChild(backDiv);
-
-    if (rows.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'p-2 text-subtle small';
-        empty.textContent = '(no matches)';
-        container.appendChild(empty);
-        return;
-    }
+    explorerRenderUpRow = () => {
+        const container = document.getElementById('explorerContainer');
+        if (!container) return;
+        const backDiv = document.createElement('div');
+        backDiv.className = 'file-item text-warning fw-bold';
+        backDiv.innerHTML = '<i class="bi bi-arrow-left me-1"></i>Back to Browse';
+        backDiv.onclick = () => loadExplorer(explorerPath);
+        container.appendChild(backDiv);
+    };
 
     const isHits = node.queryType === 'hits';
-    const table = document.createElement('table');
-    table.className = 'table table-dark table-sm table-hover mb-0';
-    const thead = document.createElement('thead');
-    const headRow = document.createElement('tr');
-    const cols = isHits ? ['Value', 'File', 'Source Image', 'Path'] : ['Name', 'Size', 'Source Image', 'Path'];
-    cols.forEach(label => {
-        const th = document.createElement('th');
-        th.textContent = label;
-        headRow.appendChild(th);
-    });
-    thead.appendChild(headRow);
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    table.appendChild(tbody);
-    container.appendChild(table);
-
-    rows.forEach(row => renderFileViewsResultRow(tbody, row, isHits));
+    const isTags = node.queryType === 'tags';
+    explorerListingExtraCols = isHits ? ['Source Image', 'Value', 'Path']
+        : isTags ? ['Source Image', 'Comment', 'Path']
+        : ['Source Image', 'Path'];
+    explorerActiveRows = rows.map(row => ({
+        name: row.name || (row.path ? row.path.split('/').pop() : '(unknown)'),
+        size: row.size, modified: row.mtime, accessed: row.atime, changed: row.ctime, created: row.crtime,
+        raw: row,
+    }));
+    explorerActiveRowRenderer = (tbody, row) => renderFileViewsResultRow(tbody, row, node.queryType);
+    renderExplorerActiveTable();
 }
 
-function renderFileViewsResultRow(tbody, row, isHits) {
-    const tr = document.createElement('tr');
-    tr.className = 'file-item';
+// One result row - reuses renderExplorerImageEntryRow()'s visual
+// construction (icon, DELETED badge, standard MACB columns) exactly like
+// renderInlineImageEntryRow() does for inline-nested image browsing, then
+// appends the File-Views-specific extra columns and overrides the click/
+// right-click handlers to work against this row's own image_path/fs_offset
+// (image-backed rows) or its real filesystem path (source_type='real_fs'
+// Quick Triage Scan hits, or a real-fs tagged file) instead of whatever the
+// shared globals currently point at.
+function renderFileViewsResultRow(tbody, row, queryType) {
+    const isHits = queryType === 'hits';
+    const isTags = queryType === 'tags';
     const name = row.name || (row.path ? row.path.split('/').pop() : '(unknown)');
-    const sourceImage = row.image_path ? row.image_path.split('/').pop() : 'Real filesystem';
-
-    if (isHits) {
-        const valTd = document.createElement('td');
-        valTd.className = 'font-monospace text-warning';
-        valTd.textContent = row.value; // untrusted evidence content, text node only
-        tr.appendChild(valTd);
-    }
-
-    const nameTd = document.createElement('td');
-    const labelSpan = document.createElement('span');
-    labelSpan.className = 'text-light';
-    labelSpan.innerHTML = '<i class="bi bi-file-earmark-text text-info me-2 fs-6"></i>'; // static/trusted markup
-    labelSpan.appendChild(document.createTextNode(name)); // untrusted evidence filename, text-only
-    if (row.deleted) {
-        const delBadge = document.createElement('span');
-        delBadge.className = 'badge bg-danger ms-2';
-        delBadge.textContent = 'DELETED';
-        labelSpan.appendChild(delBadge);
-    }
-    nameTd.appendChild(labelSpan);
-    tr.appendChild(nameTd);
-
-    if (!isHits) {
-        const sizeTd = document.createElement('td');
-        sizeTd.className = 'text-subtle font-monospace';
-        sizeTd.textContent = row.size !== null && row.size !== undefined ? imgFormatBytes(row.size) : '--';
-        tr.appendChild(sizeTd);
-    }
+    const isImageBacked = !!row.image_path;
+    const entry = {
+        name, is_dir: false, size: row.size !== undefined ? row.size : null,
+        deleted: !!row.deleted, is_virtual: false, inode: row.inode,
+        mtime: row.mtime, atime: row.atime, ctime: row.ctime, crtime: row.crtime,
+        path: row.path || null, // File Views already knows the full in-image path - carry it onto the
+                                 // selected entry so anything reading explorerImageSelected later (tagging)
+                                 // gets it too, unlike full/inline image-mode browsing which doesn't have one.
+    };
+    renderExplorerImageEntryRow(tbody, entry, name);
+    const tr = tbody.lastElementChild;
 
     const imgTd = document.createElement('td');
     imgTd.className = 'text-subtle font-monospace';
-    imgTd.appendChild(document.createTextNode(sourceImage));
-    if (row.image_path) {
+    imgTd.appendChild(document.createTextNode(isImageBacked ? row.image_path.split('/').pop() : 'Real filesystem'));
+    if (isImageBacked) {
         const browseBtn = document.createElement('button');
         browseBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 ms-2';
         browseBtn.title = 'Browse this image';
@@ -1239,6 +1462,20 @@ function renderFileViewsResultRow(tbody, row, isHits) {
         imgTd.appendChild(browseBtn);
     }
     tr.appendChild(imgTd);
+
+    if (isHits) {
+        const valTd = document.createElement('td');
+        valTd.className = 'font-monospace text-warning';
+        valTd.textContent = row.value; // untrusted evidence content, text node only
+        tr.appendChild(valTd);
+    }
+
+    if (isTags) {
+        const cmtTd = document.createElement('td');
+        cmtTd.className = 'text-subtle small';
+        cmtTd.textContent = row.comment || ''; // examiner-entered, still a text node only
+        tr.appendChild(cmtTd);
+    }
 
     const pathTd = document.createElement('td');
     pathTd.className = 'text-subtle font-monospace small';
@@ -1251,31 +1488,53 @@ function renderFileViewsResultRow(tbody, row, isHits) {
         selectFileViewsResultRow(row, name);
     };
 
+    tr.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        if (isImageBacked) {
+            explorerImagePath = row.image_path;
+            explorerImageOffset = row.fs_offset || 0;
+            showExplorerImageContextMenu(ev, entry);
+        } else {
+            showFileContextMenu(ev, { path: row.path, is_dir: false, name });
+        }
+        return false;
+    };
+
     tbody.appendChild(tr);
 }
 
-// Targets Preview/Hex/Metadata at this exact row's file WITHOUT entering
-// image mode - the backend routes behind those panes already take
-// image_path/offset per-request (not a server-side "current image"), so
+// Targets Preview/Hex/Metadata at an arbitrary image-backed entry WITHOUT
+// entering full image mode - the backend routes behind those panes already
+// take image_path/offset per-request (not a server-side "current image"), so
 // temporarily pointing the existing explorerImagePath/explorerImageOffset/
-// explorerImageSelected globals at this row's image is enough to reuse
+// explorerImageSelected globals at this entry's image is enough to reuse
 // previewExplorerImageEntry()/loadExplorerImageHexPane()/
-// loadExplorerImageMetadataPane() completely unchanged - a File Views hit
-// can come from a different image than whatever (if anything) was last
-// browsed in image mode, and this works regardless, since entering image
-// mode for real later (enterExplorerImageFor()) always freshly overwrites
-// these same globals anyway.
+// loadExplorerImageMetadataPane() completely unchanged. Shared by File Views
+// result rows and inline-nested tree/listing selections (both can point at a
+// different image than whatever - if anything - was last browsed in full
+// image mode, and this works regardless, since entering image mode for real
+// later (enterExplorerImageFor()) always freshly overwrites these same
+// globals anyway). `imageCtx` is `{image_path, offset}`; `entry` is whatever
+// shape `previewExplorerImageEntry()`/the Hex/Metadata loaders expect
+// (inode, name, is_dir, deleted, is_virtual, size - deleted/is_virtual/size
+// are optional, matching entries that don't carry them e.g. a triage hit).
+function selectImageBackedFile(imageCtx, entry) {
+    explorerImagePath = imageCtx.image_path;
+    explorerImageOffset = imageCtx.offset || 0;
+    explorerImageSelected = entry;
+    explorerDetailsIsImage = true;
+    if (!entry.is_dir) previewExplorerImageEntry(entry);
+    refreshExplorerDetailsView();
+}
+
 function selectFileViewsResultRow(row, displayName) {
     if (row.image_path) {
-        explorerImagePath = row.image_path;
-        explorerImageOffset = row.fs_offset || 0;
-        explorerImageSelected = {
+        selectImageBackedFile({ image_path: row.image_path, offset: row.fs_offset || 0 }, {
             inode: row.inode, name: displayName, is_dir: false,
             deleted: !!row.deleted, is_virtual: false,
             size: row.size !== undefined ? row.size : null,
-        };
-        explorerDetailsIsImage = true;
-        previewExplorerImageEntry(explorerImageSelected);
+            path: row.path || null,
+        });
     } else {
         // source_type 'real_fs' - a Quick Triage Scan hit against a real file,
         // not anything living inside an acquired image.
@@ -1283,8 +1542,386 @@ function selectFileViewsResultRow(row, displayName) {
         activeSelectedIsDir = false;
         explorerDetailsIsImage = false;
         previewSelectedFile({ path: row.path, name: displayName, is_dir: false });
+        refreshExplorerDetailsView();
     }
-    refreshExplorerDetailsView();
+}
+
+// --- Tagging: flag a real-fs or in-image file as evidence of interest
+// (Bookmark/Follow Up/Notable Item by default, custom tags supported),
+// modeled on Autopsy's tagging feature. Reachable from the "Tag..." button
+// in both context-menu groups (real filesystem and in-image), which - since
+// File Views results already route through those same two menus - means it
+// works identically whether the file was reached by normal browsing, full
+// image-mode browsing, inline-nested tree browsing, or a File Views result
+// row, with zero per-surface special-casing needed here. ---
+let tagItemModalInstance = null;
+let currentTagTargetItem = null; // {source_type, image_path, fs_offset, inode, path, name}
+
+// Reads whichever context-menu group is currently showing (set by
+// showFileContextMenu()/showExplorerImageContextMenu(), both already called
+// before "Tag..." can be clicked) to build the identity descriptor the
+// backend's tag endpoints expect - same globals every other context-menu
+// action already reads, just assembled into one object here.
+function getCurrentTagTargetItem() {
+    const imageActionsVisible = document.getElementById('ctxMenuImageActions')?.style.display !== 'none';
+    if (imageActionsVisible && explorerImageSelected) {
+        return {
+            source_type: 'image', image_path: explorerImagePath, fs_offset: explorerImageOffset || 0,
+            inode: explorerImageSelected.inode, path: explorerImageSelected.path || null,
+            name: explorerImageSelected.name,
+        };
+    }
+    if (activeSelectedFile) {
+        return { source_type: 'real_fs', path: activeSelectedFile, name: activeSelectedFile.split('/').pop() };
+    }
+    return null;
+}
+
+async function openTagItemModal() {
+    const item = getCurrentTagTargetItem();
+    if (!item) return;
+    if (!activeCase || !activeCase.case_folder) {
+        showToast('Select or create a case before tagging.', 'warning');
+        return;
+    }
+    currentTagTargetItem = item;
+    hideFileContextMenu();
+
+    document.getElementById('tagItemFileName').textContent = item.name;
+    document.getElementById('tagItemComment').value = '';
+    document.getElementById('tagItemModalStatus').textContent = '';
+    document.getElementById('newTagName').value = '';
+    document.getElementById('newTagNotable').checked = false;
+    const formCollapse = document.getElementById('tagItemNewTagForm');
+    if (formCollapse && formCollapse.classList.contains('show')) {
+        bootstrap.Collapse.getOrCreateInstance(formCollapse).hide();
+    }
+
+    if (!tagItemModalInstance) {
+        tagItemModalInstance = new bootstrap.Modal(document.getElementById('tagItemModal'));
+    }
+    tagItemModalInstance.show();
+    await refreshTagItemModalList();
+}
+
+async function refreshTagItemModalList() {
+    const listEl = document.getElementById('tagItemExistingList');
+    listEl.innerHTML = '<div class="text-subtle small p-2">Loading tags...</div>';
+    try {
+        const [summaryRes, itemRes] = await Promise.all([
+            fetch('/api/case_index/summary', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ case_folder: activeCase.case_folder })
+            }),
+            fetch('/api/case_index/item_tags', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ case_folder: activeCase.case_folder, ...currentTagTargetItem })
+            }),
+        ]);
+        const summary = await summaryRes.json();
+        const itemTagsData = await itemRes.json();
+        const appliedTags = itemTagsData.tags || [];
+        const appliedIds = new Set(appliedTags.map(t => t.id));
+        renderTagItemModalList(summary.tags || [], appliedIds, appliedTags);
+    } catch (err) {
+        listEl.innerHTML = '<div class="text-danger small p-2">Failed to load tags.</div>';
+    }
+}
+
+// TEXT_BG_SAFE_COLORS: which Bootstrap contextual colors need dark text for
+// readable contrast on this app's dark theme - matches the same small,
+// fixed palette ALLOWED_TAG_COLORS (app.py) validates against.
+const TAG_LIGHT_TEXT_COLORS = new Set(['warning', 'info', 'success']);
+
+function renderTagItemModalList(allTags, appliedIds, appliedTags) {
+    const listEl = document.getElementById('tagItemExistingList');
+    listEl.innerHTML = '';
+    if (allTags.length === 0) {
+        listEl.innerHTML = '<div class="text-subtle small p-2">No tags defined yet - create one below.</div>';
+        return;
+    }
+    allTags.forEach(tag => {
+        const isApplied = appliedIds.has(tag.id);
+        const row = document.createElement('div');
+        row.className = 'list-group-item bg-dark text-light d-flex justify-content-between align-items-center py-2';
+
+        const left = document.createElement('div');
+        const badge = document.createElement('span');
+        badge.className = `badge bg-${tag.color} me-2`;
+        badge.textContent = tag.notable ? '★' : '•'; // star for notable, bullet otherwise
+        left.appendChild(badge);
+        left.appendChild(document.createTextNode(tag.name)); // tag names are examiner-entered, text node only
+        const countSpan = document.createElement('span');
+        countSpan.className = 'text-subtle small ms-2';
+        countSpan.textContent = `(${tag.count})`;
+        left.appendChild(countSpan);
+        if (isApplied) {
+            const detail = appliedTags.find(t => t.id === tag.id);
+            if (detail && detail.comment) {
+                const cmt = document.createElement('div');
+                cmt.className = 'text-subtle small mt-1';
+                cmt.textContent = detail.comment; // examiner-entered, text node only
+                left.appendChild(cmt);
+            }
+        }
+        row.appendChild(left);
+
+        const btn = document.createElement('button');
+        btn.className = isApplied ? 'btn btn-sm btn-outline-danger'
+            : `btn btn-sm btn-${tag.color} ${TAG_LIGHT_TEXT_COLORS.has(tag.color) ? 'text-dark' : ''}`;
+        btn.textContent = isApplied ? 'Remove' : 'Apply';
+        btn.onclick = () => isApplied ? removeTagFromCurrentItem(tag.id) : applyTagToCurrentItem(tag.id);
+        row.appendChild(btn);
+
+        listEl.appendChild(row);
+    });
+}
+
+async function applyTagToCurrentItem(tagId) {
+    const statusEl = document.getElementById('tagItemModalStatus');
+    statusEl.textContent = 'Applying...';
+    try {
+        const comment = document.getElementById('tagItemComment').value.trim();
+        const res = await fetch('/api/case_index/tag_item', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder, tag_id: tagId, comment, ...currentTagTargetItem })
+        });
+        const data = await res.json();
+        if (data.success) {
+            statusEl.textContent = `Tagged with "${data.tag.name}".`;
+            document.getElementById('tagItemComment').value = '';
+            await refreshTagItemModalList();
+            initFileViewsTree(true);
+        } else {
+            statusEl.textContent = `Failed: ${data.error}`;
+        }
+    } catch (err) {
+        statusEl.textContent = 'Failed: request error.';
+    }
+}
+
+async function removeTagFromCurrentItem(tagId) {
+    const statusEl = document.getElementById('tagItemModalStatus');
+    statusEl.textContent = 'Removing...';
+    try {
+        const res = await fetch('/api/case_index/untag_item', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder, tag_id: tagId, ...currentTagTargetItem })
+        });
+        const data = await res.json();
+        if (data.success) {
+            statusEl.textContent = 'Tag removed.';
+            await refreshTagItemModalList();
+            initFileViewsTree(true);
+        } else {
+            statusEl.textContent = `Failed: ${data.error}`;
+        }
+    } catch (err) {
+        statusEl.textContent = 'Failed: request error.';
+    }
+}
+
+async function createAndApplyNewTag() {
+    const nameEl = document.getElementById('newTagName');
+    const name = nameEl.value.trim();
+    if (!name) { showToast('Enter a tag name first.', 'warning'); return; }
+    const color = document.getElementById('newTagColor').value;
+    const notable = document.getElementById('newTagNotable').checked;
+    const comment = document.getElementById('tagItemComment').value.trim();
+    const statusEl = document.getElementById('tagItemModalStatus');
+    statusEl.textContent = 'Creating tag...';
+    try {
+        const res = await fetch('/api/case_index/tag_item', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                case_folder: activeCase.case_folder, new_tag_name: name, new_tag_color: color,
+                new_tag_notable: notable, comment, ...currentTagTargetItem
+            })
+        });
+        const data = await res.json();
+        if (data.success) {
+            statusEl.textContent = `Created and applied "${data.tag.name}".`;
+            nameEl.value = '';
+            document.getElementById('newTagNotable').checked = false;
+            document.getElementById('tagItemComment').value = '';
+            await refreshTagItemModalList();
+            initFileViewsTree(true);
+        } else {
+            statusEl.textContent = `Failed: ${data.error}`;
+        }
+    } catch (err) {
+        statusEl.textContent = 'Failed: request error.';
+    }
+}
+
+// --- Settings > Case & Reporting > Manage Tags: create/rename/recolor/
+// delete tags themselves, distinct from applying them to a file above.
+// Tags are per-case data (each case keeps its own tag list in its own
+// analysis index), so this section always operates on whichever case is
+// currently active rather than being a station-wide default like the rest
+// of Case & Reporting - it just shows a "select a case" message otherwise. ---
+let manageTagModalInstance = null;
+let manageTagModalMode = 'create'; // 'create' | 'edit'
+let manageTagModalTagId = null;
+
+async function loadManageTagsSection() {
+    const noteEl = document.getElementById('manageTagsCaseNote');
+    const listEl = document.getElementById('manageTagsListContainer');
+    if (!activeCase || !activeCase.case_folder) {
+        noteEl.textContent = 'Select or create a case in the top bar to manage its tags.';
+        listEl.innerHTML = '';
+        return;
+    }
+    noteEl.textContent = `Managing tags for: ${activeCase.case_number || activeCase.case_folder.split('/').pop()}`;
+    listEl.innerHTML = '<div class="text-subtle small p-2">Loading tags...</div>';
+    try {
+        const res = await fetch('/api/case_index/summary', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder })
+        });
+        const data = await res.json();
+        renderManageTagsList(data.tags || []);
+    } catch (err) {
+        listEl.innerHTML = '<div class="text-danger small p-2">Failed to load tags.</div>';
+    }
+}
+
+function renderManageTagsList(tags) {
+    const listEl = document.getElementById('manageTagsListContainer');
+    listEl.innerHTML = '';
+    if (tags.length === 0) {
+        listEl.innerHTML = '<div class="text-subtle small p-2">No tags yet - create one below.</div>';
+        return;
+    }
+    const table = document.createElement('table');
+    table.className = 'table table-dark table-sm mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>Tag</th><th>Notable</th><th>Used</th><th></th></tr>'; // static/trusted markup
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    tags.forEach(tag => {
+        const tr = document.createElement('tr');
+
+        const nameTd = document.createElement('td');
+        const badge = document.createElement('span');
+        badge.className = `badge bg-${tag.color} me-2`;
+        badge.innerHTML = '&nbsp;'; // static/trusted markup, a plain color swatch
+        nameTd.appendChild(badge);
+        nameTd.appendChild(document.createTextNode(tag.name)); // examiner-entered, text node only
+        tr.appendChild(nameTd);
+
+        const notableTd = document.createElement('td');
+        notableTd.textContent = tag.notable ? '★' : '';
+        tr.appendChild(notableTd);
+
+        const countTd = document.createElement('td');
+        countTd.className = 'text-subtle';
+        countTd.textContent = tag.count;
+        tr.appendChild(countTd);
+
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'text-end';
+        const editBtn = document.createElement('button');
+        editBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 me-1';
+        editBtn.innerHTML = '<i class="bi bi-pencil"></i>';
+        editBtn.title = 'Rename / recolor';
+        editBtn.onclick = () => openEditTagModal(tag);
+        actionsTd.appendChild(editBtn);
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-1';
+        delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+        if (tag.is_default) {
+            delBtn.disabled = true;
+            delBtn.title = "Default tags can't be deleted";
+        } else {
+            delBtn.title = 'Delete tag';
+            delBtn.onclick = () => deleteManageTag(tag.id, tag.name);
+        }
+        actionsTd.appendChild(delBtn);
+        tr.appendChild(actionsTd);
+
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    listEl.appendChild(table);
+}
+
+function openCreateTagModal() {
+    if (!activeCase || !activeCase.case_folder) {
+        showToast('Select or create a case before managing tags.', 'warning');
+        return;
+    }
+    manageTagModalMode = 'create';
+    manageTagModalTagId = null;
+    document.getElementById('manageTagModalTitle').textContent = 'New Tag';
+    document.getElementById('manageTagName').value = '';
+    document.getElementById('manageTagColor').value = 'secondary';
+    document.getElementById('manageTagNotable').checked = false;
+    document.getElementById('manageTagModalStatus').textContent = '';
+    if (!manageTagModalInstance) {
+        manageTagModalInstance = new bootstrap.Modal(document.getElementById('manageTagModal'));
+    }
+    manageTagModalInstance.show();
+}
+
+function openEditTagModal(tag) {
+    manageTagModalMode = 'edit';
+    manageTagModalTagId = tag.id;
+    document.getElementById('manageTagModalTitle').textContent = `Edit Tag: ${tag.name}`;
+    document.getElementById('manageTagName').value = tag.name;
+    document.getElementById('manageTagColor').value = tag.color;
+    document.getElementById('manageTagNotable').checked = tag.notable;
+    document.getElementById('manageTagModalStatus').textContent = '';
+    if (!manageTagModalInstance) {
+        manageTagModalInstance = new bootstrap.Modal(document.getElementById('manageTagModal'));
+    }
+    manageTagModalInstance.show();
+}
+
+async function saveManageTagModal() {
+    const name = document.getElementById('manageTagName').value.trim();
+    const color = document.getElementById('manageTagColor').value;
+    const notable = document.getElementById('manageTagNotable').checked;
+    const statusEl = document.getElementById('manageTagModalStatus');
+    if (!name) { statusEl.textContent = 'Tag name is required.'; return; }
+    statusEl.textContent = 'Saving...';
+    const endpoint = manageTagModalMode === 'edit' ? '/api/case_index/tags/update' : '/api/case_index/tags/create';
+    const body = { case_folder: activeCase.case_folder, name, color, notable };
+    if (manageTagModalMode === 'edit') body.tag_id = manageTagModalTagId;
+    try {
+        const res = await fetch(endpoint, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.success) {
+            manageTagModalInstance.hide();
+            loadManageTagsSection();
+            initFileViewsTree(true);
+        } else {
+            statusEl.textContent = `Failed: ${data.error}`;
+        }
+    } catch (err) {
+        statusEl.textContent = 'Failed: request error.';
+    }
+}
+
+async function deleteManageTag(tagId, name) {
+    if (!confirm(`Delete tag "${name}"? It will be removed from every file it's currently applied to.`)) return;
+    try {
+        const res = await fetch('/api/case_index/tags/delete', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder, tag_id: tagId })
+        });
+        const data = await res.json();
+        if (data.success) {
+            loadManageTagsSection();
+            initFileViewsTree(true);
+        } else {
+            showToast(`Delete failed: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast('Delete failed: request error.', 'danger');
+    }
 }
 
 // "Browse this image" - jumps into full Sleuth Kit navigation for the row's
@@ -1424,6 +2061,7 @@ async function loadExplorer(path) {
             name: item.name, size: item.size_bytes, modified: item.modified,
             accessed: item.accessed, changed: item.changed, created: item.created, raw: item
         }));
+        explorerListingExtraCols = [];
         explorerActiveRowRenderer = buildFileTableRow;
         renderExplorerActiveTable();
 
@@ -1802,6 +2440,8 @@ function showExplorerImageContextMenu(ev, entry) {
     if (extractBtn) extractBtn.disabled = entry.is_dir;
     const attachBtn = document.getElementById('ctxMenuImageAttach');
     if (attachBtn) attachBtn.disabled = entry.is_dir || !activeCase;
+    const tagBtn = document.getElementById('ctxMenuImageTag');
+    if (tagBtn) tagBtn.disabled = entry.is_dir || !activeCase;
     const binwalkBtn = document.getElementById('ctxMenuImageBinwalk');
     if (binwalkBtn) binwalkBtn.disabled = entry.is_dir;
     const stringsBtn = document.getElementById('ctxMenuImageStrings');
@@ -1836,6 +2476,7 @@ function updateContextToolbar(item) {
     const btnBrowseImage = document.getElementById("btnBrowseImage");
     const btnVerifyHash = document.getElementById("btnVerifyHash");
     const btnAttachToCase = document.getElementById("btnAttachToCase");
+    const btnTagFile = document.getElementById("btnTagFile");
     const btnRecoverFromImage = document.getElementById("btnRecoverFromImage");
     const btnBinwalk = document.getElementById("btnRunBinwalk");
     const btnClamscan = document.getElementById("btnRunClamscan");
@@ -1859,6 +2500,7 @@ function updateContextToolbar(item) {
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnVerifyHash) btnVerifyHash.disabled = item.is_dir;
     if (btnAttachToCase) btnAttachToCase.disabled = item.is_dir || !activeCase;
+    if (btnTagFile) btnTagFile.disabled = item.is_dir || !activeCase;
     if (btnRecoverFromImage) btnRecoverFromImage.disabled = item.is_dir || !isImageFile(item.name);
 }
 
@@ -2578,6 +3220,7 @@ async function loadExplorerImageDir(inode) {
             name: entry.name, size: entry.size, modified: entry.mtime,
             accessed: entry.atime, changed: entry.ctime, created: entry.crtime, raw: entry
         }));
+        explorerListingExtraCols = [];
         explorerActiveRowRenderer = (tbody, entry) => renderExplorerImageEntryRow(tbody, entry);
         renderExplorerActiveTable();
 
@@ -5325,6 +5968,7 @@ document.addEventListener('shown.bs.modal', (ev) => {
 document.getElementById('secAuditLog')?.addEventListener('shown.bs.collapse', () => startCocAutoRefresh());
 document.getElementById('secAuditLog')?.addEventListener('hidden.bs.collapse', () => stopCocAutoRefresh());
 document.getElementById('secNetConfig')?.addEventListener('shown.bs.collapse', () => loadNetworkConfig());
+document.getElementById('secManageTags')?.addEventListener('shown.bs.collapse', () => loadManageTagsSection());
 
 document.addEventListener('shown.bs.tab', (ev) => {
     // Returning to the whole Settings sidebar tab while the Audit Log
