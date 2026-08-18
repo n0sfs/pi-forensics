@@ -1101,6 +1101,29 @@ CREATE TABLE IF NOT EXISTS tagged_items (
     tagged_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tagged_items_tag ON tagged_items(tag_id);
+
+-- Persists Binwalk/ClamAV/Strings tool output (previously ephemeral - shown
+-- once in toolOutputModal and lost on close) so it can be cited as
+-- documented analysis methodology and surfaced on a file's Exhibits entry
+-- in the exported report. Shaped like tagged_items (same source_type/
+-- image_path/fs_offset/inode/path/name identity columns) since a scan can
+-- run against either a real filesystem file or an in-image entry.
+CREATE TABLE IF NOT EXISTS analysis_results (
+    id INTEGER PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    image_path TEXT,
+    fs_offset INTEGER,
+    inode TEXT,
+    path TEXT,
+    name TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    summary TEXT,
+    output TEXT,
+    run_by TEXT,
+    run_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_analysis_path ON analysis_results(path);
+CREATE INDEX IF NOT EXISTS idx_analysis_image ON analysis_results(image_path);
 """
 
 def _case_index_connect(db_path):
@@ -5695,6 +5718,11 @@ def run_binwalk():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
 
+    # Optional, best-effort - see quick_triage_scan()'s matching comment.
+    # Only persisted into the case's analysis index when this file is being
+    # scanned in the context of an active, already-consolidated case.
+    case_folder = req.get('case_folder')
+
     try:
         # Signature scan only - deliberately not using -e (extract), which
         # would write files into the evidence directory automatically.
@@ -5703,7 +5731,11 @@ def run_binwalk():
         # silently as a side effect of scanning.
         res = subprocess.run(['binwalk', file_path], capture_output=True, text=True, timeout=120)
         output = res.stdout.strip() or res.stderr.strip() or "[no output]"
+        sig_count = len(re.findall(r'^\d+\s', output, re.MULTILINE))
+        summary = f"{sig_count} signature(s) found" if sig_count else "No signatures found"
         log_chain_of_custody("binwalk_scan", {"path": file_path})
+        _record_analysis_result(case_folder, {"source_type": "real_fs", "path": file_path,
+                                               "name": os.path.basename(file_path)}, "Binwalk", summary, output)
         return jsonify({"success": True, "file_name": os.path.basename(file_path), "output": output})
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": "binwalk timed out."}), 500
@@ -5751,6 +5783,8 @@ def run_clamscan():
     if not target_path or not os.path.exists(target_path):
         return jsonify({"success": False, "error": "Path not found or outside the permitted evidence directory."}), 400
 
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
+
     try:
         # -r = recursive (harmless no-op on a single file), --no-summary
         # keeps output focused on actual findings rather than a stats block.
@@ -5759,6 +5793,9 @@ def run_clamscan():
         # clamscan exit codes: 0 = clean, 1 = virus(es) found, 2 = error
         infected = res.returncode == 1
         log_chain_of_custody("clamav_scan", {"path": target_path, "infected": infected})
+        _record_analysis_result(case_folder, {"source_type": "real_fs", "path": target_path,
+                                               "name": os.path.basename(target_path)}, "ClamAV",
+                                 "THREAT(S) FOUND" if infected else "CLEAN", output)
         return jsonify({"success": True, "path": target_path, "infected": infected, "output": output})
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": "clamscan timed out."}), 500
@@ -5914,6 +5951,8 @@ def run_strings():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
 
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
+
     try:
         res = subprocess.run(['strings', '-n', '6', file_path], capture_output=True, text=True, timeout=60)
         lines = res.stdout.splitlines()
@@ -5921,7 +5960,11 @@ def run_strings():
         output = "\n".join(lines[:1000])
         if truncated:
             output += f"\n\n[... truncated, {len(lines) - 1000} more lines not shown ...]"
-        return jsonify({"success": True, "file_name": os.path.basename(file_path), "output": output or "[no printable strings found]"})
+        output = output or "[no printable strings found]"
+        summary = f"{min(len(lines), 1000)} line(s) extracted" + (" (capped)" if truncated else "")
+        _record_analysis_result(case_folder, {"source_type": "real_fs", "path": file_path,
+                                               "name": os.path.basename(file_path)}, "Strings", summary, output)
+        return jsonify({"success": True, "file_name": os.path.basename(file_path), "output": output})
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": "strings timed out."}), 500
     except Exception as e:
@@ -7464,6 +7507,117 @@ def _case_index_open_write(case_folder):
         return None
     return _case_index_connect(db_path)
 
+# --- Unified evidence-item lookups: tags and persisted analysis results for
+# a batch of real-filesystem paths at once (not one identity at a time like
+# case_index_item_tags()/nothing, respectively) - shared by the Reporting >
+# Files gallery (JSON round-trip) and export_report() (called directly,
+# server-side, no round-trip). Both are read-only and always scoped to
+# source_type='real_fs' - Exhibits/attachments are always real filesystem
+# paths (already-extracted files), never in-image identities, so neither
+# helper needs the image_path/fs_offset/inode branch case_index_item_tags()
+# has to handle for File Explorer's own per-item lookups. ---
+
+def _tags_for_paths(case_folder, paths):
+    """Returns {path: [{id, name, color, notable, comment}, ...]} for every
+    real-fs path in `paths` that has at least one tag. Empty dict if the
+    case isn't indexed/consolidated, or paths is empty - never an error."""
+    result = {}
+    if not paths:
+        return result
+    conn = _case_index_open_readonly(case_folder)
+    if not conn:
+        return result
+    try:
+        placeholders = ",".join("?" * len(paths))
+        cur = conn.execute(
+            f"SELECT ti.path, t.id, t.name, t.color, t.notable, ti.comment "
+            f"FROM tagged_items ti JOIN tags t ON ti.tag_id=t.id "
+            f"WHERE ti.source_type='real_fs' AND ti.path IN ({placeholders})",
+            paths)
+        for row in cur:
+            result.setdefault(row[0], []).append(
+                {"id": row[1], "name": row[2], "color": row[3], "notable": bool(row[4]), "comment": row[5]})
+    finally:
+        conn.close()
+    return result
+
+ANALYSIS_RESULT_MAX_PER_PATH = 5  # most recent N runs shown per exhibit - a documented history, not an unbounded log dump
+ANALYSIS_RESULT_MAX_OUTPUT_CHARS = 20000  # caps one stored row - same capping discipline used throughout this app
+
+def _analysis_results_for_paths(case_folder, paths):
+    """Returns {path: [{tool, summary, run_by, run_at}, ...]} (most recent
+    first, capped to ANALYSIS_RESULT_MAX_PER_PATH per path) for every
+    real-fs path in `paths` that has at least one recorded analysis run.
+    Deliberately omits the full `output` text here - the gallery/export only
+    need the summary line; the full output was already shown in
+    toolOutputModal at scan time and isn't re-fetched for this enrichment."""
+    result = {}
+    if not paths:
+        return result
+    conn = _case_index_open_readonly(case_folder)
+    if not conn:
+        return result
+    try:
+        placeholders = ",".join("?" * len(paths))
+        cur = conn.execute(
+            f"SELECT path, tool, summary, run_by, run_at FROM analysis_results "
+            f"WHERE source_type='real_fs' AND path IN ({placeholders}) ORDER BY run_at DESC",
+            paths)
+        for row in cur:
+            bucket = result.setdefault(row[0], [])
+            if len(bucket) < ANALYSIS_RESULT_MAX_PER_PATH:
+                bucket.append({"tool": row[1], "summary": row[2], "run_by": row[3], "run_at": row[4]})
+    finally:
+        conn.close()
+    return result
+
+def _record_analysis_result(case_folder, identity, tool, summary, output):
+    """Best-effort persistence of one analysis-tool run, mirroring
+    quick_triage_scan()'s exact optional/non-blocking case-index write
+    pattern: `case_folder` is optional (None/invalid just means "don't
+    persist"), and any failure here is swallowed and logged, never raised -
+    a broken or locked index write must never turn a successful scan into a
+    reported tool failure. `identity` is the same shape
+    _resolve_tag_identity() produces: {source_type, image_path, fs_offset,
+    inode, path, name}."""
+    if not case_folder:
+        return
+    if not case_consolidated_path(case_folder):
+        return
+    db_path = case_index_db_path(case_folder)
+    if not db_path:
+        return
+    try:
+        conn = _case_index_connect(db_path)
+        conn.execute(
+            "INSERT INTO analysis_results (source_type, image_path, fs_offset, inode, path, name, tool, summary, output, run_by, run_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (identity["source_type"], identity.get("image_path"), identity.get("fs_offset"), identity.get("inode"),
+             identity.get("path"), identity["name"], tool, summary, (output or "")[:ANALYSIS_RESULT_MAX_OUTPUT_CHARS],
+             getattr(g, 'forensic_user', None), time.strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Warning: could not record analysis result ({tool}) to case index: {e}")
+
+@app.route('/api/case_index/tags_for_paths', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def case_index_tags_for_paths():
+    req = request.get_json() or {}
+    paths = [safe_path(p) for p in (req.get('paths') or [])]
+    paths = [p for p in paths if p]
+    return jsonify({"success": True, "tags": _tags_for_paths(req.get('case_folder'), paths)})
+
+@app.route('/api/case_index/analysis_for_paths', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def case_index_analysis_for_paths():
+    req = request.get_json() or {}
+    paths = [safe_path(p) for p in (req.get('paths') or [])]
+    paths = [p for p in paths if p]
+    return jsonify({"success": True, "results": _analysis_results_for_paths(req.get('case_folder'), paths)})
+
 @app.route('/api/case_index/summary', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -7891,6 +8045,7 @@ def image_binwalk():
     offset = req.get('offset', 0)
     inode = req.get('inode', '')
     name_hint = req.get('name', '') or 'selected_file'
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
 
     if not image_path or not os.path.isfile(image_path):
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
@@ -7918,7 +8073,12 @@ def image_binwalk():
             except OSError:
                 pass
 
+    sig_count = len(re.findall(r'^\d+\s', output, re.MULTILINE))
+    summary = f"{sig_count} signature(s) found" if sig_count else "No signatures found"
     log_chain_of_custody("binwalk_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
+    _record_analysis_result(case_folder, {"source_type": "image", "image_path": image_path, "fs_offset": offset,
+                                           "inode": str(inode), "path": req.get('path'), "name": name_hint},
+                             "Binwalk", summary, output)
     return jsonify({"success": True, "file_name": name_hint, "output": output})
 
 @app.route('/api/image/strings', methods=['POST'])
@@ -7930,6 +8090,7 @@ def image_strings():
     offset = req.get('offset', 0)
     inode = req.get('inode', '')
     name_hint = req.get('name', '') or 'selected_file'
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
 
     if not image_path or not os.path.isfile(image_path):
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
@@ -7960,6 +8121,10 @@ def image_strings():
             except OSError:
                 pass
 
+    summary = f"{min(len(lines), 1000)} line(s) extracted" + (" (capped)" if truncated else "")
+    _record_analysis_result(case_folder, {"source_type": "image", "image_path": image_path, "fs_offset": offset,
+                                           "inode": str(inode), "path": req.get('path'), "name": name_hint},
+                             "Strings", summary, output)
     log_chain_of_custody("strings_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
     return jsonify({"success": True, "file_name": name_hint, "output": output or "[no printable strings found]"})
 
@@ -8498,6 +8663,13 @@ def attach_file_to_case():
     req = request.get_json() or {}
     case_folder = safe_path(req.get('case_folder'))
     file_path = safe_path(req.get('file_path'))
+    # Optional provenance note - populated automatically by call sites that
+    # know something worth recording (e.g. "extracted from inside an
+    # acquired image"), which is otherwise lost the moment the file lands on
+    # disk as just another path. Only ever applied on first attach and only
+    # if no caption already exists for this path - never overwrites an
+    # examiner's own edit made since.
+    caption = (req.get('caption') or '').strip() or None
 
     if not case_folder or not os.path.isdir(case_folder):
         return jsonify({"success": False, "error": "Case folder not found or outside the permitted evidence directory."}), 400
@@ -8514,6 +8686,10 @@ def attach_file_to_case():
     already_attached = file_path in files
     if not already_attached:
         files.append(file_path)
+        if caption:
+            captions = attachments.setdefault('file_captions', {})
+            if file_path not in captions:
+                captions[file_path] = caption
         data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
         _write_case_file(case_file, data)
         log_chain_of_custody("file_attached_to_case", {"case_folder": case_folder, "file_path": file_path})
@@ -8560,6 +8736,21 @@ def add_case_note():
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not read report: {e}"}), 500
 
+    # Optional links to already-attached exhibit files, so a note can say
+    # "found in DCIM, see Exhibit 3" with a real reference instead of just
+    # prose. Add-time only - not editable via /api/cases/notes/edit, since
+    # editing is for correcting text, not changing which files a note
+    # references. Sent as a JSON-encoded string in a form field (this route
+    # is multipart, unlike the JSON-bodied edit route). Any path not
+    # currently a real attached exhibit is silently dropped - a note
+    # shouldn't fail to save over a stale reference.
+    try:
+        requested_links = json.loads(request.form.get('linked_files', '[]'))
+    except (TypeError, ValueError):
+        requested_links = []
+    attached_files = set((data.get('attachments') or {}).get('files', []))
+    linked_files = [p for p in requested_links if isinstance(p, str) and p in attached_files]
+
     note_id = uuid.uuid4().hex
     saved_attachments = []
     uploaded_files = request.files.getlist('files')
@@ -8593,6 +8784,7 @@ def add_case_note():
         "category": category,
         "text": text,
         "attachments": saved_attachments,
+        "linked_files": linked_files,
         "content_hash": _hash_note_content(text, [a["path"] for a in saved_attachments]),
         "edited_at": None,
         "edit_history": [],
@@ -8661,14 +8853,24 @@ def edit_case_note():
     log_chain_of_custody("case_note_edit", {"report_path": report_file, "note_id": note_id})
     return jsonify({"success": True, "note": note})
 
-def _embed_file_into_pdf(c, y, file_path, caption=None):
+def _embed_file_into_pdf(c, y, file_path, caption=None, exhibit_number=None, category=None, tags=None, analysis_summary=None):
     """Draws one file's content (image/text embedded, or a path+size
     fallback) at the current y and returns the new y. Shared by Exhibits
     (case attachments) and the Case Notes journal so the per-extension
     embedding dispatch isn't duplicated a third time. caption is
-    examiner-entered free text (an Exhibits-only concept - Case Notes
-    attachments don't have one), rendered as a small italic line under the
-    filename heading when present."""
+    examiner-entered free text, rendered as a small italic line under the
+    filename heading when present.
+
+    exhibit_number/category/tags/analysis_summary are Exhibits-only
+    enrichment - the Case Notes journal's own call to this function never
+    passes them (its attachments aren't exhibits), so they default to None
+    and add nothing there. exhibit_number is the file's 1-based position in
+    attachments.files; category is a plain string from classify_extension();
+    tags is a list of {name, notable, comment} dicts; analysis_summary is a
+    pre-formatted string of recent tool-run results. All render via
+    _draw_pdf_wrapped_text (self-paginating), never a raw drawString, since
+    an exhibit with several tags/analysis runs can genuinely run past one
+    page's remaining room."""
     name = os.path.basename(file_path)
     ext = os.path.splitext(file_path)[1].lower()
     try:
@@ -8676,22 +8878,31 @@ def _embed_file_into_pdf(c, y, file_path, caption=None):
     except OSError:
         size = 0
 
-    def _draw_caption(y):
-        if not caption:
-            return y
+    label_prefix = f"Exhibit {exhibit_number}: " if exhibit_number else ""
+    category_suffix = f" [{category}]" if category else ""
+
+    def _draw_meta(y):
         c.setFont("Helvetica-Oblique", 8)
-        y = _draw_pdf_wrapped_text(c, y, caption, x=50, width_chars=100, font="Helvetica-Oblique", size=8, leading=10)
+        if caption:
+            y = _draw_pdf_wrapped_text(c, y, caption, x=50, width_chars=100, font="Helvetica-Oblique", size=8, leading=10)
+        if tags:
+            tag_line = "Tags: " + "; ".join(
+                (f"* {t['name']}" if t.get('notable') else t['name']) + (f' - "{t["comment"]}"' if t.get('comment') else "")
+                for t in tags)
+            y = _draw_pdf_wrapped_text(c, y, tag_line, x=50, width_chars=100, font="Helvetica-Oblique", size=8, leading=10)
+        if analysis_summary:
+            y = _draw_pdf_wrapped_text(c, y, f"Analysis: {analysis_summary}", x=50, width_chars=100, font="Helvetica-Oblique", size=8, leading=10)
         c.setFont("Helvetica", 10)
         return y
 
     if ext in ATTACHMENT_IMAGE_EXT and size <= ATTACHMENT_MAX_IMAGE_EMBED_BYTES:
-        if y < 220:
+        if y < 280:
             c.showPage()
             y = 750
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(50, y, f"Image: {name}"[:100])
+        c.drawString(50, y, f"{label_prefix}Image: {name}{category_suffix}"[:110])
         y -= 14
-        y = _draw_caption(y)
+        y = _draw_meta(y)
         y -= 131
         try:
             from reportlab.lib.utils import ImageReader
@@ -8702,13 +8913,13 @@ def _embed_file_into_pdf(c, y, file_path, caption=None):
         y -= 15
         c.setFont("Helvetica", 10)
     elif ext in ATTACHMENT_TEXT_EXT and size <= ATTACHMENT_MAX_TEXT_EMBED_BYTES:
-        if y < 100:
+        if y < 160:
             c.showPage()
             y = 750
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(50, y, f"Text File: {name}"[:100])
+        c.drawString(50, y, f"{label_prefix}Text File: {name}{category_suffix}"[:110])
         y -= 14
-        y = _draw_caption(y)
+        y = _draw_meta(y)
         c.setFont("Courier", 7.5)
         try:
             with open(file_path, 'r', errors='replace') as tf:
@@ -8725,17 +8936,14 @@ def _embed_file_into_pdf(c, y, file_path, caption=None):
         y -= 10
         c.setFont("Helvetica", 10)
     else:
-        if y < 60:
+        if y < 110:
             c.showPage()
             y = 750
             c.setFont("Helvetica", 10)
         size_note = f" ({size:,} bytes)" if size else ""
-        c.drawString(60, y, f"• Document: {name}{size_note} - {file_path}"[:130])
+        c.drawString(60, y, f"* {label_prefix}Document: {name}{category_suffix}{size_note} - {file_path}"[:140])
         y -= 15
-        if caption:
-            c.setFont("Helvetica-Oblique", 8)
-            y = _draw_pdf_wrapped_text(c, y, caption, x=60, width_chars=100, font="Helvetica-Oblique", size=8, leading=10)
-            c.setFont("Helvetica", 10)
+        y = _draw_meta(y)
     return y
 
 def _draw_pdf_wrapped_text(c, y, text, x=50, width_chars=95, font="Helvetica", size=9, leading=12):
@@ -8833,7 +9041,8 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory"):
     y -= 12
     return y
 
-def _draw_pdf_case_notes(c, y, notes, title="Forensic Analysis / Steps Taken (Case Notes)"):
+def _draw_pdf_case_notes(c, y, notes, title="Forensic Analysis / Steps Taken (Case Notes)", exhibit_numbers=None):
+    exhibit_numbers = exhibit_numbers or {}
     if y < 150:
         c.showPage()
         y = 730
@@ -8866,6 +9075,12 @@ def _draw_pdf_case_notes(c, y, notes, title="Forensic Analysis / Steps Taken (Ca
             y -= 11
         y = _draw_pdf_wrapped_text(c, y, note.get('text') or '', x=60, width_chars=90)
         y -= 4
+        linked = [p for p in (note.get('linked_files') or []) if p in exhibit_numbers]
+        if linked:
+            link_line = "Linked Exhibit(s): " + "; ".join(
+                f"Exhibit {exhibit_numbers[p]} - {os.path.basename(p)}" for p in linked)
+            y = _draw_pdf_wrapped_text(c, y, link_line, x=60, width_chars=90, font="Helvetica-Oblique", size=8, leading=10)
+            y -= 2
         for att in note.get('attachments', []):
             file_path = safe_path(att.get('path', ''))
             if file_path and os.path.exists(file_path):
@@ -8873,8 +9088,29 @@ def _draw_pdf_case_notes(c, y, notes, title="Forensic Analysis / Steps Taken (Ca
         y -= 10
     return y
 
-def _draw_pdf_attachments(c, y, urls, files, title="Exhibits", captions=None):
+def _format_analysis_summary(results):
+    """Turns the list of {tool, summary, run_by, run_at} dicts from
+    _analysis_results_for_paths() into one compact string, e.g. "Binwalk: 3
+    signature(s) found (2026-08-18 13:10); Strings: 142 line(s) extracted
+    (2026-08-18 12:05)". Returns None for an empty/missing list so callers
+    can skip the "Analysis:" line entirely rather than rendering an empty
+    one."""
+    if not results:
+        return None
+    return "; ".join(f"{r['tool']}: {r['summary']} ({r['run_at']})" for r in results)
+
+def _draw_pdf_attachments(c, y, urls, files, title="Exhibits", captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
     captions = captions or {}
+    tags_by_path = tags_by_path or {}
+    analysis_by_path = analysis_by_path or {}
+    # Looked up, not enumerated from `files` - `files` here can be a
+    # per-export FILTERED subset of the case's real attachments.files list
+    # (attachment_selection), and a number must stay stable against the
+    # FULL list regardless of which subset any one export includes, since
+    # Case Notes' "Linked Exhibit(s)" references and the Reporting gallery
+    # both key off the same full-list numbering. export_report() computes
+    # this dict once from the unfiltered list.
+    exhibit_numbers = exhibit_numbers or {}
     if not (urls or files):
         return y
 
@@ -8902,11 +9138,28 @@ def _draw_pdf_attachments(c, y, urls, files, title="Exhibits", captions=None):
             y -= 15
         y -= 5
 
+    # Exhibit numbers are each file's 1-based position in the case's FULL,
+    # order-preserved attachments.files list (not this possibly-filtered
+    # `files` subset) - a deliberately simple scheme, not a
+    # permanently-retired Bates number: removing an exhibit and re-exporting
+    # shifts later numbers down.
+    if files:
+        c.setFont("Helvetica-Oblique", 7)
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(50, y, "Exhibit numbers reflect this case's current attachment order.")
+        c.setFillColorRGB(0, 0, 0)
+        y -= 12
+        c.setFont("Helvetica", 10)
+
     for raw_path in files:
         file_path = safe_path(raw_path)
         if not file_path or not os.path.exists(file_path):
             continue
-        y = _embed_file_into_pdf(c, y, file_path, caption=captions.get(raw_path))
+        category, _ext = classify_extension(os.path.basename(file_path))
+        y = _embed_file_into_pdf(
+            c, y, file_path, caption=captions.get(raw_path),
+            exhibit_number=exhibit_numbers.get(raw_path), category=category,
+            tags=tags_by_path.get(raw_path), analysis_summary=_format_analysis_summary(analysis_by_path.get(raw_path)))
     return y
 
 # Shared by the DFIR and Police report templates below - not used by the
@@ -9368,7 +9621,7 @@ def _resolve_template_ref(value, cfg):
         raise ValueError(f"Selected custom template '{template_id}' no longer exists.")
     return 'standard', None
 
-def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None):
+def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
     from reportlab.lib.pagesizes import letter
 
     c = _numbered_canvas_class()(pdf_path, pagesize=letter)
@@ -9414,13 +9667,15 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
         "objectives": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("objectives")),
         "evidence_inventory": lambda y, title: _draw_pdf_evidence_inventory(c, y, events, title=title),
         "acquisition_method": lambda y, title: _draw_pdf_acquisition_method(c, y, events, job_fields, title=title),
-        "forensic_analysis": lambda y, title: _draw_pdf_case_notes(c, y, case_notes, title=title),
+        "forensic_analysis": lambda y, title: _draw_pdf_case_notes(c, y, case_notes, title=title, exhibit_numbers=exhibit_numbers),
         "relevant_findings": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("findings_summary")),
         "limitations": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("limitations")),
         "conclusion": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("conclusion")),
         "iocs": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("iocs")),
         "recommendations": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("recommendations_next_steps")),
-        "attachments": lambda y, title: _draw_pdf_attachments(c, y, urls, files, title=title, captions=captions),
+        "attachments": lambda y, title: _draw_pdf_attachments(c, y, urls, files, title=title, captions=captions,
+                                                                tags_by_path=tags_by_path, analysis_by_path=analysis_by_path,
+                                                                exhibit_numbers=exhibit_numbers),
         "audit_trail": lambda y, title: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
         "timeline": lambda y, title: _draw_pdf_timeline_block(c, y, events, title=title),
     }
@@ -9442,7 +9697,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
 
     c.save()
 
-def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None):
+def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
     """Fixed-structure DFIR Incident Report - no sections/job_fields dict,
     since a template's whole point is a defined shape. Reuses the same
     low-level drawing helpers the Standard template uses; only the section
@@ -9517,7 +9772,8 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
     if has_exhibits:
         c.bookmarkPage('exhibits')
         c.addOutlineEntry("Exhibits", 'exhibits', level=0)
-        y = _draw_pdf_attachments(c, y, urls, files, captions=captions)
+        y = _draw_pdf_attachments(c, y, urls, files, captions=captions,
+                                   tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
 
     c.bookmarkPage('audit_trail')
     c.addOutlineEntry("Audit Trail", 'audit_trail', level=0)
@@ -9525,7 +9781,7 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
 
     c.save()
 
-def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None):
+def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
     """Fixed-structure Forensics (Police) Report, modeled on the reference
     law-enforcement examination report. Reuses the same low-level drawing
     helpers as the other two templates - see the plan's field-mapping table
@@ -9610,15 +9866,21 @@ def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entrie
     if has_exhibits:
         c.bookmarkPage('exhibits')
         c.addOutlineEntry("Exhibits & Appendices", 'exhibits', level=0)
-        y = _draw_pdf_attachments(c, y, urls, files, captions=captions)
+        y = _draw_pdf_attachments(c, y, urls, files, captions=captions,
+                                   tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
 
     c.save()
 
-def _embed_file_into_html(file_path, caption=None):
+def _embed_file_into_html(file_path, caption=None, exhibit_number=None, category=None, tags=None, analysis_summary=None):
     """HTML counterpart to _embed_file_into_pdf - shared by Exhibits (case
-    attachments) and the Case Notes journal. caption is an Exhibits-only
-    concept (Case Notes attachments don't have one) - rendered as a small
-    italic line under the filename heading when present."""
+    attachments) and the Case Notes journal. caption is examiner-entered
+    free text. exhibit_number/category/tags/analysis_summary are
+    Exhibits-only enrichment - the Case Notes journal's own call never
+    passes them, so they default to None and add nothing there. Every value
+    is examiner/evidence-derived (filename, tag comment, analysis summary),
+    so everything goes through html.escape() before interpolation, same
+    discipline as every other untrusted string this app embeds into a
+    report that might later be reopened in a browser."""
     esc = html.escape
     name = os.path.basename(file_path)
     ext = os.path.splitext(file_path)[1].lower()
@@ -9626,7 +9888,18 @@ def _embed_file_into_html(file_path, caption=None):
         size = os.path.getsize(file_path)
     except OSError:
         size = 0
+
+    heading = (f"Exhibit {exhibit_number}: " if exhibit_number else "") + esc(name) + (f" [{esc(category)}]" if category else "")
     caption_html = f'<p class="muted"><em>{esc(caption)}</em></p>' if caption else ''
+    tags_html = ''
+    if tags:
+        tag_bits = [
+            ('&#9733; ' if t.get('notable') else '') + esc(t['name']) + (f' &mdash; &quot;{esc(t["comment"])}&quot;' if t.get('comment') else '')
+            for t in tags
+        ]
+        tags_html = f'<p class="muted"><strong>Tags:</strong> {"; ".join(tag_bits)}</p>'
+    analysis_html = f'<p class="muted"><strong>Analysis:</strong> {esc(analysis_summary)}</p>' if analysis_summary else ''
+    meta_html = caption_html + tags_html + analysis_html
 
     if ext in ATTACHMENT_IMAGE_EXT and size <= ATTACHMENT_MAX_IMAGE_EMBED_BYTES:
         mime = {
@@ -9636,19 +9909,19 @@ def _embed_file_into_html(file_path, caption=None):
         try:
             with open(file_path, 'rb') as imf:
                 b64 = base64.b64encode(imf.read()).decode('ascii')
-            return f'<div class="attach-item"><h3>{esc(name)}</h3>{caption_html}<img src="data:{mime};base64,{b64}"></div>'
+            return f'<div class="attach-item"><h3>{heading}</h3>{meta_html}<img src="data:{mime};base64,{b64}"></div>'
         except OSError as e:
-            return f'<div class="attach-item"><h3>{esc(name)}</h3>{caption_html}<p class="muted">Could not read image: {esc(str(e))}</p></div>'
+            return f'<div class="attach-item"><h3>{heading}</h3>{meta_html}<p class="muted">Could not read image: {esc(str(e))}</p></div>'
     elif ext in ATTACHMENT_TEXT_EXT and size <= ATTACHMENT_MAX_TEXT_EMBED_BYTES:
         try:
             with open(file_path, 'r', errors='replace') as tf:
                 text_content = tf.read(ATTACHMENT_MAX_TEXT_EMBED_BYTES)
         except OSError as e:
             text_content = f"(could not read file: {e})"
-        return f'<div class="attach-item"><h3>{esc(name)}</h3>{caption_html}<pre>{esc(text_content)}</pre></div>'
+        return f'<div class="attach-item"><h3>{heading}</h3>{meta_html}<pre>{esc(text_content)}</pre></div>'
     else:
         size_note = f" ({size:,} bytes)" if size else ""
-        return f'<div class="attach-item"><h3>{esc(name)}</h3>{caption_html}<p class="muted mono">{esc(file_path)}{esc(size_note)}</p></div>'
+        return f'<div class="attach-item"><h3>{heading}</h3>{meta_html}<p class="muted mono">{esc(file_path)}{esc(size_note)}</p></div>'
 
 def _html_timeline_table(case_notes, title="Incident Timeline", anchor_id=None):
     """HTML counterpart to _draw_pdf_timeline_table - same case_notes source,
@@ -9782,11 +10055,17 @@ def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id
     parts.append('</table>')
     return ''.join(parts)
 
-def _html_exhibits_block(urls, files, anchor_id=None, title="Exhibits", captions=None):
+def _html_exhibits_block(urls, files, anchor_id=None, title="Exhibits", captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
     """HTML counterpart to _draw_pdf_attachments - shared by all three
     templates' Exhibits section. Caller already checks whether there's
     anything to show (urls or files) before calling this."""
     captions = captions or {}
+    tags_by_path = tags_by_path or {}
+    analysis_by_path = analysis_by_path or {}
+    # Looked up against the case's FULL attachments.files list, not
+    # enumerated from `files` (a possibly-filtered per-export subset) - see
+    # the matching comment in _draw_pdf_attachments.
+    exhibit_numbers = exhibit_numbers or {}
     esc = html.escape
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     parts = [f'<h2{id_attr}>{esc(title)}</h2>']
@@ -9795,11 +10074,16 @@ def _html_exhibits_block(urls, files, anchor_id=None, title="Exhibits", captions
         for url in urls:
             parts.append(f'<li><a href="{esc(str(url))}">{esc(str(url))}</a></li>')
         parts.append('</ul>')
+    if files:
+        parts.append('<p class="muted"><em>Exhibit numbers reflect this case\'s current attachment order.</em></p>')
     for raw_path in files:
         file_path = safe_path(raw_path)
         if not file_path or not os.path.exists(file_path):
             continue
-        parts.append(_embed_file_into_html(file_path, caption=captions.get(raw_path)))
+        category, _ext = classify_extension(os.path.basename(file_path))
+        parts.append(_embed_file_into_html(
+            file_path, caption=captions.get(raw_path), exhibit_number=exhibit_numbers.get(raw_path), category=category,
+            tags=tags_by_path.get(raw_path), analysis_summary=_format_analysis_summary(analysis_by_path.get(raw_path))))
     return ''.join(parts)
 
 def _html_audit_trail_block(audit_entries, anchor_id=None, title="Case Activity Log (Audit Trail)"):
@@ -9933,7 +10217,8 @@ def _html_acquisition_method(events, job_fields, anchor_id=None):
         parts.append('</div>')
     return ''.join(parts)
 
-def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis / Steps Taken (Case Notes)"):
+def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis / Steps Taken (Case Notes)", exhibit_numbers=None):
+    exhibit_numbers = exhibit_numbers or {}
     esc = html.escape
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     parts = [f'<h2{id_attr}>{esc(title)}</h2>']
@@ -9947,6 +10232,10 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         if note.get('edited_at'):
             parts.append(f'<div class="muted">(edited {esc(str(note["edited_at"]))})</div>')
         parts.append(f'<p style="white-space:pre-wrap;">{esc(str(note.get("text", "")))}</p>')
+        linked = [p for p in (note.get('linked_files') or []) if p in exhibit_numbers]
+        if linked:
+            link_bits = [f'Exhibit {exhibit_numbers[p]} &mdash; {esc(os.path.basename(p))}' for p in linked]
+            parts.append(f'<p class="muted"><strong>Linked Exhibit(s):</strong> {"; ".join(link_bits)}</p>')
         for att in note.get('attachments', []):
             file_path = safe_path(att.get('path', ''))
             if file_path and os.path.exists(file_path):
@@ -9954,7 +10243,7 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         parts.append('</div>')
     return ''.join(parts)
 
-def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None):
+def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
     """Self-contained HTML report - every value is escaped since it may
     contain examiner-entered text or evidence-derived strings (filenames,
     device paths) that this file could later be reopened/served from disk.
@@ -9979,13 +10268,15 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         "objectives": lambda anchor, title: _html_narrative_block(title, header.get("objectives"), anchor),
         "evidence_inventory": lambda anchor, title: _html_evidence_inventory_table(events, title=title, anchor_id=anchor),
         "acquisition_method": lambda anchor, title: _html_acquisition_method(events, job_fields, anchor_id=anchor),
-        "forensic_analysis": lambda anchor, title: _html_case_notes_block(case_notes, anchor_id=anchor, title=title),
+        "forensic_analysis": lambda anchor, title: _html_case_notes_block(case_notes, anchor_id=anchor, title=title, exhibit_numbers=exhibit_numbers),
         "relevant_findings": lambda anchor, title: _html_narrative_block(title, header.get("findings_summary"), anchor),
         "limitations": lambda anchor, title: _html_narrative_block(title, header.get("limitations"), anchor),
         "conclusion": lambda anchor, title: _html_narrative_block(title, header.get("conclusion"), anchor),
         "iocs": lambda anchor, title: _html_narrative_block(title, header.get("iocs"), anchor),
         "recommendations": lambda anchor, title: _html_narrative_block(title, header.get("recommendations_next_steps"), anchor),
-        "attachments": lambda anchor, title: _html_exhibits_block(urls, files, anchor_id=anchor, title=title, captions=captions),
+        "attachments": lambda anchor, title: _html_exhibits_block(urls, files, anchor_id=anchor, title=title, captions=captions,
+                                                                    tags_by_path=tags_by_path, analysis_by_path=analysis_by_path,
+                                                                    exhibit_numbers=exhibit_numbers),
         "audit_trail": lambda anchor, title: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
         "timeline": lambda anchor, title: _html_timeline_block(events, title=title, anchor_id=anchor),
     }
@@ -10000,7 +10291,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
     parts.append('</body></html>')
     return ''.join(parts)
 
-def _build_html_report_dfir(header, events, urls, files, audit_entries, case_notes, captions=None):
+def _build_html_report_dfir(header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
     """HTML counterpart to _build_pdf_report_dfir - same fixed section list,
     same reused data sources, see that function's docstring."""
     esc = html.escape
@@ -10041,14 +10332,15 @@ def _build_html_report_dfir(header, events, urls, files, audit_entries, case_not
     parts.append(_html_narrative_block('Containment, Eradication & Next Steps', header.get('recommendations_next_steps'), 'sec-containment'))
 
     if has_exhibits:
-        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits', captions=captions))
+        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits', captions=captions,
+                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers))
 
     parts.append(_html_audit_trail_block(audit_entries, anchor_id='sec-audit-trail'))
 
     parts.append('</body></html>')
     return ''.join(parts)
 
-def _build_html_report_police(header, events, urls, files, audit_entries, case_notes, captions=None):
+def _build_html_report_police(header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
     """HTML counterpart to _build_pdf_report_police - same fixed section
     list, same reused data sources, same disclosed Chain-of-Custody-vs-
     Audit-Trail caveat, see that function's docstring."""
@@ -10104,7 +10396,8 @@ def _build_html_report_police(header, events, urls, files, audit_entries, case_n
     parts.append(_html_signoff(header['examiner'], anchor_id='sec-signoff'))
 
     if has_exhibits:
-        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits', captions=captions))
+        parts.append(_html_exhibits_block(urls, files, anchor_id='sec-exhibits', captions=captions,
+                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers))
 
     parts.append('</body></html>')
     return ''.join(parts)
@@ -10267,30 +10560,49 @@ def export_report():
     if needs_audit_trail and header['case_number'] not in (None, '', 'N/A'):
         audit_entries = _case_history_entries(header['case_number'], limit=500)
 
+    # Unified evidence-item enrichment - tags and persisted analysis results
+    # for whichever files this particular export actually includes
+    # (sel_files), plus exhibit numbers derived from the case's FULL
+    # attachments list (not sel_files) so a number stays stable regardless
+    # of which subset any one export selects - see the matching comment on
+    # _draw_pdf_attachments/_html_exhibits_block. case_folder here is just
+    # this report's own containing directory; both helpers gracefully
+    # return {} if it isn't actually a real, indexed, consolidated case.
+    case_folder = os.path.dirname(report_file)
+    tags_by_path = _tags_for_paths(case_folder, sel_files)
+    analysis_by_path = _analysis_results_for_paths(case_folder, sel_files)
+    exhibit_numbers = {p: i for i, p in enumerate(attachments.get('files', []), start=1)}
+
     try:
         if template == 'dfir':
             if fmt == 'html':
                 out_path = report_file.rsplit('.json', 1)[0] + '.html'
                 with open(out_path, 'w') as f:
-                    f.write(_build_html_report_dfir(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions))
+                    f.write(_build_html_report_dfir(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
+                                                     tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers))
             else:
                 out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-                _build_pdf_report_dfir(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions)
+                _build_pdf_report_dfir(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
+                                       tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
         elif template == 'police':
             if fmt == 'html':
                 out_path = report_file.rsplit('.json', 1)[0] + '.html'
                 with open(out_path, 'w') as f:
-                    f.write(_build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions))
+                    f.write(_build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
+                                                       tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers))
             else:
                 out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-                _build_pdf_report_police(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions)
+                _build_pdf_report_police(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
+                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
         elif fmt == 'html':
             out_path = report_file.rsplit('.json', 1)[0] + '.html'
             with open(out_path, 'w') as f:
-                f.write(_build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions))
+                f.write(_build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
+                                                     tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers))
         else:
             out_path = report_file.rsplit('.json', 1)[0] + '.pdf'
-            _build_pdf_report_standard(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions)
+            _build_pdf_report_standard(out_path, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
+                                       tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
 
         # A report-level integrity hash - computed over the exported file's
         # actual bytes, not the source case JSON, so it verifies the specific

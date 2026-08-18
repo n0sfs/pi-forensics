@@ -2916,7 +2916,7 @@ async function runSelectedBinwalk() {
         const res = await fetch('/api/files/binwalk', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile })
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
         });
         const data = await res.json();
         const container = document.getElementById("toolOutputContainer");
@@ -2935,7 +2935,7 @@ async function runSelectedClamscan() {
         const res = await fetch('/api/files/clamscan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile })
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
         });
         const data = await res.json();
         const container = document.getElementById("toolOutputContainer");
@@ -2959,7 +2959,7 @@ async function runSelectedStrings() {
         const res = await fetch('/api/files/strings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile })
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
         });
         const data = await res.json();
         const container = document.getElementById("toolOutputContainer");
@@ -3947,10 +3947,20 @@ async function extractAndAttachExplorerImageSelected() {
             return;
         }
 
+        // Provenance the examiner would otherwise lose the moment this lands
+        // as just another path on disk - auto-populated only here, since
+        // this is the one attach path that actually knows something worth
+        // saying. Applied server-side only if the attachment doesn't
+        // already have a caption, so it never overwrites an examiner's own
+        // edit made since a prior extract.
+        const imageName = (explorerImagePath || '').split('/').pop();
+        const inImagePath = explorerImageSelected.path || explorerImageSelected.name;
+        const provenanceCaption = `Extracted from ${imageName} (in-image path: ${inImagePath})`;
+
         const attachRes = await fetch('/api/cases/attach_file', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ case_folder: activeCase.case_folder, file_path: extractData.path })
+            body: JSON.stringify({ case_folder: activeCase.case_folder, file_path: extractData.path, caption: provenanceCaption })
         });
         const attachData = await attachRes.json();
         if (attachData.success) {
@@ -3971,7 +3981,9 @@ async function runImageBinwalk() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 image_path: explorerImagePath, offset: explorerImageOffset,
-                inode: explorerImageSelected.inode, name: explorerImageSelected.name
+                inode: explorerImageSelected.inode, name: explorerImageSelected.name,
+                path: explorerImageSelected.path || null,
+                case_folder: activeCase ? activeCase.case_folder : null
             })
         });
         const data = await res.json();
@@ -3992,7 +4004,9 @@ async function runImageStrings() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 image_path: explorerImagePath, offset: explorerImageOffset,
-                inode: explorerImageSelected.inode, name: explorerImageSelected.name
+                inode: explorerImageSelected.inode, name: explorerImageSelected.name,
+                path: explorerImageSelected.path || null,
+                case_folder: activeCase ? activeCase.case_folder : null
             })
         });
         const data = await res.json();
@@ -4158,6 +4172,32 @@ async function renderReportFilesGallery() {
     const attachedSet = new Set(currentAttachedFilesList);
     const extraFiles = discovered.filter(f => !attachedSet.has(f.path));
 
+    // Batch-fetch tags and recent analysis history for every path currently
+    // in view (both attached and discovered-but-unattached) - lets an
+    // examiner see tag/analysis status before deciding to attach, not just
+    // after. Best-effort: an empty case index (no tags/analysis run yet, or
+    // no case at all) just means every row's tag/analysis area stays empty.
+    const allPaths = [...currentAttachedFilesList, ...extraFiles.map(f => f.path)];
+    let tagsByPath = {}, analysisByPath = {};
+    if (caseFolder && allPaths.length) {
+        try {
+            const [tagsRes, analysisRes] = await Promise.all([
+                fetch('/api/case_index/tags_for_paths', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ case_folder: caseFolder, paths: allPaths })
+                }),
+                fetch('/api/case_index/analysis_for_paths', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ case_folder: caseFolder, paths: allPaths })
+                }),
+            ]);
+            const tagsData = await tagsRes.json();
+            const analysisData = await analysisRes.json();
+            if (tagsData.success) tagsByPath = tagsData.tags || {};
+            if (analysisData.success) analysisByPath = analysisData.results || {};
+        } catch (err) {}
+    }
+
     container.innerHTML = '';
 
     if (currentAttachedFilesList.length === 0 && extraFiles.length === 0) {
@@ -4165,7 +4205,7 @@ async function renderReportFilesGallery() {
         return;
     }
 
-    const addRow = (name, sublabel, filePath, checked) => {
+    const addRow = (name, sublabel, filePath, checked, exhibitNumber) => {
         const row = document.createElement('div');
         row.className = 'd-flex align-items-start gap-2 bg-dark p-2 rounded mb-1 border border-secondary';
 
@@ -4187,16 +4227,59 @@ async function renderReportFilesGallery() {
 
         const textWrap = document.createElement('div');
         textWrap.className = 'flex-grow-1';
+
         const line1 = document.createElement('div');
-        line1.className = 'small text-break';
-        line1.textContent = name; // untrusted (filename) - text node only
+        line1.className = 'small text-break d-flex align-items-center flex-wrap gap-1';
+        if (exhibitNumber) {
+            const exBadge = document.createElement('span');
+            exBadge.className = 'badge bg-info text-dark';
+            exBadge.textContent = `Exhibit ${exhibitNumber}`;
+            line1.appendChild(exBadge);
+        }
+        const baseNameForExt = filePath.split('/').pop();
+        const dotIdx = baseNameForExt.lastIndexOf('.');
+        const ext = dotIdx > 0 ? baseNameForExt.slice(dotIdx + 1).toUpperCase() : '';
+        if (ext) {
+            const extBadge = document.createElement('span');
+            extBadge.className = 'badge bg-secondary';
+            extBadge.textContent = ext;
+            line1.appendChild(extBadge);
+        }
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = name; // untrusted (filename) - text node only
+        line1.appendChild(nameSpan);
         textWrap.appendChild(line1);
+
         if (sublabel) {
             const line2 = document.createElement('div');
             line2.className = 'text-subtle small';
             line2.textContent = sublabel;
             textWrap.appendChild(line2);
         }
+
+        const fileTags = tagsByPath[filePath] || [];
+        if (fileTags.length) {
+            const tagLine = document.createElement('div');
+            tagLine.className = 'small mt-1 d-flex flex-wrap gap-1';
+            fileTags.forEach(t => {
+                const pill = document.createElement('span');
+                pill.className = `badge bg-${t.color || 'secondary'}`;
+                pill.textContent = (t.notable ? '★ ' : '') + t.name; // untrusted (tag name) - text node only
+                if (t.comment) pill.title = t.comment; // untrusted (comment) - tooltip attribute, not markup
+                tagLine.appendChild(pill);
+            });
+            textWrap.appendChild(tagLine);
+        }
+
+        const fileAnalysis = analysisByPath[filePath] || [];
+        if (fileAnalysis.length) {
+            const analysisLine = document.createElement('div');
+            analysisLine.className = 'text-subtle small mt-1';
+            analysisLine.textContent = 'Recently analyzed: ' + fileAnalysis
+                .map(r => `${r.tool} (${r.summary}, ${r.run_at})`).join('; '); // untrusted (tool/summary text) - text node only
+            textWrap.appendChild(analysisLine);
+        }
+
         if (checked) {
             const capInput = document.createElement('input');
             capInput.type = 'text';
@@ -4221,11 +4304,15 @@ async function renderReportFilesGallery() {
         container.appendChild(row);
     };
 
-    currentAttachedFilesList.forEach(fp => addRow(fp.split('/').pop(), `Attached · ${fp}`, fp, true));
+    // Exhibit numbers are each file's 1-based position in currentAttachedFilesList
+    // (the same order-preserved list attachments.files gets saved as) -
+    // matches export_report()'s own exhibit_numbers derivation exactly, so
+    // what's shown here is always what a real export would print.
+    currentAttachedFilesList.forEach((fp, i) => addRow(fp.split('/').pop(), `Attached · ${fp}`, fp, true, i + 1));
     extraFiles.forEach(f => {
         const kindLabel = f.kind === 'image' ? 'Image' : f.kind === 'text' ? 'Text' : 'File';
         const sizeKb = f.size_bytes ? ` · ${(f.size_bytes / 1024).toFixed(1)} KB` : '';
-        addRow(f.name, `Found in case folder · ${kindLabel}${sizeKb}`, f.path, false);
+        addRow(f.name, `Found in case folder · ${kindLabel}${sizeKb}`, f.path, false, null);
     });
 
     if (truncated) {
@@ -4965,7 +5052,38 @@ function renderCaseJobs() {
 // /api/cases/notes/edit in app.py.
 let editingCaseNoteId = null;
 
+// Populates the "Link to Exhibit(s)" checklist on the Add Note form from
+// whatever's currently attached - exhibit numbers here are each file's
+// 1-based position in currentAttachedFilesList, matching the Files gallery
+// and export_report()'s own numbering exactly.
+function renderNewCaseNoteLinkedFilesChecklist() {
+    const container = document.getElementById("newCaseNoteLinkedFiles");
+    if (!container) return;
+    container.innerHTML = '';
+    if (!currentAttachedFilesList.length) {
+        container.innerHTML = '<span class="text-subtle small italic">No exhibits attached yet - see the Files tab.</span>';
+        return;
+    }
+    currentAttachedFilesList.forEach((fp, i) => {
+        const row = document.createElement('div');
+        row.className = 'form-check';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input new-case-note-link-cb';
+        cb.value = fp;
+        cb.id = `newCaseNoteLink${i}`;
+        const label = document.createElement('label');
+        label.className = 'form-check-label small';
+        label.htmlFor = cb.id;
+        label.textContent = `Exhibit ${i + 1} - ${fp.split('/').pop()}`; // untrusted (filename) - text node only
+        row.appendChild(cb);
+        row.appendChild(label);
+        container.appendChild(row);
+    });
+}
+
 function renderCaseNotesList() {
+    renderNewCaseNoteLinkedFilesChecklist();
     const container = document.getElementById("caseNotesContainer");
     if (!container) return;
 
@@ -5042,6 +5160,19 @@ function renderCaseNotesList() {
             card.appendChild(textEl);
         }
 
+        const linkedFiles = (note.linked_files || []).filter(p => currentAttachedFilesList.includes(p));
+        if (linkedFiles.length) {
+            const linkLine = document.createElement('div');
+            linkLine.className = 'small mt-1 d-flex flex-wrap gap-1';
+            linkedFiles.forEach(fp => {
+                const chip = document.createElement('span');
+                chip.className = 'badge bg-info text-dark';
+                chip.textContent = `Linked: Exhibit ${currentAttachedFilesList.indexOf(fp) + 1} - ${fp.split('/').pop()}`; // untrusted (filename) - text node only
+                linkLine.appendChild(chip);
+            });
+            card.appendChild(linkLine);
+        }
+
         (note.attachments || []).forEach(att => {
             if (att.kind === 'image') {
                 const img = document.createElement('img');
@@ -5092,11 +5223,13 @@ async function addCaseNote() {
     }
     const category = document.getElementById("newCaseNoteCategory")?.value || "General";
     const filesInput = document.getElementById("newCaseNoteFiles");
+    const linkedFiles = Array.from(document.querySelectorAll('.new-case-note-link-cb:checked')).map(cb => cb.value);
 
     const formData = new FormData();
     formData.append('report_path', reportPath);
     formData.append('text', text);
     formData.append('category', category);
+    formData.append('linked_files', JSON.stringify(linkedFiles));
     if (filesInput && filesInput.files) {
         Array.from(filesInput.files).forEach(f => formData.append('files', f));
     }
