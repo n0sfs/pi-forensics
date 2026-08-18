@@ -6,6 +6,15 @@ const graphLabels = Array(maxGraphPoints).fill('');
 
 let currentDrivesList = [];
 
+// BitLocker pre-acquisition unlock state - null unless a dislocker mount is
+// currently active for the Acquisition tab's selected drive. Cleared on a
+// successful/attempted Lock, and left for the examiner to clean up manually
+// otherwise (mirrors this app's existing "no automatic cleanup of things the
+// examiner explicitly did" posture elsewhere, e.g. active network mounts).
+let bitlockerActiveMountId = null;
+let bitlockerUnlockedSourcePath = null;
+let bitlockerMountConsumedByJob = false; // true once a started job is actually using the unlocked mount, so fetchProgress() knows the backend's own post-job auto-unlock applies
+
 let currentBrowsePath = '/mnt';
 let folderModalInstance = null;
 let modalPickerMode = 'folder';
@@ -2493,6 +2502,7 @@ function updateContextToolbar(item) {
     const btnDelete = document.getElementById("btnDeleteFile");
     const btnCopy = document.getElementById("btnCopyFile");
     const btnBrowseImage = document.getElementById("btnBrowseImage");
+    const btnUnlockBitlockerImage = document.getElementById("btnUnlockBitlockerImage");
     const btnVerifyHash = document.getElementById("btnVerifyHash");
     const btnAttachToCase = document.getElementById("btnAttachToCase");
     const btnTagFile = document.getElementById("btnTagFile");
@@ -2517,6 +2527,7 @@ function updateContextToolbar(item) {
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
+    if (btnUnlockBitlockerImage) btnUnlockBitlockerImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnVerifyHash) btnVerifyHash.disabled = item.is_dir;
     if (btnAttachToCase) btnAttachToCase.disabled = item.is_dir || !activeCase;
     if (btnTagFile) btnTagFile.disabled = item.is_dir || !activeCase;
@@ -3095,6 +3106,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
 let explorerImagePath = null;
 let explorerImageOffset = 0;
+let explorerImageBitlockerMountId = null; // set only when the currently-browsed image is a decrypted dislocker volume, so exitExplorerImage() knows to lock/cleanup it
 let explorerImagePathStack = [];  // [{inode, name}, ...] for breadcrumb + "up" navigation
 let explorerImageSelected = null; // {inode, name} or a timeline event with a .path
 let explorerImageView = 'browse'; // 'browse' | 'search' | 'timeline'
@@ -3175,6 +3187,84 @@ function enterExplorerImageFor(item) {
     return loadExplorerImagePartitions();
 }
 
+// --- BitLocker: unlock an already-acquired image (or a partition within
+// it) and browse the decrypted volume with the normal Sleuth Kit Image
+// Browser - zero new browsing code needed, since enterExplorerImageFor()
+// doesn't care whether the path it's given is a real evidence file or a
+// dislocker-file virtual mount; both are just a path pytsk3 can open.
+let bitlockerUnlockImageModalInstance = null;
+
+function openBitlockerUnlockImageModal() {
+    if (!activeSelectedFile) return;
+    document.getElementById("bitlockerImageFileName").textContent = activeSelectedFile.split('/').pop();
+    const offsetEl = document.getElementById("bitlockerImageOffset");
+    if (offsetEl) offsetEl.value = '0';
+    const keyEl = document.getElementById("bitlockerImageKey");
+    if (keyEl) keyEl.value = '';
+    const status = document.getElementById("bitlockerImageStatus");
+    if (status) status.textContent = "Enter the byte offset of the encrypted partition (0 if this image has no partition table) and the recovery key/password, then click Unlock & Browse.";
+
+    if (!bitlockerUnlockImageModalInstance) {
+        bitlockerUnlockImageModalInstance = new bootstrap.Modal(document.getElementById('bitlockerUnlockImageModal'));
+    }
+    bitlockerUnlockImageModalInstance.show();
+}
+
+async function detectBitlockerImage() {
+    if (!activeSelectedFile) return;
+    const offset = document.getElementById("bitlockerImageOffset")?.value || '0';
+    const status = document.getElementById("bitlockerImageStatus");
+    if (status) status.textContent = "Checking for a BitLocker signature at this offset...";
+    try {
+        const res = await fetch('/api/bitlocker/detect_image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: activeSelectedFile, offset })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Detect failed: ${data.error}`;
+            return;
+        }
+        if (status) {
+            status.textContent = data.is_bitlocker
+                ? "BitLocker signature found at this offset. Enter the recovery key/password and click Unlock & Browse."
+                : "No BitLocker signature found at this offset - double-check the partition byte offset (Use the whole-image \"Search Inside Image\"/mmls partition listing if unsure), or try Unlock & Browse anyway if you believe this is wrong.";
+        }
+    } catch (err) {
+        if (status) status.textContent = "Detect failed - see console.";
+    }
+}
+
+async function unlockBitlockerImageAndBrowse() {
+    if (!activeSelectedFile) return;
+    const offset = document.getElementById("bitlockerImageOffset")?.value || '0';
+    const recoveryKey = document.getElementById("bitlockerImageKey")?.value || "";
+    const status = document.getElementById("bitlockerImageStatus");
+    if (!recoveryKey.trim()) return showToast("Enter the BitLocker recovery key/password first.", 'warning');
+    if (status) status.textContent = "Unlocking (this can take a few seconds)...";
+    try {
+        const res = await fetch('/api/bitlocker/unlock_image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: activeSelectedFile, offset, recovery_key: recoveryKey })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Unlock failed: ${data.error}`;
+            showToast(`BitLocker unlock failed: ${data.error}`, 'danger');
+            return;
+        }
+        explorerImageBitlockerMountId = data.mount_id;
+        if (bitlockerUnlockImageModalInstance) bitlockerUnlockImageModalInstance.hide();
+        showToast("BitLocker volume unlocked - browsing the decrypted image now.", 'success');
+        const originalName = activeSelectedFile.split('/').pop();
+        await enterExplorerImageFor({ path: data.source_path, name: `${originalName} (BitLocker Decrypted)` });
+    } catch (err) {
+        if (status) status.textContent = "Unlock failed - see console.";
+    }
+}
+
 // explorerPath (the JS variable, not the #explorerPath DOM label) is never
 // mutated while in image mode - only loadExplorer() touches it, and nothing
 // calls that until exitExplorerImage() does - so it still holds the real
@@ -3184,6 +3274,22 @@ function exitExplorerImage() {
     explorerDetailsIsImage = false;
     const toolbar = document.getElementById("explorerImageToolbar");
     if (toolbar) toolbar.style.display = 'none';
+
+    // If this was a decrypted BitLocker volume, lock/unmount it now - a
+    // decrypted mount is sensitive and shouldn't linger past the browsing
+    // session that needed it. Fire-and-forget: exiting the view shouldn't
+    // block on the unmount, and there's nothing else in the UI that needs
+    // to wait for it to finish.
+    if (explorerImageBitlockerMountId) {
+        const mountId = explorerImageBitlockerMountId;
+        explorerImageBitlockerMountId = null;
+        fetch('/api/bitlocker/lock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mount_id: mountId })
+        }).catch(() => {});
+    }
+
     initExplorerTree(); // restores the real-fs tree exactly as left, no re-fetch
     loadExplorer(explorerPath);
 }
@@ -6617,6 +6723,153 @@ async function checkSmartTelemetry() {
     } catch (err) {}
 }
 
+// --- BitLocker pre-acquisition unlock (dislocker) ---
+// Lets an examiner unlock a BitLocker-encrypted physical source drive with
+// its recovery key/password before starting acquisition, so dc3dd/dcfldd/
+// ewfacquire/plain dd image the decrypted volume instead of raw encrypted
+// bytes. Reuses the #bitlockerKey field (also recorded as case-report
+// documentation regardless of whether this unlock flow is used at all).
+function toggleBitlockerSection() {
+    const on = document.getElementById("bitlockerSourceToggle")?.checked ?? false;
+    const controls = document.getElementById("bitlockerSourceControls");
+    if (controls) controls.style.display = on ? '' : 'none';
+    const help = document.getElementById("bitlockerKeyHelp");
+    if (help) {
+        help.textContent = on
+            ? 'Used both to unlock the encrypted volume below AND recorded in the case report as documentation.'
+            : 'Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the key is not used to decrypt anything during acquisition. Enable "This source drive is BitLocker-encrypted" above to unlock and acquire the decrypted volume instead.';
+    }
+    if (on) loadBitlockerPartitions();
+}
+
+async function loadBitlockerPartitions() {
+    const device = document.getElementById("driveSelect")?.value || "";
+    const select = document.getElementById("bitlockerPartitionSelect");
+    const status = document.getElementById("bitlockerStatus");
+    if (!select) return;
+    if (!device) {
+        select.innerHTML = '<option value="">-- Select a target drive above first --</option>';
+        return;
+    }
+    select.innerHTML = '<option value="">Scanning...</option>';
+    try {
+        const res = await fetch('/api/bitlocker/partitions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device })
+        });
+        const data = await res.json();
+        select.innerHTML = '';
+        // The whole device itself is always offered too - some BitLocker-To-Go
+        // USB media is formatted with no partition table at all, so the
+        // encrypted volume IS the whole disk, not a partition within it.
+        const wholeOpt = document.createElement("option");
+        wholeOpt.value = device;
+        wholeOpt.textContent = `${device} (whole device, no partition table)`;
+        select.appendChild(wholeOpt);
+        if (data.success && data.partitions && data.partitions.length) {
+            data.partitions.forEach(p => {
+                const opt = document.createElement("option");
+                opt.value = p.path;
+                opt.textContent = `${p.path} - ${p.fstype || 'unknown fs'} (${p.size || '?'})`;
+                select.appendChild(opt);
+            });
+        }
+        if (status) status.textContent = data.success
+            ? `Found ${(data.partitions || []).length} partition(s) on ${device}. Select the encrypted one, then Detect/Unlock.`
+            : `Scan failed: ${data.error}`;
+    } catch (err) {
+        select.innerHTML = '<option value="">-- Scan failed --</option>';
+    }
+}
+
+function getBitlockerSelectedSource() {
+    return document.getElementById("bitlockerPartitionSelect")?.value
+        || document.getElementById("driveSelect")?.value
+        || "";
+}
+
+async function detectBitlocker() {
+    const partition = getBitlockerSelectedSource();
+    const status = document.getElementById("bitlockerStatus");
+    if (!partition) return showToast("Select a drive/partition first.", 'warning');
+    if (status) status.textContent = "Checking for a BitLocker signature...";
+    try {
+        const res = await fetch('/api/bitlocker/detect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ partition })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Detect failed: ${data.error}`;
+            return;
+        }
+        if (status) {
+            status.textContent = data.is_bitlocker
+                ? `${partition} looks like BitLocker (filesystem type: ${data.fstype}). Enter the recovery key/password below and click Unlock.`
+                : `${partition} does not look like BitLocker (filesystem type: ${data.fstype || 'unrecognized'}). You can still try Unlock if you believe this is wrong.`;
+        }
+    } catch (err) {
+        if (status) status.textContent = "Detect failed - see console.";
+    }
+}
+
+async function unlockBitlockerVolume() {
+    const partition = getBitlockerSelectedSource();
+    const recoveryKey = document.getElementById("bitlockerKey")?.value || "";
+    const status = document.getElementById("bitlockerStatus");
+    if (!partition) return showToast("Select a drive/partition first.", 'warning');
+    if (!recoveryKey.trim()) return showToast("Enter the BitLocker recovery key/password first.", 'warning');
+    if (status) status.textContent = "Unlocking (this can take a few seconds)...";
+    try {
+        const res = await fetch('/api/bitlocker/unlock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ partition, recovery_key: recoveryKey })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Unlock failed: ${data.error}`;
+            showToast(`BitLocker unlock failed: ${data.error}`, 'danger');
+            return;
+        }
+        bitlockerActiveMountId = data.mount_id;
+        bitlockerUnlockedSourcePath = data.source_path;
+        if (status) status.textContent = `Unlocked. Acquisition will image the decrypted volume (not ${partition} directly) as long as this stays unlocked. Click Lock / Cleanup when finished.`;
+        const lockBtn = document.getElementById("btnLockBitlocker");
+        if (lockBtn) lockBtn.style.display = '';
+        showToast("BitLocker volume unlocked - acquisition will use the decrypted volume.", 'success');
+    } catch (err) {
+        if (status) status.textContent = "Unlock failed - see console.";
+    }
+}
+
+async function lockBitlockerVolume() {
+    if (!bitlockerActiveMountId) return;
+    const status = document.getElementById("bitlockerStatus");
+    try {
+        const res = await fetch('/api/bitlocker/lock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mount_id: bitlockerActiveMountId })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(`Lock/cleanup failed: ${data.error}`, 'danger');
+            return;
+        }
+        bitlockerActiveMountId = null;
+        bitlockerUnlockedSourcePath = null;
+        if (status) status.textContent = "Locked and unmounted. Select the encrypted partition and Unlock again if needed.";
+        const lockBtn = document.getElementById("btnLockBitlocker");
+        if (lockBtn) lockBtn.style.display = 'none';
+        showToast("BitLocker volume locked/unmounted.", 'success');
+    } catch (err) {
+        showToast("Lock/cleanup failed - see console.", 'danger');
+    }
+}
+
 // --- Parameterized Network Shares Engine ---
 async function loadNetworkHistory() {
     try {
@@ -7038,11 +7291,21 @@ function hideNetworkRevertBanner() {
 }
 
 async function startAcquisition() {
-    const source = document.getElementById("driveSelect")?.value;
+    const rawSource = document.getElementById("driveSelect")?.value;
     const dest = document.getElementById("destPath")?.value;
     const fmt = document.getElementById("imageFormatSelect")?.value;
 
-    if (!source) return showToast("Select target evidence drive first.", 'warning');
+    if (!rawSource) return showToast("Select target evidence drive first.", 'warning');
+
+    // ddrescue deliberately never uses the unlocked (decrypted) source - see
+    // the matching comment in app.py's start_ddrescue(): its whole purpose
+    // is direct-I/O sector-level recovery against a real block device, which
+    // doesn't apply to an already-decrypted FUSE virtual file. Every other
+    // format substitutes the dislocker-file path transparently - the
+    // backend's _resolve_acquisition_source() only trusts it because it was
+    // created by this app's own unlock call, never client-supplied otherwise.
+    const useUnlockedSource = fmt !== 'ddrescue' && !!bitlockerUnlockedSourcePath;
+    const source = useUnlockedSource ? bitlockerUnlockedSourcePath : rawSource;
 
     const metadata = {
         case_number: document.getElementById("caseNum")?.value || "2026-UNASSIGNED",
@@ -7050,6 +7313,7 @@ async function startAcquisition() {
         examiner: document.getElementById("examiner")?.value || "UNSPECIFIED",
         notes: document.getElementById("notes")?.value || "None"
     };
+    const bitlockerKey = document.getElementById("bitlockerKey")?.value || "";
 
     let endpoint, body;
 
@@ -7058,7 +7322,7 @@ async function startAcquisition() {
         const retries = document.getElementById("ddrescueRetries")?.value || "3";
         const directMode = document.getElementById("ddrescueDirect")?.checked ?? false;
         endpoint = '/api/start_ddrescue';
-        body = { source, destination: dest, strategy, retry_passes: retries, direct_mode: directMode, metadata };
+        body = { source, destination: dest, strategy, retry_passes: retries, direct_mode: directMode, metadata, bitlocker_key: bitlockerKey };
     } else {
         const compression = document.getElementById("compressionSelect")?.value;
         const split_size = document.getElementById("splitSizeSelect")?.value;
@@ -7068,7 +7332,11 @@ async function startAcquisition() {
         if (document.getElementById("hashSha1")?.checked) selectedHashes.push("sha1");
         if (document.getElementById("hashSha256")?.checked) selectedHashes.push("sha256");
         endpoint = '/api/start_imaging';
-        body = { source, destination: dest, format: fmt, compression, split_size, hashes: selectedHashes, metadata, keep_raw };
+        body = { source, destination: dest, format: fmt, compression, split_size, hashes: selectedHashes, metadata, keep_raw, bitlocker_key: bitlockerKey };
+    }
+
+    if (fmt === 'ddrescue' && bitlockerUnlockedSourcePath) {
+        showToast("ddrescue does not support the unlocked BitLocker volume - it will image the raw encrypted device directly.", 'warning');
     }
 
     try {
@@ -7082,6 +7350,11 @@ async function startAcquisition() {
         if (data.success) {
             if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = true;
             if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = false;
+            // The backend keeps the dislocker mount alive for the whole job
+            // and unmounts it automatically once the job finishes - mirror
+            // that transition in fetchProgress() so the UI doesn't keep
+            // offering "Lock / Cleanup" for a mount that's already gone.
+            if (useUnlockedSource) bitlockerMountConsumedByJob = true;
         } else showToast(`Start Failed: ${data.error}`, 'danger');
     } catch (err) {}
 }
@@ -8513,6 +8786,21 @@ async function fetchProgress() {
                 showToast(completionMsgFn(data.status), 'info');
             }
             lastImageJobActiveByFormat[data.format] = data.active;
+        }
+
+        // Mirrors start_imaging()'s own post-job cleanup thread, which
+        // unmounts the dislocker volume automatically once the acquisition
+        // that was using it finishes (success, failure, or Stop) - without
+        // this, the UI would keep showing "Lock / Cleanup" for a mount the
+        // backend already tore down.
+        if (bitlockerMountConsumedByJob && !data.active) {
+            bitlockerActiveMountId = null;
+            bitlockerUnlockedSourcePath = null;
+            bitlockerMountConsumedByJob = false;
+            const lockBtn = document.getElementById("btnLockBitlocker");
+            if (lockBtn) lockBtn.style.display = 'none';
+            const status = document.getElementById("bitlockerStatus");
+            if (status) status.textContent = "The acquisition job finished - the BitLocker volume has been automatically locked/unmounted.";
         }
 
         if (throughputChart) {

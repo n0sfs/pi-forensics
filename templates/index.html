@@ -473,6 +473,31 @@
                                                 </div>
                                             </div>
 
+                                            <div class="p-2 bg-dark border border-warning rounded-2 mb-3" id="bitlockerUnlockBlock">
+                                                <div class="form-check form-switch mb-1">
+                                                    <input class="form-check-input" type="checkbox" id="bitlockerSourceToggle" onchange="toggleBitlockerSection()">
+                                                    <label class="form-check-label small fw-bold text-warning" for="bitlockerSourceToggle"><i class="bi bi-shield-lock-fill me-1"></i>This source drive is BitLocker-encrypted</label>
+                                                </div>
+                                                <div id="bitlockerSourceControls" style="display:none;">
+                                                    <div class="row g-2 align-items-center mb-2">
+                                                        <div class="col-md-8">
+                                                            <select id="bitlockerPartitionSelect" class="form-select form-select-sm">
+                                                                <option value="">-- Scan Selected Drive for Partitions --</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <button type="button" class="btn btn-sm btn-outline-warning w-100 fw-bold" onclick="loadBitlockerPartitions()"><i class="bi bi-arrow-clockwise me-1"></i>Scan</button>
+                                                        </div>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <button type="button" class="btn btn-sm btn-outline-info fw-bold me-1" onclick="detectBitlocker()"><i class="bi bi-search me-1"></i>Detect</button>
+                                                        <button type="button" class="btn btn-sm btn-warning text-dark fw-bold me-1" onclick="unlockBitlockerVolume()"><i class="bi bi-unlock-fill me-1"></i>Unlock</button>
+                                                        <button type="button" class="btn btn-sm btn-outline-danger fw-bold" id="btnLockBitlocker" onclick="lockBitlockerVolume()" style="display:none;"><i class="bi bi-lock-fill me-1"></i>Lock / Cleanup</button>
+                                                    </div>
+                                                    <div id="bitlockerStatus" class="small text-subtle">Select the encrypted partition, enter the recovery key/password in the field below, then click Unlock. Once unlocked, acquisition images the decrypted volume instead of the raw encrypted device.</div>
+                                                </div>
+                                            </div>
+
                                             <span class="fw-bold text-info small d-block mb-1"><i class="bi bi-folder2-open me-1"></i>Destination Directory</span>
                                             <div class="input-group input-group-sm mb-1">
                                                 <input type="text" id="destPath" class="form-control" value="/mnt">
@@ -487,6 +512,8 @@
                                                 <div class="col-md-4"><input type="text" id="examiner" class="form-control form-control-sm" placeholder="Examiner Name"></div>
                                             </div>
                                             <input type="text" id="notes" class="form-control form-control-sm" placeholder="Notes / Chain of Custody Remarks">
+                                            <input type="password" id="bitlockerKey" class="form-control form-control-sm mt-2" placeholder="BitLocker Recovery Key / Password (optional, if source is encrypted)">
+                                            <div class="small text-subtle mt-1" id="bitlockerKeyHelp">Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the key is not used to decrypt anything during acquisition. Enable "This source drive is BitLocker-encrypted" above to unlock and acquire the decrypted volume instead.</div>
                                         </div>
 
                                         <div class="col-md-6">
@@ -757,6 +784,7 @@
                         <div id="ctxMenuRealActions">
                             <h6 class="dropdown-header">Image &amp; Case</h6>
                             <button id="btnBrowseImage" class="dropdown-item" onclick="enterExplorerImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files right here, without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse as Image (Sleuth Kit)</button>
+                            <button id="btnUnlockBitlockerImage" class="dropdown-item" onclick="openBitlockerUnlockImageModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Decrypts a BitLocker-encrypted acquired image (or a specific partition within it) with its recovery key/password, then browses the decrypted volume with the same Sleuth Kit tools used for a normal image."><i class="bi bi-shield-lock me-2"></i>Unlock BitLocker &amp; Browse...</button>
                             <button id="btnVerifyHash" class="dropdown-item" onclick="openVerifyHashModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Computes a cryptographic hash of this file and optionally compares it against a known reference hash - confirms an evidence image (or any file) hasn't been altered since acquisition."><i class="bi bi-hash me-2"></i>Verify Image Hash</button>
                             <button id="btnAttachToCase" class="dropdown-item" onclick="attachSelectedFileToCase()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Bookmarks this file as a case exhibit - it'll show up pre-checked in Reporting > Files, ready to include in an exported report. Requires an active, consolidated-format case."><i class="bi bi-bookmark-plus me-2"></i>Attach to Case</button>
                             <button id="btnTagFile" class="dropdown-item" onclick="openTagItemModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Flags this file with a tag (Bookmark, Follow Up, Notable Item, or a custom tag) - shows up under File Views > Tagged Files. Requires an active, consolidated-format case."><i class="bi bi-tag me-2"></i>Tag...</button>
@@ -1931,6 +1959,36 @@ sudo update-ca-certificates</pre>
                 </div>
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="bitlockerUnlockImageModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-shield-lock me-2"></i>Unlock BitLocker: <span id="bitlockerImageFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-3">Decrypts this image (or a specific encrypted partition within it) with a BitLocker recovery key/password, then browses the decrypted volume using the same Sleuth Kit tools (Search, Timeline, Metadata, Hex, etc.) as any other image. The unlocked volume stays available until you click Exit Image or Lock/Cleanup it.</div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Partition Byte Offset (0 for a single-filesystem image or a whole-device BitLocker-To-Go image):</label>
+                        <input type="number" id="bitlockerImageOffset" class="form-control form-control-sm" value="0" min="0">
+                    </div>
+                    <div class="mb-2">
+                        <button type="button" class="btn btn-sm btn-outline-info fw-bold w-100" onclick="detectBitlockerImage()"><i class="bi bi-search me-1"></i>Detect BitLocker Signature at This Offset</button>
+                    </div>
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Recovery Key / Password:</label>
+                        <input type="password" id="bitlockerImageKey" class="form-control form-control-sm" placeholder="48-digit recovery key or password">
+                    </div>
+                    <div id="bitlockerImageStatus" class="small text-subtle">Enter the byte offset of the encrypted partition (0 if this image has no partition table) and the recovery key/password, then click Unlock & Browse.</div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-warning text-dark fw-bold" onclick="unlockBitlockerImageAndBrowse()"><i class="bi bi-unlock-fill me-1"></i>Unlock &amp; Browse</button>
                 </div>
             </div>
         </div>
