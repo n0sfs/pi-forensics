@@ -753,7 +753,7 @@
                          exclusive action sets: real filesystem items get the full action list,
                          virtual entries inside an image (Image Browser mode) only get Extract,
                          since Metadata/Binwalk/ClamAV/etc. all need a real path on disk. -->
-                    <div id="fileContextMenu" class="dropdown-menu dropdown-menu-dark" style="display:none; position:fixed; z-index:2000;">
+                    <div id="fileContextMenu" class="dropdown-menu dropdown-menu-dark" style="display:none; position:fixed; z-index:2000; max-height: calc(100vh - 16px); overflow-y: auto;">
                         <div id="ctxMenuRealActions">
                             <h6 class="dropdown-header">Image &amp; Case</h6>
                             <button id="btnBrowseImage" class="dropdown-item" onclick="enterExplorerImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files right here, without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse as Image (Sleuth Kit)</button>
