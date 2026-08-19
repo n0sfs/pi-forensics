@@ -1,0 +1,268 @@
+            <!-- APP 2b: FORENSIC FILE EXPLORER (its own tab - moved out of File Recovery) -->
+            <div class="tab-pane fade" id="explorer-app" role="tabpanel">
+                            <div class="card">
+                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-1 py-2">
+                                    <span><i class="bi bi-folder-check me-2"></i>Forensic File Explorer</span>
+                                    <span class="small text-subtle fw-normal">Tap to preview | Double-tap folder/image to enter | Right-click (or press-and-hold) for actions</span>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="row g-2">
+                                        <div class="col-lg-3" id="explorerTreeCol">
+                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                <span class="telemetry-grid-label">Folders &amp; Files</span>
+                                                <button type="button" id="explorerTreeToggleBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="toggleExplorerTreeCol()" title="Show/hide the folder tree"><i class="bi bi-diagram-3"></i></button>
+                                            </div>
+                                            <div id="explorerTreeContainer" class="file-pane" style="height: clamp(320px, 74vh, 800px);"></div>
+                                        </div>
+                                        <div class="col-lg-9">
+                                            <div class="mb-2">
+                                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                                    <span class="telemetry-grid-label">Listing</span>
+                                                    <span id="explorerPath" class="font-monospace small text-info fw-bold text-truncate" style="max-width: 70%;">/mnt</span>
+                                                </div>
+                                                <div id="explorerImageToolbar" style="display:none; align-items:center; justify-content:space-between; margin-bottom:.25rem;">
+                                                    <select id="explorerImagePartitionSelect" class="form-select form-select-sm" style="max-width: 55%;" onchange="explorerImageChangePartition()"></select>
+                                                    <div class="d-flex gap-1">
+                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="explorerImageToggleSearch()" title="Search inside image"><i class="bi bi-search"></i></button>
+                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="explorerImageToggleTimeline()" title="Generate timeline"><i class="bi bi-clock-history"></i></button>
+                                                        <button type="button" id="explorerImageGeoBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageGeolocationExport()" title="Scan the whole image for GPS-tagged photos and export a KML file"><i class="bi bi-geo-alt"></i></button>
+                                                        <button type="button" id="explorerImageHashBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageHashManifest()" title="Hash every file in the whole image (SHA256) and save a manifest"><i class="bi bi-list-check"></i></button>
+                                                        <button type="button" id="explorerImageTriageBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="startImageTriageScan()" title="Walk every real file in the image and scan its content for emails, URLs, IP addresses, card-like numbers, and phone numbers - results are tied to real file paths. Runs as a trackable background job (see the progress bar below)."><i class="bi bi-binoculars"></i></button>
+                                                        <button type="button" id="explorerImageRecoverBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="runImageRecoverDeleted()" title="Recover deleted files still referenced by an intact directory entry, preserving their original names and folder structure. Recovery odds vary by filesystem type - see documentation."><i class="bi bi-recycle"></i></button>
+                                                        <button type="button" class="btn btn-xs btn-outline-warning py-0 px-2" onclick="exitExplorerImage()" title="Exit image, return to file system"><i class="bi bi-x-lg me-1"></i>Exit Image</button>
+                                                    </div>
+                                                </div>
+                                                <!-- Only the Filesystem-Aware Triage Scan (a genuinely long-running,
+                                                     job-tracked operation, unlike every other in-image tool above
+                                                     which is synchronous) needs this - shown/hidden and updated by
+                                                     the same fetchProgress() poll every other tab's progress display
+                                                     already reuses (one shared current_job, many mirrors). -->
+                                                <div id="explorerJobProgress" style="display:none; margin-bottom:.25rem;">
+                                                    <div class="d-flex justify-content-between align-items-center small text-subtle mb-1">
+                                                        <span id="explorerJobStatus">Status: --</span>
+                                                        <button type="button" class="btn btn-xs btn-outline-danger py-0 px-2" onclick="stopAcquisition()"><i class="bi bi-stop-fill me-1"></i>Stop</button>
+                                                    </div>
+                                                    <div class="progress" style="height: 6px;">
+                                                        <div id="explorerJobProgressBar" class="progress-bar bg-info" role="progressbar" style="width: 0%;"></div>
+                                                    </div>
+                                                </div>
+                                                <div id="explorerContainer" class="file-pane" style="height: clamp(140px, 26vh, 300px);"></div>
+                                            </div>
+                                            <div>
+                                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                                    <span class="telemetry-grid-label">Details</span>
+                                                    <div class="d-flex gap-1">
+                                                        <button type="button" id="explorerViewPreviewBtn" class="btn btn-xs btn-info py-0 px-2" onclick="switchExplorerRightView('preview')">Preview</button>
+                                                        <button type="button" id="explorerViewHexBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="switchExplorerRightView('hex')" title="Raw byte view (offset / hex / ASCII) of the first part of the file">Hex</button>
+                                                        <button type="button" id="explorerViewMetadataBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="switchExplorerRightView('metadata')" title="Embedded file metadata via ExifTool">Metadata</button>
+                                                    </div>
+                                                </div>
+                                                <div id="explorerPreview" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="height: clamp(160px, 40vh, 460px);">
+                                                    <i class="bi bi-cursor fs-1 text-subtle mb-2"></i>
+                                                    <span class="text-subtle small">Select a file on the left to preview it here.</span>
+                                                </div>
+                                                <!-- display:none needs !important from the start - this div's own
+                                                     d-flex class is !important in Bootstrap and would otherwise force
+                                                     it visible on the very first render, before switchExplorerRightView()
+                                                     ever runs to apply the same override dynamically (see main.js). -->
+                                                <div id="explorerHex" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="display:none !important; height: clamp(160px, 40vh, 460px);">
+                                                    <i class="bi bi-code-square fs-1 text-subtle mb-2"></i>
+                                                    <span class="text-subtle small">Select a file on the left to view its raw bytes.</span>
+                                                </div>
+                                                <div id="explorerMetadata" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="display:none !important; height: clamp(160px, 40vh, 460px);">
+                                                    <i class="bi bi-info-circle fs-1 text-subtle mb-2"></i>
+                                                    <span class="text-subtle small">Select a file on the left to view its metadata.</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                    <!-- Right-click / press-and-hold context menu for file items - two mutually
+                         exclusive action sets: real filesystem items get the full action list,
+                         virtual entries inside an image (Image Browser mode) only get Extract,
+                         since Metadata/Binwalk/ClamAV/etc. all need a real path on disk. -->
+                    <div id="fileContextMenu" class="dropdown-menu dropdown-menu-dark" style="display:none; position:fixed; z-index:2000; max-height: calc(100vh - 16px); overflow-y: auto;">
+                        <div id="ctxMenuRealActions">
+                            <h6 class="dropdown-header">Image &amp; Case</h6>
+                            <button id="btnBrowseImage" class="dropdown-item" onclick="enterExplorerImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files right here, without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse as Image (Sleuth Kit)</button>
+                            <button id="btnUnlockBitlockerImage" class="dropdown-item" onclick="openBitlockerUnlockImageModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Decrypts a BitLocker-encrypted acquired image (or a specific partition within it) with its recovery key/password, then browses the decrypted volume with the same Sleuth Kit tools used for a normal image."><i class="bi bi-shield-lock me-2"></i>Unlock BitLocker &amp; Browse...</button>
+                            <button id="btnVerifyHash" class="dropdown-item" onclick="openVerifyHashModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Computes a cryptographic hash of this file and optionally compares it against a known reference hash - confirms an evidence image (or any file) hasn't been altered since acquisition."><i class="bi bi-hash me-2"></i>Verify Image Hash</button>
+                            <button id="btnAttachToCase" class="dropdown-item" onclick="attachSelectedFileToCase()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Bookmarks this file as a case exhibit - it'll show up pre-checked in Reporting > Files, ready to include in an exported report. Requires an active, consolidated-format case."><i class="bi bi-bookmark-plus me-2"></i>Attach to Case</button>
+                            <button id="btnTagFile" class="dropdown-item" onclick="openTagItemModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Flags this file with a tag (Bookmark, Follow Up, Notable Item, or a custom tag) - shows up under File Views > Tagged Files. Requires an active, consolidated-format case."><i class="bi bi-tag me-2"></i>Tag...</button>
+                            <button id="btnRecoverFromImage" class="dropdown-item" onclick="recoverDeletedFilesFromImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Jumps to File Recovery with this image pre-filled as the source, ready to run PhotoRec, foremost, scalpel, or extundelete against it."><i class="bi bi-life-preserver me-2"></i>Recover Deleted Files...</button>
+                            <h6 class="dropdown-header">Whole-Image Analysis</h6>
+                            <button id="btnEnterSearchImage" class="dropdown-item" onclick="contextMenuBrowseImageAnd('search')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Opens this image and searches its filesystem for files by name - the same tool available once you're browsing inside an image."><i class="bi bi-search me-2"></i>Search Inside Image</button>
+                            <button id="btnEnterTimelineImage" class="dropdown-item" onclick="contextMenuBrowseImageAnd('timeline')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Opens this image and generates a MACB (Modified/Accessed/Changed/Born) timeline across its filesystem."><i class="bi bi-clock-history me-2"></i>Generate Timeline</button>
+                            <button id="btnEnterGeoImage" class="dropdown-item" onclick="contextMenuBrowseImageAnd('geo')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Opens this image and scans the whole thing for GPS-tagged photos, exporting a .kml file - as a trackable background job."><i class="bi bi-geo-alt me-2"></i>Extract Geolocation (Whole Image)</button>
+                            <button id="btnEnterHashImage" class="dropdown-item" onclick="contextMenuBrowseImageAnd('hash')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Opens this image and hashes every real file inside it (SHA256), saving a manifest - as a trackable background job."><i class="bi bi-list-check me-2"></i>Hash Manifest (Whole Image)</button>
+                            <button id="btnEnterTriageImage" class="dropdown-item" onclick="contextMenuBrowseImageAnd('triage')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Opens this image and scans every real file's content for emails, URLs, IP addresses, card-like numbers, and phone numbers, tied to real file paths - as a trackable background job."><i class="bi bi-binoculars me-2"></i>Triage Scan (Whole Image)</button>
+                            <button id="btnEnterRecoverImage" class="dropdown-item" onclick="contextMenuBrowseImageAnd('recover')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Opens this image and recovers deleted files still referenced by an intact directory entry, preserving original names/paths. Distinct from 'Recover Deleted Files...' above, which uses raw signature-based carving (PhotoRec/foremost/etc.) instead."><i class="bi bi-recycle me-2"></i>Recover Deleted (Filesystem-Aware)</button>
+                            <h6 class="dropdown-header">Analyze</h6>
+                            <button id="btnRunBinwalk" class="dropdown-item" onclick="runSelectedBinwalk()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Looks for other files or systems hidden inside this one - useful for firmware dumps, router images, or unknown binary files."><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button>
+                            <button id="btnRunClamscan" class="dropdown-item" onclick="runSelectedClamscan()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks this file (or folder) against known virus/malware signatures."><i class="bi bi-shield-exclamation me-2"></i>Scan for Malware (ClamAV)</button>
+                            <button id="btnRunStrings" class="dropdown-item" onclick="runSelectedStrings()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls out any readable text hiding inside a file that isn't normally text - like URLs or passwords buried in an executable."><i class="bi bi-fonts me-2"></i>Extract Strings</button>
+                            <button id="btnQuickTriageScan" class="dropdown-item" onclick="runSelectedQuickTriageScan()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Fast scan of the first 32MB for emails, URLs, IP addresses, card-like numbers, and phone numbers - a quick look at a .dd/.E01 image right here, without configuring the full Triage Scan job in File Recovery."><i class="bi bi-binoculars me-2"></i>Quick Triage Scan</button>
+                            <button id="btnRunHashdeep" class="dropdown-item" onclick="runSelectedHashdeep()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Creates a fingerprint (hash) for every file in a folder at once - useful for proving a whole set of recovered files hasn't been tampered with."><i class="bi bi-list-check me-2"></i>Hash Directory Tree (hashdeep)</button>
+                            <button id="btnExtractGeolocation" class="dropdown-item" onclick="runSelectedGeolocationExport()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Scans every photo in this folder for embedded GPS location data and saves a .kml file you can open in Google Earth or similar mapping software."><i class="bi bi-geo-alt me-2"></i>Extract Geolocation (KML)</button>
+                            <button id="btnRunMvtIos" class="dropdown-item" onclick="runSelectedMvtScan('ios')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks an iOS backup folder (from Mobile Forensics) against known spyware indicators, using Amnesty International's Mobile Verification Toolkit."><i class="bi bi-phone me-2"></i>MVT Scan (iOS Backup)</button>
+                            <button id="btnRunMvtAndroid" class="dropdown-item" onclick="runSelectedMvtScan('android')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Best-effort spyware/IOC scan of an Android backup folder using MVT. Only matches a decrypted adb-backup-format directory, not adb pull/bugreport output - errors clearly if the format doesn't match."><i class="bi bi-phone me-2"></i>MVT Scan (Android Backup)</button>
+                            <h6 class="dropdown-header">File Operations</h6>
+                            <button id="btnCopyFile" class="dropdown-item" onclick="promptCopySelected()" disabled><i class="bi bi-copy me-2"></i>Copy to...</button>
+                            <button id="btnDeleteFile" class="dropdown-item text-danger" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-2"></i>Delete</button>
+                        </div>
+                        <div id="ctxMenuImageActions" style="display:none;">
+                            <h6 class="dropdown-header">In-Image Actions</h6>
+                            <button id="ctxMenuImageExtract" class="dropdown-item" onclick="extractExplorerImageSelected()"><i class="bi bi-download me-2"></i>Extract to Evidence Root</button>
+                            <button id="ctxMenuImageAttach" class="dropdown-item" onclick="extractAndAttachExplorerImageSelected()" data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls this file out of the image into the active case folder and bookmarks it as a report exhibit in one step. Requires an active, consolidated-format case."><i class="bi bi-bookmark-plus me-2"></i>Extract &amp; Attach to Case</button>
+                            <button id="ctxMenuImageTag" class="dropdown-item" onclick="openTagItemModal()" data-bs-toggle="tooltip" data-bs-placement="left" title="Flags this file with a tag (Bookmark, Follow Up, Notable Item, or a custom tag) - shows up under File Views > Tagged Files. Requires an active, consolidated-format case."><i class="bi bi-tag me-2"></i>Tag...</button>
+                            <button id="ctxMenuImageBinwalk" class="dropdown-item" onclick="runImageBinwalk()"><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button>
+                            <button id="ctxMenuImageStrings" class="dropdown-item" onclick="runImageStrings()"><i class="bi bi-fonts me-2"></i>Extract Strings</button>
+                        </div>
+                    </div>
+            </div>
+    <div class="modal fade" id="verifyHashModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-hash me-2"></i>Verify Image Hash: <span id="verifyHashFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Hash Algorithm:</label>
+                        <select id="verifyAlgorithmSelect" class="form-select form-select-sm">
+                            <option value="sha256" selected>SHA-256</option>
+                            <option value="sha1">SHA-1</option>
+                            <option value="md5">MD5</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Expected Reference Hash (Optional Comparison):</label>
+                        <input type="text" id="verifyExpectedHash" class="form-control form-control-sm font-monospace" placeholder="Paste known acquisition hash here...">
+                    </div>
+                    <button class="btn btn-sm btn-info text-dark fw-bold w-100 mb-3" onclick="runStandaloneHashVerification()">
+                        <i class="bi bi-cpu-fill me-1"></i>Calculate & Verify Hash
+                    </button>
+                    <div class="p-2 bg-black border border-secondary rounded-2">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="telemetry-grid-label">Verification Status:</span>
+                            <span id="hashMatchBadge" class="badge bg-secondary">AWAITING INPUT</span>
+                        </div>
+                        <div>
+                            <small class="telemetry-grid-label d-block">Computed Hash:</small>
+                            <div id="computedHashOutput" class="font-monospace small text-info text-break bg-dark p-2 rounded border border-secondary">--</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="bitlockerUnlockImageModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-shield-lock me-2"></i>Unlock BitLocker: <span id="bitlockerImageFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-3">Decrypts this image (or a specific encrypted partition within it) with a BitLocker recovery key/password, then browses the decrypted volume using the same Sleuth Kit tools (Search, Timeline, Metadata, Hex, etc.) as any other image. The unlocked volume stays available until you click Exit Image or Lock/Cleanup it.</div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Partition Byte Offset (0 for a single-filesystem image or a whole-device BitLocker-To-Go image):</label>
+                        <input type="number" id="bitlockerImageOffset" class="form-control form-control-sm" value="0" min="0">
+                    </div>
+                    <div class="mb-2">
+                        <button type="button" class="btn btn-sm btn-outline-info fw-bold w-100" onclick="detectBitlockerImage()"><i class="bi bi-search me-1"></i>Detect BitLocker Signature at This Offset</button>
+                    </div>
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Recovery Key / Password:</label>
+                        <input type="password" id="bitlockerImageKey" class="form-control form-control-sm" placeholder="48-digit recovery key or password">
+                    </div>
+                    <div id="bitlockerImageStatus" class="small text-subtle">Enter the byte offset of the encrypted partition (0 if this image has no partition table) and the recovery key/password, then click Unlock & Browse.</div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-warning text-dark fw-bold" onclick="unlockBitlockerImageAndBrowse()"><i class="bi bi-unlock-fill me-1"></i>Unlock &amp; Browse</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="tagItemModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-tag me-2"></i>Tag: <span id="tagItemFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Comment (optional, applied when you tag with a new tag below):</label>
+                        <textarea id="tagItemComment" class="form-control form-control-sm" rows="2" placeholder="e.g. why this file matters to the case..."></textarea>
+                    </div>
+                    <div id="tagItemExistingList" class="list-group list-group-flush mb-2" style="max-height: 220px; overflow-y: auto;">
+                        <div class="text-subtle small p-2">Loading tags...</div>
+                    </div>
+                    <div class="border-top border-secondary pt-2">
+                        <button class="btn btn-sm btn-outline-info w-100" type="button" data-bs-toggle="collapse" data-bs-target="#tagItemNewTagForm">
+                            <i class="bi bi-plus-lg me-1"></i>Create New Tag
+                        </button>
+                        <div class="collapse mt-2" id="tagItemNewTagForm">
+                            <div class="row g-2 align-items-end">
+                                <div class="col-6">
+                                    <label class="telemetry-grid-label d-block mb-1">Tag Name:</label>
+                                    <input type="text" id="newTagName" class="form-control form-control-sm" maxlength="60" placeholder="e.g. Contraband">
+                                </div>
+                                <div class="col-3">
+                                    <label class="telemetry-grid-label d-block mb-1">Color:</label>
+                                    <select id="newTagColor" class="form-select form-select-sm">
+                                        <option value="secondary" selected>Gray</option>
+                                        <option value="info">Blue</option>
+                                        <option value="success">Green</option>
+                                        <option value="warning">Yellow</option>
+                                        <option value="danger">Red</option>
+                                        <option value="primary">Purple</option>
+                                    </select>
+                                </div>
+                                <div class="col-3">
+                                    <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="createAndApplyNewTag()">Create</button>
+                                </div>
+                            </div>
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="newTagNotable">
+                                <label class="form-check-label small telemetry-grid-label" for="newTagNotable">
+                                    Notable (flags this tag as evidence of interest, like Autopsy's "Notable Item")
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="tagItemModalStatus" class="small mt-2"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="toolOutputModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i id="toolOutputIcon" class="bi bi-terminal-fill me-2"></i><span id="toolOutputTitle">Tool Output</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div id="toolOutputBadgeRow" class="mb-2" style="display:none;">
+                        <span id="toolOutputBadge" class="badge bg-secondary"></span>
+                    </div>
+                    <pre id="toolOutputContainer" class="log-window mb-0" style="height: 350px;">Loading...</pre>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>

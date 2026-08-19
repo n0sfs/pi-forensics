@@ -1,0 +1,200 @@
+                    <!-- APP 1: FORENSIC ACQUISITION DASHBOARD -->
+                    <div class="tab-pane fade show active" id="acquisition-app" role="tabpanel">
+                            <div class="card">
+                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2 py-2">
+                                    <span><i class="bi bi-hdd-network me-2"></i>Forensic Acquisition</span>
+                                    <div class="d-flex flex-wrap align-items-center gap-2">
+                                        <!-- Write Blocker status + Safe Detach shortcut - both link to Settings >
+                                             Drive Management rather than acting directly (too easy to flip/eject
+                                             by accident from a compact header button - see goToDriveManagement()). -->
+                                        <button id="wbBadgeBtn" class="btn btn-sm btn-success fw-bold" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to change this">
+                                            <i class="bi bi-lock-fill me-1"></i>Write Blocker: On
+                                        </button>
+                                        <!-- Hidden below md: goes to the exact same place as the Write
+                                             Blocker badge above (goToDriveManagement()), which stays
+                                             visible - genuinely redundant on a phone, not a feature loss. -->
+                                        <button class="btn btn-sm btn-warning text-dark fw-bold d-none d-md-inline-block" onclick="goToDriveManagement()" title="Go to Settings > Drive Management to safely detach a drive">
+                                            <i class="bi bi-eject-fill me-1"></i>Safe Detach
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="row g-3">
+                                        <div class="col-md-6">
+                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                <span class="fw-bold text-info small"><i class="bi bi-cpu-fill me-1"></i>Target Source Selection</span>
+                                                <span id="lblHealthBadge" class="badge bg-secondary">UNCHECKED</span>
+                                            </div>
+                                            <div class="row g-2 align-items-center mb-2">
+                                                <div class="col-md-8">
+                                                    <select id="driveSelect" class="form-select form-select-sm drive-select" onchange="checkSmartTelemetry()">
+                                                        <option value="">-- Choose Target Source Drive --</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <button class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="refreshDrives()"><i class="bi bi-arrow-clockwise me-1"></i>Scan Drives</button>
+                                                </div>
+                                            </div>
+                                            <div class="p-2 bg-dark border border-secondary rounded-2 mb-3">
+                                                <div class="row g-2">
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Device Path</span><span id="lblDevicePath" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Media Type</span><span id="lblMediaType" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Capacity Size</span><span id="lblCapacity" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Model / Vendor</span><span id="lblModel" class="telemetry-grid-val text-truncate d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Serial Number</span><span id="lblSerial" class="telemetry-grid-val text-warning font-monospace text-truncate d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Temperature</span><span id="lblTemp" class="telemetry-grid-val d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Reallocated Sectors</span><span id="lblReallocated" class="telemetry-grid-val d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Pending Bad Sectors</span><span id="lblPending" class="telemetry-grid-val d-block">--</span></div>
+                                                    <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Power-On Hours</span><span id="lblPowerHours" class="telemetry-grid-val d-block">--</span></div>
+                                                </div>
+                                            </div>
+
+                                            <div class="p-2 bg-dark border border-warning rounded-2 mb-3" id="bitlockerUnlockBlock">
+                                                <div class="form-check form-switch mb-1">
+                                                    <input class="form-check-input" type="checkbox" id="bitlockerSourceToggle" onchange="toggleBitlockerSection()">
+                                                    <label class="form-check-label small fw-bold text-warning" for="bitlockerSourceToggle"><i class="bi bi-shield-lock-fill me-1"></i>This source drive is BitLocker-encrypted</label>
+                                                </div>
+                                                <div id="bitlockerSourceControls" style="display:none;">
+                                                    <div class="row g-2 align-items-center mb-2">
+                                                        <div class="col-md-8">
+                                                            <select id="bitlockerPartitionSelect" class="form-select form-select-sm">
+                                                                <option value="">-- Scan Selected Drive for Partitions --</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <button type="button" class="btn btn-sm btn-outline-warning w-100 fw-bold" onclick="loadBitlockerPartitions()"><i class="bi bi-arrow-clockwise me-1"></i>Scan</button>
+                                                        </div>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <button type="button" class="btn btn-sm btn-outline-info fw-bold me-1" onclick="detectBitlocker()"><i class="bi bi-search me-1"></i>Detect</button>
+                                                        <button type="button" class="btn btn-sm btn-warning text-dark fw-bold me-1" onclick="unlockBitlockerVolume()"><i class="bi bi-unlock-fill me-1"></i>Unlock</button>
+                                                        <button type="button" class="btn btn-sm btn-outline-danger fw-bold" id="btnLockBitlocker" onclick="lockBitlockerVolume()" style="display:none;"><i class="bi bi-lock-fill me-1"></i>Lock / Cleanup</button>
+                                                    </div>
+                                                    <div id="bitlockerStatus" class="small text-subtle">Select the encrypted partition, enter the recovery key/password in the field below, then click Unlock. Once unlocked, acquisition images the decrypted volume instead of the raw encrypted device.</div>
+                                                </div>
+                                            </div>
+
+                                            <span class="fw-bold text-info small d-block mb-1"><i class="bi bi-folder2-open me-1"></i>Destination Directory</span>
+                                            <div class="input-group input-group-sm mb-1">
+                                                <input type="text" id="destPath" class="form-control" value="/mnt">
+                                                <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'destPath')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                                            </div>
+                                            <div class="small text-subtle mb-3">Mounting a network share is now under Settings &gt; Network - once mounted, Browse into it like any local path.</div>
+
+                                            <span class="fw-bold text-info small d-block mb-1"><i class="bi bi-folder-symlink me-1"></i>Case & Evidence Metadata</span>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-4"><input type="text" id="caseNum" class="form-control form-control-sm" placeholder="Case Number (e.g. 2026-CASE-001)"></div>
+                                                <div class="col-md-4"><input type="text" id="evidenceId" class="form-control form-control-sm" placeholder="Evidence ID (e.g. ITEM-01)"></div>
+                                                <div class="col-md-4"><input type="text" id="examiner" class="form-control form-control-sm" placeholder="Examiner Name"></div>
+                                            </div>
+                                            <input type="text" id="notes" class="form-control form-control-sm" placeholder="Notes / Chain of Custody Remarks">
+                                            <input type="password" id="bitlockerKey" class="form-control form-control-sm mt-2" placeholder="BitLocker Recovery Key / Password (optional, if source is encrypted)">
+                                            <div class="small text-subtle mt-1" id="bitlockerKeyHelp">Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the key is not used to decrypt anything during acquisition. Enable "This source drive is BitLocker-encrypted" above to unlock and acquire the decrypted volume instead.</div>
+                                        </div>
+
+                                        <div class="col-md-6">
+                                            <span class="fw-bold text-info small d-block mb-1"><i class="bi bi-sliders me-1"></i>Advanced Acquisition Controls</span>
+                                            <div class="row g-2 mb-1">
+                                                <div class="col-md-4">
+                                                    <label class="telemetry-grid-label d-block">Format</label>
+                                                    <select id="imageFormatSelect" class="form-select form-select-sm" onchange="toggleFormatControls()">
+                                                        <option value="dd" selected>Raw / dc3dd (.dd)</option>
+                                                        <option value="dcfldd">Raw / dcfldd (.dd)</option>
+                                                        <option value="plain_dd">Raw / GNU dd (.dd)</option>
+                                                        <option value="e01">EWF (.E01)</option>
+                                                        <option value="aff">AFF (.aff)</option>
+                                                        <option value="ddrescue">Recovery / ddrescue (.dd)</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <label class="telemetry-grid-label d-block">E01 Compression</label>
+                                                    <select id="compressionSelect" class="form-select form-select-sm" disabled>
+                                                        <option value="fast" selected>Fast</option>
+                                                        <option value="best">Best</option>
+                                                        <option value="none">None</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <label class="telemetry-grid-label d-block">Segment Split Size</label>
+                                                    <select id="splitSizeSelect" class="form-select form-select-sm" disabled>
+                                                        <option value="2000M" selected>2 GB (Default)</option>
+                                                        <option value="650M">650 MB (CD)</option>
+                                                        <option value="4000M">4 GB (FAT32)</option>
+                                                        <option value="8000M">8 GB</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <div id="formatHelpText" class="small text-subtle mb-2">Raw bit-for-bit copy using dc3dd, with hashing built in. A solid default for most acquisitions.</div>
+
+                                            <div id="ddrescueOptionRow" class="mb-2" style="display:none;">
+                                                <div class="row g-2 mb-1">
+                                                    <div class="col-md-6">
+                                                        <label class="telemetry-grid-label d-block mb-1">Recovery Strategy</label>
+                                                        <select id="ddrescueStrategySelect" class="form-select form-select-sm" onchange="updateDdrescueStrategyHelp()">
+                                                            <option value="stage1_fast" selected>1. Fast Copy (No-Scrape/No-Trim - Safest for Weak Heads)</option>
+                                                            <option value="stage2_trim">2. Edge Trimming Pass (Isolate Bad Sectors)</option>
+                                                            <option value="stage3_intensive">3. Intensive Bad Sector Scraping</option>
+                                                            <option value="reverse">4. Reverse Direction Reading Pass (--reverse)</option>
+                                                        </select>
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <label class="telemetry-grid-label d-block mb-1">Bad Sector Retries</label>
+                                                        <input type="number" class="form-control form-control-sm" id="ddrescueRetries" value="3" min="0" max="10">
+                                                    </div>
+                                                    <div class="col-md-3 align-self-end">
+                                                        <div class="form-check form-switch mb-2">
+                                                            <input class="form-check-input" type="checkbox" id="ddrescueDirect" data-bs-toggle="tooltip" data-bs-placement="top" title="Reads the source drive bypassing the system's cache (ddrescue's -d/--idirect flag) - can help on a failing drive, but some USB/SATA adapters don't support it correctly and will fail with an 'unaligned read' error if it's on. Off by default for that reason; try enabling it only if you're getting inconsistent results.">
+                                                            <label class="form-check-label small text-light fw-bold" for="ddrescueDirect">Direct I/O Mode</label>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div id="ddrescueStrategyHelpText" class="small text-subtle mb-1">Safest first pass - copies everything readable quickly, skipping bad areas rather than dwelling on them. Start here on a failing drive.</div>
+                                            </div>
+
+                                            <div id="affRawOptionRow" class="mb-2" style="display:none;">
+                                                <div class="form-check form-check-inline mb-0">
+                                                    <input class="form-check-input" type="checkbox" id="affKeepRaw" checked>
+                                                    <label class="form-check-label small text-light" for="affKeepRaw">
+                                                        Keep intermediate .raw image after AFF conversion
+                                                    </label>
+                                                </div>
+                                                <div class="small text-subtle">
+                                                    AFF is produced in two steps: a hashed raw acquisition (dc3dd), then conversion to .aff.
+                                                    The acquisition hashes come from the raw step. Uncheck to delete the .raw once the .aff is verified written, saving disk space.
+                                                </div>
+                                            </div>
+
+                                            <div id="hashRow" class="mb-2">
+                                                <span class="telemetry-grid-label d-inline me-2">Verification Hashes:</span>
+                                                <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="hashMd5" value="md5"><label class="form-check-label small text-light" for="hashMd5">MD5</label></div>
+                                                <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="hashSha1" value="sha1"><label class="form-check-label small text-light" for="hashSha1">SHA1</label></div>
+                                                <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="hashSha256" value="sha256" checked><label class="form-check-label small text-light" for="hashSha256">SHA256</label></div>
+                                            </div>
+
+                                            <div class="d-flex gap-2 mb-3">
+                                                <button id="startBtn" class="btn btn-primary flex-fill fw-bold py-2" onclick="startAcquisition()"><i class="bi bi-play-circle me-1"></i>Start Acquisition</button>
+                                                <button id="stopBtn" class="btn btn-danger flex-fill fw-bold py-2" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop Acquisition</button>
+                                            </div>
+
+                                            <hr class="border-secondary my-2">
+
+                                            <span class="fw-bold text-info small d-block mb-1"><i class="bi bi-terminal me-1"></i>Output</span>
+                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                <span id="jobStatus" class="fw-bold text-info fs-6">Status: IDLE</span>
+                                                <span id="progressPct" class="fw-bold fs-5 text-light">0.0%</span>
+                                            </div>
+                                            <div class="progress bg-secondary mb-2" style="height: 10px;">
+                                                <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%"></div>
+                                            </div>
+                                            <div class="row text-center align-items-center mb-2">
+                                                <div class="col-6 col-md-4"><small class="telemetry-label d-block">Speed</small><span id="speedVal" class="fw-bold text-warning">0.0 MB/s</span></div>
+                                                <div class="col-6 col-md-4"><div class="chart-container-mini"><canvas id="throughputChart"></canvas></div></div>
+                                                <div class="col-6 col-md-4"><small class="telemetry-label d-block">Bytes</small><span id="bytesVal" class="fw-bold text-light">0 / 0 GB</span></div>
+                                            </div>
+                                            <label class="form-label fw-bold text-light small mb-1">Console Terminal Stream:</label>
+                                            <pre id="logOutput" class="log-window" style="height: clamp(140px, 30vh, 260px);">[System initialized and idle. Ready for disk acquisition job.]</pre>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                    </div>

@@ -1,0 +1,109 @@
+                        <!-- Service Controls, Updates, Power & Diagnostics (combined) -->
+                        <div class="tab-pane fade" id="settings-pane-diag" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-terminal-fill me-2"></i>Service Controls & Diagnostics</h6>
+                            <!-- Mobile-only mirror of the navbar's system telemetry (hidden there
+                                 below 768px, see the d-none d-md-flex wrapper up in <nav>) - moving
+                                 it here instead of just deleting it keeps CPU/RAM/Storage/Network
+                                 reachable on a phone, one tap into Settings instead of permanently
+                                 occupying header space. Distinct *Settings-suffixed element ids -
+                                 fetchSystemInfo()/fetchNetworkInterfaces() populate both this and
+                                 the navbar version from the exact same single poll, two views of one
+                                 source of truth, not a second polling loop. -->
+                            <div class="d-flex d-md-none flex-wrap align-items-center gap-3 text-nowrap mb-3 p-2 bg-black border border-secondary rounded-2">
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
+                                    <span id="cpuValSettings" class="telemetry-val">0%</span>
+                                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                                        <div id="cpuBarSettings" class="progress-bar bg-info" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="telemetry-label"><i class="bi bi-memory text-primary me-1"></i>RAM:</span>
+                                    <span id="memValSettings" class="telemetry-val">0 / 0 GB (0%)</span>
+                                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                                        <div id="memBarSettings" class="progress-bar bg-primary" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="telemetry-label"><i class="bi bi-hdd text-warning me-1"></i>Storage:</span>
+                                    <span id="storageValSettings" class="telemetry-val">0 / 0 GB</span>
+                                    <div class="progress bg-secondary" style="width: 70px; height: 6px;">
+                                        <div id="storageBarSettings" class="progress-bar bg-warning" style="width: 0%"></div>
+                                    </div>
+                                </div>
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="telemetry-label"><i class="bi bi-ethernet me-1"></i>Network:</span>
+                                    <div id="settingsInterfacesContainer" class="d-flex align-items-center gap-1"></div>
+                                </div>
+                            </div>
+                            <div class="row g-2">
+                                <div class="col-md-3">
+                                    <div class="d-grid gap-1">
+                                        <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartForensicService()"><i class="bi bi-arrow-repeat me-1"></i>Restart Service</button>
+                                        <button class="btn btn-sm btn-outline-warning fw-bold text-start" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button>
+                                        <button class="btn btn-sm btn-success fw-bold text-start" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button>
+                                        <button class="btn btn-sm btn-primary fw-bold text-start" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button>
+                                        <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="showToolVersionsPanel()"><i class="bi bi-info-square me-1"></i>Check Tool Versions</button>
+                                        <button class="btn btn-sm btn-outline-warning fw-bold text-start" onclick="purgeConsoleLogs()"><i class="bi bi-trash3 me-1"></i>Purge Terminal Log Buffer</button>
+
+                                        <hr class="border-secondary my-1">
+
+                                        <div class="dropdown">
+                                            <button class="btn btn-sm btn-outline-secondary text-light fw-bold text-start w-100 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-terminal me-1"></i>Run Diagnostic</button>
+                                            <ul class="dropdown-menu dropdown-menu-dark">
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('dmesg')">dmesg</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('lsusb')">lsusb</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('df')">df -h</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('ip_a')">ip a</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('uptime')">uptime</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('lsblk')">lsblk</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('free')">free -h</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('mounts')">mount</button></li>
+                                            </ul>
+                                        </div>
+
+                                        <hr class="border-secondary my-1">
+
+                                        <button class="btn btn-sm btn-warning text-dark fw-bold text-start" onclick="triggerSystemPower('reboot')"><i class="bi bi-arrow-clockwise me-1"></i>Reboot Appliance</button>
+                                        <button class="btn btn-sm btn-danger fw-bold text-start" onclick="triggerSystemPower('poweroff')"><i class="bi bi-power me-1"></i>Power Off Station</button>
+                                    </div>
+                                    <div class="small text-subtle mt-2">
+                                        Git/OS updates pull from configured remotes - only run these on a station whose update
+                                        sources you trust. Diagnostics are a fixed, read-only allowlist, not a general shell -
+                                        SSH in for anything not listed here.
+                                    </div>
+                                </div>
+                                <div class="col-md-9">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="telemetry-grid-label">Output</span>
+                                        <div id="toolVersionsActions" style="display:none; gap: 4px;">
+                                            <button type="button" class="btn btn-xs btn-outline-warning fw-bold py-0 px-2" onclick="updateMvtIndicators(this)" title="Downloads the latest spyware/IOC indicator files MVT scans check against - needs internet access."><i class="bi bi-cloud-download me-1"></i>Update MVT Indicators</button>
+                                            <button type="button" class="btn btn-xs btn-outline-info fw-bold py-0 px-2" onclick="loadToolVersions()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                        </div>
+                                    </div>
+                                    <pre id="diagOutput" class="log-window mb-0" style="height: 420px;">[Run a command on the left to see its output here.]</pre>
+                                    <div id="toolVersionsPanel" class="log-window mb-0 p-0" style="height: 420px; overflow-y: auto; display:none;">
+                                        <table class="table table-sm table-dark table-striped mb-0 font-monospace small">
+                                            <caption class="caption-top small text-subtle px-2 py-1">
+                                                "Installed Version" is each tool's own self-reported version string; "Newest Available" is Debian's
+                                                packaging version from apt's locally cached index (refresh via Update OS Packages if stale). The two
+                                                use different numbering schemes and won't always visually match even when nothing is out of date -
+                                                trust the Status/Action column, not a side-by-side comparison of the two version strings.
+                                            </caption>
+                                            <thead>
+                                                <tr class="text-info">
+                                                    <th>Tool</th>
+                                                    <th>Installed Version</th>
+                                                    <th title="From apt's locally cached package index - refresh via Update OS Packages if this looks stale.">Newest Available</th>
+                                                    <th>Status</th>
+                                                    <th>Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="toolVersionsBody">
+                                                <tr><td colspan="5" class="text-subtle">Loading...</td></tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>

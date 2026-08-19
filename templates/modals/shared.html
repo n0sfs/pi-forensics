@@ -1,0 +1,166 @@
+    <div class="modal fade" id="folderBrowserModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6" id="modalTitle"><i class="bi bi-folder2-open me-2"></i>Select Directory or File</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="d-flex align-items-center mb-3">
+                        <span class="me-2 fw-bold text-muted small">Current Path:</span>
+                        <input type="text" id="modalCurrentPath" class="form-control form-control-sm font-monospace" value="/mnt" readonly>
+                        <button class="btn btn-sm btn-outline-secondary ms-2 text-nowrap" onclick="navigateFolderUp()"><i class="bi bi-arrow-up me-1"></i>Up Level</button>
+                    </div>
+                    <div class="list-group list-group-flush border border-secondary rounded-2" id="folderList" style="max-height: 250px; overflow-y: auto; background-color: #090b10;"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" id="modalSelectBtn" class="btn btn-sm btn-primary fw-bold" onclick="selectCurrentFolder()">Select This Directory</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="caseManagerModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-folder-plus me-2"></i>Create or Select Case</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <h6 class="text-info fw-bold mb-2"><i class="bi bi-plus-circle me-2"></i>Create New Case</h6>
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-6"><input type="text" id="newCaseNumber" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
+                        <div class="col-md-6"><input type="text" id="newCaseExaminer" class="form-control form-control-sm" readonly title="Auto-filled from your logged-in account"></div>
+                    </div>
+                    <div class="input-group input-group-sm mb-2">
+                        <input type="text" id="newCaseParentDir" class="form-control" value="/mnt" placeholder="Where to create the case folder">
+                        <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'newCaseParentDir')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                    </div>
+                    <textarea id="newCaseNotes" class="form-control form-control-sm mb-2" rows="2" placeholder="Notes (optional)"></textarea>
+                    <button class="btn btn-sm btn-primary fw-bold w-100" onclick="createCase()"><i class="bi bi-folder-plus me-1"></i>Create Case</button>
+                    <div id="createCaseStatus" class="small mt-2"></div>
+
+                    <hr class="border-secondary my-3">
+
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="text-info fw-bold mb-0"><i class="bi bi-search me-2"></i>Select Existing Case</h6>
+                        <button class="btn btn-xs btn-outline-info py-0 px-2" onclick="loadExistingCases()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                    </div>
+                    <div class="list-group list-group-flush border border-secondary rounded-2" id="caseList" style="max-height: 220px; overflow-y: auto; background-color: #090b10;">
+                        <div class="text-subtle small p-2">Loading...</div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
+                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearActiveCase()"><i class="bi bi-x-circle me-1"></i>Clear Active Case</button>
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="changePasswordModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-sm">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-key-fill me-2"></i>Change My Password</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Current Password</label>
+                        <input type="password" id="cfgCurrentPass" class="form-control form-control-sm" placeholder="Enter active password" autocomplete="current-password">
+                    </div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">New Password</label>
+                        <input type="password" id="cfgNewPass" class="form-control form-control-sm" placeholder="New password (min 8 chars)" autocomplete="new-password">
+                    </div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Confirm New Password</label>
+                        <input type="password" id="cfgConfirmPass" class="form-control form-control-sm" placeholder="Confirm new password" autocomplete="new-password">
+                    </div>
+                    <div id="cfgPassStatus" class="small"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-info text-dark fw-bold" onclick="changeAdminPassword()"><i class="bi bi-shield-lock-fill me-1"></i>Change My Password</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="switchUserModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-sm">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-person-fill-lock me-2"></i>Switch User</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-2">
+                        Signs this session in as a different station account, without leaving this page.
+                    </div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Username</label>
+                        <input type="text" id="switchUserUsername" class="form-control form-control-sm" autocomplete="username">
+                    </div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Password</label>
+                        <input type="password" id="switchUserPassword" class="form-control form-control-sm" autocomplete="current-password">
+                    </div>
+                    <div id="switchUserStatus" class="small"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-primary fw-bold" onclick="submitSwitchUser()">Switch</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="helpModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content bg-dark text-light border-secondary" style="height: 85vh;">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-question-circle-fill me-2"></i>Help & Reference</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2 d-flex flex-column" style="overflow: hidden;">
+                    <ul class="nav nav-pills mb-2 flex-shrink-0" id="helpTabNav">
+                        <li class="nav-item"><button class="nav-link active" data-help-tab="start">Getting Started</button></li>
+                        <li class="nav-item"><button class="nav-link" data-help-tab="faq">FAQ</button></li>
+                        <li class="nav-item"><button class="nav-link" data-help-tab="tools">Tool Reference</button></li>
+                        <li class="nav-item"><button class="nav-link" data-help-tab="info">Additional Info</button></li>
+                    </ul>
+                    <div style="overflow-y: auto; flex: 1;">
+
+                        <div id="helpPane-start" class="help-pane">
+                            <div class="mb-2 small text-subtle">Pick the situation closest to yours - the guide will point you to the right tab and settings.</div>
+                            <div class="d-flex flex-wrap gap-2 mb-2">
+                                <button class="btn btn-sm btn-outline-info fw-bold" onclick="showGuideStep('healthy')"><i class="bi bi-check-circle me-1"></i>Drive works fine, I just need a copy</button>
+                                <button class="btn btn-sm btn-outline-warning fw-bold" onclick="showGuideStep('damaged')"><i class="bi bi-exclamation-triangle me-1"></i>Drive is damaged / clicking / not detected properly</button>
+                                <button class="btn btn-sm btn-outline-success fw-bold" onclick="showGuideStep('deleted')"><i class="bi bi-search me-1"></i>I need to recover deleted files</button>
+                                <button class="btn btn-sm btn-outline-primary fw-bold" onclick="showGuideStep('phone')"><i class="bi bi-phone me-1"></i>It's a phone, not a drive</button>
+                                <button class="btn btn-sm btn-outline-light fw-bold" onclick="showGuideStep('report')"><i class="bi bi-file-earmark-text me-1"></i>Documenting findings / writing a report</button>
+                            </div>
+                            <div id="guideStepsContainer"></div>
+                        </div>
+
+                        <div id="helpPane-faq" class="help-pane d-none">
+                            <div id="faqAccordion" class="accordion accordion-flush"></div>
+                        </div>
+
+                        <div id="helpPane-tools" class="help-pane d-none">
+                            <div class="table-responsive">
+                                <table class="table table-sm table-dark table-striped mb-0 small">
+                                    <tbody id="toolReferenceBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div id="helpPane-info" class="help-pane d-none">
+                            <div id="infoContent" class="small text-light"></div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
