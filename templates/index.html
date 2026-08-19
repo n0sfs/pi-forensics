@@ -333,17 +333,16 @@
                 <i class="bi bi-keyboard-fill me-1"></i>Keyboard
             </button>
             {% endif %}
-            <!-- Basic Auth has no real server-side session - "Switch User" re-authenticates this
-                 browser as a different account client-side (see openSwitchUserModal()/
-                 submitSwitchUser() and CLAUDE.md for the mechanism/caveats). Both this and
-                 self-service password change live here (not Settings > Security) since every
-                 logged-in account needs them regardless of what their user group can otherwise
-                 access. -->
+            <!-- Real session-based login (see /login, /logout in app.py) - Change Password and
+                 Switch User live here (not Settings > Security) since every logged-in account
+                 needs them regardless of what their user group can otherwise access. -->
             <div class="dropdown d-inline-block ms-1">
                 <button id="whoamiIndicator" class="btn btn-link btn-sm text-subtle p-0 dropdown-toggle" style="display:none; text-decoration:none;" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="Account options"></button>
                 <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
                     <li><button class="dropdown-item" type="button" onclick="openChangePasswordModal()"><i class="bi bi-key-fill me-2"></i>Change My Password</button></li>
                     <li><button class="dropdown-item" type="button" onclick="openSwitchUserModal()"><i class="bi bi-person-fill-lock me-2"></i>Switch User</button></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><button class="dropdown-item" type="button" onclick="logout()"><i class="bi bi-box-arrow-right me-2"></i>Logout</button></li>
                 </ul>
             </div>
         </div>
@@ -1925,9 +1924,7 @@ sudo update-ca-certificates</pre>
                 </div>
                 <div class="modal-body py-2">
                     <div class="small text-subtle mb-2">
-                        Basic Auth has no real server-side logout, so this re-authenticates the browser as a
-                        different station account. Works in most Chromium/Firefox-based browsers; not
-                        guaranteed identical in every browser.
+                        Signs this session in as a different station account, without leaving this page.
                     </div>
                     <div class="mb-2">
                         <label class="telemetry-grid-label d-block mb-1">Username</label>
