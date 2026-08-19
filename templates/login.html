@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pi Forensics Suite - Login</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <style>
+        :root {
+            --bg-dark: #090b10;
+            --card-bg: #131722;
+            --border-color: #2e364f;
+            --accent-cyan: #00f2fe;
+            --text-bright: #ffffff;
+            --text-subtle: #cbd5e1;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-bright);
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .login-card {
+            width: 100%;
+            max-width: 380px;
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        .login-brand {
+            font-weight: 700;
+            font-size: 1.05rem;
+        }
+
+        .form-control:focus {
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 0 0.2rem rgba(0, 242, 254, 0.15);
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card p-4">
+        <div class="d-flex align-items-center justify-content-center mb-4 text-info login-brand">
+            <i class="bi bi-shield-lock-fill me-2 fs-4"></i>Pi Forensics Suite
+        </div>
+
+        <form id="loginForm" autocomplete="on">
+            <div class="mb-3">
+                <label class="small text-subtle d-block mb-1">Username</label>
+                <input type="text" id="loginUsername" class="form-control" autocomplete="username" autofocus required>
+            </div>
+            <div class="mb-3">
+                <label class="small text-subtle d-block mb-1">Password</label>
+                <input type="password" id="loginPassword" class="form-control" autocomplete="current-password" required>
+            </div>
+            <div id="loginStatus" class="small mb-2"></div>
+            <button type="submit" class="btn btn-info text-dark fw-bold w-100" id="loginSubmitBtn">
+                <i class="bi bi-box-arrow-in-right me-1"></i>Log In
+            </button>
+        </form>
+    </div>
+
+    <script>
+        (function () {
+            const nextPath = {{ (next or '/') | tojson }};
+            const form = document.getElementById('loginForm');
+            const statusEl = document.getElementById('loginStatus');
+            const submitBtn = document.getElementById('loginSubmitBtn');
+
+            form.addEventListener('submit', async function (ev) {
+                ev.preventDefault();
+                const username = document.getElementById('loginUsername').value.trim();
+                const password = document.getElementById('loginPassword').value;
+                if (!username || !password) {
+                    statusEl.textContent = 'Enter both a username and password.';
+                    statusEl.className = 'small mb-2 text-danger';
+                    return;
+                }
+
+                statusEl.textContent = 'Signing in...';
+                statusEl.className = 'small mb-2 text-info';
+                submitBtn.disabled = true;
+
+                try {
+                    const res = await fetch('/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password, next: nextPath }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+
+                    if (res.status === 429) {
+                        statusEl.textContent = data.error || 'Too many failed login attempts. Try again in a few minutes.';
+                        statusEl.className = 'small mb-2 text-danger';
+                        submitBtn.disabled = false;
+                        return;
+                    }
+                    if (res.status === 401 || !data.success) {
+                        statusEl.textContent = data.error || 'Incorrect username or password.';
+                        statusEl.className = 'small mb-2 text-danger';
+                        submitBtn.disabled = false;
+                        return;
+                    }
+
+                    statusEl.textContent = 'Success - redirecting...';
+                    statusEl.className = 'small mb-2 text-success';
+                    location.href = data.redirect || '/';
+                } catch (err) {
+                    statusEl.textContent = 'Request failed: ' + err.message;
+                    statusEl.className = 'small mb-2 text-danger';
+                    submitBtn.disabled = false;
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

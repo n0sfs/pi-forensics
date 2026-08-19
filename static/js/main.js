@@ -1,22 +1,3 @@
-// Switch User (see submitSwitchUser() below) authenticates by navigating to a
-// same-origin URL with credentials embedded in it - the browser adopts those
-// as its cached Basic Auth credential for the origin the moment the page
-// successfully loads, which happens before this script runs. But leaving the
-// document's own URL with embedded credentials afterward breaks every
-// same-origin fetch() call on the page ("Request cannot be constructed from a
-// URL that includes credentials" - a hard browser restriction, not a bug in
-// the fetch() calls themselves). So immediately strip them back out via a
-// second, credential-free navigation before anything below gets a chance to
-// call fetch(). sessionStorage (not a JS variable) is what survives across
-// this same-tab navigation. This must stay the very first statement in the
-// file - main.js loads via a plain non-deferred <script src>, so top-level
-// code here runs before DOMContentLoaded and before any other init logic
-// that might itself call fetch().
-if (sessionStorage.getItem('pif_switch_user_pending') === '1') {
-    sessionStorage.removeItem('pif_switch_user_pending');
-    location.replace(location.origin + location.pathname + location.search + location.hash);
-}
-
 let isWriteBlockActive = true;
 let throughputChart = null;
 const maxGraphPoints = 30;
@@ -8175,19 +8156,12 @@ function openSwitchUserModal() {
     switchUserModalInstance.show();
 }
 
-// Basic Auth has no server-side session to swap, so there's no real
-// "logout" - the standard client-side technique is: validate the new
-// credentials directly with a manual Authorization header (bypassing
-// whatever the browser already has cached for this origin), then navigate
-// to a same-origin URL with those credentials embedded so the browser
-// adopts them as its new cached credential going forward. That first
-// navigation alone used to be the whole flow, but leaving the document's
-// URL with embedded credentials breaks every fetch() call on the resulting
-// page - the pif_switch_user_pending flag set below is what makes the
-// top-of-file guard immediately strip them back out again on the very next
-// load, once the browser has already cached the new credential. Best-effort:
-// most Chromium/Firefox-based browsers honor this, but it's not a
-// guaranteed mechanism in every browser (see CLAUDE.md).
+// Switching identity is now a real, reliable operation - a second /login
+// call, exactly like signing in fresh, just while a session already exists.
+// (Basic Auth's old embedded-credential-URL trick is gone: it depended on a
+// browser evicting one cached credential in favor of another, which browsers
+// don't reliably do once more than one has been used in the same profile -
+// that's the actual bug that was reported and is what real sessions fix.)
 async function submitSwitchUser() {
     const username = document.getElementById("switchUserUsername")?.value.trim();
     const password = document.getElementById("switchUserPassword")?.value || '';
@@ -8198,26 +8172,38 @@ async function submitSwitchUser() {
         return;
     }
 
-    if (statusEl) { statusEl.textContent = 'Checking credentials...'; statusEl.className = 'small text-info'; }
+    if (statusEl) { statusEl.textContent = 'Switching...'; statusEl.className = 'small text-info'; }
 
     try {
-        const res = await fetch('/api/whoami', {
-            headers: { 'Authorization': 'Basic ' + btoa(`${username}:${password}`) }
+        const res = await fetch('/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
         });
-        if (res.status === 401) {
-            if (statusEl) { statusEl.textContent = 'Incorrect username or password.'; statusEl.className = 'small text-danger'; }
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+            if (statusEl) { statusEl.textContent = data.error || 'Too many failed login attempts. Try again in a few minutes.'; statusEl.className = 'small text-danger'; }
             return;
         }
-        if (!res.ok) {
-            if (statusEl) { statusEl.textContent = 'Request failed - try again.'; statusEl.className = 'small text-danger'; }
+        if (res.status === 401 || !data.success) {
+            if (statusEl) { statusEl.textContent = data.error || 'Incorrect username or password.'; statusEl.className = 'small text-danger'; }
             return;
         }
-        if (statusEl) { statusEl.textContent = 'Switching...'; statusEl.className = 'small text-success'; }
-        sessionStorage.setItem('pif_switch_user_pending', '1');
-        location.replace(`${location.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(password)}@${location.host}${location.pathname}`);
+        // Full reload, deliberately - this app has a lot of per-tab state
+        // (activeCase, loaded report data, permission-gated UI) that was
+        // never designed to be hot-swapped for a different identity's
+        // permissions mid-session; a fresh load is the simple, correct choice.
+        location.reload();
     } catch (err) {
         if (statusEl) { statusEl.textContent = `Failed: ${err.message}`; statusEl.className = 'small text-danger'; }
     }
+}
+
+async function logout() {
+    try {
+        await fetch('/logout', { method: 'POST' });
+    } catch (err) { /* best-effort - navigating to /login below still ends the visible session either way */ }
+    location.href = '/login';
 }
 
 function applyUserMgmtPermissionGating() {
