@@ -111,6 +111,12 @@ app.config['PERMANENT_SESSION_LIFETIME'] = 12 * 60 * 60  # 12h - a workstation s
 # exactly once, at this module's own top level.
 app.secret_key = _get_or_create_secret_key()
 
+# routes/*.py Blueprints - registered as each is extracted out of this file
+# (Phase B of the app.py -> core/ + routes/ split). See the dated CLAUDE.md
+# entry for the full rationale and rollout order.
+from routes.auth_routes import auth_routes_bp
+app.register_blueprint(auth_routes_bp)
+
 # job_lock/current_job/update_job/snapshot_job/active_proc, the auth
 # lockout tracker, and _record_last_login now live in core/jobs.py and
 # core/auth.py respectively (imported at the top of this file) - see the
@@ -1546,53 +1552,9 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
         clear_active_proc()
 
 # --- Web Routes & API Endpoints ---
-# _safe_next_path now lives in core/auth.py (imported at the top of this
-# file) - see the Step 0 core/ extraction.
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'GET':
-        # Already have a valid session - no need to show the form again.
-        existing = session.get('username')
-        if existing and _session_user_still_valid(existing):
-            return redirect(_safe_next_path(request.args.get('next')))
-        return render_template('login.html', next=_safe_next_path(request.args.get('next')))
-
-    client_key = request.remote_addr or 'unknown'
-    if _is_locked_out(client_key):
-        return jsonify({
-            "success": False,
-            "error": "Too many failed login attempts. Try again in a few minutes.",
-        }), 429
-
-    req = request.get_json(silent=True) or {}
-    username = (req.get('username') or '').strip()
-    password = req.get('password') or ''
-
-    if not check_auth(username, password):
-        _record_auth_failure(client_key)
-        return jsonify({"success": False, "error": "Incorrect username or password."}), 401
-
-    _record_auth_success(client_key)
-    _record_last_login(username)
-    session.clear()  # drop any prior identity outright rather than merge state into it
-    session['username'] = username
-    session.permanent = True
-    return jsonify({"success": True, "redirect": _safe_next_path(req.get('next'))})
-
-@app.route('/logout', methods=['POST'])
-def logout():
-    session.clear()
-    return jsonify({"success": True})
-
-@app.route('/')
-@requires_auth
-def index():
-    return render_template(
-        'index.html',
-        is_local_kiosk=is_local_kiosk_request(),
-        offline_tiles_json=json.dumps(get_offline_tiles_info()),
-    )
+# /login, /logout, /, and /api/whoami now live in routes/auth_routes.py
+# (registered as a Blueprint below) - see the dated CLAUDE.md entry for
+# this refactor.
 
 @app.route('/api/system_info', methods=['GET'])
 @requires_auth
@@ -3484,17 +3446,6 @@ def change_password():
     cfg['pass'] = new_pass
     save_runtime_config(cfg)
     return jsonify({"success": True, "message": "Password changed successfully. This takes effect immediately."})
-
-@app.route('/api/whoami', methods=['GET'])
-@requires_auth
-def whoami():
-    username = getattr(g, 'forensic_user', None)
-    perms = get_current_user_permissions()
-    return jsonify({
-        "username": username,
-        "role": get_current_user_role(),
-        "permissions": perms,
-    })
 
 @app.route('/api/users/list', methods=['GET'])
 @requires_auth
