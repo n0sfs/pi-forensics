@@ -35,6 +35,56 @@ from flask import Flask, render_template, jsonify, request, Response, send_file,
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 
+# --- core/ - shared, cross-cutting state and helpers, pulled out of this
+# file's own top-of-file block as part of the app.py -> core/ + routes/
+# split (Step 0: extraction only, no routes physically moved yet). See the
+# dated CLAUDE.md entry for this refactor for the full rationale.
+from core.config import (
+    ADMIN_USER, ADMIN_PASS, INSTALL_DIR, HISTORY_FILE, SCALPEL_CONF_PATH,
+    MVT_BIN_DIR, MVT_IOS_BIN, MVT_ANDROID_BIN, TLS_CERT_PATH, TLS_KEY_PATH,
+    RUNTIME_CONFIG_FILE, SECRET_KEY_FILE, MOUNT_KEY_FILE, COC_LOG_FILE,
+    EVIDENCE_ROOT, ALLOWED_HASH_ALGOS,
+    load_runtime_config, save_runtime_config, get_active_admin_pass,
+    get_report_defaults, get_custom_case_fields,
+    _get_or_create_secret_key, _get_or_create_mount_key,
+    _encrypt_secret, _decrypt_secret,
+)
+from core.auth import (
+    PERMISSION_KEYS, KIOSK_AUTH_BYPASS_ENABLED,
+    MAX_AUTH_FAILURES, LOCKOUT_SECONDS,
+    requires_auth, requires_permission, check_auth,
+    is_local_kiosk_request, get_offline_tiles_info,
+    find_user, find_group, get_user_groups, get_user_group_id,
+    get_current_user_permissions, get_current_user_role,
+    caller_reauth_ok, _session_user_still_valid, _safe_next_path,
+    _record_last_login,
+)
+from core.jobs import (
+    job_lock, current_job, update_job, snapshot_job,
+    get_active_proc, set_active_proc, clear_active_proc,
+    _stream_subprocess, CaseEventTarget,
+    build_report_target, write_initial_report, _write_report,
+    _case_upsert_event, _read_case_file, _write_case_file,
+    reclaim_ownership,
+)
+from core.paths import (
+    safe_path, log_chain_of_custody, sanitize_case_slug,
+    case_consolidated_path, classify_extension,
+    EXTENSION_CATEGORY_MAP, FILE_VIEW_EXTENSION_CATEGORIES,
+)
+from core.case_index_db import (
+    case_index_db_path, _CASE_INDEX_SCHEMA, _case_index_connect,
+    _case_index_open_readonly, _case_index_open_write,
+    _tags_for_paths, _analysis_results_for_paths, _record_analysis_result,
+    TRIAGE_PATTERNS, TRIAGE_MAX_MATCHES_PER_CATEGORY, TRIAGE_CATEGORY_LABELS,
+)
+from core.tsk_utils import (
+    _tsk_walk, _tsk_resolve_filesystems, _tsk_entry_dict,
+    _tsk_open_fs, _tsk_list_dir, _tsk_stream_file, _tsk_parse_inode,
+    TSK_DEFAULT_SECTOR_SIZE, TSK_READ_CHUNK_BYTES,
+    TSK_MAX_WALK_DIRS, TSK_MAX_WALK_DEPTH, TSK_MAX_TIMELINE_ENTRIES,
+)
+
 app = Flask(__name__)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
@@ -48,272 +98,22 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 # HTTPS-configured case, only avoids silently breaking the HTTP-only one).
 app.config['PERMANENT_SESSION_LIFETIME'] = 12 * 60 * 60  # 12h - a workstation shift, not a web app's short-lived token
 
-# Authentication Config
-ADMIN_USER = os.environ.get('FORENSIC_USER', 'admin')
-ADMIN_PASS = os.environ.get('FORENSIC_PASS', 'forensics')
-
-if ADMIN_USER == 'admin' and ADMIN_PASS == 'forensics':
-    print("[SECURITY WARNING] FORENSIC_USER/FORENSIC_PASS are still set to the default "
-          "admin/forensics credentials. Set unique values via environment variables "
-          "(see install.py / the generated systemd unit) before deploying this on any network.")
-
-# INSTALL_DIR mirrors install.py's INSTALL_DIR so this stays correct regardless
-# of which system user the installer's service account ends up being.
-INSTALL_DIR = os.environ.get('FORENSIC_INSTALL_DIR', '/opt/pi-forensics')
-HISTORY_FILE = os.path.join(INSTALL_DIR, "mount_history.json")
-
-# scalpel ships with every file signature disabled in its stock config -
-# this curated one (jpg/png/gif/pdf/zip, common formats) is written to
-# INSTALL_DIR by install.py, so scalpel actually recovers something by
-# default rather than silently finding nothing.
-SCALPEL_CONF_PATH = os.path.join(INSTALL_DIR, "scalpel.conf")
-
-# mvt-ios/mvt-android are pip console-scripts (see requirements.txt),
-# installed into the same Python environment app.py itself runs in - not on
-# system PATH like every other tool this app shells out to (those are all
-# apt packages). Resolve their path from sys.executable rather than a bare
-# command name, so this works whether running under the venv (production)
-# or a plain `python3 app.py` dev invocation.
-MVT_BIN_DIR = os.path.dirname(sys.executable)
-MVT_IOS_BIN = os.path.join(MVT_BIN_DIR, "mvt-ios")
-MVT_ANDROID_BIN = os.path.join(MVT_BIN_DIR, "mvt-android")
-
-# Written by install.py's optional TLS setup (self-signed, via openssl) at
-# a fixed path also hardcoded in nginx/pi-forensics.conf's ssl_certificate/
-# ssl_certificate_key directives - keep all three in sync if this ever
-# changes. The .crt is left world-readable by install.py (no explicit
-# chmod), so this app can read/parse it directly with no sudo; the .key is
-# root-only (chmod 600), never read directly - only replaced, via sudo.
-TLS_CERT_PATH = "/etc/ssl/pi-forensics/pi-forensics.crt"
-TLS_KEY_PATH = "/etc/ssl/pi-forensics/pi-forensics.key"
-
-# Password changes made from the Advanced Settings tab are persisted here
-# (0600, owned by the service account) so they survive a restart without
-# requiring the examiner to edit the systemd unit. Falls back to
-# FORENSIC_PASS above if this file doesn't exist yet.
-RUNTIME_CONFIG_FILE = os.path.join(INSTALL_DIR, "runtime_config.json")
-runtime_config_lock = threading.Lock()
-
-# Symmetric key for encrypting auto-mount share credentials at rest (see
-# "Auto-Connect Shares" below) - deliberately a separate file from
-# runtime_config.json itself, so the key and the ciphertext it protects
-# never sit in the same document. Lazily generated on first use (0600,
-# service-account owned) rather than requiring an install.py step, so a
-# station that only ever upgrades via `git pull` still gets one the first
-# time this feature is used.
-#
-# Honest scope of what this protects: an examiner reconnecting a share
-# unattended at boot means the decryption key MUST be locally readable by
-# the same account doing the mounting - there is no human typing a
-# passphrase at boot to gate access to it. This defends against casual
-# plaintext exposure (someone reading runtime_config.json directly, a
-# backup/screen-share leak, an accidental git-add), not against an
-# attacker who already has root or physical disk access to this station -
-# that limitation is inherent to any unattended auto-reconnect, not a gap
-# specific to this implementation.
-# Signs the Flask session cookie (see requires_auth()/the /login, /logout
-# routes below). Persisted to disk, not generated fresh in memory each run,
-# specifically so `systemctl restart pi-forensics` - this project's own
-# routine step after nearly every deploy - doesn't silently log out every
-# open browser tab by invalidating the signing key underneath them.
-SECRET_KEY_FILE = os.path.join(INSTALL_DIR, ".flask_secret_key")
-secret_key_lock = threading.Lock()
-
-def _get_or_create_secret_key():
-    with secret_key_lock:
-        if os.path.exists(SECRET_KEY_FILE):
-            with open(SECRET_KEY_FILE, 'r') as f:
-                return f.read().strip()
-        key = secrets.token_hex(32)
-        with open(SECRET_KEY_FILE, 'w') as f:
-            f.write(key)
-        os.chmod(SECRET_KEY_FILE, 0o600)
-        return key
-
+# All of the above (ADMIN_USER/ADMIN_PASS, INSTALL_DIR and every path
+# derived from it, the secret/mount key helpers, log_chain_of_custody(),
+# load/save_runtime_config(), EVIDENCE_ROOT, etc.) now live in core/config.py
+# and core/paths.py, imported at the top of this file - see the Step 0
+# core/ extraction. The one thing that has to stay here rather than move
+# into core/config.py itself: this exact call, in this exact position
+# (right after `app = Flask(__name__)` above), since it does real
+# filesystem I/O (creates/chmods the key file on first run) and must fire
+# exactly once, at this module's own top level.
 app.secret_key = _get_or_create_secret_key()
 
-MOUNT_KEY_FILE = os.path.join(INSTALL_DIR, ".mount_key")
-mount_key_lock = threading.Lock()
+# job_lock/current_job/update_job/snapshot_job/active_proc, the auth
+# lockout tracker, and _record_last_login now live in core/jobs.py and
+# core/auth.py respectively (imported at the top of this file) - see the
+# Step 0 core/ extraction.
 
-def _get_or_create_mount_key():
-    with mount_key_lock:
-        if os.path.exists(MOUNT_KEY_FILE):
-            with open(MOUNT_KEY_FILE, 'rb') as f:
-                return f.read().strip()
-        key = Fernet.generate_key()
-        with open(MOUNT_KEY_FILE, 'wb') as f:
-            f.write(key)
-        os.chmod(MOUNT_KEY_FILE, 0o600)
-        return key
-
-def _encrypt_secret(plaintext):
-    if not plaintext:
-        return None
-    return Fernet(_get_or_create_mount_key()).encrypt(plaintext.encode()).decode()
-
-def _decrypt_secret(token):
-    if not token:
-        return ""
-    try:
-        return Fernet(_get_or_create_mount_key()).decrypt(token.encode()).decode()
-    except (InvalidToken, ValueError):
-        return ""
-
-# Append-only chain-of-custody log: one JSON object per line, covering
-# acquisitions, file deletes/copies, hash verifications, PhotoRec runs,
-# image extractions, and report edits. NOTE on what this can and can't
-# attest to: once real per-user accounts exist (runtime_config.json['users'],
-# see check_auth()), entries carry the authenticated username via the
-# "user" field. Stations still on the legacy single-shared-login path
-# (FORENSIC_USER/FORENSIC_PASS, no users created yet) get "user": null -
-# there's genuinely no examiner to attribute to in that mode, only the
-# client IP. Physical kiosk access (FORENSIC_KIOSK_AUTH_BYPASS) always
-# attributes to the fixed sentinel "local-kiosk" regardless of account
-# mode, since kiosk requests never carry real credentials to attribute to.
-COC_LOG_FILE = os.path.join(INSTALL_DIR, "chain_of_custody.log")
-coc_log_lock = threading.Lock()
-
-def log_chain_of_custody(action, details=None, source_ip=None, user=None):
-    # source_ip/user let a caller running outside the original Flask request
-    # context (e.g. a background daemon thread, like network config's
-    # delayed auto-revert) supply values captured earlier - request/g are
-    # request-context-bound proxies and raise RuntimeError if touched from a
-    # thread that never received the HTTP request itself. Every existing
-    # call site is unaffected (both default to None, falling back to the
-    # live request context exactly as before).
-    entry = {
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "action": action,
-        "details": details or {},
-        "source_ip": source_ip if source_ip is not None else (request.headers.get('X-Real-IP', request.remote_addr) if request else None),
-        "user": user if user is not None else getattr(g, 'forensic_user', None),
-    }
-    with coc_log_lock:
-        try:
-            os.makedirs(os.path.dirname(COC_LOG_FILE), exist_ok=True)
-            with open(COC_LOG_FILE, 'a') as f:
-                f.write(json.dumps(entry) + "\n")
-        except Exception as e:
-            print(f"Error writing chain-of-custody log: {e}")
-
-def load_runtime_config():
-    with runtime_config_lock:
-        if os.path.exists(RUNTIME_CONFIG_FILE):
-            try:
-                with open(RUNTIME_CONFIG_FILE, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Error loading runtime config: {e}")
-        return {}
-
-def save_runtime_config(cfg):
-    with runtime_config_lock:
-        try:
-            with open(RUNTIME_CONFIG_FILE, 'w') as f:
-                json.dump(cfg, f, indent=2)
-            os.chmod(RUNTIME_CONFIG_FILE, 0o600)
-        except Exception as e:
-            print(f"Error saving runtime config: {e}")
-
-def get_active_admin_pass():
-    return load_runtime_config().get('pass', ADMIN_PASS)
-
-# Station-wide report export defaults and custom case-field definitions,
-# both edited together from Settings > Case & Reporting. Stored in the same
-# schema-agnostic runtime_config.json as the admin password/users above -
-# load_runtime_config()/save_runtime_config() need no changes to support
-# these additional top-level keys.
-def get_report_defaults():
-    return load_runtime_config().get('report_defaults', {})
-
-def get_custom_case_fields():
-    return load_runtime_config().get('custom_case_fields', [])
-
-# Root directory that all file-explorer / report / attachment / imaging-destination
-# endpoints are sandboxed to. Nothing outside this tree can be browsed, read,
-# written, or deleted via the API, regardless of what path a client sends.
-EVIDENCE_ROOT = os.path.realpath(os.environ.get('FORENSIC_ROOT', '/mnt'))
-
-# Guards access to the shared current_job / active_proc state, which is
-# written from the background acquisition thread and read/written from
-# request-handling threads.
-job_lock = threading.Lock()
-
-# --- Basic brute-force throttling for Basic Auth ---
-# In-memory only (resets on restart) and keyed by source IP, so it's not a
-# substitute for a real WAF/fail2ban setup on a network you don't control -
-# but it closes the "unlimited guesses" gap in the meantime.
-auth_fail_lock = threading.Lock()
-auth_fail_tracker = {}  # ip -> {"count": int, "locked_until": float|None}
-MAX_AUTH_FAILURES = 5
-LOCKOUT_SECONDS = 300
-
-# --- Last-login tracking (User Accounts list) ---
-# HTTP Basic Auth re-sends credentials on every single request, and this
-# app's own telemetry alone polls every 2 seconds per open tab - persisting
-# runtime_config.json (the whole file, not just this one field) on every
-# successful auth would mean a disk write several times a second for one
-# active user. Throttled instead: only actually written to disk once per
-# LAST_LOGIN_PERSIST_INTERVAL per username, tracked here in memory (resets
-# on restart, which just means one extra write next time that user is seen -
-# never wrong, only occasionally a little stale between restarts).
-_last_login_persist_times = {}  # username -> epoch seconds of last disk write
-LAST_LOGIN_PERSIST_INTERVAL = 300
-
-def _record_last_login(username):
-    if not username:
-        return
-    now = time.time()
-    if now - _last_login_persist_times.get(username, 0) < LAST_LOGIN_PERSIST_INTERVAL:
-        return
-    cfg = load_runtime_config()
-    user = find_user(username, cfg.get('users'))
-    if not user:
-        # Local-kiosk sentinel or the legacy single-shared-account login -
-        # neither has a real per-user record to update.
-        return
-    user['last_login'] = time.strftime("%Y-%m-%d %H:%M:%S")
-    save_runtime_config(cfg)
-    _last_login_persist_times[username] = now
-
-# Skips login for the physical kiosk touchscreen only (see requires_auth and
-# is_local_kiosk_request below) - remote/LAN/WiFi access always still
-# requires authentication regardless of this setting. Defaults on since a
-# working on-screen keyboard for the native Basic Auth prompt has proven
-# unreliable in this project's Wayland/labwc kiosk environment. Set
-# FORENSIC_KIOSK_AUTH_BYPASS=0 to require login locally too.
-KIOSK_AUTH_BYPASS_ENABLED = os.environ.get('FORENSIC_KIOSK_AUTH_BYPASS', '1') != '0'
-if KIOSK_AUTH_BYPASS_ENABLED:
-    print("[SECURITY] Local kiosk login is bypassed (FORENSIC_KIOSK_AUTH_BYPASS=1, the default). "
-          "Anyone with physical access to the touchscreen has full control of this station without "
-          "a password. Remote/LAN access still requires login. Set FORENSIC_KIOSK_AUTH_BYPASS=0 "
-          "in the systemd unit to disable this.")
-
-ALLOWED_HASH_ALGOS = {'md5', 'sha1', 'sha256'}
-
-def update_job(**kwargs):
-    """Atomically update one or more fields of the shared current_job dict."""
-    with job_lock:
-        current_job.update(kwargs)
-
-def snapshot_job():
-    """Return a consistent point-in-time copy of current_job for reading."""
-    with job_lock:
-        return dict(current_job)
-
-# Global State for Live Acquisition Job
-current_job = {
-    "active": False,
-    "format": "dd",
-    "progress_percent": 0.0,
-    "speed_mbps": 0.0,
-    "transferred_bytes": 0,
-    "total_bytes": 0,
-    "status": "IDLE",
-    "log": "[System initialized and idle. Ready for disk acquisition job.]"
-}
-
-active_proc = None
 last_net_check = {"time": time.time(), "bytes_sent": 0, "bytes_recv": 0}
 # Per-interface equivalent of last_net_check above, keyed by interface name -
 # used by get_network_interfaces() so each interface's hover tooltip shows
@@ -362,354 +162,14 @@ def save_mount_history(entry):
 # compare against for a nonexistent username - without this, a lookup miss
 # would return instantly while a real user takes as long as a scrypt hash
 # comparison, a timing side-channel that leaks which usernames exist.
-_DUMMY_PASSWORD_HASH = generate_password_hash('dummy-timing-safety-password')
-
-def find_user(username, users=None):
-    if users is None:
-        users = load_runtime_config().get('users') or []
-    for u in users:
-        if hmac.compare_digest(u.get('username', ''), username or ''):
-            return u
-    return None
-
-def check_auth(username, password):
-    # Two-tier: real multi-user accounts (runtime_config.json['users']) take
-    # priority once any exist; otherwise fall back to the original single
-    # shared-login path unchanged, so a station that upgrades app.py via git
-    # pull but hasn't created a user yet keeps working exactly as before.
-    users = load_runtime_config().get('users')
-    if users:
-        user = find_user(username, users)
-        if user:
-            return check_password_hash(user.get('password_hash', ''), password or '')
-        check_password_hash(_DUMMY_PASSWORD_HASH, password or '')
-        return False
-
-    # Constant-time comparison to avoid leaking credential info via timing.
-    user_ok = hmac.compare_digest(username or '', ADMIN_USER)
-    pass_ok = hmac.compare_digest(password or '', get_active_admin_pass())
-    return user_ok and pass_ok
-
-def _session_user_still_valid(username):
-    # Mirrors check_auth()'s two-tier logic, but for existence rather than a
-    # password match - a session only ever proves "this browser successfully
-    # logged in as this username at some point", so every subsequent request
-    # re-derives whether that identity still exists rather than trusting the
-    # cookie forever. This is what makes a deleted user's still-cached
-    # session cookie die on their very next request, for free, with no
-    # separate server-side session-revocation list needed.
-    if not username:
-        return False
-    users = load_runtime_config().get('users')
-    if users:
-        return find_user(username, users) is not None
-    return hmac.compare_digest(username, ADMIN_USER)
-
-def is_local_kiosk_request():
-    """
-    True if this request is coming from the Pi's own local kiosk session,
-    not a remote LAN/WiFi client. The kiosk's chromium always talks to
-    gunicorn directly over loopback (http://127.0.0.1:5000), regardless of
-    whether TLS/nginx is set up - see install.py's autostart script.
-
-    When nginx is in front of gunicorn (TLS setup), gunicorn only ever sees
-    connections from nginx itself (also loopback), so a naive remote_addr
-    check would misidentify every remote client as local. nginx forwards
-    the real client IP via X-Real-IP (see nginx/pi-forensics.conf), so that
-    takes priority when present.
-    """
-    real_ip = request.headers.get('X-Real-IP', request.remote_addr)
-    return real_ip in ('127.0.0.1', '::1', 'localhost')
-
-def get_offline_tiles_info():
-    """Read install.py's optional offline OSM tile cache manifest, if that setup step was run.
-    Returns {'max_zoom': N} or None - a tiny file, read fresh per page load rather than cached at
-    process start, since re-running install.py's tile step (or a future manual refresh) shouldn't
-    need a service restart to be picked up."""
-    manifest_path = os.path.join(app.static_folder, 'vendor', 'osm_tiles', 'manifest.json')
-    try:
-        with open(manifest_path) as f:
-            data = json.load(f)
-        if isinstance(data.get('max_zoom'), int):
-            return {'max_zoom': data['max_zoom']}
-    except (OSError, ValueError, TypeError):
-        pass
-    return None
-
-def _plain_401():
-    # No WWW-Authenticate header - that header alone is what makes a browser
-    # pop its native Basic Auth credentials dialog, which this app no longer
-    # wants to ever show (the browser UI authenticates via /login instead).
-    # Basic Auth is still *accepted* on /api/* routes (see requires_auth()),
-    # just never *advertised/demanded* via this challenge header.
-    return Response('Authentication required to access Pi Forensics Suite.\n', 401)
-
-def _is_locked_out(client_key):
-    with auth_fail_lock:
-        entry = auth_fail_tracker.get(client_key)
-        return bool(entry and entry["locked_until"] and time.time() < entry["locked_until"])
-
-def _record_auth_failure(client_key):
-    with auth_fail_lock:
-        entry = auth_fail_tracker.get(client_key, {"count": 0, "locked_until": None})
-        entry["count"] += 1
-        if entry["count"] >= MAX_AUTH_FAILURES:
-            entry["locked_until"] = time.time() + LOCKOUT_SECONDS
-        auth_fail_tracker[client_key] = entry
-
-def _record_auth_success(client_key):
-    with auth_fail_lock:
-        auth_fail_tracker.pop(client_key, None)
-
-def requires_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        # Physical-kiosk-only auth bypass. Deliberately narrow: this only
-        # matches genuine loopback origin with no X-Real-IP header (see
-        # is_local_kiosk_request() above) - a remote client proxied through
-        # nginx always has X-Real-IP set to their real address, so this does
-        # NOT bypass auth for LAN/WiFi/remote access, which stays fully
-        # authenticated exactly as before. The remaining risk is narrow but
-        # real: anyone with physical access to the touchscreen gets full
-        # control of the station, including destructive actions in Advanced
-        # Settings (those still have confirmation dialogs). Set
-        # FORENSIC_KIOSK_AUTH_BYPASS=0 to disable this and require login
-        # locally too.
-        if KIOSK_AUTH_BYPASS_ENABLED and is_local_kiosk_request():
-            # Kiosk requests never carry a Basic Auth header, so there's no
-            # real username to attribute - use a fixed sentinel rather than
-            # leaving chain-of-custody entries with no user at all.
-            g.forensic_user = 'local-kiosk'
-            return f(*args, **kwargs)
-
-        # Primary path: a real signed session cookie, set by POST /login (or
-        # by the "Switch User" flow, which is just a second /login call).
-        # Re-derived on every request rather than trusted for the cookie's
-        # whole lifetime, so a user deleted mid-session loses access on their
-        # very next request (see _session_user_still_valid()).
-        session_username = session.get('username')
-        if session_username:
-            if _session_user_still_valid(session_username):
-                g.forensic_user = session_username
-                return f(*args, **kwargs)
-            session.clear()
-
-        client_key = request.remote_addr or 'unknown'
-
-        # Fallback path, /api/* only: plain HTTP Basic Auth, unchanged from
-        # this app's original auth model - kept specifically so this
-        # project's own extensively-documented `curl -sk -u user:pass
-        # https://host/api/...` live-verification workflow keeps working
-        # with zero changes. Deliberately NOT offered for the page route
-        # (see the redirect-to-/login branch below) - the browser UI only
-        # ever authenticates via the login page/session from here on.
-        if request.path.startswith('/api/'):
-            auth = request.authorization
-            if auth:
-                # Only an actually-presented-and-wrong credential counts as a
-                # failed attempt. Treating "no Authorization header at all"
-                # the same way would auto-lock the examiner's own IP out of
-                # the login form itself - this app already polls several
-                # /api/* endpoints every 2 seconds from the browser, and a
-                # tab left open past logout (or open before ever logging in)
-                # would rack up "failures" purely from having no cookie yet,
-                # with no credentials involved at all.
-                if _is_locked_out(client_key):
-                    return Response(
-                        'Too many failed login attempts. Try again in a few minutes.\n',
-                        429,
-                        {'Retry-After': str(LOCKOUT_SECONDS)}
-                    )
-                if not check_auth(auth.username, auth.password):
-                    _record_auth_failure(client_key)
-                    return _plain_401()
-                _record_auth_success(client_key)
-                _record_last_login(auth.username)
-                g.forensic_user = auth.username
-                return f(*args, **kwargs)
-            # No session, no Authorization header - a plain unauthenticated
-            # API request. No lockout tracking here (nothing was actually
-            # attempted - see the comment above this branch).
-            return _plain_401()
-
-        # The one page route (/) with no valid session - send the browser to
-        # our own branded login page instead of ever showing a 401 that
-        # would trigger the native Basic Auth dialog.
-        return redirect(f'/login?next={request.path}')
-    return decorated
-
-# --- User Groups / Permissions ---
-# A group is {id, name, is_builtin, permissions: {key: bool}}. Two built-ins
-# always exist: "admin" (every key forced True, never persisted, never
-# editable - there must always be at least one group with full access that
-# no code path, bug, or accidental checkbox click can weaken) and "analyst"
-# (a sane operational-access default, persisted/editable like any custom
-# group once a station admin adjusts it, but not deletable/renamable - it's
-# meant to always exist as the sensible non-admin default new users land in).
-PERMISSION_KEYS = [
-    ("acquisition", "Forensic Acquisition"),
-    ("mobile", "Mobile Forensics"),
-    ("recovery", "File Recovery"),
-    ("file_explorer", "File Explorer"),
-    ("reporting", "Reporting"),
-    ("settings", "Settings (station configuration)"),
-    ("manage_users", "User & Group Management"),
-]
-
-def _all_permissions_true():
-    return {k: True for k, _ in PERMISSION_KEYS}
-
-def _normalize_permissions(raw):
-    raw = raw or {}
-    return {k: bool(raw.get(k, False)) for k, _ in PERMISSION_KEYS}
-
-def _default_analyst_permissions():
-    # Full day-to-day operational access, no station configuration and no
-    # ability to manage other accounts - matches this app's pre-groups
-    # "standard" role exactly, so nothing changes for an existing standard
-    # user migrated into this group (see get_user_group_id below).
-    return {
-        "acquisition": True, "mobile": True, "recovery": True,
-        "file_explorer": True, "reporting": True,
-        "settings": False, "manage_users": False,
-    }
-
-def get_user_groups():
-    """Full group list: the two built-ins merged with any custom groups from
-    runtime_config.json. Admin is synthesized fresh every call - it is never
-    read from or written to disk, so there is no code path that can persist
-    a weakened Admin group. Analyst is also always present even if never
-    explicitly saved, using its sane default permissions until a station
-    admin edits and saves it."""
-    cfg = load_runtime_config()
-    saved = {rec.get('id'): rec for rec in cfg.get('user_groups', [])}
-
-    groups = [{"id": "admin", "name": "Admin", "is_builtin": True, "permissions": _all_permissions_true()}]
-
-    analyst_saved = saved.get('analyst')
-    groups.append({
-        "id": "analyst", "name": "Analyst", "is_builtin": True,
-        "permissions": _normalize_permissions(analyst_saved.get('permissions')) if analyst_saved else _default_analyst_permissions(),
-    })
-
-    for rec in cfg.get('user_groups', []):
-        if rec.get('id') in ('admin', 'analyst'):
-            continue
-        groups.append({
-            "id": rec.get('id'), "name": rec.get('name'), "is_builtin": False,
-            "permissions": _normalize_permissions(rec.get('permissions')),
-        })
-    return groups
-
-def find_group(group_id, groups=None):
-    groups = groups if groups is not None else get_user_groups()
-    for grp in groups:
-        if grp['id'] == group_id:
-            return grp
-    return None
-
-def get_user_group_id(user):
-    """Resolves a user record's group id. A user created before groups
-    existed has no group_id, only the old role field - migrated on read
-    (not rewritten to disk) so this never needs an explicit migration step:
-    role 'admin' -> group 'admin', anything else (including the old
-    'standard' default) -> group 'analyst'."""
-    if not user:
-        return None
-    gid = user.get('group_id')
-    if gid:
-        return gid
-    return 'admin' if user.get('role') == 'admin' else 'analyst'
-
-def get_current_user_permissions():
-    """Full permission dict for whoever requires_auth() just authenticated.
-    Local kiosk access and the pre-multi-user single-shared-account mode
-    both resolve to full (Admin-equivalent) access - see
-    get_current_user_role()'s docstring below for why that's unchanged
-    behavior, not a new grant."""
-    username = getattr(g, 'forensic_user', None)
-    if username == 'local-kiosk':
-        return _all_permissions_true()
-    users = load_runtime_config().get('users')
-    if not users:
-        return _all_permissions_true()
-    user = find_user(username, users)
-    if not user:
-        return {k: False for k, _ in PERMISSION_KEYS}
-    group = find_group(get_user_group_id(user))
-    return dict(group['permissions']) if group else {k: False for k, _ in PERMISSION_KEYS}
-
-def get_current_user_role():
-    """
-    Display-only label for whoever requires_auth() just authenticated on
-    this request (shown in the navbar's "Logged in as" indicator and the
-    user list). Local kiosk access and the pre-multi-user single-shared-
-    account mode both behave as "Admin" - they're the same one account this
-    app has always had, full station control, nothing new granted by this
-    change. Actual authorization decisions use get_current_user_permissions()
-    / requires_permission(), never this string.
-    """
-    username = getattr(g, 'forensic_user', None)
-    if username == 'local-kiosk':
-        return 'Admin'
-    users = load_runtime_config().get('users')
-    if not users:
-        return 'Admin'
-    user = find_user(username, users)
-    if not user:
-        return None
-    group = find_group(get_user_group_id(user))
-    return group['name'] if group else 'Unknown'
-
-def caller_reauth_ok(current_password):
-    """
-    Re-verifies the CALLER's own password for the delete/reset-another-user
-    actions (same friction as self-service password change). The physical
-    kiosk sentinel ('local-kiosk', see requires_auth's bypass branch) has no
-    real account/password to check against - physical access to the
-    touchscreen is already this app's most-trusted tier (full station
-    control with no login at all), so demanding a password confirmation
-    there would be both meaningless and a hard lockout, not a security
-    improvement.
-    """
-    caller_username = getattr(g, 'forensic_user', None)
-    if caller_username == 'local-kiosk':
-        return True
-    caller = find_user(caller_username)
-    return bool(caller) and check_password_hash(caller.get('password_hash', ''), current_password)
-
-def requires_permission(*keys):
-    """Stack under @requires_auth - relies on it having already set
-    g.forensic_user. Passes if the caller's group has ANY of the given
-    permission keys (most call sites pass exactly one; a few genuinely
-    cross-cutting routes - reachable from more than one tab's UI - pass more
-    than one so either tab's access is sufficient)."""
-    def decorator(f):
-        @wraps(f)
-        def decorated(*args, **kwargs):
-            perms = get_current_user_permissions()
-            if not any(perms.get(k, False) for k in keys):
-                return jsonify({"success": False, "error": "Your account's user group doesn't have permission to perform this action."}), 403
-            return f(*args, **kwargs)
-        return decorated
-    return decorator
-
-def safe_path(path_str):
-    """
-    Resolve a user-supplied path and confirm it stays within EVIDENCE_ROOT.
-
-    Prevents path traversal (../..), absolute-path escapes, and symlink
-    tricks in every endpoint that takes a path from the client (file
-    browser, copy/delete, report load/save, hash verification, PDF export,
-    dd/ddrescue acquisition source & destination).
-    Returns the resolved absolute path, or None if it escapes the sandbox.
-    """
-    if not path_str:
-        return None
-    resolved = os.path.realpath(path_str)
-    if resolved == EVIDENCE_ROOT or resolved.startswith(EVIDENCE_ROOT + os.sep):
-        return resolved
-    return None
+# _DUMMY_PASSWORD_HASH, find_user, check_auth, _session_user_still_valid,
+# is_local_kiosk_request, get_offline_tiles_info, _plain_401,
+# _is_locked_out/_record_auth_failure/_record_auth_success, requires_auth,
+# PERMISSION_KEYS and its group/permission helpers, get_user_groups,
+# find_group, get_user_group_id, get_current_user_permissions,
+# get_current_user_role, caller_reauth_ok, requires_permission, and
+# safe_path all now live in core/auth.py and core/paths.py (imported at the
+# top of this file) - see the Step 0 core/ extraction.
 
 # --- Block Device Path Validation ---
 _DEVICE_RE = re.compile(r'^/dev/(sd[a-z]|nvme\d+n\d+|mmcblk\d+)$')
@@ -938,43 +398,9 @@ def _resolve_acquisition_source(source):
                 return source, False, mount_id
     return source, True, None
 
-# --- Case Folder Name Sanitization ---
-_CASE_SLUG_INVALID_RE = re.compile(r'[^A-Za-z0-9_-]+')
-
-def sanitize_case_slug(raw):
-    """
-    Turn an examiner-typed case number into a filesystem-safe folder name.
-    Whitelist-based (like _DEVICE_RE above) rather than blacklisting bad
-    characters, so this can never be tricked into producing '..' or an
-    absolute-path-looking result. Returns None if nothing usable is left.
-    """
-    if not raw:
-        return None
-    slug = _CASE_SLUG_INVALID_RE.sub('_', raw.strip())
-    slug = re.sub(r'_+', '_', slug).strip('_')
-    return slug[:80] or None
-
-_SERVICE_ACCOUNT_NAME = pwd.getpwuid(os.getuid()).pw_name
-
-def reclaim_ownership(path):
-    """
-    dc3dd/dcfldd/dd/ewfacquire/photorec/ddrescue all run via sudo (root) to
-    get raw read access to the source device - their output files land
-    owned by root as a side effect. Without handing ownership back, every
-    later operation on those files (delete, hash verify, copy, ExifTool,
-    etc.) run as this unprivileged service account would fail with
-    permission denied. Safe to grant broadly in sudoers: the target
-    user:group is fixed at install time, not attacker-controllable, so this
-    can only ever hand a file back to the unprivileged account, never
-    escalate ownership to root or anyone else.
-    """
-    if not path or not os.path.exists(path):
-        return
-    try:
-        subprocess.run(['sudo', '/bin/chown', '-R', _SERVICE_ACCOUNT_NAME, path], capture_output=True, timeout=30)
-        subprocess.run(['sudo', '/bin/chgrp', '-R', _SERVICE_ACCOUNT_NAME, path], capture_output=True, timeout=30)
-    except Exception as e:
-        print(f"Warning: could not reclaim ownership of {path}: {e}")
+# sanitize_case_slug and reclaim_ownership now live in core/paths.py and
+# core/jobs.py respectively (imported at the top of this file) - see the
+# Step 0 core/ extraction.
 
 # --- Hash & Recovery Output Parsers ---
 def parse_dc3dd_hashes(log_path):
@@ -1054,170 +480,14 @@ def parse_ddrescue_line(line):
 
     return rescued_bytes, pct, spd
 
-# --- Quick Triage Scan: pattern definitions ---
-# Deliberately built in-house rather than depending on bulk_extractor,
-# which isn't in Debian's mainline archive (see README) - this needs no
-# external tool at all, so it can never hit a "package not found" wall on
-# any system this app runs on. Patterns are intentionally loose (especially
-# the credit-card one) - a triage scan is meant to over-flag for a human to
-# review, not to be a precise validator.
-TRIAGE_PATTERNS = {
-    "emails": re.compile(rb'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'),
-    "urls": re.compile(rb'https?://[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]+'),
-    "ip_addresses": re.compile(rb'\b(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\b'),
-    "credit_card_numbers": re.compile(rb'\b(?:\d[ -]?){13,19}\b'),
-    "phone_numbers": re.compile(rb'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'),
-}
-TRIAGE_MAX_MATCHES_PER_CATEGORY = 50000  # protects memory on very large images
-
-# --- Per-case analysis index (SQLite) ---
-# A single small, queryable index living inside the case folder - what makes
-# Autopsy-style "File Views" (By Extension counts, Deleted Files, Keyword
-# Hits broken out per category) possible without re-walking every indexed
-# image on every File Explorer load. First SQLite/database usage in this
-# codebase; sqlite3 is stdlib, no new pip dependency. Path derivation
-# deliberately mirrors case_consolidated_path()'s pattern (fixed filename
-# derived from the case folder's own basename, living directly in the case
-# folder root) rather than build_report_target()'s per-job-event pattern -
-# this is one fixed, case-scoped artifact, not a per-job-run file.
-EXTENSION_CATEGORY_MAP = {
-    'jpg': 'images', 'jpeg': 'images', 'png': 'images', 'gif': 'images', 'bmp': 'images',
-    'webp': 'images', 'tif': 'images', 'tiff': 'images', 'heic': 'images', 'heif': 'images',
-    'mp4': 'videos', 'mov': 'videos', 'avi': 'videos', 'mkv': 'videos', 'wmv': 'videos',
-    'flv': 'videos', 'm4v': 'videos', '3gp': 'videos',
-    'mp3': 'audio', 'wav': 'audio', 'flac': 'audio', 'm4a': 'audio', 'aac': 'audio', 'ogg': 'audio',
-    'zip': 'archives', 'rar': 'archives', '7z': 'archives', 'tar': 'archives', 'gz': 'archives', 'bz2': 'archives',
-    'pdf': 'documents', 'doc': 'documents', 'docx': 'documents', 'xls': 'documents', 'xlsx': 'documents',
-    'ppt': 'documents', 'pptx': 'documents', 'txt': 'documents', 'rtf': 'documents', 'csv': 'documents',
-    'exe': 'executables', 'dll': 'executables', 'bat': 'executables', 'sh': 'executables',
-    'bin': 'executables', 'msi': 'executables', 'apk': 'executables',
-}
-FILE_VIEW_EXTENSION_CATEGORIES = ('images', 'videos', 'audio', 'archives', 'documents', 'executables', 'other')
+# TRIAGE_PATTERNS/TRIAGE_MAX_MATCHES_PER_CATEGORY/TRIAGE_CATEGORY_LABELS,
+# EXTENSION_CATEGORY_MAP/FILE_VIEW_EXTENSION_CATEGORIES/classify_extension,
+# and the whole per-case SQLite analysis index (case_index_db_path,
+# _CASE_INDEX_SCHEMA, _case_index_connect) now live in core/case_index_db.py
+# and core/paths.py (imported at the top of this file) - see the Step 0
+# core/ extraction. ALLOWED_TAG_COLORS stays here - only routes/case_index.py
+# (not yet split out) uses it.
 ALLOWED_TAG_COLORS = ('primary', 'secondary', 'success', 'danger', 'warning', 'info')
-
-def classify_extension(name):
-    """Returns (category, extension) for a filename - extension is the bare,
-    lowercased suffix with no leading dot ('' if none); category is one of
-    FILE_VIEW_EXTENSION_CATEGORIES, defaulting to 'other' for anything not in
-    EXTENSION_CATEGORY_MAP. Deliberately not exhaustive - documented as a
-    reasonable, extensible starting set, not a claim of complete coverage."""
-    ext = os.path.splitext(name)[1].lstrip('.').lower()
-    return EXTENSION_CATEGORY_MAP.get(ext, 'other'), ext
-
-def case_index_db_path(case_dir):
-    """Fixed per-case SQLite index path, e.g. <case_dir>/<slug>_case_index.db -
-    same derivation as case_consolidated_path() (slug = the case folder's own
-    basename), but unconditional (doesn't check the file exists yet - the DB
-    is created lazily on first write via _case_index_connect()). The
-    safe_path() re-check here is belt-and-suspenders only, matching
-    create_case()'s own stated convention - `case_dir` is expected to already
-    be a validated case folder by the time any caller reaches this point."""
-    if not case_dir or not os.path.isdir(case_dir):
-        return None
-    slug = os.path.basename(case_dir.rstrip(os.sep))
-    return safe_path(os.path.join(case_dir, f"{slug}_case_index.db"))
-
-_CASE_INDEX_SCHEMA = """
-CREATE TABLE IF NOT EXISTS indexed_files (
-    id INTEGER PRIMARY KEY,
-    image_path TEXT NOT NULL,
-    fs_offset INTEGER NOT NULL,
-    inode TEXT NOT NULL,
-    path TEXT NOT NULL,
-    name TEXT NOT NULL,
-    extension TEXT,
-    category TEXT NOT NULL,
-    size INTEGER,
-    deleted INTEGER NOT NULL,
-    is_virtual INTEGER NOT NULL,
-    mtime INTEGER, atime INTEGER, ctime INTEGER, crtime INTEGER,
-    indexed_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_files_cat ON indexed_files(category, deleted);
-CREATE INDEX IF NOT EXISTS idx_files_image ON indexed_files(image_path);
-
-CREATE TABLE IF NOT EXISTS triage_hits (
-    id INTEGER PRIMARY KEY,
-    source_type TEXT NOT NULL,
-    image_path TEXT,
-    fs_offset INTEGER,
-    inode TEXT,
-    path TEXT NOT NULL,
-    category TEXT NOT NULL,
-    value TEXT NOT NULL,
-    found_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_hits_cat ON triage_hits(category);
-CREATE INDEX IF NOT EXISTS idx_hits_image ON triage_hits(image_path);
-
-CREATE TABLE IF NOT EXISTS tags (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    color TEXT NOT NULL,
-    notable INTEGER NOT NULL DEFAULT 0,
-    is_default INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-);
--- Seeded every time this schema runs (idempotent via INSERT OR IGNORE on the
--- UNIQUE name) - mirrors Autopsy's default tag set: Bookmark/Follow Up are
--- plain organizational tags, Notable Item is the one flagged `notable` (its
--- own examiner-facing meaning is "evidence of interest", surfaced with its
--- own icon/color everywhere a tag renders, same convention Autopsy uses it
--- for). A fresh case's tags table exists with these three the moment
--- anything first touches the index, tagging included - not gated behind an
--- image ever having been triage-scanned.
-INSERT OR IGNORE INTO tags (name, color, notable, is_default, created_at) VALUES
-    ('Bookmark', 'info', 0, 1, datetime('now')),
-    ('Follow Up', 'warning', 0, 1, datetime('now')),
-    ('Notable Item', 'danger', 1, 1, datetime('now'));
-
-CREATE TABLE IF NOT EXISTS tagged_items (
-    id INTEGER PRIMARY KEY,
-    tag_id INTEGER NOT NULL,
-    source_type TEXT NOT NULL,
-    image_path TEXT,
-    fs_offset INTEGER,
-    inode TEXT,
-    path TEXT,
-    name TEXT NOT NULL,
-    comment TEXT,
-    tagged_by TEXT,
-    tagged_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_tagged_items_tag ON tagged_items(tag_id);
-
--- Persists Binwalk/ClamAV/Strings tool output (previously ephemeral - shown
--- once in toolOutputModal and lost on close) so it can be cited as
--- documented analysis methodology and surfaced on a file's Exhibits entry
--- in the exported report. Shaped like tagged_items (same source_type/
--- image_path/fs_offset/inode/path/name identity columns) since a scan can
--- run against either a real filesystem file or an in-image entry.
-CREATE TABLE IF NOT EXISTS analysis_results (
-    id INTEGER PRIMARY KEY,
-    source_type TEXT NOT NULL,
-    image_path TEXT,
-    fs_offset INTEGER,
-    inode TEXT,
-    path TEXT,
-    name TEXT NOT NULL,
-    tool TEXT NOT NULL,
-    summary TEXT,
-    output TEXT,
-    run_by TEXT,
-    run_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_analysis_path ON analysis_results(path);
-CREATE INDEX IF NOT EXISTS idx_analysis_image ON analysis_results(image_path);
-"""
-
-def _case_index_connect(db_path):
-    """Opens (creating if absent) the per-case analysis index, in WAL mode
-    so a running scan job's writes and a concurrent File Explorer read don't
-    block each other. Caller is responsible for closing the connection."""
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(_CASE_INDEX_SCHEMA)
-    return conn
 
 HASH_HEX_LEN = {'md5': 32, 'sha1': 40, 'sha256': 64}
 
@@ -1301,93 +571,9 @@ def parse_ddrescue_mapfile(map_path):
             print(f"Error reading mapfile: {e}")
     return summary
 
-# --- Direct Real-time Asynchronous Execution Engine ---
-def _stream_subprocess(cmd, on_line, on_poll=None, poll_interval=2.0, cwd=None, stdin_yes=False):
-    """
-    Launch cmd, non-blockingly stream stdout+stderr line by line (ANSI-
-    stripped) into on_line(clean_line), and return the finished Popen
-    object. Sets the module-level active_proc so /api/stop_imaging can
-    kill it. Shared by execution_worker (single-phase formats),
-    execution_worker_aff (raw acquisition + AFF conversion phases), and
-    the mobile workers.
-
-    If on_poll is given, it's called every poll_interval seconds
-    regardless of stdout activity - some tools (idevicebackup2, adb
-    backup) go long stretches with no output while still working, so
-    line-triggered progress alone isn't enough to show the job is alive.
-
-    cwd: run the process in this working directory - needed for tools
-    like extundelete that write output relative to their cwd rather than
-    accepting an explicit output-path flag.
-
-    stdin_yes: pipe "y\\n" to the process immediately, then close stdin -
-    needed for extundelete, which can block on an interactive
-    confirmation prompt about filesystem safety warnings. Without an
-    explicit pipe here, stdin would be whatever the parent service
-    process has (typically /dev/null under systemd), which doesn't
-    reliably answer that prompt.
-    """
-    global active_proc
-    active_proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.PIPE if stdin_yes else None,
-        text=False,
-        bufsize=0,
-        cwd=cwd,
-        preexec_fn=os.setsid
-    )
-
-    if stdin_yes:
-        try:
-            active_proc.stdin.write(b'y\n')
-            active_proc.stdin.close()
-        except Exception:
-            pass
-
-    fd = active_proc.stdout.fileno()
-    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-
-    byte_buffer = b""
-    last_poll = time.time()
-
-    while True:
-        time.sleep(0.1)
-        try:
-            raw_chunk = os.read(fd, 1024)
-            if raw_chunk:
-                byte_buffer += raw_chunk
-
-                while b'\r' in byte_buffer or b'\n' in byte_buffer:
-                    r_idx = byte_buffer.find(b'\r')
-                    n_idx = byte_buffer.find(b'\n')
-                    indices = [i for i in (r_idx, n_idx) if i != -1]
-                    cut_idx = min(indices)
-
-                    line_bytes = byte_buffer[:cut_idx]
-                    byte_buffer = byte_buffer[cut_idx + 1:]
-
-                    line_str = line_bytes.decode('utf-8', errors='ignore')
-                    clean_line = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line_str).replace('\r', '').strip()
-                    if clean_line:
-                        on_line(clean_line)
-
-            elif active_proc.poll() is not None:
-                break
-        except (OSError, IOError):
-            pass
-
-        if on_poll and (time.time() - last_poll) >= poll_interval:
-            try:
-                on_poll()
-            except Exception:
-                pass
-            last_poll = time.time()
-
-    active_proc.wait()
-    return active_proc
+# _stream_subprocess now lives in core/jobs.py (imported at the top of this
+# file) - see the Step 0 core/ extraction, including the active_proc
+# accessor-function fix described there.
 
 def poll_directory_size(path):
     """Ground-truth bytes-on-disk for a file or directory tree, used as a
@@ -1416,85 +602,10 @@ def poll_directory_size(path):
 # build_report_target(). Existing cases stay on the old scattered-files
 # layout until explicitly migrated (see /api/cases/migrate_preview/_apply);
 # there's no silent auto-upgrade, to avoid a case ending up half-migrated.
-class CaseEventTarget:
-    """Marks a report write as 'append/update one event inside a case's
-    consolidated file' rather than 'overwrite a standalone _report.json'."""
-    __slots__ = ("case_file", "event_id")
-    def __init__(self, case_file, event_id):
-        self.case_file = case_file
-        self.event_id = event_id
-
-def case_consolidated_path(dest_path):
-    """Returns the case's consolidated-file path if `dest_path` IS a case
-    folder root (checked directly, no ancestor walk - matches how the
-    frontend sends `destination` as the case folder itself verbatim once a
-    case is active), else None."""
-    if not dest_path or not os.path.isdir(dest_path):
-        return None
-    slug = os.path.basename(dest_path.rstrip(os.sep))
-    case_file = os.path.join(dest_path, f"{slug}_case.json")
-    return case_file if os.path.isfile(case_file) else None
-
-def _read_case_file(case_file):
-    try:
-        with open(case_file, 'r') as f:
-            return json.load(f)
-    except Exception:
-        return {"schema_version": 1, "events": [], "attachments": {"files": [], "reference_urls": []}}
-
-def _write_case_file(case_file, case_record):
-    with open(case_file, 'w') as f:
-        json.dump(case_record, f, indent=2)
-
-def _case_upsert_event(case_file, event_id, event_data):
-    """Replaces the event matching event_id if present, else appends it -
-    this is what makes a job's start-write and later complete-write update
-    the SAME array entry instead of appending a duplicate."""
-    case_record = _read_case_file(case_file)
-    events = case_record.setdefault("events", [])
-    events[:] = [e for e in events if e.get("event_id") != event_id]
-    payload = dict(event_data)
-    payload["event_id"] = event_id
-    events.append(payload)
-    case_record["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    _write_case_file(case_file, case_record)
-
-def build_report_target(dest_path, legacy_dir, base_name):
-    """Returns a CaseEventTarget if `dest_path` is an active case folder,
-    else the plain flat-file path this route would have used before this
-    change existed (legacy_dir is job_dest_dir for tools that write into
-    their own subfolder, dest_path itself for the rest)."""
-    case_file = case_consolidated_path(dest_path)
-    if case_file:
-        return CaseEventTarget(case_file, uuid.uuid4().hex)
-    return os.path.join(legacy_dir, f"{base_name}_report.json")
-
-def write_initial_report(report_target, report_data):
-    """First write at job start (status IN_PROGRESS) - mirrors what every
-    route used to do with a bare open()/json.dump() against its own file."""
-    try:
-        if isinstance(report_target, CaseEventTarget):
-            _case_upsert_event(report_target.case_file, report_target.event_id, report_data)
-        else:
-            with open(report_target, 'w') as f:
-                json.dump(report_data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Could not write report JSON: {e}")
-
-def _write_report(report_target, report_data, append_log):
-    """Second write at job completion (status COMPLETED/FAILED/etc) - called
-    from inside the worker threads, unchanged at every call site; only the
-    type of report_target (flat path vs CaseEventTarget) changed upstream."""
-    try:
-        if isinstance(report_target, CaseEventTarget):
-            _case_upsert_event(report_target.case_file, report_target.event_id, report_data)
-            append_log(f"[+] Forensic case report updated: {report_target.case_file} (event {report_target.event_id[:8]})")
-        else:
-            with open(report_target, 'w') as f:
-                json.dump(report_data, f, indent=2)
-            append_log(f"[+] Forensic case report updated: {report_target}")
-    except Exception as e:
-        append_log(f"[-] Warning: Failed updating report JSON: {e}")
+# CaseEventTarget, case_consolidated_path, _read_case_file/_write_case_file/
+# _case_upsert_event, and build_report_target/write_initial_report/
+# _write_report now live in core/jobs.py and core/paths.py (imported at the
+# top of this file) - see the Step 0 core/ extraction.
 
 # --- Mobile Device Discovery (iOS via libimobiledevice, Android via adb) ---
 # These only talk to devices that are already unlocked and have already
@@ -1615,7 +726,6 @@ def list_android_devices():
     return devices
 
 def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data, hashes=None):
-    global current_job, active_proc
     log_history = []
     hashes = hashes or []
     
@@ -1735,7 +845,7 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
         # deleted afterward by this unprivileged service account.
         reclaim_ownership(os.path.dirname(out_file))
         update_job(active=False)
-        active_proc = None
+        clear_active_proc()
 
 def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_file_path, report_data, total_bytes):
     """
@@ -1747,7 +857,6 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
     tools (e.g. the old `aimage`) are no longer part of the packaged
     afflib-tools, which only ships file-to-file converters - hence two phases.
     """
-    global current_job, active_proc
     log_history = []
 
     def append_log(msg):
@@ -1860,7 +969,7 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
 
     finally:
         update_job(active=False)
-        active_proc = None
+        clear_active_proc()
 
 def execution_worker_ios_backup(udid, dest_dir, encrypt_password, report_file_path, report_data):
     """
@@ -1868,7 +977,6 @@ def execution_worker_ios_backup(udid, dest_dir, encrypt_password, report_file_pa
     percentage (open upstream request, unresolved) - so progress here is
     shown as bytes-on-disk (polled from the backup folder), not a percent.
     """
-    global current_job, active_proc
     log_history = []
 
     def append_log(msg):
@@ -1944,7 +1052,7 @@ def execution_worker_ios_backup(udid, dest_dir, encrypt_password, report_file_pa
 
     finally:
         update_job(active=False)
-        active_proc = None
+        clear_active_proc()
 
 def execution_worker_android(mode, serial, output_path, report_file_path, report_data):
     """
@@ -1958,7 +1066,6 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
     Like iOS, adb gives no clean aggregate percentage either way, so
     progress is bytes-on-disk, polled directly.
     """
-    global current_job, active_proc
     log_history = []
 
     def append_log(msg):
@@ -2028,7 +1135,7 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
 
     finally:
         update_job(active=False)
-        active_proc = None
+        clear_active_proc()
 
 def execution_worker_photorec(source, dest_dir, report_file_path, report_data):
     """
@@ -2051,7 +1158,6 @@ def execution_worker_photorec(source, dest_dir, report_file_path, report_data):
     far (polled from the destination directory) plus the live log, same
     conservative approach used for the mobile forensics jobs.
     """
-    global current_job, active_proc
     log_history = []
 
     def append_log(msg):
@@ -2105,7 +1211,7 @@ def execution_worker_photorec(source, dest_dir, report_file_path, report_data):
         # browsed/deleted/copied afterward by this unprivileged service.
         reclaim_ownership(dest_dir)
         update_job(active=False)
-        active_proc = None
+        clear_active_proc()
 
 def execution_worker_extundelete(source, dest_dir, report_file_path, report_data):
     """
@@ -2122,7 +1228,6 @@ def execution_worker_extundelete(source, dest_dir, report_file_path, report_data
       filesystem's journal state - answered via stdin_yes rather than
       risking an indefinite hang.
     """
-    global current_job, active_proc
     log_history = []
 
     def append_log(msg):
@@ -2171,7 +1276,7 @@ def execution_worker_extundelete(source, dest_dir, report_file_path, report_data
     finally:
         reclaim_ownership(dest_dir)
         update_job(active=False)
-        active_proc = None
+        clear_active_proc()
 
 def execution_worker_foremost(source, dest_dir, report_file_path, report_data):
     """
@@ -2179,7 +1284,6 @@ def execution_worker_foremost(source, dest_dir, report_file_path, report_data):
     Older and narrower in supported types than PhotoRec, but sometimes
     faster for the common formats it does support.
     """
-    global current_job, active_proc
     log_history = []
 
     def append_log(msg):
@@ -2231,7 +1335,7 @@ def execution_worker_foremost(source, dest_dir, report_file_path, report_data):
     finally:
         reclaim_ownership(dest_dir)
         update_job(active=False)
-        active_proc = None
+        clear_active_proc()
 
 def execution_worker_scalpel(source, dest_dir, report_file_path, report_data):
     """
@@ -2242,7 +1346,6 @@ def execution_worker_scalpel(source, dest_dir, report_file_path, report_data):
     covering common formats (jpg/png/gif/pdf/zip) rather than depending on
     the stock config, which would silently recover nothing if left as-is.
     """
-    global current_job, active_proc
     log_history = []
 
     def append_log(msg):
@@ -2292,7 +1395,7 @@ def execution_worker_scalpel(source, dest_dir, report_file_path, report_data):
     finally:
         reclaim_ownership(dest_dir)
         update_job(active=False)
-        active_proc = None
+        clear_active_proc()
 
 def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data, total_bytes):
     """
@@ -2311,7 +1414,6 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
     project mostly deals with; for a full scan of a very large drive,
     expect it to take a while.
     """
-    global current_job, active_proc
     log_history = []
 
     def append_log(msg):
@@ -2439,18 +1541,11 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
 
     finally:
         update_job(active=False)
-        active_proc = None
+        clear_active_proc()
 
 # --- Web Routes & API Endpoints ---
-
-def _safe_next_path(raw):
-    # Only ever redirect to a same-origin relative path - "//evil.com/x" is
-    # parsed by browsers as protocol-relative (i.e. an off-site redirect),
-    # so reject anything not starting with exactly one "/". Falls back to
-    # "/" for anything else (missing, empty, off-site, or malformed).
-    if raw and raw.startswith('/') and not raw.startswith('//'):
-        return raw
-    return '/'
+# _safe_next_path now lives in core/auth.py (imported at the top of this
+# file) - see the Step 0 core/ extraction.
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -4110,11 +3205,11 @@ def start_triage_scan():
 @app.route('/api/stop_imaging', methods=['POST'])
 @requires_auth
 def stop_imaging():
-    global current_job, active_proc
     if current_job["active"]:
         try:
-            if active_proc and active_proc.poll() is None:
-                os.killpg(os.getpgid(active_proc.pid), signal.SIGKILL)
+            proc = get_active_proc()
+            if proc and proc.poll() is None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception as e:
             print(f"Error killing process group: {e}")
 
@@ -6111,10 +5206,8 @@ def run_strings():
 # to the File Recovery tab's Triage Scan tool.
 QUICK_TRIAGE_MAX_BYTES = 32 * 1024 * 1024  # 32 MB - fast enough to stay synchronous within one request
 QUICK_TRIAGE_MAX_MATCHES_PER_CATEGORY = 500  # smaller than the background job's 50000 - this is a quick preview, not an exhaustive collection
-TRIAGE_CATEGORY_LABELS = {
-    "emails": "Email Addresses", "urls": "URLs", "ip_addresses": "IP Addresses",
-    "credit_card_numbers": "Credit Card-like Numbers", "phone_numbers": "Phone Numbers",
-}
+# TRIAGE_CATEGORY_LABELS now lives in core/case_index_db.py (imported at the
+# top of this file) - see the Step 0 core/ extraction.
 
 @app.route('/api/files/quick_triage_scan', methods=['POST'])
 @requires_auth
@@ -6643,12 +5736,12 @@ def migrate_case_apply():
 # Debian trixie/aarch64 before adding - PyPI ships a prebuilt manylinux
 # aarch64 wheel (no compile step, installs in ~10s) that was functionally
 # tested against a real acquired image on the deployed Pi. See CLAUDE.md.
-TSK_DEFAULT_SECTOR_SIZE = 512  # matches the sector size this app's images have always assumed (mmls/fls/dc3dd never handled 4Kn-native source drives specially either - not a new limitation)
-TSK_READ_CHUNK_BYTES = 1024 * 1024
+# TSK_DEFAULT_SECTOR_SIZE/TSK_READ_CHUNK_BYTES/TSK_MAX_WALK_DIRS/
+# TSK_MAX_WALK_DEPTH/TSK_MAX_TIMELINE_ENTRIES now live in core/tsk_utils.py
+# (imported at the top of this file) - see the Step 0 core/ extraction.
+# TSK_MAX_SEARCH_RESULTS and everything below stays here - single-consumer,
+# only this file's own image-browser routes use them.
 TSK_MAX_SEARCH_RESULTS = 500
-TSK_MAX_TIMELINE_ENTRIES = 5000
-TSK_MAX_WALK_DIRS = 5000   # safety cap against pathological/looping directory structures
-TSK_MAX_WALK_DEPTH = 25
 TSK_PREVIEW_TEXT_MAX_BYTES = 200_000
 TSK_PREVIEW_IMAGE_MAX_BYTES = 8_000_000
 TSK_PREVIEW_IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
@@ -6668,88 +5761,9 @@ def detect_image_format_support():
 def image_format_support():
     return jsonify({"success": True, "support": detect_image_format_support()})
 
-def _tsk_parse_inode(raw):
-    """Directory/file navigation uses the base inode address only - NTFS's
-    optional '-type-id' attribute-selector suffix (for alternate data
-    streams) isn't chased here, same scope the old fls-based version had."""
-    return int(str(raw).split('-')[0])
-
-def _tsk_open_fs(image_path, offset_sectors):
-    img = pytsk3.Img_Info(image_path)
-    return pytsk3.FS_Info(img, offset=int(offset_sectors) * TSK_DEFAULT_SECTOR_SIZE)
-
-def _tsk_entry_dict(entry):
-    name = entry.info.name.name.decode('utf-8', errors='replace')
-    meta = entry.info.meta
-    return {
-        "name": name,
-        "inode": str(entry.info.name.meta_addr),
-        "is_dir": entry.info.name.type == pytsk3.TSK_FS_NAME_TYPE_DIR,
-        "deleted": bool(entry.info.name.flags & pytsk3.TSK_FS_NAME_FLAG_UNALLOC),
-        # TSK synthesizes its own pseudo-entries for filesystem-metadata regions -
-        # $MBR/$FAT1/$FAT2 (TSK_FS_NAME_TYPE_VIRT) and $OrphanFiles (a virtual
-        # *directory* of recovered-but-unlinked inodes, TSK_FS_NAME_TYPE_VIRT_DIR).
-        # These aren't real evidence files a user created - a hash manifest or
-        # similar "here are the files on this evidence" listing that included them
-        # unfiltered would misrepresent what's actually on the filesystem.
-        "is_virtual": entry.info.name.type in (pytsk3.TSK_FS_NAME_TYPE_VIRT, pytsk3.TSK_FS_NAME_TYPE_VIRT_DIR),
-        "size": meta.size if meta else None,
-        "mtime": meta.mtime if meta else None,
-        "atime": meta.atime if meta else None,
-        "ctime": meta.ctime if meta else None,
-        "crtime": getattr(meta, 'crtime', None) if meta else None,
-    }
-
-def _tsk_list_dir(fs, inode_num):
-    tsk_dir = fs.open_dir(inode=inode_num) if inode_num is not None else fs.open_dir(path='/')
-    entries = []
-    for entry in tsk_dir:
-        if not entry.info.name or entry.info.name.name in (b'.', b'..'):
-            continue
-        try:
-            entries.append(_tsk_entry_dict(entry))
-        except Exception:
-            continue  # one corrupt/unreadable directory entry shouldn't fail the whole listing
-    return entries
-
-def _tsk_walk(fs, start_inode_num=None, max_dirs=TSK_MAX_WALK_DIRS, max_depth=TSK_MAX_WALK_DEPTH):
-    """Recursively walks a filesystem from start_inode_num (or root),
-    yielding (entry_dict, path) for every entry found - shared by search and
-    timeline below. Deliberately does not recurse into deleted directories:
-    a deleted directory's inode may already have been reallocated to
-    something unrelated, and walking it can loop or return garbage on a live
-    evidence filesystem. Capped on both directories visited and depth as a
-    safety net against reused-inode loops."""
-    visited = [0]
-
-    def _walk(inode_num, path, depth):
-        if visited[0] >= max_dirs or depth > max_depth:
-            return
-        try:
-            entries = _tsk_list_dir(fs, inode_num)
-        except Exception:
-            return
-        visited[0] += 1
-        for d in entries:
-            entry_path = f"{path}/{d['name']}"
-            yield d, entry_path
-            if d['is_dir'] and not d['deleted']:
-                yield from _walk(int(d['inode']), entry_path, depth + 1)
-
-    yield from _walk(start_inode_num, '', 0)
-
-def _tsk_stream_file(tsk_file, write_fn, max_bytes=None):
-    size = tsk_file.info.meta.size if tsk_file.info.meta else 0
-    if max_bytes is not None:
-        size = min(size, max_bytes)
-    read_offset = 0
-    while read_offset < size:
-        chunk = tsk_file.read_random(read_offset, min(TSK_READ_CHUNK_BYTES, size - read_offset))
-        if not chunk:
-            break
-        write_fn(chunk)
-        read_offset += len(chunk)
-    return read_offset
+# _tsk_parse_inode/_tsk_open_fs/_tsk_entry_dict/_tsk_list_dir/_tsk_walk/
+# _tsk_stream_file now live in core/tsk_utils.py (imported at the top of
+# this file) - see the Step 0 core/ extraction.
 
 @app.route('/api/image/mmls', methods=['POST'])
 @requires_auth
@@ -7603,132 +6617,11 @@ def start_image_triage_scan():
     log_chain_of_custody("image_triage_scan_start", {"image_path": image_path, "destination": dest_dir})
     return jsonify({"success": True, "message": "Filesystem-aware triage scan started."})
 
-# --- Case analysis index queries (read-only, File Explorer's File Views tree) ---
-# Case-wide - deliberately query across every image_path in the case's index
-# rather than filtering to one, so results cover every image that's ever been
-# triage-scanned in the case, not just whichever one happens to be open right
-# now. All three return graceful zero/empty results if the case has never
-# been indexed (no DB file yet) rather than erroring - matches this app's
-# "case selection optional, nothing breaks if none is active" convention.
-
-def _case_index_open_readonly(case_folder):
-    """Returns an open connection for read-only querying, or None if
-    case_folder isn't a real consolidated case or has never been indexed
-    (no DB file exists yet - not an error, just nothing to show)."""
-    case_folder = safe_path(case_folder) if case_folder else None
-    if not case_folder or not case_consolidated_path(case_folder):
-        return None
-    db_path = case_index_db_path(case_folder)
-    if not db_path or not os.path.isfile(db_path):
-        return None
-    return _case_index_connect(db_path)
-
-def _case_index_open_write(case_folder):
-    """Like _case_index_open_readonly, but for actions that need to write
-    (tagging) and so must be able to create the index DB on first use rather
-    than requiring an image to have been triage-scanned first - tagging is a
-    manual, image-scan-independent action. Still requires a real,
-    consolidated case folder; returns None otherwise."""
-    case_folder = safe_path(case_folder) if case_folder else None
-    if not case_folder or not case_consolidated_path(case_folder):
-        return None
-    db_path = case_index_db_path(case_folder)
-    if not db_path:
-        return None
-    return _case_index_connect(db_path)
-
-# --- Unified evidence-item lookups: tags and persisted analysis results for
-# a batch of real-filesystem paths at once (not one identity at a time like
-# case_index_item_tags()/nothing, respectively) - shared by the Reporting >
-# Files gallery (JSON round-trip) and export_report() (called directly,
-# server-side, no round-trip). Both are read-only and always scoped to
-# source_type='real_fs' - Exhibits/attachments are always real filesystem
-# paths (already-extracted files), never in-image identities, so neither
-# helper needs the image_path/fs_offset/inode branch case_index_item_tags()
-# has to handle for File Explorer's own per-item lookups. ---
-
-def _tags_for_paths(case_folder, paths):
-    """Returns {path: [{id, name, color, notable, comment}, ...]} for every
-    real-fs path in `paths` that has at least one tag. Empty dict if the
-    case isn't indexed/consolidated, or paths is empty - never an error."""
-    result = {}
-    if not paths:
-        return result
-    conn = _case_index_open_readonly(case_folder)
-    if not conn:
-        return result
-    try:
-        placeholders = ",".join("?" * len(paths))
-        cur = conn.execute(
-            f"SELECT ti.path, t.id, t.name, t.color, t.notable, ti.comment "
-            f"FROM tagged_items ti JOIN tags t ON ti.tag_id=t.id "
-            f"WHERE ti.source_type='real_fs' AND ti.path IN ({placeholders})",
-            paths)
-        for row in cur:
-            result.setdefault(row[0], []).append(
-                {"id": row[1], "name": row[2], "color": row[3], "notable": bool(row[4]), "comment": row[5]})
-    finally:
-        conn.close()
-    return result
-
-ANALYSIS_RESULT_MAX_PER_PATH = 5  # most recent N runs shown per exhibit - a documented history, not an unbounded log dump
-ANALYSIS_RESULT_MAX_OUTPUT_CHARS = 20000  # caps one stored row - same capping discipline used throughout this app
-
-def _analysis_results_for_paths(case_folder, paths):
-    """Returns {path: [{tool, summary, run_by, run_at}, ...]} (most recent
-    first, capped to ANALYSIS_RESULT_MAX_PER_PATH per path) for every
-    real-fs path in `paths` that has at least one recorded analysis run.
-    Deliberately omits the full `output` text here - the gallery/export only
-    need the summary line; the full output was already shown in
-    toolOutputModal at scan time and isn't re-fetched for this enrichment."""
-    result = {}
-    if not paths:
-        return result
-    conn = _case_index_open_readonly(case_folder)
-    if not conn:
-        return result
-    try:
-        placeholders = ",".join("?" * len(paths))
-        cur = conn.execute(
-            f"SELECT path, tool, summary, run_by, run_at FROM analysis_results "
-            f"WHERE source_type='real_fs' AND path IN ({placeholders}) ORDER BY run_at DESC",
-            paths)
-        for row in cur:
-            bucket = result.setdefault(row[0], [])
-            if len(bucket) < ANALYSIS_RESULT_MAX_PER_PATH:
-                bucket.append({"tool": row[1], "summary": row[2], "run_by": row[3], "run_at": row[4]})
-    finally:
-        conn.close()
-    return result
-
-def _record_analysis_result(case_folder, identity, tool, summary, output):
-    """Best-effort persistence of one analysis-tool run, mirroring
-    quick_triage_scan()'s exact optional/non-blocking case-index write
-    pattern: `case_folder` is optional (None/invalid just means "don't
-    persist"), and any failure here is swallowed and logged, never raised -
-    a broken or locked index write must never turn a successful scan into a
-    reported tool failure. `identity` is the same shape
-    _resolve_tag_identity() produces: {source_type, image_path, fs_offset,
-    inode, path, name}."""
-    if not case_folder:
-        return
-    if not case_consolidated_path(case_folder):
-        return
-    db_path = case_index_db_path(case_folder)
-    if not db_path:
-        return
-    try:
-        conn = _case_index_connect(db_path)
-        conn.execute(
-            "INSERT INTO analysis_results (source_type, image_path, fs_offset, inode, path, name, tool, summary, output, run_by, run_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (identity["source_type"], identity.get("image_path"), identity.get("fs_offset"), identity.get("inode"),
-             identity.get("path"), identity["name"], tool, summary, (output or "")[:ANALYSIS_RESULT_MAX_OUTPUT_CHARS],
-             getattr(g, 'forensic_user', None), time.strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Warning: could not record analysis result ({tool}) to case index: {e}")
+# _case_index_open_readonly/_case_index_open_write/_tags_for_paths/
+# _analysis_results_for_paths/_record_analysis_result (and
+# ANALYSIS_RESULT_MAX_PER_PATH/ANALYSIS_RESULT_MAX_OUTPUT_CHARS) now live in
+# core/case_index_db.py (imported at the top of this file) - see the Step 0
+# core/ extraction.
 
 @app.route('/api/case_index/tags_for_paths', methods=['POST'])
 @requires_auth
@@ -8447,48 +7340,8 @@ def image_recover_deleted():
 # and FEATURE_MODULES further below.
 TIMELINE_MIN_PER_FS_BUDGET = 200
 
-def _tsk_resolve_filesystems(image_path):
-    """Returns [{'offset': sectors, 'label': str}, ...] for every ALLOCATED
-    partition (or the whole image, if unpartitioned) that opens as a real
-    filesystem via pytsk3.
-
-    Deliberately does NOT attempt to open every Volume_Info slot -
-    Volume_Info lists unallocated/meta placeholder regions alongside real
-    partitions (image_mmls() above shows all of them for a human-readable
-    listing, which is fine there), and a naive "try opening everything, keep
-    what succeeds" approach can pick up a stale filesystem signature left in
-    what's now unallocated space on media that was previously partitioned
-    differently (repartitioned/re-imaged evidence is not unusual) - that
-    would inject timeline entries from a filesystem that isn't actually part
-    of the evidence's current layout, a real accuracy problem for a
-    forensic report, not just noise. Filtering to TSK_VS_PART_FLAG_ALLOC
-    entries only avoids that."""
-    try:
-        img = pytsk3.Img_Info(image_path)
-    except Exception:
-        return []
-
-    try:
-        vol = pytsk3.Volume_Info(img)
-    except IOError:
-        # No partition table - normal for a single-filesystem image (phone/
-        # media card dd), same case image_mmls() already documents.
-        try:
-            _tsk_open_fs(image_path, 0)
-            return [{"offset": 0, "label": "Whole Image"}]
-        except Exception:
-            return []
-
-    filesystems = []
-    for part in vol:
-        if int(part.flags) != pytsk3.TSK_VS_PART_FLAG_ALLOC:
-            continue
-        try:
-            _tsk_open_fs(image_path, part.start)
-        except Exception:
-            continue
-        filesystems.append({"offset": part.start, "label": part.desc.decode('utf-8', errors='replace')})
-    return filesystems
+# _tsk_resolve_filesystems now lives in core/tsk_utils.py (imported at the
+# top of this file) - see the Step 0 core/ extraction.
 
 def _collect_case_timeline(events):
     """Builds a combined MACB timeline across every acquired disk image in a
