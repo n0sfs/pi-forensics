@@ -15,6 +15,18 @@ from core.config import EVIDENCE_ROOT, COC_LOG_FILE
 
 coc_log_lock = threading.Lock()
 
+# --- Block Device Path Validation ---
+# Shared by routes/recovery.py, routes/acquisition.py (still inline in
+# app.py pending its own extraction), and routes/settings.py's drive
+# management - a genuinely cross-module helper, not recovery- or
+# acquisition-specific despite living next to the acquisition-flavored
+# BitLocker helpers in the original app.py.
+_DEVICE_RE = re.compile(r'^/dev/(sd[a-z]|nvme\d+n\d+|mmcblk\d+)$')
+
+def is_valid_block_device(path_str):
+    """Whitelist check for whole-disk device paths (no partitions, no shell metacharacters)."""
+    return bool(path_str) and bool(_DEVICE_RE.match(path_str))
+
 def log_chain_of_custody(action, details=None, source_ip=None, user=None):
     # source_ip/user let a caller running outside the original Flask request
     # context (e.g. a background daemon thread, like network config's
