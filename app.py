@@ -58,6 +58,8 @@ from core.auth import (
     get_current_user_permissions, get_current_user_role,
     caller_reauth_ok, _session_user_still_valid, _safe_next_path,
     _record_last_login,
+    _is_locked_out, _record_auth_failure, _record_auth_success,
+    _normalize_permissions,
 )
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job,
