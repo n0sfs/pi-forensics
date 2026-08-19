@@ -1,0 +1,83 @@
+                        <!-- Network Drive Mounting (moved from Acquisition - a mount is a system-wide
+                             resource, not specific to any one tool, so it lives here now. Mounting
+                             just produces a path under /mnt; use any tab's own destination field +
+                             Browse button to point at it, the same way you'd browse to any local path. -->
+                        <div class="tab-pane fade" id="settings-pane-network" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-diagram-3 me-2"></i>Network</h6>
+                            <div class="accordion accordion-flush" id="networkAccordion">
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secNetMount"><i class="bi bi-hdd-network-fill me-2"></i>Network Drive Mounting</button>
+                                    </h2>
+                                    <div id="secNetMount" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Mount an NFS, SMB/CIFS, or SFTP share once here - every tool's own destination field can then Browse into it, the same as any local path under the evidence root.</div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-3">
+                                                    <select id="netProtocol" class="form-select form-select-sm" onchange="updateNetworkMountControls()">
+                                                        <option value="nfs">NFS Share</option>
+                                                        <option value="smb">SMB / CIFS</option>
+                                                        <option value="sftp">SFTP</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-5"><input type="text" id="netHost" class="form-control form-control-sm" placeholder="Server IP (e.g. 192.168.1.100)"></div>
+                                                <div class="col-md-4"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" id="btnQueryShares" onclick="queryNetworkShares('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-search me-1"></i>Query Shares</button></div>
+                                            </div>
+                                            <div class="row g-2 mb-2" id="netCredentialsRow" style="display:none;">
+                                                <div class="col-md-6"><input type="text" id="netUser" class="form-control form-control-sm" placeholder="Username"></div>
+                                                <div class="col-md-6"><input type="password" id="netPass" class="form-control form-control-sm" placeholder="Password"></div>
+                                            </div>
+                                            <div class="mb-2" id="netSftpKeyRow" style="display:none;">
+                                                <label class="telemetry-grid-label d-block mb-1">SSH Private Key (optional - paste instead of a password)</label>
+                                                <textarea id="netSftpKey" class="form-control form-control-sm font-monospace" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----..."></textarea>
+                                            </div>
+                                            <div class="row g-2 align-items-center mb-2">
+                                                <div class="col-md-8">
+                                                    <select id="serverShareSelect" class="form-select form-select-sm"><option value="">Select Exported Share...</option></select>
+                                                    <input type="text" id="netSftpPath" class="form-control form-control-sm" placeholder="Remote path (e.g. /home/user/evidence)" style="display:none;">
+                                                </div>
+                                                <div class="col-md-4"><button class="btn btn-sm btn-success w-100 fw-bold" onclick="mountNetworkDrive('netHost', 'netProtocol', 'serverShareSelect', 'mountStatus')"><i class="bi bi-plug me-1"></i>Mount Share</button></div>
+                                            </div>
+                                            <div class="form-check mb-2">
+                                                <input class="form-check-input" type="checkbox" id="netAutoConnect">
+                                                <label class="form-check-label small" for="netAutoConnect"><i class="bi bi-shield-lock me-1"></i>Auto-connect this share on reboot</label>
+                                            </div>
+                                            <div class="small text-subtle mb-2">Any password or key is encrypted at rest on this station. That protects against the config file being casually read or leaked - it does not protect against someone with root or physical access to this device, since reconnecting unattended at boot means no one is there to type a passphrase.</div>
+                                            <div id="mountStatus" class="small text-light mb-3"></div>
+                                            <h6 class="text-info fw-bold mb-2 mt-3"><i class="bi bi-arrow-repeat me-2"></i>Auto-Connect Shares</h6>
+                                            <div class="small text-subtle mb-2">Shares below reconnect automatically every time this station starts or restarts. Removing one here only stops future auto-reconnects - it does not unmount the share right now.</div>
+                                            <div id="autoMountSharesList" class="bg-black border border-secondary p-2 rounded-2">
+                                                <span class="text-subtle small">Loading...</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <!-- Network Configuration - the station's OWN IP addressing (DHCP or
+                                     static) per interface, via NetworkManager. Distinct from Network
+                                     Drive Mounting above, which mounts remote evidence shares, not this
+                                     station's own interfaces. Added after a plain DHCP reassignment
+                                     briefly locked an examiner out of this exact page on a reboot -
+                                     Apply always includes an automatic revert-if-unconfirmed safety net
+                                     (#networkRevertBanner) for exactly that reason, since a bad static
+                                     IP/gateway here is the same lockout, just self-inflicted. -->
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secNetConfig"><i class="bi bi-hdd-network me-2"></i>Network Configuration</button>
+                                    </h2>
+                                    <div id="secNetConfig" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-3">Set this station's own IP addressing (DHCP or static) per network interface. <span class="text-warning fw-bold">Changing the interface you're currently connected through can disconnect this session.</span> A change is never permanent until you confirm it - if you don't, it automatically reverts to the previous working settings.</div>
+
+                                            <div id="networkRevertBanner" class="alert alert-warning small mb-3" style="display:none;">
+                                                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                                    <span id="networkRevertBannerText"></span>
+                                                    <button class="btn btn-sm btn-success fw-bold" onclick="confirmNetworkConfig()"><i class="bi bi-check-lg me-1"></i>Keep These Settings</button>
+                                                </div>
+                                            </div>
+
+                                            <div id="networkIfaceDevices"><span class="text-subtle small">Loading network devices...</span></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
