@@ -1,0 +1,334 @@
+            <!-- APP 3: REPORTS & VERIFICATION TAB -->
+            <div class="tab-pane fade" id="reports-app" role="tabpanel">
+                            <div class="card">
+                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2 py-2">
+                                    <span><i class="bi bi-journal-richtext me-2"></i>Case Report</span>
+                                    <div class="d-flex flex-wrap align-items-center gap-2">
+                                        <span class="small text-subtle fw-normal">Follows the case selected in the bar above - select or create one there to populate this</span>
+                                        <button id="btnSaveReportChanges" class="btn btn-sm btn-success fw-bold" onclick="saveReportMetadata()">
+                                            <i class="bi bi-save me-1"></i>Save Report Changes
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="card-body py-3">
+                                    <div id="reportsNoCaseState" class="text-subtle small py-4 text-center">
+                                        <i id="reportsNoCaseIcon" class="bi bi-folder2-open fs-3 d-block mb-2"></i>
+                                        <span id="reportsNoCaseMsg">Select or create a case using the bar above to view its report.</span>
+                                    </div>
+                                    <div id="reportsLoadedState" style="display:none;">
+                                        <div id="repLegacyNotice" class="alert alert-warning small py-2 px-3 mb-3" style="display:none;">
+                                            <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                                            This is a single-job report, not a consolidated case file. Migrate this case from the Case Manager to combine all of its evidence items into one file.
+                                        </div>
+                                        <div class="reports-shell">
+                                            <div class="reports-nav list-group" id="reportsNavList" role="tablist">
+                                                <button class="list-group-item list-group-item-action active" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
+                                                <button class="list-group-item list-group-item-action" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
+                                                <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab" onclick="renderReportFilesGallery()"><i class="bi bi-paperclip"></i>Files</button>
+                                                <button class="list-group-item list-group-item-action" id="repGeoTab" data-bs-toggle="list" data-bs-target="#repGeoPane" type="button" role="tab" onclick="renderReportGeolocationList()"><i class="bi bi-geo-alt"></i>Geolocation</button>
+                                                <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
+                                                <button class="list-group-item list-group-item-action" id="repHistoryTab" data-bs-toggle="list" data-bs-target="#repHistoryPane" type="button" role="tab" onclick="loadCaseHistory()"><i class="bi bi-clock-history"></i>Audit Trail</button>
+                                                <button class="list-group-item list-group-item-action" id="repSearchTab" data-bs-toggle="list" data-bs-target="#repSearchPane" type="button" role="tab"><i class="bi bi-search"></i>Search</button>
+                                                <button class="list-group-item list-group-item-action" id="repExportTab" data-bs-toggle="list" data-bs-target="#repExportPane" type="button" role="tab" onclick="prepareExportPane()"><i class="bi bi-file-earmark-arrow-down-fill"></i>Export</button>
+                                            </div>
+                                            <div class="reports-content tab-content" id="reportDetailTabContent">
+                                                <div class="tab-pane fade" id="repCaseNotesPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">
+                                                        A chronological, append-only journal of what was done and observed - this is the "Forensic Analysis / Steps Taken" section of the exported report. Each note gets a timestamp, author, and a local SHA-256 integrity hash computed at save time (a tamper-evidence check on this station only, not a legal timestamp authority). Editing a note keeps its original text in an "Edited" history rather than overwriting it.
+                                                    </div>
+                                                    <!-- Add-note form stays first/fixed so it's always reachable without
+                                                         scrolling past a growing list - the notes list below it is what
+                                                         grows over the life of a case, not this form. -->
+                                                    <div class="row g-2 mb-2">
+                                                        <div class="col-md-4">
+                                                            <select id="newCaseNoteCategory" class="form-select form-select-sm">
+                                                                <option value="General">General</option>
+                                                                <option value="Objective">Objective</option>
+                                                                <option value="Acquisition">Acquisition</option>
+                                                                <option value="Analysis">Analysis</option>
+                                                                <option value="Finding">Finding</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-8">
+                                                            <input type="file" id="newCaseNoteFiles" class="form-control form-control-sm" multiple>
+                                                        </div>
+                                                    </div>
+                                                    <textarea id="newCaseNoteText" class="form-control form-control-sm mb-2" rows="3" placeholder="What did you do / observe just now?"></textarea>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Link to Exhibit(s) (optional):</label>
+                                                        <div id="newCaseNoteLinkedFiles" class="small" style="max-height: 100px; overflow-y: auto;">
+                                                            <span class="text-subtle small italic">No exhibits attached yet - see the Files tab.</span>
+                                                        </div>
+                                                    </div>
+                                                    <button class="btn btn-sm btn-success fw-bold" onclick="addCaseNote()"><i class="bi bi-plus-lg me-1"></i>Add Note</button>
+                                                    <div id="caseNoteAddStatus" class="small mt-1"></div>
+                                                    <hr class="border-secondary my-3">
+                                                    <div id="caseNotesContainer" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
+                                                        <span class="text-subtle small italic">No case notes recorded yet.</span>
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade show active" id="repNarrativePane" role="tabpanel">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-info-circle me-1"></i>Case Details</h6>
+                                                    <div class="small text-subtle mb-2">Station-configured extra fields (Settings &gt; Case &amp; Reporting) for this case. Saved via "Save Report Changes" in the header above.</div>
+                                                    <div id="customFieldsContainer" class="row g-2 mb-3"></div>
+                                                    <hr class="border-secondary my-3">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-file-text me-1"></i>Report Narrative</h6>
+                                                    <div class="small text-subtle mb-2">Examiner-authored narrative for the exported report - filled in once analysis is complete, distinct from the running Case Notes journal.</div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Executive Summary</label>
+                                                        <textarea id="editExecSummary" class="form-control form-control-sm" rows="3" placeholder="High-level summary of the case, scope, and outcome for a non-technical reader..."></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Objectives</label>
+                                                        <textarea id="editObjectives" class="form-control form-control-sm" rows="2" placeholder="What was this examination asked to determine?"></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Relevant Findings</label>
+                                                        <textarea id="editFindingsSummary" class="form-control form-control-sm" rows="3" placeholder="Findings most relevant to the objectives above..."></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Limitations &amp; Statement of Uncertainty</label>
+                                                        <textarea id="editLimitations" class="form-control form-control-sm" rows="2" placeholder="Anything that limits confidence in these findings (partial acquisition, damaged media, tool limitations)..."></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Conclusion</label>
+                                                        <textarea id="editConclusion" class="form-control form-control-sm" rows="2" placeholder="Closing statement..."></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Indicators of Compromise <span class="text-subtle">(DFIR template)</span></label>
+                                                        <textarea id="editIocs" class="form-control form-control-sm" rows="2" placeholder="IPs, domains, file hashes, file paths, or other IOCs discovered during the investigation..."></textarea>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <label class="telemetry-grid-label d-block mb-1">Recommendations / Next Steps <span class="text-subtle">(DFIR &amp; Forensics templates)</span></label>
+                                                        <textarea id="editRecommendations" class="form-control form-control-sm" rows="2" placeholder="Containment/eradication actions taken, remaining follow-up work, or evidence-handling recommendations..."></textarea>
+                                                    </div>
+                                                    <div class="small text-subtle">Saved via "Save Report Changes" in the header above.</div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repFilesPane" role="tabpanel">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <h6 class="text-success fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Case Attachments (Exhibits)</h6>
+                                                        <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-folder2-open me-1"></i>Browse Elsewhere...</button>
+                                                    </div>
+                                                    <div class="small text-subtle mb-2">Check a file to attach it as a report exhibit - files already found in this case's folder are listed automatically. Right-click a file in File Explorer and choose "Attach to Case" to add it from there instead.</div>
+                                                    <div id="reportFilesGallery" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
+                                                        <span class="text-subtle small italic">Loading...</span>
+                                                    </div>
+                                                    <div>
+                                                        <label class="telemetry-grid-label d-block mb-1">Reference URLs / Links (Comma-separated or newline):</label>
+                                                        <input type="text" id="editUrls" class="form-control form-control-sm font-monospace" placeholder="e.g. https://cve.mitre.org/..., https://case-tracker.local/id/102">
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repGeoPane" role="tabpanel">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-geo-alt me-1"></i>Geolocation</h6>
+                                                    <div class="small text-subtle mb-2">GPS locations extracted from this case's evidence, rendered from every KML file attached to the case or found in its case folder. Generate one via File Explorer's "Extract Geolocation (KML)" action on a folder of photos, or the geo-pin icon in the Sleuth Kit image toolbar when browsing an acquired image.</div>
+                                                    <div id="reportGeoContainer">
+                                                        <span class="text-subtle small italic">Loading...</span>
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repJobsPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">Every acquisition/recovery job recorded against this case, most recent first. Click a row to see its full telemetry, parameters and hashes.</div>
+                                                    <div id="jobsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
+                                                        <span class="text-subtle">Open this tab to see this case's jobs.</span>
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repHistoryPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">Station-wide actions tagged to this case number (creation, selection, job starts/stops, settings changes) - a broad activity log, not a structured acquisition record. See the Jobs tab for that, or Settings &gt; Audit Log for the full station-wide log across all cases.</div>
+                                                    <div id="caseHistoryContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
+                                                        <span class="text-subtle">Open this tab to see this case's history.</span>
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repSearchPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Audit Trail for a keyword - client-side, against what's already loaded for this case (Audit Trail is limited to the same 200 most recent entries the tab above shows). Click a result to jump to its tab.</div>
+                                                    <input type="text" id="repSearchInput" class="form-control form-control-sm mb-3" placeholder="Search keyword..." oninput="runCaseSearch()">
+                                                    <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
+                                                        <span class="text-subtle">Type a keyword above to search.</span>
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repExportPane" role="tabpanel">
+                                                    <div class="row g-2 mb-1">
+                                                        <div class="col-md-4">
+                                                            <label class="telemetry-grid-label d-block mb-1">Export Format</label>
+                                                            <select id="exportFormatSelect" class="form-select form-select-sm" onchange="onExportFormatChange()">
+                                                                <option value="pdf">PDF Document (.pdf)</option>
+                                                                <option value="html">HTML Report (.html)</option>
+                                                                <option value="json">Raw JSON (.json)</option>
+                                                                <option value="csv">Evidence Inventory (.csv)</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-8" id="exportTemplateGroup">
+                                                            <label class="telemetry-grid-label d-block mb-1">Report Template</label>
+                                                            <select id="exportTemplateSelect" class="form-select form-select-sm mb-1" onchange="onExportTemplateChange()">
+                                                                <option value="standard">Standard - configurable sections</option>
+                                                                <option value="dfir">DFIR Report - fixed incident-response structure</option>
+                                                                <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
+                                                                <option value="caseuco">CASE/UCO Report - fixed structure aligned with the CASE/UCO forensic ontology</option>
+                                                            </select>
+                                                            <div id="exportTemplateHint" class="small text-subtle mb-1" style="display:none;"></div>
+                                                            <button type="button" id="exportEditTemplateBtn" class="btn btn-xs btn-outline-info py-0 px-2" style="display:none;" onclick="openReportTemplateBuilder(currentExportCustomTemplateId)"><i class="bi bi-pencil-square me-1"></i>Edit this template</button>
+                                                        </div>
+                                                    </div>
+                                                    <div class="row g-3" id="exportPdfHtmlOptionsRow">
+                                                        <div class="col-md-4">
+                                                            <div id="exportSectionsFieldsGroup">
+                                                            <label class="telemetry-grid-label d-block mb-1">Sections to Include</label>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecCaseInfo" checked>
+                                                                <label class="form-check-label small" for="expSecCaseInfo">Case Information</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecExecSummary" checked>
+                                                                <label class="form-check-label small" for="expSecExecSummary">Executive Summary &amp; Objectives</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecEvidenceInventory" checked>
+                                                                <label class="form-check-label small" for="expSecEvidenceInventory">Evidence Inventory</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecForensicAnalysis" checked>
+                                                                <label class="form-check-label small" for="expSecForensicAnalysis">Forensic Analysis / Steps Taken (Case Notes)</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecFindings" checked>
+                                                                <label class="form-check-label small" for="expSecFindings">Relevant Findings</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecLimitations" checked>
+                                                                <label class="form-check-label small" for="expSecLimitations">Limitations &amp; Statement of Uncertainty</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecConclusion" checked>
+                                                                <label class="form-check-label small" for="expSecConclusion">Conclusion</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecAttachments" checked>
+                                                                <label class="form-check-label small" for="expSecAttachments">Exhibits</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecGeolocation">
+                                                                <label class="form-check-label small" for="expSecGeolocation">Geolocation / GPS Evidence</label>
+                                                            </div>
+                                                            <div class="form-check mb-3">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecAuditTrail" checked>
+                                                                <label class="form-check-label small" for="expSecAuditTrail">Case Activity Log (Audit Trail)</label>
+                                                            </div>
+
+                                                            <label class="telemetry-grid-label d-block mb-1">Evidence Item Detail Fields</label>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldTelemetry" checked>
+                                                                <label class="form-check-label small" for="expFieldTelemetry">Source Media Telemetry</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldParams" checked>
+                                                                <label class="form-check-label small" for="expFieldParams">Acquisition Parameters</label>
+                                                            </div>
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-field-check" type="checkbox" id="expFieldHashes" checked>
+                                                                <label class="form-check-label small" for="expFieldHashes">Verification Hashes</label>
+                                                            </div>
+
+                                                            <div class="d-flex gap-2 mt-3">
+                                                                <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportCheckboxes(true)">Check All</button>
+                                                                <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportCheckboxes(false)">Uncheck All</button>
+                                                            </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                                <label class="telemetry-grid-label d-block mb-0">Evidence Items to Include</label>
+                                                                <div class="d-flex gap-1">
+                                                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportItemCheckboxes(true)">All</button>
+                                                                    <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportItemCheckboxes(false)">None</button>
+                                                                </div>
+                                                            </div>
+                                                            <div id="exportItemsList" class="list-group list-group-flush border border-secondary rounded-2" style="max-height: 340px; overflow-y: auto; background-color: #090b10;">
+                                                                <div class="text-subtle small p-2">Loading...</div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                                <label class="telemetry-grid-label d-block mb-0">Case Files &amp; URLs to Include</label>
+                                                                <div class="d-flex gap-1">
+                                                                    <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="setExportFileCheckboxes(true)">All</button>
+                                                                    <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setExportFileCheckboxes(false)">None</button>
+                                                                </div>
+                                                            </div>
+                                                            <div class="small text-subtle mb-1">Photos, notes, emails, text files, and reference URLs attached to this case, plus anything else found sitting in the case folder (e.g. copied in via File Explorer).</div>
+                                                            <div id="exportFilesList" class="list-group list-group-flush border border-secondary rounded-2" style="max-height: 340px; overflow-y: auto; background-color: #090b10;">
+                                                                <div class="text-subtle small p-2">Loading...</div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="d-flex justify-content-between align-items-center mt-3 pt-2 border-top border-secondary">
+                                                        <span id="exportReportStatus" class="small text-subtle"></span>
+                                                        <button type="button" class="btn btn-sm btn-danger fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
+                                                    </div>
+                                                    <div id="exportPreviewGroup" class="mt-3">
+                                                        <div class="d-flex justify-content-between align-items-center mb-1 flex-wrap gap-2">
+                                                            <label class="telemetry-grid-label d-block mb-0">Preview</label>
+                                                            <div class="d-flex align-items-center gap-2">
+                                                                <span id="exportPreviewStatus" class="small text-subtle"></span>
+                                                                <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="refreshExportPreview()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh Preview</button>
+                                                            </div>
+                                                        </div>
+                                                        <div class="small text-subtle mb-1">Renders exactly what Export would currently produce, from the checkboxes above - nothing is saved to disk until you click Export. Does not auto-update; click Refresh Preview after changing a checkbox.</div>
+                                                        <iframe id="exportPreviewFrame" title="Report preview" style="width:100%; height: clamp(300px, 55vh, 650px); border:1px solid #495057; border-radius:6px; background:#fff;"></iframe>
+                                                    </div>
+                                                    <div id="exportJsonPreviewGroup" class="mt-3" style="display:none;">
+                                                        <div class="small text-subtle mb-2">Live raw JSON structure of the case report - auto-updates on load/save. Export downloads exactly this.</div>
+                                                        <pre id="jsonPreview" class="log-window mb-0" style="height: clamp(180px, 40vh, 420px);">[Select or create a case above to view raw structured JSON data]</pre>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+            </div>
+    <div class="modal fade" id="reportTemplateBuilderModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-sliders me-2"></i>Report Template Builder</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Template Name</label>
+                        <input type="text" id="rtbName" class="form-control form-control-sm" placeholder="e.g. SOC Brief" maxlength="80">
+                    </div>
+                    <div class="small text-subtle mb-2">
+                        Check which sections to include, use the arrows to reorder, and optionally rename a
+                        section's title (leave blank to use the default). "Acquisition Method" has no on-page
+                        heading of its own - each evidence item draws its own heading - so its title only
+                        affects the table of contents and PDF bookmark.
+                    </div>
+                    <div id="rtbRowsContainer" class="mb-2"></div>
+                    <div id="rtbStatus" class="small mt-2"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-success fw-bold" onclick="saveReportTemplateBuilder()"><i class="bi bi-check2-circle me-1"></i>Save Template</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Shared KML viewer - opened from Reporting's Files gallery for any
+         .kml attachment/exhibit; File Explorer renders the same shared
+         renderKmlViewer() inline in its own Preview pane instead of this
+         modal, since it already has a dedicated details pane to use. -->
+    <div class="modal fade" id="kmlViewerModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-geo-alt me-2"></i><span id="kmlViewerTitle">Geolocation Map</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div id="kmlViewerContainer"><span class="text-subtle small">Loading...</span></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>

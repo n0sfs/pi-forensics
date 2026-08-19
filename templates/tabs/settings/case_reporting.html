@@ -1,0 +1,122 @@
+                        <!-- Case & Reporting: report export defaults/branding + custom case-field definitions -->
+                        <div class="tab-pane fade" id="settings-pane-casereporting" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-collection me-2"></i>Case & Reporting</h6>
+                            <div class="accordion accordion-flush mb-3" id="caseReportingAccordion">
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secReportTemplate"><i class="bi bi-file-earmark-text me-2"></i>Default Report Template</button>
+                                    </h2>
+                                    <div id="secReportTemplate" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Pre-selected when opening the Export Report modal from Reporting - still changeable per-export there.</div>
+                                            <select id="defReportTemplate" class="form-select form-select-sm mb-1" style="max-width:320px;" onchange="onDefReportTemplateChange()">
+                                                <option value="standard">Standard - configurable sections (default)</option>
+                                                <option value="dfir">DFIR Report - fixed incident-response structure</option>
+                                                <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
+                                                <option value="caseuco">CASE/UCO Report - fixed structure aligned with the CASE/UCO forensic ontology</option>
+                                            </select>
+                                            <div id="defTemplateHint" class="small text-subtle" style="display:none;"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secCustomTemplates"><i class="bi bi-file-earmark-ruled me-2"></i>Custom Report Templates</button>
+                                    </h2>
+                                    <div id="secCustomTemplates" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="d-flex justify-content-end align-items-center mb-2">
+                                                <button class="btn btn-xs btn-outline-info py-0 px-2" onclick="openReportTemplateBuilder()"><i class="bi bi-plus-lg me-1"></i>New Template</button>
+                                            </div>
+                                            <div class="small text-subtle mb-2">Build your own report shape from the same sections Standard uses - pick which to include, reorder them, and rename their titles. Saved templates appear above and in the Export pane's Report Template list.</div>
+                                            <div id="customReportTemplatesList" class="bg-black border border-secondary p-2 rounded-2" style="max-height: 160px; overflow-y: auto;">
+                                                <span class="text-subtle small italic">No custom templates yet.</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secExportDefaults"><i class="bi bi-list-check me-2"></i>Report Export Defaults</button>
+                                    </h2>
+                                    <div id="secExportDefaults" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Pre-checks these sections/fields when opening the Export Report modal from Reporting - still adjustable per-export there. Applies to the Standard template only.</div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-6">
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecCaseInfo" checked><label class="form-check-label small" for="defSecCaseInfo">Case Information</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecExecSummary" checked><label class="form-check-label small" for="defSecExecSummary">Executive Summary &amp; Objectives</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecEvidenceInventory" checked><label class="form-check-label small" for="defSecEvidenceInventory">Evidence Inventory</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecForensicAnalysis" checked><label class="form-check-label small" for="defSecForensicAnalysis">Forensic Analysis (Case Notes)</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecFindings" checked><label class="form-check-label small" for="defSecFindings">Relevant Findings</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecLimitations" checked><label class="form-check-label small" for="defSecLimitations">Limitations &amp; Uncertainty</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecConclusion" checked><label class="form-check-label small" for="defSecConclusion">Conclusion</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAttachments" checked><label class="form-check-label small" for="defSecAttachments">Exhibits</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecGeolocation"><label class="form-check-label small" for="defSecGeolocation">Geolocation / GPS Evidence</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecAuditTrail" checked><label class="form-check-label small" for="defSecAuditTrail">Audit Trail</label></div>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldTelemetry" checked><label class="form-check-label small" for="defFieldTelemetry">Evidence Telemetry</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldParams" checked><label class="form-check-label small" for="defFieldParams">Acquisition Parameters</label></div>
+                                                    <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldHashes" checked><label class="form-check-label small" for="defFieldHashes">Verification Hashes</label></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secBranding"><i class="bi bi-image me-2"></i>Report Branding</button>
+                                    </h2>
+                                    <div id="secBranding" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="mb-2">
+                                                <label class="telemetry-grid-label d-block mb-1">Header Text (shown as a subtitle under the report title)</label>
+                                                <input type="text" id="reportBrandingText" class="form-control form-control-sm" placeholder="e.g. Acme Digital Forensics Lab" maxlength="200">
+                                            </div>
+                                            <div class="row g-2 align-items-center mb-2">
+                                                <div class="col-md-6"><input type="file" id="reportLogoFile" class="form-control form-control-sm" accept=".jpg,.jpeg,.png,.gif,.bmp,.webp"></div>
+                                                <div class="col-md-3"><button class="btn btn-sm btn-outline-primary w-100 fw-bold" onclick="uploadReportLogo()"><i class="bi bi-upload me-1"></i>Upload Logo</button></div>
+                                                <div class="col-md-3"><button class="btn btn-sm btn-outline-danger w-100 fw-bold" onclick="clearReportLogo()"><i class="bi bi-x-circle me-1"></i>Clear Logo</button></div>
+                                            </div>
+                                            <div id="reportLogoStatus" class="small text-subtle"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secCustomFields"><i class="bi bi-input-cursor-text me-2"></i>Custom Case Fields</button>
+                                    </h2>
+                                    <div id="secCustomFields" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Extra fields (e.g. "Agency", "Reference #") that appear on every case's Case Information block and in report exports.</div>
+                                            <div id="customFieldDefsContainer" class="mb-2"></div>
+                                            <button class="btn btn-sm btn-outline-info fw-bold" onclick="addCustomFieldDefRow()"><i class="bi bi-plus-lg me-1"></i>Add Field</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <!-- Tags themselves live per-case (the same SQLite analysis index File
+                                     Views reads/writes), not as a station-wide default like the other
+                                     sections in this accordion - this is a management tool scoped to
+                                     whichever case is currently active, not a setting applied to every
+                                     future case. -->
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secManageTags"><i class="bi bi-tags me-2"></i>Manage Tags</button>
+                                    </h2>
+                                    <div id="secManageTags" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Tags belong to the active case (each case keeps its own tag list) - create, rename, recolor, or delete them here. Deleting a tag also removes it from every file it was applied to; the default tags (Bookmark/Follow Up/Notable Item) can be edited but not deleted.</div>
+                                            <div id="manageTagsCaseNote" class="small mb-2">--</div>
+                                            <div id="manageTagsListContainer" class="mb-2">
+                                                <div class="text-subtle small p-2">Loading tags...</div>
+                                            </div>
+                                            <button class="btn btn-sm btn-outline-info fw-bold" onclick="openCreateTagModal()"><i class="bi bi-plus-lg me-1"></i>New Tag</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button class="btn btn-sm btn-success fw-bold w-100" onclick="saveCaseReportingSettings()"><i class="bi bi-check2-circle me-1"></i>Save Settings</button>
+                            <div id="caseReportingStatus" class="small mt-2"></div>
+                        </div>

@@ -1,0 +1,213 @@
+                        <!-- Security & Privacy -->
+                        <div class="tab-pane fade show active" id="settings-pane-auth" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-shield-lock-fill me-2"></i>Security & Privacy</h6>
+                            <div class="accordion accordion-flush" id="securityAccordion">
+                                <div class="accordion-item bg-dark border-secondary" id="userAccountsAccordionItem">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secUserAccounts"><i class="bi bi-people-fill me-2"></i>User Accounts</button>
+                                    </h2>
+                                    <div id="secUserAccounts" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="d-flex justify-content-end align-items-center mb-2">
+                                                <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadUserList()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                            </div>
+                                            <div class="border border-secondary rounded-2 mb-2" style="max-height: 260px; overflow-y: auto; overflow-x: auto; background-color:#090b10;">
+                                                <table class="table table-dark table-sm table-borderless font-monospace small mb-0 align-middle">
+                                                    <thead>
+                                                        <tr class="border-bottom border-secondary">
+                                                            <th class="text-subtle">User</th>
+                                                            <th class="text-subtle">Created</th>
+                                                            <th class="text-subtle">Last Login</th>
+                                                            <th class="text-subtle">Group</th>
+                                                            <th></th>
+                                                            <th></th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody id="userListContainer">
+                                                        <tr><td colspan="6" class="text-subtle">Tap Refresh to load accounts.</td></tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-4"><input type="text" id="newUserUsername" class="form-control form-control-sm" placeholder="New username"></div>
+                                                <div class="col-md-4"><input type="password" id="newUserPassword" class="form-control form-control-sm" placeholder="Password (min 8 chars)"></div>
+                                                <div class="col-md-2">
+                                                    <select id="newUserGroupId" class="form-select form-select-sm">
+                                                        <option value="">Loading groups...</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-2"><button class="btn btn-sm btn-success w-100 fw-bold" id="btnCreateUser" onclick="createUser()"><i class="bi bi-person-plus-fill me-1"></i>Add</button></div>
+                                            </div>
+                                            <div id="userMgmtStatus" class="small"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary" id="userGroupsAccordionItem">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secUserGroups"><i class="bi bi-diagram-2-fill me-2"></i>User Groups</button>
+                                    </h2>
+                                    <div id="secUserGroups" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Every user belongs to exactly one group. <strong>Admin</strong> always has full access to everything and can't be changed. <strong>Analyst</strong> is the default operational group (every tool, no station configuration or user management) - its permissions can be adjusted below. Create additional custom groups with whatever mix of access a role needs.</div>
+                                            <div class="d-flex justify-content-end align-items-center mb-2">
+                                                <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="openUserGroupModal(null)"><i class="bi bi-plus-lg me-1"></i>New Group</button>
+                                            </div>
+                                            <div id="userGroupsListContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 260px; overflow-y: auto; background-color:#090b10;">
+                                                <span class="text-subtle">Loading groups...</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secHttpsCert"><i class="bi bi-file-earmark-lock-fill me-2"></i>HTTPS Certificate</button>
+                                    </h2>
+                                    <div id="secHttpsCert" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div id="tlsStatusContainer" class="font-monospace small border border-secondary rounded-2 p-2 mb-2" style="background-color:#090b10;">
+                                                <span class="text-subtle">Loading...</span>
+                                            </div>
+
+                                            <div class="small text-subtle mb-2">This is a self-signed certificate, so every browser will warn on first visit until you import it as trusted on each device that connects here - the private key never leaves this station, only the public certificate is ever downloaded.</div>
+                                            <a href="/api/system/tls_download_cert" class="btn btn-sm btn-outline-info fw-bold w-100 mb-2" download="pi-forensics.crt">
+                                                <i class="bi bi-download me-1"></i>Download Certificate (.crt)
+                                            </a>
+                                            <div class="accordion accordion-flush mb-2" id="tlsTrustAccordion">
+                                                <div class="accordion-item bg-dark border-secondary">
+                                                    <h2 class="accordion-header">
+                                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustWindows">Windows</button>
+                                                    </h2>
+                                                    <div id="tlsTrustWindows" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                                        <div class="accordion-body small text-subtle">
+                                                            <ol class="mb-0 ps-3">
+                                                                <li>Download the certificate above, then double-click the <span class="font-monospace text-info">pi-forensics.crt</span> file.</li>
+                                                                <li>Click <strong>Install Certificate...</strong>, choose <strong>Local Machine</strong> (needs admin) or <strong>Current User</strong>, then Next.</li>
+                                                                <li>Choose <strong>Place all certificates in the following store</strong> → Browse → <strong>Trusted Root Certification Authorities</strong> → OK → Next → Finish.</li>
+                                                                <li>Restart your browser and reload this page.</li>
+                                                            </ol>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="accordion-item bg-dark border-secondary">
+                                                    <h2 class="accordion-header">
+                                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustMac">macOS</button>
+                                                    </h2>
+                                                    <div id="tlsTrustMac" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                                        <div class="accordion-body small text-subtle">
+                                                            <ol class="mb-0 ps-3">
+                                                                <li>Download the certificate above, then double-click it - it opens in <strong>Keychain Access</strong>.</li>
+                                                                <li>Choose the <strong>System</strong> keychain (or <strong>login</strong> for just your account) and click Add.</li>
+                                                                <li>Find the certificate in the list, double-click it, expand <strong>Trust</strong>, and set "When using this certificate" to <strong>Always Trust</strong>.</li>
+                                                                <li>Close the panel, enter your password to confirm, then restart your browser and reload this page.</li>
+                                                            </ol>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="accordion-item bg-dark border-secondary">
+                                                    <h2 class="accordion-header">
+                                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustLinux">Linux</button>
+                                                    </h2>
+                                                    <div id="tlsTrustLinux" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                                        <div class="accordion-body small text-subtle">
+                                                            <div class="mb-2">System-wide trust (Debian/Ubuntu-based, affects Chrome/Chromium/Edge and most other apps):</div>
+                                                            <pre class="log-window mb-0" style="height:auto;">sudo cp pi-forensics.crt /usr/local/share/ca-certificates/pi-forensics.crt
+sudo update-ca-certificates</pre>
+                                                            <div class="mt-2">Firefox keeps its own certificate store regardless of distro - see the Firefox note below.</div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="accordion-item bg-dark border-secondary">
+                                                    <h2 class="accordion-header">
+                                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustIos">iOS / iPadOS</button>
+                                                    </h2>
+                                                    <div id="tlsTrustIos" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                                        <div class="accordion-body small text-subtle">
+                                                            <ol class="mb-0 ps-3">
+                                                                <li>Open this page in Safari on the device (or AirDrop the downloaded file to it) and download the certificate.</li>
+                                                                <li>Go to <strong>Settings → General → VPN &amp; Device Management</strong>, tap the downloaded profile, then <strong>Install</strong> (enter your passcode).</li>
+                                                                <li>Then go to <strong>Settings → General → About → Certificate Trust Settings</strong> and enable full trust for this certificate.</li>
+                                                            </ol>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="accordion-item bg-dark border-secondary">
+                                                    <h2 class="accordion-header">
+                                                        <button class="accordion-button collapsed bg-dark text-light small py-2" type="button" data-bs-toggle="collapse" data-bs-target="#tlsTrustAndroid">Android</button>
+                                                    </h2>
+                                                    <div id="tlsTrustAndroid" class="accordion-collapse collapse" data-bs-parent="#tlsTrustAccordion">
+                                                        <div class="accordion-body small text-subtle">
+                                                            <ol class="mb-0 ps-3">
+                                                                <li>Open this page in the device's browser and download the certificate.</li>
+                                                                <li>Go to <strong>Settings → Security (or Security &amp; Privacy) → Encryption &amp; Credentials → Install a Certificate → CA Certificate</strong>.</li>
+                                                                <li>Browse to the downloaded file and confirm. Exact menu names vary by Android version and manufacturer.</li>
+                                                            </ol>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="small text-subtle mb-3"><strong>Firefox note (any OS):</strong> Firefox keeps its own certificate store, separate from the operating system's - the steps above don't apply to it. Instead go to Firefox Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities tab → Import → select the downloaded file → check "Trust this CA to identify websites".</div>
+
+                                            <hr class="border-secondary my-3">
+
+                                            <div class="small text-subtle mb-2">Generate a fresh self-signed certificate + private key (.pem/.key) directly on this station - no terminal needed. Automatically includes every network IP this Pi currently has (so browsers stop reporting a hostname mismatch), still shows a self-signed warning on first visit since nothing signed it.</div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-8">
+                                                    <label class="telemetry-grid-label d-block mb-1">Additional Hostname (optional)</label>
+                                                    <input type="text" id="tlsGenExtraHostname" class="form-control form-control-sm" placeholder="e.g. a custom DNS name pointing at this Pi">
+                                                </div>
+                                                <div class="col-md-4 d-flex align-items-end">
+                                                    <button class="btn btn-sm btn-info fw-bold w-100" onclick="generateTlsCertificate()">
+                                                        <i class="bi bi-magic me-1"></i>Generate &amp; Install
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div id="tlsGenerateStatus" class="small mb-2"></div>
+
+                                            <hr class="border-secondary my-3">
+
+                                            <div class="small text-subtle mb-2">Or replace with a custom certificate + private key of your own (RSA only, e.g. one signed by a real CA). Both files are validated as a matching pair before anything is installed.</div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-6">
+                                                    <label class="telemetry-grid-label d-block mb-1">Certificate File (.crt/.pem)</label>
+                                                    <input type="file" id="tlsCertFile" class="form-control form-control-sm" accept=".crt,.pem,.cer">
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label class="telemetry-grid-label d-block mb-1">Private Key File (.key)</label>
+                                                    <input type="file" id="tlsKeyFile" class="form-control form-control-sm" accept=".key,.pem">
+                                                </div>
+                                            </div>
+                                            <button class="btn btn-sm btn-warning text-dark fw-bold w-100" onclick="uploadTlsCertificate()">
+                                                <i class="bi bi-upload me-1"></i>Install Certificate
+                                            </button>
+                                            <div id="tlsUploadStatus" class="small mt-2"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secAuditLog"><i class="bi bi-journal-text me-2"></i>Audit Log</button>
+                                    </h2>
+                                    <div id="secAuditLog" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="d-flex justify-content-end align-items-center mb-3">
+                                                <div class="d-flex gap-1">
+                                                    <button class="btn btn-sm btn-outline-success fw-bold py-0" onclick="exportAuditLogCsv()"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Export to CSV</button>
+                                                    <button class="btn btn-sm btn-outline-info fw-bold py-0" onclick="loadChainOfCustodyLog()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                                                </div>
+                                            </div>
+                                            <div class="small text-subtle mb-2">
+                                                Station-wide action log (most recent first, this view capped at 200 entries and
+                                                auto-refreshes every 20 seconds while this section is expanded - Export to CSV always
+                                                includes the full log). Entries are attributed to the logged-in user once real
+                                                accounts exist (see User Accounts above); stations still on the legacy
+                                                shared login only get a timestamp and source IP.
+                                            </div>
+                                            <input type="text" id="cocSearchInput" class="form-control form-control-sm mb-2" placeholder="Search these entries..." oninput="applyCocSearchFilter()">
+                                            <div id="cocLogContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
+                                                <span class="text-subtle">Tap Refresh to load recent entries.</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>

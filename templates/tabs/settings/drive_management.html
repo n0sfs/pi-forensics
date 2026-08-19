@@ -1,0 +1,16 @@
+                        <!-- Drive Management -->
+                        <div class="tab-pane fade" id="settings-pane-eject" role="tabpanel">
+                            <h6 class="text-info fw-bold mb-3"><i class="bi bi-usb-drive-fill me-2"></i>Drive Management</h6>
+                            <label class="telemetry-grid-label d-block mb-1">Select Connected Target Drive:</label>
+                            <select id="ejectDriveSelect" class="form-select form-select-sm drive-select mb-2" onchange="refreshDriveManagementStatus()">
+                                <option value="">-- Choose Connected Drive --</option>
+                            </select>
+                            <div class="d-flex justify-content-between align-items-center mb-2 p-2 bg-black border border-secondary rounded-2">
+                                <span class="telemetry-grid-label mb-0">Write Blocker Status:</span>
+                                <span id="driveMgmtWriteBlockBadge" class="badge bg-secondary">Select a drive</span>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-outline-warning btn-sm flex-fill fw-bold" onclick="toggleWriteBlockForSelectedDrive()"><i class="bi bi-shield-lock me-1"></i>Toggle Write Blocker</button>
+                                <button class="btn btn-danger btn-sm flex-fill fw-bold" onclick="ejectTargetDrive()"><i class="bi bi-eject-fill me-1"></i>Safe Detach</button>
+                            </div>
+                        </div>
