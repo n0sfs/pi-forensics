@@ -3,6 +3,7 @@ import re
 import io
 import csv
 import math
+import secrets
 import sqlite3
 import html
 import base64
@@ -30,11 +31,22 @@ import textwrap
 import subprocess
 import threading
 from functools import wraps
-from flask import Flask, render_template, jsonify, request, Response, send_file, g
+from flask import Flask, render_template, jsonify, request, Response, send_file, g, session, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 
 app = Flask(__name__)
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+# Deliberately left at Flask's default (False), not hardcoded True: this app
+# supports both TLS-optional and plain-HTTP deployment (see install.py's TLS
+# prompt, which already discloses "without TLS, credentials are sent over
+# plain HTTP" as an accepted tradeoff for a LAN appliance), there's no
+# ProxyFix/X-Forwarded-Proto handling here to reliably detect TLS at runtime,
+# and Secure=False cookies are sent over both HTTP and HTTPS (Secure=True is
+# the one that *restricts*, so leaving this False never regresses the
+# HTTPS-configured case, only avoids silently breaking the HTTP-only one).
+app.config['PERMANENT_SESSION_LIFETIME'] = 12 * 60 * 60  # 12h - a workstation shift, not a web app's short-lived token
 
 # Authentication Config
 ADMIN_USER = os.environ.get('FORENSIC_USER', 'admin')
@@ -99,6 +111,27 @@ runtime_config_lock = threading.Lock()
 # attacker who already has root or physical disk access to this station -
 # that limitation is inherent to any unattended auto-reconnect, not a gap
 # specific to this implementation.
+# Signs the Flask session cookie (see requires_auth()/the /login, /logout
+# routes below). Persisted to disk, not generated fresh in memory each run,
+# specifically so `systemctl restart pi-forensics` - this project's own
+# routine step after nearly every deploy - doesn't silently log out every
+# open browser tab by invalidating the signing key underneath them.
+SECRET_KEY_FILE = os.path.join(INSTALL_DIR, ".flask_secret_key")
+secret_key_lock = threading.Lock()
+
+def _get_or_create_secret_key():
+    with secret_key_lock:
+        if os.path.exists(SECRET_KEY_FILE):
+            with open(SECRET_KEY_FILE, 'r') as f:
+                return f.read().strip()
+        key = secrets.token_hex(32)
+        with open(SECRET_KEY_FILE, 'w') as f:
+            f.write(key)
+        os.chmod(SECRET_KEY_FILE, 0o600)
+        return key
+
+app.secret_key = _get_or_create_secret_key()
+
 MOUNT_KEY_FILE = os.path.join(INSTALL_DIR, ".mount_key")
 mount_key_lock = threading.Lock()
 
@@ -357,6 +390,21 @@ def check_auth(username, password):
     pass_ok = hmac.compare_digest(password or '', get_active_admin_pass())
     return user_ok and pass_ok
 
+def _session_user_still_valid(username):
+    # Mirrors check_auth()'s two-tier logic, but for existence rather than a
+    # password match - a session only ever proves "this browser successfully
+    # logged in as this username at some point", so every subsequent request
+    # re-derives whether that identity still exists rather than trusting the
+    # cookie forever. This is what makes a deleted user's still-cached
+    # session cookie die on their very next request, for free, with no
+    # separate server-side session-revocation list needed.
+    if not username:
+        return False
+    users = load_runtime_config().get('users')
+    if users:
+        return find_user(username, users) is not None
+    return hmac.compare_digest(username, ADMIN_USER)
+
 def is_local_kiosk_request():
     """
     True if this request is coming from the Pi's own local kiosk session,
@@ -388,12 +436,13 @@ def get_offline_tiles_info():
         pass
     return None
 
-def authenticate():
-    return Response(
-        'Authentication required to access Pi Forensics Suite.\n',
-        401,
-        {'WWW-Authenticate': 'Basic realm="Pi Forensics Suite Login Required"'}
-    )
+def _plain_401():
+    # No WWW-Authenticate header - that header alone is what makes a browser
+    # pop its native Basic Auth credentials dialog, which this app no longer
+    # wants to ever show (the browser UI authenticates via /login instead).
+    # Basic Auth is still *accepted* on /api/* routes (see requires_auth()),
+    # just never *advertised/demanded* via this challenge header.
+    return Response('Authentication required to access Pi Forensics Suite.\n', 401)
 
 def _is_locked_out(client_key):
     with auth_fail_lock:
@@ -433,28 +482,60 @@ def requires_auth(f):
             g.forensic_user = 'local-kiosk'
             return f(*args, **kwargs)
 
+        # Primary path: a real signed session cookie, set by POST /login (or
+        # by the "Switch User" flow, which is just a second /login call).
+        # Re-derived on every request rather than trusted for the cookie's
+        # whole lifetime, so a user deleted mid-session loses access on their
+        # very next request (see _session_user_still_valid()).
+        session_username = session.get('username')
+        if session_username:
+            if _session_user_still_valid(session_username):
+                g.forensic_user = session_username
+                return f(*args, **kwargs)
+            session.clear()
+
         client_key = request.remote_addr or 'unknown'
 
-        if _is_locked_out(client_key):
-            return Response(
-                'Too many failed login attempts. Try again in a few minutes.\n',
-                429,
-                {'Retry-After': str(LOCKOUT_SECONDS)}
-            )
+        # Fallback path, /api/* only: plain HTTP Basic Auth, unchanged from
+        # this app's original auth model - kept specifically so this
+        # project's own extensively-documented `curl -sk -u user:pass
+        # https://host/api/...` live-verification workflow keeps working
+        # with zero changes. Deliberately NOT offered for the page route
+        # (see the redirect-to-/login branch below) - the browser UI only
+        # ever authenticates via the login page/session from here on.
+        if request.path.startswith('/api/'):
+            auth = request.authorization
+            if auth:
+                # Only an actually-presented-and-wrong credential counts as a
+                # failed attempt. Treating "no Authorization header at all"
+                # the same way would auto-lock the examiner's own IP out of
+                # the login form itself - this app already polls several
+                # /api/* endpoints every 2 seconds from the browser, and a
+                # tab left open past logout (or open before ever logging in)
+                # would rack up "failures" purely from having no cookie yet,
+                # with no credentials involved at all.
+                if _is_locked_out(client_key):
+                    return Response(
+                        'Too many failed login attempts. Try again in a few minutes.\n',
+                        429,
+                        {'Retry-After': str(LOCKOUT_SECONDS)}
+                    )
+                if not check_auth(auth.username, auth.password):
+                    _record_auth_failure(client_key)
+                    return _plain_401()
+                _record_auth_success(client_key)
+                _record_last_login(auth.username)
+                g.forensic_user = auth.username
+                return f(*args, **kwargs)
+            # No session, no Authorization header - a plain unauthenticated
+            # API request. No lockout tracking here (nothing was actually
+            # attempted - see the comment above this branch).
+            return _plain_401()
 
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            _record_auth_failure(client_key)
-            return authenticate()
-
-        _record_auth_success(client_key)
-        _record_last_login(auth.username)
-        # Stashed on Flask's request-scoped g object (not a new global - g
-        # is reset per-request) so log_chain_of_custody() can attribute
-        # entries to whoever is actually logged in, without threading a
-        # username parameter through every one of its ~23 call sites.
-        g.forensic_user = auth.username
-        return f(*args, **kwargs)
+        # The one page route (/) with no valid session - send the browser to
+        # our own branded login page instead of ever showing a 401 that
+        # would trigger the native Basic Auth dialog.
+        return redirect(f'/login?next={request.path}')
     return decorated
 
 # --- User Groups / Permissions ---
@@ -2361,6 +2442,52 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
         active_proc = None
 
 # --- Web Routes & API Endpoints ---
+
+def _safe_next_path(raw):
+    # Only ever redirect to a same-origin relative path - "//evil.com/x" is
+    # parsed by browsers as protocol-relative (i.e. an off-site redirect),
+    # so reject anything not starting with exactly one "/". Falls back to
+    # "/" for anything else (missing, empty, off-site, or malformed).
+    if raw and raw.startswith('/') and not raw.startswith('//'):
+        return raw
+    return '/'
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'GET':
+        # Already have a valid session - no need to show the form again.
+        existing = session.get('username')
+        if existing and _session_user_still_valid(existing):
+            return redirect(_safe_next_path(request.args.get('next')))
+        return render_template('login.html', next=_safe_next_path(request.args.get('next')))
+
+    client_key = request.remote_addr or 'unknown'
+    if _is_locked_out(client_key):
+        return jsonify({
+            "success": False,
+            "error": "Too many failed login attempts. Try again in a few minutes.",
+        }), 429
+
+    req = request.get_json(silent=True) or {}
+    username = (req.get('username') or '').strip()
+    password = req.get('password') or ''
+
+    if not check_auth(username, password):
+        _record_auth_failure(client_key)
+        return jsonify({"success": False, "error": "Incorrect username or password."}), 401
+
+    _record_auth_success(client_key)
+    _record_last_login(username)
+    session.clear()  # drop any prior identity outright rather than merge state into it
+    session['username'] = username
+    session.permanent = True
+    return jsonify({"success": True, "redirect": _safe_next_path(req.get('next'))})
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({"success": True})
+
 @app.route('/')
 @requires_auth
 def index():
