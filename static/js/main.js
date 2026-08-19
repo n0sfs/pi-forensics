@@ -1,3 +1,22 @@
+// Switch User (see submitSwitchUser() below) authenticates by navigating to a
+// same-origin URL with credentials embedded in it - the browser adopts those
+// as its cached Basic Auth credential for the origin the moment the page
+// successfully loads, which happens before this script runs. But leaving the
+// document's own URL with embedded credentials afterward breaks every
+// same-origin fetch() call on the page ("Request cannot be constructed from a
+// URL that includes credentials" - a hard browser restriction, not a bug in
+// the fetch() calls themselves). So immediately strip them back out via a
+// second, credential-free navigation before anything below gets a chance to
+// call fetch(). sessionStorage (not a JS variable) is what survives across
+// this same-tab navigation. This must stay the very first statement in the
+// file - main.js loads via a plain non-deferred <script src>, so top-level
+// code here runs before DOMContentLoaded and before any other init logic
+// that might itself call fetch().
+if (sessionStorage.getItem('pif_switch_user_pending') === '1') {
+    sessionStorage.removeItem('pif_switch_user_pending');
+    location.replace(location.origin + location.pathname + location.search + location.hash);
+}
+
 let isWriteBlockActive = true;
 let throughputChart = null;
 const maxGraphPoints = 30;
@@ -8161,7 +8180,12 @@ function openSwitchUserModal() {
 // credentials directly with a manual Authorization header (bypassing
 // whatever the browser already has cached for this origin), then navigate
 // to a same-origin URL with those credentials embedded so the browser
-// adopts them as its new cached credential going forward. Best-effort:
+// adopts them as its new cached credential going forward. That first
+// navigation alone used to be the whole flow, but leaving the document's
+// URL with embedded credentials breaks every fetch() call on the resulting
+// page - the pif_switch_user_pending flag set below is what makes the
+// top-of-file guard immediately strip them back out again on the very next
+// load, once the browser has already cached the new credential. Best-effort:
 // most Chromium/Firefox-based browsers honor this, but it's not a
 // guaranteed mechanism in every browser (see CLAUDE.md).
 async function submitSwitchUser() {
@@ -8189,7 +8213,8 @@ async function submitSwitchUser() {
             return;
         }
         if (statusEl) { statusEl.textContent = 'Switching...'; statusEl.className = 'small text-success'; }
-        location.href = `${location.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(password)}@${location.host}${location.pathname}`;
+        sessionStorage.setItem('pif_switch_user_pending', '1');
+        location.replace(`${location.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(password)}@${location.host}${location.pathname}`);
     } catch (err) {
         if (statusEl) { statusEl.textContent = `Failed: ${err.message}`; statusEl.className = 'small text-danger'; }
     }
