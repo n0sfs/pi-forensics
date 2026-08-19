@@ -47,6 +47,26 @@ def snapshot_job():
     with job_lock:
         return dict(current_job)
 
+def poll_directory_size(path):
+    """Ground-truth bytes-on-disk for a file or directory tree, used as a
+    progress proxy for tools that don't report a parseable percentage.
+    Shared by mobile and recovery workers (routes/mobile.py,
+    routes/recovery.py) - lives here rather than in either routes/*.py
+    file so neither has to import it from the other."""
+    try:
+        if os.path.isfile(path):
+            return os.path.getsize(path)
+        total = 0
+        for root, _dirs, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+        return total
+    except Exception:
+        return 0
+
 # Global State for Live Acquisition Job
 current_job = {
     "active": False,
