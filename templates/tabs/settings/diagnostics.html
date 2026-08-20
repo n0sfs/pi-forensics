@@ -38,18 +38,24 @@
                             </div>
                             <div class="row g-2">
                                 <div class="col-md-3">
-                                    <div class="d-grid gap-1">
+                                    <div class="telemetry-grid-label mb-1">Service</div>
+                                    <div class="d-grid gap-1 mb-3">
                                         <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartForensicService()"><i class="bi bi-arrow-repeat me-1"></i>Restart Service</button>
-                                        <button class="btn btn-sm btn-outline-warning fw-bold text-start" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button>
-                                        <button class="btn btn-sm btn-success fw-bold text-start" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button>
-                                        <button class="btn btn-sm btn-primary fw-bold text-start" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button>
+                                        <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button>
+                                    </div>
+
+                                    <div class="telemetry-grid-label mb-1">Updates</div>
+                                    <div class="d-grid gap-1 mb-3">
+                                        <button class="btn btn-sm btn-outline-success fw-bold text-start" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button>
+                                        <button class="btn btn-sm btn-outline-primary fw-bold text-start" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button>
+                                    </div>
+
+                                    <div class="telemetry-grid-label mb-1">Diagnostics</div>
+                                    <div class="d-grid gap-1 mb-3">
                                         <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="showToolVersionsPanel()"><i class="bi bi-info-square me-1"></i>Check Tool Versions</button>
-                                        <button class="btn btn-sm btn-outline-warning fw-bold text-start" onclick="purgeConsoleLogs()"><i class="bi bi-trash3 me-1"></i>Purge Terminal Log Buffer</button>
-
-                                        <hr class="border-secondary my-1">
-
+                                        <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="purgeConsoleLogs()"><i class="bi bi-trash3 me-1"></i>Purge Terminal Log Buffer</button>
                                         <div class="dropdown">
-                                            <button class="btn btn-sm btn-outline-secondary text-light fw-bold text-start w-100 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-terminal me-1"></i>Run Diagnostic</button>
+                                            <button class="btn btn-sm btn-outline-info fw-bold text-start w-100 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-terminal me-1"></i>Run Diagnostic</button>
                                             <ul class="dropdown-menu dropdown-menu-dark">
                                                 <li><button class="dropdown-item" onclick="runDiagnostic('dmesg')">dmesg</button></li>
                                                 <li><button class="dropdown-item" onclick="runDiagnostic('lsusb')">lsusb</button></li>
@@ -61,12 +67,14 @@
                                                 <li><button class="dropdown-item" onclick="runDiagnostic('mounts')">mount</button></li>
                                             </ul>
                                         </div>
+                                    </div>
 
-                                        <hr class="border-secondary my-1">
-
+                                    <div class="telemetry-grid-label mb-1">Power</div>
+                                    <div class="d-grid gap-1 p-2 border border-danger rounded-2">
                                         <button class="btn btn-sm btn-warning text-dark fw-bold text-start" onclick="triggerSystemPower('reboot')"><i class="bi bi-arrow-clockwise me-1"></i>Reboot Appliance</button>
                                         <button class="btn btn-sm btn-danger fw-bold text-start" onclick="triggerSystemPower('poweroff')"><i class="bi bi-power me-1"></i>Power Off Station</button>
                                     </div>
+
                                     <div class="small text-subtle mt-2">
                                         Git/OS updates pull from configured remotes - only run these on a station whose update
                                         sources you trust. Diagnostics are a fixed, read-only allowlist, not a general shell -
