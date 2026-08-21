@@ -31,10 +31,14 @@ import subprocess
 import threading
 import ipaddress
 
+import base64
+
 import psutil
 from flask import Blueprint, jsonify, request, g, send_file, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from core.auth import (
     PERMISSION_KEYS, KIOSK_AUTH_BYPASS_ENABLED,
@@ -44,6 +48,7 @@ from core.auth import (
     caller_reauth_ok, _normalize_permissions,
 )
 from core.paths import safe_path, log_chain_of_custody, is_valid_block_device
+import core.config as config
 from core.config import (
     ADMIN_USER, ADMIN_PASS, INSTALL_DIR, HISTORY_FILE,
     TLS_CERT_PATH, TLS_KEY_PATH, MVT_BIN_DIR, MVT_IOS_BIN, MVT_ANDROID_BIN,
@@ -1200,6 +1205,157 @@ def tls_download_cert():
     if not os.path.exists(TLS_CERT_PATH):
         return jsonify({"success": False, "error": "No certificate is currently installed."}), 404
     return send_file(TLS_CERT_PATH, as_attachment=True, download_name="pi-forensics.crt", mimetype="application/x-x509-ca-cert")
+
+# --- Configuration Backup & Restore ---
+# A single encrypted, passphrase-protected file capturing this station's own
+# identity: runtime_config.json in full (user accounts + password hashes,
+# groups, custom report templates, custom case fields, report branding
+# defaults, network auto-mount share entries), the Fernet key those auto-mount
+# entries' saved credentials are encrypted under (without it, restoring
+# runtime_config.json alone would leave every saved share password/key as
+# permanently undecryptable garbage - see core/config.py's _get_or_create_
+# mount_key), and the report-branding logo file if one is configured. Meant
+# for disaster recovery (a botched OS reinstall, a failed SD card) or cloning
+# one station's accounts/templates onto a freshly-installed second one.
+#
+# Deliberately does NOT include the TLS private key: this app's own service
+# account can't read it (root-only, chmod 600 - see core/config.py's
+# TLS_KEY_PATH comment) without a new sudo grant just to serve a file back to
+# the browser, and no route in this app has ever done that. A restored
+# station regenerates or re-uploads its own certificate instead (Settings >
+# Security > HTTPS Certificate, already fully self-service) - a disclosed,
+# deliberate scope boundary, not an oversight.
+#
+# Encrypted with a passphrase the examiner supplies at backup time (PBKDF2-
+# SHA256 -> Fernet), not this station's own mount key - the whole point is a
+# file that's still meaningful once it's off this station (a USB stick, a
+# second station), where the original mount key isn't available to derive
+# from. File format: b"PIFB1" + 16-byte salt + Fernet token.
+_BACKUP_MAGIC = b"PIFB1"
+_BACKUP_KDF_ITERATIONS = 600_000
+
+# Referenced as config.RUNTIME_CONFIG_FILE / config.MOUNT_KEY_FILE /
+# config.INSTALL_DIR below, deliberately not via `from core.config import
+# RUNTIME_CONFIG_FILE` like every other constant in this file - a bare
+# `from X import CONSTANT` copies the value into this module's own namespace
+# once, at import time, which is harmless for values that genuinely never
+# change in production but breaks under a test suite that monkeypatches
+# core.config's own attributes to redirect I/O at a temp file per test (this
+# module's stale copy keeps pointing at the real path regardless). A real
+# instance of exactly this bug was caught live by tests/test_config_backup.py
+# on its first run against the deployed Pi: with RUNTIME_CONFIG_FILE/
+# MOUNT_KEY_FILE still bare, a test run copied the *actual* production
+# runtime_config.json/.mount_key into *.pre_restore_backup files sitting
+# right next to them; with INSTALL_DIR still bare, a second pass silently
+# overwrote the station's real report_logo.png (with identical bytes, since
+# the same file was read then written back unchanged - no data was lost,
+# but it's still a live-filesystem write a test run should never cause).
+# Both fixed the same way: read through the config module object instead of
+# a copied name. Same root cause as the active_proc bug already documented
+# and fixed once in core/jobs.py during the app.py -> core/ + routes/ split
+# - see that dated CLAUDE.md entry.
+
+def _derive_backup_key(passphrase, salt):
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=_BACKUP_KDF_ITERATIONS)
+    return base64.urlsafe_b64encode(kdf.derive(passphrase.encode('utf-8')))
+
+@settings_bp.route('/api/settings/config_backup', methods=['POST'])
+@requires_auth
+@requires_permission('manage_users')
+def config_backup():
+    data = request.get_json(silent=True) or {}
+    passphrase = data.get('passphrase') or ''
+    if len(passphrase) < 8:
+        return jsonify({"success": False, "error": "Choose a backup passphrase of at least 8 characters - you'll need it again to restore this file."}), 400
+
+    manifest = {
+        "version": 1,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "runtime_config": load_runtime_config(),
+        "mount_key": None,
+        "report_logo": None,
+    }
+
+    if os.path.exists(config.MOUNT_KEY_FILE):
+        with open(config.MOUNT_KEY_FILE, 'r') as f:
+            manifest["mount_key"] = f.read().strip()
+
+    logo_matches = glob.glob(os.path.join(config.INSTALL_DIR, "report_logo.*"))
+    if logo_matches:
+        with open(logo_matches[0], 'rb') as f:
+            manifest["report_logo"] = {
+                "filename": os.path.basename(logo_matches[0]),
+                "data_b64": base64.b64encode(f.read()).decode(),
+            }
+
+    salt = secrets.token_bytes(16)
+    key = _derive_backup_key(passphrase, salt)
+    token = Fernet(key).encrypt(json.dumps(manifest).encode('utf-8'))
+    body = _BACKUP_MAGIC + salt + token
+
+    log_chain_of_custody("config_backup_exported", {})
+    filename = f"pi-forensics-backup-{time.strftime('%Y%m%d-%H%M%S')}.pfback"
+    return send_file(io.BytesIO(body), as_attachment=True, download_name=filename, mimetype="application/octet-stream")
+
+@settings_bp.route('/api/settings/config_restore', methods=['POST'])
+@requires_auth
+@requires_permission('manage_users')
+def config_restore():
+    backup_file = request.files.get('backup_file')
+    passphrase = request.form.get('passphrase') or ''
+    if not backup_file:
+        return jsonify({"success": False, "error": "Choose a backup file to restore."}), 400
+    if not passphrase:
+        return jsonify({"success": False, "error": "Enter the passphrase this backup was created with."}), 400
+
+    raw = backup_file.read()
+    if not raw.startswith(_BACKUP_MAGIC) or len(raw) < len(_BACKUP_MAGIC) + 16:
+        return jsonify({"success": False, "error": "This doesn't look like a Pi Forensics Suite backup file."}), 400
+
+    salt = raw[len(_BACKUP_MAGIC):len(_BACKUP_MAGIC) + 16]
+    token = raw[len(_BACKUP_MAGIC) + 16:]
+    key = _derive_backup_key(passphrase, salt)
+    try:
+        plaintext = Fernet(key).decrypt(token)
+    except InvalidToken:
+        return jsonify({"success": False, "error": "Wrong passphrase, or this backup file is corrupted."}), 400
+
+    try:
+        manifest = json.loads(plaintext)
+    except ValueError:
+        return jsonify({"success": False, "error": "Backup file contents are corrupted."}), 400
+    if manifest.get("version") != 1 or "runtime_config" not in manifest:
+        return jsonify({"success": False, "error": "Unrecognized backup file format."}), 400
+
+    # Never overwrite silently and irreversibly - the pre-restore state is
+    # kept under a .pre_restore_backup suffix, matching this app's own
+    # established non-destructive-migration convention (e.g. legacy case
+    # format migration keeps originals under .pre_consolidation_backup).
+    if os.path.exists(config.RUNTIME_CONFIG_FILE):
+        shutil.copy2(config.RUNTIME_CONFIG_FILE, config.RUNTIME_CONFIG_FILE + ".pre_restore_backup")
+    save_runtime_config(manifest["runtime_config"])
+
+    if manifest.get("mount_key"):
+        if os.path.exists(config.MOUNT_KEY_FILE):
+            shutil.copy2(config.MOUNT_KEY_FILE, config.MOUNT_KEY_FILE + ".pre_restore_backup")
+        with open(config.MOUNT_KEY_FILE, 'w') as f:
+            f.write(manifest["mount_key"])
+        os.chmod(config.MOUNT_KEY_FILE, 0o600)
+
+    logo = manifest.get("report_logo") or {}
+    if logo.get("filename") and logo.get("data_b64"):
+        # Same-basename collision guard already established by the upload
+        # route (upload_report_logo) doesn't apply here since we're writing
+        # back the exact filename this backup itself recorded - just write it.
+        with open(os.path.join(config.INSTALL_DIR, os.path.basename(logo["filename"])), 'wb') as f:
+            f.write(base64.b64decode(logo["data_b64"]))
+
+    log_chain_of_custody("config_restored", {"backup_created_at": manifest.get("created_at")})
+    return jsonify({
+        "success": True,
+        "message": "Configuration restored. Your previous configuration was saved alongside it with a "
+                    ".pre_restore_backup suffix. If your own account's credentials changed, you'll need to log back in.",
+    })
 
 # --- Settings > Case & Reporting (station-wide report export defaults,
 # Report Template Builder CRUD, report branding logo) moved to

@@ -63,6 +63,25 @@ def _record_last_login(username):
     save_runtime_config(cfg)
     _last_login_persist_times[username] = now
 
+# --- Idle session timeout ---
+# A session cookie only ever proves "this browser logged in at some point" -
+# left alone, PERMANENT_SESSION_LIFETIME (12h, app.py) is the only thing that
+# ever expires it, which is fine for an actively-open tab (this app's own 2s
+# telemetry poll keeps refreshing it below) but does nothing for a laptop
+# that's closed, put to sleep, or walked away from mid-session on a remote/
+# LAN connection. Deliberately does NOT apply to the physical kiosk bypass
+# (requires_auth's first branch, below) - that path never touches the
+# session at all, matching this app's standing "physical access already
+# implies high trust" posture, and to the /api/* Basic Auth fallback (no
+# session there either, by design - see check_auth()'s docstring). A sliding
+# window, not an absolute one: every authenticated request pushes it back out
+# by SESSION_IDLE_TIMEOUT_SECONDS, so a genuinely active session never times
+# out mid-use, only one that's gone quiet.
+SESSION_IDLE_TIMEOUT_SECONDS = int(os.environ.get('FORENSIC_IDLE_TIMEOUT', 1800))  # 30 min
+print(f"[SECURITY] Remote/LAN sessions idle-timeout after {SESSION_IDLE_TIMEOUT_SECONDS // 60} minutes of "
+      f"inactivity (set FORENSIC_IDLE_TIMEOUT, in seconds, to change this). Does not apply to the physical "
+      f"kiosk touchscreen.")
+
 # Skips login for the physical kiosk touchscreen only (see requires_auth and
 # is_local_kiosk_request below) - remote/LAN/WiFi access always still
 # requires authentication regardless of this setting. Defaults on since a
@@ -207,11 +226,20 @@ def requires_auth(f):
         # whole lifetime, so a user deleted mid-session loses access on their
         # very next request (see _session_user_still_valid()).
         session_username = session.get('username')
+        idle_expired = False
         if session_username:
             if _session_user_still_valid(session_username):
-                g.forensic_user = session_username
-                return f(*args, **kwargs)
-            session.clear()
+                now = time.time()
+                last_activity = session.get('last_activity')
+                if last_activity is not None and (now - last_activity) > SESSION_IDLE_TIMEOUT_SECONDS:
+                    idle_expired = True
+                    session.clear()
+                else:
+                    session['last_activity'] = now
+                    g.forensic_user = session_username
+                    return f(*args, **kwargs)
+            else:
+                session.clear()
 
         client_key = request.remote_addr or 'unknown'
 
@@ -253,8 +281,12 @@ def requires_auth(f):
 
         # The one page route (/) with no valid session - send the browser to
         # our own branded login page instead of ever showing a 401 that
-        # would trigger the native Basic Auth dialog.
-        return redirect(f'/login?next={request.path}')
+        # would trigger the native Basic Auth dialog. Flag idle-timeout
+        # separately from "never logged in" so the login page can say why.
+        next_url = f'/login?next={request.path}'
+        if idle_expired:
+            next_url += '&expired=1'
+        return redirect(next_url)
     return decorated
 
 # --- User Groups / Permissions ---

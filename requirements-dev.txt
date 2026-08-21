@@ -1,0 +1,8 @@
+# Dev/test-only dependencies - not installed by install.py (which only ever
+# reads requirements.txt, the production dependency list). Install with:
+#   pip install -r requirements.txt -r requirements-dev.txt
+# then run the test suite with: pytest
+#
+# See tests/conftest.py for why some tests skip themselves on a non-Linux
+# dev machine, and .github/workflows/tests.yml for what CI actually runs.
+pytest>=7.0.0

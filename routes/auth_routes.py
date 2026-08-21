@@ -9,6 +9,7 @@ Part of the app.py -> core/ + routes/ split. See the dated CLAUDE.md
 entry for this refactor.
 """
 import json
+import time
 
 from flask import Blueprint, render_template, jsonify, request, g, session, redirect
 
@@ -29,7 +30,11 @@ def login():
         existing = session.get('username')
         if existing and _session_user_still_valid(existing):
             return redirect(_safe_next_path(request.args.get('next')))
-        return render_template('login.html', next=_safe_next_path(request.args.get('next')))
+        return render_template(
+            'login.html',
+            next=_safe_next_path(request.args.get('next')),
+            expired=bool(request.args.get('expired')),
+        )
 
     client_key = request.remote_addr or 'unknown'
     if _is_locked_out(client_key):
@@ -50,6 +55,7 @@ def login():
     _record_last_login(username)
     session.clear()  # drop any prior identity outright rather than merge state into it
     session['username'] = username
+    session['last_activity'] = time.time()
     session.permanent = True
     return jsonify({"success": True, "redirect": _safe_next_path(req.get('next'))})
 

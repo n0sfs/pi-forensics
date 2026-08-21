@@ -62,7 +62,7 @@
                 <label class="small text-subtle d-block mb-1">Password</label>
                 <input type="password" id="loginPassword" class="form-control" autocomplete="current-password" required>
             </div>
-            <div id="loginStatus" class="small mb-2"></div>
+            <div id="loginStatus" class="small mb-2{% if expired %} text-warning{% endif %}">{% if expired %}Your session expired due to inactivity. Please log in again.{% endif %}</div>
             <button type="submit" class="btn btn-info text-dark fw-bold w-100" id="loginSubmitBtn">
                 <i class="bi bi-box-arrow-in-right me-1"></i>Log In
             </button>
