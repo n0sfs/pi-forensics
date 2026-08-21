@@ -113,6 +113,13 @@ def image_mmls():
                 "end_sector": part.start + part.len - 1,
                 "length_sectors": part.len,
                 "description": part.desc.decode('utf-8', errors='replace'),
+                # Same TSK_VS_PART_FLAG_ALLOC check _tsk_resolve_filesystems()
+                # already uses to decide which Volume_Info entries are real,
+                # openable filesystems vs. unallocated/meta placeholder
+                # regions - exposed here too so the File Explorer tree can
+                # show unallocated gaps as informational (non-browsable)
+                # entries instead of trying to open them as a filesystem.
+                "is_allocated": int(part.flags) == pytsk3.TSK_VS_PART_FLAG_ALLOC,
             })
     except IOError:
         pass  # no partition table - normal for a single-filesystem image (phone/media card dd)

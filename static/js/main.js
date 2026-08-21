@@ -902,6 +902,15 @@ let explorerImageFsRootsCache = {};      // image_path -> [{offset,label}, ...] 
 // whole image at offset 0" fallback loadExplorerImagePartitions() already
 // uses for the full image-mode toolbar's own partition dropdown - this is
 // the inline-tree-nesting equivalent, reusing the same /api/image/mmls route.
+// Each root is {offset, label, browsable} - browsable=false marks an
+// unallocated/non-filesystem Volume_Info entry (is_allocated=false from
+// /api/image/mmls, the same TSK_VS_PART_FLAG_ALLOC check
+// _tsk_resolve_filesystems() uses server-side): still shown, Autopsy-style,
+// as a plain informational leaf in the tree (real forensic signal - e.g. a
+// hidden pre-partition gap), just never offered as something to open as a
+// filesystem, which would either error or - worse - risk opening a stale
+// filesystem signature left over in space that's no longer really part of
+// the evidence's current partition layout.
 async function resolveImageFsRoots(imagePath) {
     if (explorerImageFsRootsCache[imagePath]) return explorerImageFsRootsCache[imagePath];
     let roots;
@@ -913,15 +922,31 @@ async function resolveImageFsRoots(imagePath) {
         });
         const data = await res.json();
         if (!data.success || !data.partitions || data.partitions.length === 0) {
-            roots = [{ offset: 0, label: 'Whole image (offset 0)' }];
+            roots = [{ offset: 0, label: 'Whole image (offset 0)', browsable: true }];
         } else {
+            // Always the full Autopsy-style label (not just the bare
+            // description) - the single-real-filesystem, no-unallocated-
+            // regions case (the common one) never actually renders this at
+            // all, since the fast path below skips straight into folder
+            // browsing without showing a partition-level node first; this
+            // only becomes visible for a genuinely multi-entry Volume_Info
+            // (real partitions and/or unallocated gaps), where the fuller
+            // label carries real information.
             roots = data.partitions.map(p => ({
                 offset: p.start_sector,
-                label: data.partitions.length === 1 ? p.description : `Slot ${p.slot}: ${p.description}`,
+                label: `vol${p.slot} (${p.description}: ${p.start_sector}-${p.end_sector})`,
+                browsable: p.is_allocated,
             }));
+            // Every entry came back unallocated/unopenable (an unusual
+            // partition table, or a format mmls half-understands) - fall
+            // back to offering the whole image directly rather than leaving
+            // the examiner with nothing they can actually open.
+            if (!roots.some(r => r.browsable)) {
+                roots.push({ offset: 0, label: 'Whole image (offset 0)', browsable: true });
+            }
         }
     } catch (err) {
-        roots = [{ offset: 0, label: 'Whole image (offset 0)' }];
+        roots = [{ offset: 0, label: 'Whole image (offset 0)', browsable: true }];
     }
     explorerImageFsRootsCache[imagePath] = roots;
     return roots;
@@ -976,20 +1001,28 @@ function explorerTreeRealAdapter() {
                 }
             }
             // The image FILE itself (.dd/.e01/.aff), first expand - resolve its
-            // filesystem(s) via mmls; a single filesystem (the common case, incl.
-            // this project's own primary test image) skips straight to that
-            // filesystem's root entries as this node's children, so expanding a
-            // typical image goes directly to its real folders with no extra
-            // "Partition 1" pseudo-level in between. Multiple filesystems each
-            // become their own expandable child node instead.
+            // filesystem(s)/partition layout via mmls. A single real
+            // filesystem with no other Volume_Info entries at all (the
+            // common case, incl. this project's own primary test images)
+            // skips straight to that filesystem's root entries as this
+            // node's children, so expanding a typical image goes directly to
+            // its real folders with no extra "Partition 1" pseudo-level in
+            // between. Anything richer than that (real multi-partition
+            // media, or unallocated gaps alongside a single real filesystem)
+            // instead shows one child per Volume_Info entry - browsable ones
+            // (is_allocated) expand further into that filesystem, non-
+            // browsable ones (unallocated/meta placeholder regions) render
+            // as plain informational leaves, Autopsy's own Data Sources tree
+            // convention, folded into this same inline location instead of
+            // a separate top-level section - see resolveImageFsRoots().
             if (node.kind === 'image') {
                 try {
                     const roots = await resolveImageFsRoots(node.path);
-                    if (roots.length === 1) {
+                    if (roots.length === 1 && roots[0].browsable) {
                         const imageCtx = { image_path: node.path, offset: roots[0].offset };
                         return mapImageEntriesToNodes(await fetchImageFls(imageCtx, ''), imageCtx);
                     }
-                    return roots.map(r => ({
+                    return roots.map(r => r.browsable ? {
                         imageCtx: { image_path: node.path, offset: r.offset },
                         // raw is a synthetic entry-dict-shaped stand-in (no real inode/size -
                         // this node represents "a whole filesystem", not a file or folder
@@ -997,7 +1030,19 @@ function explorerTreeRealAdapter() {
                         // choke on a null entry if this node is ever right-clicked.
                         inode: '', name: r.label, kind: 'dir',
                         raw: { name: r.label, inode: '', is_dir: true, deleted: false, is_virtual: false, size: null },
-                    }));
+                    } : {
+                        // Unallocated/non-filesystem region - a real, unique
+                        // path-shaped key (not just node.path, which is the
+                        // parent image's own path and would collide across
+                        // sibling unallocated entries) so tree selection sync
+                        // never confuses two of these for each other; no
+                        // expand affordance since there's no filesystem here
+                        // to open. unallocated:true short-circuits
+                        // selectFile()/contextMenu() below to a no-op instead
+                        // of treating this synthetic path as a real
+                        // selectable/right-clickable file.
+                        path: `${node.path}#unalloc-${r.offset}`, name: r.label, kind: 'file', unallocated: true,
+                    });
                 } catch (err) {
                     return [];
                 }
@@ -1036,6 +1081,7 @@ function explorerTreeRealAdapter() {
         // real .click() on the matching <tr> (see buildFileTableRow's data-item-path) rather than
         // duplicating what a click already does.
         selectFile: async (node) => {
+            if (node.unallocated) return; // informational-only entry (see fetchChildren's kind==='image' branch) - nothing real to select/preview
             if (node.imageCtx) {
                 selectImageBackedFile(node.imageCtx, node.raw);
                 return;
@@ -1063,6 +1109,7 @@ function explorerTreeRealAdapter() {
             syncExplorerTreeSelection(node.raw.path);
         },
         contextMenu: (ev, node) => {
+            if (node.unallocated) return; // informational-only entry - nothing real to act on
             if (node.imageCtx) {
                 // showExplorerImageContextMenu() itself sets explorerImageSelected,
                 // but the actual action buttons (Extract, Attach to Case, etc.) read
@@ -1414,12 +1461,11 @@ async function initExplorerTree(forceRebuild) {
         explorerRealTreeRootEl = rootUl;
         await rootLi._expand(); // show top-level contents immediately, matching the initial listing
     }
-    // Data Sources and File Views are two more case-wide roots sitting
-    // alongside the real folder tree (neither gated behind first entering
-    // one specific image) - both appended AFTER the real-fs root so
-    // container.querySelector('li') elsewhere (syncExplorerTreeSelection et
-    // al) keeps finding the real-fs root first, unaffected by this addition.
-    await initDataSourcesTree(forceRebuild);
+    // File Views is a second case-wide root sitting alongside the real
+    // folder tree (not gated behind first entering one specific image) -
+    // appended AFTER the real-fs root so container.querySelector('li')
+    // elsewhere (syncExplorerTreeSelection et al) keeps finding the real-fs
+    // root first, unaffected by this addition.
     await initFileViewsTree(forceRebuild);
 }
 
@@ -1577,131 +1623,6 @@ function explorerFileViewsAdapter(caseFolder) {
         },
         contextMenu: () => {}, // no context menu on synthetic category/query nodes
     };
-}
-
-// --- Data Sources (Autopsy-style physical evidence overview) ---
-// A third case-wide tree root, sitting between the real folder tree and
-// File Views - lists every acquired image directly in the case folder,
-// each lazily expanded into its own partition layout (allocated regions
-// and unallocated gaps) via the existing /api/image/mmls, the same data
-// the image-mode toolbar's partition <select> already renders - this is
-// just a persistent, always-reachable overview of it instead of something
-// only visible after already entering one specific image. Same static-tree-
-// shape/lazy-fetch-once pattern as explorerFileViewsAdapter below.
-let explorerDataSourcesChildrenCache = {};
-let explorerDataSourcesTreeRootEl = null;
-
-// Enters full Sleuth Kit browsing for imagePath, then - if startSector is
-// given and actually exists in that image's real partition list - switches
-// straight to that partition. enterExplorerImageFor() always lands on
-// whichever partition its own populated <select> defaults to first, so a
-// deep-linked partition (anything but the first) needs this second step;
-// startSector omitted/undefined just leaves that default in place.
-async function enterExplorerImageForPartition(imagePath, imageName, startSector) {
-    await enterExplorerImageFor({ path: imagePath, name: imageName });
-    if (startSector === undefined || startSector === null) return;
-    const select = document.getElementById("explorerImagePartitionSelect");
-    if (!select) return;
-    const match = [...select.options].some(o => o.value === String(startSector));
-    if (match) {
-        select.value = String(startSector);
-        explorerImageChangePartition();
-    }
-}
-
-function explorerDataSourcesAdapter(caseFolder) {
-    return {
-        cache: explorerDataSourcesChildrenCache,
-        key: (node) => node.id,
-        label: (node) => node.name,
-        async fetchChildren(node) {
-            if (node.imagePath === undefined) {
-                // Root: list every acquired image sitting in the case folder.
-                try {
-                    const res = await fetch('/api/case_index/data_sources', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ case_folder: caseFolder })
-                    });
-                    const data = await res.json();
-                    const sources = (data.success && data.sources) || [];
-                    if (sources.length === 0) {
-                        return [{ id: 'ds-note', name: 'No acquired images found directly in this case folder', kind: 'file' }];
-                    }
-                    return sources.map(s => ({
-                        id: `ds-img-${s.path}`, name: s.name, kind: 'image', imagePath: s.path,
-                    }));
-                } catch (err) {
-                    return [];
-                }
-            }
-            // An image node: its own partition layout.
-            try {
-                const res = await fetch('/api/image/mmls', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image_path: node.imagePath })
-                });
-                const data = await res.json();
-                const partitions = (data.success && data.partitions) || [];
-                if (partitions.length === 0) {
-                    return [{
-                        id: `${node.id}-whole`, name: 'Whole image (offset 0)', kind: 'file',
-                        imagePath: node.imagePath, startSector: 0,
-                    }];
-                }
-                return partitions.map(p => ({
-                    id: `${node.id}-p${p.slot}`,
-                    name: `vol${p.slot} (${p.description}: ${p.start_sector}-${p.end_sector})`,
-                    kind: 'file', imagePath: node.imagePath, startSector: p.start_sector,
-                }));
-            } catch (err) {
-                return [];
-            }
-        },
-        navigate: (node) => {
-            if (node.imagePath !== undefined) enterExplorerImageForPartition(node.imagePath, node.name);
-        },
-        selectFile: (node) => {
-            if (node.imagePath !== undefined) enterExplorerImageForPartition(node.imagePath, node.imagePath.split('/').pop(), node.startSector);
-        },
-        contextMenu: () => {}, // no context menu on synthetic overview nodes - the same image is fully reachable (with its full action set) from the real-fs tree/Listing table
-    };
-}
-
-async function initDataSourcesTree(forceRebuild) {
-    const container = document.getElementById('explorerTreeContainer');
-    if (!container) return;
-    if (explorerDataSourcesTreeRootEl && !forceRebuild) {
-        container.appendChild(explorerDataSourcesTreeRootEl);
-        return;
-    }
-    if (explorerDataSourcesTreeRootEl && explorerDataSourcesTreeRootEl.parentNode) {
-        explorerDataSourcesTreeRootEl.remove();
-    }
-    explorerDataSourcesChildrenCache = {};
-    const wrap = document.createElement('div');
-    wrap.className = 'explorer-fileviews-section mt-2 pt-2 border-top';
-
-    if (!activeCase || !activeCase.case_folder) {
-        const msg = document.createElement('div');
-        msg.className = 'text-subtle small px-2 py-1';
-        msg.textContent = 'Select or create a case to see Data Sources.';
-        wrap.appendChild(msg);
-        container.appendChild(wrap);
-        explorerDataSourcesTreeRootEl = wrap;
-        return;
-    }
-
-    const rootUl = document.createElement('ul');
-    rootUl.className = 'explorer-tree';
-    const rootNode = { id: 'ds-root', name: 'Data Sources', kind: 'dir' };
-    const rootLi = renderExplorerTreeNode(rootNode, explorerDataSourcesAdapter(activeCase.case_folder), []);
-    rootUl.appendChild(rootLi);
-    wrap.appendChild(rootUl);
-    container.appendChild(wrap);
-    explorerDataSourcesTreeRootEl = wrap;
-    await rootLi._expand();
 }
 
 async function initFileViewsTree(forceRebuild) {
