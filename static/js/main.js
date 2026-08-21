@@ -986,9 +986,13 @@ function explorerTreeRealAdapter() {
         // section (see appendExplorerTreeChildren) - image-mode browsing
         // and File Views keep their existing plain child order.
         groupDiskImages: true,
-        key: (node) => node.imageCtx ? `img:${node.imageCtx.image_path}:${node.imageCtx.offset}:${node.inode}` : node.path,
+        key: (node) => node.imageCtx ? `img:${node.imageCtx.image_path}:${node.imageCtx.offset}:${node.inode}` : (node.id || node.path),
         label: (node) => node.name,
         async fetchChildren(node) {
+            // A synthetic group header (kind:'group', see appendExplorerTreeChildren)
+            // already has its full, known child-node list in hand - no fetch
+            // needed, same as File Views' own static category nodes.
+            if (node.staticChildren) return node.staticChildren;
             // In-image node (a resolved filesystem root, or anything deeper inside
             // one) - expands inline as real nested tree children instead of
             // swapping the whole panel to full image mode, using the same
@@ -1290,6 +1294,12 @@ function explorerTreeImageAdapter() {
 // case database, even though the tree only needs the coarser split.
 const CASE_ROLE_TREE_GROUP = { report: 'artifacts', analysis_log: 'artifacts', backup: 'artifacts', geolocation: 'geolocation' };
 
+function buildExplorerTreeDivider() {
+    const divider = document.createElement('li');
+    divider.className = 'explorer-tree-divider';
+    return divider;
+}
+
 function appendExplorerTreeChildren(ul, children, adapter, ancestorPath) {
     if (!adapter.groupDiskImages) {
         children.forEach(child => ul.appendChild(renderExplorerTreeNode(child, adapter, ancestorPath)));
@@ -1301,14 +1311,42 @@ function appendExplorerTreeChildren(ul, children, adapter, ancestorPath) {
     const artifacts = rest.filter(c => CASE_ROLE_TREE_GROUP[c.raw?.case_role] === 'artifacts');
     const geolocation = rest.filter(c => CASE_ROLE_TREE_GROUP[c.raw?.case_role] === 'geolocation');
     const plainFiles = rest.filter(c => !CASE_ROLE_TREE_GROUP[c.raw?.case_role]);
-    const groups = [dirs, images, artifacts, geolocation, plainFiles].filter(g => g.length > 0);
-    groups.forEach((group, i) => {
-        if (i > 0) {
-            const divider = document.createElement('li');
-            divider.className = 'explorer-tree-divider';
-            ul.appendChild(divider);
-        }
+
+    // Real folders and disk images stay flat/immediately visible - they're
+    // usually few and are the most directly actionable content (navigate
+    // into a folder, browse inside an image). Everything else - this app's
+    // own generated artifacts, geolocation exports, and the directory's
+    // plain files - is what actually grows long in a real case folder (see
+    // the user-reported screenshot: 18 flat rows with no way to collapse
+    // any of it), so each of those three becomes one collapsible synthetic
+    // group node instead of a flat dump. Reuses the exact same node-
+    // rendering/expand-collapse machinery every real folder already has
+    // (kind:'group' + staticChildren, mirroring File Views' own static
+    // category nodes) - starts collapsed for free, since every tree node
+    // already defaults to collapsed until its toggle is clicked.
+    const flatGroups = [dirs, images].filter(g => g.length > 0);
+    flatGroups.forEach((group, i) => {
+        if (i > 0) ul.appendChild(buildExplorerTreeDivider());
         group.forEach(child => ul.appendChild(renderExplorerTreeNode(child, adapter, ancestorPath)));
+    });
+
+    const parentKey = ancestorPath.length ? adapter.key(ancestorPath[ancestorPath.length - 1]) : 'root';
+    const collapsibleGroups = [
+        { items: artifacts, label: 'Case Artifacts', idSuffix: 'artifacts' },
+        { items: geolocation, label: 'Geolocation', idSuffix: 'geolocation' },
+        { items: plainFiles, label: 'Files', idSuffix: 'files' },
+    ].filter(g => g.items.length > 0);
+
+    if (flatGroups.length > 0 && collapsibleGroups.length > 0) ul.appendChild(buildExplorerTreeDivider());
+    collapsibleGroups.forEach((g, i) => {
+        if (i > 0) ul.appendChild(buildExplorerTreeDivider());
+        const groupNode = {
+            id: `group:${parentKey}:${g.idSuffix}`,
+            name: `${g.label} (${g.items.length})`,
+            kind: 'group',
+            staticChildren: g.items,
+        };
+        ul.appendChild(renderExplorerTreeNode(groupNode, adapter, ancestorPath));
     });
 }
 
@@ -1330,7 +1368,8 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
     const icon = document.createElement('i');
     icon.className = node.kind === 'dir'
         ? 'bi bi-folder-fill folder-icon me-1'
-        : (node.kind === 'image' ? 'bi bi-hdd-stack text-warning me-1' : 'bi bi-file-earmark-text text-info me-1');
+        : (node.kind === 'image' ? 'bi bi-hdd-stack text-warning me-1'
+            : (node.kind === 'group' ? 'bi bi-collection text-subtle me-1' : 'bi bi-file-earmark-text text-info me-1'));
 
     const label = document.createElement('span');
     label.className = node.kind === 'dir' ? 'folder-text' : 'text-light';
@@ -1368,7 +1407,16 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
         if (!childrenUl) {
             childrenUl = document.createElement('ul');
             const nextAncestors = ancestorPath.concat([node]);
-            appendExplorerTreeChildren(childrenUl, children, adapter, nextAncestors);
+            if (node.kind === 'group') {
+                // A synthetic group's own children (see appendExplorerTreeChildren's
+                // case-role grouping) are already a single homogeneous category -
+                // re-running the grouping logic on them would just wrap them in
+                // another redundant "Case Artifacts" sub-group instead of finally
+                // showing the real files, so render them flatly here instead.
+                children.forEach(child => childrenUl.appendChild(renderExplorerTreeNode(child, adapter, nextAncestors)));
+            } else {
+                appendExplorerTreeChildren(childrenUl, children, adapter, nextAncestors);
+            }
             li.appendChild(childrenUl);
         }
         childrenUl.style.display = '';
@@ -1389,6 +1437,16 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
     };
 
     row.onclick = () => {
+        // A synthetic group header (see appendExplorerTreeChildren's case-role
+        // grouping) is a pure expand/collapse container, not a real
+        // file/folder - there's nothing to navigate to or select, and it has
+        // no .raw to hand to adapter.selectFile(). Clicking anywhere on the
+        // row toggles it, same as clicking just the caret, rather than
+        // requiring a precise click on the small toggle icon.
+        if (node.kind === 'group') {
+            toggle.onclick({ stopPropagation() {} });
+            return;
+        }
         document.querySelectorAll('#explorerTreeContainer .explorer-tree-node.active').forEach(el => el.classList.remove('active'));
         row.classList.add('active');
         // 'image' nodes and any in-image directory (imageCtx set, kind !== 'file')
@@ -1403,6 +1461,7 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
 
     row.oncontextmenu = (ev) => {
         ev.preventDefault();
+        if (node.kind === 'group') return false; // nothing to act on for a synthetic category header
         adapter.contextMenu(ev, node);
         return false;
     };
