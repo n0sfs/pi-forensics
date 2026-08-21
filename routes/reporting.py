@@ -669,6 +669,7 @@ def _draw_pdf_header(c, header, title="Case Information"):
     c.drawString(300, y, f"Examiner: {header['examiner']}")
     y -= 20
     c.drawString(50, y, f"Created: {header['created_at']}")
+    c.drawString(300, y, f"Status: {header.get('case_status', 'Open')}")
     y -= 20
     c.drawString(50, y, f"Notes: {header['notes'] or 'None'}")
     y -= 20
@@ -2844,7 +2845,8 @@ def _html_case_info_block(header, event_count, anchor_id=None, title="Case Infor
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     parts = [f'<h2{id_attr}>{esc(title)}</h2><table>']
     parts.append(f'<tr><th>Case Number</th><td>{esc(str(header["case_number"]))}</td><th>Examiner</th><td>{esc(str(header["examiner"]))}</td></tr>')
-    parts.append(f'<tr><th>Created</th><td>{esc(str(header["created_at"]))}</td><th>Evidence Items</th><td>{event_count}</td></tr>')
+    parts.append(f'<tr><th>Status</th><td>{esc(str(header.get("case_status", "Open")))}</td><th>Evidence Items</th><td>{event_count}</td></tr>')
+    parts.append(f'<tr><th>Created</th><td colspan="3">{esc(str(header["created_at"]))}</td></tr>')
     parts.append(f'<tr><th>Notes</th><td colspan="3">{esc(str(header["notes"] or "None"))}</td></tr>')
     for field in header.get('custom_fields', []):
         parts.append(f'<tr><th>{esc(str(field["label"]))}</th><td colspan="3">{esc(str(field["value"]))}</td></tr>')
@@ -3003,6 +3005,7 @@ def _build_html_report_dfir(header, events, urls, files, audit_entries, case_not
 
     parts.append('<h2 id="sec-case-info">Case Information</h2><table>')
     parts.append(f'<tr><th>Case Number</th><td>{esc(str(header["case_number"]))}</td><th>Examiner</th><td>{esc(str(header["examiner"]))}</td></tr>')
+    parts.append(f'<tr><th>Status</th><td colspan="3">{esc(str(header.get("case_status", "Open")))}</td></tr>')
     parts.append(f'<tr><th>Created</th><td colspan="3">{esc(str(header["created_at"]))}</td></tr>')
     for field in header.get('custom_fields', []):
         parts.append(f'<tr><th>{esc(str(field["label"]))}</th><td colspan="3">{esc(str(field["value"]))}</td></tr>')
@@ -3054,6 +3057,7 @@ def _build_html_report_police(header, events, urls, files, audit_entries, case_n
 
     parts.append('<h2 id="sec-admin-info">Administrative Information</h2><table>')
     parts.append(f'<tr><th>Case Number</th><td>{esc(str(header["case_number"]))}</td><th>Examiner</th><td>{esc(str(header["examiner"]))}</td></tr>')
+    parts.append(f'<tr><th>Status</th><td colspan="3">{esc(str(header.get("case_status", "Open")))}</td></tr>')
     parts.append(f'<tr><th>Created</th><td colspan="3">{esc(str(header["created_at"]))}</td></tr>')
     for field in header.get('custom_fields', []):
         parts.append(f'<tr><th>{esc(str(field["label"]))}</th><td colspan="3">{esc(str(field["value"]))}</td></tr>')
@@ -3241,6 +3245,7 @@ def export_report():
             "case_number": data.get('case_number', 'N/A'),
             "examiner": data.get('examiner', 'N/A'),
             "notes": data.get('notes', ''),
+            "case_status": data.get('case_status') or 'Open',
             "created_at": data.get('created_at', 'N/A'),
             "custom_fields": _custom_field_pairs(data.get('custom_fields')),
             "executive_summary": data.get('executive_summary', ''),
@@ -3259,6 +3264,7 @@ def export_report():
             "case_number": meta.get('case_number', 'N/A'),
             "examiner": meta.get('examiner', 'N/A'),
             "notes": meta.get('notes', ''),
+            "case_status": meta.get('case_status') or 'Open',
             "created_at": data.get('timestamp_start', 'N/A'),
             "custom_fields": _custom_field_pairs(meta.get('custom_fields')),
             "executive_summary": meta.get('executive_summary', ''),

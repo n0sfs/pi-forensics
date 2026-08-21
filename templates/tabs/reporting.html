@@ -68,6 +68,18 @@
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade show active" id="repNarrativePane" role="tabpanel">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-flag-fill me-1"></i>Case Status</h6>
+                                                    <div class="small text-subtle mb-2">Where this case stands in its own lifecycle - shown in the Case Manager list and included in exported reports. New cases start Open.</div>
+                                                    <div class="mb-3" style="max-width: 260px;">
+                                                        <select id="editCaseStatus" class="form-select form-select-sm">
+                                                            <option value="Open">Open</option>
+                                                            <option value="In Review">In Review</option>
+                                                            <option value="On Hold">On Hold</option>
+                                                            <option value="Closed">Closed</option>
+                                                            <option value="Archived">Archived</option>
+                                                        </select>
+                                                    </div>
+                                                    <hr class="border-secondary my-3">
                                                     <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-info-circle me-1"></i>Case Details</h6>
                                                     <div class="small text-subtle mb-2">Station-configured extra fields (Settings &gt; Case &amp; Reporting) for this case. Saved via "Save Report Changes" in the header above.</div>
                                                     <div id="customFieldsContainer" class="row g-2 mb-3"></div>

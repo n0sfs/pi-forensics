@@ -4550,13 +4550,25 @@ async function fetchCustomReportTemplates() {
 function populateTemplateSelectOptions(selectEl) {
     if (!selectEl) return;
     const previousValue = selectEl.value;
-    selectEl.querySelectorAll('option[value^="custom:"]').forEach(opt => opt.remove());
-    customReportTemplatesCache.forEach(t => {
-        const opt = document.createElement('option');
-        opt.value = `custom:${t.id}`;
-        opt.textContent = t.name; // set via textContent, not innerHTML - template names are examiner-entered
-        selectEl.appendChild(opt);
-    });
+    // Custom templates render inside their own <optgroup>, not just appended
+    // as flat <option>s after the 4 built-ins - a station that's built up
+    // several custom templates could otherwise no longer tell at a glance
+    // which entries are the fixed built-ins vs. its own. Rebuilt fresh each
+    // call (removed then recreated) since the underlying cache can change
+    // (a template created/renamed/deleted).
+    selectEl.querySelectorAll('option[value^="custom:"], optgroup[data-custom-templates]').forEach(el => el.remove());
+    if (customReportTemplatesCache.length > 0) {
+        const group = document.createElement('optgroup');
+        group.label = 'Custom Templates';
+        group.dataset.customTemplates = '1';
+        customReportTemplatesCache.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = `custom:${t.id}`;
+            opt.textContent = t.name; // set via textContent, not innerHTML - template names are examiner-entered
+            group.appendChild(opt);
+        });
+        selectEl.appendChild(group);
+    }
     if ([...selectEl.options].some(o => o.value === previousValue)) {
         selectEl.value = previousValue;
     }
@@ -5053,6 +5065,8 @@ async function loadCaseForEditing() {
         // Report Narrative fields - same isConsolidated/legacyMeta split
         // as case_number/examiner/notes above.
         const narrativeSrc = isConsolidated ? currentLoadedReportData : legacyMeta;
+        const caseStatusEl = document.getElementById("editCaseStatus");
+        if (caseStatusEl) caseStatusEl.value = narrativeSrc.case_status || "Open";
         const execSummaryEl = document.getElementById("editExecSummary");
         const objectivesEl = document.getElementById("editObjectives");
         const findingsEl = document.getElementById("editFindingsSummary");
@@ -5697,6 +5711,7 @@ async function saveReportMetadata() {
     const customFieldValues = gatherCustomFieldValues();
 
     const narrativeFields = {
+        case_status: document.getElementById("editCaseStatus")?.value || "Open",
         executive_summary: document.getElementById("editExecSummary")?.value || "",
         objectives: document.getElementById("editObjectives")?.value || "",
         findings_summary: document.getElementById("editFindingsSummary")?.value || "",
@@ -5707,11 +5722,12 @@ async function saveReportMetadata() {
     };
 
     if (Array.isArray(currentLoadedReportData.events)) {
-        // Consolidated case file - narrative fields are top-level;
-        // case_number/examiner/notes are no longer editable here (notes
-        // is set once at case creation, the other two come read-only from
-        // the Active Case Bar) so all three are left untouched, same as
-        // events[] and case_notes[] already are.
+        // Consolidated case file - narrative fields (now including
+        // case_status, genuinely editable over a case's life unlike the
+        // other three) are top-level; case_number/examiner/notes stay
+        // untouched (notes is set once at case creation, the other two
+        // come read-only from the Active Case Bar), same as events[] and
+        // case_notes[] already are.
         currentLoadedReportData.custom_fields = customFieldValues;
         Object.assign(currentLoadedReportData, narrativeFields);
     } else {
@@ -6641,6 +6657,17 @@ async function createCase() {
     }
 }
 
+// Case Status badge colors - semantic, not the app's own cyan accent (that's
+// reserved for interactive/branding use, per this app's existing convention
+// of keeping status color separate from the accent hue).
+const CASE_STATUS_BADGE_CLASS = {
+    'Open': 'bg-info text-dark',
+    'In Review': 'bg-warning text-dark',
+    'On Hold': 'bg-secondary',
+    'Closed': 'bg-success',
+    'Archived': 'bg-dark border border-secondary text-subtle',
+};
+
 async function loadExistingCases() {
     const listEl = document.getElementById("caseList");
     if (!listEl) return;
@@ -6672,6 +6699,10 @@ async function loadExistingCases() {
             const nameSpan = document.createElement('span');
             nameSpan.className = 'fw-bold text-info';
             nameSpan.appendChild(document.createTextNode(c.case_number)); // examiner-entered, text-only
+            const statusBadge = document.createElement('span');
+            statusBadge.className = `badge ms-2 ${CASE_STATUS_BADGE_CLASS[c.case_status] || 'bg-info text-dark'}`;
+            statusBadge.textContent = (c.case_status || 'Open').toUpperCase();
+            nameSpan.appendChild(statusBadge);
             if (c.schema === 'legacy') {
                 const legacyBadge = document.createElement('span');
                 legacyBadge.className = 'badge bg-warning text-dark ms-2';

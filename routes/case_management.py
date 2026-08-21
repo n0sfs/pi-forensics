@@ -68,6 +68,7 @@ def create_case():
             "case_folder": case_dir,
             "examiner": examiner,
             "notes": notes,
+            "case_status": "Open",
             "created_at": now,
             "updated_at": now,
             "attachments": {"files": [], "reference_urls": []},
@@ -115,6 +116,11 @@ def list_cases():
                         "case_folder": data.get('case_folder', root),
                         "created_at": data.get('created_at', '--'),
                         "notes": data.get('notes', ''),
+                        # Absent on any case created before this field
+                        # existed - defaults to Open (assume active) rather
+                        # than a blank/unknown state, matching the same
+                        # default new cases get at creation.
+                        "case_status": data.get('case_status') or 'Open',
                         "event_count": len(data.get('events', [])),
                         "schema": "consolidated",
                     })
@@ -131,6 +137,7 @@ def list_cases():
                         "case_folder": data.get('case_folder', root),
                         "created_at": data.get('created_at', '--'),
                         "notes": data.get('notes', ''),
+                        "case_status": data.get('case_status') or 'Open',
                         "event_count": None,
                         "schema": "legacy",
                     })
