@@ -2602,6 +2602,22 @@ async function previewSelectedFile(item) {
 // ClamAV/etc. all need a real path on disk to operate on.
 let contextMenuTargetItem = null;
 
+function toggleCtxMenuSection(sectionId) {
+    const section = document.getElementById(sectionId);
+    if (!section) return;
+    const toggle = document.querySelector(`.ctx-menu-section-toggle[data-ctx-section="${sectionId}"]`);
+    const expanded = section.style.display !== 'none';
+    section.style.display = expanded ? 'none' : '';
+    if (toggle) toggle.classList.toggle('expanded', !expanded);
+}
+
+function resetCtxMenuSections(rootId) {
+    const root = document.getElementById(rootId);
+    if (!root) return;
+    root.querySelectorAll('.ctx-menu-section').forEach(section => { section.style.display = 'none'; });
+    root.querySelectorAll('.ctx-menu-section-toggle').forEach(toggle => { toggle.classList.remove('expanded'); });
+}
+
 function positionContextMenu(ev) {
     const menu = document.getElementById('fileContextMenu');
     if (!menu) return;
@@ -2643,6 +2659,7 @@ function showFileContextMenu(ev, item) {
     const imageActions = document.getElementById('ctxMenuImageActions');
     if (realActions) realActions.style.display = '';
     if (imageActions) imageActions.style.display = 'none';
+    resetCtxMenuSections('ctxMenuRealActions');
     positionContextMenu(ev);
 }
 
@@ -2662,6 +2679,7 @@ function showExplorerImageContextMenu(ev, entry) {
     if (binwalkBtn) binwalkBtn.disabled = entry.is_dir;
     const stringsBtn = document.getElementById('ctxMenuImageStrings');
     if (stringsBtn) stringsBtn.disabled = entry.is_dir;
+    resetCtxMenuSections('ctxMenuImageActions');
     positionContextMenu(ev);
 }
 
