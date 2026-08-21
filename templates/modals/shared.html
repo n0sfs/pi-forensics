@@ -127,6 +127,7 @@
                         <li class="nav-item"><button class="nav-link active" data-help-tab="start">Getting Started</button></li>
                         <li class="nav-item"><button class="nav-link" data-help-tab="faq">FAQ</button></li>
                         <li class="nav-item"><button class="nav-link" data-help-tab="tools">Tool Reference</button></li>
+                        <li class="nav-item"><button class="nav-link" data-help-tab="reportfields">Report Field Mapping</button></li>
                         <li class="nav-item"><button class="nav-link" data-help-tab="info">Additional Info</button></li>
                     </ul>
                     <div style="overflow-y: auto; flex: 1;">
@@ -151,6 +152,18 @@
                             <div class="table-responsive">
                                 <table class="table table-sm table-dark table-striped mb-0 small">
                                     <tbody id="toolReferenceBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div id="helpPane-reportfields" class="help-pane d-none">
+                            <div class="small text-subtle mb-2">What populates each section of an exported report, and where to edit that data before you export. The Report Template Builder (Settings &gt; Case &amp; Reporting) lets you choose which sections appear, reorder them, rename them, and - for the text sections marked "Remappable" - choose which of your narrative fields fills that slot. It can't rewire structured sections (tables, logs) to a different source.</div>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-dark table-striped mb-0 small">
+                                    <thead>
+                                        <tr class="text-info text-uppercase small"><th>Section</th><th>What Populates It</th><th>Where To Edit It</th></tr>
+                                    </thead>
+                                    <tbody id="reportFieldMappingBody"></tbody>
                                 </table>
                             </div>
                         </div>

@@ -360,6 +360,7 @@ function openHelpModal() {
     }
     populateFaq();
     populateToolReference();
+    populateReportFieldMapping();
     populateHelpInfo();
     helpModalInstance.show();
 }
@@ -585,6 +586,53 @@ function populateToolReference() {
             row.appendChild(descCell);
             tbody.appendChild(row);
         });
+    });
+}
+
+// Mirrors routes/reporting.py's REPORT_SECTION_BLOCKS one-for-one (same 15
+// keys, same order) - kept as a second, hand-written copy rather than
+// fetched from the backend, since this is static reference prose (what a
+// section IS), not live template data the way the Report Template Builder's
+// own block list already is. "Remappable" flags the 7 free-text sections a
+// custom template's Report Template Builder can point at a different
+// narrative field than their own default (see source_field) - every other
+// section pulls from structured data (a table, a log, a filesystem walk)
+// that isn't something a dropdown can meaningfully rewire.
+const REPORT_FIELD_MAPPING = [
+    ["Case Information", "Case #, Examiner, Status, Created date, Custom Fields", "Case #/Examiner set at creation (not editable after); Report Narrative &gt; Case Status; Custom Fields defined in Settings &gt; Case &amp; Reporting, values in Report Narrative &gt; Case Details"],
+    ["Executive Summary", "Free text (Remappable)", "Report Narrative"],
+    ["Objectives", "Free text (Remappable)", "Report Narrative"],
+    ["Evidence Inventory", "Auto-built table (make/model/serial/capacity/hash)", "Not directly editable - comes from the acquisition job itself"],
+    ["Acquisition Method", "Full per-job telemetry/parameters/hashes", "Not directly editable - comes from the acquisition job itself"],
+    ["Forensic Analysis / Steps Taken", "The Case Notes journal, in order", "Case Notes"],
+    ["Relevant Findings", "Free text (Remappable)", "Report Narrative"],
+    ["Limitations &amp; Statement of Uncertainty", "Free text (Remappable)", "Report Narrative"],
+    ["Conclusion", "Free text (Remappable)", "Report Narrative"],
+    ["Indicators of Compromise", "Free text (Remappable)", "Report Narrative"],
+    ["Recommendations / Next Steps", "Free text (Remappable)", "Report Narrative"],
+    ["Exhibits", "Attached files/URLs + captions + tags + analysis results", "Files tab (check/caption); File Explorer (tag/analyze)"],
+    ["Geolocation / GPS Evidence", "KML files attached to or found in the case folder", "Auto-discovered; generate via File Explorer's \"Extract Geolocation (KML)\""],
+    ["Case Activity Log (Audit Trail)", "Chain-of-custody entries matching this case #", "Automatic"],
+    ["Filesystem Timeline (MACB)", "MACB walk of the acquired image", "Automatic, needs the image still on disk"],
+];
+
+function populateReportFieldMapping() {
+    const tbody = document.getElementById("reportFieldMappingBody");
+    if (!tbody || tbody.children.length > 0) return; // build once
+    REPORT_FIELD_MAPPING.forEach(([section, source, whereToEdit]) => {
+        const row = document.createElement('tr');
+        const sectionCell = document.createElement('td');
+        sectionCell.className = 'text-info fw-bold';
+        sectionCell.style.width = '20%';
+        sectionCell.innerHTML = section; // static reference prose, not user data
+        const sourceCell = document.createElement('td');
+        sourceCell.style.width = '32%';
+        sourceCell.innerHTML = source;
+        const editCell = document.createElement('td');
+        editCell.className = 'text-subtle';
+        editCell.innerHTML = whereToEdit;
+        row.append(sectionCell, sourceCell, editCell);
+        tbody.appendChild(row);
     });
 }
 
@@ -4574,8 +4622,23 @@ async function fetchCustomFieldDefs() {
 // Reporting's Export pane) read from this cache rather than fetching
 // independently, so they always agree on what templates currently exist.
 let customReportTemplatesCache = [];
-let reportSectionBlocksCache = []; // [{key, default_title}, ...] - server truth for the builder's palette
-let reportTemplateBuilderEditing = null; // array of {key, title, enabled} while the modal is open, else null
+// Mirrors routes/reporting.py's NARRATIVE_BLOCK_FIELD_MAP exactly - a
+// remappable block's own default source field, used only to pre-fill a new
+// row's dropdown (or an old, pre-remapping-feature template's row) before
+// the examiner ever touches it. The backend re-validates/defaults this
+// itself regardless, so a stale copy here can't corrupt storage - at worst
+// a dropdown would show the wrong default until this constant is updated
+// to match a future backend change.
+const NARRATIVE_BLOCK_FIELD_MAP = {
+    executive_summary: "executive_summary", objectives: "objectives",
+    relevant_findings: "findings_summary", limitations: "limitations",
+    conclusion: "conclusion", iocs: "iocs", recommendations: "recommendations_next_steps",
+};
+function defaultSourceFieldFor(key) { return NARRATIVE_BLOCK_FIELD_MAP[key] || null; }
+
+let reportSectionBlocksCache = []; // [{key, default_title, remappable}, ...] - server truth for the builder's palette
+let reportFieldOptionsCache = []; // [{value, label}, ...] - the narrative fields a remappable row's dropdown can choose among
+let reportTemplateBuilderEditing = null; // array of {key, title, enabled, source_field?} while the modal is open, else null
 let reportTemplateBuilderEditingId = null; // null = creating new, else the id being edited
 let currentExportCustomTemplateId = null; // read by #exportEditTemplateBtn's onclick in index.html
 
@@ -4586,6 +4649,7 @@ async function fetchCustomReportTemplates() {
         if (data.success) {
             customReportTemplatesCache = data.templates || [];
             reportSectionBlocksCache = data.blocks || [];
+            reportFieldOptionsCache = data.field_options || [];
         }
     } catch (err) { /* non-fatal - both selects just show the 3 built-in templates */ }
     populateTemplateSelectOptions(document.getElementById("defReportTemplate"));
@@ -4676,12 +4740,12 @@ function openReportTemplateBuilder(existingId = null) {
         const knownKeys = new Set(reportTemplateBuilderEditing.map(s => s.key));
         reportSectionBlocksCache.forEach(b => {
             if (!knownKeys.has(b.key)) {
-                reportTemplateBuilderEditing.push({ key: b.key, title: '', enabled: false });
+                reportTemplateBuilderEditing.push({ key: b.key, title: '', enabled: false, source_field: b.remappable ? defaultSourceFieldFor(b.key) : undefined });
             }
         });
     } else {
         if (nameEl) nameEl.value = '';
-        reportTemplateBuilderEditing = reportSectionBlocksCache.map(b => ({ key: b.key, title: '', enabled: true }));
+        reportTemplateBuilderEditing = reportSectionBlocksCache.map(b => ({ key: b.key, title: '', enabled: true, source_field: b.remappable ? defaultSourceFieldFor(b.key) : undefined }));
     }
     renderReportTemplateBuilderRows();
 
@@ -4729,11 +4793,41 @@ function renderReportTemplateBuilderRows() {
         titleInput.placeholder = block ? block.default_title : row.key;
         titleInput.value = row.title || '';
         titleInput.maxLength = 120;
+        titleInput.style.flex = '1 1 auto';
         titleInput.oninput = () => { reportTemplateBuilderEditing[idx].title = titleInput.value; };
 
         wrap.appendChild(moveWrap);
         wrap.appendChild(checkbox);
         wrap.appendChild(titleInput);
+
+        // Only the 7 free-text blocks are remappable (see REPORT_SECTION_
+        // BLOCKS' own remappable flag, mirrored here via block.remappable) -
+        // every other block's content is structured data a dropdown can't
+        // meaningfully rewire, so it gets no source-field control at all.
+        if (block && block.remappable) {
+            const fieldSelect = document.createElement('select');
+            fieldSelect.className = 'form-select form-select-sm';
+            fieldSelect.style.flex = '0 0 auto';
+            fieldSelect.style.width = '200px';
+            fieldSelect.title = 'Which narrative field fills this section';
+            reportFieldOptionsCache.forEach(opt => {
+                const optEl = document.createElement('option');
+                optEl.value = opt.value;
+                optEl.textContent = opt.label;
+                fieldSelect.appendChild(optEl);
+            });
+            fieldSelect.value = row.source_field || defaultSourceFieldFor(row.key);
+            fieldSelect.onchange = () => { reportTemplateBuilderEditing[idx].source_field = fieldSelect.value; };
+            wrap.appendChild(fieldSelect);
+        } else {
+            // Empty same-width spacer so non-remappable rows' title inputs
+            // still line up with remappable ones' shorter title inputs.
+            const spacer = document.createElement('div');
+            spacer.style.width = '200px';
+            spacer.style.flex = '0 0 auto';
+            wrap.appendChild(spacer);
+        }
+
         container.appendChild(wrap);
     });
 }
@@ -4756,7 +4850,10 @@ async function saveReportTemplateBuilder() {
 
     const payload = {
         name,
-        sections: reportTemplateBuilderEditing.map(r => ({ key: r.key, title: r.title || '', enabled: r.enabled !== false })),
+        sections: reportTemplateBuilderEditing.map(r => ({
+            key: r.key, title: r.title || '', enabled: r.enabled !== false,
+            source_field: r.source_field || defaultSourceFieldFor(r.key),
+        })),
         job_fields: { telemetry: true, params: true, hashes: true },
     };
     const isEdit = !!reportTemplateBuilderEditingId;

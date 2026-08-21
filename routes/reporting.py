@@ -161,18 +161,32 @@ def _custom_report_template_from_payload(req):
         key = entry.get('key')
         if key not in _REPORT_SECTION_BLOCK_MAP:
             return None, f"Unknown report section '{key}'."
-        by_key[key] = {
+        block = _REPORT_SECTION_BLOCK_MAP[key]
+        row = {
             "key": key,
             "title": (entry.get('title') or '').strip()[:120],
             "enabled": bool(entry.get('enabled', True)),
         }
+        # source_field only ever stored for a remappable block, and only if
+        # it's actually one of the recognized narrative fields - an
+        # unrecognized value (stale client, hand-edited request) falls back
+        # to the block's own default rather than being rejected outright,
+        # matching this function's existing self-healing posture for a
+        # missing block entirely (see the docstring above).
+        if block["remappable"]:
+            requested = entry.get('source_field')
+            row["source_field"] = requested if requested in NARRATIVE_BLOCK_FIELD_MAP.values() else NARRATIVE_BLOCK_FIELD_MAP[key]
+        by_key[key] = row
     # Preserve the payload's own order for keys it included, then append
-    # any of the 13 registry blocks it left out, in the registry's own
+    # any of the 15 registry blocks it left out, in the registry's own
     # default order.
     sections = list(by_key.values())
     for block in REPORT_SECTION_BLOCKS:
         if block['key'] not in by_key:
-            sections.append({"key": block['key'], "title": block['default_title'], "enabled": True})
+            row = {"key": block['key'], "title": block['default_title'], "enabled": True}
+            if block["remappable"]:
+                row["source_field"] = NARRATIVE_BLOCK_FIELD_MAP[block['key']]
+            sections.append(row)
 
     job_fields_in = req.get('job_fields') or {}
     job_fields = {
@@ -197,8 +211,14 @@ def report_templates_custom():
             "success": True,
             "templates": cfg.get('custom_report_templates', []),
             # Single source of truth for the frontend builder's palette -
-            # it never hardcodes the 13-block list itself.
-            "blocks": [{"key": b["key"], "default_title": b["default_title"]} for b in REPORT_SECTION_BLOCKS],
+            # it never hardcodes the 15-block list itself. field_options is
+            # the same 7-entry map every remappable block can choose among
+            # (value = header field name the way source_field stores it,
+            # label = what a human calls it) - identical for every
+            # remappable row, sent once at the top level rather than
+            # repeated per block.
+            "blocks": [{"key": b["key"], "default_title": b["default_title"], "remappable": b["remappable"]} for b in REPORT_SECTION_BLOCKS],
+            "field_options": [{"value": v, "label": NARRATIVE_FIELD_LABELS[v]} for v in NARRATIVE_BLOCK_FIELD_MAP.values()],
         })
 
     # GET is left ungated above - both the Reporting Export pane and
@@ -1928,31 +1948,40 @@ REPORT_TEMPLATES = {
 #                        fixed, page-fresh position; a reordered custom
 #                        template could otherwise silently overlap/clip
 #                        content.
+#   remappable         - whether a custom template can point this block at a
+#                        different narrative field than its own default (see
+#                        NARRATIVE_BLOCK_FIELD_MAP below and source_field in
+#                        _resolve_section_order()) - true only for the 7
+#                        free-text blocks. Every other block's content is
+#                        structured data (a table, a log, a filesystem walk)
+#                        that isn't something a dropdown can meaningfully
+#                        rewire, so remapping is deliberately scoped to just
+#                        these 7 rather than offered everywhere.
 REPORT_SECTION_BLOCKS = [
     {"key": "case_info", "default_title": "Case Information",
-     "in_legacy_default": True, "requires_events": False, "force_page_break": True},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": True, "remappable": False},
     {"key": "executive_summary", "default_title": "Executive Summary",
-     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": True},
     {"key": "objectives", "default_title": "Objectives",
-     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": True},
     {"key": "evidence_inventory", "default_title": "Evidence Inventory",
-     "in_legacy_default": True, "requires_events": True, "force_page_break": False},
+     "in_legacy_default": True, "requires_events": True, "force_page_break": False, "remappable": False},
     {"key": "acquisition_method", "default_title": "Acquisition Method",
-     "in_legacy_default": True, "requires_events": True, "force_page_break": True},
+     "in_legacy_default": True, "requires_events": True, "force_page_break": True, "remappable": False},
     {"key": "forensic_analysis", "default_title": "Forensic Analysis / Steps Taken (Case Notes)",
-     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
     {"key": "relevant_findings", "default_title": "Relevant Findings",
-     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": True},
     {"key": "limitations", "default_title": "Limitations & Statement of Uncertainty",
-     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": True},
     {"key": "conclusion", "default_title": "Conclusion",
-     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": True},
     {"key": "iocs", "default_title": "Indicators of Compromise",
-     "in_legacy_default": False, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": False, "requires_events": False, "force_page_break": False, "remappable": True},
     {"key": "recommendations", "default_title": "Recommendations / Next Steps",
-     "in_legacy_default": False, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": False, "requires_events": False, "force_page_break": False, "remappable": True},
     {"key": "attachments", "default_title": "Exhibits",
-     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
     # Unlike timeline/iocs/recommendations (in_legacy_default=False, custom-
     # template-only - _expand_legacy_sections_dict() unconditionally skips
     # any False-flagged block, so there is no other way for a block to be
@@ -1962,16 +1991,45 @@ REPORT_SECTION_BLOCKS = [
     # markup, so a case with no GPS evidence doesn't grow an empty section
     # by default.
     {"key": "geolocation", "default_title": "Geolocation / GPS Evidence",
-     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
     {"key": "audit_trail", "default_title": "Case Activity Log (Audit Trail)",
-     "in_legacy_default": True, "requires_events": False, "force_page_break": False},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
     {"key": "timeline", "default_title": "Filesystem Timeline (MACB)",
-     "in_legacy_default": False, "requires_events": True, "force_page_break": True},
+     "in_legacy_default": False, "requires_events": True, "force_page_break": True, "remappable": False},
 ]
+# key -> the header dict field a remappable block draws from by default -
+# also the full set of choices a custom template's Report Template Builder
+# can point ANY remappable block's source_field at (see
+# _custom_report_template_from_payload/_resolve_section_order below). Field
+# names are header dict keys, not block keys - relevant_findings/
+# recommendations differ from their own block key (findings_summary/
+# recommendations_next_steps) because the underlying narrative field was
+# named before this remapping feature existed and renaming it would be a
+# larger, unrelated schema change.
+NARRATIVE_BLOCK_FIELD_MAP = {
+    "executive_summary": "executive_summary",
+    "objectives": "objectives",
+    "relevant_findings": "findings_summary",
+    "limitations": "limitations",
+    "conclusion": "conclusion",
+    "iocs": "iocs",
+    "recommendations": "recommendations_next_steps",
+}
+# Reverse lookup for populating the Report Template Builder's per-row
+# dropdown with a human label instead of a raw header-field name.
+NARRATIVE_FIELD_LABELS = {
+    "executive_summary": "Executive Summary text",
+    "objectives": "Objectives text",
+    "findings_summary": "Relevant Findings text",
+    "limitations": "Limitations text",
+    "conclusion": "Conclusion text",
+    "iocs": "Indicators of Compromise text",
+    "recommendations_next_steps": "Recommendations / Next Steps text",
+}
 assert all(
-    {"key", "default_title", "in_legacy_default", "requires_events", "force_page_break"} <= b.keys()
+    {"key", "default_title", "in_legacy_default", "requires_events", "force_page_break", "remappable"} <= b.keys()
     for b in REPORT_SECTION_BLOCKS
-), "every REPORT_SECTION_BLOCKS entry needs all 5 fields - see the docstring above"
+), "every REPORT_SECTION_BLOCKS entry needs all 6 fields - see the docstring above"
 
 _REPORT_SECTION_BLOCK_MAP = {b["key"]: b for b in REPORT_SECTION_BLOCKS}
 
@@ -2019,26 +2077,47 @@ def _expand_legacy_sections_dict(sections_dict):
             continue
         legacy_key = "executive_summary" if block["key"] == "objectives" else block["key"]
         if sections_dict.get(legacy_key, True):
-            result.append({"key": block["key"], "title": block["default_title"]})
+            # source_field always the block's own default here - the plain
+            # checkbox path has no per-section remapping capability, only a
+            # saved custom template does (see _resolve_section_order below).
+            result.append({"key": block["key"], "title": block["default_title"],
+                            "source_field": NARRATIVE_BLOCK_FIELD_MAP.get(block["key"])})
     return result
 
 def _resolve_section_order(mode, sections_dict, custom_record, event_count):
     """Single source of truth for 'which blocks render, in what order, with
-    what title' - used by both the plain Standard export path (mode=
-    'legacy', driven by the checkbox dict) and any user-defined custom
-    template (mode='custom', driven by a saved runtime_config record). Also
-    the single place that filters out blocks needing events the case
-    doesn't have, so the draw loop / PDF Contents page / HTML TOC never
-    need to separately re-derive that condition (see REPORT_SECTION_BLOCKS'
-    requires_events docstring) - a future duplicated copy of this check
-    silently drifting out of sync is exactly the fragility this centralizes
-    away."""
+    what title, from which underlying field' - used by both the plain
+    Standard export path (mode='legacy', driven by the checkbox dict) and
+    any user-defined custom template (mode='custom', driven by a saved
+    runtime_config record). Also the single place that filters out blocks
+    needing events the case doesn't have, so the draw loop / PDF Contents
+    page / HTML TOC never need to separately re-derive that condition (see
+    REPORT_SECTION_BLOCKS' requires_events docstring) - a future duplicated
+    copy of this check silently drifting out of sync is exactly the
+    fragility this centralizes away. source_field on each returned entry is
+    only ever meaningful for a remappable block (see NARRATIVE_BLOCK_FIELD_MAP)
+    - None for every other block, which the draw-loop dispatch simply
+    ignores. A custom template's own source_field per section is already
+    validated/defaulted at save time (_custom_report_template_from_payload),
+    so this just passes it through unchanged."""
     if mode == "custom":
-        raw = [
-            {"key": e["key"], "title": (e.get("title") or "").strip() or _REPORT_SECTION_BLOCK_MAP[e["key"]]["default_title"]}
-            for e in custom_record.get("sections", [])
-            if e.get("enabled", True) and e.get("key") in _REPORT_SECTION_BLOCK_MAP
-        ]
+        raw = []
+        for e in custom_record.get("sections", []):
+            key = e.get("key")
+            if not e.get("enabled", True) or key not in _REPORT_SECTION_BLOCK_MAP:
+                continue
+            block = _REPORT_SECTION_BLOCK_MAP[key]
+            source_field = None
+            if block["remappable"]:
+                # Falls back to the block's own default field, not None, if
+                # this entry has no source_field at all - covers a custom
+                # template saved before this remapping feature existed,
+                # which otherwise would have silently blanked every one of
+                # its narrative sections the first time it was used again.
+                stored = e.get("source_field")
+                source_field = stored if stored in NARRATIVE_BLOCK_FIELD_MAP.values() else NARRATIVE_BLOCK_FIELD_MAP[key]
+            raw.append({"key": key, "title": (e.get("title") or "").strip() or block["default_title"],
+                        "source_field": source_field})
     else:
         raw = _expand_legacy_sections_dict(sections_dict)
     return [e for e in raw if not _REPORT_SECTION_BLOCK_MAP[e["key"]]["requires_events"] or event_count > 0]
@@ -2110,24 +2189,31 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
     # Per-key dispatch table - each entry knows how to draw its own block
     # given the current y and its (possibly custom) title. Built fresh per
     # call so each closure captures this call's own header/events/etc.
+    # A remappable block's lambda reads `field` (the resolved source_field
+    # from _resolve_section_order() - the block's own default header key
+    # unless a custom template pointed it elsewhere) instead of a hardcoded
+    # header key. Every lambda takes the same (y, title, field) signature,
+    # even ones that ignore `field`, so the call site below can stay a
+    # single uniform dispatch[key](y, title, field) with no per-block
+    # special-casing.
     dispatch = {
-        "case_info": lambda y, title: _draw_pdf_header(c, header, title=title),
-        "executive_summary": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("executive_summary")),
-        "objectives": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("objectives")),
-        "evidence_inventory": lambda y, title: _draw_pdf_evidence_inventory(c, y, events, title=title),
-        "acquisition_method": lambda y, title: _draw_pdf_acquisition_method(c, y, events, job_fields, title=title),
-        "forensic_analysis": lambda y, title: _draw_pdf_case_notes(c, y, case_notes, title=title, exhibit_numbers=exhibit_numbers),
-        "relevant_findings": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("findings_summary")),
-        "limitations": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("limitations")),
-        "conclusion": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("conclusion")),
-        "iocs": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("iocs")),
-        "recommendations": lambda y, title: _draw_pdf_narrative_section(c, y, title, header.get("recommendations_next_steps")),
-        "attachments": lambda y, title: _draw_pdf_attachments(c, y, urls, files, title=title, captions=captions,
-                                                                tags_by_path=tags_by_path, analysis_by_path=analysis_by_path,
-                                                                exhibit_numbers=exhibit_numbers),
-        "audit_trail": lambda y, title: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
-        "timeline": lambda y, title: _draw_pdf_timeline_block(c, y, events, title=title),
-        "geolocation": lambda y, title: _draw_pdf_geolocation_block(c, y, geo_data or [], title=title),
+        "case_info": lambda y, title, field: _draw_pdf_header(c, header, title=title),
+        "executive_summary": lambda y, title, field: _draw_pdf_narrative_section(c, y, title, header.get(field)),
+        "objectives": lambda y, title, field: _draw_pdf_narrative_section(c, y, title, header.get(field)),
+        "evidence_inventory": lambda y, title, field: _draw_pdf_evidence_inventory(c, y, events, title=title),
+        "acquisition_method": lambda y, title, field: _draw_pdf_acquisition_method(c, y, events, job_fields, title=title),
+        "forensic_analysis": lambda y, title, field: _draw_pdf_case_notes(c, y, case_notes, title=title, exhibit_numbers=exhibit_numbers),
+        "relevant_findings": lambda y, title, field: _draw_pdf_narrative_section(c, y, title, header.get(field)),
+        "limitations": lambda y, title, field: _draw_pdf_narrative_section(c, y, title, header.get(field)),
+        "conclusion": lambda y, title, field: _draw_pdf_narrative_section(c, y, title, header.get(field)),
+        "iocs": lambda y, title, field: _draw_pdf_narrative_section(c, y, title, header.get(field)),
+        "recommendations": lambda y, title, field: _draw_pdf_narrative_section(c, y, title, header.get(field)),
+        "attachments": lambda y, title, field: _draw_pdf_attachments(c, y, urls, files, title=title, captions=captions,
+                                                                       tags_by_path=tags_by_path, analysis_by_path=analysis_by_path,
+                                                                       exhibit_numbers=exhibit_numbers),
+        "audit_trail": lambda y, title, field: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
+        "timeline": lambda y, title, field: _draw_pdf_timeline_block(c, y, events, title=title),
+        "geolocation": lambda y, title, field: _draw_pdf_geolocation_block(c, y, geo_data or [], title=title),
     }
 
     for i, entry in enumerate(resolved_sections):
@@ -2143,7 +2229,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
             y = 750
         c.bookmarkPage(key)
         c.addOutlineEntry(title, key, level=0)
-        y = dispatch[key](y, title)
+        y = dispatch[key](y, title, entry.get("source_field"))
 
     c.save()
 
@@ -2947,24 +3033,26 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
 
     parts.append(_build_html_toc(resolved_sections, has_exhibits))
 
+    # See the PDF builder's own dispatch dict for why every lambda takes a
+    # uniform (anchor, title, field) signature even when it ignores `field`.
     dispatch = {
-        "case_info": lambda anchor, title: _html_case_info_block(header, len(events), anchor_id=anchor, title=title),
-        "executive_summary": lambda anchor, title: _html_narrative_block(title, header.get("executive_summary"), anchor),
-        "objectives": lambda anchor, title: _html_narrative_block(title, header.get("objectives"), anchor),
-        "evidence_inventory": lambda anchor, title: _html_evidence_inventory_table(events, title=title, anchor_id=anchor),
-        "acquisition_method": lambda anchor, title: _html_acquisition_method(events, job_fields, anchor_id=anchor),
-        "forensic_analysis": lambda anchor, title: _html_case_notes_block(case_notes, anchor_id=anchor, title=title, exhibit_numbers=exhibit_numbers),
-        "relevant_findings": lambda anchor, title: _html_narrative_block(title, header.get("findings_summary"), anchor),
-        "limitations": lambda anchor, title: _html_narrative_block(title, header.get("limitations"), anchor),
-        "conclusion": lambda anchor, title: _html_narrative_block(title, header.get("conclusion"), anchor),
-        "iocs": lambda anchor, title: _html_narrative_block(title, header.get("iocs"), anchor),
-        "recommendations": lambda anchor, title: _html_narrative_block(title, header.get("recommendations_next_steps"), anchor),
-        "attachments": lambda anchor, title: _html_exhibits_block(urls, files, anchor_id=anchor, title=title, captions=captions,
-                                                                    tags_by_path=tags_by_path, analysis_by_path=analysis_by_path,
-                                                                    exhibit_numbers=exhibit_numbers),
-        "audit_trail": lambda anchor, title: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
-        "timeline": lambda anchor, title: _html_timeline_block(events, title=title, anchor_id=anchor),
-        "geolocation": lambda anchor, title: _html_geolocation_block(geo_data or [], title=title, anchor_id=anchor),
+        "case_info": lambda anchor, title, field: _html_case_info_block(header, len(events), anchor_id=anchor, title=title),
+        "executive_summary": lambda anchor, title, field: _html_narrative_block(title, header.get(field), anchor),
+        "objectives": lambda anchor, title, field: _html_narrative_block(title, header.get(field), anchor),
+        "evidence_inventory": lambda anchor, title, field: _html_evidence_inventory_table(events, title=title, anchor_id=anchor),
+        "acquisition_method": lambda anchor, title, field: _html_acquisition_method(events, job_fields, anchor_id=anchor),
+        "forensic_analysis": lambda anchor, title, field: _html_case_notes_block(case_notes, anchor_id=anchor, title=title, exhibit_numbers=exhibit_numbers),
+        "relevant_findings": lambda anchor, title, field: _html_narrative_block(title, header.get(field), anchor),
+        "limitations": lambda anchor, title, field: _html_narrative_block(title, header.get(field), anchor),
+        "conclusion": lambda anchor, title, field: _html_narrative_block(title, header.get(field), anchor),
+        "iocs": lambda anchor, title, field: _html_narrative_block(title, header.get(field), anchor),
+        "recommendations": lambda anchor, title, field: _html_narrative_block(title, header.get(field), anchor),
+        "attachments": lambda anchor, title, field: _html_exhibits_block(urls, files, anchor_id=anchor, title=title, captions=captions,
+                                                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path,
+                                                                           exhibit_numbers=exhibit_numbers),
+        "audit_trail": lambda anchor, title, field: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
+        "timeline": lambda anchor, title, field: _html_timeline_block(events, title=title, anchor_id=anchor),
+        "geolocation": lambda anchor, title, field: _html_geolocation_block(geo_data or [], title=title, anchor_id=anchor),
     }
 
     for entry in resolved_sections:
@@ -2972,7 +3060,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         if key == "attachments" and not has_exhibits:
             continue
         anchor = "sec-" + key.replace("_", "-")
-        parts.append(dispatch[key](anchor, title))
+        parts.append(dispatch[key](anchor, title, entry.get("source_field")))
 
     parts.append('</body></html>')
     return ''.join(parts)
