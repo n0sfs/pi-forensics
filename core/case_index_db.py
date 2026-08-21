@@ -102,17 +102,24 @@ CREATE TABLE IF NOT EXISTS tags (
 -- for). A fresh case's tags table exists with these three the moment
 -- anything first touches the index, tagging included - not gated behind an
 -- image ever having been triage-scanned.
--- Case Artifact is the fourth default, distinct from the other three: it's
--- never applied by an examiner clicking Tag..., only by this app itself
--- (see _auto_tag_case_artifact below) the moment it generates a report
--- export, hash manifest, or geolocation KML - a self-classifying label so
--- File Explorer's tree/File Views can group this app's own housekeeping
--- output apart from real evidence without a separate mechanism.
+-- The remaining four defaults are never applied by an examiner clicking
+-- Tag... - only by this app itself (see _auto_tag_case_artifact /
+-- CASE_ROLE_TAG_NAMES below), one per classify_case_role() outcome, the
+-- moment it generates a report export, hash manifest/analysis log,
+-- geolocation KML, or a pre-consolidation/pre-restore backup snapshot -
+-- self-classifying labels so File Explorer's File Views can group this
+-- app's own housekeeping output apart from real evidence, split by kind,
+-- without a separate mechanism. (Originally one lump 'Case Artifact' tag -
+-- split into these four; see _migrate_legacy_case_artifact_tag below for
+-- the one-time per-case migration off the old name.)
 INSERT OR IGNORE INTO tags (name, color, notable, is_default, created_at) VALUES
     ('Bookmark', 'info', 0, 1, datetime('now')),
     ('Follow Up', 'warning', 0, 1, datetime('now')),
     ('Notable Item', 'danger', 1, 1, datetime('now')),
-    ('Case Artifact', 'secondary', 0, 1, datetime('now'));
+    ('Report Export', 'secondary', 0, 1, datetime('now')),
+    ('Analysis Log / Hash', 'secondary', 0, 1, datetime('now')),
+    ('Geolocation Export', 'secondary', 0, 1, datetime('now')),
+    ('Backup Snapshot', 'secondary', 0, 1, datetime('now'));
 
 CREATE TABLE IF NOT EXISTS tagged_items (
     id INTEGER PRIMARY KEY,
@@ -289,28 +296,45 @@ def _record_analysis_result(case_folder, identity, tool, summary, output):
     except Exception as e:
         print(f"Warning: could not record analysis result ({tool}) to case index: {e}")
 
+# One default tag per classify_case_role() outcome - see the schema seed
+# comment above for why this exists as four tags instead of one lump one.
+CASE_ROLE_TAG_NAMES = {
+    'report': 'Report Export',
+    'analysis_log': 'Analysis Log / Hash',
+    'geolocation': 'Geolocation Export',
+    'backup': 'Backup Snapshot',
+}
+
 def _auto_tag_case_artifact(case_folder, file_path):
-    """Applies the built-in 'Case Artifact' tag (see the schema seed above)
-    to a real file this app itself just generated - a report export, hash
-    manifest, or geolocation KML - so File Explorer's File Views tree and
-    any future tag-aware view can find "everything this station produced
-    for this case" as easily as an examiner's own manually-tagged items.
-    Mirrors _record_analysis_result()'s best-effort, non-blocking contract
-    exactly: case_folder being absent/not-a-real-case, or any DB error, is
-    silently swallowed - a broken index write must never turn a successful
-    export into a reported failure. Deduped the same way case_index_tag_item()
-    dedupes a real_fs identity (by tag_id + path), so repeatedly overwriting
-    the same export filename (this app's own documented convention - a
-    report export always overwrites, never accumulates timestamped copies)
-    tags it once, not once per re-export."""
+    """Applies the role-specific default tag (CASE_ROLE_TAG_NAMES, keyed by
+    classify_case_role() of file_path's own name) to a real file this app
+    itself just generated - a report export, hash manifest/analysis log,
+    geolocation KML, or backup snapshot - so File Explorer's File Views tree
+    and any future tag-aware view can find "everything this station
+    produced for this case", split by kind, as easily as an examiner's own
+    manually-tagged items. A no-op (not an error) if file_path's name isn't
+    a recognized artifact - every real call site only ever passes a known
+    one, but this makes the function safe to call speculatively too (see
+    _backfill_case_artifact_tags below). Mirrors _record_analysis_result()'s
+    best-effort, non-blocking contract exactly: case_folder being absent/
+    not-a-real-case, or any DB error, is silently swallowed - a broken
+    index write must never turn a successful export into a reported
+    failure. Deduped the same way case_index_tag_item() dedupes a real_fs
+    identity (by tag_id + path), so repeatedly overwriting the same export
+    filename (this app's own documented convention - a report export
+    always overwrites, never accumulates timestamped copies) tags it once,
+    not once per re-export."""
     if not case_folder or not case_consolidated_path(case_folder):
+        return
+    tag_name = CASE_ROLE_TAG_NAMES.get(classify_case_role(os.path.basename(file_path)))
+    if not tag_name:
         return
     db_path = case_index_db_path(case_folder)
     if not db_path:
         return
     try:
         conn = _case_index_connect(db_path)
-        row = conn.execute("SELECT id FROM tags WHERE name='Case Artifact'").fetchone()
+        row = conn.execute("SELECT id FROM tags WHERE name=?", (tag_name,)).fetchone()
         if not row:
             return  # schema seed above didn't run for some reason - fail quiet, don't create a duplicate
         tag_id = row[0]
@@ -327,6 +351,40 @@ def _auto_tag_case_artifact(case_folder, file_path):
     except Exception as e:
         print(f"Warning: could not auto-tag case artifact {file_path}: {e}")
 
+def _migrate_legacy_case_artifact_tag(conn):
+    """One-time-per-case migration off the original single lump 'Case
+    Artifact' tag (split into the four CASE_ROLE_TAG_NAMES tags above).
+    Re-derives each already-tagged file's role from its own name (the same
+    thing a fresh tag call would compute today) and moves its tagged_items
+    row onto the correct new tag; a row whose name no longer classifies to
+    a known role (shouldn't happen - only ever added by
+    _auto_tag_case_artifact/_backfill_case_artifact_tags in the first
+    place) is dropped rather than left dangling. Deletes the now-empty
+    legacy tag afterward so it stops appearing as a permanent 0-count 5th
+    bucket. No-op once no case has the old tag left. Caller owns the
+    connection (opened only when the DB already exists - see
+    _backfill_case_artifact_tags)."""
+    old = conn.execute("SELECT id FROM tags WHERE name='Case Artifact'").fetchone()
+    if not old:
+        return
+    old_id = old[0]
+    for row_id, path, name in conn.execute(
+            "SELECT id, path, name FROM tagged_items WHERE tag_id=?", (old_id,)).fetchall():
+        new_name = CASE_ROLE_TAG_NAMES.get(classify_case_role(name or (os.path.basename(path) if path else '')))
+        new_tag = conn.execute("SELECT id FROM tags WHERE name=?", (new_name,)).fetchone() if new_name else None
+        if not new_tag:
+            conn.execute("DELETE FROM tagged_items WHERE id=?", (row_id,))
+            continue
+        dupe = conn.execute(
+            "SELECT id FROM tagged_items WHERE tag_id=? AND source_type='real_fs' AND path=?",
+            (new_tag[0], path)).fetchone()
+        if dupe:
+            conn.execute("DELETE FROM tagged_items WHERE id=?", (row_id,))
+        else:
+            conn.execute("UPDATE tagged_items SET tag_id=? WHERE id=?", (new_tag[0], row_id))
+    conn.execute("DELETE FROM tags WHERE id=?", (old_id,))
+    conn.commit()
+
 # Every call site above tags a report export / hash manifest / geolocation
 # KML the moment THIS app generates it - real, but forward-only: anything
 # already on disk before that call site existed (or written some other way -
@@ -338,20 +396,31 @@ _ARTIFACT_SCAN_SKIP_DIR_SUFFIXES = ('_photorec', '_foremost', '_scalpel', '_tria
 _ARTIFACT_SCAN_MAX_FILES = 5000  # safety cap on one sweep - a case folder is typically small; only guards a pathological one
 
 def _backfill_case_artifact_tags(case_folder):
-    """Best-effort sweep: walk the case folder and apply the 'Case Artifact'
-    tag to anything classify_case_role() recognizes but hasn't been tagged
-    yet - self-heals the 'Case Artifact' bucket so it always reflects
-    everything this app has ever generated for the case, not just what's
-    been tagged since each individual write site started calling
-    _auto_tag_case_artifact(). Called from case_index_summary() on every
-    fetch (cheap - a shallow walk plus a filename check per file; a DB write
-    only happens for a genuinely new match, since _auto_tag_case_artifact()
-    itself already dedupes). Errors are swallowed exactly like every other
-    best-effort write in this module - this must never break a File Views
-    load."""
+    """Best-effort sweep: walk the case folder and apply the correct
+    role-specific tag (CASE_ROLE_TAG_NAMES) to anything classify_case_role()
+    recognizes but hasn't been tagged yet - self-heals those four buckets so
+    they always reflect everything this app has ever generated for the
+    case, not just what's been tagged since each individual write site
+    started calling _auto_tag_case_artifact(). Also runs the one-time
+    legacy-tag migration first (see _migrate_legacy_case_artifact_tag),
+    but only if the case's index DB already exists - never eagerly creates
+    one just to check, so a case with no artifacts yet and no prior index
+    still gets no DB file, matching this module's existing laziness.
+    Called from case_index_summary() on every fetch (cheap - a shallow walk
+    plus a filename check per file; a DB write only happens for a genuinely
+    new match, since _auto_tag_case_artifact() itself already dedupes).
+    Errors are swallowed exactly like every other best-effort write in this
+    module - this must never break a File Views load."""
     if not case_folder or not case_consolidated_path(case_folder):
         return
     try:
+        db_path = case_index_db_path(case_folder)
+        if db_path and os.path.isfile(db_path):
+            conn = _case_index_connect(db_path)
+            try:
+                _migrate_legacy_case_artifact_tag(conn)
+            finally:
+                conn.close()
         scanned = 0
         for root, dirs, files in os.walk(case_folder):
             dirs[:] = [d for d in dirs if d not in _ARTIFACT_SCAN_SKIP_DIR_NAMES
