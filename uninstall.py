@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ARM Forensic Acquisition Station – uninstaller.
+Pi Forensics Suite – uninstaller.
 
 Reverses the actions of install.py:
   - stops and disables systemd services
@@ -33,7 +33,7 @@ NGINX_SITE = Path("/etc/nginx/sites-available/pi-forensics")
 NGINX_ENABLED = Path("/etc/nginx/sites-enabled/pi-forensics")
 
 print("=" * 56)
-print("  ARM Forensic Acquisition Station – Uninstaller")
+print("  Pi Forensics Suite – Uninstaller")
 print("=" * 56)
 print()
 print("This will stop services and remove configuration created")
