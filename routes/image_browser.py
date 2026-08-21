@@ -45,7 +45,7 @@ from core.case_index_db import (
     _record_parsed_artifacts,
 )
 from core.browser_artifacts import (
-    CHROME_ARTIFACT_FILENAMES, BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES, parse_chrome_profile_file,
+    BROWSER_ARTIFACT_FILENAMES, BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES, parse_browser_profile_file,
 )
 
 image_browser_bp = Blueprint('image_browser', __name__)
@@ -671,7 +671,7 @@ def image_hash_manifest():
     })
 
 # --- Browser Artifacts (in-image): real per-app parsing (Chrome/Chromium
-# family), directly against an acquired image's filesystem ---
+# family + Firefox), directly against an acquired image's filesystem ---
 # Same core/browser_artifacts.py parsing as the real-directory route in
 # routes/file_explorer.py - only candidate discovery differs (a pytsk3 walk
 # here, matching by entry name, instead of os.walk over real files) and
@@ -711,7 +711,7 @@ def image_parse_browser_artifacts():
             if time.time() - start_time > IMAGE_BROWSER_ARTIFACT_MAX_WALKED_SECONDS:
                 truncated = True
                 break
-            if entry['name'] in CHROME_ARTIFACT_FILENAMES:
+            if entry['name'] in BROWSER_ARTIFACT_FILENAMES:
                 candidates.append((fs, fsinfo, entry, path))
                 if len(candidates) >= BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES:
                     truncated = True
@@ -725,7 +725,7 @@ def image_parse_browser_artifacts():
         tmp_path = None
         try:
             tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
-            records = parse_chrome_profile_file(tmp_path, entry['name'])
+            records = parse_browser_profile_file(tmp_path, entry['name'])
         except Exception:
             records = []
         finally:

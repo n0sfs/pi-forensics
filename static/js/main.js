@@ -1519,10 +1519,12 @@ const FILE_VIEWS_HIT_LABELS = {
     credit_card_numbers: 'Credit Card-like Numbers', phone_numbers: 'Phone Numbers',
 };
 // Mirrors routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS - real per-app
-// artifact parsing (core/browser_artifacts.py), Chrome/Chromium family only.
+// artifact parsing (core/browser_artifacts.py), Chrome/Chromium family + Firefox.
 const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     chrome_history: 'Chrome/Chromium History', chrome_downloads: 'Chrome/Chromium Downloads',
     chrome_bookmarks: 'Chrome/Chromium Bookmarks', chrome_cookies: 'Chrome/Chromium Cookies',
+    firefox_history: 'Firefox History', firefox_downloads: 'Firefox Downloads',
+    firefox_bookmarks: 'Firefox Bookmarks', firefox_cookies: 'Firefox Cookies',
 };
 
 function buildFileViewsHierarchy(summary) {
@@ -3042,7 +3044,7 @@ function updateContextToolbar(item) {
     if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
     if (btnGeolocation) btnGeolocation.disabled = !item.is_dir;  // scans a whole folder of photos at once
-    if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium profile files
+    if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium + Firefox profile files
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
@@ -3561,12 +3563,15 @@ async function runSelectedGeolocationExport() {
     } catch (err) {}
 }
 
-// Chrome/Chromium field->plain-label map, shared by the real-fs and
-// in-image summary toasts below - kept in one place so the two entry
-// points can never describe the same artifact_type differently.
+// Browser-artifact field->plain-label map (Chrome/Chromium + Firefox),
+// shared by the real-fs and in-image summary toasts below - kept in one
+// place so the two entry points can never describe the same artifact_type
+// differently.
 const BROWSER_ARTIFACT_TYPE_LABELS = {
     chrome_history: 'history entries', chrome_downloads: 'downloads',
     chrome_bookmarks: 'bookmarks', chrome_cookies: 'cookies',
+    firefox_history: 'Firefox history entries', firefox_downloads: 'Firefox downloads',
+    firefox_bookmarks: 'Firefox bookmarks', firefox_cookies: 'Firefox cookies',
 };
 
 function summarizeBrowserArtifactCounts(counts) {
@@ -3588,7 +3593,7 @@ async function runSelectedBrowserArtifactsParse() {
             return;
         }
         if (data.candidates_found === 0) {
-            showToast('No Chrome/Chromium profile files (History/Cookies/Bookmarks) found under this folder.', 'success');
+            showToast('No Chrome/Chromium or Firefox profile files (History/Cookies/Bookmarks, places.sqlite/cookies.sqlite) found under this folder.', 'success');
             return;
         }
         const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
@@ -4646,7 +4651,7 @@ async function runImageBrowserArtifactsParse() {
             return;
         }
         if (data.candidates_found === 0) {
-            showToast('No Chrome/Chromium profile files (History/Cookies/Bookmarks) found in this image.', 'success');
+            showToast('No Chrome/Chromium or Firefox profile files (History/Cookies/Bookmarks, places.sqlite/cookies.sqlite) found in this image.', 'success');
             return;
         }
         const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
@@ -9937,7 +9942,7 @@ async function fetchProgress() {
     } catch (err) {}
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
     if (localStorage.getItem("pi_forensics_sidebar_compact") === "1") {
         const sidebar = document.getElementById("appSidebar");
         const icon = document.getElementById("sidebarToggleIcon");
@@ -9956,11 +9961,16 @@ document.addEventListener("DOMContentLoaded", () => {
     loadHomeStats();
     updateAndroidModeHelp();
     initHelpTooltips();
+    // Awaited before initActiveCaseBar() - that call can synchronously chain into
+    // loadCaseForEditing() -> renderCustomFieldsForCase(), which reads this cache. A bare
+    // fire-and-forget fetchCustomFieldDefs() here raced /api/report/load and regularly lost,
+    // leaving Case Details permanently empty for that whole page load with nothing to
+    // re-trigger a render once the cache did arrive (real bug, found via live testing).
+    await fetchCustomFieldDefs();
     initActiveCaseBar(); // sets activeCase synchronously (if restored) - must run before File Explorer's first build below so it roots at the right case from the start, not '/mnt' then a moment later re-rooting
     initExplorerTree();
     loadExplorer(getExplorerRootPath());
     fetchWhoami();
-    fetchCustomFieldDefs();
     fetchCustomReportTemplates();
 
     fetchNetworkInterfaces();

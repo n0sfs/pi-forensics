@@ -1,8 +1,8 @@
-"""core/browser_artifacts.py - Chrome/Chromium-family real per-app artifact
-parsing (History, Downloads, Bookmarks, Cookie metadata), added this
-session. No POSIX dependency - runs on every platform. Builds real SQLite
-files/JSON matching Chrome's actual on-disk schemas rather than mocking the
-parser, so a schema-shape mistake would actually fail these tests.
+"""core/browser_artifacts.py - Chrome/Chromium-family and Firefox real
+per-app artifact parsing (History, Downloads, Bookmarks, Cookies). No POSIX
+dependency - runs on every platform. Builds real SQLite files/JSON matching
+each browser's actual on-disk schema rather than mocking the parser, so a
+schema-shape mistake would actually fail these tests.
 """
 import json
 import os
@@ -233,10 +233,10 @@ def test_dispatch_routes_by_exact_filename(tmp_path, monkeypatch):
     monkeypatch.setattr(ba, "parse_chrome_cookies_db", lambda p: calls.append(("cookies", p)) or [{"b": 2}])
     monkeypatch.setattr(ba, "parse_chrome_bookmarks_json", lambda p: calls.append(("bookmarks", p)) or [{"c": 3}])
 
-    assert ba.parse_chrome_profile_file("/x/History", "History") == [{"a": 1}]
-    assert ba.parse_chrome_profile_file("/x/Cookies", "Cookies") == [{"b": 2}]
-    assert ba.parse_chrome_profile_file("/x/Bookmarks", "Bookmarks") == [{"c": 3}]
-    assert ba.parse_chrome_profile_file("/x/Unrelated", "Unrelated") == []
+    assert ba.parse_browser_profile_file("/x/History", "History") == [{"a": 1}]
+    assert ba.parse_browser_profile_file("/x/Cookies", "Cookies") == [{"b": 2}]
+    assert ba.parse_browser_profile_file("/x/Bookmarks", "Bookmarks") == [{"c": 3}]
+    assert ba.parse_browser_profile_file("/x/Unrelated", "Unrelated") == []
     assert {c[0] for c in calls} == {"history", "cookies", "bookmarks"}
 
 
@@ -245,49 +245,261 @@ def test_dispatch_swallows_a_parse_exception_and_returns_empty(tmp_path):
     # database (corrupted, truncated, or just coincidentally named).
     bad_path = tmp_path / "History"
     bad_path.write_text("not a real sqlite file")
-    result = ba.parse_chrome_profile_file(str(bad_path), "History")
+    result = ba.parse_browser_profile_file(str(bad_path), "History")
     assert result == []
 
 
-# --- find_chrome_artifact_files (real-fs candidate discovery) ---
+# --- find_browser_artifact_files (real-fs candidate discovery) ---
 
-def test_find_chrome_artifact_files_matches_by_exact_basename_anywhere_nested(tmp_path):
+def test_find_browser_artifact_files_matches_by_exact_basename_anywhere_nested(tmp_path):
     deep = tmp_path / "Users" / "suspect" / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default"
     deep.mkdir(parents=True)
     (deep / "History").write_text("x")
     (deep / "Cookies").write_text("x")
     (deep / "Bookmarks").write_text("x")
     (deep / "Preferences").write_text("x")  # not a recognized artifact filename - must not match
-    found, truncated = ba.find_chrome_artifact_files(str(tmp_path))
+    found, truncated = ba.find_browser_artifact_files(str(tmp_path))
     names = {os.path.basename(p) for p in found}
     assert names == {"History", "Cookies", "Bookmarks"}
     assert truncated is False
 
 
-def test_find_chrome_artifact_files_skips_bulk_carve_output_dirs(tmp_path):
+def test_find_browser_artifact_files_skips_bulk_carve_output_dirs(tmp_path):
     real = tmp_path / "Default"
     real.mkdir()
     (real / "History").write_text("x")
     carved = tmp_path / "CASE_ITEM-01_photorec" / "Default"
     carved.mkdir(parents=True)
     (carved / "History").write_text("x")  # same filename, inside a carve-output dir - must never be found
-    found, truncated = ba.find_chrome_artifact_files(str(tmp_path))
+    found, truncated = ba.find_browser_artifact_files(str(tmp_path))
     assert len(found) == 1
     assert "photorec" not in found[0]
 
 
-def test_find_chrome_artifact_files_empty_dir_returns_empty(tmp_path):
-    found, truncated = ba.find_chrome_artifact_files(str(tmp_path))
+def test_find_browser_artifact_files_empty_dir_returns_empty(tmp_path):
+    found, truncated = ba.find_browser_artifact_files(str(tmp_path))
     assert found == []
     assert truncated is False
 
 
-def test_find_chrome_artifact_files_truncates_at_the_candidate_cap(tmp_path, monkeypatch):
+def test_find_browser_artifact_files_truncates_at_the_candidate_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(ba, "BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES", 2)
     for i in range(4):
         d = tmp_path / f"profile{i}"
         d.mkdir()
         (d / "History").write_text("x")
-    found, truncated = ba.find_chrome_artifact_files(str(tmp_path))
+    found, truncated = ba.find_browser_artifact_files(str(tmp_path))
     assert len(found) == 2
     assert truncated is True
+
+
+def test_find_browser_artifact_files_matches_firefox_filenames_too(tmp_path):
+    # Firefox profile folders are randomly-named (<hash>.default-release) -
+    # basename-only matching (same approach as Chrome) finds the files
+    # regardless of what the containing profile folder is called.
+    profile = tmp_path / "Users" / "suspect" / "AppData" / "Roaming" / "Mozilla" / "Firefox" / "Profiles" / "a1b2c3d4.default-release"
+    profile.mkdir(parents=True)
+    (profile / "places.sqlite").write_text("x")
+    (profile / "cookies.sqlite").write_text("x")
+    (profile / "prefs.js").write_text("x")  # not a recognized artifact filename - must not match
+    found, truncated = ba.find_browser_artifact_files(str(tmp_path))
+    names = {os.path.basename(p) for p in found}
+    assert names == {"places.sqlite", "cookies.sqlite"}
+    assert truncated is False
+
+
+def test_find_browser_artifact_files_matches_chrome_and_firefox_in_one_walk(tmp_path):
+    chrome_dir = tmp_path / "chrome_profile"
+    chrome_dir.mkdir()
+    (chrome_dir / "History").write_text("x")
+    firefox_dir = tmp_path / "firefox_profile"
+    firefox_dir.mkdir()
+    (firefox_dir / "places.sqlite").write_text("x")
+    found, truncated = ba.find_browser_artifact_files(str(tmp_path))
+    names = {os.path.basename(p) for p in found}
+    assert names == {"History", "places.sqlite"}
+
+
+# --- Firefox epoch conversion (PRTime - microseconds since the Unix epoch,
+# NOT the WebKit epoch Chrome uses above) ---
+
+def test_firefox_epoch_zero_point_round_trips_to_unix_epoch():
+    assert ba.firefox_time_to_unix(0) is None  # 0 means "unset", not the epoch itself
+    # A known, hand-computed real PRTime: 2024-01-01 00:00:00 UTC.
+    prtime_us = 1704067200 * 1_000_000
+    assert ba.firefox_time_to_unix(prtime_us) == 1704067200.0
+
+
+def test_firefox_time_zero_or_empty_means_no_timestamp():
+    assert ba.firefox_time_to_unix(0) is None
+    assert ba.firefox_time_to_unix(None) is None
+    assert ba.firefox_time_to_unix("") is None
+
+
+def test_firefox_time_accepts_a_numeric_string():
+    assert ba.firefox_time_to_unix(str(1704067200 * 1_000_000)) == 1704067200.0
+
+
+def test_firefox_time_unparseable_value_returns_none():
+    assert ba.firefox_time_to_unix("not-a-number") is None
+
+
+def test_firefox_and_chrome_epochs_are_genuinely_different_conversions():
+    # The exact real-world gotcha this module's own docstring warns about -
+    # the same raw microsecond value must NOT produce the same Unix
+    # timestamp under both conversions (they differ by exactly the WebKit
+    # epoch offset, ~369 years). A copy-paste bug routing Firefox values
+    # through webkit_time_to_unix() would silently produce timestamps
+    # centuries off, so this is asserted directly rather than trusted.
+    raw_us = 1704067200 * 1_000_000
+    assert ba.firefox_time_to_unix(raw_us) != ba.webkit_time_to_unix(raw_us)
+    assert ba.webkit_time_to_unix(raw_us) == ba.firefox_time_to_unix(raw_us) - ba.WEBKIT_EPOCH_OFFSET_SECONDS
+
+
+# --- Firefox History + Bookmarks (moz_places/moz_bookmarks, both live in
+# 'places.sqlite') ---
+
+def _build_firefox_places_db(path, place_rows, bookmark_rows=(), anno_rows=()):
+    """place_rows: [(id, url, title, visit_count, last_visit_date), ...]
+    bookmark_rows: [(id, type, fk, parent, title, dateAdded), ...] - type=1
+    is a real bookmark, type=2 a folder (used as a parent, never inserted
+    as a moz_places row itself).
+    anno_rows: [(place_id, anno_attribute_id, content, dateAdded), ...] -
+    the download-tracking annotation rows; anno_attribute_id must match a
+    real id from moz_anno_attributes."""
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT, title TEXT, visit_count INTEGER, last_visit_date INTEGER)")
+    conn.executemany("INSERT INTO moz_places VALUES (?,?,?,?,?)", place_rows)
+    conn.execute("CREATE TABLE moz_bookmarks (id INTEGER PRIMARY KEY, type INTEGER, fk INTEGER, parent INTEGER, title TEXT, dateAdded INTEGER)")
+    conn.executemany("INSERT INTO moz_bookmarks VALUES (?,?,?,?,?,?)", bookmark_rows)
+    conn.execute("CREATE TABLE moz_anno_attributes (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("INSERT INTO moz_anno_attributes VALUES (1, 'downloads/destinationFileURI')")
+    conn.execute("CREATE TABLE moz_annos (id INTEGER PRIMARY KEY, place_id INTEGER, anno_attribute_id INTEGER, content TEXT, dateAdded INTEGER)")
+    conn.executemany("INSERT INTO moz_annos (place_id, anno_attribute_id, content, dateAdded) VALUES (?,?,?,?)", anno_rows)
+    conn.commit()
+    conn.close()
+
+
+def test_parse_firefox_history_returns_real_url_rows(tmp_path):
+    db_path = tmp_path / "places.sqlite"
+    visit_us = 1704067200 * 1_000_000
+    _build_firefox_places_db(str(db_path), [
+        (1, "https://mail.example.com/inbox", "Example Mail - Inbox", 12, visit_us),
+        (2, "https://never-visited.example.com", "No visits yet", 0, None),  # last_visit_date NULL - must be excluded (WHERE clause)
+    ])
+    result = ba.parse_firefox_places_db(str(db_path))
+    assert len(result["history"]) == 1
+    row = result["history"][0]
+    assert row["artifact_type"] == "firefox_history"
+    assert row["url"] == "https://mail.example.com/inbox"
+    assert row["title"] == "Example Mail - Inbox"
+    assert row["value"] == "12 visit(s)"
+    assert row["timestamp"] == 1704067200.0
+
+
+def test_parse_firefox_bookmarks_real_row_with_parent_folder_title(tmp_path):
+    db_path = tmp_path / "places.sqlite"
+    added_us = 1704067200 * 1_000_000
+    _build_firefox_places_db(str(db_path),
+        place_rows=[(1, "https://darkweb-market.example.onion", "Suspicious Site", 1, None)],
+        bookmark_rows=[
+            (100, 2, None, 0, "Bookmarks Toolbar", None),  # type=2 folder, itself a bookmark record's parent
+            (101, 1, 1, 100, "Suspicious Site", added_us),  # type=1 real bookmark, parent=100
+        ])
+    result = ba.parse_firefox_places_db(str(db_path))
+    assert len(result["bookmarks"]) == 1
+    row = result["bookmarks"][0]
+    assert row["artifact_type"] == "firefox_bookmarks"
+    assert row["title"] == "Suspicious Site"
+    assert row["url"] == "https://darkweb-market.example.onion"
+    assert row["value"] == "Bookmarks Toolbar"  # the immediate parent folder's own title
+    assert row["timestamp"] == 1704067200.0
+
+
+def test_parse_firefox_downloads_via_moz_annos_join(tmp_path):
+    db_path = tmp_path / "places.sqlite"
+    dl_us = 1704067200 * 1_000_000
+    _build_firefox_places_db(str(db_path),
+        place_rows=[(1, "https://evil.example.net/dl", "evil download page", 1, None)],
+        anno_rows=[(1, 1, "file:///C:/Users/suspect/Downloads/stolen_data.zip", dl_us)])
+    result = ba.parse_firefox_places_db(str(db_path))
+    assert len(result["downloads"]) == 1
+    row = result["downloads"][0]
+    assert row["artifact_type"] == "firefox_downloads"
+    assert row["title"] == "stolen_data.zip"  # basename extracted from the file:// URI, Windows separators and all
+    assert row["url"] == "https://evil.example.net/dl"
+    assert row["value"] == "C:/Users/suspect/Downloads/stolen_data.zip"
+    assert row["timestamp"] == 1704067200.0
+
+
+def test_parse_firefox_places_on_a_file_with_no_recognizable_tables_returns_empty_not_error(tmp_path):
+    db_path = tmp_path / "places.sqlite"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE unrelated_table (x INTEGER)")
+    conn.commit()
+    conn.close()
+    result = ba.parse_firefox_places_db(str(db_path))
+    assert result == {"history": [], "bookmarks": [], "downloads": []}
+
+
+# --- Firefox Cookies (moz_cookies, in the separate 'cookies.sqlite' file) ---
+
+def _build_firefox_cookies_db(path, rows):
+    """rows: [(host, name, value, path, expiry, isSecure, isHttpOnly, creationTime), ...]"""
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE moz_cookies (id INTEGER PRIMARY KEY, host TEXT, name TEXT, value TEXT, path TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, creationTime INTEGER)")
+    conn.executemany("INSERT INTO moz_cookies (host,name,value,path,expiry,isSecure,isHttpOnly,creationTime) VALUES (?,?,?,?,?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
+
+
+def test_parse_firefox_cookies_real_plaintext_value_shown_directly(tmp_path):
+    # Unlike Chrome, Firefox does NOT encrypt cookie values with an OS-level
+    # key - the real value is directly recoverable, and must be shown as-is
+    # (not "[encrypted]", which is a Chrome-specific disclosure that would
+    # be actively wrong/misleading if reused here).
+    db_path = tmp_path / "cookies.sqlite"
+    creation_us = 1704067200 * 1_000_000
+    expiry_s = 1800000000  # moz_cookies.expiry is SECONDS, not PRTime microseconds - the one exception on this table
+    _build_firefox_cookies_db(str(db_path), [
+        ("mail.example.com", "session_token", "abc123realvalue", "/", expiry_s, 1, 1, creation_us),
+    ])
+    result = ba.parse_firefox_cookies_db(str(db_path))
+    assert len(result) == 1
+    row = result[0]
+    assert row["artifact_type"] == "firefox_cookies"
+    assert row["title"] == "session_token"
+    assert row["url"] == "mail.example.com"
+    assert row["value"] == "abc123realvalue"  # real plaintext, not "[encrypted]"
+    assert row["timestamp"] == 1704067200.0
+    assert row["extra"]["expires"] == expiry_s  # stored as-is, no PRTime conversion applied to this one column
+    assert row["extra"]["secure"] is True
+    assert row["extra"]["httponly"] is True
+
+
+def test_parse_firefox_cookies_on_a_file_with_no_cookies_table_returns_empty(tmp_path):
+    db_path = tmp_path / "cookies.sqlite"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE unrelated_table (x INTEGER)")
+    conn.commit()
+    conn.close()
+    assert ba.parse_firefox_cookies_db(str(db_path)) == []
+
+
+# --- Dispatcher: Firefox filenames ---
+
+def test_dispatch_routes_firefox_filenames_too(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ba, "parse_firefox_places_db", lambda p: calls.append(("places", p)) or {"history": [{"a": 1}], "bookmarks": [{"b": 2}], "downloads": [{"c": 3}]})
+    monkeypatch.setattr(ba, "parse_firefox_cookies_db", lambda p: calls.append(("cookies", p)) or [{"d": 4}])
+
+    assert ba.parse_browser_profile_file("/x/places.sqlite", "places.sqlite") == [{"a": 1}, {"b": 2}, {"c": 3}]
+    assert ba.parse_browser_profile_file("/x/cookies.sqlite", "cookies.sqlite") == [{"d": 4}]
+    assert {c[0] for c in calls} == {"places", "cookies"}
+
+
+def test_dispatch_swallows_a_firefox_parse_exception_and_returns_empty(tmp_path):
+    bad_path = tmp_path / "places.sqlite"
+    bad_path.write_text("not a real sqlite file")
+    result = ba.parse_browser_profile_file(str(bad_path), "places.sqlite")
+    assert result == []

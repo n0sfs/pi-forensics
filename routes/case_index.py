@@ -112,6 +112,8 @@ def case_index_summary():
 PARSED_ARTIFACT_TYPE_LABELS = {
     "chrome_history": "Chrome/Chromium History", "chrome_downloads": "Chrome/Chromium Downloads",
     "chrome_bookmarks": "Chrome/Chromium Bookmarks", "chrome_cookies": "Chrome/Chromium Cookies",
+    "firefox_history": "Firefox History", "firefox_downloads": "Firefox Downloads",
+    "firefox_bookmarks": "Firefox Bookmarks", "firefox_cookies": "Firefox Cookies",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])

@@ -1,12 +1,18 @@
-"""Real per-app artifact parsing: Chrome/Chromium-family browser artifacts
-(History, Downloads, Bookmarks, Cookie metadata) - the first genuine
-"parsed artifact" capability in this app, distinct from everything File
-Views already offered (file-type buckets, tags, regex-matched triage hits).
-Scoped deliberately to the Chrome/Chromium family (Chrome, Edge, Brave,
-Opera, Vivaldi all share the same History/Cookies SQLite schema and
-Bookmarks JSON format) - Firefox (places.sqlite) and Safari use genuinely
-different formats and are a real, separate follow-up, not silently bundled
-in here.
+"""Real per-app artifact parsing: Chrome/Chromium-family AND Firefox browser
+artifacts (History, Downloads, Bookmarks, Cookie metadata) - the first
+genuine "parsed artifact" capability in this app, distinct from everything
+File Views already offered (file-type buckets, tags, regex-matched triage
+hits). Two families, two schemas, one shared output shape
+({artifact_type, title, url, value, timestamp, extra}) so File Views/the
+case index never need to know which browser produced a record:
+  - Chrome/Chromium family (Chrome, Edge, Brave, Opera, Vivaldi all share
+    the same History/Cookies SQLite schema and Bookmarks JSON format) -
+    matched by the fixed, extensionless filenames History/Cookies/Bookmarks.
+  - Firefox - a real, separate parser (places.sqlite for History+Bookmarks,
+    cookies.sqlite for cookies), added 2026-08-21. Safari's format is a
+    third, genuinely different thing (typically bundled into an iOS/macOS
+    backup rather than a portable profile folder) and is still explicitly
+    out of scope - not silently bundled in here.
 
 Shared by both the real-directory scan (routes/file_explorer.py) and the
 in-image scan (routes/image_browser.py) - only how each candidate file's
@@ -44,13 +50,43 @@ def webkit_time_to_unix(value):
     return (microseconds / 1_000_000) - WEBKIT_EPOCH_OFFSET_SECONDS
 
 
+# --- Firefox's own timestamp epoch ---
+# Firefox stores places.sqlite/cookies.sqlite timestamps as PRTime -
+# microseconds since the Unix epoch (1970-01-01), NOT the WebKit epoch
+# Chrome uses above - a real, distinct gotcha in this exact space (easy to
+# copy-paste the WebKit conversion and be ~52 years off instead of ~369).
+# The one exception: moz_cookies.expiry is stored in whole SECONDS since
+# the Unix epoch, not PRTime microseconds - handled separately below, never
+# routed through this function.
+def firefox_time_to_unix(value):
+    """Converts a Firefox PRTime microsecond timestamp (int, or numeric
+    string) to Unix epoch seconds. Returns None for 0/empty/unparseable -
+    same "0 means unset" convention Chrome's own timestamps use."""
+    if not value:
+        return None
+    try:
+        microseconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    if microseconds == 0:
+        return None
+    return microseconds / 1_000_000
+
+
 # --- Candidate-file detection ---
 # Chrome/Chromium profile files have fixed, extensionless names, always
 # sitting under a "User Data/<Profile>/" style folder - matched by exact
 # basename, not by location, since a real evidence acquisition can have
 # that folder nested arbitrarily deep (a user's own AppData tree, an
-# extracted phone backup, etc.).
+# extracted phone backup, etc.). Firefox profile files (places.sqlite,
+# cookies.sqlite) sit directly under a randomly-named profile folder
+# (<hash>.default-release/) - the profile folder's own name is never
+# assumed or parsed, since basename-only matching (identical to the Chrome
+# approach) already finds them regardless of what the containing folder is
+# called or how deep it's nested.
 CHROME_ARTIFACT_FILENAMES = {'History', 'Cookies', 'Bookmarks'}
+FIREFOX_ARTIFACT_FILENAMES = {'places.sqlite', 'cookies.sqlite'}
+BROWSER_ARTIFACT_FILENAMES = CHROME_ARTIFACT_FILENAMES | FIREFOX_ARTIFACT_FILENAMES
 
 BROWSER_ARTIFACT_MAX_HISTORY = 5000
 BROWSER_ARTIFACT_MAX_DOWNLOADS = 2000
@@ -66,15 +102,16 @@ _SCAN_SKIP_DIR_NAMES = {'RECOVERED_FILES'}  # extundelete's fixed output dir nam
 _SCAN_SKIP_DIR_SUFFIXES = ('_photorec', '_foremost', '_scalpel', '_triagescan')  # bulk carved-file output - same skip-list convention as this app's other whole-folder scanners (reporting.py's _discover_case_files, core/case_index_db.py's artifact-tag backfill sweep)
 
 
-def find_chrome_artifact_files(root_dir):
+def find_browser_artifact_files(root_dir):
     """Recursively finds real files whose basename exactly matches a known
-    Chrome/Chromium profile filename (CHROME_ARTIFACT_FILENAMES) anywhere
-    under root_dir - these live arbitrarily deep in a real acquisition (a
-    user's own AppData tree, an extracted phone backup, etc.), so location
-    is never assumed, only the filename. Returns (paths, truncated) -
-    truncated is True if either cap (candidates found, or total files
-    walked) was hit before the walk finished, so a caller can disclose an
-    incomplete scan rather than silently presenting it as exhaustive."""
+    Chrome/Chromium OR Firefox profile filename (BROWSER_ARTIFACT_FILENAMES)
+    anywhere under root_dir - these live arbitrarily deep in a real
+    acquisition (a user's own AppData/.mozilla tree, an extracted phone
+    backup, etc.), so location is never assumed, only the filename. Returns
+    (paths, truncated) - truncated is True if either cap (candidates found,
+    or total files walked) was hit before the walk finished, so a caller
+    can disclose an incomplete scan rather than silently presenting it as
+    exhaustive."""
     found = []
     walked = 0
     for root, dirs, files in os.walk(root_dir):
@@ -83,7 +120,7 @@ def find_chrome_artifact_files(root_dir):
             walked += 1
             if walked > BROWSER_ARTIFACT_SCAN_MAX_WALKED:
                 return found, True
-            if fname in CHROME_ARTIFACT_FILENAMES:
+            if fname in BROWSER_ARTIFACT_FILENAMES:
                 found.append(os.path.join(root, fname))
                 if len(found) >= BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES:
                     return found, True
@@ -267,16 +304,147 @@ def parse_chrome_bookmarks_json(path):
     return bookmarks
 
 
-def parse_chrome_profile_file(path, filename):
+def parse_firefox_places_db(path):
+    """Returns {"history": [...], "bookmarks": [...], "downloads": [...]},
+    each capped - all three live in the one 'places.sqlite' file, unlike
+    Chrome's separate History/Bookmarks files. Every timestamp column here
+    is PRTime (Firefox's own microseconds-since-Unix-epoch), never the
+    WebKit epoch - see firefox_time_to_unix()."""
+    history, bookmarks, downloads = [], [], []
+    conn = _open_sqlite_readonly(path)
+    try:
+        try:
+            cur = conn.execute(
+                "SELECT p.url, p.title, p.visit_count, p.last_visit_date "
+                "FROM moz_places p WHERE p.last_visit_date IS NOT NULL "
+                "ORDER BY p.last_visit_date DESC LIMIT ?",
+                (BROWSER_ARTIFACT_MAX_HISTORY,))
+            for url, title, visit_count, last_visit_date in cur:
+                history.append({
+                    "artifact_type": "firefox_history",
+                    "title": title or "",
+                    "url": url or "",
+                    "value": f"{visit_count} visit(s)" if visit_count else "",
+                    "timestamp": firefox_time_to_unix(last_visit_date),
+                    "extra": {"visit_count": visit_count},
+                })
+        except sqlite3.OperationalError:
+            pass  # not a real/recognizable moz_places table - leave history empty, still try bookmarks/downloads
+
+        try:
+            # type=1 is a real bookmark (fk references moz_places.id); a
+            # single left join to the immediate parent folder's own title
+            # gives a one-level location breadcrumb - not the full nested
+            # path Chrome's JSON walk can reconstruct (moz_bookmarks.parent
+            # is a self-referencing hierarchy, arbitrarily deep), but a
+            # reasonable, honest approximation rather than a second
+            # recursive-CTE query for marginal extra depth.
+            cur = conn.execute(
+                "SELECT p.url, b.title, b.dateAdded, folder.title "
+                "FROM moz_bookmarks b "
+                "JOIN moz_places p ON b.fk = p.id "
+                "LEFT JOIN moz_bookmarks folder ON b.parent = folder.id "
+                "WHERE b.type = 1 ORDER BY b.dateAdded DESC LIMIT ?",
+                (BROWSER_ARTIFACT_MAX_BOOKMARKS,))
+            for url, title, date_added, folder_title in cur:
+                bookmarks.append({
+                    "artifact_type": "firefox_bookmarks",
+                    "title": title or "",
+                    "url": url or "",
+                    "value": folder_title or "",
+                    "timestamp": firefox_time_to_unix(date_added),
+                    "extra": {"folder": folder_title or ""},
+                })
+        except sqlite3.OperationalError:
+            pass  # not a real/recognizable moz_bookmarks table
+
+        try:
+            # Modern Firefox has no dedicated downloads table - a download is
+            # a moz_places entry with two annotations attached
+            # ('downloads/destinationFileURI' holding a file:// URI,
+            # optionally 'downloads/metaData' holding a JSON blob with
+            # state/bytes). Best-effort and more version-dependent than
+            # Chrome's own dedicated downloads table - degrades to an empty
+            # list (not a parse failure) on any older/newer schema this
+            # query doesn't match, same defensive pattern as Chrome's own
+            # downloads try/except below.
+            cur = conn.execute(
+                "SELECT p.url, a.content, a.dateAdded "
+                "FROM moz_annos a "
+                "JOIN moz_places p ON a.place_id = p.id "
+                "JOIN moz_anno_attributes attr ON a.anno_attribute_id = attr.id "
+                "WHERE attr.name = 'downloads/destinationFileURI' "
+                "ORDER BY a.dateAdded DESC LIMIT ?",
+                (BROWSER_ARTIFACT_MAX_DOWNLOADS,))
+            for url, dest_uri, date_added in cur:
+                # file:///C:/Users/x/Downloads/y.zip -> y.zip - the same
+                # basename-only display Chrome's own downloads list uses,
+                # via the same cross-platform-separator-safe helper (a
+                # file:// URI's path can itself be Windows- or POSIX-style
+                # depending on which OS the browser ran on).
+                local_path = re.sub(r'^file:///?', '', dest_uri or '')
+                downloads.append({
+                    "artifact_type": "firefox_downloads",
+                    "title": _evidence_path_basename(local_path),
+                    "url": url or "",
+                    "value": local_path,
+                    "timestamp": firefox_time_to_unix(date_added),
+                    "extra": {},
+                })
+        except sqlite3.OperationalError:
+            pass  # older/newer Firefox schema this query doesn't match - skip rather than guess
+    finally:
+        conn.close()
+    return {"history": history, "bookmarks": bookmarks, "downloads": downloads}
+
+
+def parse_firefox_cookies_db(path):
+    """Returns a capped list of cookie rows from Firefox's 'cookies.sqlite'.
+    Unlike Chrome, Firefox does NOT encrypt cookie values with an OS-level
+    key by default - moz_cookies.value is real plaintext, so (unlike
+    parse_chrome_cookies_db's deliberate '[encrypted]' placeholder) the
+    actual value is included directly. moz_cookies.expiry is the one
+    column on this table stored in whole SECONDS since the Unix epoch, not
+    PRTime microseconds like every other Firefox timestamp - never routed
+    through firefox_time_to_unix()."""
+    cookies = []
+    conn = _open_sqlite_readonly(path)
+    try:
+        try:
+            cur = conn.execute(
+                "SELECT host, name, value, path, expiry, isSecure, isHttpOnly, creationTime "
+                "FROM moz_cookies ORDER BY creationTime DESC LIMIT ?",
+                (BROWSER_ARTIFACT_MAX_COOKIES,))
+        except sqlite3.OperationalError:
+            return cookies  # not a real/recognizable moz_cookies table
+        for host, name, value, path_, expiry, is_secure, is_httponly, creation_time in cur:
+            cookies.append({
+                "artifact_type": "firefox_cookies",
+                "title": name or "",
+                "url": host or "",
+                "value": value or "",
+                "timestamp": firefox_time_to_unix(creation_time),
+                "extra": {
+                    "path": path_, "expires": expiry if expiry else None,
+                    "secure": bool(is_secure), "httponly": bool(is_httponly),
+                },
+            })
+    finally:
+        conn.close()
+    return cookies
+
+
+def parse_browser_profile_file(path, filename):
     """Dispatches a candidate file (matched by exact basename against
-    CHROME_ARTIFACT_FILENAMES) to the right parser, returning a flat list
+    BROWSER_ARTIFACT_FILENAMES) to the right parser, returning a flat list
     of records (each already shaped {artifact_type, title, url, value,
-    timestamp, extra}) - 'History' yields two artifact_types at once
-    (chrome_history + chrome_downloads) since both live in that one file.
-    Any parse failure (corrupted/truncated/not actually a Chrome file
-    despite the matching name) is swallowed and returns an empty list -
-    matches this app's established best-effort tolerance for a single bad
-    input during a broader scan (e.g. _backfill_case_artifact_tags)."""
+    timestamp, extra}) - Chrome's 'History' and Firefox's 'places.sqlite'
+    each yield more than one artifact_type at once, since more than one
+    concept lives in that one file. Any parse failure (corrupted/truncated/
+    not actually a browser file despite the matching name) is swallowed and
+    returns an empty list - matches this app's established best-effort
+    tolerance for a single bad input during a broader scan (e.g.
+    _backfill_case_artifact_tags)."""
     try:
         if filename == 'History':
             parsed = parse_chrome_history_db(path)
@@ -285,6 +453,11 @@ def parse_chrome_profile_file(path, filename):
             return parse_chrome_cookies_db(path)
         if filename == 'Bookmarks':
             return parse_chrome_bookmarks_json(path)
+        if filename == 'places.sqlite':
+            parsed = parse_firefox_places_db(path)
+            return parsed["history"] + parsed["bookmarks"] + parsed["downloads"]
+        if filename == 'cookies.sqlite':
+            return parse_firefox_cookies_db(path)
     except Exception as e:
-        print(f"Warning: could not parse Chrome artifact file {path} ({filename}): {e}")
+        print(f"Warning: could not parse browser artifact file {path} ({filename}): {e}")
     return []
