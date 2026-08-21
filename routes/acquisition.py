@@ -177,7 +177,7 @@ def _dislocker_unlock(source_path, recovery_key, offset=None):
     mount_dir = os.path.join(DISLOCKER_MOUNT_ROOT, mount_id)
     os.makedirs(mount_dir, exist_ok=False)
 
-    cmd = ["sudo", "/sbin/dislocker", "-V", original_source]
+    cmd = ["sudo", "/usr/bin/dislocker", "-V", original_source]
     if offset:
         cmd += ["-O", str(offset)]
     cmd += [f"-p{recovery_key}", "--", mount_dir]
