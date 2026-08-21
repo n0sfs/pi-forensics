@@ -102,10 +102,17 @@ CREATE TABLE IF NOT EXISTS tags (
 -- for). A fresh case's tags table exists with these three the moment
 -- anything first touches the index, tagging included - not gated behind an
 -- image ever having been triage-scanned.
+-- Case Artifact is the fourth default, distinct from the other three: it's
+-- never applied by an examiner clicking Tag..., only by this app itself
+-- (see _auto_tag_case_artifact below) the moment it generates a report
+-- export, hash manifest, or geolocation KML - a self-classifying label so
+-- File Explorer's tree/File Views can group this app's own housekeeping
+-- output apart from real evidence without a separate mechanism.
 INSERT OR IGNORE INTO tags (name, color, notable, is_default, created_at) VALUES
     ('Bookmark', 'info', 0, 1, datetime('now')),
     ('Follow Up', 'warning', 0, 1, datetime('now')),
-    ('Notable Item', 'danger', 1, 1, datetime('now'));
+    ('Notable Item', 'danger', 1, 1, datetime('now')),
+    ('Case Artifact', 'secondary', 0, 1, datetime('now'));
 
 CREATE TABLE IF NOT EXISTS tagged_items (
     id INTEGER PRIMARY KEY,
@@ -281,3 +288,41 @@ def _record_analysis_result(case_folder, identity, tool, summary, output):
         conn.close()
     except Exception as e:
         print(f"Warning: could not record analysis result ({tool}) to case index: {e}")
+
+def _auto_tag_case_artifact(case_folder, file_path):
+    """Applies the built-in 'Case Artifact' tag (see the schema seed above)
+    to a real file this app itself just generated - a report export, hash
+    manifest, or geolocation KML - so File Explorer's File Views tree and
+    any future tag-aware view can find "everything this station produced
+    for this case" as easily as an examiner's own manually-tagged items.
+    Mirrors _record_analysis_result()'s best-effort, non-blocking contract
+    exactly: case_folder being absent/not-a-real-case, or any DB error, is
+    silently swallowed - a broken index write must never turn a successful
+    export into a reported failure. Deduped the same way case_index_tag_item()
+    dedupes a real_fs identity (by tag_id + path), so repeatedly overwriting
+    the same export filename (this app's own documented convention - a
+    report export always overwrites, never accumulates timestamped copies)
+    tags it once, not once per re-export."""
+    if not case_folder or not case_consolidated_path(case_folder):
+        return
+    db_path = case_index_db_path(case_folder)
+    if not db_path:
+        return
+    try:
+        conn = _case_index_connect(db_path)
+        row = conn.execute("SELECT id FROM tags WHERE name='Case Artifact'").fetchone()
+        if not row:
+            return  # schema seed above didn't run for some reason - fail quiet, don't create a duplicate
+        tag_id = row[0]
+        existing = conn.execute(
+            "SELECT id FROM tagged_items WHERE tag_id=? AND source_type='real_fs' AND path=?",
+            (tag_id, file_path)).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO tagged_items (tag_id, source_type, image_path, fs_offset, inode, path, name, comment, tagged_by, tagged_at) "
+                "VALUES (?,'real_fs',NULL,NULL,NULL,?,?,NULL,?,?)",
+                (tag_id, file_path, os.path.basename(file_path), 'system', time.strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Warning: could not auto-tag case artifact {file_path}: {e}")
