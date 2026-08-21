@@ -151,6 +151,64 @@ function switchToTab(tabId) {
     if (el) new bootstrap.Tab(el).show();
 }
 
+// Home tab's station-wide stats strip - built entirely from two already-
+// existing, @requires_auth-only endpoints (no new backend route, no
+// permission gating beyond being logged in). "Today" is defined relative
+// to the newest log entry's own date rather than the browser's clock, so a
+// viewing device in a different timezone than the station can't disagree
+// with the log about what "today" means.
+async function loadHomeStats() {
+    const els = {
+        cases: document.getElementById('homeStatCases'),
+        items: document.getElementById('homeStatEvidenceItems'),
+        today: document.getElementById('homeStatActionsToday'),
+        latest: document.getElementById('homeStatLatestActivity'),
+    };
+    if (!els.cases) return; // Home tab isn't in the DOM (shouldn't happen, but don't throw if so)
+
+    try {
+        const [casesRes, cocRes] = await Promise.all([
+            fetch('/api/cases/list'),
+            fetch('/api/coc/log?limit=200'),
+        ]);
+        const casesData = await casesRes.json();
+        const cocData = await cocRes.json();
+
+        if (casesData.success) {
+            const cases = casesData.cases || [];
+            els.cases.textContent = String(cases.length);
+            // Consolidated cases carry a real event_count; a legacy
+            // (pre-consolidation, not yet migrated) case has none but
+            // still represents exactly one acquisition - count it as 1
+            // rather than 0, so an unmigrated case doesn't just vanish
+            // from this total.
+            const totalEvidence = cases.reduce((sum, c) => sum + (typeof c.event_count === 'number' ? c.event_count : 1), 0);
+            els.items.textContent = String(totalEvidence);
+        } else {
+            els.cases.textContent = '--';
+            els.items.textContent = '--';
+        }
+
+        if (cocData.success) {
+            const entries = cocData.entries || [];
+            if (entries.length > 0 && entries[0].timestamp) {
+                const latestDate = entries[0].timestamp.slice(0, 10); // "YYYY-MM-DD"
+                const todayCount = entries.filter(e => e.timestamp && e.timestamp.startsWith(latestDate)).length;
+                els.today.textContent = String(todayCount);
+                els.latest.textContent = entries[0].timestamp;
+            } else {
+                els.today.textContent = '0';
+                els.latest.textContent = 'No activity yet';
+            }
+        } else {
+            els.today.textContent = '--';
+            els.latest.textContent = '--';
+        }
+    } catch (err) {
+        Object.values(els).forEach(el => { if (el) el.textContent = '--'; });
+    }
+}
+
 // Persist and restore whichever top-level sidebar tab the examiner was last on, so refreshing the
 // page (or the kiosk browser restarting) doesn't always land back on Forensic Acquisition - a real
 // reported annoyance for anyone mid-review on Reporting/Settings/etc. Scoped to exactly these 6 real
@@ -9140,6 +9198,7 @@ document.addEventListener("DOMContentLoaded", () => {
     refreshMobileDevices();
     updateDdrescueStrategyHelp();
     updateRecoveryToolControls();
+    loadHomeStats();
     updateAndroidModeHelp();
     initHelpTooltips();
     initActiveCaseBar(); // sets activeCase synchronously (if restored) - must run before File Explorer's first build below so it roots at the right case from the start, not '/mnt' then a moment later re-rooting
