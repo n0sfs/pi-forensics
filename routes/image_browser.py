@@ -42,6 +42,10 @@ from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entri
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
+    _record_parsed_artifacts,
+)
+from core.browser_artifacts import (
+    CHROME_ARTIFACT_FILENAMES, BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES, parse_chrome_profile_file,
 )
 
 image_browser_bp = Blueprint('image_browser', __name__)
@@ -657,6 +661,90 @@ def image_hash_manifest():
     return jsonify({
         "success": True, "manifest_path": manifest_path, "files_hashed": files_hashed,
         "files_errored": files_errored, "truncated": truncated
+    })
+
+# --- Browser Artifacts (in-image): real per-app parsing (Chrome/Chromium
+# family), directly against an acquired image's filesystem ---
+# Same core/browser_artifacts.py parsing as the real-directory route in
+# routes/file_explorer.py - only candidate discovery differs (a pytsk3 walk
+# here, matching by entry name, instead of os.walk over real files) and
+# each match needs extracting to a short-lived temp file first (parsing
+# needs a real path on disk - same reasoning image_binwalk()/image_strings()
+# already established for this exact extract-to-temp-then-parse pattern).
+IMAGE_BROWSER_ARTIFACT_MAX_WALKED_SECONDS = 300  # the walk itself is cheap (a name comparison per entry) - this is a backstop against a pathologically large/looping filesystem, not the normal case
+
+@image_browser_bp.route('/api/image/parse_browser_artifacts', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_browser_artifacts():
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    filesystems = _tsk_resolve_filesystems(image_path)
+    if not filesystems:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    start_time = time.time()
+    candidates = []  # (fs, fsinfo, entry, in-image path)
+    truncated = False
+    for fsinfo in filesystems:
+        try:
+            fs = _tsk_open_fs(image_path, fsinfo['offset'])
+        except Exception:
+            continue
+        for entry, path in _tsk_walk(fs):
+            if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
+                continue  # deleted-file data may already be partially overwritten - same exclusion every other in-image analysis tool in this app already applies
+            if time.time() - start_time > IMAGE_BROWSER_ARTIFACT_MAX_WALKED_SECONDS:
+                truncated = True
+                break
+            if entry['name'] in CHROME_ARTIFACT_FILENAMES:
+                candidates.append((fs, fsinfo, entry, path))
+                if len(candidates) >= BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES:
+                    truncated = True
+                    break
+        if truncated:
+            break
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+            records = parse_chrome_profile_file(tmp_path, entry['name'])
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("browser_artifacts_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 
 # --- Filesystem-aware triage scan, directly against an acquired image ---

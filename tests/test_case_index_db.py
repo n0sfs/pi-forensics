@@ -295,3 +295,82 @@ def test_backfill_is_a_silent_no_op_for_a_non_case_folder(tmp_path):
 def test_backfill_is_a_silent_no_op_for_none_or_empty_folder():
     case_index_db._backfill_case_artifact_tags(None)
     case_index_db._backfill_case_artifact_tags("")
+
+
+# --- _record_parsed_artifacts / _parsed_artifact_counts (core/browser_artifacts.py's write side) ---
+
+def _sample_history_records():
+    return [
+        {"artifact_type": "chrome_history", "title": "Example", "url": "https://example.com",
+         "value": "3 visit(s)", "timestamp": 1700000000.0, "extra": {"visit_count": 3}},
+        {"artifact_type": "chrome_downloads", "title": "evidence.zip", "url": "https://example.com/evidence.zip",
+         "value": "/home/user/Downloads/evidence.zip", "timestamp": 1700000100.0, "extra": {"state": "complete"}},
+    ]
+
+
+def test_record_parsed_artifacts_writes_real_rows(case_folder):
+    identity = {"source_type": "real_fs", "image_path": None, "fs_offset": None, "inode": None,
+                "path": os.path.join(case_folder, "History")}
+    written = case_index_db._record_parsed_artifacts(case_folder, identity, _sample_history_records())
+    assert written == 2
+
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    rows = conn.execute(
+        "SELECT artifact_type, title, url, value, timestamp, extra_json FROM parsed_artifacts ORDER BY artifact_type").fetchall()
+    conn.close()
+    assert len(rows) == 2
+    history_row = next(r for r in rows if r[0] == "chrome_history")
+    assert history_row[1] == "Example"
+    assert history_row[2] == "https://example.com"
+    assert history_row[4] == 1700000000.0
+    assert json.loads(history_row[5]) == {"visit_count": 3}
+
+
+def test_record_parsed_artifacts_replaces_prior_rows_for_the_same_source(case_folder):
+    identity = {"source_type": "real_fs", "image_path": None, "fs_offset": None, "inode": None,
+                "path": os.path.join(case_folder, "History")}
+    case_index_db._record_parsed_artifacts(case_folder, identity, _sample_history_records())
+    # Re-parse with just one record (e.g. a newer, smaller History snapshot) -
+    # must replace, not accumulate on top of the first pass's 2 rows.
+    case_index_db._record_parsed_artifacts(case_folder, identity, _sample_history_records()[:1])
+
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM parsed_artifacts").fetchone()[0]
+    conn.close()
+    assert count == 1
+
+
+def test_record_parsed_artifacts_from_different_sources_do_not_collide(case_folder):
+    id_a = {"source_type": "real_fs", "path": os.path.join(case_folder, "History")}
+    id_b = {"source_type": "real_fs", "path": os.path.join(case_folder, "Cookies")}
+    case_index_db._record_parsed_artifacts(case_folder, id_a, _sample_history_records())
+    case_index_db._record_parsed_artifacts(case_folder, id_b, [
+        {"artifact_type": "chrome_cookies", "title": "session_id", "url": "example.com",
+         "value": "[encrypted]", "timestamp": None, "extra": {"secure": True}},
+    ])
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM parsed_artifacts").fetchone()[0]
+    conn.close()
+    assert count == 3  # 2 from History + 1 from Cookies, both preserved
+
+
+def test_record_parsed_artifacts_is_a_silent_no_op_for_no_active_case(tmp_path):
+    identity = {"source_type": "real_fs", "path": str(tmp_path / "History")}
+    written = case_index_db._record_parsed_artifacts(None, identity, _sample_history_records())
+    assert written == 0
+    written2 = case_index_db._record_parsed_artifacts(str(tmp_path), identity, _sample_history_records())
+    assert written2 == 0  # tmp_path isn't a real consolidated case
+
+
+def test_parsed_artifact_counts_reflects_real_types_and_counts(case_folder):
+    id_a = {"source_type": "real_fs", "path": os.path.join(case_folder, "History")}
+    case_index_db._record_parsed_artifacts(case_folder, id_a, _sample_history_records())
+    counts = case_index_db._parsed_artifact_counts(case_folder)
+    assert counts == {"chrome_history": 1, "chrome_downloads": 1}
+
+
+def test_parsed_artifact_counts_empty_dict_when_never_indexed(case_folder):
+    assert case_index_db._parsed_artifact_counts(case_folder) == {}
