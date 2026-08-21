@@ -10,6 +10,7 @@ behavior change. See the dated CLAUDE.md entry for this refactor.
 """
 import os
 import re
+import json
 import time
 import sqlite3
 from flask import g
@@ -226,6 +227,34 @@ CREATE TABLE IF NOT EXISTS analysis_results (
 );
 CREATE INDEX IF NOT EXISTS idx_analysis_path ON analysis_results(path);
 CREATE INDEX IF NOT EXISTS idx_analysis_image ON analysis_results(image_path);
+
+-- Real per-app artifact parsing (core/browser_artifacts.py) - Chrome/
+-- Chromium History/Downloads/Bookmarks/Cookies, one row per parsed record
+-- (a single visited URL, a single download, a single bookmark, a single
+-- cookie), not one row per source file the way analysis_results is.
+-- source_path is the History/Cookies/Bookmarks file this record came from;
+-- extra_json holds whatever type-specific fields don't fit the generic
+-- title/url/value/timestamp shape (visit_count, download state/bytes,
+-- bookmark folder, cookie secure/httponly/expiry), kept as JSON rather than
+-- a wide sparse column set since every artifact_type uses a different
+-- subset.
+CREATE TABLE IF NOT EXISTS parsed_artifacts (
+    id INTEGER PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    image_path TEXT,
+    fs_offset INTEGER,
+    inode TEXT,
+    source_path TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    title TEXT,
+    url TEXT,
+    value TEXT,
+    timestamp REAL,
+    extra_json TEXT,
+    found_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_parsed_artifacts_type ON parsed_artifacts(artifact_type);
+CREATE INDEX IF NOT EXISTS idx_parsed_artifacts_source ON parsed_artifacts(source_path);
 """
 
 def _case_index_connect(db_path):
@@ -363,6 +392,71 @@ def _record_analysis_result(case_folder, identity, tool, summary, output):
         conn.close()
     except Exception as e:
         print(f"Warning: could not record analysis result ({tool}) to case index: {e}")
+
+PARSED_ARTIFACTS_MAX_PER_SOURCE = 10_000  # backstop above core/browser_artifacts.py's own per-type caps combined
+
+def _record_parsed_artifacts(case_folder, identity, records):
+    """Persists a batch of records already parsed by core/browser_artifacts.py
+    (each shaped {artifact_type, title, url, value, timestamp, extra}) - the
+    write side of routes/file_explorer.py's/routes/image_browser.py's
+    browser-artifact-parsing routes. `identity` describes the SOURCE FILE
+    (the History/Cookies/Bookmarks file these records came from), same
+    shape _record_analysis_result() takes minus 'name' (not needed here -
+    every stored row already carries its own title/url).
+
+    Re-scan safety: deletes this exact source_path's prior rows before
+    inserting fresh ones, same pattern execution_worker_image_triage_scan()
+    already uses for indexed_files/triage_hits - re-parsing the same
+    History file (an examiner re-running the scan after copying a newer
+    profile snapshot in) replaces its rows rather than duplicating them.
+    Best-effort like every other case-index write in this module: a broken/
+    locked index must never turn a successful parse into a reported
+    failure. Returns the number of rows actually written (0 on any
+    failure or if case_folder isn't real/active)."""
+    if not case_folder or not case_consolidated_path(case_folder):
+        return 0
+    db_path = case_index_db_path(case_folder)
+    if not db_path:
+        return 0
+    source_path = identity.get("path")
+    found_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        conn = _case_index_connect(db_path)
+        conn.execute("DELETE FROM parsed_artifacts WHERE source_path=?", (source_path,))
+        rows = [
+            (identity["source_type"], identity.get("image_path"), identity.get("fs_offset"), identity.get("inode"),
+             source_path, r["artifact_type"], r.get("title") or "", r.get("url") or "", r.get("value") or "",
+             r.get("timestamp"), json.dumps(r.get("extra") or {}), found_at)
+            for r in records[:PARSED_ARTIFACTS_MAX_PER_SOURCE]
+        ]
+        conn.executemany(
+            "INSERT INTO parsed_artifacts (source_type, image_path, fs_offset, inode, source_path, artifact_type, "
+            "title, url, value, timestamp, extra_json, found_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows)
+        conn.commit()
+        conn.close()
+        return len(rows)
+    except Exception as e:
+        print(f"Warning: could not record parsed artifacts from {source_path} to case index: {e}")
+        return 0
+
+def _parsed_artifact_counts(case_folder):
+    """Returns {artifact_type: count} for whatever's actually been parsed
+    into this case's index so far (empty dict if never indexed) - feeds
+    case_index_summary()'s response, which File Views' tree renders as a
+    per-type child under a new 'Web Artifacts' category. Dynamically
+    discovered (not a fixed key set like TRIAGE_PATTERNS) since which
+    artifact_types exist depends entirely on what's actually been parsed -
+    a case with only a Bookmarks file scanned never shows a chrome_cookies
+    entry at all, rather than a permanent 0."""
+    conn = _case_index_open_readonly(case_folder)
+    if not conn:
+        return {}
+    try:
+        return {row[0]: row[1] for row in conn.execute(
+            "SELECT artifact_type, COUNT(*) FROM parsed_artifacts GROUP BY artifact_type")}
+    finally:
+        conn.close()
 
 # One default tag per classify_case_role() outcome - see the schema seed
 # comment above for why this exists as four tags instead of one lump one.

@@ -10,6 +10,7 @@ Part of the app.py -> core/ + routes/ split. See the dated CLAUDE.md
 entry for this refactor.
 """
 import os
+import json
 import time
 import sqlite3
 
@@ -70,6 +71,7 @@ def case_index_summary():
     by_extension = {cat: 0 for cat in FILE_VIEW_EXTENSION_CATEGORIES}
     keyword_hits = {name: 0 for name in TRIAGE_PATTERNS}
     custom_keyword_hits = []  # any keyword-list-derived categories ('kw_<id>') a scan actually recorded hits under - see build_scan_patterns()
+    parsed_artifact_counts = {}  # {artifact_type: count} - whatever core/browser_artifacts.py has actually parsed into this case; see routes/file_explorer.py's/routes/image_browser.py's parse_browser_artifacts routes
     deleted_files = 0
     total_files = 0
     tags = []
@@ -85,6 +87,8 @@ def case_index_summary():
                     keyword_hits[row[0]] = row[1]
                 elif row[0].startswith(KEYWORD_CATEGORY_PREFIX):
                     custom_keyword_hits.append({"category": row[0], "label": resolve_scan_category_label(row[0]), "count": row[1]})
+            for row in conn.execute("SELECT artifact_type, COUNT(*) FROM parsed_artifacts GROUP BY artifact_type"):
+                parsed_artifact_counts[row[0]] = row[1]
             for row in conn.execute(
                     "SELECT t.id, t.name, t.color, t.notable, t.is_default, "
                     "(SELECT COUNT(*) FROM tagged_items WHERE tag_id=t.id) "
@@ -101,8 +105,46 @@ def case_index_summary():
         "deleted_files": deleted_files,
         "keyword_hits": {"total": sum(keyword_hits.values()) + sum(c['count'] for c in custom_keyword_hits), **keyword_hits},
         "custom_keyword_hits": custom_keyword_hits,
+        "parsed_artifact_counts": parsed_artifact_counts,
         "tags": tags,
     })
+
+PARSED_ARTIFACT_TYPE_LABELS = {
+    "chrome_history": "Chrome/Chromium History", "chrome_downloads": "Chrome/Chromium Downloads",
+    "chrome_bookmarks": "Chrome/Chromium Bookmarks", "chrome_cookies": "Chrome/Chromium Cookies",
+}
+
+@case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def case_index_parsed_artifacts():
+    """Lists parsed browser-artifact records (core/browser_artifacts.py) of
+    one artifact_type - the query side of File Views' new "Web Artifacts"
+    category, same request/response shape as case_index_files()/
+    case_index_hits() above (category in, rows out) but against
+    parsed_artifacts instead of indexed_files/triage_hits, since these rows
+    are structured records (a visited URL, a download, a bookmark, a
+    cookie), not files - the frontend renders them into their own small
+    table rather than reusing the file-row Listing pipeline."""
+    req = request.get_json() or {}
+    category = req.get('category', '')
+    conn = _case_index_open_readonly(req.get('case_folder'))
+    rows = []
+    if conn and category in PARSED_ARTIFACT_TYPE_LABELS:
+        try:
+            cur = conn.execute(
+                "SELECT source_type, image_path, fs_offset, inode, source_path, title, url, value, timestamp, extra_json "
+                "FROM parsed_artifacts WHERE artifact_type=? ORDER BY timestamp DESC LIMIT 5000",
+                (category,))
+            for r in cur:
+                rows.append({
+                    "source_type": r[0], "image_path": r[1], "fs_offset": r[2], "inode": r[3],
+                    "source_path": r[4], "title": r[5], "url": r[6], "value": r[7], "timestamp": r[8],
+                    "extra": json.loads(r[9]) if r[9] else {},
+                })
+        finally:
+            conn.close()
+    return jsonify({"success": True, "rows": rows})
 
 # Same recognized-image-extension set as isImageFile() in main.js (the
 # single source of truth for "does this file get a Browse as Image
