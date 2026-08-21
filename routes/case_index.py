@@ -21,6 +21,7 @@ from core.case_index_db import (
     case_index_db_path, _case_index_connect,
     _case_index_open_readonly, _case_index_open_write,
     _tags_for_paths, _analysis_results_for_paths, TRIAGE_PATTERNS,
+    _backfill_case_artifact_tags,
 )
 
 case_index_bp = Blueprint('case_index', __name__)
@@ -58,7 +59,13 @@ def case_index_analysis_for_paths():
 @requires_permission('file_explorer')
 def case_index_summary():
     req = request.get_json() or {}
-    conn = _case_index_open_readonly(req.get('case_folder'))
+    case_folder = req.get('case_folder')
+    # Self-heals the 'Case Artifact' tag bucket every time File Views loads,
+    # rather than requiring a dedicated backfill action - see the function's
+    # own docstring for why this can't just rely on the per-write-site
+    # auto-tagging alone.
+    _backfill_case_artifact_tags(case_folder)
+    conn = _case_index_open_readonly(case_folder)
     by_extension = {cat: 0 for cat in FILE_VIEW_EXTENSION_CATEGORIES}
     keyword_hits = {name: 0 for name in TRIAGE_PATTERNS}
     deleted_files = 0

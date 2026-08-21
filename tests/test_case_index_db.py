@@ -104,3 +104,81 @@ def test_two_different_files_get_two_distinct_tagged_rows(case_folder):
     count = conn.execute("SELECT COUNT(*) FROM tagged_items").fetchone()[0]
     conn.close()
     assert count == 2
+
+
+def test_backfill_tags_pre_existing_artifact_files_never_seen_by_auto_tag(case_folder):
+    # The exact gap this exists to close: a report/log/kml file that landed
+    # on disk (a legacy case, a manual copy, or simply predates the
+    # per-write-site auto-tag call) with no _auto_tag_case_artifact() call
+    # ever having run against it. Note the case_folder fixture's own
+    # {slug}_case.json marker is itself a recognized report artifact - it
+    # gets swept too, correctly, so this asserts membership rather than an
+    # exact set.
+    report = os.path.join(case_folder, "2026-CASE-TEST_case.pdf")
+    hashlog = os.path.join(case_folder, "2026-CASE-TEST_USBDrive-1_hash_manifest_sha256.txt")
+    kml = os.path.join(case_folder, "geolocation_export.kml")
+    evidence = os.path.join(case_folder, "batmanlego.JPG")  # not a recognized artifact - must stay untagged
+    for p in (report, hashlog, kml, evidence):
+        with open(p, "w") as f:
+            f.write("x")
+
+    case_index_db._backfill_case_artifact_tags(case_folder)
+
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    tagged_paths = {r[0] for r in conn.execute(
+        "SELECT ti.path FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id WHERE t.name='Case Artifact'")}
+    conn.close()
+    assert {report, hashlog, kml} <= tagged_paths
+    assert evidence not in tagged_paths
+
+
+def test_backfill_is_idempotent_and_skips_recovery_tool_output_dirs(case_folder):
+    report = os.path.join(case_folder, "2026-CASE-TEST_case.pdf")
+    with open(report, "w") as f:
+        f.write("x")
+    carved_dir = os.path.join(case_folder, "2026-CASE-TEST_ITEM-01_photorec")
+    os.makedirs(carved_dir)
+    # Same base name pattern classify_case_role() would otherwise match -
+    # sitting inside a bulk carved-file output dir must never be swept.
+    carved_lookalike = os.path.join(carved_dir, "recovered_case.pdf")
+    with open(carved_lookalike, "w") as f:
+        f.write("x")
+
+    case_index_db._backfill_case_artifact_tags(case_folder)
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    first_paths = [r[0] for r in conn.execute(
+        "SELECT ti.path FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id WHERE t.name='Case Artifact'")]
+    conn.close()
+    assert report in first_paths
+    assert carved_lookalike not in first_paths
+
+    # Re-run - a second sweep may legitimately pick up one new real artifact
+    # this app itself just created (the per-case SQLite index file, which is
+    # itself a recognized report artifact once it exists on disk), but must
+    # never re-tag anything it already tagged, and must still never reach
+    # into the carve-output dir.
+    case_index_db._backfill_case_artifact_tags(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    second_paths = [r[0] for r in conn.execute(
+        "SELECT ti.path FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id WHERE t.name='Case Artifact'")]
+    dupes = conn.execute(
+        "SELECT ti.path, COUNT(*) c FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id "
+        "WHERE t.name='Case Artifact' GROUP BY ti.path HAVING c > 1").fetchall()
+    conn.close()
+    assert not dupes
+    assert carved_lookalike not in second_paths
+
+
+def test_backfill_is_a_silent_no_op_for_a_non_case_folder(tmp_path):
+    not_a_case = tmp_path / "just_a_folder"
+    not_a_case.mkdir()
+    (not_a_case / "whatever_case.pdf").write_text("x")
+    case_index_db._backfill_case_artifact_tags(str(not_a_case))
+    assert not any(f.endswith('.db') for f in os.listdir(not_a_case))
+
+
+def test_backfill_is_a_silent_no_op_for_none_or_empty_folder():
+    case_index_db._backfill_case_artifact_tags(None)
+    case_index_db._backfill_case_artifact_tags("")
