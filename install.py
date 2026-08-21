@@ -752,29 +752,29 @@ wlr-randr --output ALL --on 2>/dev/null || true
 # racing that.
 sleep 3
 
-# On-screen keyboard for touch input - CURRENTLY DISABLED.
+# On-screen keyboard for touch input.
 #
-# wvkbd-mobintl was crash-looping on at least one real deployment (rapid
-# restart cycle every ~3s, each cycle's layer-shell surface mapping/
-# unmapping briefly, which looked like the whole kiosk screen flashing
-# between the keyboard and the app). Since local kiosk login is bypassed
-# by default (see FORENSIC_KIOSK_AUTH_BYPASS in app.py), the original
-# urgent reason for this - helping type into the native Basic Auth prompt -
-# no longer applies, so it's disabled here rather than left actively
-# breaking the kiosk display while unresolved. The remaining use case
-# (typing case numbers, notes, etc.) can use a physical USB keyboard
-# in the meantime.
-#
-# To re-enable and actually debug the crash, redirect its output to a log
-# instead of guessing at flags blind:
-#   wvkbd-mobintl --hidden -H 340 -L 230 >> /tmp/wvkbd.log 2>&1
-# then check /tmp/wvkbd.log for the actual error after it dies.
-#
-# while true; do
-#     wvkbd-mobintl --hidden -H 340 -L 230
-#     echo "[kiosk] wvkbd exited, restarting in 3s..." >&2
-#     sleep 3
-# done &
+# Previously disabled after wvkbd-mobintl was observed crash-looping on at
+# least one real deployment (rapid restart cycle every ~3s, each cycle's
+# layer-shell surface mapping/unmapping briefly, which looked like the whole
+# kiosk screen flashing between the keyboard and the app). Re-enabled after
+# live debugging directly against a real deployed station's already-running
+# kiosk session (SSH'd in, launched wvkbd-mobintl against the live Wayland
+# socket with logging, then stress-tested it with 7 rapid SIGUSR2/SIGUSR1
+# show/hide toggles 0.3s apart - the exact layer-shell mapping/unmapping
+# the original bug describes) and found it completely stable: no crash, no
+# restart, same PID throughout, chromium unaffected. Output still stays
+# redirected to a log, and the respawn loop stays capped (not unconditional)
+# in case a real cold-boot startup race - not reproducible by attaching to
+# an already-running session - still triggers something that live test
+# against a warm session couldn't catch.
+wvkbd_restarts=0
+while [ "$wvkbd_restarts" -lt 10 ]; do
+    wvkbd-mobintl --hidden -H 340 -L 230 >> /tmp/wvkbd.log 2>&1
+    wvkbd_restarts=$((wvkbd_restarts + 1))
+    echo "[kiosk] wvkbd exited (restart $wvkbd_restarts/10), retrying in 3s..." >&2
+    sleep 3
+done &
 
 # Respawn loop: if chromium crashes or is closed, relaunch it rather than
 # leaving a blank screen until the next reboot. This is the equivalent of
