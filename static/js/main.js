@@ -1,3 +1,35 @@
+// --- Idle-session redirect: a single global fetch() wrapper ---
+// Sessions now idle-timeout server-side (core/auth.py, FORENSIC_IDLE_TIMEOUT,
+// default 30 min of no requests). Once that happens, this app's own
+// background polling (fetchSystemInfo() etc., every 2s) starts getting real
+// 401s instead of data - left alone, that would just show up as silently-
+// broken telemetry forever, never a clear "please log back in". Patching the
+// one shared fetch() primitive covers all ~100+ call sites in this file
+// uniformly, with nothing to keep in sync at each one individually - the
+// alternative (teaching every call site its own 401 handling) doesn't scale
+// and is easy to miss on a new one. Placed as the very first executable
+// statement in this file, before any other code runs, so it's guaranteed to
+// wrap fetch() before anything (including DOMContentLoaded's own early
+// fetchWhoami() call) has a chance to use the original. /login and /logout
+// are excluded since neither ever needs a session to begin with - a wrong-
+// password 401 from /login is handled inline by whatever called it (the
+// login form itself, or Switch User), not a real logout.
+(function () {
+    const _origFetch = window.fetch.bind(window);
+    window.fetch = async function (input, init) {
+        const res = await _origFetch(input, init);
+        if (res.status === 401 && window.location.pathname !== '/login') {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            let path;
+            try { path = new URL(url, window.location.origin).pathname; } catch (e) { path = url; }
+            if (path !== '/login' && path !== '/logout') {
+                window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname) + '&expired=1';
+            }
+        }
+        return res;
+    };
+})();
+
 let isWriteBlockActive = true;
 let throughputChart = null;
 const maxGraphPoints = 30;
@@ -8778,6 +8810,90 @@ async function uploadTlsCertificate() {
         }
     } catch (err) {
         if (statusEl) { statusEl.className = 'small mt-2 text-danger'; statusEl.innerText = 'Request failed.'; }
+    }
+}
+
+// --- Configuration Backup & Restore ---
+async function downloadConfigBackup() {
+    const passEl = document.getElementById("configBackupPassphrase");
+    const statusEl = document.getElementById("configBackupStatus");
+    const passphrase = passEl?.value || '';
+
+    if (passphrase.length < 8) {
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.textContent = 'Choose a backup passphrase of at least 8 characters.'; }
+        return;
+    }
+
+    if (statusEl) { statusEl.className = 'small text-info'; statusEl.textContent = 'Building backup...'; }
+
+    try {
+        const res = await fetch('/api/settings/config_backup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ passphrase }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            if (statusEl) { statusEl.className = 'small text-danger'; statusEl.textContent = data.error || 'Backup failed.'; }
+            return;
+        }
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.download = `pi-forensics-backup-${stamp}.pfback`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        if (statusEl) { statusEl.className = 'small text-success'; statusEl.textContent = 'Backup downloaded. Keep the passphrase somewhere safe - it cannot be recovered.'; }
+        if (passEl) passEl.value = '';
+    } catch (err) {
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.textContent = 'Request failed.'; }
+    }
+}
+
+async function submitConfigRestore() {
+    const fileEl = document.getElementById("configRestoreFile");
+    const passEl = document.getElementById("configRestorePassphrase");
+    const statusEl = document.getElementById("configBackupStatus");
+    const file = fileEl?.files[0];
+    const passphrase = passEl?.value || '';
+
+    if (!file) {
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.textContent = 'Choose a backup file to restore.'; }
+        return;
+    }
+    if (!passphrase) {
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.textContent = 'Enter the passphrase this backup was created with.'; }
+        return;
+    }
+    if (!confirm('Restoring will replace every current user account, group, and setting on this station with the backup\'s contents. Continue?')) {
+        return;
+    }
+
+    if (statusEl) { statusEl.className = 'small text-info'; statusEl.textContent = 'Restoring...'; }
+
+    const formData = new FormData();
+    formData.append('backup_file', file);
+    formData.append('passphrase', passphrase);
+
+    try {
+        const res = await fetch('/api/settings/config_restore', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (statusEl) {
+            statusEl.className = data.success ? 'small text-success' : 'small text-danger';
+            statusEl.textContent = data.success ? data.message : data.error;
+        }
+        if (data.success) {
+            if (fileEl) fileEl.value = '';
+            if (passEl) passEl.value = '';
+            loadUserList();
+            loadUserGroups();
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.className = 'small text-danger'; statusEl.textContent = 'Request failed.'; }
     }
 }
 
