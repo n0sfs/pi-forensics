@@ -41,7 +41,7 @@ from core.tsk_utils import (
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
 from core.case_index_db import (
     TRIAGE_PATTERNS, TRIAGE_CATEGORY_LABELS,
-    case_index_db_path, _case_index_connect, _record_analysis_result,
+    case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
 )
 
 image_browser_bp = Blueprint('image_browser', __name__)
@@ -496,6 +496,7 @@ def execution_worker_image_geolocation_kml(image_path, dest_dir, source_ip=None,
             kml_path = os.path.join(dest_dir, f"{image_base}_geolocation_export.kml")
             with open(kml_path, 'w', encoding='utf-8') as f:
                 f.write(kml_doc)
+            _auto_tag_case_artifact(dest_dir, kml_path)
             append_log(f"[+] {len(points)} GPS-tagged point(s) found -> {kml_path}")
         else:
             append_log("[*] No GPS-tagged photos found - no KML file was written.")
@@ -647,6 +648,7 @@ def image_hash_manifest():
             f.write("\n".join(lines) + "\n")
     except Exception as e:
         return jsonify({"success": False, "error": f"Failed to write manifest file: {e}"}), 500
+    _auto_tag_case_artifact(dest_dir, manifest_path)
 
     log_chain_of_custody("hash_manifest_export_image", {
         "image_path": image_path, "algorithm": algo, "files_hashed": files_hashed,

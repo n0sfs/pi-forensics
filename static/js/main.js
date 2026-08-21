@@ -1182,6 +1182,19 @@ function explorerTreeImageAdapter() {
 // mode browsing and the File Views tree keep their existing plain order,
 // since neither one mixes disk-image files in with regular ones the way a
 // real case folder does.
+// case_role (core/paths.py's classify_case_role(), passed through on each
+// node's raw.case_role) identifies this app's own generated artifacts -
+// report exports, hash-manifest/triage-scan logs, KML geolocation files,
+// migration backups - which otherwise land wherever they fall
+// alphabetically among real evidence files. Grouped into two tree sections,
+// not one per case_role - report/analysis_log/backup are all "this app's
+// own housekeeping output" from the examiner's point of view and read as
+// one section; geolocation (.kml) is visually distinct enough (a map, not a
+// log) to warrant its own. Keeping case_role itself more granular than the
+// grouping (see core/paths.py) matters for auto-tagging these into the
+// case database, even though the tree only needs the coarser split.
+const CASE_ROLE_TREE_GROUP = { report: 'artifacts', analysis_log: 'artifacts', backup: 'artifacts', geolocation: 'geolocation' };
+
 function appendExplorerTreeChildren(ul, children, adapter, ancestorPath) {
     if (!adapter.groupDiskImages) {
         children.forEach(child => ul.appendChild(renderExplorerTreeNode(child, adapter, ancestorPath)));
@@ -1189,8 +1202,11 @@ function appendExplorerTreeChildren(ul, children, adapter, ancestorPath) {
     }
     const dirs = children.filter(c => c.kind === 'dir');
     const images = children.filter(c => c.kind === 'image');
-    const others = children.filter(c => c.kind !== 'dir' && c.kind !== 'image');
-    const groups = [dirs, images, others].filter(g => g.length > 0);
+    const rest = children.filter(c => c.kind !== 'dir' && c.kind !== 'image');
+    const artifacts = rest.filter(c => CASE_ROLE_TREE_GROUP[c.raw?.case_role] === 'artifacts');
+    const geolocation = rest.filter(c => CASE_ROLE_TREE_GROUP[c.raw?.case_role] === 'geolocation');
+    const plainFiles = rest.filter(c => !CASE_ROLE_TREE_GROUP[c.raw?.case_role]);
+    const groups = [dirs, images, artifacts, geolocation, plainFiles].filter(g => g.length > 0);
     groups.forEach((group, i) => {
         if (i > 0) {
             const divider = document.createElement('li');

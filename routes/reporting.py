@@ -53,7 +53,7 @@ from core.config import (
     get_report_defaults, get_custom_case_fields,
 )
 from core.jobs import _read_case_file, _write_case_file
-from core.case_index_db import _tags_for_paths, _analysis_results_for_paths
+from core.case_index_db import _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
 reporting_bp = Blueprint('reporting', __name__)
@@ -3412,6 +3412,8 @@ def export_report():
         digest = hashlib.sha256(content_bytes).hexdigest()
         with open(out_path + '.sha256', 'w') as f:
             f.write(f"{digest}  {os.path.basename(out_path)}\n")
+        _auto_tag_case_artifact(case_folder, out_path)
+        _auto_tag_case_artifact(case_folder, out_path + '.sha256')
 
         resp = send_file(out_path, as_attachment=True)
         resp.headers['X-Report-Sha256'] = digest
