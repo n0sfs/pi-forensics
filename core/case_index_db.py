@@ -14,7 +14,7 @@ import time
 import sqlite3
 from flask import g
 
-from core.paths import safe_path, case_consolidated_path
+from core.paths import safe_path, case_consolidated_path, classify_case_role
 
 # --- Quick Triage Scan: pattern definitions ---
 # Deliberately built in-house rather than depending on bulk_extractor,
@@ -326,3 +326,41 @@ def _auto_tag_case_artifact(case_folder, file_path):
         conn.close()
     except Exception as e:
         print(f"Warning: could not auto-tag case artifact {file_path}: {e}")
+
+# Every call site above tags a report export / hash manifest / geolocation
+# KML the moment THIS app generates it - real, but forward-only: anything
+# already on disk before that call site existed (or written some other way -
+# a migrated legacy case, a manual copy) never gets caught. This sweep closes
+# that gap by re-deriving the same answer from the filesystem itself instead
+# of trusting whatever happened to get tagged at write time.
+_ARTIFACT_SCAN_SKIP_DIR_NAMES = {'RECOVERED_FILES'}  # extundelete's fixed output dir name
+_ARTIFACT_SCAN_SKIP_DIR_SUFFIXES = ('_photorec', '_foremost', '_scalpel', '_triagescan')  # bulk carved-file output - same skip-list convention as reporting.py's _discover_case_files()
+_ARTIFACT_SCAN_MAX_FILES = 5000  # safety cap on one sweep - a case folder is typically small; only guards a pathological one
+
+def _backfill_case_artifact_tags(case_folder):
+    """Best-effort sweep: walk the case folder and apply the 'Case Artifact'
+    tag to anything classify_case_role() recognizes but hasn't been tagged
+    yet - self-heals the 'Case Artifact' bucket so it always reflects
+    everything this app has ever generated for the case, not just what's
+    been tagged since each individual write site started calling
+    _auto_tag_case_artifact(). Called from case_index_summary() on every
+    fetch (cheap - a shallow walk plus a filename check per file; a DB write
+    only happens for a genuinely new match, since _auto_tag_case_artifact()
+    itself already dedupes). Errors are swallowed exactly like every other
+    best-effort write in this module - this must never break a File Views
+    load."""
+    if not case_folder or not case_consolidated_path(case_folder):
+        return
+    try:
+        scanned = 0
+        for root, dirs, files in os.walk(case_folder):
+            dirs[:] = [d for d in dirs if d not in _ARTIFACT_SCAN_SKIP_DIR_NAMES
+                       and not d.endswith(_ARTIFACT_SCAN_SKIP_DIR_SUFFIXES)]
+            for fname in files:
+                if scanned >= _ARTIFACT_SCAN_MAX_FILES:
+                    return
+                scanned += 1
+                if classify_case_role(fname):
+                    _auto_tag_case_artifact(case_folder, os.path.join(root, fname))
+    except Exception as e:
+        print(f"Warning: case artifact backfill sweep failed for {case_folder}: {e}")
