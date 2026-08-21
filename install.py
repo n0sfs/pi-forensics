@@ -27,7 +27,7 @@ if not default_user or default_user == "root":
     default_user = "pi"
 
 print("====================================================")
-print("  ARM Forensic Acquisition Station Auto-Installer   ")
+print("      Pi Forensics Suite Auto-Installer      ")
 print("====================================================")
 
 # Interactive Prompt for System Username
@@ -382,7 +382,7 @@ if USE_TLS:
     # Matches pi-forensics.conf shipped in this repo - kept inline here so
     # install.py doesn't depend on a companion file existing at a specific
     # relative path when cloned.
-    nginx_conf = """# ARM Forensic Acquisition Station - TLS reverse proxy
+    nginx_conf = """# Pi Forensics Suite - TLS reverse proxy
 # Authentication is enforced by app.py (not nginx) so the local kiosk and
 # health checks on 127.0.0.1 work without an extra Basic-Auth prompt.
 
@@ -664,7 +664,7 @@ if not admin_seeded:
     env_lines += f'\nEnvironment="FORENSIC_PASS={FORENSIC_PASS}"'
 
 service_content = f"""[Unit]
-Description=ARM Forensic Acquisition Station (Production WSGI)
+Description=Pi Forensics Suite (Production WSGI)
 After=network.target network-online.target
 
 [Service]
