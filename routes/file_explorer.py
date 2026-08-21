@@ -33,7 +33,7 @@ from core.case_index_db import (
     _record_parsed_artifacts,
 )
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
-from core.browser_artifacts import find_chrome_artifact_files, parse_chrome_profile_file
+from core.browser_artifacts import find_browser_artifact_files, parse_browser_profile_file
 
 file_explorer_bp = Blueprint('file_explorer', __name__)
 
@@ -500,9 +500,10 @@ def extract_geolocation_kml():
     })
     return jsonify({"success": True, "kml_path": kml_path, "files_scanned": len(entries), "points_found": len(points)})
 
-# --- Browser Artifacts: real per-app parsing (Chrome/Chromium family) ---
+# --- Browser Artifacts: real per-app parsing (Chrome/Chromium family + Firefox) ---
 # core/browser_artifacts.py holds the actual parsing (History/Downloads/
-# Bookmarks/Cookies) and the real-fs candidate-file walk; this route is
+# Bookmarks/Cookies, either browser family) and the real-fs candidate-file
+# walk; this route is
 # just the HTTP layer - find candidates under target_dir, parse each,
 # persist into the case's analysis index (File Views' new "Web Artifacts"
 # category reads it back), and report a summary. No flat report file is
@@ -523,12 +524,12 @@ def parse_browser_artifacts():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
-    candidate_paths, truncated = find_chrome_artifact_files(target_dir)
+    candidate_paths, truncated = find_browser_artifact_files(target_dir)
     counts = {}
     files_parsed = 0
     for path in candidate_paths:
         filename = os.path.basename(path)
-        records = parse_chrome_profile_file(path, filename)
+        records = parse_browser_profile_file(path, filename)
         if not records:
             continue
         files_parsed += 1
