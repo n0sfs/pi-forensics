@@ -16,7 +16,7 @@ import sqlite3
 from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission
-from core.paths import safe_path, log_chain_of_custody, classify_extension, FILE_VIEW_EXTENSION_CATEGORIES
+from core.paths import safe_path, log_chain_of_custody, classify_extension, case_consolidated_path, FILE_VIEW_EXTENSION_CATEGORIES
 from core.case_index_db import (
     case_index_db_path, _case_index_connect,
     _case_index_open_readonly, _case_index_open_write,
@@ -99,6 +99,47 @@ def case_index_summary():
         "keyword_hits": {"total": sum(keyword_hits.values()), **keyword_hits},
         "tags": tags,
     })
+
+# Same recognized-image-extension set as isImageFile() in main.js (the
+# single source of truth for "does this file get a Browse as Image
+# affordance" app-wide) - deliberately duplicated rather than imported
+# across module boundaries, same precedent as TOOL_INSTALLABLE_PACKAGES
+# being kept in sync by hand between app.py/install.py in an earlier
+# session (separate contexts, no shared import path).
+DATA_SOURCE_IMAGE_EXTENSIONS = {'.dd', '.raw', '.img', '.e01', '.aff'}
+
+@case_index_bp.route('/api/case_index/data_sources', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def case_index_data_sources():
+    """Lists every acquired image sitting directly in the case folder (the
+    same root-level convention every acquisition/whole-image tool already
+    writes to) - the case-wide overview the File Explorer tree's new "Data
+    Sources" section renders, one node per image, each lazily expanded into
+    its own partition list via the existing /api/image/mmls. Non-recursive
+    by design: an image never legitimately lives in a subfolder (case_notes_
+    attachments, a recovery tool's carved-output dir, etc. never hold one),
+    so there's nothing to gain from a deeper walk."""
+    req = request.get_json() or {}
+    case_folder = safe_path(req.get('case_folder'))
+    sources = []
+    if case_folder and case_consolidated_path(case_folder):
+        try:
+            for fname in sorted(os.listdir(case_folder)):
+                ext = os.path.splitext(fname)[1].lower()
+                if ext not in DATA_SOURCE_IMAGE_EXTENSIONS:
+                    continue
+                fpath = os.path.join(case_folder, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                try:
+                    size = os.path.getsize(fpath)
+                except OSError:
+                    size = None
+                sources.append({"path": fpath, "name": fname, "size": size})
+        except OSError:
+            pass
+    return jsonify({"success": True, "sources": sources})
 
 @case_index_bp.route('/api/case_index/files', methods=['POST'])
 @requires_auth
