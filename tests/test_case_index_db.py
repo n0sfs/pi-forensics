@@ -1,8 +1,10 @@
 """core/case_index_db.py - the per-case SQLite analysis index's schema
-seeding and the auto-tagging helper added this session (_auto_tag_case_
-artifact), which report export / hash manifest / geolocation KML export
-call directly, server-side, whenever they write a real file to a case
-folder."""
+seeding, the auto-tagging helper (_auto_tag_case_artifact) that report
+export / hash manifest / geolocation KML export call directly whenever they
+write a real file to a case folder, the self-healing backfill sweep
+(_backfill_case_artifact_tags), and the one-time migration off the original
+single lump 'Case Artifact' tag onto four role-specific default tags
+(_migrate_legacy_case_artifact_tag)."""
 import json
 import os
 import sqlite3
@@ -29,13 +31,16 @@ def case_folder(evidence_root):
     return str(folder)
 
 
-def test_schema_seeds_exactly_four_default_tags_and_is_idempotent(case_folder):
+def test_schema_seeds_exactly_seven_default_tags_and_is_idempotent(case_folder):
     db_path = case_index_db.case_index_db_path(case_folder)
     conn = case_index_db._case_index_connect(db_path)
     rows = conn.execute("SELECT name, is_default FROM tags ORDER BY name").fetchall()
     conn.close()
     names = {r[0] for r in rows}
-    assert names == {"Bookmark", "Follow Up", "Notable Item", "Case Artifact"}
+    assert names == {
+        "Bookmark", "Follow Up", "Notable Item",
+        "Report Export", "Analysis Log / Hash", "Geolocation Export", "Backup Snapshot",
+    }
     assert all(r[1] == 1 for r in rows)  # every seeded default tag is_default=1
 
     # Re-running the schema (as every _case_index_connect() call does) must
@@ -43,7 +48,7 @@ def test_schema_seeds_exactly_four_default_tags_and_is_idempotent(case_folder):
     conn2 = case_index_db._case_index_connect(db_path)
     count = conn2.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
     conn2.close()
-    assert count == 4
+    assert count == 7
 
 
 def test_auto_tag_case_artifact_creates_a_real_row(case_folder):
@@ -57,7 +62,41 @@ def test_auto_tag_case_artifact_creates_a_real_row(case_folder):
         "FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id WHERE ti.path=?",
         (target,)).fetchone()
     conn.close()
-    assert row == ("Case Artifact", "real_fs", target, "2026-CASE-TEST_case.pdf", "system")
+    assert row == ("Report Export", "real_fs", target, "2026-CASE-TEST_case.pdf", "system")
+
+
+@pytest.mark.parametrize("filename,expected_tag", [
+    ("2026-CASE-TEST_case.pdf", "Report Export"),
+    ("2026-CASE-TEST_case.html", "Report Export"),
+    ("2026-CASE-TEST_case_index.db", "Report Export"),
+    ("2026-CASE-TEST_USBDrive-1_hash_manifest_sha256.txt", "Analysis Log / Hash"),
+    ("2026-CASE-TEST_USBDrive-1_triage_scan_report.txt", "Analysis Log / Hash"),
+    ("2026-CASE-TEST_USBDrive-1_dc3dd.log", "Analysis Log / Hash"),
+    ("geolocation_export.kml", "Geolocation Export"),
+    ("case_info.json.pre_consolidation_backup", "Backup Snapshot"),
+    ("2026-CASE-TEST_report.json.pre_restore_backup", "Backup Snapshot"),
+])
+def test_auto_tag_case_artifact_picks_the_correct_role_specific_tag(case_folder, filename, expected_tag):
+    target = os.path.join(case_folder, filename)
+    case_index_db._auto_tag_case_artifact(case_folder, target)
+
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    row = conn.execute(
+        "SELECT t.name FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id WHERE ti.path=?",
+        (target,)).fetchone()
+    conn.close()
+    assert row == (expected_tag,)
+
+
+def test_auto_tag_case_artifact_is_a_no_op_for_an_unrecognized_filename(case_folder):
+    # Not one of the four recognized roles - must not create any tagged_items
+    # row, and (since nothing else has touched the DB in this test) must not
+    # even create the index file.
+    target = os.path.join(case_folder, "batmanlego.JPG")
+    case_index_db._auto_tag_case_artifact(case_folder, target)
+    db_path = case_index_db.case_index_db_path(case_folder)
+    assert not os.path.isfile(db_path)
 
 
 def test_auto_tag_case_artifact_does_not_duplicate_on_repeat_calls(case_folder):
@@ -106,6 +145,23 @@ def test_two_different_files_get_two_distinct_tagged_rows(case_folder):
     assert count == 2
 
 
+def _all_tagged_role_paths(case_folder):
+    """Every path currently tagged under one of the four role-specific
+    default tags (not Bookmark/Follow Up/Notable Item) - used by tests that
+    only care about backfill/sweep membership, not which exact one of the
+    four buckets a file landed in (see the parametrized role-mapping test
+    above for that)."""
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    placeholders = ",".join("?" * len(case_index_db.CASE_ROLE_TAG_NAMES))
+    rows = conn.execute(
+        f"SELECT ti.path FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id "
+        f"WHERE t.name IN ({placeholders})",
+        list(case_index_db.CASE_ROLE_TAG_NAMES.values())).fetchall()
+    conn.close()
+    return {r[0] for r in rows}
+
+
 def test_backfill_tags_pre_existing_artifact_files_never_seen_by_auto_tag(case_folder):
     # The exact gap this exists to close: a report/log/kml file that landed
     # on disk (a legacy case, a manual copy, or simply predates the
@@ -124,11 +180,7 @@ def test_backfill_tags_pre_existing_artifact_files_never_seen_by_auto_tag(case_f
 
     case_index_db._backfill_case_artifact_tags(case_folder)
 
-    db_path = case_index_db.case_index_db_path(case_folder)
-    conn = case_index_db._case_index_connect(db_path)
-    tagged_paths = {r[0] for r in conn.execute(
-        "SELECT ti.path FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id WHERE t.name='Case Artifact'")}
-    conn.close()
+    tagged_paths = _all_tagged_role_paths(case_folder)
     assert {report, hashlog, kml} <= tagged_paths
     assert evidence not in tagged_paths
 
@@ -146,11 +198,7 @@ def test_backfill_is_idempotent_and_skips_recovery_tool_output_dirs(case_folder)
         f.write("x")
 
     case_index_db._backfill_case_artifact_tags(case_folder)
-    db_path = case_index_db.case_index_db_path(case_folder)
-    conn = case_index_db._case_index_connect(db_path)
-    first_paths = [r[0] for r in conn.execute(
-        "SELECT ti.path FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id WHERE t.name='Case Artifact'")]
-    conn.close()
+    first_paths = _all_tagged_role_paths(case_folder)
     assert report in first_paths
     assert carved_lookalike not in first_paths
 
@@ -160,15 +208,80 @@ def test_backfill_is_idempotent_and_skips_recovery_tool_output_dirs(case_folder)
     # never re-tag anything it already tagged, and must still never reach
     # into the carve-output dir.
     case_index_db._backfill_case_artifact_tags(case_folder)
+    second_paths = _all_tagged_role_paths(case_folder)
+    db_path = case_index_db.case_index_db_path(case_folder)
     conn = case_index_db._case_index_connect(db_path)
-    second_paths = [r[0] for r in conn.execute(
-        "SELECT ti.path FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id WHERE t.name='Case Artifact'")]
     dupes = conn.execute(
-        "SELECT ti.path, COUNT(*) c FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id "
-        "WHERE t.name='Case Artifact' GROUP BY ti.path HAVING c > 1").fetchall()
+        "SELECT path, COUNT(*) c FROM tagged_items GROUP BY tag_id, path HAVING c > 1").fetchall()
     conn.close()
     assert not dupes
     assert carved_lookalike not in second_paths
+
+
+def test_backfill_migrates_legacy_case_artifact_tag_into_role_specific_tags(case_folder):
+    # Simulates a case whose index predates the 4-way split: a lump 'Case
+    # Artifact' tag with two real files tagged under it, one report-shaped
+    # and one geolocation-shaped.
+    report = os.path.join(case_folder, "2026-CASE-TEST_case.pdf")
+    kml = os.path.join(case_folder, "geolocation_export.kml")
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    conn.execute("INSERT INTO tags (name, color, notable, is_default, created_at) VALUES ('Case Artifact', 'secondary', 0, 1, datetime('now'))")
+    old_tag_id = conn.execute("SELECT id FROM tags WHERE name='Case Artifact'").fetchone()[0]
+    for path in (report, kml):
+        conn.execute(
+            "INSERT INTO tagged_items (tag_id, source_type, path, name, tagged_by, tagged_at) "
+            "VALUES (?, 'real_fs', ?, ?, 'system', datetime('now'))",
+            (old_tag_id, path, os.path.basename(path)))
+    conn.commit()
+    conn.close()
+
+    migrate_conn = case_index_db._case_index_connect(db_path)
+    case_index_db._migrate_legacy_case_artifact_tag(migrate_conn)
+    migrate_conn.close()
+
+    conn = case_index_db._case_index_connect(db_path)
+    remaining_old_tag = conn.execute("SELECT id FROM tags WHERE name='Case Artifact'").fetchone()
+    report_tag_path = conn.execute(
+        "SELECT ti.path FROM tagged_items ti JOIN tags t ON t.id=ti.tag_id WHERE t.name='Report Export'").fetchone()
+    geo_tag_path = conn.execute(
+        "SELECT ti.path FROM tagged_items ti JOIN tags t ON t.id=ti.tag_id WHERE t.name='Geolocation Export'").fetchone()
+    conn.close()
+    assert remaining_old_tag is None  # legacy tag deleted once emptied
+    assert report_tag_path == (report,)
+    assert geo_tag_path == (kml,)
+
+
+def test_backfill_migration_drops_a_duplicate_rather_than_creating_one(case_folder):
+    # A file already tagged under BOTH the legacy lump tag and its correct
+    # new role-specific tag (e.g. from a partial migration, or a station
+    # that ran an older build after already re-tagging manually) - the
+    # migration must not leave two tagged_items rows for the same
+    # (tag_id, path) once the legacy tag is folded in.
+    report = os.path.join(case_folder, "2026-CASE-TEST_case.pdf")
+    case_index_db._auto_tag_case_artifact(case_folder, report)  # tags it under the real 'Report Export' tag first
+
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    conn.execute("INSERT INTO tags (name, color, notable, is_default, created_at) VALUES ('Case Artifact', 'secondary', 0, 1, datetime('now'))")
+    old_tag_id = conn.execute("SELECT id FROM tags WHERE name='Case Artifact'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO tagged_items (tag_id, source_type, path, name, tagged_by, tagged_at) "
+        "VALUES (?, 'real_fs', ?, ?, 'system', datetime('now'))",
+        (old_tag_id, report, os.path.basename(report)))
+    conn.commit()
+    conn.close()
+
+    migrate_conn = case_index_db._case_index_connect(db_path)
+    case_index_db._migrate_legacy_case_artifact_tag(migrate_conn)
+    migrate_conn.close()
+
+    conn = case_index_db._case_index_connect(db_path)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM tagged_items ti JOIN tags t ON t.id=ti.tag_id "
+        "WHERE t.name='Report Export' AND ti.path=?", (report,)).fetchone()[0]
+    conn.close()
+    assert count == 1
 
 
 def test_backfill_is_a_silent_no_op_for_a_non_case_folder(tmp_path):

@@ -60,10 +60,11 @@ def case_index_analysis_for_paths():
 def case_index_summary():
     req = request.get_json() or {}
     case_folder = req.get('case_folder')
-    # Self-heals the 'Case Artifact' tag bucket every time File Views loads,
-    # rather than requiring a dedicated backfill action - see the function's
-    # own docstring for why this can't just rely on the per-write-site
-    # auto-tagging alone.
+    # Self-heals the four role-specific artifact-tag buckets (Report Export /
+    # Analysis Log & Hash / Geolocation Export / Backup Snapshot) every time
+    # File Views loads, and migrates any pre-existing lump 'Case Artifact'
+    # tag off onto them - see the function's own docstring for why this
+    # can't just rely on the per-write-site auto-tagging alone.
     _backfill_case_artifact_tags(case_folder)
     conn = _case_index_open_readonly(case_folder)
     by_extension = {cat: 0 for cat in FILE_VIEW_EXTENSION_CATEGORIES}
