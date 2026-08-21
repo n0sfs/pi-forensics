@@ -30,8 +30,10 @@ from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDR
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
+    _record_parsed_artifacts,
 )
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
+from core.browser_artifacts import find_chrome_artifact_files, parse_chrome_profile_file
 
 file_explorer_bp = Blueprint('file_explorer', __name__)
 
@@ -497,6 +499,53 @@ def extract_geolocation_kml():
         "directory": target_dir, "files_scanned": len(entries), "points_found": len(points)
     })
     return jsonify({"success": True, "kml_path": kml_path, "files_scanned": len(entries), "points_found": len(points)})
+
+# --- Browser Artifacts: real per-app parsing (Chrome/Chromium family) ---
+# core/browser_artifacts.py holds the actual parsing (History/Downloads/
+# Bookmarks/Cookies) and the real-fs candidate-file walk; this route is
+# just the HTTP layer - find candidates under target_dir, parse each,
+# persist into the case's analysis index (File Views' new "Web Artifacts"
+# category reads it back), and report a summary. No flat report file is
+# written for this one (unlike hashdeep/geolocation above) - the per-case
+# SQLite index is already the durable, queryable record, and this is the
+# first analysis feature built after that index existed, so there's no
+# legacy flat-file expectation to preserve here.
+@file_explorer_bp.route('/api/files/parse_browser_artifacts', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_browser_artifacts():
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_chrome_artifact_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        filename = os.path.basename(path)
+        records = parse_chrome_profile_file(path, filename)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("browser_artifacts_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated,
+        "indexed": bool(case_folder),
+    })
 
 # --- strings: Extract Printable Text From a Binary File ---
 @file_explorer_bp.route('/api/files/strings', methods=['POST'])

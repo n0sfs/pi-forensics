@@ -1472,6 +1472,12 @@ const FILE_VIEWS_HIT_LABELS = {
     emails: 'Email Addresses', urls: 'URLs', ip_addresses: 'IP Addresses',
     credit_card_numbers: 'Credit Card-like Numbers', phone_numbers: 'Phone Numbers',
 };
+// Mirrors routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS - real per-app
+// artifact parsing (core/browser_artifacts.py), Chrome/Chromium family only.
+const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
+    chrome_history: 'Chrome/Chromium History', chrome_downloads: 'Chrome/Chromium Downloads',
+    chrome_bookmarks: 'Chrome/Chromium Bookmarks', chrome_cookies: 'Chrome/Chromium Cookies',
+};
 
 function buildFileViewsHierarchy(summary) {
     const byExtChildren = Object.keys(FILE_VIEWS_EXTENSION_LABELS).map(cat => ({
@@ -1524,6 +1530,22 @@ function buildFileViewsHierarchy(summary) {
             ],
         },
     ];
+    // Only shown once something's actually been parsed (right-click a
+    // folder or a whole image -> "Parse Browser Artifacts") - unlike the 5
+    // built-in keyword-hit categories above, there's no fixed set of
+    // artifact_types to always render at 0; which ones exist depends
+    // entirely on what's been scanned.
+    const parsedCounts = summary.parsed_artifact_counts || {};
+    const webArtifactTypes = Object.keys(parsedCounts);
+    if (webArtifactTypes.length > 0) {
+        children.push({
+            id: 'fv-web-artifacts', name: 'Web Artifacts', kind: 'dir',
+            staticChildren: webArtifactTypes.map(type => ({
+                id: `fv-webart-${type}`, name: `${FILE_VIEWS_WEB_ARTIFACT_LABELS[type] || type} (${parsedCounts[type]})`,
+                kind: 'file', queryType: 'parsed_artifacts', queryCategory: type,
+            })),
+        });
+    }
     if (!summary.indexed) {
         children.unshift({ id: 'fv-note', name: 'Not indexed yet - run Triage Scan on an image to populate this', kind: 'file' });
     }
@@ -1732,6 +1754,7 @@ async function runFileViewsQuery(node, caseFolder) {
     if (container) container.innerHTML = '<div class="p-2 text-subtle small">Loading...</div>';
     const endpoint = node.queryType === 'hits' ? '/api/case_index/hits'
         : node.queryType === 'tags' ? '/api/case_index/tagged_files'
+        : node.queryType === 'parsed_artifacts' ? '/api/case_index/parsed_artifacts'
         : '/api/case_index/files';
     const body = node.queryType === 'tags'
         ? { case_folder: caseFolder, tag_id: node.tagId }
@@ -1743,10 +1766,77 @@ async function runFileViewsQuery(node, caseFolder) {
             body: JSON.stringify(body)
         });
         const data = await res.json();
-        renderFileViewsResults(node, data.rows || []);
+        // Parsed-artifact rows (a visited URL, a download, a bookmark, a
+        // cookie) are structured records, not files - renderFileViewsResults()
+        // below reuses the file-Listing pipeline (Name/Size/MACB columns),
+        // which doesn't fit this shape at all, so these get their own
+        // dedicated renderer instead.
+        if (node.queryType === 'parsed_artifacts') {
+            renderParsedArtifactsResults(node, data.rows || []);
+        } else {
+            renderFileViewsResults(node, data.rows || []);
+        }
     } catch (err) {
-        renderFileViewsResults(node, []);
+        if (node.queryType === 'parsed_artifacts') {
+            renderParsedArtifactsResults(node, []);
+        } else {
+            renderFileViewsResults(node, []);
+        }
     }
+}
+
+// Dedicated Listing-pane renderer for parsed browser-artifact records
+// (core/browser_artifacts.py) - Title/URL-or-Value/Timestamp/Source columns,
+// nothing file-shaped about these rows (no size, no MACB times, some don't
+// even have a URL). Reuses the same "swap #explorerContainer's content, add
+// a Back pseudo-row" mechanism the in-image Search view already established,
+// just with its own table markup instead of routing through
+// renderExplorerActiveTable()'s file-row pipeline.
+function renderParsedArtifactsResults(node, rows) {
+    const container = document.getElementById('explorerContainer');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const backDiv = document.createElement('div');
+    backDiv.className = 'file-item text-warning fw-bold';
+    backDiv.innerHTML = '<i class="bi bi-arrow-left me-1"></i>Back to Browse';
+    backDiv.onclick = () => loadExplorer(explorerPath);
+    container.appendChild(backDiv);
+
+    if (rows.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'p-2 text-subtle small';
+        empty.textContent = 'No records found.';
+        container.appendChild(empty);
+        return;
+    }
+
+    const table = document.createElement('table');
+    table.className = 'table table-dark table-sm mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>Title</th><th>URL</th><th>Value</th><th>Timestamp</th><th>Source</th></tr>'; // static/trusted markup
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    rows.forEach(row => {
+        const tr = document.createElement('tr');
+        [row.title, row.url, row.value].forEach(field => {
+            const td = document.createElement('td');
+            td.className = 'text-break';
+            td.appendChild(document.createTextNode(field || '')); // examiner/evidence-derived, text node only
+            tr.appendChild(td);
+        });
+        const tsTd = document.createElement('td');
+        tsTd.className = 'text-subtle font-monospace small';
+        tsTd.textContent = row.timestamp ? new Date(row.timestamp * 1000).toLocaleString() : '';
+        tr.appendChild(tsTd);
+        const srcTd = document.createElement('td');
+        srcTd.className = 'text-subtle small';
+        srcTd.textContent = row.source_type === 'image' ? (row.image_path || '').split('/').pop() : 'Real filesystem';
+        tr.appendChild(srcTd);
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    container.appendChild(table);
 }
 
 // Routes File Views results through the exact same sortable-Listing pipeline
@@ -3019,6 +3109,7 @@ function updateContextToolbar(item) {
     const btnQuickTriage = document.getElementById("btnQuickTriageScan");
     const btnHashdeep = document.getElementById("btnRunHashdeep");
     const btnGeolocation = document.getElementById("btnExtractGeolocation");
+    const btnBrowserArtifacts = document.getElementById("btnParseBrowserArtifacts");
     const btnMvtIos = document.getElementById("btnRunMvtIos");
     const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
 
@@ -3030,6 +3121,7 @@ function updateContextToolbar(item) {
     if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
     if (btnGeolocation) btnGeolocation.disabled = !item.is_dir;  // scans a whole folder of photos at once
+    if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium profile files
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
@@ -3044,7 +3136,7 @@ function updateContextToolbar(item) {
     // contextMenuBrowseImageAnd()) before running its own tool.
     const wholeImageDisabled = item.is_dir || !isImageFile(item.name);
     ['btnEnterSearchImage', 'btnEnterTimelineImage', 'btnEnterGeoImage', 'btnEnterHashImage',
-     'btnEnterTriageImage', 'btnEnterRecoverImage'].forEach(id => {
+     'btnEnterTriageImage', 'btnEnterBrowserArtifactsImage', 'btnEnterRecoverImage'].forEach(id => {
         const btn = document.getElementById(id);
         if (btn) btn.disabled = wholeImageDisabled;
     });
@@ -3070,6 +3162,7 @@ async function contextMenuBrowseImageAnd(action) {
         geo: runImageGeolocationExport,
         hash: runImageHashManifest,
         triage: startImageTriageScan,
+        browserartifacts: runImageBrowserArtifactsParse,
         recover: runImageRecoverDeleted,
     };
     if (actions[action]) actions[action]();
@@ -3545,6 +3638,49 @@ async function runSelectedGeolocationExport() {
             showToast(`Geolocation export failed: ${data.error}`, 'danger');
         }
     } catch (err) {}
+}
+
+// Chrome/Chromium field->plain-label map, shared by the real-fs and
+// in-image summary toasts below - kept in one place so the two entry
+// points can never describe the same artifact_type differently.
+const BROWSER_ARTIFACT_TYPE_LABELS = {
+    chrome_history: 'history entries', chrome_downloads: 'downloads',
+    chrome_bookmarks: 'bookmarks', chrome_cookies: 'cookies',
+};
+
+function summarizeBrowserArtifactCounts(counts) {
+    const parts = Object.keys(counts || {}).map(k => `${counts[k]} ${BROWSER_ARTIFACT_TYPE_LABELS[k] || k}`);
+    return parts.length ? parts.join(', ') : 'no records';
+}
+
+async function runSelectedBrowserArtifactsParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_browser_artifacts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(`Browser artifact scan failed: ${data.error}`, 'danger');
+            return;
+        }
+        if (data.candidates_found === 0) {
+            showToast('No Chrome/Chromium profile files (History/Cookies/Bookmarks) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeBrowserArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. See File Views > Web Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Browser artifact scan failed: request error.', 'danger');
+    }
 }
 
 async function runSelectedMvtScan(platform) {
@@ -4573,6 +4709,36 @@ async function runImageHashManifest() {
         }
         showToast(msg, 'success');
     } catch (err) {}
+}
+
+async function runImageBrowserArtifactsParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_browser_artifacts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(`Browser artifact scan failed: ${data.error}`, 'danger');
+            return;
+        }
+        if (data.candidates_found === 0) {
+            showToast('No Chrome/Chromium profile files (History/Cookies/Bookmarks) found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeBrowserArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. See File Views > Web Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Browser artifact scan failed: request error.', 'danger');
+    }
 }
 
 // Unlike every other in-image tool on this toolbar (which run synchronously
