@@ -28,7 +28,7 @@ from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN
 from core.case_index_db import (
-    TRIAGE_PATTERNS, TRIAGE_CATEGORY_LABELS,
+    build_scan_patterns, resolve_scan_category_label,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
 )
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
@@ -528,18 +528,17 @@ def run_strings():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # --- Quick Triage Scan: fast, capped IOC scan for a single right-clicked file ---
-# Reuses TRIAGE_PATTERNS/the same regex-per-chunk-with-overlap technique
-# execution_worker_triage_scan() (File Recovery's background job) already
-# uses - this is deliberately NOT a second scanning implementation, just a
-# capped, synchronous entry point into the same category matching, for a
-# quick right-click look at a .dd/.E01 image (or any other file) without
-# configuring and running the full background job. Only scans the first
-# QUICK_TRIAGE_MAX_BYTES of the file - large/exhaustive scans still belong
-# to the File Recovery tab's Triage Scan tool.
+# Reuses build_scan_patterns()/the same regex-per-chunk-with-overlap
+# technique execution_worker_triage_scan() (File Recovery's background job)
+# already uses - this is deliberately NOT a second scanning implementation,
+# just a capped, synchronous entry point into the same category matching
+# (the 5 built-in structured-data categories, plus any keyword_list_ids the
+# caller selects), for a quick right-click look at a .dd/.E01 image (or any
+# other file) without configuring and running the full background job. Only
+# scans the first QUICK_TRIAGE_MAX_BYTES of the file - large/exhaustive
+# scans still belong to the File Recovery tab's Triage Scan tool.
 QUICK_TRIAGE_MAX_BYTES = 32 * 1024 * 1024  # 32 MB - fast enough to stay synchronous within one request
 QUICK_TRIAGE_MAX_MATCHES_PER_CATEGORY = 500  # smaller than the background job's 50000 - this is a quick preview, not an exhaustive collection
-# TRIAGE_CATEGORY_LABELS now lives in core/case_index_db.py (imported at the
-# top of this file) - see the Step 0 core/ extraction.
 
 @file_explorer_bp.route('/api/files/quick_triage_scan', methods=['POST'])
 @requires_auth
@@ -560,10 +559,12 @@ def quick_triage_scan():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
+    patterns = build_scan_patterns(req.get('keyword_list_ids'))
+
     CHUNK_SIZE = 8 * 1024 * 1024
     OVERLAP = 256  # bytes carried over between chunks so a match spanning a chunk boundary isn't missed
-    results = {name: set() for name in TRIAGE_PATTERNS}
-    truncated = {name: False for name in TRIAGE_PATTERNS}
+    results = {name: set() for name in patterns}
+    truncated = {name: False for name in patterns}
 
     try:
         total_size = os.path.getsize(file_path)
@@ -575,7 +576,7 @@ def quick_triage_scan():
                 if not chunk:
                     break
                 data = tail + chunk
-                for name, pattern in TRIAGE_PATTERNS.items():
+                for name, pattern in patterns.items():
                     if truncated[name]:
                         continue
                     for m in pattern.finditer(data):
@@ -615,9 +616,9 @@ def quick_triage_scan():
     if scan_truncated_to_prefix:
         lines.append("(First-32MB quick preview only - use the full Triage Scan tool in File Recovery for an exhaustive scan of the whole file.)")
     lines.append("")
-    for name in TRIAGE_PATTERNS:
+    for name in patterns:
         matches = sorted(results[name])
-        label = TRIAGE_CATEGORY_LABELS.get(name, name)
+        label = resolve_scan_category_label(name)
         cap_note = " (capped)" if truncated[name] else ""
         lines.append(f"{label} ({len(matches)} found{cap_note}):")
         if matches:

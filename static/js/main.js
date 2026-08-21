@@ -1481,7 +1481,17 @@ function buildFileViewsHierarchy(summary) {
     const hitChildren = Object.keys(FILE_VIEWS_HIT_LABELS).map(cat => ({
         id: `fv-hit-${cat}`, name: `${FILE_VIEWS_HIT_LABELS[cat]} (${summary.keyword_hits[cat] || 0})`,
         kind: 'file', queryType: 'hits', queryCategory: cat,
-    }));
+    })).concat((summary.custom_keyword_hits || []).map(h => ({
+        // Examiner keyword-list-derived categories (build_scan_patterns() in
+        // core/case_index_db.py, 'kw_<list_id>') - dynamically discovered
+        // from whatever a scan actually recorded hits under, unlike the 5
+        // built-ins above which always render even at 0. case_index_hits()
+        // already accepts a 'kw_'-prefixed category, so no other change is
+        // needed for these to be clickable/queryable exactly like the
+        // built-in ones.
+        id: `fv-hit-${h.category}`, name: `${h.label} (${h.count})`,
+        kind: 'file', queryType: 'hits', queryCategory: h.category,
+    })));
     // A star prefix flags "notable" tags (Autopsy's convention for
     // examiner-flagged evidence of interest) - simple text, not a real icon,
     // so this doesn't need any change to the generic tree renderer's
@@ -2262,6 +2272,147 @@ async function deleteManageTag(tagId, name) {
         if (data.success) {
             loadManageTagsSection();
             initFileViewsTree(true);
+        } else {
+            showToast(`Delete failed: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast('Delete failed: request error.', 'danger');
+    }
+}
+
+// --- Settings > Case & Reporting > Keyword Lists: station-wide, unlike
+// Manage Tags above (which is per-case) - the same CRUD list this section
+// edits is read by fetchKeywordLists()/loadRecoveryKeywordListsChecklist()
+// (File Recovery's Triage Scan tool) elsewhere in this file. ---
+let keywordListModalInstance = null;
+let keywordListModalMode = 'create'; // 'create' | 'edit'
+let keywordListModalId = null;
+
+async function loadKeywordListsSection() {
+    const listEl = document.getElementById('keywordListsListContainer');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="text-subtle small p-2">Loading keyword lists...</div>';
+    const lists = await fetchKeywordLists(true); // always fresh here - this IS the management view
+    renderKeywordListsList(lists);
+}
+
+function renderKeywordListsList(lists) {
+    const listEl = document.getElementById('keywordListsListContainer');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    if (lists.length === 0) {
+        listEl.innerHTML = '<div class="text-subtle small p-2">No keyword lists yet - create one below.</div>';
+        return;
+    }
+    const table = document.createElement('table');
+    table.className = 'table table-dark table-sm mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>List</th><th>Terms</th><th>Type</th><th></th></tr>'; // static/trusted markup
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    lists.forEach(l => {
+        const tr = document.createElement('tr');
+
+        const nameTd = document.createElement('td');
+        nameTd.appendChild(document.createTextNode(l.name)); // examiner-entered, text node only
+        tr.appendChild(nameTd);
+
+        const countTd = document.createElement('td');
+        countTd.className = 'text-subtle';
+        countTd.textContent = l.terms.length;
+        tr.appendChild(countTd);
+
+        const typeTd = document.createElement('td');
+        typeTd.className = 'text-subtle';
+        typeTd.textContent = l.is_regex ? 'Regex' : 'Plain text';
+        tr.appendChild(typeTd);
+
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'text-end';
+        const editBtn = document.createElement('button');
+        editBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 me-1';
+        editBtn.innerHTML = '<i class="bi bi-pencil"></i>';
+        editBtn.title = 'Edit';
+        editBtn.onclick = () => openEditKeywordListModal(l);
+        actionsTd.appendChild(editBtn);
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-1';
+        delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+        delBtn.title = 'Delete list';
+        delBtn.onclick = () => deleteKeywordList(l.id, l.name);
+        actionsTd.appendChild(delBtn);
+        tr.appendChild(actionsTd);
+
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    listEl.appendChild(table);
+}
+
+function openCreateKeywordListModal() {
+    keywordListModalMode = 'create';
+    keywordListModalId = null;
+    document.getElementById('keywordListModalTitle').textContent = 'New Keyword List';
+    document.getElementById('keywordListName').value = '';
+    document.getElementById('keywordListTerms').value = '';
+    document.getElementById('keywordListIsRegex').checked = false;
+    document.getElementById('keywordListModalStatus').textContent = '';
+    if (!keywordListModalInstance) {
+        keywordListModalInstance = new bootstrap.Modal(document.getElementById('keywordListModal'));
+    }
+    keywordListModalInstance.show();
+}
+
+function openEditKeywordListModal(list) {
+    keywordListModalMode = 'edit';
+    keywordListModalId = list.id;
+    document.getElementById('keywordListModalTitle').textContent = `Edit Keyword List: ${list.name}`;
+    document.getElementById('keywordListName').value = list.name;
+    document.getElementById('keywordListTerms').value = list.terms.join('\n');
+    document.getElementById('keywordListIsRegex').checked = list.is_regex;
+    document.getElementById('keywordListModalStatus').textContent = '';
+    if (!keywordListModalInstance) {
+        keywordListModalInstance = new bootstrap.Modal(document.getElementById('keywordListModal'));
+    }
+    keywordListModalInstance.show();
+}
+
+async function saveKeywordListModal() {
+    const name = document.getElementById('keywordListName').value.trim();
+    const terms = document.getElementById('keywordListTerms').value.split('\n').map(t => t.trim()).filter(Boolean);
+    const isRegex = document.getElementById('keywordListIsRegex').checked;
+    const statusEl = document.getElementById('keywordListModalStatus');
+    if (!name) { statusEl.textContent = 'List name is required.'; return; }
+    if (terms.length === 0) { statusEl.textContent = 'At least one term is required.'; return; }
+    statusEl.textContent = 'Saving...';
+    const endpoint = keywordListModalMode === 'edit' ? `/api/settings/keyword_lists/${keywordListModalId}` : '/api/settings/keyword_lists';
+    const method = keywordListModalMode === 'edit' ? 'PUT' : 'POST';
+    try {
+        const res = await fetch(endpoint, {
+            method, headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, terms, is_regex: isRegex })
+        });
+        const data = await res.json();
+        if (data.success) {
+            keywordListModalInstance.hide();
+            keywordListsCache = null; // invalidate - Recovery tab's checklist and this list must both see the change
+            loadKeywordListsSection();
+        } else {
+            statusEl.textContent = `Failed: ${data.error}`;
+        }
+    } catch (err) {
+        statusEl.textContent = 'Failed: request error.';
+    }
+}
+
+async function deleteKeywordList(listId, name) {
+    if (!confirm(`Delete keyword list "${name}"? Any past scan results already recorded under it are kept, just no longer selectable for a new scan.`)) return;
+    try {
+        const res = await fetch(`/api/settings/keyword_lists/${listId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+            keywordListsCache = null;
+            loadKeywordListsSection();
         } else {
             showToast(`Delete failed: ${data.error}`, 'danger');
         }
@@ -6833,6 +6984,7 @@ document.getElementById('secAuditLog')?.addEventListener('shown.bs.collapse', ()
 document.getElementById('secAuditLog')?.addEventListener('hidden.bs.collapse', () => stopCocAutoRefresh());
 document.getElementById('secNetConfig')?.addEventListener('shown.bs.collapse', () => loadNetworkConfig());
 document.getElementById('secManageTags')?.addEventListener('shown.bs.collapse', () => loadManageTagsSection());
+document.getElementById('secKeywordLists')?.addEventListener('shown.bs.collapse', () => loadKeywordListsSection());
 
 document.addEventListener('shown.bs.tab', (ev) => {
     // Returning to the whole Settings sidebar tab while the Audit Log
@@ -8085,12 +8237,57 @@ function showRecoveryStructuredOutput() {
     if (structured) structured.style.display = '';
 }
 
+// Fetched once per page load (Settings' own Keyword Lists CRUD invalidates
+// this the same way other station-config caches do - nothing else edits
+// it), used both here and by loadRecoveryKeywordListsChecklist() below.
+let keywordListsCache = null;
+
+async function fetchKeywordLists(forceRefresh) {
+    if (keywordListsCache && !forceRefresh) return keywordListsCache;
+    try {
+        const res = await fetch('/api/settings/keyword_lists');
+        const data = await res.json();
+        keywordListsCache = (data.success && data.lists) || [];
+    } catch (err) {
+        keywordListsCache = [];
+    }
+    return keywordListsCache;
+}
+
+async function loadRecoveryKeywordListsChecklist() {
+    const container = document.getElementById("recoveryKeywordListsContainer");
+    if (!container) return;
+    const lists = await fetchKeywordLists();
+    container.innerHTML = '';
+    if (lists.length === 0) {
+        container.innerHTML = '<span class="text-subtle">No saved keyword lists yet - create one in Settings &gt; Case &amp; Reporting.</span>';
+        return;
+    }
+    lists.forEach(l => {
+        const row = document.createElement('div');
+        row.className = 'form-check';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.className = 'form-check-input recovery-keyword-list-check';
+        input.id = `recoveryKwList_${l.id}`;
+        input.value = l.id;
+        const label = document.createElement('label');
+        label.className = 'form-check-label';
+        label.htmlFor = input.id;
+        label.textContent = `${l.name} (${l.terms.length} term${l.terms.length === 1 ? '' : 's'}${l.is_regex ? ', regex' : ''})`; // examiner-entered name - text node only
+        row.appendChild(input);
+        row.appendChild(label);
+        container.appendChild(row);
+    });
+}
+
 function updateRecoveryToolControls() {
     const tool = document.getElementById("recoveryToolSelect")?.value;
     const sourceRow = document.getElementById("recoverySourceRow");
     const destCol = document.getElementById("recoveryDestCol");
     const mapfileRow = document.getElementById("recoveryMapfileRow");
     const metadataRow = document.getElementById("recoveryMetadataRow");
+    const keywordListsRow = document.getElementById("recoveryKeywordListsRow");
     const stopBtn = document.getElementById("btnRecoveryStop");
     const startLabel = document.getElementById("btnRecoveryStartLabel");
     const helpText = document.getElementById("recoveryToolHelpText");
@@ -8099,12 +8296,17 @@ function updateRecoveryToolControls() {
 
     const isMapfile = tool === 'mapfile_inspect';
     const isTestdisk = tool === 'testdisk_analyze';
+    const isTriageScan = tool === 'triage_scan';
     const isSyncTool = isMapfile || isTestdisk;
 
     if (sourceRow) sourceRow.style.display = isMapfile ? 'none' : '';
     if (mapfileRow) mapfileRow.style.display = isMapfile ? '' : 'none';
     if (destCol) destCol.style.display = isTestdisk ? 'none' : '';
     if (metadataRow) metadataRow.style.display = isSyncTool ? 'none' : '';
+    if (keywordListsRow) {
+        keywordListsRow.style.display = isTriageScan ? '' : 'none';
+        if (isTriageScan) loadRecoveryKeywordListsChecklist();
+    }
     // Stop only makes sense for background jobs - the two synchronous
     // tools (mapfile inspect, testdisk analyze) return immediately.
     if (stopBtn) stopBtn.style.display = isSyncTool ? 'none' : '';
@@ -8177,11 +8379,16 @@ async function startRecoveryTool() {
     const endpoint = ENDPOINTS[tool];
     if (!endpoint) return;
 
+    const body = { source, destination: dest, metadata };
+    if (tool === 'triage_scan') {
+        body.keyword_list_ids = [...document.querySelectorAll('.recovery-keyword-list-check:checked')].map(el => el.value);
+    }
+
     try {
         const res = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source, destination: dest, metadata })
+            body: JSON.stringify(body)
         });
         const data = await res.json();
 

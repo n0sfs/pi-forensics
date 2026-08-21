@@ -15,6 +15,7 @@ import sqlite3
 from flask import g
 
 from core.paths import safe_path, case_consolidated_path, classify_case_role
+from core.config import get_keyword_lists
 
 # --- Quick Triage Scan: pattern definitions ---
 # Deliberately built in-house rather than depending on bulk_extractor,
@@ -39,6 +40,73 @@ TRIAGE_CATEGORY_LABELS = {
     "emails": "Email Addresses", "urls": "URLs", "ip_addresses": "IP Addresses",
     "credit_card_numbers": "Credit Card-like Numbers", "phone_numbers": "Phone Numbers",
 }
+
+# --- Examiner-defined keyword lists (Settings > Case & Reporting) ---
+# Selectable, additive scan categories on top of the 5 built-in ones above -
+# closer to AXIOM's Keyword Lists. Every triage-scan worker
+# (execution_worker_triage_scan, quick_triage_scan,
+# execution_worker_image_triage_scan) already iterates whatever dict of
+# {name: compiled_pattern} it's handed generically by name, with zero
+# knowledge of what backs each entry - so build_scan_patterns() is the ONLY
+# change any of them need: swap the module-level TRIAGE_PATTERNS constant
+# for this function's return value, locally, and every downstream line
+# (results/truncated dict construction, the finditer loop, the per-category
+# report/log lines) keeps working unchanged. Internal keys use 'kw_<id>'
+# (underscore, not the ':' a display label might use) since every worker
+# also uses the key directly in an output filename
+# (f"{name}.txt")/DB column - never assume '_'-only names are literal
+# scan-category-derived, though; a keyword list's own id is already
+# slug-shaped from _custom_report_template_from_payload()'s own precedent.
+KEYWORD_CATEGORY_PREFIX = "kw_"
+
+def build_scan_patterns(keyword_list_ids=None):
+    """Returns {name: compiled_regex} - always the 5 built-in TRIAGE_PATTERNS,
+    plus one compiled pattern per selected keyword list (get_keyword_lists()
+    in core/config.py), keyed 'kw_<list_id>'. A list with no usable terms,
+    or whose terms fail to compile as a regex (only relevant when
+    is_regex=True - a plain-term list is always safe, since every term is
+    re.escape()'d), is silently skipped rather than failing the whole scan -
+    matches this app's established tolerance for a broken/stale config
+    elsewhere over hard-failing a long-running job for it. keyword_list_ids
+    is opt-in per scan (None/empty = built-ins only, unchanged from every
+    call site's pre-existing behavior) - a keyword list is never
+    force-included just because it exists."""
+    patterns = dict(TRIAGE_PATTERNS)
+    if not keyword_list_ids:
+        return patterns
+    wanted = set(keyword_list_ids)
+    for kw_list in get_keyword_lists():
+        if kw_list.get('id') not in wanted:
+            continue
+        terms = [t for t in (kw_list.get('terms') or []) if t and t.strip()]
+        if not terms:
+            continue
+        try:
+            if kw_list.get('is_regex'):
+                combined = '|'.join(f'(?:{t})' for t in terms)
+            else:
+                combined = '|'.join(re.escape(t) for t in terms)
+            patterns[f"{KEYWORD_CATEGORY_PREFIX}{kw_list['id']}"] = re.compile(combined.encode('utf-8'), re.IGNORECASE)
+        except re.error:
+            continue
+    return patterns
+
+def resolve_scan_category_label(category):
+    """Human label for a scan category name, for the report/log lines every
+    triage-scan worker already writes - a built-in category (TRIAGE_
+    CATEGORY_LABELS) or a keyword list's own saved name (re-derived at
+    display time, not stored at scan time, so a later rename is reflected
+    retroactively); a keyword list deleted since the scan ran still shows
+    something meaningful rather than the raw internal key."""
+    if category in TRIAGE_CATEGORY_LABELS:
+        return TRIAGE_CATEGORY_LABELS[category]
+    if category.startswith(KEYWORD_CATEGORY_PREFIX):
+        list_id = category[len(KEYWORD_CATEGORY_PREFIX):]
+        for kw_list in get_keyword_lists():
+            if kw_list.get('id') == list_id:
+                return kw_list.get('name', list_id)
+        return f"Keyword List (deleted): {list_id}"
+    return category
 
 def case_index_db_path(case_dir):
     """Fixed per-case SQLite index path, e.g. <case_dir>/<slug>_case_index.db -

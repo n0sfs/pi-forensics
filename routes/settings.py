@@ -518,6 +518,128 @@ def mount_network():
     return jsonify({"success": True, "mount_point": mount_point})
 
 
+# --- Keyword Lists: examiner-defined, saved search terms selectable at
+# Triage Scan time (Quick Triage Scan, the File Recovery job, and the
+# filesystem-aware whole-image job), additive to the 5 built-in structured-
+# data categories (see core/case_index_db.py's TRIAGE_PATTERNS/
+# build_scan_patterns()). Same CRUD shape as report_templates_custom() in
+# routes/reporting.py (GET ungated - every Triage Scan launcher across 3
+# tabs needs to read the list regardless of whether that account has
+# 'settings'; writes gated 'settings' since this is station-wide config).
+KEYWORD_LIST_NAME_MAX = 100
+KEYWORD_LIST_TERM_MAX = 500  # a single term/pattern's own max length
+KEYWORD_LIST_MAX_TERMS = 200  # per list
+KEYWORD_LIST_MAX_LISTS = 100  # station-wide
+
+def _keyword_list_from_payload(req):
+    """Validates and normalizes a create/update payload into the stored
+    record shape (minus id/created_at, which the caller fills in). Returns
+    (record_dict, None) or (None, error_message). Regex-mode terms are
+    compile-checked up front and rejected with a specific error naming the
+    bad pattern - unlike a plain-term list (always safe, every term is
+    re.escape()'d at scan time), a broken regex here would otherwise fail
+    silently mid-scan (build_scan_patterns() swallows a compile error and
+    just drops that list rather than failing a long-running job), which
+    would be a confusing way for an examiner to discover a typo."""
+    name = (req.get('name') or '').strip()[:KEYWORD_LIST_NAME_MAX]
+    if not name:
+        return None, "List name is required."
+
+    raw_terms = req.get('terms')
+    if not isinstance(raw_terms, list):
+        return None, "Terms must be a list of strings."
+    terms = [t.strip()[:KEYWORD_LIST_TERM_MAX] for t in raw_terms if isinstance(t, str) and t.strip()]
+    if not terms:
+        return None, "At least one term is required."
+    if len(terms) > KEYWORD_LIST_MAX_TERMS:
+        return None, f"Too many terms - max {KEYWORD_LIST_MAX_TERMS} per list."
+
+    is_regex = bool(req.get('is_regex'))
+    if is_regex:
+        for t in terms:
+            try:
+                re.compile(t)
+            except re.error as e:
+                return None, f"'{t}' is not a valid regular expression: {e}"
+
+    return {
+        "name": name,
+        "terms": terms,
+        "is_regex": is_regex,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }, None
+
+@settings_bp.route('/api/settings/keyword_lists', methods=['GET', 'POST'])
+@requires_auth
+def keyword_lists():
+    cfg = load_runtime_config()
+    if request.method == 'GET':
+        return jsonify({"success": True, "lists": cfg.get('keyword_lists', [])})
+
+    perms = get_current_user_permissions()
+    if not perms.get('settings', False):
+        return jsonify({"success": False, "error": "Your account's user group doesn't have permission to perform this action."}), 403
+
+    lists = cfg.setdefault('keyword_lists', [])
+    if len(lists) >= KEYWORD_LIST_MAX_LISTS:
+        return jsonify({"success": False, "error": f"Station already has the maximum of {KEYWORD_LIST_MAX_LISTS} keyword lists."}), 400
+
+    req = request.get_json() or {}
+    record, error = _keyword_list_from_payload(req)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+
+    # Soft-dedupe on name collision (numeric suffix), same precedent as
+    # custom report templates - no on-disk artifact at stake for a
+    # duplicate list *name*.
+    base_id = re.sub(r'[^a-z0-9_]+', '_', record['name'].lower()).strip('_') or 'keywords'
+    existing_ids = {r['id'] for r in lists}
+    list_id = base_id
+    n = 2
+    while list_id in existing_ids:
+        list_id = f"{base_id}_{n}"
+        n += 1
+
+    record['id'] = list_id
+    record['created_at'] = record['updated_at']
+    lists.append(record)
+    save_runtime_config(cfg)
+    log_chain_of_custody("keyword_list_created", {"id": list_id, "name": record['name'], "term_count": len(record['terms'])})
+    return jsonify({"success": True, "list": record})
+
+@settings_bp.route('/api/settings/keyword_lists/<list_id>', methods=['PUT', 'DELETE'])
+@requires_auth
+@requires_permission('settings')
+def keyword_list_detail(list_id):
+    cfg = load_runtime_config()
+    lists = cfg.get('keyword_lists', [])
+    idx = next((i for i, r in enumerate(lists) if r.get('id') == list_id), None)
+    if idx is None:
+        return jsonify({"success": False, "error": "Keyword list not found."}), 404
+
+    if request.method == 'DELETE':
+        removed = lists.pop(idx)
+        cfg['keyword_lists'] = lists
+        save_runtime_config(cfg)
+        log_chain_of_custody("keyword_list_deleted", {"id": list_id, "name": removed.get('name')})
+        return jsonify({"success": True})
+
+    req = request.get_json() or {}
+    record, error = _keyword_list_from_payload(req)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+    # id is fixed at creation and never regenerated from a new name - a
+    # rename must not invalidate a scan launcher's already-checked
+    # keyword_list_ids selection or any other stored reference.
+    record['id'] = list_id
+    record['created_at'] = lists[idx].get('created_at', record['updated_at'])
+    lists[idx] = record
+    cfg['keyword_lists'] = lists
+    save_runtime_config(cfg)
+    log_chain_of_custody("keyword_list_updated", {"id": list_id, "name": record['name'], "term_count": len(record['terms'])})
+    return jsonify({"success": True, "list": record})
+
+
 @settings_bp.route('/api/network/auto_mounts', methods=['GET'])
 @requires_auth
 def list_auto_mount_shares():
