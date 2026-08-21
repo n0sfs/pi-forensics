@@ -1363,6 +1363,29 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
     return li;
 }
 
+// Recursively expands li and every 'dir'-kind descendant it reveals - used
+// only for File Views (see initFileViewsTree below), so every category's
+// live count (Images (60), Report Export (6), URLs (50), ...) is visible
+// the moment File Views loads, AXIOM's "REFINED RESULTS" panel-style,
+// instead of requiring a click per level to drill down to each count.
+// Cheap here specifically because File Views' non-root dir nodes
+// (buildFileViewsHierarchy()'s staticChildren) are pre-computed from the
+// one /api/case_index/summary fetch already made for the root - expanding
+// them is pure DOM work, no extra network round-trips. Not used for the
+// real-fs tree, image-mode tree, or Data Sources - those can have
+// arbitrarily many/deep real entries, where a full recursive expand would
+// be wasteful (or, for Data Sources' partition lists, actively excessive
+// on a large multi-partition image) rather than a free convenience.
+async function autoExpandTreeSubtree(li) {
+    if (!li || !li._expand) return;
+    await li._expand();
+    const childUl = li.querySelector(':scope > ul');
+    if (!childUl) return;
+    for (const childLi of childUl.children) {
+        await autoExpandTreeSubtree(childLi);
+    }
+}
+
 // Case-scoped: rooted at the active case's own folder so the tree only ever
 // shows that case's evidence, matching every other job-launcher tab's
 // auto-fill; falls back to the full evidence root when no case is selected.
@@ -1685,7 +1708,7 @@ async function initFileViewsTree(forceRebuild) {
     wrap.appendChild(rootUl);
     container.appendChild(wrap);
     explorerFileViewsTreeRootEl = wrap;
-    await rootLi._expand();
+    await autoExpandTreeSubtree(rootLi);
 }
 
 // Clicking a File Views leaf category fetches matching rows and renders them
