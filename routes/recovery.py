@@ -25,7 +25,10 @@ from core.jobs import (
     _stream_subprocess, clear_active_proc, reclaim_ownership,
     build_report_target, write_initial_report, _write_report,
 )
-from core.case_index_db import TRIAGE_PATTERNS, TRIAGE_MAX_MATCHES_PER_CATEGORY
+from core.case_index_db import (
+    TRIAGE_PATTERNS, TRIAGE_MAX_MATCHES_PER_CATEGORY,
+    build_scan_patterns, resolve_scan_category_label,
+)
 
 recovery_bp = Blueprint('recovery', __name__)
 
@@ -294,14 +297,16 @@ def execution_worker_scalpel(source, dest_dir, report_file_path, report_data):
         clear_active_proc()
 
 
-def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data, total_bytes):
+def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data, total_bytes, keyword_list_ids=None):
     """
     Built-in triage scan for structured data (emails, URLs, IP addresses,
-    credit-card-like numbers, phone numbers) - reads the source directly
-    and regex-matches TRIAGE_PATTERNS against it, writing deduplicated
-    results to one text file per category. No external tool dependency at
-    all (see TRIAGE_PATTERNS above for why that matters), so this can never
-    hit a "package not found" wall on any system this app runs on.
+    credit-card-like numbers, phone numbers) plus any examiner-selected
+    keyword lists (keyword_list_ids - see build_scan_patterns()) - reads
+    the source directly and regex-matches the combined pattern set against
+    it, writing deduplicated results to one text file per category. No
+    external tool dependency at all for the built-in categories (see
+    TRIAGE_PATTERNS above for why that matters), so this can never hit a
+    "package not found" wall on any system this app runs on.
     Read-only against the source.
 
     Honest tradeoff: this is a straightforward single-threaded Python loop,
@@ -326,8 +331,9 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
     OVERLAP = 256  # bytes carried over between chunks so a match spanning a
                    # chunk boundary isn't missed
 
-    results = {name: set() for name in TRIAGE_PATTERNS}
-    truncated = {name: False for name in TRIAGE_PATTERNS}
+    patterns = build_scan_patterns(keyword_list_ids)
+    results = {name: set() for name in patterns}
+    truncated = {name: False for name in patterns}
 
     try:
         os.makedirs(dest_dir, exist_ok=True)
@@ -365,7 +371,7 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                     break
 
                 data = tail + chunk
-                for name, pattern in TRIAGE_PATTERNS.items():
+                for name, pattern in patterns.items():
                     if truncated[name]:
                         continue
                     for m in pattern.finditer(data):
@@ -374,7 +380,7 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                             results[name].add(val)
                             if len(results[name]) >= TRIAGE_MAX_MATCHES_PER_CATEGORY:
                                 truncated[name] = True
-                                append_log(f"[!] {name}: hit the {TRIAGE_MAX_MATCHES_PER_CATEGORY}-match cap, no longer collecting new ones.")
+                                append_log(f"[!] {resolve_scan_category_label(name)}: hit the {TRIAGE_MAX_MATCHES_PER_CATEGORY}-match cap, no longer collecting new ones.")
                                 break
 
                 tail = data[-OVERLAP:] if len(data) >= OVERLAP else data
@@ -418,7 +424,7 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                     out_f.write(val.decode('utf-8', errors='replace') + "\n")
             total_hits += len(matches)
             note = " (capped)" if truncated[name] else ""
-            append_log(f"[+] {name}: {len(matches)} unique match(es){note} -> {out_path}")
+            append_log(f"[+] {resolve_scan_category_label(name)}: {len(matches)} unique match(es){note} -> {out_path}")
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["triage_summary"] = {name: len(matches) for name, matches in results.items()}
@@ -730,6 +736,7 @@ def start_triage_scan():
     source_raw = req.get('source', '')
     dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
     metadata = req.get('metadata', {})
+    keyword_list_ids = req.get('keyword_list_ids') or []
 
     if is_valid_block_device(source_raw) and os.path.exists(source_raw):
         source = source_raw
@@ -782,7 +789,7 @@ def start_triage_scan():
 
     thread = threading.Thread(
         target=execution_worker_triage_scan,
-        args=(source, job_dest_dir, report_target, report_data, total_bytes)
+        args=(source, job_dest_dir, report_target, report_data, total_bytes, keyword_list_ids)
     )
     thread.daemon = True
     thread.start()

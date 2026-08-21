@@ -21,7 +21,7 @@ from core.case_index_db import (
     case_index_db_path, _case_index_connect,
     _case_index_open_readonly, _case_index_open_write,
     _tags_for_paths, _analysis_results_for_paths, TRIAGE_PATTERNS,
-    _backfill_case_artifact_tags,
+    _backfill_case_artifact_tags, KEYWORD_CATEGORY_PREFIX, resolve_scan_category_label,
 )
 
 case_index_bp = Blueprint('case_index', __name__)
@@ -69,6 +69,7 @@ def case_index_summary():
     conn = _case_index_open_readonly(case_folder)
     by_extension = {cat: 0 for cat in FILE_VIEW_EXTENSION_CATEGORIES}
     keyword_hits = {name: 0 for name in TRIAGE_PATTERNS}
+    custom_keyword_hits = []  # any keyword-list-derived categories ('kw_<id>') a scan actually recorded hits under - see build_scan_patterns()
     deleted_files = 0
     total_files = 0
     tags = []
@@ -82,6 +83,8 @@ def case_index_summary():
             for row in conn.execute("SELECT category, COUNT(*) FROM triage_hits GROUP BY category"):
                 if row[0] in keyword_hits:
                     keyword_hits[row[0]] = row[1]
+                elif row[0].startswith(KEYWORD_CATEGORY_PREFIX):
+                    custom_keyword_hits.append({"category": row[0], "label": resolve_scan_category_label(row[0]), "count": row[1]})
             for row in conn.execute(
                     "SELECT t.id, t.name, t.color, t.notable, t.is_default, "
                     "(SELECT COUNT(*) FROM tagged_items WHERE tag_id=t.id) "
@@ -96,7 +99,8 @@ def case_index_summary():
         "total_files": total_files,
         "by_extension": by_extension,
         "deleted_files": deleted_files,
-        "keyword_hits": {"total": sum(keyword_hits.values()), **keyword_hits},
+        "keyword_hits": {"total": sum(keyword_hits.values()) + sum(c['count'] for c in custom_keyword_hits), **keyword_hits},
+        "custom_keyword_hits": custom_keyword_hits,
         "tags": tags,
     })
 
@@ -176,7 +180,7 @@ def case_index_hits():
     category = req.get('category', '')
     conn = _case_index_open_readonly(req.get('case_folder'))
     rows = []
-    if conn and category in TRIAGE_PATTERNS:
+    if conn and (category in TRIAGE_PATTERNS or category.startswith(KEYWORD_CATEGORY_PREFIX)):
         try:
             # LEFT JOIN indexed_files for MACB timestamps/size/deleted-status -
             # triage_hits itself never duplicates that data (the same walk

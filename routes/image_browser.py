@@ -40,7 +40,7 @@ from core.tsk_utils import (
 )
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
 from core.case_index_db import (
-    TRIAGE_PATTERNS, TRIAGE_CATEGORY_LABELS,
+    build_scan_patterns, resolve_scan_category_label,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
 )
 
@@ -678,7 +678,7 @@ IMAGE_TRIAGE_MAX_FILES = 5000  # matches IMAGE_HASH_MAX_FILES's precedent
 IMAGE_TRIAGE_MAX_FILE_BYTES = 4 * 1024 * 1024  # 4 MB per file - smaller than quick_triage_scan()'s single-file 32MB cap, since this walks many files
 IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY = 2000  # between quick_triage_scan()'s 500 (one file) and the background job's 50000 (one whole device)
 
-def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, user=None):
+def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, user=None, keyword_list_ids=None):
     global current_job
     log_history = []
 
@@ -687,9 +687,10 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
             log_history.append(msg)
             update_job(log="\n".join(log_history[-100:]))
 
-    results = {name: [] for name in TRIAGE_PATTERNS}       # list of (path, value) tuples, in match order
-    seen = {name: set() for name in TRIAGE_PATTERNS}       # dedupe by (path, value)
-    truncated = {name: False for name in TRIAGE_PATTERNS}
+    patterns = build_scan_patterns(keyword_list_ids)
+    results = {name: [] for name in patterns}       # list of (path, value) tuples, in match order
+    seen = {name: set() for name in patterns}       # dedupe by (path, value)
+    truncated = {name: False for name in patterns}
     files_scanned = 0
     files_errored = 0
     indexed_files_count = 0
@@ -788,7 +789,7 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
                         buf = io.BytesIO()
                         _tsk_stream_file(tsk_file, buf.write, max_bytes=IMAGE_TRIAGE_MAX_FILE_BYTES)
                         data = buf.getvalue()
-                        for name, pattern in TRIAGE_PATTERNS.items():
+                        for name, pattern in patterns.items():
                             if truncated[name]:
                                 continue
                             for m in pattern.finditer(data):
@@ -807,7 +808,7 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
                                     ))
                                 if len(results[name]) >= IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY:
                                     truncated[name] = True
-                                    append_log(f"[!] {TRIAGE_CATEGORY_LABELS.get(name, name)}: hit the {IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY}-match cap, no longer collecting new ones.")
+                                    append_log(f"[!] {resolve_scan_category_label(name)}: hit the {IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY}-match cap, no longer collecting new ones.")
                                     break
                         files_scanned += 1
                     except Exception:
@@ -860,8 +861,8 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
             "",
         ]
         total_hits = 0
-        for name in TRIAGE_PATTERNS:
-            label = TRIAGE_CATEGORY_LABELS.get(name, name)
+        for name in patterns:
+            label = resolve_scan_category_label(name)
             matches = results[name]
             total_hits += len(matches)
             cap_note = " (capped)" if truncated[name] else ""
@@ -908,6 +909,7 @@ def start_image_triage_scan():
     req = request.get_json() or {}
     image_path = safe_path(req.get('image_path'))
     dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    keyword_list_ids = req.get('keyword_list_ids') or []
 
     if not image_path or not os.path.isfile(image_path):
         update_job(active=False)
@@ -931,7 +933,7 @@ def start_image_triage_scan():
 
     thread = threading.Thread(
         target=execution_worker_image_triage_scan,
-        args=(image_path, dest_dir, requester_ip, requester_user)
+        args=(image_path, dest_dir, requester_ip, requester_user, keyword_list_ids)
     )
     thread.daemon = True
     thread.start()
