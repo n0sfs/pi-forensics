@@ -9,7 +9,7 @@
 # ============================================================================
 
 [Unit]
-Description=ARM Forensic Acquisition Station (Production WSGI)
+Description=Pi Forensics Suite (Production WSGI)
 After=network.target network-online.target
 
 [Service]
