@@ -25,11 +25,11 @@ import subprocess
 from flask import Blueprint, jsonify, request, send_file
 
 from core.auth import requires_auth, requires_permission
-from core.paths import safe_path, log_chain_of_custody, case_consolidated_path
+from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN
 from core.case_index_db import (
     TRIAGE_PATTERNS, TRIAGE_CATEGORY_LABELS,
-    case_index_db_path, _case_index_connect, _record_analysis_result,
+    case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
 )
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
 
@@ -68,6 +68,10 @@ def browse_files():
                     "accessed": _format_epoch(st.st_atime),
                     "changed": _format_epoch(st.st_ctime),
                     "created": _format_epoch(getattr(st, 'st_birthtime', None)),
+                    # None for a directory or anything that isn't a
+                    # recognized artifact kind this app itself generates -
+                    # see classify_case_role()'s own docstring.
+                    "case_role": None if is_dir else classify_case_role(entry.name),
                 })
             except Exception:
                 pass
@@ -428,6 +432,7 @@ def run_hashdeep():
         )
         with open(manifest_path, 'w') as f:
             f.write(res.stdout)
+        _auto_tag_case_artifact(target_dir, manifest_path)
 
         file_count = sum(1 for line in res.stdout.splitlines() if line and not line.startswith('%') and not line.startswith('#'))
         log_chain_of_custody("hashdeep_manifest", {"directory": target_dir, "algorithm": algo, "file_count": file_count})
@@ -486,6 +491,7 @@ def extract_geolocation_kml():
                 f.write(kml_doc)
         except Exception as e:
             return jsonify({"success": False, "error": f"Failed to write KML file: {e}"}), 500
+        _auto_tag_case_artifact(target_dir, kml_path)
 
     log_chain_of_custody("geolocation_kml_export", {
         "directory": target_dir, "files_scanned": len(entries), "points_found": len(points)

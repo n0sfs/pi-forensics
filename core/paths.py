@@ -114,6 +114,39 @@ EXTENSION_CATEGORY_MAP = {
 }
 FILE_VIEW_EXTENSION_CATEGORIES = ('images', 'videos', 'audio', 'archives', 'documents', 'executables', 'other')
 
+_CASE_ROLE_BACKUP_SUFFIXES = ('.pre_consolidation_backup', '.pre_restore_backup')
+_CASE_ROLE_REPORT_SUFFIXES = (
+    '_case.json', '_case.pdf', '_case.html', '_case_index.db',
+    '_case.json.sha256', '_case.pdf.sha256', '_case.html.sha256',
+    '_report.json',  # legacy per-job report (pre-consolidated-schema cases)
+)
+_CASE_ROLE_ANALYSIS_LOG_RE = re.compile(r'(_hash_manifest_\w+\.txt|_triage_scan_report\.txt)$')
+
+def classify_case_role(name):
+    """Best-effort classification of a filename as one of this app's own
+    generated case-artifact kinds - 'report' (the case JSON/PDF/HTML export
+    and their .sha256 sidecars, the per-case SQLite index, a legacy per-job
+    report), 'analysis_log' (a hash-manifest or triage-scan text report),
+    'geolocation' (a .kml), 'backup' (a pre-consolidation/pre-restore
+    snapshot), or None for anything that isn't a recognized artifact kind
+    (real evidence, an examiner-added note, etc.). Deliberately narrow and
+    pattern-matched against this app's own actual naming conventions, not a
+    general file-type classifier - see classify_extension() above for that.
+    Used to visually group these files in File Explorer's folder tree
+    (case_role dividers, separate from actual case data) and to auto-tag
+    them into the per-case analysis index at the moment each is generated.
+    """
+    lower = name.lower()
+    if lower.endswith(_CASE_ROLE_BACKUP_SUFFIXES):
+        return 'backup'
+    if name == 'case_info.json' or lower.endswith(tuple(s.lower() for s in _CASE_ROLE_REPORT_SUFFIXES)):
+        return 'report'
+    if _CASE_ROLE_ANALYSIS_LOG_RE.search(name) or lower.endswith('.log'):
+        return 'analysis_log'
+    if lower.endswith('.kml'):
+        return 'geolocation'
+    return None
+
 def classify_extension(name):
     """Returns (category, extension) for a filename - extension is the bare,
     lowercased suffix with no leading dot ('' if none); category is one of
