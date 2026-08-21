@@ -1391,11 +1391,12 @@ async function initExplorerTree(forceRebuild) {
         explorerRealTreeRootEl = rootUl;
         await rootLi._expand(); // show top-level contents immediately, matching the initial listing
     }
-    // File Views is a second, case-wide root sitting alongside the real
-    // folder tree (not gated behind first entering one specific image) -
-    // appended AFTER the real-fs root so container.querySelector('li')
-    // elsewhere (syncExplorerTreeSelection et al) keeps finding the real-fs
-    // root first, unaffected by this addition.
+    // Data Sources and File Views are two more case-wide roots sitting
+    // alongside the real folder tree (neither gated behind first entering
+    // one specific image) - both appended AFTER the real-fs root so
+    // container.querySelector('li') elsewhere (syncExplorerTreeSelection et
+    // al) keeps finding the real-fs root first, unaffected by this addition.
+    await initDataSourcesTree(forceRebuild);
     await initFileViewsTree(forceRebuild);
 }
 
@@ -1521,6 +1522,131 @@ function explorerFileViewsAdapter(caseFolder) {
         },
         contextMenu: () => {}, // no context menu on synthetic category/query nodes
     };
+}
+
+// --- Data Sources (Autopsy-style physical evidence overview) ---
+// A third case-wide tree root, sitting between the real folder tree and
+// File Views - lists every acquired image directly in the case folder,
+// each lazily expanded into its own partition layout (allocated regions
+// and unallocated gaps) via the existing /api/image/mmls, the same data
+// the image-mode toolbar's partition <select> already renders - this is
+// just a persistent, always-reachable overview of it instead of something
+// only visible after already entering one specific image. Same static-tree-
+// shape/lazy-fetch-once pattern as explorerFileViewsAdapter below.
+let explorerDataSourcesChildrenCache = {};
+let explorerDataSourcesTreeRootEl = null;
+
+// Enters full Sleuth Kit browsing for imagePath, then - if startSector is
+// given and actually exists in that image's real partition list - switches
+// straight to that partition. enterExplorerImageFor() always lands on
+// whichever partition its own populated <select> defaults to first, so a
+// deep-linked partition (anything but the first) needs this second step;
+// startSector omitted/undefined just leaves that default in place.
+async function enterExplorerImageForPartition(imagePath, imageName, startSector) {
+    await enterExplorerImageFor({ path: imagePath, name: imageName });
+    if (startSector === undefined || startSector === null) return;
+    const select = document.getElementById("explorerImagePartitionSelect");
+    if (!select) return;
+    const match = [...select.options].some(o => o.value === String(startSector));
+    if (match) {
+        select.value = String(startSector);
+        explorerImageChangePartition();
+    }
+}
+
+function explorerDataSourcesAdapter(caseFolder) {
+    return {
+        cache: explorerDataSourcesChildrenCache,
+        key: (node) => node.id,
+        label: (node) => node.name,
+        async fetchChildren(node) {
+            if (node.imagePath === undefined) {
+                // Root: list every acquired image sitting in the case folder.
+                try {
+                    const res = await fetch('/api/case_index/data_sources', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ case_folder: caseFolder })
+                    });
+                    const data = await res.json();
+                    const sources = (data.success && data.sources) || [];
+                    if (sources.length === 0) {
+                        return [{ id: 'ds-note', name: 'No acquired images found directly in this case folder', kind: 'file' }];
+                    }
+                    return sources.map(s => ({
+                        id: `ds-img-${s.path}`, name: s.name, kind: 'image', imagePath: s.path,
+                    }));
+                } catch (err) {
+                    return [];
+                }
+            }
+            // An image node: its own partition layout.
+            try {
+                const res = await fetch('/api/image/mmls', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image_path: node.imagePath })
+                });
+                const data = await res.json();
+                const partitions = (data.success && data.partitions) || [];
+                if (partitions.length === 0) {
+                    return [{
+                        id: `${node.id}-whole`, name: 'Whole image (offset 0)', kind: 'file',
+                        imagePath: node.imagePath, startSector: 0,
+                    }];
+                }
+                return partitions.map(p => ({
+                    id: `${node.id}-p${p.slot}`,
+                    name: `vol${p.slot} (${p.description}: ${p.start_sector}-${p.end_sector})`,
+                    kind: 'file', imagePath: node.imagePath, startSector: p.start_sector,
+                }));
+            } catch (err) {
+                return [];
+            }
+        },
+        navigate: (node) => {
+            if (node.imagePath !== undefined) enterExplorerImageForPartition(node.imagePath, node.name);
+        },
+        selectFile: (node) => {
+            if (node.imagePath !== undefined) enterExplorerImageForPartition(node.imagePath, node.imagePath.split('/').pop(), node.startSector);
+        },
+        contextMenu: () => {}, // no context menu on synthetic overview nodes - the same image is fully reachable (with its full action set) from the real-fs tree/Listing table
+    };
+}
+
+async function initDataSourcesTree(forceRebuild) {
+    const container = document.getElementById('explorerTreeContainer');
+    if (!container) return;
+    if (explorerDataSourcesTreeRootEl && !forceRebuild) {
+        container.appendChild(explorerDataSourcesTreeRootEl);
+        return;
+    }
+    if (explorerDataSourcesTreeRootEl && explorerDataSourcesTreeRootEl.parentNode) {
+        explorerDataSourcesTreeRootEl.remove();
+    }
+    explorerDataSourcesChildrenCache = {};
+    const wrap = document.createElement('div');
+    wrap.className = 'explorer-fileviews-section mt-2 pt-2 border-top';
+
+    if (!activeCase || !activeCase.case_folder) {
+        const msg = document.createElement('div');
+        msg.className = 'text-subtle small px-2 py-1';
+        msg.textContent = 'Select or create a case to see Data Sources.';
+        wrap.appendChild(msg);
+        container.appendChild(wrap);
+        explorerDataSourcesTreeRootEl = wrap;
+        return;
+    }
+
+    const rootUl = document.createElement('ul');
+    rootUl.className = 'explorer-tree';
+    const rootNode = { id: 'ds-root', name: 'Data Sources', kind: 'dir' };
+    const rootLi = renderExplorerTreeNode(rootNode, explorerDataSourcesAdapter(activeCase.case_folder), []);
+    rootUl.appendChild(rootLi);
+    wrap.appendChild(rootUl);
+    container.appendChild(wrap);
+    explorerDataSourcesTreeRootEl = wrap;
+    await rootLi._expand();
 }
 
 async function initFileViewsTree(forceRebuild) {
