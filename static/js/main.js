@@ -909,6 +909,10 @@ async function fetchImageFls(imageCtx, inode) {
 function explorerTreeRealAdapter() {
     return {
         cache: explorerTreeChildrenCache,
+        // Only the real-fs adapter groups disk images into their own
+        // section (see appendExplorerTreeChildren) - image-mode browsing
+        // and File Views keep their existing plain child order.
+        groupDiskImages: true,
         key: (node) => node.imageCtx ? `img:${node.imageCtx.image_path}:${node.imageCtx.offset}:${node.inode}` : node.path,
         label: (node) => node.name,
         async fetchChildren(node) {
@@ -1167,6 +1171,36 @@ function explorerTreeImageAdapter() {
 // Renders one <li> for `node`. `ancestorPath` is the array of nodes from the
 // tree root down to (but not including) `node` itself - threaded through so
 // image-mode navigation can rebuild explorerImagePathStack without a
+// Appends one directory level's children to its <ul>, grouping disk images
+// (node.kind === 'image' - a .dd/.e01/.aff, already distinguished from a
+// plain file for the double-click/right-click "Browse as Image" behavior)
+// into their own visually separated section instead of leaving them
+// scattered wherever they happen to fall alphabetically among regular
+// files - reported directly by the user from a real case folder where two
+// acquired images landed far apart in the list. Real-fs directories only
+// (adapter.groupDiskImages, set on explorerTreeRealAdapter() below) - image-
+// mode browsing and the File Views tree keep their existing plain order,
+// since neither one mixes disk-image files in with regular ones the way a
+// real case folder does.
+function appendExplorerTreeChildren(ul, children, adapter, ancestorPath) {
+    if (!adapter.groupDiskImages) {
+        children.forEach(child => ul.appendChild(renderExplorerTreeNode(child, adapter, ancestorPath)));
+        return;
+    }
+    const dirs = children.filter(c => c.kind === 'dir');
+    const images = children.filter(c => c.kind === 'image');
+    const others = children.filter(c => c.kind !== 'dir' && c.kind !== 'image');
+    const groups = [dirs, images, others].filter(g => g.length > 0);
+    groups.forEach((group, i) => {
+        if (i > 0) {
+            const divider = document.createElement('li');
+            divider.className = 'explorer-tree-divider';
+            ul.appendChild(divider);
+        }
+        group.forEach(child => ul.appendChild(renderExplorerTreeNode(child, adapter, ancestorPath)));
+    });
+}
+
 // separate lookup table. `node.kind` ('dir' | 'image' | 'file') drives icon,
 // expand behavior, and click behavior - see the two adapters above for how
 // each kind is derived.
@@ -1223,7 +1257,7 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
         if (!childrenUl) {
             childrenUl = document.createElement('ul');
             const nextAncestors = ancestorPath.concat([node]);
-            children.forEach(child => childrenUl.appendChild(renderExplorerTreeNode(child, adapter, nextAncestors)));
+            appendExplorerTreeChildren(childrenUl, children, adapter, nextAncestors);
             li.appendChild(childrenUl);
         }
         childrenUl.style.display = '';
