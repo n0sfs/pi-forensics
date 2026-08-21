@@ -157,7 +157,7 @@ function switchToTab(tabId) {
 // tabs (not sub-navs like Reporting's/Settings' own list-group-as-tabs, which reuse the same
 // Bootstrap Tab component and would otherwise also fire this listener).
 const LAST_TAB_STORAGE_KEY = 'pi_forensics_last_tab';
-const TOP_LEVEL_TAB_IDS = ['acquisition-tab', 'mobile-tab', 'ddrescue-tab', 'explorer-tab', 'reports-tab', 'settings-tab'];
+const TOP_LEVEL_TAB_IDS = ['home-tab', 'acquisition-tab', 'mobile-tab', 'ddrescue-tab', 'explorer-tab', 'reports-tab', 'settings-tab'];
 document.addEventListener('shown.bs.tab', (ev) => {
     if (TOP_LEVEL_TAB_IDS.includes(ev.target?.id)) {
         localStorage.setItem(LAST_TAB_STORAGE_KEY, ev.target.id);
@@ -8104,6 +8104,18 @@ const SIDEBAR_TAB_PERMISSIONS = {
     navItemReports: 'reporting',
 };
 
+// Home tab tiles mirror the same permission keys as the sidebar entries
+// above (Settings has none in either map - never gated) - an account
+// without a given tab's permission shouldn't see a tile that would just
+// 403 if clicked.
+const HOME_CARD_PERMISSIONS = {
+    homeCardAcquisition: 'acquisition',
+    homeCardMobile: 'mobile',
+    homeCardRecovery: 'recovery',
+    homeCardExplorer: 'file_explorer',
+    homeCardReports: 'reporting',
+};
+
 function applySidebarPermissionGating() {
     let activeTabHidden = false;
     for (const [navId, permKey] of Object.entries(SIDEBAR_TAB_PERMISSIONS)) {
@@ -8112,6 +8124,10 @@ function applySidebarPermissionGating() {
         const allowed = !!currentUserPermissions[permKey];
         li.style.display = allowed ? '' : 'none';
         if (!allowed && li.querySelector('.nav-link.active')) activeTabHidden = true;
+    }
+    for (const [cardId, permKey] of Object.entries(HOME_CARD_PERMISSIONS)) {
+        const col = document.getElementById(cardId);
+        if (col) col.style.display = currentUserPermissions[permKey] ? '' : 'none';
     }
     // Settings/Help are never gated (self-service password change and
     // account switching live in Settings, which must stay reachable
@@ -9145,7 +9161,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // not switchToTab()'s bootstrap.Tab(...).show() - so those onclick handlers actually run too,
     // matching a genuine click exactly (.show() alone would switch the pane but skip them).
     const savedTabId = localStorage.getItem(LAST_TAB_STORAGE_KEY);
-    if (savedTabId && savedTabId !== 'acquisition-tab') {
+    if (savedTabId && savedTabId !== 'home-tab') {
         document.getElementById(savedTabId)?.click();
     }
 });
