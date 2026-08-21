@@ -115,6 +115,23 @@
                                         </div>
                                     </div>
                                 </div>
+                                <!-- Keyword Lists ARE station-wide (unlike Manage Tags above) - saved
+                                     terms selectable at Triage Scan time from any case, in File
+                                     Recovery's Triage Scan tool. -->
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secKeywordLists"><i class="bi bi-search me-2"></i>Keyword Lists</button>
+                                    </h2>
+                                    <div id="secKeywordLists" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Saved search terms selectable when running Triage Scan (File Recovery tab), additive to the 5 built-in categories (emails/URLs/IPs/card-like numbers/phone numbers). Plain terms match as case-insensitive substrings; a list can instead be marked Regex to use each term as a full regular expression.</div>
+                                            <div id="keywordListsListContainer" class="mb-2">
+                                                <div class="text-subtle small p-2">Loading keyword lists...</div>
+                                            </div>
+                                            <button class="btn btn-sm btn-outline-info fw-bold" onclick="openCreateKeywordListModal()"><i class="bi bi-plus-lg me-1"></i>New List</button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
 
                             <button class="btn btn-sm btn-success fw-bold w-100" onclick="saveCaseReportingSettings()"><i class="bi bi-check2-circle me-1"></i>Save Settings</button>

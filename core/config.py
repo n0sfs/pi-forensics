@@ -154,6 +154,14 @@ def get_report_defaults():
 def get_custom_case_fields():
     return load_runtime_config().get('custom_case_fields', [])
 
+# Station-wide, examiner-defined keyword/regex lists (Settings > Case &
+# Reporting) - selectable at scan time by Quick/Full Triage Scan, additive
+# to the 5 built-in structured-data categories (see
+# core/case_index_db.py's TRIAGE_PATTERNS/build_scan_patterns()). Same
+# schema-agnostic runtime_config.json storage as everything else above.
+def get_keyword_lists():
+    return load_runtime_config().get('keyword_lists', [])
+
 # Root directory that all file-explorer / report / attachment / imaging-destination
 # endpoints are sandboxed to. Nothing outside this tree can be browsed, read,
 # written, or deleted via the API, regardless of what path a client sends.

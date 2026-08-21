@@ -104,6 +104,14 @@ class RemoteTestClient:
         kwargs.setdefault("environ_base", {})["REMOTE_ADDR"] = self.REMOTE_ADDR
         return self._raw.post(*args, **kwargs)
 
+    def put(self, *args, **kwargs):
+        kwargs.setdefault("environ_base", {})["REMOTE_ADDR"] = self.REMOTE_ADDR
+        return self._raw.put(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        kwargs.setdefault("environ_base", {})["REMOTE_ADDR"] = self.REMOTE_ADDR
+        return self._raw.delete(*args, **kwargs)
+
     def session_transaction(self, *args, **kwargs):
         return self._raw.session_transaction(*args, **kwargs)
 
