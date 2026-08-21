@@ -248,6 +248,19 @@
         .explorer-tree-toggle.no-children { visibility: hidden; cursor: default; }
         .explorer-tree-divider { border-top: 1px solid rgba(255, 255, 255, 0.18); margin: 4px 6px; list-style: none; }
 
+        /* File Explorer's right-click context menu: each labeled group
+           (Image & Case, Whole-Image Analysis, Analyze, File Operations,
+           In-Image Actions) collapses behind its own header button,
+           starting collapsed every time the menu opens - keeps a ~24-item
+           menu to a short list of section names instead of one long
+           scrolling column. */
+        .ctx-menu-section-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; background: none; border: none; padding: .35rem 1rem; margin: 0; font-size: .75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--text-subtle); cursor: pointer; }
+        .ctx-menu-section-toggle:hover { color: var(--accent-cyan); background-color: #1e2638; }
+        .ctx-menu-section-toggle i { transition: transform .15s ease; }
+        .ctx-menu-section-toggle.expanded i { transform: rotate(180deg); }
+        .ctx-menu-section { border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding-bottom: 2px; margin-bottom: 2px; }
+        .ctx-menu-section:last-child { border-bottom: none; }
+
         /* Sortable column headers in File Explorer's listing table (real
            filesystem and Sleuth Kit image browsing both use this). */
         .explorer-sort-th { cursor: pointer; user-select: none; white-space: nowrap; }
