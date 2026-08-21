@@ -183,6 +183,40 @@
         .chart-container { position: relative; height: 130px; width: 100%; }
         .chart-container-mini { position: relative; height: 55px; width: 100%; }
         .telemetry-grid-label { color: #38bdf8 !important; font-size: 0.80rem; font-weight: 700; text-transform: uppercase; }
+
+        /* Home tab: one clickable tile per real sidebar tab, acting as a
+           launcher/reference grid - see templates/tabs/home.html. */
+        .home-tile {
+            cursor: pointer;
+            transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        .home-tile:hover, .home-tile:focus-visible {
+            border-color: var(--accent-cyan);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 28px rgba(0, 242, 254, 0.12);
+            outline: none;
+        }
+        .home-tile-icon {
+            font-size: 1.6rem;
+            color: var(--accent-cyan);
+            width: 46px;
+            height: 46px;
+            min-width: 46px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 242, 254, 0.08);
+            border-radius: 10px;
+        }
+        .home-tile-chip {
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: var(--text-subtle);
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 2px 10px;
+        }
         .telemetry-grid-val { color: #ffffff !important; font-size: 0.92rem; font-weight: 700; }
 
         .file-pane { background-color: #06070a; border: 1px solid var(--border-color); border-radius: 6px; height: 350px; overflow-y: auto; }
@@ -355,8 +389,13 @@
                 <i class="bi bi-chevron-double-left" id="sidebarToggleIcon"></i>
             </button>
             <ul class="nav flex-column" id="forensicAppTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="home-tab" data-bs-toggle="tab" data-bs-target="#home-app" type="button" role="tab" title="Home">
+                        <i class="bi bi-house-door-fill"></i><span class="tab-label">Home</span>
+                    </button>
+                </li>
                 <li class="nav-item" role="presentation" id="navItemAcquisition">
-                    <button class="nav-link active" id="acquisition-tab" data-bs-toggle="tab" data-bs-target="#acquisition-app" type="button" role="tab" title="Forensic Acquisition">
+                    <button class="nav-link" id="acquisition-tab" data-bs-toggle="tab" data-bs-target="#acquisition-app" type="button" role="tab" title="Forensic Acquisition">
                         <i class="bi bi-hdd-stack"></i><span class="tab-label">Forensic Acquisition</span>
                     </button>
                 </li>
@@ -420,6 +459,7 @@
 
             <div class="container-fluid px-4">
                 <div class="tab-content" id="forensicTabContent">
+{% include 'tabs/home.html' %}
 {% include 'tabs/acquisition.html' %}
 {% include 'tabs/recovery.html' %}
 {% include 'tabs/file_explorer.html' %}

@@ -1,0 +1,124 @@
+                    <!-- APP 0: HOME - a launcher/reference grid, one tile per real sidebar tab.
+                         Purely a directory page: no live data fetched here, no state of its own.
+                         Each tile's visibility is gated by the same permission keys the sidebar
+                         itself uses (see HOME_CARD_PERMISSIONS / applySidebarPermissionGating() in
+                         main.js), so an account without a given tab's permission never sees a tile
+                         that would just 403 if clicked. -->
+                    <div class="tab-pane fade show active" id="home-app" role="tabpanel">
+                        <div class="card">
+                            <div class="card-header d-flex align-items-center gap-2 py-2">
+                                <i class="bi bi-house-door-fill"></i>Home
+                            </div>
+                            <div class="card-body">
+                                <div class="text-subtle small mb-3">Pick a workspace below, or use the sidebar on the left. Each tile lists what that area covers.</div>
+                                <div class="row g-3">
+                                    <div class="col-md-6 col-lg-4" id="homeCardAcquisition">
+                                        <div class="card home-tile h-100" tabindex="0" role="button" onclick="switchToTab('acquisition-tab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchToTab('acquisition-tab');}">
+                                            <div class="card-body">
+                                                <div class="d-flex align-items-center gap-3 mb-2">
+                                                    <div class="home-tile-icon"><i class="bi bi-hdd-stack"></i></div>
+                                                    <div class="fw-bold fs-6">Forensic Acquisition</div>
+                                                </div>
+                                                <div class="text-subtle small mb-2">Write-blocked bit-for-bit disk imaging, with hashing built in and BitLocker-encrypted sources handled directly.</div>
+                                                <div class="d-flex flex-wrap gap-1">
+                                                    <span class="home-tile-chip">dc3dd / dcfldd</span>
+                                                    <span class="home-tile-chip">E01 / AFF</span>
+                                                    <span class="home-tile-chip">ddrescue</span>
+                                                    <span class="home-tile-chip">BitLocker</span>
+                                                    <span class="home-tile-chip">SMART</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6 col-lg-4" id="homeCardMobile">
+                                        <div class="card home-tile h-100" tabindex="0" role="button" onclick="switchToTab('mobile-tab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchToTab('mobile-tab');}">
+                                            <div class="card-body">
+                                                <div class="d-flex align-items-center gap-3 mb-2">
+                                                    <div class="home-tile-icon"><i class="bi bi-phone"></i></div>
+                                                    <div class="fw-bold fs-6">Mobile Forensics</div>
+                                                </div>
+                                                <div class="text-subtle small mb-2">iOS and Android device acquisition - full backups, file pulls, and bug reports, plus spyware/IOC scanning.</div>
+                                                <div class="d-flex flex-wrap gap-1">
+                                                    <span class="home-tile-chip">iOS Backup</span>
+                                                    <span class="home-tile-chip">ADB Pull</span>
+                                                    <span class="home-tile-chip">Bugreport</span>
+                                                    <span class="home-tile-chip">MVT Scan</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6 col-lg-4" id="homeCardRecovery">
+                                        <div class="card home-tile h-100" tabindex="0" role="button" onclick="switchToTab('ddrescue-tab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchToTab('ddrescue-tab');}">
+                                            <div class="card-body">
+                                                <div class="d-flex align-items-center gap-3 mb-2">
+                                                    <div class="home-tile-icon"><i class="bi bi-life-preserver"></i></div>
+                                                    <div class="fw-bold fs-6">File Recovery</div>
+                                                </div>
+                                                <div class="text-subtle small mb-2">Signature-based file carving and deleted-file recovery, run against a live drive or an already-acquired image.</div>
+                                                <div class="d-flex flex-wrap gap-1">
+                                                    <span class="home-tile-chip">PhotoRec</span>
+                                                    <span class="home-tile-chip">Scalpel</span>
+                                                    <span class="home-tile-chip">Foremost</span>
+                                                    <span class="home-tile-chip">extundelete</span>
+                                                    <span class="home-tile-chip">Triage Scan</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6 col-lg-4" id="homeCardExplorer">
+                                        <div class="card home-tile h-100" tabindex="0" role="button" onclick="switchToTab('explorer-tab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchToTab('explorer-tab');}">
+                                            <div class="card-body">
+                                                <div class="d-flex align-items-center gap-3 mb-2">
+                                                    <div class="home-tile-icon"><i class="bi bi-folder-check"></i></div>
+                                                    <div class="fw-bold fs-6">File Explorer</div>
+                                                </div>
+                                                <div class="text-subtle small mb-2">Browse evidence, tag exhibits, and analyze files - including browsing directly inside an acquired disk image.</div>
+                                                <div class="d-flex flex-wrap gap-1">
+                                                    <span class="home-tile-chip">Sleuth Kit</span>
+                                                    <span class="home-tile-chip">Binwalk</span>
+                                                    <span class="home-tile-chip">ClamAV</span>
+                                                    <span class="home-tile-chip">Hashdeep</span>
+                                                    <span class="home-tile-chip">Tagging</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6 col-lg-4" id="homeCardReports">
+                                        <div class="card home-tile h-100" tabindex="0" role="button" onclick="switchToTab('reports-tab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchToTab('reports-tab');}">
+                                            <div class="card-body">
+                                                <div class="d-flex align-items-center gap-3 mb-2">
+                                                    <div class="home-tile-icon"><i class="bi bi-file-earmark-pdf"></i></div>
+                                                    <div class="fw-bold fs-6">Reporting</div>
+                                                </div>
+                                                <div class="text-subtle small mb-2">Case notes, evidence inventory, and exportable reports in Standard, DFIR, Police, or CASE/UCO format.</div>
+                                                <div class="d-flex flex-wrap gap-1">
+                                                    <span class="home-tile-chip">Case Notes</span>
+                                                    <span class="home-tile-chip">PDF / HTML Export</span>
+                                                    <span class="home-tile-chip">Geolocation</span>
+                                                    <span class="home-tile-chip">Audit Trail</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6 col-lg-4" id="homeCardSettings">
+                                        <div class="card home-tile h-100" tabindex="0" role="button" onclick="switchToTab('settings-tab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchToTab('settings-tab');}">
+                                            <div class="card-body">
+                                                <div class="d-flex align-items-center gap-3 mb-2">
+                                                    <div class="home-tile-icon"><i class="bi bi-gear-wide-connected"></i></div>
+                                                    <div class="fw-bold fs-6">Settings</div>
+                                                </div>
+                                                <div class="text-subtle small mb-2">Station configuration - user accounts, the HTTPS certificate, network setup, and service diagnostics.</div>
+                                                <div class="d-flex flex-wrap gap-1">
+                                                    <span class="home-tile-chip">User Accounts</span>
+                                                    <span class="home-tile-chip">TLS Certificate</span>
+                                                    <span class="home-tile-chip">Network</span>
+                                                    <span class="home-tile-chip">Diagnostics</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
