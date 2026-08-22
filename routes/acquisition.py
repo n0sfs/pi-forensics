@@ -974,6 +974,271 @@ def start_image_conversion():
     log_chain_of_custody("image_conversion_started", {"source": source_image_path, "target_format": target_format})
     return jsonify({"success": True})
 
+# --- Logical / "Custom Content" Acquisition: package selected whole folders
+# from an already-mounted evidence source (a write-blocked drive, or a
+# network share - both already land under EVIDENCE_ROOT per this app's own
+# mount conventions, so safe_path() already covers both with no boundary
+# change needed) into one hash-verified evidence container + manifest,
+# without imaging the whole device. FTK Imager's AD1/Custom Content Image
+# equivalent - net new, nothing like it existed anywhere in this app before.
+LOGICAL_ACQ_SKIP_DIRS = {'RECOVERED_FILES'}  # extundelete's fixed output dir name, matches _discover_case_files()'s own skip-list
+LOGICAL_ACQ_MAX_FILES = 20000
+LOGICAL_ACQ_MAX_TOTAL_BYTES = 20 * 1024**3  # 20 GB - generous vs the in-image tools' own caps, since this is a deliberate, examiner-curated multi-folder selection expected to legitimately be sizable sometimes
+
+def _is_logical_acq_bulk_carve_dir(dirname):
+    return dirname in LOGICAL_ACQ_SKIP_DIRS or dirname.endswith(('_photorec', '_foremost', '_scalpel', '_triagescan'))
+
+def _enumerate_logical_acq_files(selected_folders):
+    """Walks every selected folder (skipping this app's own bulk-carve-
+    output directories, same convention as _discover_case_files() in
+    routes/reporting.py), returning (files, total_bytes, truncated) where
+    files is a list of (folder_root, abs_path, relative_path_within_folder).
+    Stops enumerating - not copying, this is a dry pass - the instant either
+    cap would be exceeded, so a genuinely oversized selection gets a clear
+    truncation note rather than a silent partial result."""
+    files = []
+    total_bytes = 0
+    truncated = False
+    for folder in selected_folders:
+        for root, dirs, filenames in os.walk(folder):
+            dirs[:] = [d for d in dirs if not _is_logical_acq_bulk_carve_dir(d)]
+            for fname in filenames:
+                abs_path = os.path.join(root, fname)
+                try:
+                    size = os.path.getsize(abs_path)
+                except OSError:
+                    continue
+                if len(files) >= LOGICAL_ACQ_MAX_FILES or total_bytes + size > LOGICAL_ACQ_MAX_TOTAL_BYTES:
+                    truncated = True
+                    return files, total_bytes, truncated
+                rel_path = os.path.relpath(abs_path, folder)
+                files.append((folder, abs_path, rel_path))
+                total_bytes += size
+    return files, total_bytes, truncated
+
+def _unique_folder_label(basename, used_labels):
+    label = basename or 'folder'
+    n = 2
+    while label in used_labels:
+        label = f"{basename}_{n}"
+        n += 1
+    used_labels.add(label)
+    return label
+
+def execution_worker_logical_acquisition(selected_folders, output_root, requested_hashes, make_zip, report_file_path, report_data):
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    manifest_entries = []
+    files_copied = 0
+    files_errored = 0
+
+    try:
+        update_job(format='logical_acquisition', status="Enumerating selected folders...",
+                   progress_percent=0.0, speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
+        append_log(f"[*] Enumerating {len(selected_folders)} selected folder(s)...")
+        files, total_bytes, truncated = _enumerate_logical_acq_files(selected_folders)
+        if truncated:
+            append_log(f"[-] Selection exceeds the {LOGICAL_ACQ_MAX_FILES}-file / {LOGICAL_ACQ_MAX_TOTAL_BYTES // (1024**3)}GB cap - stopped enumerating early, only what was found before the cap will be included.")
+        append_log(f"[*] Found {len(files)} file(s), {total_bytes} bytes total. Beginning copy...")
+        update_job(status="Copying files...", total_bytes=total_bytes)
+
+        os.makedirs(output_root, exist_ok=True)
+        used_labels = set()
+        folder_labels = {folder: _unique_folder_label(os.path.basename(folder.rstrip('/')) or 'folder', used_labels) for folder in selected_folders}
+
+        transferred_bytes = 0
+        for i, (folder, abs_path, rel_path) in enumerate(files):
+            if snapshot_job()["status"] == "Stopped":
+                append_log("[-] Stopped by examiner.")
+                break
+            dest_path = os.path.join(output_root, folder_labels[folder], rel_path)
+            try:
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy2(abs_path, dest_path)
+                file_hashes = compute_file_hashes(dest_path, requested_hashes)
+                size = os.path.getsize(dest_path)
+                manifest_entries.append({
+                    "original_path": abs_path,
+                    "relative_output_path": os.path.join(folder_labels[folder], rel_path),
+                    "size_bytes": size,
+                    "hashes": file_hashes,
+                })
+                files_copied += 1
+                transferred_bytes += size
+            except Exception as e:
+                files_errored += 1
+                append_log(f"[-] Failed to copy {abs_path}: {e}")
+                continue
+
+            if i % 25 == 0 or i == len(files) - 1:
+                pct = round(((i + 1) / len(files)) * 100, 1) if files else 100.0
+                update_job(progress_percent=pct, transferred_bytes=transferred_bytes)
+
+        # Manifest written regardless of a mid-run Stop, so whatever was
+        # actually copied before stopping is still accounted for - matches
+        # this app's own "hard error/honest partial result over silent data
+        # loss" posture elsewhere (e.g. Hash Manifest's own truncation note).
+        manifest_json_path = os.path.join(output_root, "manifest.json")
+        manifest_txt_path = os.path.join(output_root, "manifest.txt")
+        manifest_data = {
+            "case_metadata": report_data.get("case_metadata", {}),
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "selected_folders": selected_folders,
+            "requested_hashes": requested_hashes,
+            "truncated": truncated,
+            "files_copied": files_copied,
+            "files_errored": files_errored,
+            "total_bytes": transferred_bytes,
+            "entries": manifest_entries,
+        }
+        with open(manifest_json_path, 'w') as f:
+            json.dump(manifest_data, f, indent=2)
+        with open(manifest_txt_path, 'w') as f:
+            f.write(f"Logical Acquisition Manifest - generated {manifest_data['generated_at']}\n")
+            f.write(f"Selected folders: {', '.join(selected_folders)}\n")
+            f.write(f"Files copied: {files_copied} ({transferred_bytes} bytes){' - TRUNCATED, see below' if truncated else ''}\n")
+            if files_errored:
+                f.write(f"Files that failed to copy: {files_errored} (see the job log)\n")
+            f.write("\n")
+            for entry in manifest_entries:
+                hash_str = ", ".join(f"{a}={h}" for a, h in entry["hashes"].items())
+                f.write(f"{entry['relative_output_path']}\t{entry['size_bytes']} bytes\t{hash_str}\n")
+        append_log(f"[*] Wrote manifest.json and manifest.txt ({files_copied} file(s) recorded).")
+
+        zip_path = None
+        if make_zip:
+            append_log("[*] Building .zip archive...")
+            update_job(status="Building .zip archive...")
+            zip_base = output_root.rstrip('/')
+            zip_path = shutil.make_archive(zip_base, 'zip', root_dir=output_root)
+            append_log(f"[*] Wrote {zip_path}")
+
+        # Container-level hash for Evidence Inventory's existing one-hash-
+        # per-event display - hash of the manifest.json itself (a
+        # deterministic, single reference point), while every individual
+        # file's own hash still lives inside the manifest for deeper
+        # verification. Matches _pick_display_hash()'s documented
+        # "one hash per item" assumption with zero schema change needed.
+        container_hashes = compute_file_hashes(manifest_json_path, requested_hashes)
+
+        report_data["acquisition_parameters"]["output_container_path"] = output_root
+        report_data["acquisition_parameters"]["manifest_path"] = manifest_json_path
+        report_data["acquisition_parameters"]["zip_path"] = zip_path
+        report_data["acquisition_parameters"]["file_count"] = files_copied
+        report_data["acquisition_parameters"]["total_bytes"] = transferred_bytes
+        report_data["acquisition_parameters"]["truncated"] = truncated
+        report_data["computed_verification_hashes"] = container_hashes
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+
+        if snapshot_job()["status"] == "Stopped":
+            report_data["acquisition_status"] = "STOPPED"
+            append_log(f"[+] Stopped - {files_copied} file(s) were copied and included in the manifest before stopping.")
+        elif files_errored and not files_copied:
+            update_job(status="Failed")
+            report_data["acquisition_status"] = "FAILED"
+            append_log("[-] Every file failed to copy - nothing was captured.")
+        else:
+            update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
+            report_data["acquisition_status"] = "COMPLETED"
+            append_log(f"[+] Logical acquisition completed successfully. {files_copied} file(s) captured, {files_errored} error(s).")
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
+        # No sudo'd tool runs anywhere in this worker (safe_path()-validated
+        # real filesystem paths, plain unprivileged file copies), so unlike
+        # every other worker there's no root-owned output to reclaim here -
+        # everything this worker writes is already owned by the service
+        # account from the moment it's created.
+        update_job(active=False)
+        clear_active_proc()
+
+@acquisition_bp.route('/api/start_logical_acquisition', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def start_logical_acquisition():
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    selected_folders_raw = req.get('selected_folders') or []
+    dest_path = safe_path((req.get('destination') or EVIDENCE_ROOT).strip())
+    hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
+    make_zip = bool(req.get('make_zip', False))
+    metadata = req.get('metadata', {})
+
+    if not selected_folders_raw:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Select at least one folder first."}), 400
+
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Destination path is outside the permitted evidence directory."}), 400
+
+    selected_folders = []
+    for raw in selected_folders_raw:
+        validated = safe_path(raw)
+        if not validated or not os.path.isdir(validated):
+            update_job(active=False)
+            return jsonify({"success": False, "error": f"'{raw}' is not a folder inside the permitted evidence directory."}), 400
+        selected_folders.append(validated)
+
+    invalid_hashes = set(hashes) - ALLOWED_HASH_ALGOS
+    if invalid_hashes:
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"Unsupported hash algorithm(s): {sorted(invalid_hashes)}. Use any of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
+
+    case_num = metadata.get('case_number') or 'UNASSIGNED'
+    evidence_id = metadata.get('evidence_id') or 'ITEM-01'
+    base_name = f"{case_num}_{evidence_id}"
+    output_root = os.path.join(dest_path, f"{base_name}_logical")
+
+    if os.path.exists(output_root):
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"{output_root} already exists - rename/remove it, or change the Evidence ID, before starting."}), 409
+
+    report_data = {
+        "tool": "logical_acquisition",
+        "case_metadata": metadata,
+        "acquisition_parameters": {
+            "selected_folders": selected_folders,
+            "requested_hashes": hashes,
+            "make_zip": make_zip,
+        },
+        "attachments": {
+            "files": [],
+            "reference_urls": []
+        },
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "computed_verification_hashes": {}
+    }
+
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
+
+    thread = threading.Thread(
+        target=execution_worker_logical_acquisition,
+        args=(selected_folders, output_root, hashes, make_zip, report_target, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("logical_acquisition_started", {"selected_folders": selected_folders, "destination": output_root})
+    return jsonify({"success": True})
+
 @acquisition_bp.route('/api/drives', methods=['GET'])
 @requires_auth
 def list_drives():
