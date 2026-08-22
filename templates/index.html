@@ -219,9 +219,12 @@
         }
         .home-stat-value { color: #ffffff; font-size: 1.9rem; font-weight: 800; line-height: 1.2; }
         /* Reporting's case-status mini-chart (moved from Home 2026-08-21, condensed into the Case
-           Report header row the same day) - a slim segmented bar, no separate value/legend classes
-           needed anymore since it's inline text + this bar now, not a standalone stat tile. */
+           Report header row the same day, then given the bolder number + legend back - still on
+           one line, this time horizontal instead of stacked - once the plain version read as
+           "blah"). */
+        .reports-stat-value { color: #ffffff; font-size: 1.3rem; font-weight: 800; line-height: 1; }
         .reports-stat-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: rgba(255,255,255,0.08); }
+        .reports-stat-legend-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
         .telemetry-grid-val { color: #ffffff !important; font-size: 0.92rem; font-weight: 700; }
 
         .file-pane { background-color: #06070a; border: 1px solid var(--border-color); border-radius: 6px; height: 350px; overflow-y: auto; }
@@ -270,56 +273,64 @@
         .explorer-sort-th { cursor: pointer; user-select: none; white-space: nowrap; }
         .explorer-sort-th:hover { color: var(--accent-cyan); }
 
-        /* Settings tab: a left nav (category list) + single right-hand content
-           pane, not the plain stacked accordion this used to be - clicking a
-           category swaps what's shown on the right, matching a typical
-           Settings-app layout. */
-        .settings-shell { display: flex; align-items: stretch; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.4); background-color: var(--card-bg); }
-        .settings-nav { flex: 0 0 auto; width: max-content; min-width: 200px; border-right: 1px solid var(--border-color); background: rgba(255,255,255,0.02); padding: 6px 0; }
+        /* Settings tab: a top tab row (category list) + single content pane
+           below, not the plain stacked accordion this used to be - clicking
+           a category swaps what's shown below. Originally a left-side nav
+           column (matching a typical desktop Settings-app layout), changed
+           to a horizontal row across the top (2026-08-21, same request and
+           same reasoning already applied to Reporting's nav the same day -
+           see that class set's own comment) to give the content pane its
+           width back. Kept as its own class set rather than merged with
+           Reporting's now-identical-looking rules, matching this file's own
+           established precedent of not coupling two areas' styling just
+           because they happen to look the same today. */
+        .settings-shell { display: flex; flex-direction: column; align-items: stretch; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.4); background-color: var(--card-bg); }
+        .settings-nav { display: flex; flex-direction: row; flex-wrap: wrap; border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.02); padding: 0 6px; }
         .settings-nav .list-group-item {
-            display: flex; align-items: center; gap: 10px;
+            display: flex; align-items: center; gap: 8px;
+            /* Same Bootstrap .list-group-item width:100% override Reporting's
+               nav needed - without it every button stretches to fill the row
+               and wraps onto its own line regardless of flex-direction above. */
+            width: auto; flex: 0 0 auto;
             background: transparent; color: var(--text-subtle); font-weight: 600; font-size: 0.88rem;
-            border: none; border-left: 3px solid transparent; border-radius: 0;
-            padding: 12px 18px; white-space: nowrap; text-align: left;
+            border: none; border-bottom: 3px solid transparent; border-radius: 0;
+            padding: 12px 16px; white-space: nowrap; text-align: left;
         }
         .settings-nav .list-group-item i { font-size: 1.05rem; flex-shrink: 0; }
         .settings-nav .list-group-item:hover { color: var(--text-bright); background: rgba(255,255,255,0.03); }
         .settings-nav .list-group-item.active {
-            color: var(--accent-cyan); font-weight: 700; background: rgba(0, 242, 254, 0.07); border-left-color: var(--accent-cyan);
+            color: var(--accent-cyan); font-weight: 700; background: rgba(0, 242, 254, 0.07); border-bottom-color: var(--accent-cyan);
         }
         .settings-content { flex: 1; min-width: 0; padding: 20px; }
 
-        /* Reporting's left-nav + right-pane, same pattern as Settings above
-           but kept as its own class set so the two stay independently
-           tunable rather than sharing one generic name. */
-        .reports-shell { display: flex; align-items: stretch; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.4); background-color: var(--card-bg); }
-        .reports-nav { flex: 0 0 auto; width: max-content; min-width: 200px; border-right: 1px solid var(--border-color); background: rgba(255,255,255,0.02); padding: 6px 0; }
+        /* Reporting's nav + pane - same horizontal-top-tabs treatment as
+           Settings above (2026-08-21, at the user's own request, both
+           converted the same day) - kept as its own class set rather than
+           merged into one shared name now that they look alike, matching
+           this file's own established precedent of not coupling two areas'
+           styling just because they happen to render the same today. */
+        .reports-shell { display: flex; flex-direction: column; align-items: stretch; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.4); background-color: var(--card-bg); }
+        .reports-nav { display: flex; flex-direction: row; flex-wrap: wrap; border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.02); padding: 0 6px; }
         .reports-nav .list-group-item {
-            display: flex; align-items: center; gap: 10px;
+            display: flex; align-items: center; gap: 8px;
+            /* Bootstrap's own .list-group-item rule sets width:100% (meant for
+               a vertical list where every item fills the container's width) -
+               without this override each button would stretch to fill the
+               whole row by itself and wrap onto its own line regardless of
+               the container's row flex-direction above. */
+            width: auto; flex: 0 0 auto;
             background: transparent; color: var(--text-subtle); font-weight: 600; font-size: 0.88rem;
-            border: none; border-left: 3px solid transparent; border-radius: 0;
-            padding: 12px 18px; white-space: nowrap; text-align: left;
+            border: none; border-bottom: 3px solid transparent; border-radius: 0;
+            padding: 12px 16px; white-space: nowrap; text-align: left;
         }
         .reports-nav .list-group-item i { font-size: 1.05rem; flex-shrink: 0; }
         .reports-nav .list-group-item:hover { color: var(--text-bright); background: rgba(255,255,255,0.03); }
         .reports-nav .list-group-item.active {
-            color: var(--accent-cyan); font-weight: 700; background: rgba(0, 242, 254, 0.07); border-left-color: var(--accent-cyan);
+            color: var(--accent-cyan); font-weight: 700; background: rgba(0, 242, 254, 0.07); border-bottom-color: var(--accent-cyan);
         }
         .reports-content { flex: 1; min-width: 0; padding: 20px; }
 
-        /* Both shells' nav column has a 200px floor, meant to fit the
-           longest label ("Service Controls & Diagnostics") - fine
-           side-by-side on a real screen, but on a phone that floor alone
-           can exceed the whole viewport width, pushing .settings-content/
-           .reports-content off-screen entirely (min-width:0 lets it shrink,
-           but not below what its own form fields need). Stack nav above
-           content instead of forcing them into one row that doesn't fit. */
         @media (max-width: 767.98px) {
-            .settings-shell, .reports-shell { flex-direction: column; }
-            .settings-nav, .reports-nav {
-                width: 100%; min-width: 0;
-                border-right: none; border-bottom: 1px solid var(--border-color);
-            }
             /* File Explorer's folder tree: hidden by default below this
                breakpoint (matches the main sidebar's own narrow-screen
                behavior) - explorerTreeToggleBtn adds .explorer-tree-shown

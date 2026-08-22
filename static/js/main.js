@@ -200,6 +200,7 @@ const CASE_STATUS_BAR_COLOR = {
 async function loadReportingStats() {
     const casesEl = document.getElementById('repStatCases');
     const barEl = document.getElementById('repStatCasesBar');
+    const legendEl = document.getElementById('repStatCasesLegend');
     if (!casesEl) return; // Reporting tab isn't in the DOM (shouldn't happen, but don't throw if so)
 
     try {
@@ -208,6 +209,7 @@ async function loadReportingStats() {
         if (!data.success) {
             casesEl.textContent = '--';
             if (barEl) barEl.style.display = 'none';
+            if (legendEl) legendEl.innerHTML = '';
             return;
         }
 
@@ -215,19 +217,21 @@ async function loadReportingStats() {
         casesEl.textContent = String(cases.length);
 
         // Status breakdown mini-chart - one segment per distinct status
-        // actually present (proportional width). Hidden entirely when
-        // there are no cases yet, rather than showing an empty bar. A
-        // legacy (pre-case_status-field) case buckets into "Legacy" rather
-        // than being silently dropped. No written-out legend at this size
-        // (condensed into the Case Report header row, 2026-08-21) - each
-        // segment carries its own title="Status: N" tooltip instead.
-        if (barEl) {
+        // actually present (proportional width), plus a horizontal dot-
+        // legend with counts (stacked below the bar in the original
+        // standalone box; inline here since this now shares one header
+        // row with the Case Report title and Save button). Hidden
+        // entirely when there are no cases yet, rather than showing an
+        // empty bar. A legacy (pre-case_status-field) case buckets into
+        // "Legacy" rather than being silently dropped.
+        if (barEl && legendEl) {
             const counts = {};
             cases.forEach(c => {
                 const status = c.case_status || 'Legacy';
                 counts[status] = (counts[status] || 0) + 1;
             });
             barEl.innerHTML = '';
+            legendEl.innerHTML = '';
             if (cases.length > 0) {
                 Object.keys(counts).forEach(status => {
                     const seg = document.createElement('div');
@@ -235,6 +239,13 @@ async function loadReportingStats() {
                     seg.style.flex = String(counts[status]);
                     seg.title = `${status}: ${counts[status]}`;
                     barEl.appendChild(seg);
+
+                    const legendItem = document.createElement('span');
+                    const dot = document.createElement('span');
+                    dot.className = `reports-stat-legend-dot ${CASE_STATUS_BAR_COLOR[status] || 'bg-secondary'}`;
+                    legendItem.appendChild(dot);
+                    legendItem.appendChild(document.createTextNode(`${status} (${counts[status]})`));
+                    legendEl.appendChild(legendItem);
                 });
                 barEl.style.display = 'flex';
             } else {
@@ -244,6 +255,7 @@ async function loadReportingStats() {
     } catch (err) {
         casesEl.textContent = '--';
         if (barEl) barEl.style.display = 'none';
+        if (legendEl) legendEl.innerHTML = '';
     }
 }
 
