@@ -21,12 +21,13 @@ import base64
 import shutil
 import hashlib
 import subprocess
+import threading
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
@@ -34,6 +35,7 @@ from core.case_index_db import (
 )
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
 from core.browser_artifacts import find_browser_artifact_files, parse_browser_profile_file
+from core.jobs import job_lock, current_job, update_job, snapshot_job
 
 file_explorer_bp = Blueprint('file_explorer', __name__)
 
@@ -724,4 +726,185 @@ def run_mvt_scan():
         return jsonify({"success": False, "error": "MVT scan timed out (large backup - partial results may still be in output_dir)."}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+# --- Memory Forensics: Volatility3 analysis of an already-captured Windows
+# RAM image. This app never acquires memory itself (there's no live target
+# to capture from - it's a dead-box disk-imaging appliance); it only ever
+# receives an already-captured image file (WinPmem/LiME/AVML/etc.), exactly
+# like it already does for a logical acquisition.
+#
+# Windows-only for v1 (confirmed with the user) - Volatility3 needs an
+# OS-specific symbol table to interpret a memory image's kernel structures,
+# fetched live from the Volatility Foundation's public symbol server by
+# default (no useful symbols ship bundled with the package at all -
+# confirmed by inspecting the installed package's own symbols/ directory,
+# which holds nothing but unrelated generic VMCS/CPU-architecture data).
+# Windows is the only one of the three OSes where this online-fetch-based
+# resolution reliably works out of the box; Linux/Mac need a symbol bank
+# built from the *exact* source kernel, which a downstream station
+# receiving just a raw memory dump essentially never has separately - not
+# offered this pass rather than silently shipped as an unreliable surface.
+#
+# A curated plugin allowlist, not all ~170 real windows/linux/mac plugins -
+# matches this project's own established curation philosophy elsewhere
+# (e.g. scalpel.conf's curated signature set) - and is a real security
+# boundary too: the plugin identifier is passed directly on the `vol`
+# command line, so only ever a value from this fixed server-side map, never
+# an arbitrary client-supplied string.
+MEMORY_FORENSICS_PLUGINS = {
+    "info": {"plugin": "windows.info.Info", "label": "OS & Kernel Info"},
+    "pslist": {"plugin": "windows.pslist.PsList", "label": "Process List"},
+    "pstree": {"plugin": "windows.pstree.PsTree", "label": "Process Tree"},
+    "cmdline": {"plugin": "windows.cmdline.CmdLine", "label": "Process Command Lines"},
+    "netscan": {"plugin": "windows.netscan.NetScan", "label": "Network Connections (netscan)"},
+    "netstat": {"plugin": "windows.netstat.NetStat", "label": "Network Connections (netstat)"},
+    "dlllist": {"plugin": "windows.dlllist.DllList", "label": "Loaded DLLs"},
+    "filescan": {"plugin": "windows.filescan.FileScan", "label": "Open File Handles (filescan)"},
+    "malfind": {"plugin": "windows.malfind.Malfind", "label": "Injected Code Detection (malfind)"},
+    "svcscan": {"plugin": "windows.svcscan.SvcScan", "label": "Windows Services"},
+    "handles": {"plugin": "windows.handles.Handles", "label": "Process Handles"},
+}
+MEMORY_FORENSICS_PLUGIN_TIMEOUT_SECONDS = 1800  # 30 min per plugin - some (handles/filescan) can run long on a busy system's memory image
+
+def execution_worker_memory_forensics_scan(image_path, dest_dir, plugin_keys, source_ip=None, user=None):
+    """Runs each requested Volatility3 plugin against image_path in turn,
+    writing each plugin's own -r json output to a real file (mirrors Hash
+    Manifest/Triage-Scan-report/Geolocation-KML's own "write a real result
+    file, don't index every row into SQLite" pattern - Volatility3 output
+    can run into the thousands of rows for filescan/handles, well past what
+    the per-case parsed_artifacts index was ever sized for). A failing
+    plugin (wrong OS, missing symbols, no internet) records its own real
+    error and the scan continues with the next plugin, rather than aborting
+    the whole run - surfaced to the examiner directly, never silently
+    skipped."""
+    global current_job
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    total = len(plugin_keys)
+    completed = 0
+    failed = 0
+
+    try:
+        update_job(format="memory_forensics_scan", status="Initializing...", progress_percent=0.0,
+                   transferred_bytes=0, total_bytes=total)
+        append_log(f"[*] Starting Volatility3 memory forensics scan of {image_path} ({total} plugin(s) requested)...")
+
+        for key in plugin_keys:
+            if snapshot_job()["status"] == "Stopped":
+                append_log("[!] Stopped by user.")
+                return
+
+            info = MEMORY_FORENSICS_PLUGINS.get(key)
+            if not info:
+                append_log(f"[-] Skipping unrecognized plugin key '{key}'.")
+                continue
+
+            update_job(status=f"Running {info['label']}...", transferred_bytes=completed + failed)
+            append_log(f"[*] Running {info['plugin']}...")
+
+            try:
+                res = subprocess.run(
+                    [VOL3_BIN, "-f", image_path, "-r", "json", info["plugin"]],
+                    capture_output=True, text=True, timeout=MEMORY_FORENSICS_PLUGIN_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                failed += 1
+                append_log(f"[-] {info['plugin']} timed out after {MEMORY_FORENSICS_PLUGIN_TIMEOUT_SECONDS}s.")
+                continue
+            except FileNotFoundError:
+                append_log("[-] volatility3 is not installed on this station. Check Settings > Service Controls & Diagnostics > Tool Versions.")
+                update_job(status="Failed")
+                return
+
+            identity = {"source_type": "real_fs", "path": image_path, "name": os.path.basename(image_path)}
+            tool_label = f"Volatility3 {info['plugin']}"
+
+            if res.returncode != 0 or not res.stdout.strip():
+                failed += 1
+                err = (res.stderr or res.stdout or "Unknown volatility3 error.").strip()
+                append_log(f"[-] {info['plugin']} failed: {err[:300]}")
+                _record_analysis_result(dest_dir, identity, tool_label, "FAILED", err)
+                continue
+
+            out_path = os.path.join(dest_dir, f"{base_name}_vol3_{key}.json")
+            with open(out_path, 'w', encoding='utf-8') as f:
+                f.write(res.stdout)
+            _auto_tag_case_artifact(dest_dir, out_path)
+
+            try:
+                rows = json.loads(res.stdout)
+                row_count = len(rows) if isinstance(rows, list) else 0
+            except (ValueError, TypeError):
+                row_count = 0
+
+            completed += 1
+            summary = f"{row_count} row(s)"
+            _record_analysis_result(dest_dir, identity, tool_label, summary, res.stdout[:20000])
+            log_chain_of_custody("memory_forensics_scan", {
+                "image_path": image_path, "plugin": info["plugin"], "row_count": row_count,
+                "output_path": out_path,
+            }, source_ip=source_ip, user=user)
+            append_log(f"[+] {info['plugin']} complete - {summary} -> {out_path}")
+
+        update_job(status="Completed Successfully" if failed == 0 or completed > 0 else "Failed",
+                  progress_percent=100.0, transferred_bytes=completed + failed)
+        append_log(f"[+] Scan complete: {completed} plugin(s) succeeded, {failed} failed.")
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+@file_explorer_bp.route('/api/files/memory/start_scan', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def start_memory_forensics_scan():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    plugin_keys = [k for k in (req.get('plugins') or []) if k in MEMORY_FORENSICS_PLUGINS]
+
+    if not image_path or not os.path.isfile(image_path):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Memory image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    if not plugin_keys:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Select at least one plugin to run."}), 400
+
+    update_job(
+        format="memory_forensics_scan", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=len(plugin_keys), status="Initializing...",
+        log=f"[*] Initializing Volatility3 memory forensics scan of {image_path}..."
+    )
+
+    # Captured now, in the real request thread - the worker runs in a
+    # background daemon thread with no Flask request context (request/g
+    # would raise RuntimeError if touched directly there).
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_memory_forensics_scan,
+        args=(image_path, dest_dir, plugin_keys, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("memory_forensics_scan_start", {"image_path": image_path, "plugins": plugin_keys, "destination": dest_dir})
+    return jsonify({"success": True, "message": "Memory forensics scan started."})
 

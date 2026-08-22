@@ -52,6 +52,7 @@ import core.config as config
 from core.config import (
     ADMIN_USER, ADMIN_PASS, INSTALL_DIR, HISTORY_FILE,
     TLS_CERT_PATH, TLS_KEY_PATH, MVT_BIN_DIR, MVT_IOS_BIN, MVT_ANDROID_BIN,
+    VOL3_PIP_BIN,
     EVIDENCE_ROOT,
     load_runtime_config, save_runtime_config, get_active_admin_pass,
     _get_or_create_mount_key, _encrypt_secret, _decrypt_secret,
@@ -756,6 +757,13 @@ TOOL_VERSION_COMMANDS = [
     # installed/upgraded via the venv, not the Tool Versions "Install" button.
     {"tool": "mvt-ios", "cmd": [MVT_IOS_BIN, "version"], "package": None},
     {"tool": "mvt-android", "cmd": [MVT_ANDROID_BIN, "version"], "package": None},
+    # package=None (not apt): volatility3 is a pip package (see
+    # requirements.txt), same as mvt above. `vol` itself has no --version
+    # flag (confirmed live - it errors "unrecognized arguments"), so this
+    # asks the venv's own pip instead - `pip show` output happens to already
+    # fit the existing "prefer a 'Version:' line, else line 1" parsing logic
+    # below with zero special-casing needed.
+    {"tool": "volatility3", "cmd": [VOL3_PIP_BIN, "show", "volatility3"], "package": None},
 ]
 # Every installable package this endpoint will ever run apt-get for - the
 # same allowlist install.py's sudoers file grants exact NOPASSWD entries

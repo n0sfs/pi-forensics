@@ -2771,6 +2771,73 @@ function _createGeoTileLayer() {
     return new OfflineFallbackTileLayer(onlineUrl, { attribution, maxZoom: 19 });
 }
 
+function renderVol3ResultTable(container, jsonText, truncated) {
+    container.innerHTML = '';
+    let rows;
+    try {
+        rows = JSON.parse(jsonText);
+    } catch (err) {
+        const bad = document.createElement('div');
+        bad.className = 'text-danger small p-2';
+        // A large result (e.g. filescan/handles on a busy system) can
+        // exceed /api/files/preview_text's 200KB read cap, which cuts the
+        // JSON off mid-byte rather than mid-row - that's a truncated-read
+        // failure, not a corrupt file, so say so rather than implying
+        // something is wrong with the file itself.
+        bad.textContent = truncated
+            ? 'This result is larger than the inline preview limit and cannot be rendered as a table here - the file itself is complete on disk.'
+            : 'Could not parse this file as JSON.';
+        container.appendChild(bad);
+        return;
+    }
+    if (!Array.isArray(rows) || rows.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'text-subtle small p-2';
+        empty.textContent = 'No rows in this Volatility3 result.';
+        container.appendChild(empty);
+        return;
+    }
+
+    // __children is Volatility3's own internal tree-structure field (used
+    // by hierarchical plugins like pstree) - not meaningful as a flat table
+    // column, so it's excluded here rather than shown as a raw nested blob.
+    const columns = Object.keys(rows[0]).filter(k => k !== '__children');
+
+    const wrap = document.createElement('div');
+    wrap.style.overflowX = 'auto';
+    const table = document.createElement('table');
+    table.className = 'table table-sm table-dark table-striped mb-0';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    columns.forEach(col => {
+        const th = document.createElement('th');
+        th.textContent = col; // text-node only - evidence-derived, never innerHTML
+        headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    rows.forEach(row => {
+        const tr = document.createElement('tr');
+        columns.forEach(col => {
+            const td = document.createElement('td');
+            const val = row[col];
+            td.textContent = (val === null || val === undefined) ? '' : (typeof val === 'object' ? JSON.stringify(val) : String(val));
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    container.appendChild(wrap);
+
+    const note = document.createElement('div');
+    note.className = 'text-subtle small p-1';
+    note.textContent = `${rows.length} row(s)` + (truncated ? ' (file is larger than the preview limit - truncated)' : '');
+    container.insertBefore(note, wrap);
+}
+
 function renderKmlViewer(container, kmlText, mapHeightCss) {
     container.innerHTML = '';
     const placemarks = parseKmlPlacemarks(kmlText);
@@ -2969,6 +3036,36 @@ async function previewSelectedFile(item) {
         return;
     }
 
+    // A Volatility3 memory-forensics result file (checked before the
+    // generic TEXT_EXT/.json fallback below, so this renderer wins) -
+    // rendered as a real dynamic-column table instead of a raw JSON dump,
+    // since each plugin's own row shape (pslist's PID/PPID/ImageFileName
+    // vs. netscan's LocalAddr/ForeignAddr/State/Owner) varies too much for
+    // any one fixed column set.
+    if (/_vol3_\w+\.json$/i.test(item.name)) {
+        try {
+            const res = await fetch('/api/files/preview_text', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: item.path })
+            });
+            const data = await res.json();
+            preview.innerHTML = '';
+            preview.className = 'file-pane p-2 d-block text-start';
+            if (!data.success) {
+                const errSpan = document.createElement('span');
+                errSpan.className = 'text-danger small';
+                errSpan.textContent = `[ERROR] ${data.error}`;
+                preview.appendChild(errSpan);
+                return;
+            }
+            renderVol3ResultTable(preview, data.content, data.truncated);
+        } catch (err) {
+            preview.innerHTML = '<span class="text-danger small">Preview failed to load.</span>';
+        }
+        return;
+    }
+
     if (TEXT_EXT.includes(ext)) {
         try {
             const res = await fetch('/api/files/preview_text', {
@@ -3136,6 +3233,7 @@ function updateContextToolbar(item) {
     const btnBrowserArtifacts = document.getElementById("btnParseBrowserArtifacts");
     const btnMvtIos = document.getElementById("btnRunMvtIos");
     const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
+    const btnMemoryForensics = document.getElementById("btnMemoryForensics");
 
     if (btnDelete) btnDelete.disabled = false;
     if (btnCopy) btnCopy.disabled = false;
@@ -3148,6 +3246,7 @@ function updateContextToolbar(item) {
     if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium + Firefox profile files
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
+    if (btnMemoryForensics) btnMemoryForensics.disabled = item.is_dir || !isMemoryImageFile(item.name);
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnUnlockBitlockerImage) btnUnlockBitlockerImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnUnlockLuksImage) btnUnlockLuksImage.disabled = item.is_dir || !isImageFile(item.name);
@@ -3774,6 +3873,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     image_triage_scan: (status) => `Filesystem-aware triage scan finished: ${status}\n\nCheck the case folder for the generated *_triage_scan_report.txt file.`,
     image_geolocation_kml: (status) => `Geolocation scan finished: ${status}\n\nCheck the case folder for the generated *_geolocation_export.kml file (only written if GPS-tagged photos were found).`,
     image_conversion: (status) => `Image conversion finished: ${status}\n\nSee the report event's "Hash Verified" field for whether the independently-computed source/output hashes matched.`,
+    memory_forensics_scan: (status) => `Memory forensics scan finished: ${status}\n\nClick a *_vol3_<plugin>.json file next to the image in File Explorer to view its results.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
 let explorerImagePath = null;
@@ -3807,6 +3907,18 @@ function imgFormatTimestamp(epochSeconds) {
 function isImageFile(name) {
     const IMAGE_EXTENSIONS = ['.dd', '.raw', '.img', '.e01', '.aff'];
     return IMAGE_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
+}
+
+// Memory (RAM) image extensions - distinct from isImageFile() above, which
+// detects forensic disk images. .raw is a real, unavoidable overlap: both
+// WinPmem (memory) and dc3dd/dd (disk) commonly produce a plain .raw file,
+// so a .raw selection can legitimately show both "Browse as Image" and
+// "Memory Forensics..." enabled at once - the examiner knows which one
+// they actually have, same as how BitLocker/LUKS/Convert Image Format
+// already all share isImageFile()'s own gate on a single .dd/.E01 file.
+function isMemoryImageFile(name) {
+    const MEMORY_IMAGE_EXTENSIONS = ['.raw', '.mem', '.vmem', '.dmp', '.lime'];
+    return MEMORY_IMAGE_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
 }
 
 // Photo/picture extensions (distinct from isImageFile() above, which
@@ -7708,6 +7820,54 @@ async function startImageConversion() {
         }
         if (imageConversionModalInstance) imageConversionModalInstance.hide();
         showToast('Image conversion started - watch the progress bar in File Explorer.', 'success');
+    } catch (err) {
+        if (status) status.textContent = 'Request failed - see console.';
+    }
+}
+
+// --- Memory Forensics (Volatility3) ---
+let memoryForensicsModalInstance = null;
+
+function openMemoryForensicsModal() {
+    if (!activeSelectedFile) return;
+    document.getElementById("memForensicsFileName").textContent = activeSelectedFile.split('/').pop();
+    const status = document.getElementById("memForensicsStatus");
+    if (status) status.textContent = 'Select the plugins to run, then click Start Scan.';
+
+    if (!memoryForensicsModalInstance) {
+        memoryForensicsModalInstance = new bootstrap.Modal(document.getElementById('memoryForensicsModal'));
+    }
+    memoryForensicsModalInstance.show();
+}
+
+async function startMemoryForensicsScan() {
+    if (!activeSelectedFile) return;
+    const plugins = Array.from(document.querySelectorAll('#memForensicsPluginList input[type=checkbox]:checked')).map(el => el.value);
+    if (!plugins.length) return showToast('Select at least one plugin to run.', 'warning');
+
+    const status = document.getElementById("memForensicsStatus");
+    if (status) status.textContent = 'Starting scan job...';
+
+    // Output files land in the active case's folder if one is selected,
+    // else next to the source file itself - same
+    // activeCase ? activeCase.case_folder : ... pattern this app already
+    // uses for every other in-image/whole-image tool's output destination.
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+
+    try {
+        const res = await fetch('/api/files/memory/start_scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, plugins: plugins, destination_dir: destinationDir })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Failed to start: ${data.error}`;
+            showToast(`Memory forensics scan failed to start: ${data.error}`, 'danger');
+            return;
+        }
+        if (memoryForensicsModalInstance) memoryForensicsModalInstance.hide();
+        showToast('Memory forensics scan started - watch the progress bar in File Explorer.', 'success');
     } catch (err) {
         if (status) status.textContent = 'Request failed - see console.';
     }

@@ -5,3 +5,4 @@ reportlab==4.0.8
 mvt>=2.5.0
 pytsk3>=20250312
 cryptography>=41.0.0
+volatility3>=2.11.0
