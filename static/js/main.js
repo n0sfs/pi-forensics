@@ -1810,7 +1810,22 @@ function renderParsedArtifactsResults(node, rows) {
         container.appendChild(empty);
         return;
     }
+    container.appendChild(buildParsedArtifactsTable(rows));
+}
 
+// Shared Title/URL/Value/Timestamp/Source table builder for parsed browser-
+// artifact records (core/browser_artifacts.py) - used by File Explorer's
+// File Views results (renderParsedArtifactsResults above) and by
+// Reporting's Files tab's own Web Artifacts section
+// (renderReportWebArtifactCategory), so the two never drift into two
+// different renderings of the same record shape.
+function buildParsedArtifactsTable(rows) {
+    if (!rows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'p-2 text-subtle small';
+        empty.textContent = 'No records found.';
+        return empty;
+    }
     const table = document.createElement('table');
     table.className = 'table table-dark table-sm mb-0';
     const thead = document.createElement('thead');
@@ -1836,7 +1851,7 @@ function renderParsedArtifactsResults(node, rows) {
         tbody.appendChild(tr);
     });
     table.appendChild(tbody);
-    container.appendChild(table);
+    return table;
 }
 
 // Routes File Views results through the exact same sortable-Listing pipeline
@@ -4825,10 +4840,101 @@ async function runImageRecoverDeleted() {
 // Explorer-added attachment on its next save - the same "last write wins"
 // tradeoff this app already accepts everywhere /api/report/save is used,
 // not a new risk introduced here.
+// classify_case_role() (core/paths.py) labels - this app's own generated
+// housekeeping output (reports, hash-manifest/triage logs, KML exports,
+// migration backups), kept in its own "Case-Generated Artifacts" group so
+// it never gets mixed in with actual evidence the same way File Explorer's
+// folder tree already separates it (CASE_ROLE_TREE_GROUP).
+const REPORT_CASE_ROLE_LABELS = {
+    report: 'Reports', analysis_log: 'Analysis Logs & Hashes',
+    geolocation: 'Geolocation Exports', backup: 'Backup Snapshots',
+};
+const REPORT_CASE_ROLE_ICONS = {
+    report: 'bi bi-file-earmark-pdf', analysis_log: 'bi bi-list-check',
+    geolocation: 'bi bi-geo-alt', backup: 'bi bi-archive',
+};
+const REPORT_EXTENSION_CATEGORY_ICONS = {
+    images: 'bi bi-image', videos: 'bi bi-camera-reels', audio: 'bi bi-music-note-beamed',
+    archives: 'bi bi-file-zip', documents: 'bi bi-file-earmark-text',
+    executables: 'bi bi-terminal', other: 'bi bi-file-earmark',
+};
+
+// One collapsed-by-default category group (header button with a count
+// badge + chevron, plus a body div) - the same "one line per category
+// until asked for more" idea already used for the context-menu sections
+// and Settings' accordion, applied here so Reporting's Files tab reads as
+// labeled groups instead of one flat undifferentiated list. If onExpand is
+// given, it's called once (async, given the body element) the first time
+// the group is actually opened, for data that's worth deferring until the
+// examiner asks for it (Web Artifacts' per-type record fetch) rather than
+// eagerly fetching every category's rows up front.
+function buildReportFileGroup(container, label, count, iconClass, onExpand) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'report-file-group-toggle';
+    const icon = document.createElement('i');
+    icon.className = iconClass || 'bi bi-folder2';
+    toggle.appendChild(icon);
+    const labelSpan = document.createElement('span');
+    labelSpan.textContent = label;
+    toggle.appendChild(labelSpan);
+    const countBadge = document.createElement('span');
+    countBadge.className = 'badge bg-secondary';
+    countBadge.textContent = String(count);
+    toggle.appendChild(countBadge);
+    const chevron = document.createElement('i');
+    chevron.className = 'bi bi-chevron-down';
+    toggle.appendChild(chevron);
+
+    const body = document.createElement('div');
+    body.className = 'report-file-group-body';
+    body.style.display = 'none';
+    let loaded = !onExpand;
+
+    toggle.onclick = async () => {
+        const expanded = toggle.classList.toggle('expanded');
+        body.style.display = expanded ? 'block' : 'none';
+        if (expanded && !loaded) {
+            loaded = true;
+            body.innerHTML = '<span class="text-subtle small italic">Loading...</span>';
+            try {
+                await onExpand(body);
+            } catch (err) {
+                body.innerHTML = '<span class="text-danger small">Failed to load.</span>';
+            }
+        }
+    };
+
+    container.appendChild(toggle);
+    container.appendChild(body);
+    return body;
+}
+
+// Guards against overlapping renders: loadCaseForEditing() calls this
+// unconditionally on every case load (same "populate every sub-tab up
+// front" pattern the other Reporting sub-tabs already use), and the Files
+// nav button's own onclick calls it again whenever the examiner actually
+// switches to that tab - if the case-load call is still awaiting one of
+// its several fetches when the tab-click call starts, both would otherwise
+// interleave and each append their own copy of every group into the same
+// container. Each call captures its own token and checks it's still the
+// most recent one after every await; a call that's been superseded bails
+// out instead of mutating the DOM with stale/duplicate content.
+let reportFilesGalleryRenderToken = 0;
+
 async function renderReportFilesGallery() {
-    const container = document.getElementById("reportFilesGallery");
-    if (!container) return;
-    container.innerHTML = '<div class="text-subtle small p-2">Loading...</div>';
+    const myToken = ++reportFilesGalleryRenderToken;
+    const exhibitsEl = document.getElementById("reportExhibitsList");
+    const discoveredEl = document.getElementById("reportDiscoveredGroups");
+    const artifactsEl = document.getElementById("reportArtifactGroups");
+    const webWrapEl = document.getElementById("reportWebArtifactsWrap");
+    const webGroupsEl = document.getElementById("reportWebArtifactGroups");
+    if (!exhibitsEl) return;
+    exhibitsEl.innerHTML = '<div class="text-subtle small p-2">Loading...</div>';
+    discoveredEl.innerHTML = '';
+    artifactsEl.innerHTML = '';
+    webWrapEl.style.display = 'none';
+    webGroupsEl.innerHTML = '';
 
     const caseFolder = activeCase ? activeCase.case_folder : "";
     let discovered = [];
@@ -4843,9 +4949,16 @@ async function renderReportFilesGallery() {
             }
         } catch (err) {}
     }
+    if (myToken !== reportFilesGalleryRenderToken) return;
 
     const attachedSet = new Set(currentAttachedFilesList);
     const extraFiles = discovered.filter(f => !attachedSet.has(f.path));
+    // case_role (classify_case_role() in core/paths.py, passed through by
+    // /api/cases/discover_files) splits this app's own generated files
+    // (reports, logs, KML exports, backups) away from real evidence found
+    // in the case folder - two genuinely different groups, not one pile.
+    const caseArtifactFiles = extraFiles.filter(f => f.case_role);
+    const discoveredEvidenceFiles = extraFiles.filter(f => !f.case_role);
 
     // Batch-fetch tags and recent analysis history for every path currently
     // in view (both attached and discovered-but-unattached) - lets an
@@ -4872,15 +4985,12 @@ async function renderReportFilesGallery() {
             if (analysisData.success) analysisByPath = analysisData.results || {};
         } catch (err) {}
     }
+    if (myToken !== reportFilesGalleryRenderToken) return;
 
-    container.innerHTML = '';
-
-    if (currentAttachedFilesList.length === 0 && extraFiles.length === 0) {
-        container.innerHTML = '<span class="text-subtle small">No files attached, and nothing else found in this case folder yet. Use "Browse Elsewhere..." below, or right-click a file in File Explorer and choose "Attach to Case".</span>';
-        return;
-    }
-
-    const addRow = (name, sublabel, filePath, checked, exhibitNumber) => {
+    // Builds one file row into `target` (a group's body div, or the
+    // always-visible Exhibits list) - unchanged row contents from before
+    // this reorganization, just no longer tied to one single flat container.
+    const addRow = (target, name, sublabel, filePath, checked, exhibitNumber) => {
         const row = document.createElement('div');
         row.className = 'd-flex align-items-start gap-2 bg-dark p-2 rounded mb-1 border border-secondary';
 
@@ -4927,7 +5037,7 @@ async function renderReportFilesGallery() {
 
         if (sublabel) {
             const line2 = document.createElement('div');
-            line2.className = 'text-subtle small';
+            line2.className = 'text-subtle small text-break';
             line2.textContent = sublabel;
             textWrap.appendChild(line2);
         }
@@ -4976,25 +5086,85 @@ async function renderReportFilesGallery() {
             row.appendChild(viewBtn);
         }
 
-        container.appendChild(row);
+        target.appendChild(row);
     };
 
+    // --- Exhibits (always visible - the curated, report-facing set) ---
     // Exhibit numbers are each file's 1-based position in currentAttachedFilesList
     // (the same order-preserved list attachments.files gets saved as) -
     // matches export_report()'s own exhibit_numbers derivation exactly, so
     // what's shown here is always what a real export would print.
-    currentAttachedFilesList.forEach((fp, i) => addRow(fp.split('/').pop(), `Attached · ${fp}`, fp, true, i + 1));
-    extraFiles.forEach(f => {
-        const kindLabel = f.kind === 'image' ? 'Image' : f.kind === 'text' ? 'Text' : 'File';
-        const sizeKb = f.size_bytes ? ` · ${(f.size_bytes / 1024).toFixed(1)} KB` : '';
-        addRow(f.name, `Found in case folder · ${kindLabel}${sizeKb}`, f.path, false, null);
-    });
+    exhibitsEl.innerHTML = '';
+    if (currentAttachedFilesList.length === 0) {
+        exhibitsEl.innerHTML = '<span class="text-subtle small">No exhibits attached yet. Check a file below, or right-click one in File Explorer and choose "Attach to Case".</span>';
+    } else {
+        currentAttachedFilesList.forEach((fp, i) => addRow(exhibitsEl, fp.split('/').pop(), fp, fp, true, i + 1));
+    }
 
+    // --- Found in Case Folder, grouped by extension category ---
+    const byExtCategory = {};
+    discoveredEvidenceFiles.forEach(f => {
+        const cat = f.category || 'other';
+        (byExtCategory[cat] = byExtCategory[cat] || []).push(f);
+    });
+    Object.keys(FILE_VIEWS_EXTENSION_LABELS).forEach(cat => {
+        const files = byExtCategory[cat];
+        if (!files || !files.length) return;
+        const body = buildReportFileGroup(discoveredEl, FILE_VIEWS_EXTENSION_LABELS[cat], files.length, REPORT_EXTENSION_CATEGORY_ICONS[cat]);
+        files.forEach(f => {
+            const sizeKb = f.size_bytes ? `${(f.size_bytes / 1024).toFixed(1)} KB · ` : '';
+            addRow(body, f.name, `${sizeKb}${f.path}`, f.path, false, null);
+        });
+    });
     if (truncated) {
         const note = document.createElement('div');
         note.className = 'text-subtle small p-2';
         note.textContent = 'Showing the first 200 discovered files - some case-folder files were not listed.';
-        container.appendChild(note);
+        discoveredEl.appendChild(note);
+    }
+    discoveredEl.classList.toggle('report-file-groups-empty', discoveredEl.children.length === 0);
+
+    // --- Case-Generated Artifacts, grouped by case_role ---
+    const byRole = {};
+    caseArtifactFiles.forEach(f => { (byRole[f.case_role] = byRole[f.case_role] || []).push(f); });
+    Object.keys(REPORT_CASE_ROLE_LABELS).forEach(role => {
+        const files = byRole[role];
+        if (!files || !files.length) return;
+        const body = buildReportFileGroup(artifactsEl, REPORT_CASE_ROLE_LABELS[role], files.length, REPORT_CASE_ROLE_ICONS[role]);
+        files.forEach(f => addRow(body, f.name, f.path, f.path, false, null));
+    });
+    artifactsEl.classList.toggle('report-file-groups-empty', artifactsEl.children.length === 0);
+
+    // --- Web Artifacts (parsed browser history/bookmarks/downloads/cookies)
+    // - only shown once something's actually been parsed for this case
+    // (File Explorer > right-click > "Parse Browser Artifacts"); each
+    // category's rows are fetched lazily on first expand, not all up front,
+    // since a busy case's history table alone can run into the thousands. ---
+    if (caseFolder) {
+        try {
+            const res = await fetch('/api/case_index/summary', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ case_folder: caseFolder })
+            });
+            const data = await res.json();
+            if (myToken !== reportFilesGalleryRenderToken) return;
+            const counts = (data.success && data.parsed_artifact_counts) || {};
+            const types = Object.keys(counts).filter(t => counts[t] > 0);
+            if (types.length) {
+                webWrapEl.style.display = '';
+                types.forEach(type => {
+                    buildReportFileGroup(webGroupsEl, FILE_VIEWS_WEB_ARTIFACT_LABELS[type] || type, counts[type], 'bi bi-globe2', async (body) => {
+                        const res2 = await fetch('/api/case_index/parsed_artifacts', {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ case_folder: caseFolder, category: type })
+                        });
+                        const data2 = await res2.json();
+                        body.innerHTML = '';
+                        body.appendChild(buildParsedArtifactsTable(data2.rows || []));
+                    });
+                });
+            }
+        } catch (err) {}
     }
 }
 

@@ -135,13 +135,34 @@
                                                 </div>
                                                 <div class="tab-pane fade" id="repFilesPane" role="tabpanel">
                                                     <div class="d-flex justify-content-between align-items-center mb-2">
-                                                        <h6 class="text-success fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Case Attachments (Exhibits)</h6>
+                                                        <h6 class="text-success fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Files &amp; Evidence</h6>
                                                         <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-folder2-open me-1"></i>Browse Elsewhere...</button>
                                                     </div>
-                                                    <div class="small text-subtle mb-2">Check a file to attach it as a report exhibit - files already found in this case's folder are listed automatically. Right-click a file in File Explorer and choose "Attach to Case" to add it from there instead.</div>
-                                                    <div id="reportFilesGallery" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
-                                                        <span class="text-subtle small italic">Loading...</span>
+                                                    <div class="small text-subtle mb-3">Organized by kind, similar to Autopsy's Extracted Content or AXIOM's Refined Results. Check a file to attach it as a report exhibit - files already found in this case's folder are listed automatically. Right-click a file in File Explorer and choose "Attach to Case" to add it from there instead.</div>
+
+                                                    <div class="mb-3">
+                                                        <div class="small fw-bold text-bright mb-1"><i class="bi bi-bookmark-star me-1"></i>Exhibits (Attached)</div>
+                                                        <div id="reportExhibitsList" class="bg-black border border-secondary p-2 rounded-2" style="max-height: 260px; overflow-y: auto;">
+                                                            <span class="text-subtle small italic">Loading...</span>
+                                                        </div>
                                                     </div>
+
+                                                    <div class="mb-3">
+                                                        <div class="small fw-bold text-bright mb-1"><i class="bi bi-images me-1"></i>Found in Case Folder</div>
+                                                        <div id="reportDiscoveredGroups" class="report-file-groups"></div>
+                                                    </div>
+
+                                                    <div class="mb-3">
+                                                        <div class="small fw-bold text-bright mb-1"><i class="bi bi-gear me-1"></i>Case-Generated Artifacts</div>
+                                                        <div id="reportArtifactGroups" class="report-file-groups"></div>
+                                                    </div>
+
+                                                    <div class="mb-3" id="reportWebArtifactsWrap" style="display:none;">
+                                                        <div class="small fw-bold text-bright mb-1"><i class="bi bi-globe2 me-1"></i>Web Artifacts</div>
+                                                        <div class="small text-subtle mb-1">Browser history, bookmarks, downloads and cookies already parsed for this case (File Explorer &gt; right-click a folder or an acquired image &gt; "Parse Browser Artifacts") - reference data, not attachable as an exhibit itself.</div>
+                                                        <div id="reportWebArtifactGroups" class="report-file-groups"></div>
+                                                    </div>
+
                                                     <div>
                                                         <label class="telemetry-grid-label d-block mb-1">Reference URLs / Links (Comma-separated or newline):</label>
                                                         <input type="text" id="editUrls" class="form-control form-control-sm font-monospace" placeholder="e.g. https://cve.mitre.org/..., https://case-tracker.local/id/102">

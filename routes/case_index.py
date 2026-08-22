@@ -57,7 +57,7 @@ def case_index_analysis_for_paths():
 
 @case_index_bp.route('/api/case_index/summary', methods=['POST'])
 @requires_auth
-@requires_permission('file_explorer')
+@requires_permission('file_explorer', 'reporting')  # Reporting's Files tab reads parsed_artifact_counts for its Web Artifacts section too
 def case_index_summary():
     req = request.get_json() or {}
     case_folder = req.get('case_folder')
@@ -118,16 +118,19 @@ PARSED_ARTIFACT_TYPE_LABELS = {
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])
 @requires_auth
-@requires_permission('file_explorer')
+@requires_permission('file_explorer', 'reporting')
 def case_index_parsed_artifacts():
     """Lists parsed browser-artifact records (core/browser_artifacts.py) of
-    one artifact_type - the query side of File Views' new "Web Artifacts"
+    one artifact_type - the query side of File Views' "Web Artifacts"
     category, same request/response shape as case_index_files()/
     case_index_hits() above (category in, rows out) but against
     parsed_artifacts instead of indexed_files/triage_hits, since these rows
     are structured records (a visited URL, a download, a bookmark, a
     cookie), not files - the frontend renders them into their own small
-    table rather than reusing the file-row Listing pipeline."""
+    table rather than reusing the file-row Listing pipeline. Reporting's
+    Files tab reuses this same route for its own Web Artifacts section
+    (renderReportWebArtifactCategory() in main.js), hence the added
+    'reporting' permission key above alongside file_explorer."""
     req = request.get_json() or {}
     category = req.get('category', '')
     conn = _case_index_open_readonly(req.get('case_folder'))
