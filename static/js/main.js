@@ -7964,6 +7964,9 @@ function openFolderModal(mode = 'folder', targetInputId = 'destPath') {
     } else if (modalPickerMode === 'copyDestination') {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-copy me-2"></i>Copy To...';
         if (selectBtn) { selectBtn.style.display = 'inline-block'; selectBtn.textContent = 'Copy Here'; }
+    } else if (modalPickerMode === 'logicalAcqFolder') {
+        if (titleEl) titleEl.innerHTML = '<i class="bi bi-folder-plus me-2"></i>Add Folder to Logical Acquisition';
+        if (selectBtn) { selectBtn.style.display = 'inline-block'; selectBtn.textContent = 'Add This Folder'; }
     } else {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-folder2-open me-2"></i>Select Destination Directory';
         if (selectBtn) { selectBtn.style.display = 'inline-block'; selectBtn.textContent = 'Select This Directory'; }
@@ -8067,9 +8070,99 @@ function selectCurrentFolder() {
         if (activeSelectedFile) performCopyTo(activeSelectedFile, currentBrowsePath);
         return;
     }
+    if (modalPickerMode === 'logicalAcqFolder') {
+        if (folderModalInstance) folderModalInstance.hide();
+        addLogicalAcqFolder(currentBrowsePath);
+        return;
+    }
     const targetEl = document.getElementById(targetInputIdForModal);
     if (targetEl) targetEl.value = currentBrowsePath;
     if (folderModalInstance) folderModalInstance.hide();
+}
+
+// --- Logical Acquisition (selected whole folders, packaged into a hash-
+// verified evidence container + manifest, no full-device image needed) ---
+let logicalAcqFolders = [];
+
+function addLogicalAcqFolder(path) {
+    if (!logicalAcqFolders.includes(path)) logicalAcqFolders.push(path);
+    renderLogicalAcqFolders();
+}
+
+function removeLogicalAcqFolder(path) {
+    logicalAcqFolders = logicalAcqFolders.filter(p => p !== path);
+    renderLogicalAcqFolders();
+}
+
+function renderLogicalAcqFolders() {
+    const container = document.getElementById("logicalAcqFoldersList");
+    if (!container) return;
+    container.innerHTML = '';
+    if (!logicalAcqFolders.length) {
+        container.innerHTML = '<span class="text-subtle small">No folders added yet.</span>';
+        return;
+    }
+    logicalAcqFolders.forEach(path => {
+        const row = document.createElement('div');
+        row.className = 'd-flex align-items-center justify-content-between bg-dark p-2 rounded mb-1 border border-secondary';
+        const label = document.createElement('span');
+        label.className = 'small font-monospace text-break';
+        label.textContent = path; // examiner-picked path, from the folder-browser modal - text node only
+        row.appendChild(label);
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-2 flex-shrink-0 ms-2';
+        delBtn.title = 'Remove';
+        delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+        delBtn.onclick = () => removeLogicalAcqFolder(path);
+        row.appendChild(delBtn);
+        container.appendChild(row);
+    });
+}
+
+async function startLogicalAcquisition() {
+    const status = document.getElementById("logicalAcqStatus");
+    if (!logicalAcqFolders.length) return showToast('Add at least one folder first.', 'warning');
+
+    const hashes = [];
+    if (document.getElementById("logicalAcqHashMd5")?.checked) hashes.push('md5');
+    if (document.getElementById("logicalAcqHashSha1")?.checked) hashes.push('sha1');
+    if (document.getElementById("logicalAcqHashSha256")?.checked) hashes.push('sha256');
+    if (!hashes.length) return showToast('Select at least one verification hash algorithm.', 'warning');
+
+    const makeZip = document.getElementById("logicalAcqMakeZip")?.checked || false;
+    const destPath = document.getElementById("destPath")?.value.trim() || '/mnt';
+    const metadata = {
+        case_number: document.getElementById("caseNum")?.value || "2026-UNASSIGNED",
+        evidence_id: document.getElementById("evidenceId")?.value || "ITEM-01",
+        examiner: document.getElementById("examiner")?.value || "UNSPECIFIED",
+        notes: document.getElementById("notes")?.value || "None",
+    };
+
+    if (status) status.textContent = 'Starting logical acquisition job...';
+    try {
+        const res = await fetch('/api/start_logical_acquisition', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                selected_folders: logicalAcqFolders,
+                destination: destPath,
+                metadata: metadata,
+                hashes: hashes,
+                make_zip: makeZip,
+            })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Failed to start: ${data.error}`;
+            showToast(`Logical acquisition failed to start: ${data.error}`, 'danger');
+            return;
+        }
+        if (status) status.textContent = 'Running - see the Output console above for live progress.';
+        showToast('Logical acquisition started.', 'success');
+    } catch (err) {
+        if (status) status.textContent = 'Request failed - see console.';
+    }
 }
 
 // --- Telemetry & Drives ---
@@ -10508,8 +10601,15 @@ async function fetchProgress() {
 
         if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = data.active;
         if (document.getElementById("btnRecoveryStart")) document.getElementById("btnRecoveryStart").disabled = data.active;
+        if (document.getElementById("logicalAcqStartBtn")) document.getElementById("logicalAcqStartBtn").disabled = data.active;
         if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = !data.active;
         if (document.getElementById("btnRecoveryStop")) document.getElementById("btnRecoveryStop").disabled = !data.active;
+        if (document.getElementById("logicalAcqStopBtn")) document.getElementById("logicalAcqStopBtn").disabled = !data.active;
+        if (data.format === 'logical_acquisition' && document.getElementById("logicalAcqStatus")) {
+            document.getElementById("logicalAcqStatus").textContent = data.active
+                ? `Status: ${data.status} (${(data.progress_percent || 0).toFixed(1)}%) - see the Output console above for the live log.`
+                : `Last run: ${data.status}`;
+        }
         if (document.getElementById("btnMobileStop")) document.getElementById("btnMobileStop").disabled = !data.active;
         if (data.active) {
             if (document.getElementById("btnMobileStart")) document.getElementById("btnMobileStart").disabled = true;
