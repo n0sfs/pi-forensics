@@ -72,11 +72,15 @@ def create_case():
             "created_at": now,
             "updated_at": now,
             "attachments": {"files": [], "reference_urls": []},
-            # Pre-populated (empty values) from the station's currently
-            # configured custom-field *definitions* (Settings > Case &
-            # Reporting) so this dict is always fully shaped rather than
-            # sparse - definitions live station-wide, values live per-case.
-            "custom_fields": {f["key"]: "" for f in get_custom_case_fields()},
+            # Pre-populated from the station's currently configured custom-
+            # field *definitions* (Settings > Case & Reporting) so this dict
+            # is always fully shaped rather than sparse - definitions live
+            # station-wide, values live per-case. A field with a configured
+            # default_value (e.g. "Agency" defaulting to the station's own
+            # agency name) seeds every new case with it directly, saving the
+            # examiner from retyping the same value case after case; a field
+            # with no default still seeds "" exactly as before.
+            "custom_fields": {f["key"]: f.get("default_value", "") for f in get_custom_case_fields()},
             "events": [],
         }
         _write_case_file(os.path.join(case_dir, f"{slug}_case.json"), case_record)
