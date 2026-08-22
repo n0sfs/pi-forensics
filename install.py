@@ -55,7 +55,24 @@ except KeyError:
             # /etc/sudoers.d/pi-forensics file (below) already grants
             # exactly the privileged commands the app needs. Blanket sudo
             # group membership would defeat the point of that scoping.
-            for group in ["video", "render", "input", "plugdev", "disk"]:
+            #
+            # Deliberately NOT adding 'disk' either (removed 2026-08-22,
+            # confirmed live and empirically on a real deployed station -
+            # see the dated CLAUDE.md entry). 'disk' group membership grants
+            # unrestricted read+write to every block device on the system,
+            # a much broader ambient capability than this app actually
+            # needs - Live Device Preview and LUKS unlock both already grant
+            # exactly the narrow, reversible read access they require via a
+            # scoped `sudo setfacl` ACL on one specific device at a time
+            # (see _grant_device_preview_acl()/_luks_unlock()), and every
+            # other device read in this app already goes through a `sudo`-
+            # wrapped tool (dc3dd/dcfldd/ewfacquire/ddrescue/photorec/etc.).
+            # Confirmed via a full-codebase audit before removing this that
+            # nothing else relies on ambient disk-group access (lsblk's
+            # FSTYPE/model columns come from the udev database cache, not a
+            # direct device open, and were verified to still populate
+            # correctly with 'disk' removed).
+            for group in ["video", "render", "input", "plugdev"]:
                 subprocess.run(["usermod", "-aG", group, SERVICE_USER], capture_output=True)
                 
             user_info = pwd.getpwnam(SERVICE_USER)
