@@ -3116,6 +3116,7 @@ function updateContextToolbar(item) {
     const btnBrowseImage = document.getElementById("btnBrowseImage");
     const btnUnlockBitlockerImage = document.getElementById("btnUnlockBitlockerImage");
     const btnVerifyHash = document.getElementById("btnVerifyHash");
+    const btnConvertImageFormat = document.getElementById("btnConvertImageFormat");
     const btnAttachToCase = document.getElementById("btnAttachToCase");
     const btnTagFile = document.getElementById("btnTagFile");
     const btnRecoverFromImage = document.getElementById("btnRecoverFromImage");
@@ -3143,6 +3144,7 @@ function updateContextToolbar(item) {
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnUnlockBitlockerImage) btnUnlockBitlockerImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnVerifyHash) btnVerifyHash.disabled = item.is_dir;
+    if (btnConvertImageFormat) btnConvertImageFormat.disabled = item.is_dir || !isImageFile(item.name);
     if (btnAttachToCase) btnAttachToCase.disabled = item.is_dir || !activeCase;
     if (btnTagFile) btnTagFile.disabled = item.is_dir || !activeCase;
     if (btnRecoverFromImage) btnRecoverFromImage.disabled = item.is_dir || !isImageFile(item.name);
@@ -3763,6 +3765,7 @@ let explorerImageMode = false;
 const IMAGE_JOB_COMPLETION_MESSAGES = {
     image_triage_scan: (status) => `Filesystem-aware triage scan finished: ${status}\n\nCheck the case folder for the generated *_triage_scan_report.txt file.`,
     image_geolocation_kml: (status) => `Geolocation scan finished: ${status}\n\nCheck the case folder for the generated *_geolocation_export.kml file (only written if GPS-tagged photos were found).`,
+    image_conversion: (status) => `Image conversion finished: ${status}\n\nSee the report event's "Hash Verified" field for whether the independently-computed source/output hashes matched.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
 let explorerImagePath = null;
@@ -7470,6 +7473,7 @@ async function openKmlViewerModal(filePath) {
 }
 
 let verifyHashModalInstance = null;
+let imageConversionModalInstance = null;
 
 function openVerifyHashModal() {
     if (!activeSelectedFile) return;
@@ -7550,6 +7554,67 @@ async function runStandaloneHashVerification() {
             badge.innerText = "FAILED";
         }
         if (output) output.innerText = `Request Failed: ${err.message}`;
+    }
+}
+
+// Runs as a real background job (converting a multi-GB image is genuinely
+// long-running), reusing the same shared #explorerJobProgress row/
+// completion-toast mechanism already established for Triage Scan and
+// Geolocation Export - see IMAGE_JOB_COMPLETION_MESSAGES and fetchProgress().
+function openImageConversionModal() {
+    if (!activeSelectedFile) return;
+    const name = activeSelectedFile.split('/').pop();
+    document.getElementById("convertImageFileName").textContent = name;
+    // Default the target format to whichever direction actually makes sense
+    // for this file - the backend independently validates this regardless,
+    // but defaulting correctly avoids a near-certain first-try rejection.
+    const targetSelect = document.getElementById("convertImageTargetFormat");
+    if (targetSelect) targetSelect.value = name.toLowerCase().endsWith('.e01') ? 'raw' : 'e01';
+    const status = document.getElementById("convertImageStatus");
+    if (status) status.textContent = '';
+
+    if (!imageConversionModalInstance) {
+        imageConversionModalInstance = new bootstrap.Modal(document.getElementById('imageConversionModal'));
+    }
+    imageConversionModalInstance.show();
+}
+
+async function startImageConversion() {
+    if (!activeSelectedFile) return;
+    const targetFormat = document.getElementById("convertImageTargetFormat")?.value || 'e01';
+    const hashes = [];
+    if (document.getElementById("convertHashSha256")?.checked) hashes.push('sha256');
+    if (document.getElementById("convertHashSha1")?.checked) hashes.push('sha1');
+    if (document.getElementById("convertHashMd5")?.checked) hashes.push('md5');
+    if (!hashes.length) return showToast('Select at least one verification hash algorithm.', 'warning');
+
+    const status = document.getElementById("convertImageStatus");
+    if (status) status.textContent = 'Starting conversion job...';
+
+    try {
+        const res = await fetch('/api/start_image_conversion', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                source_image_path: activeSelectedFile,
+                target_format: targetFormat,
+                hashes: hashes,
+                metadata: {
+                    case_number: activeCase ? activeCase.case_number : null,
+                    examiner: activeCase ? activeCase.examiner : null,
+                },
+            })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Failed to start: ${data.error}`;
+            showToast(`Conversion failed to start: ${data.error}`, 'danger');
+            return;
+        }
+        if (imageConversionModalInstance) imageConversionModalInstance.hide();
+        showToast('Image conversion started - watch the progress bar in File Explorer.', 'success');
+    } catch (err) {
+        if (status) status.textContent = 'Request failed - see console.';
     }
 }
 

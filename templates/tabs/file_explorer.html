@@ -92,6 +92,7 @@
                             <button id="btnBrowseImage" class="dropdown-item" onclick="enterExplorerImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files right here, without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse as Image (Sleuth Kit)</button>
                             <button id="btnUnlockBitlockerImage" class="dropdown-item" onclick="openBitlockerUnlockImageModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Decrypts a BitLocker-encrypted acquired image (or a specific partition within it) with its recovery key/password, then browses the decrypted volume with the same Sleuth Kit tools used for a normal image."><i class="bi bi-shield-lock me-2"></i>Unlock BitLocker &amp; Browse...</button>
                             <button id="btnVerifyHash" class="dropdown-item" onclick="openVerifyHashModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Computes a cryptographic hash of this file and optionally compares it against a known reference hash - confirms an evidence image (or any file) hasn't been altered since acquisition."><i class="bi bi-hash me-2"></i>Verify Image Hash</button>
+                            <button id="btnConvertImageFormat" class="dropdown-item" onclick="openImageConversionModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Converts an already-acquired image between raw (.dd) and E01 - independently re-hashes both sides and records whether they verify as a match. Runs as a background job (see the progress bar below)."><i class="bi bi-arrow-repeat me-2"></i>Convert Image Format...</button>
                             <button id="btnAttachToCase" class="dropdown-item" onclick="attachSelectedFileToCase()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Bookmarks this file as a case exhibit - it'll show up pre-checked in Reporting > Files, ready to include in an exported report. Requires an active, consolidated-format case."><i class="bi bi-bookmark-plus me-2"></i>Attach to Case</button>
                             <button id="btnTagFile" class="dropdown-item" onclick="openTagItemModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Flags this file with a tag (Bookmark, Follow Up, Notable Item, or a custom tag) - shows up under File Views > Tagged Files. Requires an active, consolidated-format case."><i class="bi bi-tag me-2"></i>Tag...</button>
                             <button id="btnRecoverFromImage" class="dropdown-item" onclick="recoverDeletedFilesFromImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Jumps to File Recovery with this image pre-filled as the source, ready to run PhotoRec, foremost, scalpel, or extundelete against it."><i class="bi bi-life-preserver me-2"></i>Recover Deleted Files...</button>
@@ -172,6 +173,47 @@
                 </div>
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="imageConversionModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-arrow-repeat me-2"></i>Convert Image Format: <span id="convertImageFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Convert To:</label>
+                        <select id="convertImageTargetFormat" class="form-select form-select-sm">
+                            <option value="e01">EWF (.E01)</option>
+                            <option value="raw">Raw (.dd)</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Verification Hashes:</label>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" id="convertHashSha256" checked>
+                            <label class="form-check-label small" for="convertHashSha256">SHA-256</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" id="convertHashSha1">
+                            <label class="form-check-label small" for="convertHashSha1">SHA-1</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" id="convertHashMd5" checked>
+                            <label class="form-check-label small" for="convertHashMd5">MD5</label>
+                        </div>
+                    </div>
+                    <div class="small text-subtle mb-2">The source's hash is independently computed before conversion and compared against the converted output afterward - see "Hash Verified" in the resulting report event once the background job completes.</div>
+                    <div id="convertImageStatus" class="small text-subtle"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-info text-dark fw-bold" onclick="startImageConversion()"><i class="bi bi-play-fill me-1"></i>Start Conversion</button>
                 </div>
             </div>
         </div>
