@@ -1,8 +1,28 @@
             <!-- APP 3: REPORTS & VERIFICATION TAB -->
             <div class="tab-pane fade" id="reports-app" role="tabpanel">
                             <div class="card">
-                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2 py-2">
+                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-3 py-2">
                                     <span><i class="bi bi-journal-richtext me-2"></i>Case Report</span>
+                                    <!-- Station-wide case-status stat - moved here from Home
+                                         (2026-08-21), trimmed down to just this one block the same
+                                         day, then condensed into this header row (also 2026-08-21,
+                                         at the user's own explicit request) so it no longer costs a
+                                         whole extra row of its own. Computed client-side from the
+                                         already-existing /api/cases/list response
+                                         (@requires_auth-only, no permission gating, so every
+                                         logged-in account can see this regardless of group) - no new
+                                         backend route. See loadReportingStats() in main.js.
+                                         Deliberately station-wide, not scoped to whatever case is
+                                         currently active - stays visible even with no case selected.
+                                         No written-out legend at this size (there was room for one
+                                         in the old standalone box) - each bar segment still carries
+                                         its own title="Status: N" tooltip, and the whole cluster has
+                                         one too, so the breakdown is still there on hover. -->
+                                    <div class="d-flex align-items-center gap-2" id="repHeaderCaseStat" title="Case status breakdown">
+                                        <span class="small text-subtle">Total Cases</span>
+                                        <span class="fw-bold fs-6" id="repStatCases">--</span>
+                                        <div id="repStatCasesBar" class="reports-stat-bar" style="width: 56px; display:none;"></div>
+                                    </div>
                                     <div class="d-flex flex-wrap align-items-center gap-2">
                                         <span class="small text-subtle fw-normal">Follows the case selected in the bar above - select or create one there to populate this</span>
                                         <button id="btnSaveReportChanges" class="btn btn-sm btn-success fw-bold" onclick="saveReportMetadata()">
