@@ -60,6 +60,7 @@ let currentLoadedReportData = null;
 let currentReportPath = null;
 let currentAttachedFilesList = [];
 let currentAttachmentCaptions = {};
+let currentReferenceUrlsList = [];
 
 // activeCase shape: {case_number, examiner, case_folder} | null
 let activeCase = null;
@@ -4935,6 +4936,10 @@ async function renderReportFilesGallery() {
     artifactsEl.innerHTML = '';
     webWrapEl.style.display = 'none';
     webGroupsEl.innerHTML = '';
+    // Reference URLs need no fetch - already loaded into currentReferenceUrlsList
+    // by loadCaseForEditing() - so this renders immediately rather than
+    // waiting on the async chain below.
+    renderReportUrlsGroup();
 
     const caseFolder = activeCase ? activeCase.case_folder : "";
     let discovered = [];
@@ -5166,6 +5171,109 @@ async function renderReportFilesGallery() {
             }
         } catch (err) {}
     }
+}
+
+// Only http(s) URLs are rendered as a real clickable link - an examiner
+// could type anything into this field (including a javascript: URL), and
+// unlike every other examiner-entered string in this app (case notes, tag
+// comments, captions), this one is specifically turned into a clickable
+// <a href> rather than staying inert text, so it gets its own scheme check
+// rather than relying on textContent alone to make it safe.
+function isSafeHttpUrl(str) {
+    return /^https?:\/\//i.test(str || '');
+}
+
+// Kept separate from renderReportUrlRows() below so the group's own
+// expand/collapse state (set by buildReportFileGroup's toggle) survives an
+// add/remove - only built once per renderReportFilesGallery() call, not
+// rebuilt on every edit.
+let reportUrlsGroupBodyEl = null;
+let reportUrlsGroupCountBadgeEl = null;
+
+function renderReportUrlsGroup() {
+    const container = document.getElementById('reportUrlGroups');
+    if (!container) return;
+    container.innerHTML = '';
+    reportUrlsGroupBodyEl = buildReportFileGroup(container, 'Reference URLs / Links', currentReferenceUrlsList.length, 'bi bi-link-45deg');
+    reportUrlsGroupCountBadgeEl = container.querySelector('.report-file-group-toggle .badge');
+    renderReportUrlRows();
+}
+
+// Rebuilds just the Add-URL row + URL list inside the already-built group
+// body, and updates its count badge - called after every add/remove
+// instead of renderReportUrlsGroup() so the toggle itself (and whether the
+// examiner currently has the group expanded) is never disturbed.
+function renderReportUrlRows() {
+    if (!reportUrlsGroupBodyEl) return;
+    if (reportUrlsGroupCountBadgeEl) reportUrlsGroupCountBadgeEl.textContent = String(currentReferenceUrlsList.length);
+    const body = reportUrlsGroupBodyEl;
+    body.innerHTML = '';
+
+    const addRow = document.createElement('div');
+    addRow.className = 'd-flex gap-2 mb-2';
+    const addInput = document.createElement('input');
+    addInput.type = 'text';
+    addInput.className = 'form-control form-control-sm font-monospace';
+    addInput.placeholder = 'https://cve.mitre.org/... or a case-tracker link...';
+    const doAdd = () => {
+        const val = addInput.value.trim();
+        if (!val) return;
+        currentReferenceUrlsList.push(val);
+        renderReportUrlRows();
+    };
+    addInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); doAdd(); } });
+    addRow.appendChild(addInput);
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn btn-sm btn-outline-secondary flex-shrink-0';
+    addBtn.title = 'Add';
+    addBtn.innerHTML = '<i class="bi bi-plus-lg"></i>';
+    addBtn.onclick = doAdd;
+    addRow.appendChild(addBtn);
+    body.appendChild(addRow);
+
+    if (currentReferenceUrlsList.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'text-subtle small';
+        empty.textContent = 'No reference URLs added yet.';
+        body.appendChild(empty);
+        return;
+    }
+
+    currentReferenceUrlsList.forEach((url, idx) => {
+        const row = document.createElement('div');
+        row.className = 'd-flex align-items-center gap-2 bg-dark p-2 rounded mb-1 border border-secondary';
+
+        const icon = document.createElement('i');
+        icon.className = 'bi bi-link-45deg text-subtle flex-shrink-0';
+        row.appendChild(icon);
+
+        let linkEl;
+        if (isSafeHttpUrl(url)) {
+            linkEl = document.createElement('a');
+            linkEl.href = url;
+            linkEl.target = '_blank';
+            linkEl.rel = 'noopener noreferrer';
+        } else {
+            linkEl = document.createElement('span');
+        }
+        linkEl.className = 'small text-break flex-grow-1';
+        linkEl.textContent = url; // examiner-entered - text node only
+        row.appendChild(linkEl);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-2 flex-shrink-0';
+        delBtn.title = 'Remove';
+        delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+        delBtn.onclick = () => {
+            currentReferenceUrlsList.splice(idx, 1);
+            renderReportUrlRows();
+        };
+        row.appendChild(delBtn);
+
+        body.appendChild(row);
+    });
 }
 
 async function renderReportGeolocationList() {
@@ -6001,10 +6109,8 @@ async function loadCaseForEditing() {
             currentAttachedFilesList = [attach.image_path];
         }
         currentAttachmentCaptions = attach.file_captions || {};
+        currentReferenceUrlsList = attach.reference_urls || [];
         renderReportFilesGallery();
-
-        const editUrls = document.getElementById("editUrls");
-        if (editUrls) editUrls.value = (attach.reference_urls || []).join(", ");
 
         const previewEl = document.getElementById("jsonPreview");
         if (previewEl) {
@@ -6650,12 +6756,9 @@ async function saveReportMetadata() {
         };
     }
 
-    const urlsRaw = document.getElementById("editUrls")?.value.trim() || "";
-    const urlArray = urlsRaw ? urlsRaw.split(',').map(u => u.trim()).filter(u => u.length > 0) : [];
-
     currentLoadedReportData.attachments = {
         files: currentAttachedFilesList,
-        reference_urls: urlArray,
+        reference_urls: currentReferenceUrlsList,
         file_captions: currentAttachmentCaptions
     };
 
