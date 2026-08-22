@@ -49,8 +49,11 @@
 </head>
 <body>
     <div class="login-card p-4">
-        <div class="d-flex align-items-center justify-content-center mb-4 text-info login-brand">
-            <i class="bi bi-shield-lock-fill me-2 fs-4"></i>Pi Forensics Suite
+        <div class="d-flex flex-column align-items-center mb-4 text-info login-brand">
+            <div class="d-flex align-items-center">
+                <i class="bi bi-shield-lock-fill me-2 fs-4"></i>Pi Forensics Suite
+            </div>
+            <div class="text-subtle fw-normal" style="font-size: 0.7rem;">v{{ app_version }}</div>
         </div>
 
         <form id="loginForm" autocomplete="on">
