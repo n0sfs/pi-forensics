@@ -44,10 +44,15 @@
                                         <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button>
                                     </div>
 
-                                    <div class="telemetry-grid-label mb-1">Updates</div>
+                                    <div class="telemetry-grid-label mb-1">Updates <span class="text-subtle fw-normal">- running v{{ app_version }}</span></div>
                                     <div class="d-grid gap-1 mb-3">
                                         <button class="btn btn-sm btn-outline-success fw-bold text-start" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button>
                                         <button class="btn btn-sm btn-outline-primary fw-bold text-start" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button>
+                                    </div>
+                                    <div class="small text-subtle mb-3" style="margin-top: -8px;">
+                                        Updating pulls the latest commit from this station's configured git remote/branch,
+                                        not a specific tagged release - see this project's CHANGELOG.md for what changed
+                                        in each version.
                                     </div>
 
                                     <div class="telemetry-grid-label mb-1">Diagnostics</div>
