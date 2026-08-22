@@ -5,6 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
+[![Version](https://img.shields.io/badge/version-1.0.0-brightgreen)](CHANGELOG.md)
 
 > ### A field imaging station, not a full workstation replacement.
 

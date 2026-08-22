@@ -19,6 +19,7 @@ from core.auth import (
     _session_user_still_valid, _safe_next_path,
     _record_last_login, _is_locked_out, _record_auth_failure, _record_auth_success,
 )
+from core.config import get_app_version
 
 auth_routes_bp = Blueprint('auth_routes', __name__)
 
@@ -34,6 +35,7 @@ def login():
             'login.html',
             next=_safe_next_path(request.args.get('next')),
             expired=bool(request.args.get('expired')),
+            app_version=get_app_version(),
         )
 
     client_key = request.remote_addr or 'unknown'
@@ -73,6 +75,7 @@ def index():
         'index.html',
         is_local_kiosk=is_local_kiosk_request(),
         offline_tiles_json=json.dumps(get_offline_tiles_info()),
+        app_version=get_app_version(),
     )
 
 

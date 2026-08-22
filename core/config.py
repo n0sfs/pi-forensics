@@ -181,3 +181,23 @@ COC_LOG_FILE = os.path.join(INSTALL_DIR, "chain_of_custody.log")
 # and routes/file_explorer.py (verify_hash/hashdeep) - lives in core since
 # more than one routes/*.py module needs it.
 ALLOWED_HASH_ALGOS = {'md5', 'sha1', 'sha256'}
+
+# Semantic version of this application (see CHANGELOG.md for what changed in
+# each release, and `git tag -l` for the exact commit each version was cut
+# from). Read from a plain VERSION file at the repo root - deliberately
+# located via this module's own __file__, not INSTALL_DIR, so it resolves
+# correctly both in production (INSTALL_DIR == the repo root, /opt/pi-
+# forensics) and in a bare dev checkout on a machine that never set
+# FORENSIC_INSTALL_DIR at all (this module has to import cleanly on a
+# non-POSIX dev machine, unlike core/jobs.py). A missing/unreadable VERSION
+# file (a stripped-down checkout, a packaging mistake) degrades to a clearly-
+# marked placeholder rather than crashing app startup over a cosmetic value.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+VERSION_FILE = os.path.join(_REPO_ROOT, "VERSION")
+
+def get_app_version():
+    try:
+        with open(VERSION_FILE, 'r') as f:
+            return f.read().strip() or "0.0.0-unknown"
+    except Exception:
+        return "0.0.0-unknown"
