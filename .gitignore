@@ -35,6 +35,18 @@ runtime_config.json
 *.crt
 *.key
 *.pem
+.flask_secret_key
+.mount_key
+
+# Per-station operational history/state, not project code - reveals real
+# internal network hosts/shares (mount_history.json) or is transient job
+# scratch state that can land in the install directory depending on a
+# tool's own cwd-relative default (PhotoRec's .ses resume file), a running
+# BitLocker/dislocker mount point directory, or pytest's own cache.
+mount_history.json
+*.ses
+.bitlocker_mounts/
+.pytest_cache/
 
 # Local Storage / IDE
 .vscode/

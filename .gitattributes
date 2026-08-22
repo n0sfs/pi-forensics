@@ -1,0 +1,19 @@
+# Force LF line endings for every text file, regardless of a given
+# contributor's local core.autocrlf setting. Found while reconciling the
+# Pi's own on-disk deploy state against origin/main: several files had
+# picked up CRLF at some point (from being scp'd from a Windows checkout),
+# which is harmless to Python/Bash on Linux but produces a 100%-of-lines
+# "diff" against the git-stored LF blob, making real content drift
+# impossible to spot at a glance. This guarantees every checkout - on any
+# OS, any contributor - normalizes to LF, so a future sync's diff only ever
+# shows genuine content changes.
+* text=auto eol=lf
+
+# Binary files - never text-normalize these.
+*.JPG binary
+*.jpg binary
+*.png binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.db binary
