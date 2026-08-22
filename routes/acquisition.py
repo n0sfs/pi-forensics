@@ -286,9 +286,21 @@ def parse_dc3dd_hashes(log_path):
     return hashes
 
 def parse_ewf_hashes(console_log_text):
+    # Real ewfacquire output (confirmed live against the installed
+    # 20140816 build): "MD5 hash calculated over data:\t<hex>" /
+    # "SHA256 hash calculated over data:\t<hex>" - a genuine, previously-
+    # shipped bug lived here: the old pattern required "hash" to be
+    # immediately followed by an optional colon, with no allowance for the
+    # " calculated over data" (or, during a verify pass, "stored in file")
+    # text actually sitting in between, so it matched *nothing* against
+    # real output and every E01 acquisition silently ended up with an empty
+    # computed_verification_hashes dict. Fixed to match "<ALGO> hash", any
+    # non-colon text, then the colon and hex value - confirmed against both
+    # the real "calculated over data" wording and the "stored in file"
+    # wording ewfacquire/ewfverify use during a verification pass.
     hashes = {}
     try:
-        matches = re.findall(r'(\b(?:MD5|SHA1|SHA256)\b)\s*(?:hash|hash stored in file)?:?\s*([a-fA-F0-9]{32,64})', console_log_text, re.IGNORECASE)
+        matches = re.findall(r'(\b(?:MD5|SHA1|SHA256)\b)\s+hash[^:\n]*:\s*([a-fA-F0-9]{32,64})', console_log_text, re.IGNORECASE)
         for algo, val in matches:
             hashes[algo.lower()] = val
     except Exception as e:
@@ -672,6 +684,295 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
         update_job(active=False)
         clear_active_proc()
 
+# --- Standalone image-format conversion (raw <-> E01), for an image already
+# sitting in a case folder - independent of a fresh device acquisition, no
+# live source, no job-slot dependency beyond the same single-job-station-
+# wide constraint every other worker already shares. Confirmed live against
+# the real installed ewfacquire/ewfexport (20140816) before writing this:
+# ewfacquire's own help text documents it works against "a file or device"
+# interchangeably (no special-casing needed versus the existing device-
+# acquisition E01 branch above); ewfexport needs -S/-o passed explicitly
+# (and -u for defense in depth) or it hangs on an interactive prompt with a
+# closed/piped stdin - confirmed live, not assumed.
+IMAGE_CONVERSION_FORMATS = {'e01', 'raw'}
+
+def _ewf_media_size_bytes(e01_path):
+    """Best-effort: parses ewfinfo -m's 'Media size: X MiB (N bytes)' line,
+    used only for the E01->raw direction's progress-percent transferred-
+    bytes estimate. Returns 0 (the same 'unknown, skip the estimate'
+    sentinel every update_job() call site below already treats safely) on
+    any failure - this is a display nicety, never load-bearing for the
+    conversion or its hash verification."""
+    try:
+        res = subprocess.run(["ewfinfo", "-m", e01_path], capture_output=True, text=True, timeout=15)
+        m = re.search(r'Media size:.*?\((\d+)\s*bytes\)', res.stdout or '')
+        return int(m.group(1)) if m else 0
+    except Exception:
+        return 0
+
+def execution_worker_image_conversion(source_image_path, target_format, requested_hashes, report_file_path, report_data):
+    """Converts an already-acquired image between raw (.dd) and E01, for an
+    image already sitting in a case folder.
+
+    Unlike execution_worker_aff's raw->AFF phase-2 (a lossless repackage
+    that deliberately skips re-verification per its own docstring), raw<->E01
+    involves genuine reformatting, so this always independently recomputes
+    and compares hashes rather than trusting either tool's self-report
+    alone - but the two directions compare genuinely different things, and
+    conflating them would be a real correctness bug: an E01 file's own bytes
+    are a compressed/structured container, never byte-identical to the raw
+    media, so 'hash the .E01 file and compare to the raw source's hash'
+    would never match by design and isn't attempted. What's actually
+    compared:
+      - raw -> E01: the independently-computed hash of the raw *source*
+        bytes (computed before conversion starts) against ewfacquire's own
+        self-reported hash of the media content it read (parse_ewf_hashes()
+        on its live output) - the same authoritative-hash convention this
+        app's existing E01 acquisition path already uses, just with the
+        comparison run explicitly instead of implicitly trusted.
+      - E01 -> raw: the independently-computed hash of the real raw *output*
+        file that now exists on disk (computed after conversion) against
+        ewfexport's own self-reported hash (confirmed live: always MD5 only,
+        regardless of what -d is asked for, since the tool's own help text
+        documents -d as "not used for raw and files format"). ewfinfo's
+        readback of the *original* E01's stored hash was confirmed live to
+        be unreliable for non-MD5 algorithms (a real, observed inconsistency
+        across two otherwise-identical test acquisitions, not a hypothetical
+        concern), so it's never used to gate hash_verified - only MD5, which
+        both tools reliably agree on in every direction, does that.
+    """
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    base, _ext = os.path.splitext(source_image_path)
+
+    try:
+        if target_format == 'e01':
+            source_size = os.path.getsize(source_image_path) if os.path.exists(source_image_path) else 0
+            update_job(format='image_conversion', status="Computing source hash(es)...",
+                       progress_percent=0.0, speed_mbps=0.0, transferred_bytes=0, total_bytes=source_size)
+            append_log(f"[*] Independently hashing source before conversion: {source_image_path}")
+            source_hashes = compute_file_hashes(source_image_path, requested_hashes)
+            report_data["acquisition_parameters"]["source_hashes"] = source_hashes
+
+            output_path = f"{base}.E01"
+            params = report_data["acquisition_parameters"]
+            cmd = [
+                "sudo", "/usr/bin/ewfacquire", "-u",
+                "-t", base,
+                "-C", params.get("case_number") or "UNASSIGNED",
+                "-E", params.get("evidence_id") or "ITEM-01",
+                "-e", params.get("examiner") or "UNSPECIFIED",
+                "-N", "Converted from an already-acquired raw image",
+                "-f", "encase6",
+            ]
+            for h in requested_hashes:
+                if h != 'md5':
+                    cmd += ["-d", h]
+            cmd += ["-c", "fast", "-S", "2000M", source_image_path]
+            append_log(f"[*] Command: {' '.join(cmd)}")
+            update_job(status="Converting to E01...")
+
+            def on_line(clean_line):
+                append_log(clean_line)
+                pct, speed = parse_ewf_line(clean_line)
+                updates = {}
+                if pct is not None:
+                    updates["progress_percent"] = pct
+                    if source_size > 0:
+                        updates["transferred_bytes"] = int((pct / 100.0) * source_size)
+                if speed is not None:
+                    updates["speed_mbps"] = speed
+                if updates:
+                    update_job(**updates)
+
+            proc = _stream_subprocess(cmd, on_line)
+            time.sleep(1.0)
+            tool_hashes = parse_ewf_hashes(snapshot_job()["log"])
+            report_data["computed_verification_hashes"] = tool_hashes
+            hash_verified = bool(tool_hashes) and all(
+                source_hashes.get(a) == tool_hashes.get(a) for a in requested_hashes if a in tool_hashes
+            )
+            conversion_ok = proc.returncode in (0, 2) and os.path.exists(output_path)
+
+        elif target_format == 'raw':
+            source_total = _ewf_media_size_bytes(source_image_path)
+            update_job(format='image_conversion', status="Converting to raw (.dd)...",
+                       progress_percent=0.0, speed_mbps=0.0, transferred_bytes=0, total_bytes=source_total)
+
+            output_path = f"{base}.dd"
+            cmd = ["sudo", "/usr/bin/ewfexport", "-u", "-f", "raw", "-S", "0", "-o", "0",
+                   "-t", base, source_image_path]
+            append_log(f"[*] Command: {' '.join(cmd)}")
+
+            def on_line(clean_line):
+                append_log(clean_line)
+                pct, speed = parse_ewf_line(clean_line)
+                updates = {}
+                if pct is not None:
+                    updates["progress_percent"] = pct
+                    if source_total > 0:
+                        updates["transferred_bytes"] = int((pct / 100.0) * source_total)
+                if speed is not None:
+                    updates["speed_mbps"] = speed
+                if updates:
+                    update_job(**updates)
+
+            proc = _stream_subprocess(cmd, on_line)
+            time.sleep(1.0)
+
+            # ewfexport always writes <base>.raw (+ a <base>.raw.info
+            # sidecar) regardless of what -t is given - rename to this app's
+            # own established raw-output convention (.dd, matching every
+            # other raw-producing acquisition route) once export succeeds.
+            exported_raw = f"{base}.raw"
+            conversion_ok = proc.returncode == 0 and os.path.exists(exported_raw)
+            if conversion_ok:
+                reclaim_ownership(exported_raw)
+                os.rename(exported_raw, output_path)
+                info_sidecar = f"{exported_raw}.info"
+                if os.path.exists(info_sidecar):
+                    os.rename(info_sidecar, f"{output_path}.info")
+
+            tool_hashes = parse_ewf_hashes(snapshot_job()["log"])  # ewfexport only ever reports MD5, confirmed live
+            report_data["acquisition_parameters"]["tool_reported_hashes"] = tool_hashes
+
+            output_hashes = {}
+            if conversion_ok:
+                reclaim_ownership(output_path)
+                append_log("[*] Independently hashing output after conversion for verification...")
+                output_hashes = compute_file_hashes(output_path, requested_hashes)
+            report_data["computed_verification_hashes"] = output_hashes
+            hash_verified = bool(tool_hashes.get('md5')) and output_hashes.get('md5') == tool_hashes.get('md5')
+
+        else:
+            raise ValueError(f"Unsupported target format: {target_format}")
+
+        report_data["acquisition_parameters"]["output_image_path"] = output_path
+        report_data["acquisition_parameters"]["hash_verified"] = hash_verified
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+
+        if conversion_ok:
+            update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
+            append_log(f"[+] Conversion completed successfully. Hash verified: {hash_verified}")
+            report_data["acquisition_status"] = "COMPLETED"
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            append_log(f"[-] Conversion failed with exit code {proc.returncode}")
+            report_data["acquisition_status"] = "FAILED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
+        # Both directions run their real conversion tool via sudo, so any
+        # output written before an exception/failure needs the same
+        # reclaim-in-finally treatment execution_worker()/execution_worker_aff()
+        # already give every other sudo'd acquisition tool's output.
+        reclaim_ownership(os.path.dirname(source_image_path))
+        update_job(active=False)
+        clear_active_proc()
+
+@acquisition_bp.route('/api/start_image_conversion', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def start_image_conversion():
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    source_image_path = safe_path(req.get('source_image_path'))
+    target_format = (req.get('target_format') or '').lower()
+    hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
+    metadata = req.get('metadata', {})
+
+    if not source_image_path or not os.path.isfile(source_image_path):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Source image file not found or outside the permitted evidence directory."}), 400
+
+    if target_format not in IMAGE_CONVERSION_FORMATS:
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"Unsupported target format '{target_format}'. Use one of {sorted(IMAGE_CONVERSION_FORMATS)}."}), 400
+
+    invalid_hashes = set(hashes) - ALLOWED_HASH_ALGOS
+    if invalid_hashes:
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"Unsupported hash algorithm(s): {sorted(invalid_hashes)}. Use any of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
+
+    ext = os.path.splitext(source_image_path)[1].lower()
+    RAW_IMAGE_EXTENSIONS = {'.dd', '.raw', '.001', '.img'}
+    if target_format == 'e01' and ext not in RAW_IMAGE_EXTENSIONS:
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"raw -> E01 conversion requires a recognized raw image source ({', '.join(sorted(RAW_IMAGE_EXTENSIONS))})."}), 400
+    if target_format == 'raw' and ext != '.e01':
+        update_job(active=False)
+        return jsonify({"success": False, "error": "E01 -> raw conversion requires an .E01 source file."}), 400
+
+    # Hard-stop on any pre-existing collision rather than silently
+    # overwriting - real, live-caught bug: ewfexport always writes its raw
+    # output to exactly {base}.raw (regardless of -t's own basename intent),
+    # and if the E01 being converted sits right next to the very .raw file
+    # it was originally acquired FROM (the same base name, the single most
+    # likely real-world case for this feature), that original file would be
+    # silently clobbered before ever getting renamed to .dd. Checked for
+    # both directions' actual output path, not just the raw side, since
+    # ewfacquire's own overwrite behavior for a pre-existing .E01 was never
+    # independently verified either - refusing outright is the safe default
+    # regardless of what either tool would have done on its own.
+    source_base, _source_ext = os.path.splitext(source_image_path)
+    final_output_path = f"{source_base}.E01" if target_format == 'e01' else f"{source_base}.dd"
+    ewfexport_intermediate_path = f"{source_base}.raw"
+    collision_path = ewfexport_intermediate_path if (target_format == 'raw' and os.path.exists(ewfexport_intermediate_path)) \
+        else (final_output_path if os.path.exists(final_output_path) else None)
+    if collision_path:
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"A file already exists at {collision_path} - rename or remove it first rather than risk it being overwritten by the conversion."}), 409
+
+    base_name = os.path.splitext(os.path.basename(source_image_path))[0]
+    dest_dir = os.path.dirname(source_image_path)
+
+    report_data = {
+        "tool": "image_conversion",
+        "case_metadata": metadata,
+        "acquisition_parameters": {
+            "source_image_path": source_image_path,
+            "target_format": target_format,
+            "requested_hashes": hashes,
+            "case_number": metadata.get("case_number"),
+            "evidence_id": metadata.get("evidence_id"),
+            "examiner": metadata.get("examiner"),
+        },
+        "attachments": {
+            "files": [],
+            "reference_urls": []
+        },
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "computed_verification_hashes": {}
+    }
+
+    report_target = build_report_target(dest_dir, dest_dir, f"{base_name}_converted")
+    write_initial_report(report_target, report_data)
+
+    thread = threading.Thread(
+        target=execution_worker_image_conversion,
+        args=(source_image_path, target_format, hashes, report_target, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("image_conversion_started", {"source": source_image_path, "target_format": target_format})
+    return jsonify({"success": True})
 
 @acquisition_bp.route('/api/drives', methods=['GET'])
 @requires_auth
