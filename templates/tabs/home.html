@@ -118,50 +118,6 @@
                                         </div>
                                     </div>
                                 </div>
-
-                                <!-- Station-wide forensics stats - computed client-side from the
-                                     already-existing /api/cases/list and /api/coc/log responses
-                                     (both @requires_auth-only, no permission gating, so every
-                                     logged-in account can see these regardless of group). No new
-                                     backend route. See loadHomeStats() in main.js. "Today" is
-                                     defined relative to the newest log entry's own date, not the
-                                     browser's clock, so this can't disagree with itself if the
-                                     station and the viewing device are in different timezones. -->
-                                <hr class="border-secondary my-2">
-                                <div class="row g-3">
-                                    <div class="col-6 col-lg-3">
-                                        <div class="card h-100">
-                                            <div class="card-body">
-                                                <div class="telemetry-grid-label mb-1">Total Cases</div>
-                                                <div class="home-stat-value" id="homeStatCases">--</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="col-6 col-lg-3">
-                                        <div class="card h-100">
-                                            <div class="card-body">
-                                                <div class="telemetry-grid-label mb-1">Evidence Items Acquired</div>
-                                                <div class="home-stat-value" id="homeStatEvidenceItems">--</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="col-6 col-lg-3">
-                                        <div class="card h-100">
-                                            <div class="card-body">
-                                                <div class="telemetry-grid-label mb-1">Actions Today</div>
-                                                <div class="home-stat-value" id="homeStatActionsToday">--</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="col-6 col-lg-3">
-                                        <div class="card h-100">
-                                            <div class="card-body">
-                                                <div class="telemetry-grid-label mb-1">Latest Activity</div>
-                                                <div class="home-stat-value" id="homeStatLatestActivity" style="font-size: 1.15rem;">--</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     </div>
