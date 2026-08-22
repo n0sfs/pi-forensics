@@ -344,3 +344,25 @@
             </div>
         </div>
     </div>
+    <!-- Custom Case Field item picker - lets a field's value be set from one
+         of the case's own attached exhibits or tagged items instead of
+         always typed by hand (e.g. "Evidence Source" -> pick the actual
+         drive image). Sets plain text into the field, same as typing -
+         no schema change, just a convenience filler. -->
+    <div class="modal fade" id="customFieldItemPickerModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-link-45deg me-2"></i>Set "<span id="cfPickerFieldLabel"></span>" From a Case Item</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <input type="text" id="cfPickerSearch" class="form-control form-control-sm mb-2" placeholder="Filter..." oninput="renderCustomFieldItemPickerList()">
+                    <div id="cfPickerList" class="border border-secondary rounded" style="max-height: 340px; overflow-y: auto;"><span class="text-subtle small p-2 d-block">Loading...</span></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>

@@ -5381,14 +5381,105 @@ function renderCustomFieldsForCase(values) {
         const label = document.createElement('label');
         label.className = 'telemetry-grid-label d-block mb-1';
         label.textContent = def.label;
+        const group = document.createElement('div');
+        group.className = 'input-group input-group-sm';
         const input = document.createElement('input');
         input.type = 'text';
-        input.className = 'form-control form-control-sm custom-field-input';
+        input.className = 'form-control custom-field-input';
         input.dataset.fieldKey = def.key;
         input.value = values[def.key] || '';
+        // Optional convenience filler - set this field's value from one of
+        // the case's own attached exhibits or tagged items instead of
+        // always typing it by hand (e.g. "Evidence Source" -> pick the
+        // actual drive image already attached to the case).
+        const pickBtn = document.createElement('button');
+        pickBtn.type = 'button';
+        pickBtn.className = 'btn btn-outline-secondary';
+        pickBtn.title = 'Set from a case item (attached exhibit or tagged file)';
+        pickBtn.innerHTML = '<i class="bi bi-link-45deg"></i>';
+        pickBtn.onclick = () => openCustomFieldItemPicker(def.label, input);
+        group.appendChild(input);
+        group.appendChild(pickBtn);
         col.appendChild(label);
-        col.appendChild(input);
+        col.appendChild(group);
         container.appendChild(col);
+    });
+}
+
+// --- Custom Case Field item picker (set a field's value from an attached
+// exhibit or a tagged item, instead of typing it) ---
+let customFieldItemPickerModalInstance = null;
+let cfPickerItems = [];
+let cfPickerTargetInput = null;
+
+async function openCustomFieldItemPicker(fieldLabel, inputEl) {
+    cfPickerTargetInput = inputEl;
+    const labelEl = document.getElementById("cfPickerFieldLabel");
+    if (labelEl) labelEl.textContent = fieldLabel;
+    const searchEl = document.getElementById("cfPickerSearch");
+    if (searchEl) searchEl.value = '';
+    const listEl = document.getElementById("cfPickerList");
+    if (listEl) listEl.innerHTML = '<span class="text-subtle small p-2 d-block">Loading...</span>';
+
+    if (!customFieldItemPickerModalInstance) {
+        customFieldItemPickerModalInstance = new bootstrap.Modal(document.getElementById('customFieldItemPickerModal'));
+    }
+    customFieldItemPickerModalInstance.show();
+
+    // Attached exhibits - already loaded client-side (currentLoadedReportData),
+    // same 1-based exhibit numbering the Files/Exhibits gallery and report
+    // export both already use - no extra fetch needed for this half.
+    const exhibitFiles = currentLoadedReportData?.attachments?.files || [];
+    const items = exhibitFiles.map((path, idx) => {
+        const name = path.split('/').pop();
+        return { label: `Exhibit ${idx + 1}: ${name}`, value: `Exhibit ${idx + 1}: ${name}` };
+    });
+
+    // Tagged items - a real fetch, since these live in the case's own
+    // SQLite index, not anything already loaded on this page.
+    if (activeCase) {
+        try {
+            const res = await fetch('/api/case_index/all_tagged_items', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ case_folder: activeCase.case_folder })
+            });
+            const data = await res.json();
+            if (data.success) {
+                (data.rows || []).forEach(row => {
+                    items.push({ label: `[${row.tag_name}] ${row.name}`, value: `${row.name} (tagged: ${row.tag_name})` });
+                });
+            }
+        } catch (err) { /* non-fatal - exhibit list above still shows */ }
+    }
+
+    cfPickerItems = items;
+    renderCustomFieldItemPickerList();
+}
+
+function renderCustomFieldItemPickerList() {
+    const listEl = document.getElementById("cfPickerList");
+    if (!listEl) return;
+    const query = (document.getElementById("cfPickerSearch")?.value || '').toLowerCase();
+    const filtered = cfPickerItems.filter(item => item.label.toLowerCase().includes(query));
+    listEl.innerHTML = '';
+    if (filtered.length === 0) {
+        listEl.innerHTML = '<span class="text-subtle small p-2 d-block">No matching case items found - attach a file (Reporting > Files) or tag one (right-click in File Explorer) first.</span>';
+        return;
+    }
+    filtered.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'p-2 small';
+        row.style.cursor = 'pointer';
+        row.style.borderBottom = '1px solid rgba(255,255,255,0.08)';
+        row.onmouseenter = () => { row.style.backgroundColor = '#1e2638'; };
+        row.onmouseleave = () => { row.style.backgroundColor = ''; };
+        row.appendChild(document.createTextNode(item.label)); // untrusted evidence/tag/exhibit name, text-only
+        row.onclick = () => {
+            if (cfPickerTargetInput) cfPickerTargetInput.value = item.value;
+            customFieldItemPickerModalInstance?.hide();
+        };
+        listEl.appendChild(row);
     });
 }
 
@@ -5514,19 +5605,31 @@ function renderCustomFieldDefsEditor() {
         input.placeholder = 'Field label (e.g. Agency)';
         input.value = def.label || '';
         input.oninput = () => { caseReportingFieldsEditing[idx].label = input.value; };
+        // Free-text default, prefilled into this field's value on every
+        // NEW case going forward (create_case() in routes/case_management.py)
+        // - e.g. a station that's always the same agency can set that once
+        // here instead of retyping it per case. Never touches an existing
+        // case's already-saved value.
+        const defaultInput = document.createElement('input');
+        defaultInput.type = 'text';
+        defaultInput.className = 'form-control form-control-sm';
+        defaultInput.placeholder = 'Default value for new cases (optional)';
+        defaultInput.value = def.default_value || '';
+        defaultInput.oninput = () => { caseReportingFieldsEditing[idx].default_value = defaultInput.value; };
         const delBtn = document.createElement('button');
         delBtn.className = 'btn btn-sm btn-outline-danger';
         delBtn.type = 'button';
         delBtn.innerHTML = '<i class="bi bi-trash3"></i>';
         delBtn.onclick = () => { caseReportingFieldsEditing.splice(idx, 1); renderCustomFieldDefsEditor(); };
         row.appendChild(input);
+        row.appendChild(defaultInput);
         row.appendChild(delBtn);
         container.appendChild(row);
     });
 }
 
 function addCustomFieldDefRow() {
-    caseReportingFieldsEditing.push({ key: '', label: '' });
+    caseReportingFieldsEditing.push({ key: '', label: '', default_value: '' });
     renderCustomFieldDefsEditor();
 }
 
@@ -5552,7 +5655,9 @@ async function saveCaseReportingSettings() {
         hashes: document.getElementById("defFieldHashes")?.checked ?? true,
     };
     const headerText = document.getElementById("reportBrandingText")?.value || '';
-    const labels = caseReportingFieldsEditing.map(f => (f.label || '').trim()).filter(v => v.length > 0);
+    const customFields = caseReportingFieldsEditing
+        .map(f => ({ label: (f.label || '').trim(), default_value: (f.default_value || '').trim() }))
+        .filter(f => f.label.length > 0);
 
     try {
         const res = await fetch('/api/settings/case_reporting', {
@@ -5560,7 +5665,7 @@ async function saveCaseReportingSettings() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 report_defaults: { template, sections, job_fields: jobFields, branding: { header_text: headerText } },
-                custom_case_fields: labels.map(label => ({ label }))
+                custom_case_fields: customFields
             })
         });
         const data = await res.json();

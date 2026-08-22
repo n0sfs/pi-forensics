@@ -129,7 +129,13 @@ def settings_case_reporting():
                 key = f"{base_key}_{n}"
                 n += 1
             seen_keys.add(key)
-            fields.append({"key": key, "label": label})
+            # Optional per-field default - seeded into every NEW case's own
+            # custom_fields value at creation time (see create_case() in
+            # routes/case_management.py), never retroactively applied to an
+            # existing case's already-saved (possibly deliberately blank)
+            # value.
+            default_value = (f.get('default_value') or '').strip()[:200]
+            fields.append({"key": key, "label": label, "default_value": default_value})
         cfg['custom_case_fields'] = fields
 
     save_runtime_config(cfg)

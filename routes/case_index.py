@@ -424,6 +424,32 @@ def case_index_tagged_files():
             conn.close()
     return jsonify({"success": True, "rows": rows})
 
+@case_index_bp.route('/api/case_index/all_tagged_items', methods=['POST'])
+@requires_auth
+@requires_permission('reporting')
+def case_index_all_tagged_items():
+    """Every tagged item across every tag, in one call - unlike
+    case_index_tagged_files() above (one tag at a time, for File Views'
+    per-tag browsing), this feeds the Custom Case Field item-picker
+    (Reporting > Report Narrative > Case Details), which needs a single
+    flat, searchable list of "everything tagged in this case" rather than
+    one request per tag."""
+    req = request.get_json() or {}
+    conn = _case_index_open_readonly(req.get('case_folder'))
+    rows = []
+    if conn:
+        try:
+            cur = conn.execute(
+                "SELECT ti.path, ti.name, ti.source_type, t.name, t.color "
+                "FROM tagged_items ti JOIN tags t ON ti.tag_id = t.id "
+                "ORDER BY ti.tagged_at DESC LIMIT 500")
+            for path, name, source_type, tag_name, tag_color in cur:
+                rows.append({"path": path, "name": name, "source_type": source_type,
+                             "tag_name": tag_name, "tag_color": tag_color})
+        finally:
+            conn.close()
+    return jsonify({"success": True, "rows": rows})
+
 # --- Tag management: create/rename/recolor/delete tags themselves (distinct
 # from tag_item/untag_item above, which apply/remove a tag on one specific
 # file). Reached from Settings > Case & Reporting > Manage Tags, scoped to
