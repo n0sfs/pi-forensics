@@ -45,7 +45,7 @@ from flask import Blueprint, jsonify, request, g, send_file, Response
 from core.auth import requires_auth, requires_permission, get_current_user_permissions
 from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path,
-    classify_extension, sanitize_case_slug,
+    classify_extension, classify_case_role, sanitize_case_slug,
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, ALLOWED_HASH_ALGOS,
@@ -758,7 +758,12 @@ def _discover_case_files(case_folder):
     own report artifacts, raw acquisition images (too large, already
     represented via the Jobs section), and recovery tools' bulk carved-file
     output directories (could be thousands of tiny files, impractical to
-    list individually). Returns (files, truncated)."""
+    list individually). Each result also carries category (classify_extension()
+    - images/videos/audio/archives/documents/executables/other) and case_role
+    (classify_case_role() - report/analysis_log/geolocation/backup, or None
+    for real evidence) so a caller can group results the same way File
+    Explorer's own folder tree already does, rather than everything landing
+    in one undifferentiated list. Returns (files, truncated)."""
     slug = os.path.basename(case_folder.rstrip(os.sep))
     own_artifact_names = {f"{slug}_case.json", f"{slug}_case.pdf", f"{slug}_case.html", "case_info.json"}
 
@@ -779,7 +784,12 @@ def _discover_case_files(case_folder):
             except OSError:
                 continue
             kind = 'image' if ext in ATTACHMENT_IMAGE_EXT else ('text' if ext in ATTACHMENT_TEXT_EXT else 'other')
-            results.append({"path": fpath, "name": fname, "size_bytes": size, "kind": kind})
+            category, _ext = classify_extension(fname)
+            case_role = classify_case_role(fname)
+            results.append({
+                "path": fpath, "name": fname, "size_bytes": size, "kind": kind,
+                "category": category, "case_role": case_role,
+            })
             if len(results) >= ATTACHMENT_DISCOVERY_MAX_FILES:
                 return results, True
     return results, truncated
