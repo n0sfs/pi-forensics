@@ -132,15 +132,16 @@ _CASE_ROLE_REPORT_SUFFIXES = (
     '_case.json.sha256', '_case.pdf.sha256', '_case.html.sha256',
     '_report.json',  # legacy per-job report (pre-consolidated-schema cases)
 )
-_CASE_ROLE_ANALYSIS_LOG_RE = re.compile(r'(_hash_manifest_\w+\.txt|_triage_scan_report\.txt)$')
+_CASE_ROLE_ANALYSIS_LOG_RE = re.compile(r'(_hash_manifest_\w+\.txt|_triage_scan_report\.txt|_vol3_\w+\.json)$')
 
 def classify_case_role(name):
     """Best-effort classification of a filename as one of this app's own
     generated case-artifact kinds - 'report' (the case JSON/PDF/HTML export
     and their .sha256 sidecars, the per-case SQLite index, a legacy per-job
-    report), 'analysis_log' (a hash-manifest or triage-scan text report),
-    'geolocation' (a .kml), 'backup' (a pre-consolidation/pre-restore
-    snapshot), or None for anything that isn't a recognized artifact kind
+    report), 'analysis_log' (a hash-manifest report, a triage-scan report,
+    or a Volatility3 memory-forensics plugin result), 'geolocation' (a
+    .kml), 'backup' (a pre-consolidation/pre-restore snapshot), or None for
+    anything that isn't a recognized artifact kind
     (real evidence, an examiner-added note, etc.). Deliberately narrow and
     pattern-matched against this app's own actual naming conventions, not a
     general file-type classifier - see classify_extension() above for that.

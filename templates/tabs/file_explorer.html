@@ -119,6 +119,7 @@
                             <button id="btnParseBrowserArtifacts" class="dropdown-item" onclick="runSelectedBrowserArtifactsParse()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Recursively finds and parses Chrome/Chromium-family and Firefox browser profile files (History, Downloads, Bookmarks, Cookies / places.sqlite, cookies.sqlite) anywhere under this folder - browsing history, download records, bookmarks, and cookies (Chrome's cookie values are encrypted by the browser itself and shown as [encrypted]; Firefox stores cookies unencrypted, so real values are shown). Safari uses a different format and isn't covered."><i class="bi bi-globe2 me-2"></i>Parse Browser Artifacts (Chrome/Firefox)</button>
                             <button id="btnRunMvtIos" class="dropdown-item" onclick="runSelectedMvtScan('ios')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Checks an iOS backup folder (from Mobile Forensics) against known spyware indicators, using Amnesty International's Mobile Verification Toolkit."><i class="bi bi-phone me-2"></i>MVT Scan (iOS Backup)</button>
                             <button id="btnRunMvtAndroid" class="dropdown-item" onclick="runSelectedMvtScan('android')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Best-effort spyware/IOC scan of an Android backup folder using MVT. Only matches a decrypted adb-backup-format directory, not adb pull/bugreport output - errors clearly if the format doesn't match."><i class="bi bi-phone me-2"></i>MVT Scan (Android Backup)</button>
+                            <button id="btnMemoryForensics" class="dropdown-item" onclick="openMemoryForensicsModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Analyzes an already-captured Windows RAM image (.raw/.mem/.vmem/.dmp/.lime) with Volatility3 - process list, network connections, command lines, and more. Windows only; needs internet the first time each Windows build is analyzed, to fetch its matching symbol table."><i class="bi bi-memory me-2"></i>Memory Forensics...</button>
                             </div>
                             <button type="button" class="ctx-menu-section-toggle" data-ctx-section="ctxSecFileOps" onclick="toggleCtxMenuSection('ctxSecFileOps')"><span>File Operations</span><i class="bi bi-chevron-down"></i></button>
                             <div id="ctxSecFileOps" class="ctx-menu-section" style="display:none;">
@@ -273,6 +274,38 @@
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-sm btn-info text-dark fw-bold" onclick="unlockLuksImageAndBrowse()"><i class="bi bi-unlock-fill me-1"></i>Unlock &amp; Browse</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="memoryForensicsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-memory me-2"></i>Memory Forensics: <span id="memForensicsFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-3">Analyzes this Windows RAM image with Volatility3. Runs as a background job (see the progress bar below the toolbar) - large images or plugins like Handles/FileScan can take a while. Needs internet access the first time each Windows build is analyzed, to fetch its matching symbol table (cached afterward). Results are saved as real files (<span class="font-monospace">_vol3_&lt;plugin&gt;.json</span>) next to the image, viewable by clicking them in File Explorer.</div>
+                    <label class="telemetry-grid-label d-block mb-1">Plugins to Run:</label>
+                    <div class="mb-3" id="memForensicsPluginList">
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="info" id="memPluginInfo" checked><label class="form-check-label small" for="memPluginInfo">OS &amp; Kernel Info</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="pslist" id="memPluginPslist" checked><label class="form-check-label small" for="memPluginPslist">Process List</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="pstree" id="memPluginPstree"><label class="form-check-label small" for="memPluginPstree">Process Tree</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="cmdline" id="memPluginCmdline"><label class="form-check-label small" for="memPluginCmdline">Process Command Lines</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="netscan" id="memPluginNetscan"><label class="form-check-label small" for="memPluginNetscan">Network Connections (netscan)</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="netstat" id="memPluginNetstat"><label class="form-check-label small" for="memPluginNetstat">Network Connections (netstat)</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="dlllist" id="memPluginDlllist"><label class="form-check-label small" for="memPluginDlllist">Loaded DLLs</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="filescan" id="memPluginFilescan"><label class="form-check-label small" for="memPluginFilescan">Open File Handles (filescan)</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="malfind" id="memPluginMalfind"><label class="form-check-label small" for="memPluginMalfind">Injected Code Detection (malfind)</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="svcscan" id="memPluginSvcscan"><label class="form-check-label small" for="memPluginSvcscan">Windows Services</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="handles" id="memPluginHandles"><label class="form-check-label small" for="memPluginHandles">Process Handles</label></div>
+                    </div>
+                    <div id="memForensicsStatus" class="small text-subtle">Select the plugins to run, then click Start Scan.</div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-info text-dark fw-bold" onclick="startMemoryForensicsScan()"><i class="bi bi-play-fill me-1"></i>Start Scan</button>
                 </div>
             </div>
         </div>

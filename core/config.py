@@ -42,6 +42,11 @@ MVT_BIN_DIR = os.path.dirname(sys.executable)
 MVT_IOS_BIN = os.path.join(MVT_BIN_DIR, "mvt-ios")
 MVT_ANDROID_BIN = os.path.join(MVT_BIN_DIR, "mvt-android")
 
+# volatility3 ("vol") is the same kind of pip console-script as mvt-ios/
+# mvt-android above - same MVT_BIN_DIR, same reasoning.
+VOL3_BIN = os.path.join(MVT_BIN_DIR, "vol")
+VOL3_PIP_BIN = os.path.join(MVT_BIN_DIR, "pip")
+
 # Written by install.py's optional TLS setup (self-signed, via openssl) at
 # a fixed path also hardcoded in nginx/pi-forensics.conf's ssl_certificate/
 # ssl_certificate_key directives - keep all three in sync if this ever
