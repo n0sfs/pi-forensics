@@ -40,7 +40,9 @@ from core.jobs import (
     get_active_proc, clear_active_proc,
     _stream_subprocess, reclaim_ownership,
     build_report_target, write_initial_report, _write_report,
+    _SERVICE_ACCOUNT_NAME,
 )
+from core.decrypted_sources import register_decrypted_source, unregister_decrypted_source
 
 acquisition_bp = Blueprint('acquisition', __name__)
 
@@ -184,7 +186,20 @@ def _dislocker_unlock(source_path, recovery_key, offset=None):
     cmd = ["sudo", "/usr/bin/dislocker", "-V", original_source]
     if offset:
         cmd += ["-O", str(offset)]
-    cmd += [f"-p{recovery_key}", "--", mount_dir]
+    # -o allow_other (passed after -- as a FUSE-native option, per
+    # dislocker's own --help: "-- end of program options, beginning of
+    # FUSE's ones") is required so the resulting decrypted-file mount is
+    # readable by this app's own unprivileged worker process, not just by
+    # root (the mounting UID via sudo) - FUSE restricts a mount to the
+    # mounting UID by default. This mirrors the exact same requirement and
+    # fix already applied to this app's own sshfs network-mount feature
+    # (routes/settings.py's SFTP mount, which passes allow_other with an
+    # identical rationale comment) - user_allow_other is already enabled
+    # system-wide in /etc/fuse.conf by install.py's SFTP-mounting setup, so
+    # dislocker only needed this one flag added to actually benefit from it.
+    # Without this, a successfully-unlocked volume would still fail the
+    # moment anything tried to open() the decrypted file to browse it.
+    cmd += [f"-p{recovery_key}", "--", "-o", "allow_other", mount_dir]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
@@ -228,6 +243,7 @@ def _dislocker_unlock(source_path, recovery_key, offset=None):
             "source_path": decrypted_path,
             "unlocked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+    register_decrypted_source(decrypted_path, "bitlocker")
     return True, mount_id, decrypted_path, None
 
 def _dislocker_lock(mount_id):
@@ -239,6 +255,7 @@ def _dislocker_lock(mount_id):
         info = active_bitlocker_mounts.pop(mount_id, None)
     if not info:
         return True, None
+    unregister_decrypted_source(info["source_path"])
     mount_dir = info["mount_dir"]
     try:
         # See the matching comment in _dislocker_unlock() above - plain
@@ -254,17 +271,265 @@ def _dislocker_lock(mount_id):
     return True, None
 
 def _resolve_acquisition_source(source):
-    """Returns (actual_source_path, is_real_block_device, bitlocker_mount_id).
+    """Returns (actual_source_path, source_kind, mount_meta).
+
+    source_kind is one of 'real_device' (an actual whitelisted /dev/sdX-
+    style device), 'decrypted_file' (a BitLocker dislocker-file - a regular
+    file, needs os.path.getsize() not blockdev), or 'decrypted_block_device'
+    (a LUKS dm-mapper device - block-device-shaped, needs blockdev like a
+    real device, but not SMART-queryable since it's virtual). mount_meta is
+    None for 'real_device', else {"kind": "bitlocker"|"luks", "mount_id":
+    ..., "device": <original encrypted source>}.
+
     If `source` exactly matches a currently-registered dislocker mount's own
-    decrypted virtual file path, it's trusted as a valid acquisition source
-    without needing to pass is_valid_block_device() - only a path this app's
-    own _dislocker_unlock() just created can ever match, since mountpoints
-    live under DISLOCKER_MOUNT_ROOT and are never client-supplied."""
+    decrypted virtual file path, or a currently-registered LUKS mapper
+    device's own path, it's trusted as a valid acquisition source without
+    needing to pass is_valid_block_device() - only a path this app's own
+    _dislocker_unlock()/_luks_unlock() just created can ever match, since
+    mountpoints/mapper names live under server-controlled roots and are
+    never client-supplied.
+
+    Deliberately reads active_bitlocker_mounts/active_luks_mounts directly
+    (not the shared core/decrypted_sources.py registry, which exists only
+    for routes/image_browser.py's simpler yes/no browsability check) - this
+    function needs the richer per-mount metadata (device, mount_id) those
+    two dicts already hold, and routing through the shared registry would
+    just mean a second lookup for no benefit."""
     with bitlocker_lock:
         for mount_id, info in active_bitlocker_mounts.items():
             if info["source_path"] == source:
-                return source, False, mount_id
-    return source, True, None
+                return source, "decrypted_file", {"kind": "bitlocker", "mount_id": mount_id, "device": info["device"]}
+    with luks_lock:
+        for mapper_name, info in active_luks_mounts.items():
+            if info["mapper_path"] == source:
+                return source, "decrypted_block_device", {"kind": "luks", "mount_id": mapper_name, "device": info["device"]}
+    return source, "real_device", None
+
+# --- LUKS: unlock an encrypted source via cryptsetup, so it can be imaged/
+# browsed decrypted instead of as raw encrypted bytes. Mirrors the BitLocker
+# dislocker machinery above structurally, but the actual mechanism differs
+# in two real ways confirmed by live testing against the real installed
+# cryptsetup on the deployed station (not assumed from documentation):
+#   - The decrypted volume is exposed as a real device-mapper block device
+#     (/dev/mapper/<name>), not a FUSE-mounted regular file - so it needs a
+#     defensive ACL grant (like Live Device Preview's own mechanism) rather
+#     than a FUSE allow_other flag, and it's block-device-shaped for
+#     total_bytes/iflag=direct purposes even though it's not itself a
+#     whitelisted /dev/sdX path.
+#   - cryptsetup has NO equivalent of dislocker's -O/--offset flag for LUKS
+#     (confirmed live: "Option --offset with open action is only supported
+#     for plain and loopaes devices") - unlocking a LUKS volume embedded at
+#     a nonzero byte offset within a larger already-acquired image requires
+#     first creating a loop device at that offset (losetup -o <offset>
+#     --show -f <file>) and opening THAT, tracked here so lock-time cleanup
+#     knows to losetup -d it after luksClose.
+LUKS_MAPPER_PREFIX = "pif_luks_"
+luks_lock = threading.Lock()
+active_luks_mounts = {}  # mapper_name -> {mapper_path, device, loop_device (None if no offset), unlocked_at}
+
+def _detect_luks(partition):
+    """Best-effort LUKS signature check via blkid - mirrors _detect_bitlocker
+    exactly, not authoritative (a wrong/no answer here doesn't block trying
+    to unlock anyway)."""
+    if not is_valid_bitlocker_source(partition):
+        return None
+    try:
+        res = subprocess.run(
+            ['sudo', '/sbin/blkid', '-o', 'value', '-s', 'TYPE', partition],
+            capture_output=True, text=True, timeout=10
+        )
+        fstype = res.stdout.strip()
+        return {"fstype": fstype, "is_luks": fstype.lower() == 'crypto_luks'}
+    except Exception:
+        return {"fstype": None, "is_luks": False}
+
+def _detect_luks_image(image_path, offset=0):
+    """Best-effort LUKS signature check for an already-acquired evidence
+    image (or a specific partition's byte offset within it) - a direct read
+    of the 6-byte LUKS magic ("LUKS\\xba\\xbe", identical for LUKS1 and
+    LUKS2 - confirmed live against a real luksFormat'd volume via `od`) at
+    the given offset. No sudo needed, mirrors _detect_bitlocker_image
+    exactly: an evidence image file is already owned by this app's own
+    unprivileged service account, so a plain read is enough."""
+    validated = safe_path(image_path)
+    if not validated or not os.path.isfile(validated):
+        return None
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        return None
+    try:
+        with open(validated, 'rb') as f:
+            f.seek(offset)
+            sig = f.read(6)
+        return {"is_luks": sig == b'LUKS\xba\xbe'}
+    except OSError:
+        return {"is_luks": False}
+
+def _luks_unlock(source_path, passphrase, offset=None):
+    """Mounts a LUKS-encrypted volume via cryptsetup. Two modes, selected by
+    whether `offset` is given - mirrors _dislocker_unlock's own two modes:
+      - offset=None: `source_path` is a live device/partition path -
+        validated via is_valid_bitlocker_source() (whole disk or partition).
+        luksOpen runs directly against it, no loop device.
+      - offset=<int>: `source_path` is an already-acquired evidence image
+        file - validated via safe_path() like every other image-accepting
+        route. If offset == 0, luksOpen runs directly against the file
+        (cryptsetup can open a LUKS container living at the start of a
+        regular file with no loop device, confirmed live). If offset > 0, a
+        loop device is created first (losetup -o <offset> --show -f) and
+        luksOpen runs against that instead (offset 0 relative to the loop
+        device) - confirmed live end-to-end, since cryptsetup itself cannot
+        open a LUKS container embedded partway through a larger file/device.
+
+    Returns (success, mapper_name_or_None, mapper_path_or_None,
+    error_or_None) - same shape as _dislocker_unlock. The mapper name is
+    entirely server-controlled (LUKS_MAPPER_PREFIX + a fresh uuid4, never
+    client-supplied) - this is what lets _resolve_acquisition_source() and
+    the shared decrypted-sources registry safely trust a path later."""
+    loop_device = None
+    if offset is None:
+        if not is_valid_bitlocker_source(source_path):
+            return False, None, None, "Invalid or unrecognized device/partition path."
+        target = source_path
+        original_source = source_path
+    else:
+        validated = safe_path(source_path)
+        if not validated or not os.path.isfile(validated):
+            return False, None, None, "Image file not found or outside the permitted evidence directory."
+        original_source = validated
+        try:
+            offset = int(offset)
+        except (TypeError, ValueError):
+            return False, None, None, "Invalid partition offset."
+        if offset > 0:
+            try:
+                res = subprocess.run(
+                    ["sudo", "/sbin/losetup", "-o", str(offset), "--show", "-f", validated],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                return False, None, None, "losetup timed out."
+            except FileNotFoundError:
+                return False, None, None, "losetup is not available on this station."
+            if res.returncode != 0 or not res.stdout.strip():
+                err = (res.stderr or res.stdout or "Unknown losetup error.").strip()
+                return False, None, None, f"Could not create a loop device at this offset: {err[:300]}"
+            loop_device = res.stdout.strip()
+            target = loop_device
+        else:
+            target = validated
+
+    passphrase = (passphrase or '').strip()
+    if not passphrase:
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        return False, None, None, "Passphrase is required."
+
+    mapper_name = f"{LUKS_MAPPER_PREFIX}{uuid.uuid4().hex}"
+    cmd = ["sudo", "/usr/sbin/cryptsetup", "luksOpen", target, mapper_name, "-d", "-"]
+    try:
+        res = subprocess.run(cmd, input=passphrase, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        return False, None, None, "cryptsetup timed out - the device may be unresponsive."
+    except FileNotFoundError:
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        return False, None, None, "cryptsetup is not installed on this station. Run 'sudo apt-get install cryptsetup-bin' first."
+
+    mapper_path = f"/dev/mapper/{mapper_name}"
+    if res.returncode != 0 or not os.path.exists(mapper_path):
+        # Confirmed live: a failed luksOpen leaves no dangling /dev/mapper/*
+        # entry to clean up (unlike a failed dislocker FUSE mount) - but a
+        # loop device that WAS already created is a separate resource with
+        # its own lifecycle and must still be explicitly detached here.
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        err = (res.stderr or res.stdout or "Unknown cryptsetup error.").strip()
+        return False, None, None, f"Unlock failed - check the passphrase: {err[:300]}"
+
+    # Defensive ACL grant so the unprivileged worker process can read the
+    # decrypted mapper device - real, portable defense-in-depth even though
+    # this station's own service account already has read access to any
+    # /dev/mapper/* device via its (pre-existing, disclosed) disk-group
+    # membership; a different install won't have that redundancy. Mirrors
+    # Live Device Preview's own _grant_device_preview_acl() exactly.
+    subprocess.run(
+        ["sudo", "/usr/bin/setfacl", "-m", f"u:{_SERVICE_ACCOUNT_NAME}:r", mapper_path],
+        capture_output=True, timeout=15,
+    )
+
+    with luks_lock:
+        active_luks_mounts[mapper_name] = {
+            "mapper_path": mapper_path,
+            "device": original_source,
+            "loop_device": loop_device,
+            "unlocked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    register_decrypted_source(mapper_path, "luks")
+    return True, mapper_name, mapper_path, None
+
+def _luks_lock(mapper_name):
+    """Unmounts and cleans up a LUKS mapping. Safe to call more than once
+    for the same id - a second call just finds nothing left to do. Order
+    matters: revoke the ACL, luksClose (must happen while the loop device,
+    if any, is still attached), THEN losetup -d the loop device."""
+    if not mapper_name:
+        return True, None
+    with luks_lock:
+        info = active_luks_mounts.pop(mapper_name, None)
+    if not info:
+        return True, None
+    unregister_decrypted_source(info["mapper_path"])
+    subprocess.run(
+        ["sudo", "/usr/bin/setfacl", "-x", f"u:{_SERVICE_ACCOUNT_NAME}", info["mapper_path"]],
+        capture_output=True, timeout=15,
+    )
+    try:
+        subprocess.run(["sudo", "/usr/sbin/cryptsetup", "luksClose", mapper_name], capture_output=True, timeout=15)
+    except Exception as e:
+        return False, f"Failed to close LUKS mapping: {e}"
+    if info.get("loop_device"):
+        try:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", info["loop_device"]], capture_output=True, timeout=10)
+        except Exception:
+            pass  # best-effort, matching _dislocker_lock's own best-effort cleanup pattern
+    return True, None
+
+def _luks_startup_loop_device_reconciliation():
+    """One-shot check at process start (not a recurring sweep - unlike Live
+    Device Preview's idle-timeout problem, a leaked loop device only ever
+    happens via a process crash/restart, which this only needs to check for
+    once per process lifetime). active_luks_mounts is always empty at a
+    fresh start, so any loop device already backed by a file under
+    EVIDENCE_ROOT at this point cannot be explained by this process's own
+    state - logs a disclosure, never auto-detaches (a legitimate unrelated
+    loop mount could theoretically exist), matching this project's own
+    "disclose, don't silently act" posture used elsewhere for similar
+    ambiguous-ownership findings."""
+    try:
+        res = subprocess.run(["sudo", "/sbin/losetup", "-a"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return
+    if res.returncode != 0:
+        return
+    for line in res.stdout.splitlines():
+        # Format: "/dev/loop1: [0031]:1970616 (/path/to/backing/file)[, offset ...]"
+        m = re.match(r'^(/dev/loop\d+):.*\(([^)]+)\)', line.strip())
+        if not m:
+            continue
+        loop_dev, backing_file = m.group(1), m.group(2)
+        if backing_file.startswith(EVIDENCE_ROOT + os.sep) or backing_file == EVIDENCE_ROOT:
+            log_chain_of_custody(
+                "luks_loop_device_orphan_detected",
+                {"loop_device": loop_dev, "backing_file": backing_file,
+                 "note": "Found attached at process startup, not explained by this process's own state - likely leaked by a prior crash/restart. Not auto-detached."},
+                source_ip=None, user="system-startup",
+            )
+
+threading.Thread(target=_luks_startup_loop_device_reconciliation, daemon=True).start()
 
 # --- Hash & Recovery Output Parsers ---
 def parse_dc3dd_hashes(log_path):
@@ -1474,6 +1739,86 @@ def bitlocker_status():
                   for mid, info in active_bitlocker_mounts.items()]
     return jsonify({"success": True, "mounts": mounts})
 
+@acquisition_bp.route('/api/luks/partitions', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def luks_partitions():
+    req = request.get_json() or {}
+    device = req.get('device', '')
+    if not is_valid_block_device(device):
+        return jsonify({"success": False, "error": "Not a recognized whole-disk device."}), 400
+    return jsonify({"success": True, "partitions": _list_device_partitions(device)})
+
+@acquisition_bp.route('/api/luks/detect', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def luks_detect():
+    req = request.get_json() or {}
+    partition = req.get('partition', '')
+    result = _detect_luks(partition)
+    if result is None:
+        return jsonify({"success": False, "error": "Invalid or unrecognized device/partition path."}), 400
+    return jsonify({"success": True, **result})
+
+@acquisition_bp.route('/api/luks/unlock', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def luks_unlock():
+    req = request.get_json() or {}
+    partition = req.get('partition', '')
+    passphrase = req.get('passphrase', '')
+    success, mapper_name, source_path, error = _luks_unlock(partition, passphrase)
+    if not success:
+        return jsonify({"success": False, "error": error}), 400
+    log_chain_of_custody("luks_unlock", {"device": partition, "mount_id": mapper_name})
+    return jsonify({"success": True, "mount_id": mapper_name, "source_path": source_path})
+
+@acquisition_bp.route('/api/luks/detect_image', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def luks_detect_image():
+    req = request.get_json() or {}
+    image_path = req.get('image_path', '')
+    offset = req.get('offset', 0)
+    result = _detect_luks_image(image_path, offset)
+    if result is None:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    return jsonify({"success": True, **result})
+
+@acquisition_bp.route('/api/luks/unlock_image', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def luks_unlock_image():
+    req = request.get_json() or {}
+    image_path = req.get('image_path', '')
+    offset = req.get('offset', 0)
+    passphrase = req.get('passphrase', '')
+    success, mapper_name, source_path, error = _luks_unlock(image_path, passphrase, offset=offset)
+    if not success:
+        return jsonify({"success": False, "error": error}), 400
+    log_chain_of_custody("luks_unlock_image", {"image_path": image_path, "offset": offset, "mount_id": mapper_name})
+    return jsonify({"success": True, "mount_id": mapper_name, "source_path": source_path})
+
+@acquisition_bp.route('/api/luks/lock', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition', 'file_explorer')
+def luks_lock_route():
+    req = request.get_json() or {}
+    mount_id = req.get('mount_id', '')
+    success, error = _luks_lock(mount_id)
+    if not success:
+        return jsonify({"success": False, "error": error}), 500
+    log_chain_of_custody("luks_lock", {"mount_id": mount_id})
+    return jsonify({"success": True})
+
+@acquisition_bp.route('/api/luks/status', methods=['GET'])
+@requires_auth
+@requires_permission('acquisition')
+def luks_status():
+    with luks_lock:
+        mounts = [{"mount_id": mid, **info} for mid, info in active_luks_mounts.items()]
+    return jsonify({"success": True, "mounts": mounts})
+
 @acquisition_bp.route('/api/start_imaging', methods=['POST'])
 @requires_auth
 @requires_permission('acquisition')
@@ -1501,7 +1846,10 @@ def start_imaging():
     # decrypt the image later, so encrypting it with a station-local key
     # would make it useless the moment the report leaves this station.
     bitlocker_key = (req.get('bitlocker_key') or '').strip()
-    
+    # Same rationale/plaintext-at-rest tradeoff as bitlocker_key above -
+    # documentation only, never used to decrypt anything.
+    luks_passphrase_doc = (req.get('luks_passphrase') or '').strip()
+
     compression = req.get('compression', 'fast')
     split_size = req.get('split_size', '2000M')
 
@@ -1511,18 +1859,20 @@ def start_imaging():
         return jsonify({"error": f"Unrecognized format '{fmt}'. Use one of {sorted(VALID_FORMATS)}."}), 400
 
     # A `source` matching a currently-registered dislocker mount (see
-    # /api/bitlocker/unlock) is a decrypted virtual file, not a real block
-    # device - trusted because only this app's own _dislocker_unlock() can
-    # ever create a path that matches (mountpoints live under the
-    # server-controlled DISLOCKER_MOUNT_ROOT, never client-supplied).
-    source, source_is_real_device, bitlocker_mount_id = _resolve_acquisition_source(source)
-    if source_is_real_device:
+    # /api/bitlocker/unlock) or LUKS mapper (see /api/luks/unlock) is a
+    # decrypted virtual source, not a real block device - trusted because
+    # only this app's own _dislocker_unlock()/_luks_unlock() can ever create
+    # a path that matches (mountpoints/mapper names live under
+    # server-controlled roots, never client-supplied).
+    source, source_kind, mount_meta = _resolve_acquisition_source(source)
+    if source_kind == 'real_device':
         if not is_valid_block_device(source) or not os.path.exists(source):
             update_job(active=False)
             return jsonify({"error": f"Source device {source} not found or not a recognized whole-disk device."}), 400
     elif not os.path.exists(source):
         update_job(active=False)
-        return jsonify({"error": "The unlocked BitLocker volume is no longer available - it may have been locked/unmounted."}), 400
+        kind_label = "BitLocker" if mount_meta["kind"] == "bitlocker" else "LUKS"
+        return jsonify({"error": f"The unlocked {kind_label} volume is no longer available - it may have been locked/unmounted."}), 400
 
     invalid_hashes = set(hashes) - ALLOWED_HASH_ALGOS
     if invalid_hashes:
@@ -1541,7 +1891,9 @@ def start_imaging():
             return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
 
     total_bytes = 0
-    if source_is_real_device:
+    if source_kind in ('real_device', 'decrypted_block_device'):
+        # A LUKS mapper device is block-device-shaped (dm-crypt), so
+        # blockdev works on it exactly like a real device - confirmed live.
         try:
             res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
             if res.returncode == 0:
@@ -1563,12 +1915,13 @@ def start_imaging():
         update_job(active=False)
         return jsonify({"error": f"Pre-flight storage check failed: Destination has only {free_gb} GB free, but source requires {required_gb} GB."}), 400
 
-    # SMART telemetry only exists for a real physical device - a decrypted
-    # dislocker-file has none of its own (it's a virtual file backed by the
-    # already-encrypted partition), so this is skipped entirely rather than
-    # querying smartctl against a path it was never meant to see.
+    # SMART telemetry only exists for a real physical device - neither a
+    # decrypted dislocker-file nor a LUKS mapper device has any of its own
+    # (both are virtual, backed by the already-encrypted source), so this is
+    # skipped entirely rather than querying smartctl against a path it was
+    # never meant to see.
     smart_data = {}
-    if source_is_real_device:
+    if source_kind == 'real_device':
         try:
             res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True)
             if res_smart.stdout:
@@ -1579,8 +1932,9 @@ def start_imaging():
     model = smart_data.get('model_name') or smart_data.get('device', {}).get('name') or "Generic Storage Media"
     family = smart_data.get('model_family') or smart_data.get('family_name')
     vendor_model = f"{family} ({model})" if (family and family.lower() not in model.lower()) else model
-    if not source_is_real_device:
-        vendor_model = "BitLocker-Decrypted Volume (via dislocker)"
+    if mount_meta:
+        vendor_model = ("LUKS-Decrypted Volume (via cryptsetup)" if mount_meta["kind"] == "luks"
+                         else "BitLocker-Decrypted Volume (via dislocker)")
 
     serial = smart_data.get('serial_number', 'N/A')
     healthy = smart_data.get('smart_status', {}).get('passed', True)
@@ -1598,10 +1952,10 @@ def start_imaging():
 
     drive_telemetry = {
         # Displays the real encrypted device/partition path for a BitLocker
-        # acquisition, not the internal dislocker mountpoint - the mountpoint
-        # is implementation detail, the original device is what belongs in
-        # the case record.
-        "device_path": active_bitlocker_mounts.get(bitlocker_mount_id, {}).get("device", source) if bitlocker_mount_id else source,
+        # or LUKS acquisition, not the internal dislocker mountpoint/LUKS
+        # mapper name - that's implementation detail, the original device is
+        # what belongs in the case record.
+        "device_path": mount_meta["device"] if mount_meta else source,
         "vendor_model": vendor_model,
         "serial_number": serial,
         "capacity_bytes": total_bytes,
@@ -1670,9 +2024,10 @@ def start_imaging():
         # iflag=direct bypasses the page cache on the read side - meaningful
         # for a real physical device, but O_DIRECT is frequently unsupported
         # (or outright rejected) by FUSE-backed regular files, which a
-        # dislocker-unlocked BitLocker source is. Only add it for a real
-        # block device.
-        if source_is_real_device:
+        # dislocker-unlocked BitLocker source is. A LUKS mapper device
+        # (dm-crypt) IS a real block device and supports O_DIRECT fine, so
+        # it gets iflag=direct too, unlike the FUSE case.
+        if source_kind in ('real_device', 'decrypted_block_device'):
             cmd.append("iflag=direct")
         # dd itself has no built-in hashing; computed_hashes is filled in
         # after completion by streaming the output file through hashlib.
@@ -1731,7 +2086,9 @@ def start_imaging():
             "execution_command": " ".join(cmd),
             **({"raw_image_retained": None} if fmt == 'aff' else {}),
             **({"bitlocker_key": bitlocker_key} if bitlocker_key else {}),
-            **({"bitlocker_decrypted": True} if bitlocker_mount_id else {}),
+            **({"bitlocker_decrypted": True} if mount_meta and mount_meta["kind"] == "bitlocker" else {}),
+            **({"luks_passphrase": luks_passphrase_doc} if luks_passphrase_doc else {}),
+            **({"luks_decrypted": True} if mount_meta and mount_meta["kind"] == "luks" else {}),
         },
         "attachments": {
             "files": [],
@@ -1758,7 +2115,7 @@ def start_imaging():
     thread.daemon = True
     thread.start()
 
-    # A dislocker mount must stay live for the whole acquisition (dc3dd/
+    # A dislocker/LUKS mount must stay live for the whole acquisition (dc3dd/
     # dcfldd/etc. read from it throughout the job), then gets torn down as
     # soon as it's no longer needed - a decrypted mount is sensitive and
     # shouldn't linger any longer than the job that actually needed it.
@@ -1766,24 +2123,28 @@ def start_imaging():
     # block) specifically to avoid threading a new parameter through that
     # already-large, multi-caller function; thread.join() here blocks only
     # this cleanup thread, not the request that already returned above.
-    if bitlocker_mount_id:
+    if mount_meta:
         requester_ip = request.remote_addr
         requester_user = getattr(g, 'forensic_user', None)
+        lock_fn = _dislocker_lock if mount_meta["kind"] == "bitlocker" else _luks_lock
+        log_action = "bitlocker_lock" if mount_meta["kind"] == "bitlocker" else "luks_lock"
 
-        def _cleanup_bitlocker_after_job(worker_thread, mid, src_ip, user):
+        def _cleanup_decrypted_mount_after_job(worker_thread, fn, mid, action, src_ip, user):
             worker_thread.join()
-            _dislocker_lock(mid)
-            log_chain_of_custody("bitlocker_lock", {"mount_id": mid, "reason": "acquisition_complete"},
+            fn(mid)
+            log_chain_of_custody(action, {"mount_id": mid, "reason": "acquisition_complete"},
                                  source_ip=src_ip, user=user)
 
         cleanup_thread = threading.Thread(
-            target=_cleanup_bitlocker_after_job, args=(thread, bitlocker_mount_id, requester_ip, requester_user)
+            target=_cleanup_decrypted_mount_after_job,
+            args=(thread, lock_fn, mount_meta["mount_id"], log_action, requester_ip, requester_user)
         )
         cleanup_thread.daemon = True
         cleanup_thread.start()
 
     log_chain_of_custody("acquisition_start", {"format": fmt, "source": source, "destination": dest_path,
-                                                **({"bitlocker_decrypted": True} if bitlocker_mount_id else {})})
+                                                **({"bitlocker_decrypted": True} if mount_meta and mount_meta["kind"] == "bitlocker" else {}),
+                                                **({"luks_decrypted": True} if mount_meta and mount_meta["kind"] == "luks" else {})})
     return jsonify({"success": True, "message": "Acquisition started."})
 
 @acquisition_bp.route('/api/ddrescue/inspect_map', methods=['POST'])
@@ -1839,6 +2200,7 @@ def start_ddrescue():
     # (ddrescue the raw partition first, decrypt the resulting image
     # afterward with dislocker) - a different workflow than this route.
     bitlocker_key = (req.get('bitlocker_key') or '').strip()
+    luks_passphrase_doc = (req.get('luks_passphrase') or '').strip()
 
     # This runs ddrescue via a passwordless sudo rule (see install.py), so
     # source/destination MUST be tightly validated - otherwise any caller
@@ -1936,6 +2298,7 @@ def start_ddrescue():
             "direct_mode": direct_mode,
             "execution_command": " ".join(cmd),
             **({"bitlocker_key": bitlocker_key} if bitlocker_key else {}),
+            **({"luks_passphrase": luks_passphrase_doc} if luks_passphrase_doc else {}),
         },
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")

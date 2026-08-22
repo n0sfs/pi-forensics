@@ -91,6 +91,7 @@
                             <div id="ctxSecImageCase" class="ctx-menu-section" style="display:none;">
                             <button id="btnBrowseImage" class="dropdown-item" onclick="enterExplorerImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files right here, without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse as Image (Sleuth Kit)</button>
                             <button id="btnUnlockBitlockerImage" class="dropdown-item" onclick="openBitlockerUnlockImageModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Decrypts a BitLocker-encrypted acquired image (or a specific partition within it) with its recovery key/password, then browses the decrypted volume with the same Sleuth Kit tools used for a normal image."><i class="bi bi-shield-lock me-2"></i>Unlock BitLocker &amp; Browse...</button>
+                            <button id="btnUnlockLuksImage" class="dropdown-item" onclick="openLuksUnlockImageModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Decrypts a LUKS-encrypted acquired image (or a specific partition within it) with its passphrase, then browses the decrypted volume with the same Sleuth Kit tools used for a normal image."><i class="bi bi-key me-2"></i>Unlock LUKS &amp; Browse...</button>
                             <button id="btnVerifyHash" class="dropdown-item" onclick="openVerifyHashModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Computes a cryptographic hash of this file and optionally compares it against a known reference hash - confirms an evidence image (or any file) hasn't been altered since acquisition."><i class="bi bi-hash me-2"></i>Verify Image Hash</button>
                             <button id="btnConvertImageFormat" class="dropdown-item" onclick="openImageConversionModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Converts an already-acquired image between raw (.dd) and E01 - independently re-hashes both sides and records whether they verify as a match. Runs as a background job (see the progress bar below)."><i class="bi bi-arrow-repeat me-2"></i>Convert Image Format...</button>
                             <button id="btnAttachToCase" class="dropdown-item" onclick="attachSelectedFileToCase()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Bookmarks this file as a case exhibit - it'll show up pre-checked in Reporting > Files, ready to include in an exported report. Requires an active, consolidated-format case."><i class="bi bi-bookmark-plus me-2"></i>Attach to Case</button>
@@ -243,6 +244,35 @@
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-sm btn-warning text-dark fw-bold" onclick="unlockBitlockerImageAndBrowse()"><i class="bi bi-unlock-fill me-1"></i>Unlock &amp; Browse</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="luksUnlockImageModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-key me-2"></i>Unlock LUKS: <span id="luksImageFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-3">Decrypts this image (or a specific encrypted partition within it) with a LUKS passphrase, then browses the decrypted volume using the same Sleuth Kit tools (Search, Timeline, Metadata, Hex, etc.) as any other image. The unlocked volume stays available until you click Exit Image or Lock/Cleanup it.</div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Partition Byte Offset (0 for a single-filesystem image or a whole-device LUKS container):</label>
+                        <input type="number" id="luksImageOffset" class="form-control form-control-sm" value="0" min="0">
+                    </div>
+                    <div class="mb-2">
+                        <button type="button" class="btn btn-sm btn-outline-info fw-bold w-100" onclick="detectLuksImage()"><i class="bi bi-search me-1"></i>Detect LUKS Signature at This Offset</button>
+                    </div>
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Passphrase:</label>
+                        <input type="password" id="luksImageKey" class="form-control form-control-sm" placeholder="LUKS passphrase">
+                    </div>
+                    <div id="luksImageStatus" class="small text-subtle">Enter the byte offset of the encrypted partition (0 if this image has no partition table) and the passphrase, then click Unlock & Browse.</div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-info text-dark fw-bold" onclick="unlockLuksImageAndBrowse()"><i class="bi bi-unlock-fill me-1"></i>Unlock &amp; Browse</button>
                 </div>
             </div>
         </div>
