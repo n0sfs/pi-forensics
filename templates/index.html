@@ -268,6 +268,24 @@
         .ctx-menu-section { border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding-bottom: 2px; margin-bottom: 2px; }
         .ctx-menu-section:last-child { border-bottom: none; }
 
+        /* Reporting > Files: each category (Found in Case Folder / Case-
+           Generated Artifacts / Web Artifacts) is a small collapsed-by-
+           default group with a count badge in its header - same "one line
+           per category until you ask for more" idea as the context-menu
+           sections above and the Settings accordion, applied to what used
+           to be one flat undifferentiated file list (2026-08-22). */
+        .report-file-groups { border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
+        .report-file-group-toggle { width: 100%; display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.02); border: none; border-bottom: 1px solid var(--border-color); padding: 6px 10px; font-size: .82rem; font-weight: 600; color: var(--text-subtle); cursor: pointer; text-align: left; }
+        .report-file-group-toggle:hover { color: var(--text-bright); background: rgba(255,255,255,0.04); }
+        .report-file-group-toggle:last-child { border-bottom: none; }
+        .report-file-group-toggle i.bi-chevron-down { transition: transform .15s ease; margin-left: auto; flex-shrink: 0; }
+        .report-file-group-toggle.expanded i.bi-chevron-down { transform: rotate(180deg); }
+        .report-file-group-toggle.expanded { border-bottom-color: var(--border-color); }
+        .report-file-group-body { padding: 6px; background: #090b10; border-bottom: 1px solid var(--border-color); }
+        .report-file-group-body:last-child { border-bottom: none; }
+        .report-file-groups:empty::after,
+        .report-file-groups.report-file-groups-empty::after { content: 'None found.'; display: block; padding: 8px 10px; font-size: .82rem; color: var(--text-subtle); font-style: italic; }
+
         /* Sortable column headers in File Explorer's listing table (real
            filesystem and Sleuth Kit image browsing both use this). */
         .explorer-sort-th { cursor: pointer; user-select: none; white-space: nowrap; }
