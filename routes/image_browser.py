@@ -30,9 +30,12 @@ import pytsk3
 from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission
-from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_extension
+from core.paths import (
+    safe_path, log_chain_of_custody, case_consolidated_path, classify_extension,
+    is_valid_block_device_or_partition,
+)
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS
-from core.jobs import job_lock, current_job, update_job, snapshot_job
+from core.jobs import job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME
 from core.tsk_utils import (
     _tsk_walk, _tsk_resolve_filesystems, _tsk_entry_dict,
     _tsk_open_fs, _tsk_list_dir, _tsk_stream_file, _tsk_parse_inode,
@@ -49,6 +52,147 @@ from core.browser_artifacts import (
 )
 
 image_browser_bp = Blueprint('image_browser', __name__)
+
+# --- Live Device Preview: browse a raw block device read-only, before it's
+# ever acquired (FTK Imager's "Preview" feature). The unprivileged gunicorn
+# worker this app runs as has no reliable read access to a block device
+# node today - confirmed there's no existing privilege-bridging mechanism
+# for it (the BitLocker dislocker mount does NOT solve this: its decrypted
+# file is only ever read by another *sudo'd* tool, never by this
+# unprivileged process itself). The bridge here is deliberately the
+# smallest possible one: a temporary, reversible ACL read grant on exactly
+# one device node (`sudo setfacl -m u:<service_user>:r <device>`), revoked
+# again on exit or by the idle-sweep below - never a write grant, and the
+# device is already hardware read-only via the existing udev
+# `blockdev --setro` rule regardless, so even a bug here can't result in a
+# write to evidence.
+device_previews_lock = threading.Lock()
+active_device_previews = {}  # device_path -> {granted_at, last_activity}
+DEVICE_PREVIEW_IDLE_SECONDS = 20 * 60
+
+def _grant_device_preview_acl(device_path):
+    try:
+        res = subprocess.run(
+            ["sudo", "/usr/bin/setfacl", "-m", f"u:{_SERVICE_ACCOUNT_NAME}:r", device_path],
+            capture_output=True, text=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "setfacl timed out - the device may be unresponsive."
+    except FileNotFoundError:
+        return False, "setfacl is not installed on this station. Run 'sudo apt-get install acl' first."
+    if res.returncode != 0:
+        return False, (res.stderr or res.stdout or "Unknown setfacl error.").strip()[:300]
+    return True, None
+
+def _revoke_device_preview_acl(device_path):
+    # Best-effort - a device that was unplugged mid-preview has nothing left
+    # to revoke the ACL on, and that's fine (the ACL dies with the device
+    # node); never let a revoke failure block the tracking-state cleanup.
+    try:
+        subprocess.run(
+            ["sudo", "/usr/bin/setfacl", "-x", f"u:{_SERVICE_ACCOUNT_NAME}", device_path],
+            capture_output=True, timeout=15,
+        )
+    except Exception:
+        pass
+
+def _device_preview_sweep_loop():
+    while True:
+        time.sleep(60)
+        now = time.time()
+        stale = []
+        with device_previews_lock:
+            for device_path, info in active_device_previews.items():
+                if now - info["last_activity"] > DEVICE_PREVIEW_IDLE_SECONDS:
+                    stale.append(device_path)
+            for device_path in stale:
+                del active_device_previews[device_path]
+        for device_path in stale:
+            _revoke_device_preview_acl(device_path)
+            log_chain_of_custody("device_preview_auto_revoked", {"device": device_path, "reason": "idle_timeout"},
+                                  source_ip=None, user="system-idle-sweep")
+
+threading.Thread(target=_device_preview_sweep_loop, daemon=True).start()
+
+def _touch_device_preview(device_path):
+    """Bumps last_activity for an active preview grant - called by every
+    /api/image/* route below once it resolves a request against a live
+    device, so a genuinely in-use preview session is never swept as idle."""
+    with device_previews_lock:
+        if device_path in active_device_previews:
+            active_device_previews[device_path]["last_activity"] = time.time()
+
+def _resolve_browsable_source(raw_path):
+    """Single point of truth for 'is this thing browsable via Sleuth Kit' -
+    replaces the old safe_path()+os.path.isfile() two-liner every /api/image/*
+    route used to repeat independently. Returns the real path to use, or
+    None. Two cases: (a) an acquired image FILE under the evidence root
+    (today's existing, unchanged behavior), or (b) a raw device/partition
+    path that exactly matches a currently-active Live Device Preview grant -
+    only a device this app's own /api/image/preview/enter just ACL-granted
+    can ever match, the same 'only a path we ourselves just created can be
+    trusted' pattern _resolve_acquisition_source() already uses for
+    BitLocker's dislocker mounts."""
+    if not raw_path:
+        return None
+    validated_file = safe_path(raw_path)
+    if validated_file and os.path.isfile(validated_file):
+        return validated_file
+    with device_previews_lock:
+        is_active_preview = raw_path in active_device_previews
+    if is_active_preview and is_valid_block_device_or_partition(raw_path):
+        _touch_device_preview(raw_path)
+        return raw_path
+    return None
+
+@image_browser_bp.route('/api/image/preview/enter', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def image_preview_enter():
+    req = request.get_json() or {}
+    device_path = req.get('device_path', '')
+    if not is_valid_block_device_or_partition(device_path):
+        return jsonify({"success": False, "error": "Invalid or unrecognized device/partition path."}), 400
+
+    granted, error = _grant_device_preview_acl(device_path)
+    if not granted:
+        return jsonify({"success": False, "error": f"Could not grant preview access: {error}"}), 500
+
+    with device_previews_lock:
+        active_device_previews[device_path] = {"granted_at": time.time(), "last_activity": time.time()}
+
+    # Prove the grant actually works and the device holds a real,
+    # recognizable filesystem before handing it back as "ready to browse" -
+    # a bad/garbage/unsupported device should revoke the ACL immediately
+    # rather than leaving a dangling grant the examiner then discovers is
+    # useless only once they try to browse it. _tsk_resolve_filesystems()
+    # never raises (it swallows every exception internally and returns []),
+    # so an empty result is the only failure signal available here.
+    partitions = _tsk_resolve_filesystems(device_path)
+    if not partitions:
+        with device_previews_lock:
+            active_device_previews.pop(device_path, None)
+        _revoke_device_preview_acl(device_path)
+        return jsonify({"success": False, "error": "Could not read a recognized filesystem on this device - the ACL grant was reverted."}), 400
+
+    log_chain_of_custody("device_preview_entered", {"device": device_path})
+    return jsonify({"success": True, "device_path": device_path, "filesystem_count": len(partitions)})
+
+@image_browser_bp.route('/api/image/preview/exit', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def image_preview_exit():
+    req = request.get_json() or {}
+    device_path = req.get('device_path', '')
+    with device_previews_lock:
+        was_active = active_device_previews.pop(device_path, None) is not None
+    if was_active:
+        _revoke_device_preview_acl(device_path)
+        log_chain_of_custody("device_preview_exited", {"device": device_path})
+    # Idempotent on an unknown/already-exited device, matching
+    # _dislocker_lock()'s existing convention - a second exit call (or one
+    # racing the idle-sweep) is a harmless no-op, not an error.
+    return jsonify({"success": True})
 
 # --- Sleuth Kit (pytsk3): Browse/Search/Timeline Filesystems Inside Acquired Images ---
 # Everything here only ever reads the image file - nothing writes to evidence.
@@ -94,8 +238,8 @@ def image_format_support():
 @requires_permission('file_explorer')
 def image_mmls():
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
-    if not image_path or not os.path.isfile(image_path):
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
 
     try:
@@ -131,11 +275,11 @@ def image_mmls():
 @requires_permission('file_explorer')
 def image_fls():
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     offset = req.get('offset', 0)
     inode = req.get('inode', '')  # empty = root of the filesystem at this offset
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     try:
         offset = int(offset)
@@ -161,13 +305,13 @@ def image_fls():
 @requires_permission('file_explorer')
 def image_extract():
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     offset = req.get('offset', 0)
     inode = req.get('inode', '')
     out_name = req.get('output_name', '')
     dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     if not dest_dir or not os.path.isdir(dest_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
@@ -211,12 +355,12 @@ def image_preview():
     """In-memory preview of a file still inside the image - no extract-to-
     disk step first, unlike the old icat-then-browse-in-File-Explorer flow."""
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     offset = req.get('offset', 0)
     inode = req.get('inode', '')
     name_hint = req.get('name', '')
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     try:
         offset = int(offset)
@@ -260,11 +404,11 @@ def image_hex():
     _tsk_stream_file(max_bytes=...), no temp-file extraction needed since
     this doesn't shell out to anything (unlike Binwalk/Strings/ExifTool)."""
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     offset = req.get('offset', 0)
     inode = req.get('inode', '')
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     try:
         offset = int(offset)
@@ -295,12 +439,12 @@ def image_hex():
 @requires_permission('file_explorer')
 def image_search():
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     offset = req.get('offset', 0)
     query = (req.get('query') or '').strip().lower()
     start_inode = req.get('start_inode', '')
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     if not query:
         return jsonify({"success": False, "error": "A search query is required."}), 400
@@ -339,11 +483,11 @@ def image_timeline():
     """MACB timeline built directly from a pytsk3 walk - no dependency on
     the external mactime perl script fls -m output traditionally needs."""
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     offset = req.get('offset', 0)
     start_inode = req.get('start_inode', '')
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     try:
         offset = int(offset)
@@ -538,10 +682,10 @@ def start_image_geolocation_kml():
         current_job["active"] = True
 
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         update_job(active=False)
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     if not dest_dir or not os.path.isdir(dest_dir):
@@ -596,11 +740,11 @@ def image_hash_manifest():
     manifest meant to prove integrity would be actively misleading rather
     than just incomplete."""
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
     algo = req.get('algorithm', 'sha256').lower()
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     if not dest_dir or not os.path.isdir(dest_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
@@ -685,8 +829,8 @@ IMAGE_BROWSER_ARTIFACT_MAX_WALKED_SECONDS = 300  # the walk itself is cheap (a n
 @requires_permission('file_explorer')
 def image_parse_browser_artifacts():
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
-    if not image_path or not os.path.isfile(image_path):
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
 
     case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
@@ -1002,11 +1146,11 @@ def start_image_triage_scan():
         current_job["active"] = True
 
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
     keyword_list_ids = req.get('keyword_list_ids') or []
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         update_job(active=False)
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     if not dest_dir or not os.path.isdir(dest_dir):
@@ -1056,13 +1200,13 @@ def _tsk_extract_to_temp(fs, inode_num, suffix=''):
 @requires_permission('file_explorer')
 def image_binwalk():
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     offset = req.get('offset', 0)
     inode = req.get('inode', '')
     name_hint = req.get('name', '') or 'selected_file'
     case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     try:
         offset = int(offset)
@@ -1101,13 +1245,13 @@ def image_binwalk():
 @requires_permission('file_explorer')
 def image_strings():
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     offset = req.get('offset', 0)
     inode = req.get('inode', '')
     name_hint = req.get('name', '') or 'selected_file'
     case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     try:
         offset = int(offset)
@@ -1152,12 +1296,12 @@ def image_exif():
     real filesystem. Same extract-to-temp-then-run pattern as image_binwalk/
     image_strings above, since exiftool needs a real path on disk."""
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     offset = req.get('offset', 0)
     inode = req.get('inode', '')
     name_hint = req.get('name', '') or 'selected_file'
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     try:
         offset = int(offset)
@@ -1236,10 +1380,10 @@ IMAGE_RECOVER_MAX_SECONDS = 600
 @requires_permission('file_explorer')
 def image_recover_deleted():
     req = request.get_json() or {}
-    image_path = safe_path(req.get('image_path'))
+    image_path = _resolve_browsable_source(req.get('image_path'))
     dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
 
-    if not image_path or not os.path.isfile(image_path):
+    if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     if not dest_dir or not os.path.isdir(dest_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400

@@ -133,6 +133,12 @@ apt_packages = [
                   # or File Explorer browsing - confirmed present on Debian trixie/arm64
                   # (0.7.3+git20240607-3+b1) via apt-cache before adding here, per this
                   # project's own hard-won "verify package existence first" rule.
+    "acl",  # provides /usr/bin/setfacl - Live Device Preview's narrow, reversible read-ACL
+            # grant on a single block device (the device stays hardware read-only via the
+            # existing udev blockdev --setro rule regardless; this only ever adds read).
+            # Standard Debian default-set package (Priority: standard) - present on virtually
+            # every install, but added explicitly rather than assumed, per this project's own
+            # "verify package existence first" rule.
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
@@ -269,14 +275,23 @@ install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in IN
 # apt-get), the sudoers line pins the exact arguments rather than granting
 # the whole binary - e.g. "systemctl restart pi-forensics.service" is
 # allowed, but "systemctl restart anything-else" is not.
+#
+# /usr/bin/setfacl is unqualified (like mount/sshfs/nmcli above) since its
+# legitimate argument - the device path being previewed - is examiner-
+# selected and too variable to pin exactly; the real security boundary is
+# app-level (is_valid_block_device_or_partition() in core/paths.py), which
+# only ever lets a whitelisted /dev/sd*|nvme*|mmcblk* whole-disk-or-
+# partition path reach this command, and setfacl is only ever asked to
+# grant read (never write) on a device that's already hardware read-only
+# via the udev blockdev --setro rule regardless.
 sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/sbin/blockdev, /sbin/blockdev, \\
 /usr/sbin/smartctl, \\
 /bin/mount, /bin/umount, /bin/mkdir, \\
 /usr/bin/udevil, /usr/bin/pkill, \\
-/usr/bin/smbclient, /usr/sbin/showmount, /usr/bin/sshfs, /usr/bin/nmcli, \\
+/usr/bin/smbclient, /usr/sbin/showmount, /usr/bin/sshfs, /usr/bin/nmcli, /usr/bin/setfacl, \\
 /usr/bin/dcfldd, /usr/bin/dc3dd, /usr/bin/ddrescue, \\
-/usr/bin/ewfacquire, /usr/bin/dd, /usr/bin/photorec, \\
+/usr/bin/ewfacquire, /usr/bin/ewfexport, /usr/bin/ewfinfo, /usr/bin/dd, /usr/bin/photorec, \\
 /usr/bin/extundelete, /usr/bin/foremost, /usr/bin/scalpel, /usr/bin/testdisk, \\
 /sbin/dislocker, /usr/bin/dislocker, /sbin/blkid, /usr/sbin/blkid, \\
 /bin/chown -R {SERVICE_USER} *, \\

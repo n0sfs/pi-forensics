@@ -30,7 +30,10 @@ import signal
 from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission
-from core.paths import safe_path, log_chain_of_custody, is_valid_block_device, _DEVICE_RE
+from core.paths import (
+    safe_path, log_chain_of_custody, is_valid_block_device,
+    is_valid_block_device_or_partition, _DEVICE_RE,
+)
 from core.config import EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job,
@@ -42,13 +45,14 @@ from core.jobs import (
 acquisition_bp = Blueprint('acquisition', __name__)
 
 
-_PARTITION_RE = re.compile(r'^/dev/(sd[a-z]\d+|nvme\d+n\d+p\d+|mmcblk\d+p\d+)$')
-
-def is_valid_bitlocker_source(path_str):
-    """Whole-disk OR partition path - BitLocker most commonly encrypts a
-    single partition, but some BitLocker-To-Go USB media format the whole
-    device with no partition table at all, so both forms are accepted."""
-    return bool(path_str) and (bool(_DEVICE_RE.match(path_str)) or bool(_PARTITION_RE.match(path_str)))
+# Thin alias - the actual "whole disk or partition" check now lives in
+# core/paths.py as is_valid_block_device_or_partition(), shared with Live
+# Device Preview (routes/image_browser.py), which needs the identical
+# check. Kept as a distinctly-named alias here (rather than replacing every
+# call site below with the core.paths name directly) so this function's own
+# name still documents *why* BitLocker unlock accepts a partition path, not
+# just what the check does.
+is_valid_bitlocker_source = is_valid_block_device_or_partition
 
 # --- BitLocker: unlock an encrypted source via dislocker, so it can be
 # imaged decrypted instead of as raw encrypted bytes. A dislocker mount

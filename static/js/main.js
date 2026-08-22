@@ -3768,6 +3768,7 @@ let lastImageJobActiveByFormat = {}; // job format -> was it active as of the la
 let explorerImagePath = null;
 let explorerImageOffset = 0;
 let explorerImageBitlockerMountId = null; // set only when the currently-browsed image is a decrypted dislocker volume, so exitExplorerImage() knows to lock/cleanup it
+let explorerDevicePreviewPath = null; // set only when the currently-browsed "image" is actually a live raw device (Live Device Preview), so exitExplorerImage() knows to revoke its ACL grant
 let explorerImagePathStack = [];  // [{inode, name}, ...] for breadcrumb + "up" navigation
 let explorerImageSelected = null; // {inode, name} or a timeline event with a .path
 let explorerImageView = 'browse'; // 'browse' | 'search' | 'timeline'
@@ -3846,6 +3847,47 @@ function enterExplorerImageFor(item) {
     // value, so returning a promise instead of undefined changes nothing
     // for them.
     return loadExplorerImagePartitions();
+}
+
+// Live Device Preview (FTK Imager's "Preview" feature) - browse a raw,
+// write-blocked drive's real filesystem read-only, before ever running a
+// full acquisition against it. Reuses enterExplorerImageFor() completely
+// unmodified: every existing image-mode tool (Search, Timeline, Hex,
+// Metadata, Geolocation, Hash Manifest, Recover Deleted, Triage Scan,
+// browser-artifact parsing) already only cares about explorerImagePath/
+// explorerImageOffset, not whether that path is a real acquired file or a
+// live device the backend just ACL-granted read access to.
+async function startDevicePreview() {
+    // Deliberately reads #driveSelect directly rather than
+    // getActiveTargetDrive() - that helper's "|| /dev/sda" fallback exists
+    // for harmless read-only telemetry display when nothing's selected yet,
+    // but silently defaulting a preview-and-ACL-grant action to /dev/sda
+    // with no drive actually chosen would be a real footgun, not a
+    // convenience.
+    const devicePath = document.getElementById("driveSelect")?.value || "";
+    if (!devicePath) return showToast('Select a target source drive first.', 'warning');
+    if (!confirm(`Preview ${devicePath} read-only?\n\nThis browses the live drive directly - not yet an acquired image. The drive's existing write-blocking protection still applies; only read access is granted, and it's revoked again when you exit the preview.`)) return;
+
+    try {
+        const res = await fetch('/api/image/preview/enter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device_path: devicePath })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(`Preview failed: ${data.error}`, 'danger');
+            return;
+        }
+        explorerDevicePreviewPath = devicePath;
+        switchToTab('explorer-tab');
+        await enterExplorerImageFor({ path: devicePath, name: `LIVE PREVIEW: ${devicePath}` });
+        const banner = document.getElementById('explorerLivePreviewBanner');
+        if (banner) banner.style.display = 'block';
+        showToast(`Previewing ${devicePath} read-only - found ${data.filesystem_count} filesystem(s).`, 'success');
+    } catch (err) {
+        showToast('Preview failed - see console.', 'danger');
+    }
 }
 
 // --- BitLocker: unlock an already-acquired image (or a partition within
@@ -3950,6 +3992,22 @@ function exitExplorerImage() {
             body: JSON.stringify({ mount_id: mountId })
         }).catch(() => {});
     }
+
+    // Live Device Preview: revoke the temporary read-ACL grant on exit -
+    // same fire-and-forget reasoning as the BitLocker lock above, plus the
+    // server-side idle-sweep as a backstop for an unclean exit (tab closed
+    // without ever reaching here).
+    if (explorerDevicePreviewPath) {
+        const devicePath = explorerDevicePreviewPath;
+        explorerDevicePreviewPath = null;
+        fetch('/api/image/preview/exit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device_path: devicePath })
+        }).catch(() => {});
+    }
+
+    document.getElementById("explorerLivePreviewBanner")?.remove();
 
     initExplorerTree(); // restores the real-fs tree exactly as left, no re-fetch
     loadExplorer(explorerPath);
