@@ -183,61 +183,67 @@ function switchToTab(tabId) {
     if (el) new bootstrap.Tab(el).show();
 }
 
-// Home tab's station-wide stats strip - built entirely from two already-
-// existing, @requires_auth-only endpoints (no new backend route, no
-// permission gating beyond being logged in). "Today" is defined relative
-// to the newest log entry's own date rather than the browser's clock, so a
-// viewing device in a different timezone than the station can't disagree
-// with the log about what "today" means.
-async function loadHomeStats() {
-    const els = {
-        cases: document.getElementById('homeStatCases'),
-        items: document.getElementById('homeStatEvidenceItems'),
-        today: document.getElementById('homeStatActionsToday'),
-        latest: document.getElementById('homeStatLatestActivity'),
-    };
-    if (!els.cases) return; // Home tab isn't in the DOM (shouldn't happen, but don't throw if so)
+// Reporting's station-wide case-status stat (moved here from Home,
+// 2026-08-21, then trimmed back to just this one block the same day - see
+// the dated CLAUDE.md entry) - built entirely from the already-existing,
+// @requires_auth-only /api/cases/list (no new backend route, no permission
+// gating beyond being logged in).
+// Segment colors for the Total Cases mini status-chart - deliberately the
+// same Bootstrap bg-* families (minus the text-contrast modifiers a badge
+// needs but a bare bar segment doesn't) as CASE_STATUS_BADGE_CLASS further
+// down this file, so a status reads as the same color everywhere in the app.
+const CASE_STATUS_BAR_COLOR = {
+    'Open': 'bg-info', 'In Review': 'bg-warning', 'On Hold': 'bg-secondary',
+    'Closed': 'bg-success', 'Archived': 'bg-dark',
+};
+
+async function loadReportingStats() {
+    const casesEl = document.getElementById('repStatCases');
+    const barEl = document.getElementById('repStatCasesBar');
+    if (!casesEl) return; // Reporting tab isn't in the DOM (shouldn't happen, but don't throw if so)
 
     try {
-        const [casesRes, cocRes] = await Promise.all([
-            fetch('/api/cases/list'),
-            fetch('/api/coc/log?limit=200'),
-        ]);
-        const casesData = await casesRes.json();
-        const cocData = await cocRes.json();
-
-        if (casesData.success) {
-            const cases = casesData.cases || [];
-            els.cases.textContent = String(cases.length);
-            // Consolidated cases carry a real event_count; a legacy
-            // (pre-consolidation, not yet migrated) case has none but
-            // still represents exactly one acquisition - count it as 1
-            // rather than 0, so an unmigrated case doesn't just vanish
-            // from this total.
-            const totalEvidence = cases.reduce((sum, c) => sum + (typeof c.event_count === 'number' ? c.event_count : 1), 0);
-            els.items.textContent = String(totalEvidence);
-        } else {
-            els.cases.textContent = '--';
-            els.items.textContent = '--';
+        const res = await fetch('/api/cases/list');
+        const data = await res.json();
+        if (!data.success) {
+            casesEl.textContent = '--';
+            if (barEl) barEl.style.display = 'none';
+            return;
         }
 
-        if (cocData.success) {
-            const entries = cocData.entries || [];
-            if (entries.length > 0 && entries[0].timestamp) {
-                const latestDate = entries[0].timestamp.slice(0, 10); // "YYYY-MM-DD"
-                const todayCount = entries.filter(e => e.timestamp && e.timestamp.startsWith(latestDate)).length;
-                els.today.textContent = String(todayCount);
-                els.latest.textContent = entries[0].timestamp;
+        const cases = data.cases || [];
+        casesEl.textContent = String(cases.length);
+
+        // Status breakdown mini-chart - one segment per distinct status
+        // actually present (proportional width). Hidden entirely when
+        // there are no cases yet, rather than showing an empty bar. A
+        // legacy (pre-case_status-field) case buckets into "Legacy" rather
+        // than being silently dropped. No written-out legend at this size
+        // (condensed into the Case Report header row, 2026-08-21) - each
+        // segment carries its own title="Status: N" tooltip instead.
+        if (barEl) {
+            const counts = {};
+            cases.forEach(c => {
+                const status = c.case_status || 'Legacy';
+                counts[status] = (counts[status] || 0) + 1;
+            });
+            barEl.innerHTML = '';
+            if (cases.length > 0) {
+                Object.keys(counts).forEach(status => {
+                    const seg = document.createElement('div');
+                    seg.className = CASE_STATUS_BAR_COLOR[status] || 'bg-secondary';
+                    seg.style.flex = String(counts[status]);
+                    seg.title = `${status}: ${counts[status]}`;
+                    barEl.appendChild(seg);
+                });
+                barEl.style.display = 'flex';
             } else {
-                els.today.textContent = '0';
-                els.latest.textContent = 'No activity yet';
+                barEl.style.display = 'none';
             }
-        } else {
-            els.today.textContent = '--';
-            els.latest.textContent = '--';
         }
     } catch (err) {
-        Object.values(els).forEach(el => { if (el) el.textContent = '--'; });
+        casesEl.textContent = '--';
+        if (barEl) barEl.style.display = 'none';
     }
 }
 
@@ -10122,7 +10128,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     refreshMobileDevices();
     updateDdrescueStrategyHelp();
     updateRecoveryToolControls();
-    loadHomeStats();
+    loadReportingStats();
     updateAndroidModeHelp();
     initHelpTooltips();
     // Awaited before initActiveCaseBar() - that call can synchronously chain into
