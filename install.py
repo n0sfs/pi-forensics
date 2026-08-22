@@ -139,6 +139,14 @@ apt_packages = [
             # Standard Debian default-set package (Priority: standard) - present on virtually
             # every install, but added explicitly rather than assumed, per this project's own
             # "verify package existence first" rule.
+    "cryptsetup-bin",  # unlocks LUKS-encrypted volumes for acquisition or File Explorer
+                       # browsing, mirroring dislocker's BitLocker support - deliberately the
+                       # minimal-deps variant (not the plain "cryptsetup" metapackage, which
+                       # pulls in cryptsetup-initramfs for boot-time root-disk decryption, not
+                       # needed here). Confirmed present on Debian trixie/arm64
+                       # (2:2.7.5-2, deps: libblkid1/libc6/libcryptsetup12/libpopt0/libuuid1
+                       # only) via apt-cache before adding here. losetup/dmsetup (also used by
+                       # the LUKS unlock flow) are already provided by util-linux above.
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
@@ -284,6 +292,26 @@ install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in IN
 # partition path reach this command, and setfacl is only ever asked to
 # grant read (never write) on a device that's already hardware read-only
 # via the udev blockdev --setro rule regardless.
+#
+# /usr/sbin/cryptsetup is DELIBERATELY pinned to two exact verbs
+# (luksOpen/luksClose), NOT granted unqualified like setfacl above - unlike
+# setfacl's device-path argument (genuinely too variable to pin), the
+# *verb* cryptsetup is invoked with is a small, fixed set this app only
+# ever needs two of, and cryptsetup has genuinely destructive subcommands
+# (luksFormat, luksErase, reencrypt) with no setfacl equivalent - an
+# unqualified grant would shift the entire safety burden onto "no future
+# code change ever lets a bad argument reach a bare `sudo cryptsetup`
+# call." Pinning the verb here mirrors this file's own existing
+# `/bin/chown -R {SERVICE_USER} *`-style precedent (pin the fixed prefix,
+# wildcard only the variable trailing argument) rather than setfacl's
+# fully-unqualified one. /sbin/losetup is similarly pinned even though its
+# own action space is much less dangerous (attach/detach a loop node,
+# no data destruction) - cheap to tighten the same way, and its `-d`
+# argument is always a path this app's own prior losetup call itself
+# returned, never client-supplied, matching how _dislocker_lock()'s
+# mount_dir is already trusted the same way. isLuks needs no sudo grant at
+# all - LUKS detection uses blkid (already granted below) and a direct
+# unprivileged file read, never cryptsetup itself.
 sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/sbin/blockdev, /sbin/blockdev, \\
 /usr/sbin/smartctl, \\
@@ -294,6 +322,8 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/bin/ewfacquire, /usr/bin/ewfexport, /usr/bin/ewfinfo, /usr/bin/dd, /usr/bin/photorec, \\
 /usr/bin/extundelete, /usr/bin/foremost, /usr/bin/scalpel, /usr/bin/testdisk, \\
 /sbin/dislocker, /usr/bin/dislocker, /sbin/blkid, /usr/sbin/blkid, \\
+/usr/sbin/cryptsetup luksOpen *, /usr/sbin/cryptsetup luksClose *, \\
+/sbin/losetup -o * --show -f *, /sbin/losetup -d /dev/loop*, /sbin/losetup -a, \\
 /bin/chown -R {SERVICE_USER} *, \\
 /bin/chgrp -R {SERVICE_USER} *, \\
 /sbin/reboot, /sbin/poweroff, \\

@@ -47,6 +47,12 @@ let bitlockerActiveMountId = null;
 let bitlockerUnlockedSourcePath = null;
 let bitlockerMountConsumedByJob = false; // true once a started job is actually using the unlocked mount, so fetchProgress() knows the backend's own post-job auto-unlock applies
 
+// LUKS pre-acquisition unlock state - mirrors the BitLocker trio above
+// exactly, for the same reasons.
+let luksActiveMountId = null;
+let luksUnlockedSourcePath = null;
+let luksMountConsumedByJob = false;
+
 let currentBrowsePath = '/mnt';
 let folderModalInstance = null;
 let modalPickerMode = 'folder';
@@ -3115,6 +3121,7 @@ function updateContextToolbar(item) {
     const btnCopy = document.getElementById("btnCopyFile");
     const btnBrowseImage = document.getElementById("btnBrowseImage");
     const btnUnlockBitlockerImage = document.getElementById("btnUnlockBitlockerImage");
+    const btnUnlockLuksImage = document.getElementById("btnUnlockLuksImage");
     const btnVerifyHash = document.getElementById("btnVerifyHash");
     const btnConvertImageFormat = document.getElementById("btnConvertImageFormat");
     const btnAttachToCase = document.getElementById("btnAttachToCase");
@@ -3143,6 +3150,7 @@ function updateContextToolbar(item) {
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnUnlockBitlockerImage) btnUnlockBitlockerImage.disabled = item.is_dir || !isImageFile(item.name);
+    if (btnUnlockLuksImage) btnUnlockLuksImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnVerifyHash) btnVerifyHash.disabled = item.is_dir;
     if (btnConvertImageFormat) btnConvertImageFormat.disabled = item.is_dir || !isImageFile(item.name);
     if (btnAttachToCase) btnAttachToCase.disabled = item.is_dir || !activeCase;
@@ -3771,6 +3779,7 @@ let lastImageJobActiveByFormat = {}; // job format -> was it active as of the la
 let explorerImagePath = null;
 let explorerImageOffset = 0;
 let explorerImageBitlockerMountId = null; // set only when the currently-browsed image is a decrypted dislocker volume, so exitExplorerImage() knows to lock/cleanup it
+let explorerImageLuksMountId = null; // same, for a decrypted LUKS mapper device
 let explorerDevicePreviewPath = null; // set only when the currently-browsed "image" is actually a live raw device (Live Device Preview), so exitExplorerImage() knows to revoke its ACL grant
 let explorerImagePathStack = [];  // [{inode, name}, ...] for breadcrumb + "up" navigation
 let explorerImageSelected = null; // {inode, name} or a timeline event with a .path
@@ -3971,6 +3980,81 @@ async function unlockBitlockerImageAndBrowse() {
     }
 }
 
+// --- LUKS: unlock an already-acquired image (or a partition within it) and
+// browse the decrypted volume - mirrors the BitLocker block above exactly.
+let luksUnlockImageModalInstance = null;
+
+function openLuksUnlockImageModal() {
+    if (!activeSelectedFile) return;
+    document.getElementById("luksImageFileName").textContent = activeSelectedFile.split('/').pop();
+    const offsetEl = document.getElementById("luksImageOffset");
+    if (offsetEl) offsetEl.value = '0';
+    const keyEl = document.getElementById("luksImageKey");
+    if (keyEl) keyEl.value = '';
+    const status = document.getElementById("luksImageStatus");
+    if (status) status.textContent = "Enter the byte offset of the encrypted partition (0 if this image has no partition table) and the passphrase, then click Unlock & Browse.";
+
+    if (!luksUnlockImageModalInstance) {
+        luksUnlockImageModalInstance = new bootstrap.Modal(document.getElementById('luksUnlockImageModal'));
+    }
+    luksUnlockImageModalInstance.show();
+}
+
+async function detectLuksImage() {
+    if (!activeSelectedFile) return;
+    const offset = document.getElementById("luksImageOffset")?.value || '0';
+    const status = document.getElementById("luksImageStatus");
+    if (status) status.textContent = "Checking for a LUKS signature at this offset...";
+    try {
+        const res = await fetch('/api/luks/detect_image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: activeSelectedFile, offset })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Detect failed: ${data.error}`;
+            return;
+        }
+        if (status) {
+            status.textContent = data.is_luks
+                ? "LUKS signature found at this offset. Enter the passphrase and click Unlock & Browse."
+                : "No LUKS signature found at this offset - double-check the partition byte offset (Use the whole-image \"Search Inside Image\"/mmls partition listing if unsure), or try Unlock & Browse anyway if you believe this is wrong.";
+        }
+    } catch (err) {
+        if (status) status.textContent = "Detect failed - see console.";
+    }
+}
+
+async function unlockLuksImageAndBrowse() {
+    if (!activeSelectedFile) return;
+    const offset = document.getElementById("luksImageOffset")?.value || '0';
+    const passphrase = document.getElementById("luksImageKey")?.value || "";
+    const status = document.getElementById("luksImageStatus");
+    if (!passphrase.trim()) return showToast("Enter the LUKS passphrase first.", 'warning');
+    if (status) status.textContent = "Unlocking (this can take a few seconds)...";
+    try {
+        const res = await fetch('/api/luks/unlock_image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: activeSelectedFile, offset, passphrase })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Unlock failed: ${data.error}`;
+            showToast(`LUKS unlock failed: ${data.error}`, 'danger');
+            return;
+        }
+        explorerImageLuksMountId = data.mount_id;
+        if (luksUnlockImageModalInstance) luksUnlockImageModalInstance.hide();
+        showToast("LUKS volume unlocked - browsing the decrypted image now.", 'success');
+        const originalName = activeSelectedFile.split('/').pop();
+        await enterExplorerImageFor({ path: data.source_path, name: `${originalName} (LUKS Decrypted)` });
+    } catch (err) {
+        if (status) status.textContent = "Unlock failed - see console.";
+    }
+}
+
 // explorerPath (the JS variable, not the #explorerPath DOM label) is never
 // mutated while in image mode - only loadExplorer() touches it, and nothing
 // calls that until exitExplorerImage() does - so it still holds the real
@@ -3990,6 +4074,17 @@ function exitExplorerImage() {
         const mountId = explorerImageBitlockerMountId;
         explorerImageBitlockerMountId = null;
         fetch('/api/bitlocker/lock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mount_id: mountId })
+        }).catch(() => {});
+    }
+
+    // Same, for a decrypted LUKS volume.
+    if (explorerImageLuksMountId) {
+        const mountId = explorerImageLuksMountId;
+        explorerImageLuksMountId = null;
+        fetch('/api/luks/lock', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mount_id: mountId })
@@ -8494,6 +8589,151 @@ async function lockBitlockerVolume() {
     }
 }
 
+// --- LUKS pre-acquisition unlock (cryptsetup) ---
+// Mirrors the BitLocker block above exactly (toggle/scan/detect/unlock/lock
+// + a #luksPassphrase field, also recorded as case-report documentation
+// regardless of whether this unlock flow is used at all).
+function toggleLuksSection() {
+    const on = document.getElementById("luksSourceToggle")?.checked ?? false;
+    const controls = document.getElementById("luksSourceControls");
+    if (controls) controls.style.display = on ? '' : 'none';
+    const help = document.getElementById("luksPassphraseHelp");
+    if (help) {
+        help.textContent = on
+            ? 'Used both to unlock the encrypted volume below AND recorded in the case report as documentation.'
+            : 'Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the passphrase is not used to decrypt anything during acquisition. Enable "This source drive is LUKS-encrypted" above to unlock and acquire the decrypted volume instead.';
+    }
+    if (on) loadLuksPartitions();
+}
+
+async function loadLuksPartitions() {
+    const device = document.getElementById("driveSelect")?.value || "";
+    const select = document.getElementById("luksPartitionSelect");
+    const status = document.getElementById("luksStatus");
+    if (!select) return;
+    if (!device) {
+        select.innerHTML = '<option value="">-- Select a target drive above first --</option>';
+        return;
+    }
+    select.innerHTML = '<option value="">Scanning...</option>';
+    try {
+        const res = await fetch('/api/luks/partitions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device })
+        });
+        const data = await res.json();
+        select.innerHTML = '';
+        // The whole device itself is always offered too - a whole-device
+        // LUKS container (no partition table) is a normal, common way to
+        // encrypt a secondary/external Linux drive.
+        const wholeOpt = document.createElement("option");
+        wholeOpt.value = device;
+        wholeOpt.textContent = `${device} (whole device, no partition table)`;
+        select.appendChild(wholeOpt);
+        if (data.success && data.partitions && data.partitions.length) {
+            data.partitions.forEach(p => {
+                const opt = document.createElement("option");
+                opt.value = p.path;
+                opt.textContent = `${p.path} - ${p.fstype || 'unknown fs'} (${p.size || '?'})`;
+                select.appendChild(opt);
+            });
+        }
+        if (status) status.textContent = data.success
+            ? `Found ${(data.partitions || []).length} partition(s) on ${device}. Select the encrypted one, then Detect/Unlock.`
+            : `Scan failed: ${data.error}`;
+    } catch (err) {
+        select.innerHTML = '<option value="">-- Scan failed --</option>';
+    }
+}
+
+function getLuksSelectedSource() {
+    return document.getElementById("luksPartitionSelect")?.value
+        || document.getElementById("driveSelect")?.value
+        || "";
+}
+
+async function detectLuks() {
+    const partition = getLuksSelectedSource();
+    const status = document.getElementById("luksStatus");
+    if (!partition) return showToast("Select a drive/partition first.", 'warning');
+    if (status) status.textContent = "Checking for a LUKS signature...";
+    try {
+        const res = await fetch('/api/luks/detect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ partition })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Detect failed: ${data.error}`;
+            return;
+        }
+        if (status) {
+            status.textContent = data.is_luks
+                ? `${partition} looks like LUKS (filesystem type: ${data.fstype}). Enter the passphrase below and click Unlock.`
+                : `${partition} does not look like LUKS (filesystem type: ${data.fstype || 'unrecognized'}). You can still try Unlock if you believe this is wrong.`;
+        }
+    } catch (err) {
+        if (status) status.textContent = "Detect failed - see console.";
+    }
+}
+
+async function unlockLuksVolume() {
+    const partition = getLuksSelectedSource();
+    const passphrase = document.getElementById("luksPassphrase")?.value || "";
+    const status = document.getElementById("luksStatus");
+    if (!partition) return showToast("Select a drive/partition first.", 'warning');
+    if (!passphrase.trim()) return showToast("Enter the LUKS passphrase first.", 'warning');
+    if (status) status.textContent = "Unlocking (this can take a few seconds)...";
+    try {
+        const res = await fetch('/api/luks/unlock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ partition, passphrase })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Unlock failed: ${data.error}`;
+            showToast(`LUKS unlock failed: ${data.error}`, 'danger');
+            return;
+        }
+        luksActiveMountId = data.mount_id;
+        luksUnlockedSourcePath = data.source_path;
+        if (status) status.textContent = `Unlocked. Acquisition will image the decrypted volume (not ${partition} directly) as long as this stays unlocked. Click Lock / Cleanup when finished.`;
+        const lockBtn = document.getElementById("btnLockLuks");
+        if (lockBtn) lockBtn.style.display = '';
+        showToast("LUKS volume unlocked - acquisition will use the decrypted volume.", 'success');
+    } catch (err) {
+        if (status) status.textContent = "Unlock failed - see console.";
+    }
+}
+
+async function lockLuksVolume() {
+    if (!luksActiveMountId) return;
+    const status = document.getElementById("luksStatus");
+    try {
+        const res = await fetch('/api/luks/lock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mount_id: luksActiveMountId })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(`Lock/cleanup failed: ${data.error}`, 'danger');
+            return;
+        }
+        luksActiveMountId = null;
+        luksUnlockedSourcePath = null;
+        if (status) status.textContent = "Locked and unmounted. Select the encrypted partition and Unlock again if needed.";
+        const lockBtn = document.getElementById("btnLockLuks");
+        if (lockBtn) lockBtn.style.display = 'none';
+        showToast("LUKS volume locked/unmounted.", 'success');
+    } catch (err) {
+        showToast("Lock/cleanup failed - see console.", 'danger');
+    }
+}
+
 // --- Parameterized Network Shares Engine ---
 async function loadNetworkHistory() {
     try {
@@ -8924,12 +9164,21 @@ async function startAcquisition() {
     // ddrescue deliberately never uses the unlocked (decrypted) source - see
     // the matching comment in app.py's start_ddrescue(): its whole purpose
     // is direct-I/O sector-level recovery against a real block device, which
-    // doesn't apply to an already-decrypted FUSE virtual file. Every other
-    // format substitutes the dislocker-file path transparently - the
+    // doesn't apply to an already-decrypted FUSE/dm-mapper virtual source.
+    // Every other format substitutes the decrypted path transparently - the
     // backend's _resolve_acquisition_source() only trusts it because it was
     // created by this app's own unlock call, never client-supplied otherwise.
-    const useUnlockedSource = fmt !== 'ddrescue' && !!bitlockerUnlockedSourcePath;
-    const source = useUnlockedSource ? bitlockerUnlockedSourcePath : rawSource;
+    // If both a BitLocker AND a LUKS source are somehow unlocked at once (an
+    // edge case that shouldn't arise in real use - an examiner unlocks
+    // either one or the other for a given source, not both), BitLocker
+    // takes priority; this isn't a real scenario worth building mutual-
+    // exclusion UI for.
+    const useUnlockedBitlocker = fmt !== 'ddrescue' && !!bitlockerUnlockedSourcePath;
+    const useUnlockedLuks = fmt !== 'ddrescue' && !useUnlockedBitlocker && !!luksUnlockedSourcePath;
+    const useUnlockedSource = useUnlockedBitlocker || useUnlockedLuks;
+    const source = useUnlockedBitlocker ? bitlockerUnlockedSourcePath
+        : useUnlockedLuks ? luksUnlockedSourcePath
+        : rawSource;
 
     const metadata = {
         case_number: document.getElementById("caseNum")?.value || "2026-UNASSIGNED",
@@ -8938,6 +9187,7 @@ async function startAcquisition() {
         notes: document.getElementById("notes")?.value || "None"
     };
     const bitlockerKey = document.getElementById("bitlockerKey")?.value || "";
+    const luksPassphrase = document.getElementById("luksPassphrase")?.value || "";
 
     let endpoint, body;
 
@@ -8946,7 +9196,7 @@ async function startAcquisition() {
         const retries = document.getElementById("ddrescueRetries")?.value || "3";
         const directMode = document.getElementById("ddrescueDirect")?.checked ?? false;
         endpoint = '/api/start_ddrescue';
-        body = { source, destination: dest, strategy, retry_passes: retries, direct_mode: directMode, metadata, bitlocker_key: bitlockerKey };
+        body = { source, destination: dest, strategy, retry_passes: retries, direct_mode: directMode, metadata, bitlocker_key: bitlockerKey, luks_passphrase: luksPassphrase };
     } else {
         const compression = document.getElementById("compressionSelect")?.value;
         const split_size = document.getElementById("splitSizeSelect")?.value;
@@ -8956,11 +9206,14 @@ async function startAcquisition() {
         if (document.getElementById("hashSha1")?.checked) selectedHashes.push("sha1");
         if (document.getElementById("hashSha256")?.checked) selectedHashes.push("sha256");
         endpoint = '/api/start_imaging';
-        body = { source, destination: dest, format: fmt, compression, split_size, hashes: selectedHashes, metadata, keep_raw, bitlocker_key: bitlockerKey };
+        body = { source, destination: dest, format: fmt, compression, split_size, hashes: selectedHashes, metadata, keep_raw, bitlocker_key: bitlockerKey, luks_passphrase: luksPassphrase };
     }
 
     if (fmt === 'ddrescue' && bitlockerUnlockedSourcePath) {
         showToast("ddrescue does not support the unlocked BitLocker volume - it will image the raw encrypted device directly.", 'warning');
+    }
+    if (fmt === 'ddrescue' && luksUnlockedSourcePath) {
+        showToast("ddrescue does not support the unlocked LUKS volume - it will image the raw encrypted device directly.", 'warning');
     }
 
     try {
@@ -8974,11 +9227,12 @@ async function startAcquisition() {
         if (data.success) {
             if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = true;
             if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = false;
-            // The backend keeps the dislocker mount alive for the whole job
-            // and unmounts it automatically once the job finishes - mirror
-            // that transition in fetchProgress() so the UI doesn't keep
-            // offering "Lock / Cleanup" for a mount that's already gone.
-            if (useUnlockedSource) bitlockerMountConsumedByJob = true;
+            // The backend keeps the dislocker/LUKS mount alive for the whole
+            // job and unmounts it automatically once the job finishes -
+            // mirror that transition in fetchProgress() so the UI doesn't
+            // keep offering "Lock / Cleanup" for a mount that's already gone.
+            if (useUnlockedBitlocker) bitlockerMountConsumedByJob = true;
+            if (useUnlockedLuks) luksMountConsumedByJob = true;
         } else showToast(`Start Failed: ${data.error}`, 'danger');
     } catch (err) {}
 }
@@ -10591,6 +10845,16 @@ async function fetchProgress() {
             if (lockBtn) lockBtn.style.display = 'none';
             const status = document.getElementById("bitlockerStatus");
             if (status) status.textContent = "The acquisition job finished - the BitLocker volume has been automatically locked/unmounted.";
+        }
+        // Same, for a decrypted LUKS volume.
+        if (luksMountConsumedByJob && !data.active) {
+            luksActiveMountId = null;
+            luksUnlockedSourcePath = null;
+            luksMountConsumedByJob = false;
+            const lockBtn = document.getElementById("btnLockLuks");
+            if (lockBtn) lockBtn.style.display = 'none';
+            const status = document.getElementById("luksStatus");
+            if (status) status.textContent = "The acquisition job finished - the LUKS volume has been automatically locked/unmounted.";
         }
 
         if (throughputChart) {

@@ -42,6 +42,7 @@ from core.tsk_utils import (
     TSK_MAX_TIMELINE_ENTRIES,
 )
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
+from core.decrypted_sources import get_decrypted_source_kind
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
@@ -126,13 +127,25 @@ def _resolve_browsable_source(raw_path):
     """Single point of truth for 'is this thing browsable via Sleuth Kit' -
     replaces the old safe_path()+os.path.isfile() two-liner every /api/image/*
     route used to repeat independently. Returns the real path to use, or
-    None. Two cases: (a) an acquired image FILE under the evidence root
-    (today's existing, unchanged behavior), or (b) a raw device/partition
-    path that exactly matches a currently-active Live Device Preview grant -
-    only a device this app's own /api/image/preview/enter just ACL-granted
-    can ever match, the same 'only a path we ourselves just created can be
+    None. Three cases: (a) an acquired image FILE under the evidence root
+    (today's existing, unchanged behavior), (b) a raw device/partition path
+    that exactly matches a currently-active Live Device Preview grant - only
+    a device this app's own /api/image/preview/enter just ACL-granted can
+    ever match, the same 'only a path we ourselves just created can be
     trusted' pattern _resolve_acquisition_source() already uses for
-    BitLocker's dislocker mounts."""
+    BitLocker's dislocker mounts - or (c) a path currently registered in the
+    shared core/decrypted_sources.py registry (a BitLocker dislocker-file or
+    a LUKS dm-mapper device that routes/acquisition.py's own unlock
+    machinery just created and registered).
+
+    Case (c) fixes a real, previously-latent bug: a dislocker-file's path
+    lives under DISLOCKER_MOUNT_ROOT (INSTALL_DIR/.bitlocker_mounts/...),
+    outside EVIDENCE_ROOT entirely, so safe_path() has always rejected it
+    (confirmed against both this refactored code and the original
+    pre-refactor code via git history) - meaning "Unlock BitLocker &
+    Browse..." could never actually reach a successful browse, even before
+    today. Every existing acquired-image-file caller (case a) and every
+    Live Device Preview caller (case b) is unaffected by this addition."""
     if not raw_path:
         return None
     validated_file = safe_path(raw_path)
@@ -142,6 +155,8 @@ def _resolve_browsable_source(raw_path):
         is_active_preview = raw_path in active_device_previews
     if is_active_preview and is_valid_block_device_or_partition(raw_path):
         _touch_device_preview(raw_path)
+        return raw_path
+    if get_decrypted_source_kind(raw_path) is not None:
         return raw_path
     return None
 

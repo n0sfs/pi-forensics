@@ -76,6 +76,31 @@
                                                 </div>
                                             </div>
 
+                                            <div class="p-2 bg-dark border border-info rounded-2 mb-3" id="luksUnlockBlock">
+                                                <div class="form-check form-switch mb-1">
+                                                    <input class="form-check-input" type="checkbox" id="luksSourceToggle" onchange="toggleLuksSection()">
+                                                    <label class="form-check-label small fw-bold text-info" for="luksSourceToggle"><i class="bi bi-key-fill me-1"></i>This source drive is LUKS-encrypted</label>
+                                                </div>
+                                                <div id="luksSourceControls" style="display:none;">
+                                                    <div class="row g-2 align-items-center mb-2">
+                                                        <div class="col-md-8">
+                                                            <select id="luksPartitionSelect" class="form-select form-select-sm">
+                                                                <option value="">-- Scan Selected Drive for Partitions --</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <button type="button" class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="loadLuksPartitions()"><i class="bi bi-arrow-clockwise me-1"></i>Scan</button>
+                                                        </div>
+                                                    </div>
+                                                    <div class="mb-2">
+                                                        <button type="button" class="btn btn-sm btn-outline-info fw-bold me-1" onclick="detectLuks()"><i class="bi bi-search me-1"></i>Detect</button>
+                                                        <button type="button" class="btn btn-sm btn-info text-dark fw-bold me-1" onclick="unlockLuksVolume()"><i class="bi bi-unlock-fill me-1"></i>Unlock</button>
+                                                        <button type="button" class="btn btn-sm btn-outline-danger fw-bold" id="btnLockLuks" onclick="lockLuksVolume()" style="display:none;"><i class="bi bi-lock-fill me-1"></i>Lock / Cleanup</button>
+                                                    </div>
+                                                    <div id="luksStatus" class="small text-subtle">Select the encrypted partition, enter the passphrase in the field below, then click Unlock. Once unlocked, acquisition images the decrypted volume instead of the raw encrypted device.</div>
+                                                </div>
+                                            </div>
+
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder2-open me-1"></i>Destination Directory</div>
                                             <div class="input-group input-group-sm mb-1">
                                                 <input type="text" id="destPath" class="form-control" value="/mnt">
@@ -92,6 +117,8 @@
                                             <input type="text" id="notes" class="form-control form-control-sm" placeholder="Notes / Chain of Custody Remarks">
                                             <input type="password" id="bitlockerKey" class="form-control form-control-sm mt-2" placeholder="BitLocker Recovery Key / Password (optional, if source is encrypted)">
                                             <div class="small text-subtle mt-1" id="bitlockerKeyHelp">Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the key is not used to decrypt anything during acquisition. Enable "This source drive is BitLocker-encrypted" above to unlock and acquire the decrypted volume instead.</div>
+                                            <input type="password" id="luksPassphrase" class="form-control form-control-sm mt-2" placeholder="LUKS Passphrase (optional, if source is encrypted)">
+                                            <div class="small text-subtle mt-1" id="luksPassphraseHelp">Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the passphrase is not used to decrypt anything during acquisition. Enable "This source drive is LUKS-encrypted" above to unlock and acquire the decrypted volume instead.</div>
                                         </div>
 
                                         <div class="col-md-6">
