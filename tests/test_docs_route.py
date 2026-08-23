@@ -66,6 +66,13 @@ def test_logged_in_account_can_read_each_real_doc(client, runtime_config_file):
         res = client.get(f"/docs/{doc_id}")
         assert res.status_code == 200
         assert res.mimetype == "text/plain"
+        # Real bug caught live: passing a mimetype string that already
+        # includes "; charset=utf-8" to Response(mimetype=...) makes
+        # Werkzeug append its own default charset on top, producing a
+        # malformed "charset=utf-8; charset=utf-8" header. Assert the raw
+        # header has exactly one charset param, not just that .mimetype
+        # (which strips params entirely) looks right.
+        assert res.headers["Content-Type"].count("charset") == 1
         assert res.get_data(as_text=True).startswith(expected_start)
 
 
