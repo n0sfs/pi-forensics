@@ -6,9 +6,14 @@ definitions regardless of group.
 
 Only the REJECTION path is asserted strictly (403, before any subprocess
 call). The "settings permission granted" case is exercised too, but only
-asserts we got PAST the permission check (never a 403) - whether MVT itself
-is installed on the machine running this test is irrelevant and untested
-here, matching this project's own mvt integration test scope elsewhere.
+asserts we got PAST the permission check (never a 403) - the real MVT
+binary paths are monkeypatched to a nonexistent location first, so this
+never triggers a real `download-iocs` network call regardless of whether
+MVT is actually installed on whichever machine runs this test (a real bug,
+caught live: the deployed Pi genuinely has mvt-ios/mvt-android installed,
+and an earlier version of this test without the monkeypatch triggered a
+real download with up to a 180s-per-binary timeout as a side effect of
+just running the test suite).
 
 Skipped (not failed) on a non-POSIX dev machine: routes/settings.py needs
 core.jobs, which imports POSIX-only pwd/fcntl at module level.
@@ -62,7 +67,18 @@ def test_rejected_without_settings_permission(client, runtime_config_file, mount
     assert res.status_code == 403
 
 
-def test_allowed_past_the_permission_check_with_settings_permission(client, runtime_config_file, mount_key_file):
+def test_allowed_past_the_permission_check_with_settings_permission(client, runtime_config_file, mount_key_file, monkeypatch):
+    # Real bug caught live: on a station where mvt-ios/mvt-android are
+    # actually installed (as they are on the deployed Pi), this route's own
+    # body runs a real `download-iocs` subprocess with up to a 180s timeout
+    # per binary - a genuine network side effect this test must never
+    # trigger. Point both binary paths at something that can't exist so the
+    # route's own os.path.isfile() check short-circuits to its "not
+    # installed" branch before any subprocess call, regardless of what's
+    # actually installed on whichever machine runs this test.
+    import routes.settings as settings_module
+    monkeypatch.setattr(settings_module, "MVT_IOS_BIN", "/nonexistent/mvt-ios")
+    monkeypatch.setattr(settings_module, "MVT_ANDROID_BIN", "/nonexistent/mvt-android")
     _save_user("admin_user", "pw", "admin")
     _login(client, "admin_user")
     res = client.post("/api/tools/mvt_update_iocs")
