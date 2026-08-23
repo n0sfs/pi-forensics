@@ -355,15 +355,15 @@ function showGuideStep(scenario) {
 
     container.innerHTML = '';
     const wrap = document.createElement('div');
-    wrap.className = 'p-2 bg-dark border border-secondary rounded-2';
+    wrap.className = 'guide-result-panel';
 
     const titleEl = document.createElement('div');
-    titleEl.className = 'text-info fw-bold small mb-2';
+    titleEl.className = 'text-info fw-bold mb-2';
     titleEl.textContent = data.title;
     wrap.appendChild(titleEl);
 
     const ol = document.createElement('ol');
-    ol.className = 'small text-light mb-2 ps-3';
+    ol.className = 'small text-light mb-3 ps-3';
     data.steps.forEach(step => {
         const li = document.createElement('li');
         li.className = 'mb-1';
@@ -394,12 +394,21 @@ function showGuideStep(scenario) {
 // Info" tab (populateHelpInfo()) was removed the same day - its genuinely
 // non-redundant content was folded into FAQ_GROUPS instead, and the rest
 // was already duplicated by an existing FAQ answer.
+//
+// User Manual moved to the first/default nav position (2026-08-23, at the
+// user's own request) - help-tab's onclick calls loadHelpDocFrame() for it
+// eagerly, same as the other build-once-and-guard calls above, since it's
+// now what's actually visible the instant Help opens rather than something
+// reached by a click. Quick-Start/Release Notes stay purely lazy (see
+// loadHelpDocFrame()'s own comment) since neither is shown by default.
 
 // Lazy-loads one of the three embedded doc iframes (Quick-Start/User
-// Manual/Release Notes) only the first time its nav item is actually
-// clicked - avoids three extra requests on every page load for docs most
-// sessions never open. Idempotent: a second click on an already-loaded
-// pane is a no-op.
+// Manual/Release Notes) - Quick-Start and Release Notes only load the
+// first time their own nav item is actually clicked, avoiding two extra
+// requests on every page load for docs most sessions never open; User
+// Manual is the one exception, loaded eagerly from help-tab's own onclick
+// since it's the default-shown pane (see above). Idempotent either way: a
+// second call against an already-loaded pane is a no-op.
 function loadHelpDocFrame(frameId, docId) {
     const frame = document.getElementById(frameId);
     if (!frame || frame.src) return;

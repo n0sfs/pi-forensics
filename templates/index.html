@@ -218,6 +218,30 @@
             padding: 2px 10px;
         }
         .home-stat-value { color: #ffffff; font-size: 1.9rem; font-weight: 800; line-height: 1.2; }
+
+        /* Help > Getting Started: reuses .home-tile's exact card/hover shape
+           (2026-08-23, replacing a flat row of outline buttons per the
+           user's own "make it look nicer" ask) - only the icon box gets a
+           per-scenario accent color, via these six modifiers, since the
+           original buttons' distinct colors were a genuinely useful "six
+           different situations" cue worth keeping even in the nicer layout. */
+        .guide-tile-icon {
+            font-size: 1.4rem; width: 42px; height: 42px; min-width: 42px;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 10px;
+        }
+        .guide-tile-icon.v-info { background: rgba(13, 202, 240, 0.12); color: #22d3ee; }
+        .guide-tile-icon.v-warning { background: rgba(255, 193, 7, 0.14); color: #facc15; }
+        .guide-tile-icon.v-success { background: rgba(25, 135, 84, 0.16); color: #34d399; }
+        .guide-tile-icon.v-danger { background: rgba(220, 53, 69, 0.16); color: #f87171; }
+        .guide-tile-icon.v-primary { background: rgba(13, 110, 253, 0.16); color: #60a5fa; }
+        .guide-tile-icon.v-light { background: rgba(255, 255, 255, 0.08); color: #e5e7eb; }
+        .guide-result-panel {
+            border-left: 3px solid var(--accent-cyan);
+            background: var(--card-bg);
+            border-radius: 6px;
+            padding: 16px 18px;
+        }
         /* Reporting's case-status mini-chart (moved from Home 2026-08-21, condensed into the Case
            Report header row the same day, then given the bolder number + legend back - still on
            one line, this time horizontal instead of stacked - once the plain version read as
@@ -509,7 +533,7 @@
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="help-tab" data-bs-toggle="tab" data-bs-target="#help-app" type="button" role="tab" onclick="populateFaq(); populateToolReference(); populateReportFieldMapping();" title="Help & Reference">
+                    <button class="nav-link" id="help-tab" data-bs-toggle="tab" data-bs-target="#help-app" type="button" role="tab" onclick="populateFaq(); populateToolReference(); populateReportFieldMapping(); loadHelpDocFrame('helpManualFrame', 'user-manual');" title="Help & Reference">
                         <i class="bi bi-question-circle-fill"></i><span class="tab-label">Help</span>
                     </button>
                 </li>
