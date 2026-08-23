@@ -98,11 +98,28 @@ def case_consolidated_path(dest_path):
     """Returns the case's consolidated-file path if `dest_path` IS a case
     folder root (checked directly, no ancestor walk - matches how the
     frontend sends `destination` as the case folder itself verbatim once a
-    case is active), else None."""
-    if not dest_path or not os.path.isdir(dest_path):
+    case is active), else None.
+
+    Runs `dest_path` through safe_path() itself - this function is used
+    throughout the app (core/jobs.py, core/case_index_db.py,
+    routes/reporting.py, routes/image_browser.py, routes/file_explorer.py)
+    as *the* gate for "is this a legitimate case folder," including several
+    call sites that pass a raw, client-supplied `case_folder` straight here
+    with no sandboxing of their own - found during the 2026-08-22 security
+    audit to be trusting only os.path.isdir() + a marker-file-name match,
+    neither of which implies the path is anywhere near EVIDENCE_ROOT. A
+    downstream function (case_index_db_path()) happened to safe_path() its
+    own derived path anyway, which is what kept this from being directly
+    exploitable - but that was two functions incidentally agreeing, not a
+    designed guarantee, and it left a directory-listing side channel open
+    in at least one caller before that downstream check ever ran. Every
+    real case folder already lives under EVIDENCE_ROOT by construction
+    (create_case()), so this can never reject a legitimate one."""
+    resolved = safe_path(dest_path)
+    if not resolved or not os.path.isdir(resolved):
         return None
-    slug = os.path.basename(dest_path.rstrip(os.sep))
-    case_file = os.path.join(dest_path, f"{slug}_case.json")
+    slug = os.path.basename(resolved.rstrip(os.sep))
+    case_file = os.path.join(resolved, f"{slug}_case.json")
     return case_file if os.path.isfile(case_file) else None
 
 # --- Per-case analysis index (SQLite) extension/category classification ---
