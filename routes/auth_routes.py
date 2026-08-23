@@ -11,7 +11,7 @@ entry for this refactor.
 import json
 import time
 
-from flask import Blueprint, render_template, jsonify, request, g, session, redirect
+from flask import Blueprint, render_template, jsonify, request, g, session, redirect, Response
 
 from core.auth import (
     requires_auth, check_auth, is_local_kiosk_request, get_offline_tiles_info,
@@ -19,7 +19,7 @@ from core.auth import (
     _session_user_still_valid, _safe_next_path, _effective_client_ip,
     _record_last_login, _is_locked_out, _record_auth_failure, _record_auth_success,
 )
-from core.config import get_app_version
+from core.config import get_app_version, get_doc_content
 
 auth_routes_bp = Blueprint('auth_routes', __name__)
 
@@ -77,6 +77,22 @@ def index():
         offline_tiles_json=json.dumps(get_offline_tiles_info()),
         app_version=get_app_version(),
     )
+
+
+@auth_routes_bp.route('/docs/<doc_id>')
+@requires_auth
+def view_doc(doc_id):
+    # No extra permission gate beyond a valid login - this is static,
+    # shipped-with-the-repo documentation (Quick-Start/User Manual/
+    # CHANGELOG), not evidence or station configuration, same access level
+    # as the Help modal itself which any authenticated account can open.
+    content = get_doc_content(doc_id)
+    if content is None:
+        return "Not found.", 404
+    # text/plain, not text/markdown - guarantees every browser renders it
+    # inline (readable as-is; headings/lists/code fences are still clear in
+    # plain text) instead of some browsers offering it as a download.
+    return Response(content, mimetype="text/plain; charset=utf-8")
 
 
 @auth_routes_bp.route('/api/whoami', methods=['GET'])

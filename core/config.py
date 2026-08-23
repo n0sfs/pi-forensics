@@ -201,3 +201,32 @@ def get_app_version():
             return f.read().strip() or "0.0.0-unknown"
     except Exception:
         return "0.0.0-unknown"
+
+
+# Static, shipped-with-the-repo documentation viewable from inside the app
+# (Help > User Manual/Quick-Start, Settings > Diagnostics > Release Notes) -
+# so an examiner on an air-gapped station can read them without leaving the
+# app or needing GitHub access. Same _REPO_ROOT-relative resolution as
+# VERSION_FILE above, for the same reason (works in both production and a
+# bare dev checkout). Deliberately a small fixed allowlist, not an arbitrary
+# filename - the route reading this never accepts a client-supplied path.
+DOC_FILES = {
+    "quickstart": os.path.join(_REPO_ROOT, "docs", "quickstart.md"),
+    "user-manual": os.path.join(_REPO_ROOT, "docs", "user-manual.md"),
+    "changelog": os.path.join(_REPO_ROOT, "CHANGELOG.md"),
+}
+
+
+def get_doc_content(doc_id):
+    """Returns the raw Markdown text for a known doc_id, or None if the id
+    isn't recognized or the file can't be read (a stripped-down checkout,
+    a packaging mistake) - the caller turns None into a clean 404 rather
+    than this ever raising into a 500."""
+    path = DOC_FILES.get(doc_id)
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return None
