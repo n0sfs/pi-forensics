@@ -264,9 +264,7 @@ body {
     border-bottom: 1px solid var(--border-color);
     padding: 10px 24px; display: flex; align-items: center; gap: 10px;
 }
-.doc-topbar a { color: var(--accent-cyan); text-decoration: none; font-weight: 700; font-size: 0.85rem; }
-.doc-topbar a:hover { text-decoration: underline; }
-.doc-topbar .doc-topbar-title { color: var(--text-subtle); font-size: 0.85rem; margin-left: auto; }
+.doc-topbar .doc-topbar-title { color: var(--text-subtle); font-size: 0.85rem; font-weight: 700; }
 
 /* Two-column layout (User Manual's table-of-contents / Release Notes'
    version list) - only present when render_doc_html() found real <h2>
@@ -402,12 +400,22 @@ def _split_html_by_h2(body_html):
     return intro_html, sections
 
 
-# Progressive enhancement only - every link/anchor already works via plain
-# browser navigation without this (a modern browser auto-opens a closed
-# <details> ancestor of a navigated-to fragment per the HTML living
-# standard's own "scroll to the fragment" algorithm). This just makes it
-# reliable across older browsers too, and adds the active-nav-item
-# highlight, which has no native equivalent.
+# This is what actually opens a collapsed Release Notes entry when its
+# left-nav link is clicked or a deep link is followed - relying on modern
+# browsers' own "auto-open a closed <details> ancestor of a navigated-to
+# fragment" behavior alone was tried and did NOT reliably fire in live
+# testing, so this is load-bearing, not just a nice-to-have polish layer.
+# Also adds the active-nav-item highlight, which has no native equivalent.
+#
+# Real bug caught live: version ids like "100-2026-08-22" start with a
+# digit, which is syntactically INVALID as a bare CSS id-selector
+# ("#100-..." throws "not a valid selector", confirmed directly) - the
+# original version of this script used document.querySelector(hash) inside
+# a try/catch that silently swallowed exactly that exception, so the whole
+# auto-expand feature quietly no-op'd for every single changelog entry.
+# getElementById() has no such restriction (ids are looked up as plain
+# strings, never parsed as a selector) - use that instead of querySelector
+# for anything derived from a fragment/hash.
 _DOC_NAV_SCRIPT = """
 <script>
 (function() {
@@ -418,12 +426,12 @@ _DOC_NAV_SCRIPT = """
             a.classList.toggle('active', a.getAttribute('href') === hash);
         });
         if (!hash) { if (links[0]) links[0].classList.add('active'); return; }
-        var target;
-        try { target = document.querySelector(hash); } catch (e) { return; }
+        var target = document.getElementById(hash.slice(1));
         if (!target) return;
         for (var el = target; el; el = el.parentElement) {
             if (el.tagName === 'DETAILS') el.open = true;
         }
+        target.scrollIntoView();
     }
     window.addEventListener('hashchange', activate);
     activate();
@@ -491,7 +499,6 @@ def render_doc_html(doc_id):
 </head>
 <body>
 <div class="doc-topbar">
-<a href="/">&larr; Back to Pi Forensics Suite</a>
 <span class="doc-topbar-title">{title}</span>
 </div>
 {layout_open}{sidenav_html}
