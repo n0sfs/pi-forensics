@@ -4450,6 +4450,19 @@ async function previewExplorerImageEntry(entry) {
             img.style.maxHeight = '100%';
             img.style.objectFit = 'contain';
             preview.appendChild(img);
+        } else if (data.kind === 'pdf') {
+            // Same browser-native-viewer-via-iframe approach as the real-
+            // filesystem PDF preview (previewSelectedFile()) - just pointed
+            // at a data: URI instead of /api/files/raw, since there's no
+            // real on-disk path for a still-in-image file.
+            preview.className = 'file-pane p-0';
+            const iframe = document.createElement('iframe');
+            iframe.src = `data:application/pdf;base64,${data.data}`;
+            iframe.style.width = '100%';
+            iframe.style.height = '100%';
+            iframe.style.border = 'none';
+            iframe.title = 'PDF preview';
+            preview.appendChild(iframe);
         } else if (data.kind === 'too_large') {
             preview.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
             preview.innerHTML = '<span class="text-subtle small">File too large to preview inline - use Extract instead.</span>';
