@@ -388,9 +388,12 @@ function showGuideStep(scenario) {
 // sidebar tab (2026-08-23, at the user's own request: "the help page looks
 // pretty ugly, can we push that into a tab like Settings/Reporting instead
 // of a popup?"), same horizontal-top-tabs shell as Settings/Reporting.
-// populateFaq()/populateToolReference()/populateReportFieldMapping()/
-// populateHelpInfo() are still called from help-tab's own onclick in
-// index.html (they each build-once-and-guard, so repeated calls are safe).
+// populateFaq()/populateToolReference()/populateReportFieldMapping() are
+// still called from help-tab's own onclick in index.html (they each
+// build-once-and-guard, so repeated calls are safe). The old "Additional
+// Info" tab (populateHelpInfo()) was removed the same day - its genuinely
+// non-redundant content was folded into FAQ_GROUPS instead, and the rest
+// was already duplicated by an existing FAQ answer.
 
 // Lazy-loads one of the three embedded doc iframes (Quick-Start/User
 // Manual/Release Notes) only the first time its nav item is actually
@@ -483,7 +486,7 @@ const FAQ_GROUPS = [
         items: [
             {
                 q: "What's an Active Case, and do I have to use one?",
-                a: "The \"Case\" button at the top of every page creates or selects a case, which then auto-fills Case #, Examiner, and Destination on every tool below - including Reporting, which loads that case's data automatically with no manual file browsing. It's entirely optional; every tool works the same with no case selected, you'll just fill those fields in by hand."
+                a: "The \"Case\" button at the top of every page creates or selects a case, which then auto-fills Case #, Examiner, and Destination on every tool below - including Reporting, which loads that case's data automatically with no manual file browsing. A case is a real folder on disk, with all of its metadata/notes/job telemetry consolidated into one JSON file rather than scattered per-job files. Using a case is entirely optional; every tool works the same with none selected, you'll just fill those fields in by hand. An older case created before consolidated case files existed can be migrated to the current format from the Case Manager, non-destructively - the original files are kept, renamed with a backup suffix, never deleted."
             },
             {
                 q: "Case Notes vs. Report Narrative - what's the difference?",
@@ -492,6 +495,10 @@ const FAQ_GROUPS = [
             {
                 q: "What's the Case Status field for?",
                 a: "Reporting's Case Details block has a Status dropdown (Open / In Review / On Hold / Closed / Archived) for your own case tracking. The Case Manager's case list shows a colored badge for each case's current status, and Reporting's own header shows a live breakdown of every case's status across the whole station."
+            },
+            {
+                q: "How does this station track what was done and by whom?",
+                a: "Settings > Audit Log keeps a station-wide, append-only log of significant actions (acquisitions, deletes, copies, report edits, logins) with a timestamp, source IP, and - since real per-user accounts are supported rather than one shared login - which logged-in user did it. Reporting's own \"Audit Trail\" sub-tab shows that same log filtered down to just the active case."
             },
         ]
     },
@@ -504,7 +511,7 @@ const FAQ_GROUPS = [
             },
             {
                 q: "Can more than one person have their own login on this station?",
-                a: "Yes - Settings > Security lets an account with User & Group Management access create real per-user accounts, each assigned to a group. Admin always has full access to everything; Analyst is the default operational group (every tool, no station configuration or user management); you can also create custom groups with checkboxes for exactly which tabs/actions they can access. The \"Logged in as\" button in the top-right lets you switch accounts without a full logout, since HTTP Basic Auth has no real session to log out of."
+                a: "Yes - Settings > Security lets an account with User & Group Management access create real per-user accounts, each assigned to a group. Admin always has full access to everything; Analyst is the default operational group (every tool, no station configuration or user management); you can also create custom groups with checkboxes for exactly which tabs/actions they can access. The \"Logged in as\" button in the top-right lets you switch accounts (a real re-login under the hood) or log out fully, without closing the browser."
             },
             {
                 q: "My browser says this site isn't secure or the certificate isn't trusted - what do I do?",
@@ -512,7 +519,7 @@ const FAQ_GROUPS = [
             },
             {
                 q: "How do I access this station from another computer?",
-                a: "Navigate to the station's IP address (or hostname, if you set one up) on port 5000, or over HTTPS if a TLS reverse proxy was configured. Every remote connection requires a real login - there's no bypass for remote/LAN access, only for the physical kiosk touchscreen."
+                a: "Navigate to the station's IP address (or hostname, if you set one up) on port 5000, or over HTTPS if a TLS reverse proxy was configured. Every remote connection requires a real login - there's no bypass for remote/LAN access. The physical touchscreen kiosk is the one exception (a setting called FORENSIC_KIOSK_AUTH_BYPASS, on by default) - physical access to the device already implies a high level of trust."
             },
         ]
     },
@@ -526,6 +533,14 @@ const FAQ_GROUPS = [
             {
                 q: "What happens if power is lost mid-acquisition?",
                 a: "The partial image file remains on disk, but it won't have a valid hash recorded, since the job never completed. Treat an interrupted acquisition as failed and start over once power is restored - don't rely on a partial image as evidence."
+            },
+            {
+                q: "Where does my acquired data and case data get stored?",
+                a: "Under the evidence root (/mnt by default) - acquisitions, recovered files, and reports all land there, and a case's own folder holds everything for that case in one place. Nothing is uploaded anywhere automatically; every tool this station runs works entirely locally."
+            },
+            {
+                q: "How do I update this station, and how do I know what changed?",
+                a: "Settings > Service Controls & Diagnostics has buttons to pull the latest app code (git) or update OS packages (apt) - both need internet access and pull from external sources, so only use them on a station where you trust those sources. \"View Release Notes\" right next to them (also in Help's own nav list) shows exactly what changed in each version before or after updating."
             },
         ]
     },
@@ -696,35 +711,6 @@ function populateReportFieldMapping() {
         editCell.innerHTML = whereToEdit;
         row.append(sectionCell, sourceCell, editCell);
         tbody.appendChild(row);
-    });
-}
-
-function populateHelpInfo() {
-    const container = document.getElementById("infoContent");
-    if (!container || container.children.length > 0) return; // build once
-
-    const sections = [
-        ["Where does my data go?", "Acquisitions, recovered files, and reports are written under the evidence root (/mnt by default). A case's data (metadata, notes, job telemetry, attachments) consolidates into a single JSON file per case rather than scattered per-job files. Nothing is uploaded anywhere automatically."],
-        ["Chain of custody & user accounts", "Settings > Audit Log keeps a station-wide log of significant actions (acquisitions, deletes, copies, report edits, logins) with timestamp, source IP, and - since this station uses real per-user accounts rather than one shared login - which logged-in user did it. Reporting's \"Audit Trail\" sub-tab shows the same log filtered to one case."],
-        ["Case management", "The \"Case\" button at the top of every page creates or selects a case, storing its evidence under a real per-case folder instead of loosely filename-prefixed files scattered in one directory. An older case created before consolidated case files existed can be migrated to the new format from the Case Manager, non-destructively - the originals are kept, renamed with a backup suffix."],
-        ["Physical kiosk vs. remote access", "The touchscreen kiosk skips the login prompt by default (a setting called FORENSIC_KIOSK_AUTH_BYPASS) - physical access to the device already implies a high level of trust. Remote/LAN access always requires a real login, with no exceptions."],
-        ["HTTPS & certificates", "This station can run behind an nginx TLS reverse proxy with a self-signed certificate. Settings > Security can generate a fresh one - including every IP address the station currently has, so browsers don't also flag a hostname mismatch on top of the expected self-signed warning - or you can install your own certificate (e.g. one signed by a real CA) instead. The self-signed warning itself only goes away once a client device explicitly trusts the certificate; step-by-step instructions per OS/browser are right there in Settings."],
-        ["Encrypted drives & images (BitLocker/LUKS)", "A BitLocker- or LUKS-encrypted drive can be unlocked with its recovery key/passphrase directly on the Forensic Acquisition tab, making the decrypted volume available as an acquisition source - it re-locks automatically once the job finishes, whether it succeeds or fails. An already-acquired encrypted image can also be unlocked and browsed in place from File Explorer's right-click menu. The key/passphrase you enter is stored in the case report as plain-text documentation only, never used for anything beyond that one unlock."],
-        ["Updating this station", "Settings > Service Controls & Diagnostics has buttons to pull the latest app code (git) or update OS packages (apt) - both need internet access and pull from external sources, so only use them on a station where you trust those sources."],
-    ];
-
-    sections.forEach(([title, body]) => {
-        const wrap = document.createElement('div');
-        wrap.className = 'mb-3 p-2 bg-dark border border-secondary rounded-2';
-        const titleEl = document.createElement('div');
-        titleEl.className = 'text-info fw-bold small mb-1';
-        titleEl.textContent = title;
-        const bodyEl = document.createElement('div');
-        bodyEl.className = 'text-subtle small';
-        bodyEl.textContent = body;
-        wrap.appendChild(titleEl);
-        wrap.appendChild(bodyEl);
-        container.appendChild(wrap);
     });
 }
 

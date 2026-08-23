@@ -66,6 +66,20 @@ def test_render_doc_html_unknown_id_returns_none():
     assert config.render_doc_html("bogus-id") is None
 
 
+def test_doc_topbar_has_no_self_navigating_link():
+    # Real bug caught live: these pages render inside an <iframe> in the
+    # Help tab (Quick-Start/User Manual/Release Notes panes) as well as
+    # standalone via Settings > View Release Notes. A plain <a href="/">
+    # in the topbar (no target attribute) hijacks the IFRAME's own
+    # browsing context on click, loading the entire main app recursively
+    # inside the doc pane - a visibly broken "app inside app" look. The
+    # topbar keeps its title, just never a link back to "/".
+    for doc_id in config.DOC_FILES:
+        page = config.render_doc_html(doc_id)
+        topbar = page.split('<div class="doc-topbar">', 1)[1].split("</div>", 1)[0]
+        assert "<a " not in topbar
+
+
 def _sidenav_links(page):
     import re
     m = re.search(r'<nav class="doc-sidenav">.*?</nav>', page, re.S)
@@ -103,6 +117,23 @@ def test_changelog_sidenav_link_targets_resolve_to_real_ids_in_the_body():
     page = config.render_doc_html("changelog")
     for link_id in _sidenav_links(page):
         assert f'id="{link_id}"' in page
+
+
+def test_changelog_nav_script_uses_getelementbyid_not_a_selector_on_the_hash():
+    # Real bug caught live: version ids (e.g. "100-2026-08-22", from
+    # "[1.0.0] - 2026-08-22") start with a digit, which is syntactically
+    # INVALID as a bare CSS id-selector - document.querySelector("#100-...")
+    # throws, confirmed directly in a real browser. A script that builds a
+    # selector string from location.hash and passes it to querySelector()
+    # would silently fail to auto-expand every single changelog entry (a
+    # try/catch around it just hides the exception, it doesn't fix
+    # anything). getElementById() has no such restriction.
+    links = _sidenav_links(config.render_doc_html("changelog"))
+    assert any(link_id[0].isdigit() for link_id in links), \
+        "expected at least one digit-leading version id to exercise this"
+    script = config._DOC_NAV_SCRIPT
+    assert "getElementById" in script
+    assert "querySelector(hash" not in script and "querySelector(location.hash" not in script
 
 
 def test_user_manual_sidenav_lists_all_nine_top_level_sections_not_collapsible():
