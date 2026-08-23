@@ -44,16 +44,22 @@
                                         <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button>
                                     </div>
 
-                                    <div class="telemetry-grid-label mb-1">Updates <span class="text-subtle fw-normal">- running v{{ app_version }}</span></div>
+                                    <div class="telemetry-grid-label mb-1 d-flex align-items-center flex-wrap gap-2">
+                                        Updates <span class="text-subtle fw-normal">- running v{{ app_version }}</span>
+                                        <span id="updateAvailableBadge" class="badge bg-warning text-dark" style="display:none;"></span>
+                                    </div>
                                     <div class="d-grid gap-1 mb-3">
+                                        <button id="btnCheckUpdate" class="btn btn-sm btn-outline-warning fw-bold text-start" onclick="checkForAppUpdate(true)"><i class="bi bi-cloud-arrow-down me-1"></i>Check for Updates</button>
                                         <button class="btn btn-sm btn-outline-success fw-bold text-start" onclick="gitUpdateApp()"><i class="bi bi-git me-1"></i>Update App (Git Pull)</button>
                                         <button class="btn btn-sm btn-outline-primary fw-bold text-start" onclick="updateOperatingSystem()"><i class="bi bi-download me-1"></i>Update OS Packages</button>
                                         <a href="/docs/changelog" target="_blank" rel="noopener" class="btn btn-sm btn-outline-light fw-bold text-start"><i class="bi bi-list-check me-1"></i>View Release Notes</a>
                                     </div>
                                     <div class="small text-subtle mb-3" style="margin-top: -8px;">
-                                        Updating pulls the latest commit from this station's configured git remote/branch,
-                                        not a specific tagged release - Release Notes above shows what changed in each
-                                        version.
+                                        Checking for updates runs a plain <code>git fetch</code> against this station's configured
+                                        remote and compares commits - it never downloads or applies anything on its own. Updating
+                                        pulls the latest commit from that remote/branch, not a specific tagged release - Release
+                                        Notes above shows what changed in each version. This station also checks automatically in
+                                        the background and will notify you here if one becomes available.
                                     </div>
 
                                     <div class="telemetry-grid-label mb-1">Diagnostics</div>
