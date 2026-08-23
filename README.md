@@ -23,6 +23,10 @@ This project is the open-source software layer described in the original researc
 — substantially extended since, with case management, mobile device acquisition, file recovery
 tooling, and a full reporting workflow added on top of the original imaging core.
 
+📖 **New here?** [Quick-Start Guide](docs/quickstart.md) gets you from a fresh Pi to a completed,
+hashed acquisition and a PDF report in about 20 minutes. For the full feature reference once you're
+running, see the [User Manual](docs/user-manual.md).
+
 ---
 
 ## Why use this?
@@ -93,11 +97,12 @@ Export to PDF or HTML with configurable sections, embedded image/text attachment
 station branding (logo + header text).
 
 ### Security & access
-Real per-examiner accounts (Werkzeug-hashed passwords, admin/standard roles) instead of one shared
-login, HTTP Basic Auth on every remote request with brute-force lockout, a software write-blocker
-toggle backed by `udev`, an unprivileged service account with narrowly-scoped `sudo` grants (no
-general root access), and a append-only chain-of-custody log with CSV export. See
-[Security](#-security) below for the full threat model.
+Real per-examiner accounts (Werkzeug-hashed passwords) instead of one shared login, assigned to
+built-in Admin/Analyst groups or your own custom permission groups (checkbox-based, per capability
+area). Session-based login with an idle timeout and brute-force lockout on every remote/LAN request,
+a software write-blocker toggle backed by `udev`, an unprivileged service account with
+narrowly-scoped `sudo` grants (no general root access), and an append-only chain-of-custody log with
+CSV export. See [Security](#-security) below for the full threat model.
 
 ### Station management
 TLS certificate generation (with correct SANs for your LAN IP), download, and per-OS trust
@@ -198,7 +203,8 @@ Separately from the system account above, the installer seeds the first **web da
 account — a real, hashed admin account (username/password you choose), not a plaintext
 environment variable. Leave it blank to keep the `admin`/`forensics` defaults, but the installer
 will flag that clearly at the end as something to fix before deploying. Additional accounts
-(admin or standard role) can be created afterward from Settings > Security & Privacy.
+(assigned to the built-in Admin/Analyst groups, or a custom group you define) can be created
+afterward from Settings > Security.
 
 ### Automated System Setup: 
 Configures scoped /etc/sudoers.d/pi-forensics privileges, systemd WSGI production services, udev write-blocking rules, labwc kiosk autostart, and - if you accept the prompt - an nginx + self-signed TLS reverse proxy (see [Security](#-security) below).
@@ -215,8 +221,8 @@ Desktop Autologin, and confirm the account shown matches your service user.
 ### Remote Web Interface
 If you set up TLS during install, navigate to `https://<PI_IP_ADDRESS>` (self-signed cert - your
 browser will warn on first visit; you can generate a certificate with correct SANs and download it
-for your OS's trust store directly from Settings > Security & Privacy). Otherwise, navigate to
-`http://<PI_IP_ADDRESS>:5000`. Either way, every request requires HTTP Basic Auth - see
+for your OS's trust store directly from Settings > Security). Otherwise, navigate to
+`http://<PI_IP_ADDRESS>:5000`. Either way, every remote/LAN connection requires a real login - see
 [Security](#-security) below for how to set your own credentials before relying on this.
 
 ---
@@ -228,10 +234,10 @@ networks the examiner doesn't fully control. It's built with that threat model i
 
 | Area | Behavior |
 |---|---|
-| **Authentication** | Every API route requires HTTP Basic Auth for remote/LAN/WiFi access - there is **no bypass** for private-subnet or proxied clients, even when nginx is in front of gunicorn. The one exception is the physical kiosk touchscreen itself; see below. Real per-examiner accounts (Werkzeug-hashed passwords, admin/standard roles) can be created from Settings; a station that hasn't created one yet falls back to the single `FORENSIC_USER`/`FORENSIC_PASS` environment-variable account for backward compatibility. |
-| **Local kiosk auth bypass (opt-out)** | By default (`FORENSIC_KIOSK_AUTH_BYPASS=1`), the physical kiosk skips the login prompt - physical access to the touchscreen already implies a high trust level (it also gets you the SD card, recovery mode, etc.). This is detected narrowly via genuine loopback origin with no `X-Real-IP` header - a remote client proxied through nginx always has that header set to their real address, so **this never weakens remote/LAN/WiFi access**, which stays fully authenticated. Destructive actions (reboot, delete, etc.) still have confirmation dialogs regardless. Set `FORENSIC_KIOSK_AUTH_BYPASS=0` in the systemd unit to require login locally too. |
-| **Brute-force protection** | 5 failed logins from an IP triggers a 5-minute lockout (in-memory; resets on service restart). |
-| **Service privileges** | `app.py` runs as the service account you chose during install (not root). It only reaches root for the specific, whitelisted commands in `/etc/sudoers.d/pi-forensics` (mount/umount/mkdir under `/mnt`, blockdev, smartctl, dc3dd/ewfacquire/ddrescue, `nmcli` for network configuration, pkill). Raw device reads for imaging work via `disk` group membership, not sudo. |
+| **Authentication** | Real session-based login (a signed cookie, set by `/login`) for browser access to the web UI, with an idle timeout - there is **no bypass** for private-subnet or proxied clients, even when nginx is in front of gunicorn. `/api/*` routes also accept plain HTTP Basic Auth as a fallback (for `curl`-style scripted access), never advertised to a browser. The one exception to all of this is the physical kiosk touchscreen itself; see below. Real per-examiner accounts (Werkzeug-hashed passwords) are assigned to built-in Admin/Analyst groups or custom permission groups you define; a station that hasn't created one yet falls back to the single `FORENSIC_USER`/`FORENSIC_PASS` environment-variable account for backward compatibility. |
+| **Local kiosk auth bypass (opt-out)** | By default (`FORENSIC_KIOSK_AUTH_BYPASS=1`), the physical kiosk skips the login prompt - physical access to the touchscreen already implies a high trust level (it also gets you the SD card, recovery mode, etc.). This is detected via genuine loopback origin (`request.remote_addr`, the real TCP peer - not a client-supplied header) with no `X-Real-IP` header, or with an `X-Real-IP` header only once that loopback origin is independently confirmed - a remote client proxied through nginx always has `remote_addr` be nginx's own loopback peer address and `X-Real-IP` set to their real address, so **this never weakens remote/LAN/WiFi access**, which stays fully authenticated; a remote client connecting *without* nginx in the path (e.g. TLS/reverse-proxy setup was skipped at install) can no longer spoof this bypass by forging the header, since `remote_addr` in that case is their own real, unspoofable address. Destructive actions (reboot, delete, etc.) still have confirmation dialogs regardless. Set `FORENSIC_KIOSK_AUTH_BYPASS=0` in the systemd unit to require login locally too. |
+| **Brute-force protection** | 5 failed logins from an effective client IP triggers a 5-minute lockout (in-memory; resets on service restart) - keyed the same way the kiosk-bypass check resolves the real client identity above, so remote clients proxied through nginx get independent lockout buckets rather than sharing one. |
+| **Service privileges** | `app.py` runs as the service account you chose during install (not root, and not a member of the `disk` group). It only reaches root for the specific, whitelisted commands in `/etc/sudoers.d/pi-forensics` (mount/umount/mkdir under `/mnt`, blockdev, smartctl, dc3dd/ewfacquire/ddrescue, cryptsetup/losetup for LUKS, `nmcli` for network configuration, pkill). Raw device reads for one-off browsing (Live Device Preview) use a temporary, reversible read-only ACL grant on a single whitelisted device path, revoked on exit or by an idle timeout - never a standing group membership. |
 | **File-system sandboxing** | The file explorer, report load/save, hash verification, PDF export, and imaging/recovery destinations are all restricted to one directory tree (`FORENSIC_ROOT`, default `/mnt`). Paths outside it are rejected, including via symlink or `../` traversal. |
 | **Device validation** | Acquisition/recovery source paths must match a whole-disk device pattern (`/dev/sdX`, `/dev/nvme*n*`, `/dev/mmcblk*`) - arbitrary files can't be pointed at the privileged `ddrescue`/`dc3dd` commands. |
 | **Evidence-drive-safe UI** | Filenames and file content pulled from mounted/browsed media are rendered as plain text or inside a fully sandboxed iframe (no scripts, no same-origin access), never trusted as active HTML - a maliciously named or crafted file on a suspect drive can't inject script into the examiner's session. |
@@ -239,7 +245,7 @@ networks the examiner doesn't fully control. It's built with that threat model i
 | **Chain-of-custody log** | Every significant action is logged with timestamp, source IP, and (once real accounts are in use) the acting examiner's username - viewable in Settings > Audit Log with search and one-click CSV export of the complete log. |
 | **Network configuration safety net** | Changing the station's own IP addressing (Settings > Network Configuration) applies immediately but automatically reverts to the previous working settings after 60 seconds unless explicitly confirmed - protects against a typo locking you out of the very page you'd use to fix it. |
 | **Network share credentials** | SMB/CIFS/SFTP passwords are passed via a private, mode-0600 temporary credentials file or piped over stdin rather than on the mount command line, so they don't show up in `ps aux`. |
-| **Transport encryption** | `install.py` prompts to set up nginx with a self-signed TLS certificate (generated per-install under `/etc/ssl/pi-forensics`, with SAN entries for the station's actual LAN IP). If accepted, nginx terminates TLS on 80/443 and gunicorn moves to loopback-only; if declined, gunicorn binds directly and Basic Auth credentials travel unencrypted. Certificates can be regenerated, downloaded, or replaced with your own from Settings at any time. |
+| **Transport encryption** | `install.py` prompts to set up nginx with a self-signed TLS certificate (generated per-install under `/etc/ssl/pi-forensics`, with SAN entries for the station's actual LAN IP). If accepted, nginx terminates TLS on 80/443 and gunicorn moves to loopback-only; if declined, gunicorn binds directly and both the session cookie and any Basic Auth credentials travel unencrypted. Certificates can be regenerated, downloaded, or replaced with your own from Settings > Security at any time. |
 | **No free-text shell access** | The Settings tab's diagnostics panel runs a fixed allowlist of read-only commands (`dmesg`, `lsusb`, `df -h`, `ip a`, `uptime`, `lsblk`, `free -h`, `mount`) as literal argv lists - there is deliberately no general "run any command" box anywhere in the UI or API. A web-exposed shell is a full remote-code-execution hole on a device that images evidence; that trade-off isn't worth the convenience. |
 | **Scoped privileged actions** | Power/service-restart/update controls in Settings each map to an exact, pinned sudoers entry (e.g. `systemctl restart pi-forensics.service`, `apt-get update`) rather than a wildcarded binary grant - the service account can't use these entries to run anything beyond what's listed. |
 | **Password changes persist safely** | Changing the station password or managing user accounts from Settings writes to `runtime_config.json` in the install directory (mode 0600, owned by the service account), not a world-readable file - it takes effect immediately and survives restarts without needing to edit the systemd unit. |
