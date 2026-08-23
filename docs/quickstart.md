@@ -34,6 +34,10 @@ Open a terminal on the Pi (or SSH into it) and run:
 sudo git clone https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 
+This installs the latest development code. For a stable, versioned build instead, see the
+[README's release-pinning instructions](../README.md#-prerequisites-setup--usage) and the
+[latest release](https://github.com/n0sfs/pi-forensics/releases).
+
 The installer will ask you a handful of questions. The defaults are fine for a first run — press
 Enter to accept each one unless you already know you want something different. It will ask you to:
 

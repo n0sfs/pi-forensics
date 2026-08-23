@@ -5,7 +5,8 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.0.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.1-brightgreen)](CHANGELOG.md)
+[![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
 
@@ -192,6 +193,16 @@ Open a terminal (or SSH) and run:
 ```bash
 sudo git clone https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
+This clones the `main` branch — the latest development code, updated continuously. For a stable,
+versioned build instead (recommended for anything beyond a quick test), install a tagged
+[release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
+command, e.g.:
+```bash
+sudo git clone --branch v1.0.1 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+```
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
+check its exact version and pull updates from Settings > Service Controls & Diagnostics.
+
 ### Interactive Installer Options
 During execution, install.py will prompt you to specify the system account:
 

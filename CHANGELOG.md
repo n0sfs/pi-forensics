@@ -21,6 +21,48 @@ file after updating to see what changed.
 
 ---
 
+## [1.0.1] - 2026-08-23
+
+A security-hardening and documentation release. No new features - upgrading is recommended for every
+station, especially any station reachable outside a fully trusted physical network.
+
+### Security
+
+- Fixed a way the physical-kiosk login bypass could be spoofed by a remote client under certain
+  network configurations, potentially skipping login entirely.
+- Updated the Sleuth Kit library to a version that fixes a denial-of-service vulnerability
+  triggerable by a malicious ISO9660 filesystem inside an acquired image.
+- Fixed the login lockout so failed attempts from one remote client can no longer lock out every
+  other client sharing the same network path (e.g. behind the same router or reverse proxy).
+- Closed a gap where two File Explorer actions (text/HTML preview, raw hex view) had no permission
+  check, letting any authenticated account use them regardless of their assigned group.
+- Case-folder path handling is now sandboxed the same way as every other evidence path in the app,
+  closing a narrow path-traversal gap.
+- Examiner-defined custom keyword/regex scan lists are now checked for catastrophic-backtracking
+  patterns before being accepted, so a malformed pattern can no longer be used to hang the scanning
+  engine.
+- Live Device Preview access grants are now reconciled automatically if the app restarts mid-session,
+  so an interrupted preview can't leave a live drive's read-access grant open indefinitely.
+- Network-share mount fields (host, share path, username) are now validated to reject values that
+  could be misinterpreted as command-line flags by the underlying mount tools.
+- Tightened permissions on case creation/migration and the MVT spyware-indicator update action;
+  bumped the bundled `gunicorn` dependency past a known vulnerability.
+
+### Fixed
+
+- PDF preview inside an acquired (e.g. BitLocker-decrypted) image showed garbled bytes instead of the
+  actual PDF.
+
+### Documentation
+
+- Added a Quick-Start Guide and a full User Manual (`docs/`), covering every tab and every tool -
+  including several that had never been documented anywhere before.
+- Updated the in-app Help (guided walkthroughs, FAQ, tool reference) to match - encrypted-volume
+  support, Live Device Preview, Logical Acquisition, image format conversion, memory forensics, and
+  browser-artifact parsing are now all covered there too.
+
+---
+
 ## [1.0.0] - 2026-08-22
 
 Initial tagged release. Pi Forensics Suite has been under continuous development and real-world use
