@@ -1,5 +1,13 @@
 Flask>=3.0.0
-gunicorn>=21.0.0
+# >=23.0.0 specifically: CVE-2024-6827 is a TE.CL HTTP request-smuggling
+# bug (Transfer-Encoding header not validated per RFC), fixed in 23.0.0 -
+# confirmed via the Debian security tracker's own fixed-by commit
+# reference, not just a changelog mention. Mitigated when nginx sits in
+# front (this app's own recommended deployment - see the kiosk-bypass
+# security-audit fix elsewhere in this history), more exposed on a plain-
+# HTTP install with no reverse proxy. Found via the 2026-08-22 security
+# audit.
+gunicorn>=23.0.0
 psutil>=5.8.0
 reportlab==4.0.8
 mvt>=2.5.0

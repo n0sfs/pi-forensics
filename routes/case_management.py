@@ -2,13 +2,18 @@
 of legacy (pre-consolidated-schema) cases into the modern one-file-
 per-case format.
 
-Deliberately a small, simple cluster - none of these 5 routes carry a
-@requires_permission decorator (just @requires_auth), a genuinely
-different, simpler concern from the bigger reclassified case-notes/
-attach/discover cluster reporting.py absorbs in a later step. No
-server-side "active case" state is kept here - every job-starting
-route already takes `destination` per-request, so selecting a case is
-purely a frontend concern.
+A small, simple cluster - GET/logging routes (list, log_select,
+migrate_preview - all read-only, see each one's own comment) stay
+@requires_auth-only, matching this app's established "reads are open,
+writes are permission-gated" convention. The two genuinely mutating routes
+(create_case, migrate_case_apply) originally had NO permission check at
+all - found during the 2026-08-22 security audit: even a custom group with
+every permission key False could still create case folders and rewrite
+on-disk report files via migration, inconsistent with the near-identical,
+already-gated case-notes/attach/discover cluster routes/reporting.py
+absorbs. No server-side "active case" state is kept here - every
+job-starting route already takes `destination` per-request, so selecting a
+case is purely a frontend concern.
 
 Part of the app.py -> core/ + routes/ split. See the dated CLAUDE.md
 entry for this refactor.
@@ -20,7 +25,7 @@ import uuid
 
 from flask import Blueprint, jsonify, request
 
-from core.auth import requires_auth
+from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, sanitize_case_slug
 from core.config import EVIDENCE_ROOT, get_custom_case_fields
 from core.jobs import job_lock, current_job, _write_case_file
@@ -30,6 +35,13 @@ case_management_bp = Blueprint('case_management', __name__)
 
 @case_management_bp.route('/api/cases/create', methods=['POST'])
 @requires_auth
+# Broad OR, not just 'reporting': the Active Case Bar (and its Case
+# Manager modal, where this is reached) is a global element visible from
+# every tab, and creating a case is the prerequisite for using ANY of
+# them - an Acquisition-only account must still be able to create a case
+# before starting an acquisition. Only an account with none of these four
+# (effectively a read-only/no-operational-access group) is excluded.
+@requires_permission('acquisition', 'mobile', 'recovery', 'reporting')
 def create_case():
     req = request.get_json() or {}
     case_number_raw = req.get('case_number', '').strip()
@@ -232,6 +244,12 @@ def migrate_case_preview():
 
 @case_management_bp.route('/api/cases/migrate_apply', methods=['POST'])
 @requires_auth
+# 'reporting' specifically (narrower than create_case's broad OR above):
+# migration is about rewriting a case's REPORT files into the consolidated
+# format, a report-management concern, not a prerequisite for selecting or
+# using a legacy case for acquisition/recovery/mobile work - those keep
+# working against an unmigrated case regardless of this permission.
+@requires_permission('reporting')
 def migrate_case_apply():
     req = request.get_json() or {}
     case_dir = safe_path(req.get('case_folder', ''))
