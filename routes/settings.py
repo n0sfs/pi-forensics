@@ -58,6 +58,7 @@ from core.config import (
     _get_or_create_mount_key, _encrypt_secret, _decrypt_secret,
 )
 from core.jobs import job_lock, current_job, update_job
+from core.case_index_db import check_regex_pattern_for_redos
 
 settings_bp = Blueprint('settings', __name__)
 
@@ -562,6 +563,24 @@ def _keyword_list_from_payload(req):
                 re.compile(t)
             except re.error as e:
                 return None, f"'{t}' is not a valid regular expression: {e}"
+
+        # ReDoS check, found missing entirely during the 2026-08-22 security
+        # audit: a syntactically-valid regex can still exhibit catastrophic
+        # backtracking, and this list's compiled pattern later runs directly
+        # against raw, attacker-influenced evidence bytes in 3 different scan
+        # workers with no per-match timeout. Build and test the exact same
+        # combined pattern build_scan_patterns() would actually compile and
+        # use (not each term in isolation), so this check reflects what a
+        # real scan would run - see core/case_index_db.py's
+        # check_regex_pattern_for_redos() for the mechanism and its disclosed
+        # limitations.
+        try:
+            combined = re.compile('|'.join(f'(?:{t})' for t in terms).encode('utf-8'), re.IGNORECASE)
+            redos_error = check_regex_pattern_for_redos(combined)
+            if redos_error:
+                return None, redos_error
+        except re.error as e:
+            return None, f"Combined pattern is not valid: {e}"
 
     return {
         "name": name,

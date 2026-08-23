@@ -13,6 +13,7 @@ import re
 import json
 import time
 import sqlite3
+import multiprocessing
 from flask import g
 
 from core.paths import safe_path, case_consolidated_path, classify_case_role
@@ -64,14 +65,28 @@ def build_scan_patterns(keyword_list_ids=None):
     """Returns {name: compiled_regex} - always the 5 built-in TRIAGE_PATTERNS,
     plus one compiled pattern per selected keyword list (get_keyword_lists()
     in core/config.py), keyed 'kw_<list_id>'. A list with no usable terms,
-    or whose terms fail to compile as a regex (only relevant when
-    is_regex=True - a plain-term list is always safe, since every term is
-    re.escape()'d), is silently skipped rather than failing the whole scan -
-    matches this app's established tolerance for a broken/stale config
-    elsewhere over hard-failing a long-running job for it. keyword_list_ids
-    is opt-in per scan (None/empty = built-ins only, unchanged from every
-    call site's pre-existing behavior) - a keyword list is never
-    force-included just because it exists."""
+    whose terms fail to compile as a regex (only relevant when is_regex=True
+    - a plain-term list is always safe, since every term is re.escape()'d),
+    or whose combined pattern fails the ReDoS canary check below, is
+    silently skipped rather than failing the whole scan - matches this app's
+    established tolerance for a broken/stale config elsewhere over
+    hard-failing a long-running job for it. keyword_list_ids is opt-in per
+    scan (None/empty = built-ins only, unchanged from every call site's
+    pre-existing behavior) - a keyword list is never force-included just
+    because it exists.
+
+    The ReDoS check runs here - once per scan job, when the pattern set is
+    first assembled - rather than per chunk inside each scan worker's
+    finditer() loop. This is deliberate, not a shortcut: it catches every
+    caller (including a keyword list saved before this check existed, since
+    there's no separate "already validated" flag to trust) with a single,
+    genuinely robust subprocess-based check (see check_regex_pattern_for_
+    redos()) instead of needing that heavier mechanism to also run at
+    per-chunk frequency, which would add real overhead across a large scan
+    for comparatively little extra safety - a pattern that's fast against
+    the canary probes is essentially never going to develop catastrophic
+    behavior only against longer real evidence data (backtracking blowup is
+    a property of the pattern's structure, not the specific input)."""
     patterns = dict(TRIAGE_PATTERNS)
     if not keyword_list_ids:
         return patterns
@@ -87,10 +102,110 @@ def build_scan_patterns(keyword_list_ids=None):
                 combined = '|'.join(f'(?:{t})' for t in terms)
             else:
                 combined = '|'.join(re.escape(t) for t in terms)
-            patterns[f"{KEYWORD_CATEGORY_PREFIX}{kw_list['id']}"] = re.compile(combined.encode('utf-8'), re.IGNORECASE)
+            compiled = re.compile(combined.encode('utf-8'), re.IGNORECASE)
         except re.error:
             continue
+        if kw_list.get('is_regex') and check_regex_pattern_for_redos(compiled) is not None:
+            continue
+        patterns[f"{KEYWORD_CATEGORY_PREFIX}{kw_list['id']}"] = compiled
     return patterns
+
+# --- ReDoS defense for examiner-defined regex keyword-list patterns ---
+# Found during the 2026-08-22 security audit: an is_regex=True keyword list
+# (plain-term lists are always safe - every term is re.escape()'d) compiled
+# fine but was never checked for catastrophic backtracking, and was then run
+# via pattern.finditer() against raw, attacker-influenced evidence bytes
+# with no bound on how long a single call could take - Python's re module
+# has no built-in match timeout, and one bad pattern could hang this app's
+# single shared job slot indefinitely, blocking every other acquisition/
+# recovery job station-wide.
+#
+# The first version of this fix used a background THREAD (join(timeout),
+# abandon if still alive) - the usual approach when signal.alarm() isn't an
+# option (it only works in the main thread, and every scan worker here runs
+# in its own background thread). That turned out to be actively unsafe, not
+# just a partial mitigation: CPython's re engine runs its backtracking loop
+# as a tight C-level loop that does not release the GIL, so an "abandoned"
+# thread doesn't quietly leak in the background - it can starve the ENTIRE
+# process of CPU time via the GIL, including the calling thread that
+# supposedly already "got control back". This was caught empirically, not
+# just reasoned about: testing the classic (a+)+ pattern against a 28-byte
+# adversarial string hung the *entire test session*, not just one thread.
+#
+# The only way to genuinely reclaim CPU from a runaway backtracking match is
+# to run it in a real, separate OS process that can be terminated - a
+# thread cannot be forcibly killed in Python. check_regex_pattern_for_redos()
+# below does exactly that (multiprocessing.Process + terminate()/kill() on
+# timeout), and is deliberately kept to LOW-FREQUENCY call sites where a
+# real process-spawn cost is a non-issue: save-time validation of a new/
+# edited keyword list (routes/settings.py) and build_scan_patterns() itself
+# (once per scan job, not per chunk - see that function's own docstring for
+# why per-chunk frequency isn't needed once this gate exists there).
+REDOS_PROBE_STRINGS = [
+    b"a" * 32 + b"!",
+    b"0" * 32 + b"!",
+    b" " * 32 + b"!",
+    b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaX",
+]
+REGEX_VALIDATION_TIMEOUT_SECONDS = 2.0  # per probe string - generous relative to a real
+                                         # match (milliseconds), to absorb process-startup
+                                         # overhead on a platform without fork() (see below)
+
+# Prefer 'fork' when available (every real deployment - this app is Linux-
+# only in production): the child inherits already-imported module state
+# directly, so REGEX_VALIDATION_TIMEOUT_SECONDS mostly measures the actual
+# regex match, not process startup. The default context on a fork-less
+# platform (Windows, dev-only for this project) re-imports this whole
+# module chain from scratch per probe - confirmed empirically to cost real
+# time (multiple seconds across 4 probes) that has nothing to do with the
+# pattern being tested, which without this fallback would show up as false
+# positives (a perfectly safe pattern rejected only because process
+# startup itself outran the timeout). Not a concern in production.
+try:
+    _mp_ctx = multiprocessing.get_context('fork')
+except ValueError:
+    _mp_ctx = multiprocessing.get_context()
+
+def _redos_probe_worker(pattern_bytes, flags, probe, out_queue):
+    # Runs in the child process - re-compiles from the pattern's own source/
+    # flags rather than trying to pass a compiled re.Pattern across the
+    # process boundary, avoiding any doubt about whether that pickles
+    # correctly.
+    try:
+        compiled = re.compile(pattern_bytes, flags)
+        list(compiled.finditer(probe))
+        out_queue.put(True)
+    except Exception:
+        out_queue.put(True)  # a compile/match error here isn't this check's concern
+
+def check_regex_pattern_for_redos(compiled_pattern):
+    """Runs compiled_pattern against REDOS_PROBE_STRINGS, each in its own
+    subprocess with a short hard timeout - genuinely terminated (not just
+    abandoned) if it runs long, so a catastrophic match can never starve
+    this app's own process. Returns None if every probe finishes cleanly,
+    or an error string describing the concern - meant to be surfaced
+    directly to the examiner at save time, before the pattern is ever used
+    against real evidence."""
+    for probe in REDOS_PROBE_STRINGS:
+        out_queue = _mp_ctx.Queue()
+        proc = _mp_ctx.Process(
+            target=_redos_probe_worker,
+            args=(compiled_pattern.pattern, compiled_pattern.flags, probe, out_queue),
+        )
+        proc.start()
+        proc.join(REGEX_VALIDATION_TIMEOUT_SECONDS)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(1.0)
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
+            out_queue.close()
+            return ("This pattern is too slow against a simple test string and risks hanging a real scan "
+                    "(catastrophic backtracking) - try simplifying it, e.g. avoiding nested repetition "
+                    "like (x+)+ or overlapping alternation like (x|xx)+.")
+        out_queue.close()
+    return None
 
 def resolve_scan_category_label(category):
     """Human label for a scan category name, for the report/log lines every
