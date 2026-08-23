@@ -348,6 +348,30 @@
         }
         .reports-content { flex: 1; min-width: 0; padding: 20px; }
 
+        /* Help's nav + pane - same horizontal-top-tabs treatment as Settings/
+           Reporting above (2026-08-23, converted from a Bootstrap modal at
+           the user's own request - "the help page looks pretty ugly, can we
+           push that into a tab like Settings/Reporting instead of a
+           popup?"). Kept as its own class set rather than merged into one
+           shared name, matching this file's own established precedent of
+           not coupling areas' styling just because they render the same. */
+        .help-shell { display: flex; flex-direction: column; align-items: stretch; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.4); background-color: var(--card-bg); }
+        .help-nav { display: flex; flex-direction: row; flex-wrap: wrap; border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.02); padding: 0 6px; }
+        .help-nav .list-group-item {
+            display: flex; align-items: center; gap: 8px;
+            width: auto; flex: 0 0 auto;
+            background: transparent; color: var(--text-subtle); font-weight: 600; font-size: 0.88rem;
+            border: none; border-bottom: 3px solid transparent; border-radius: 0;
+            padding: 12px 16px; white-space: nowrap; text-align: left;
+        }
+        .help-nav .list-group-item i { font-size: 1.05rem; flex-shrink: 0; }
+        .help-nav .list-group-item:hover { color: var(--text-bright); background: rgba(255,255,255,0.03); }
+        .help-nav .list-group-item.active {
+            color: var(--accent-cyan); font-weight: 700; background: rgba(0, 242, 254, 0.07); border-bottom-color: var(--accent-cyan);
+        }
+        .help-content { flex: 1; min-width: 0; padding: 20px; }
+        .help-doc-frame { width: 100%; height: clamp(420px, 78vh, 950px); border: 1px solid var(--border-color); border-radius: 6px; background: #090b10; }
+
         @media (max-width: 767.98px) {
             /* File Explorer's folder tree: hidden by default below this
                breakpoint (matches the main sidebar's own narrow-screen
@@ -484,11 +508,8 @@
                         <i class="bi bi-gear-wide-connected"></i><span class="tab-label">Settings</span>
                     </button>
                 </li>
-            </ul>
-
-            <ul class="nav flex-column">
-                <li class="nav-item">
-                    <button class="nav-link" id="helpBtn" onclick="openHelpModal()" title="Help & Reference">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="help-tab" data-bs-toggle="tab" data-bs-target="#help-app" type="button" role="tab" onclick="populateFaq(); populateToolReference(); populateReportFieldMapping(); populateHelpInfo();" title="Help & Reference">
                         <i class="bi bi-question-circle-fill"></i><span class="tab-label">Help</span>
                     </button>
                 </li>
@@ -518,6 +539,7 @@
 {% include 'tabs/mobile.html' %}
 {% include 'tabs/reporting.html' %}
 {% include 'tabs/settings.html' %}
+{% include 'tabs/help.html' %}
 
                 </div>
             </div>

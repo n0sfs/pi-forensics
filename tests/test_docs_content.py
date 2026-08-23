@@ -41,3 +41,26 @@ def test_unknown_doc_id_returns_none_not_a_crash():
 def test_missing_file_on_disk_returns_none(monkeypatch, tmp_path):
     monkeypatch.setitem(config.DOC_FILES, "quickstart", str(tmp_path / "does_not_exist.md"))
     assert config.get_doc_content("quickstart") is None
+
+
+def test_render_doc_html_produces_a_full_self_contained_page():
+    for doc_id in config.DOC_FILES:
+        page = config.render_doc_html(doc_id)
+        assert page is not None
+        assert page.startswith("<!doctype html>")
+        assert "<style>" in page  # self-contained, no external stylesheet
+        assert "cdn." not in page.lower()  # never reaches out for CSS/fonts/JS
+
+
+def test_render_doc_html_converts_markdown_syntax_not_just_passes_it_through():
+    page = config.render_doc_html("quickstart")
+    # toc extension adds an id="..." to every heading (a nice side effect -
+    # every section gets a stable deep-link anchor), so this checks the
+    # real text content landed inside a real <h1>, not the exact attribute-
+    # free tag shape.
+    assert "<h1" in page and ">Quick-Start Guide</h1>" in page
+    assert "# Quick-Start Guide" not in page  # raw markdown syntax gone
+
+
+def test_render_doc_html_unknown_id_returns_none():
+    assert config.render_doc_html("bogus-id") is None

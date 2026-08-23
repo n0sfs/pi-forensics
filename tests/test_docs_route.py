@@ -1,7 +1,7 @@
 """End-to-end tests for routes/auth_routes.py's GET /docs/<doc_id> - serves
-the shipped Quick-Start Guide, User Manual, and CHANGELOG as plain text to
-any logged-in account, from a link in the Help modal and Settings >
-Diagnostics.
+the shipped Quick-Start Guide, User Manual, and CHANGELOG as real rendered
+HTML pages to any logged-in account, linked from the Help tab and Settings
+> Diagnostics.
 
 Deliberately reuses test_login_flow.py's exact fixture pattern (a minimal
 Flask app registering only auth_routes_bp, no core.jobs dependency) so this
@@ -56,24 +56,45 @@ def test_docs_route_requires_a_session(client, runtime_config_file):
     assert "/login" in res.headers["Location"]
 
 
-def test_logged_in_account_can_read_each_real_doc(client, runtime_config_file):
+def test_logged_in_account_gets_real_rendered_html_for_each_doc(client, runtime_config_file):
     _login(client, runtime_config_file)
-    for doc_id, expected_start in (
-        ("quickstart", "# Quick-Start Guide"),
-        ("user-manual", "# Pi Forensics Suite"),
-        ("changelog", "# Changelog"),
+    for doc_id, expected_heading, expected_title in (
+        # toc extension adds id="..." to every heading, so these check the
+        # real text landed inside a real <h1>, not an exact attribute-free
+        # tag shape.
+        ("quickstart", ">Quick-Start Guide</h1>", "Quick-Start Guide"),
+        ("user-manual", ">Pi Forensics Suite", "User Manual"),
+        ("changelog", ">Changelog</h1>", "Release Notes"),
     ):
         res = client.get(f"/docs/{doc_id}")
         assert res.status_code == 200
-        assert res.mimetype == "text/plain"
-        # Real bug caught live: passing a mimetype string that already
-        # includes "; charset=utf-8" to Response(mimetype=...) makes
-        # Werkzeug append its own default charset on top, producing a
-        # malformed "charset=utf-8; charset=utf-8" header. Assert the raw
+        assert res.mimetype == "text/html"
+        # Real bug caught live once already (for this route's earlier
+        # plain-text version): a mimetype string that already includes
+        # "; charset=utf-8" makes Werkzeug append its own default charset
+        # on top, producing a malformed doubled header. Assert the raw
         # header has exactly one charset param, not just that .mimetype
         # (which strips params entirely) looks right.
         assert res.headers["Content-Type"].count("charset") == 1
-        assert res.get_data(as_text=True).startswith(expected_start)
+        body = res.get_data(as_text=True)
+        assert expected_heading in body
+        assert f"<title>{expected_title} - Pi Forensics Suite</title>" in body
+        # Raw Markdown syntax should never leak through unconverted.
+        assert "##" not in body
+
+
+def test_user_manual_internal_toc_anchors_all_resolve(client, runtime_config_file):
+    # The User Manual has its own hand-written table of contents linking to
+    # #1-what-this-station-is-and-isnt style anchors - confirms the toc
+    # extension's generated heading ids exactly match what the manual's own
+    # links expect, not just that the page renders without error.
+    import re
+    _login(client, runtime_config_file)
+    body = client.get("/docs/user-manual").get_data(as_text=True)
+    anchor_ids = set(re.findall(r'id="([^"]+)"', body))
+    linked_anchors = set(re.findall(r'href="#([^"]+)"', body))
+    assert linked_anchors, "expected at least one internal TOC link"
+    assert linked_anchors <= anchor_ids, f"broken anchors: {linked_anchors - anchor_ids}"
 
 
 def test_unknown_doc_id_is_a_clean_404_not_a_crash(client, runtime_config_file):

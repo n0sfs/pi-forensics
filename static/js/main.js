@@ -268,11 +268,11 @@ async function loadReportingStats() {
 
 // Persist and restore whichever top-level sidebar tab the examiner was last on, so refreshing the
 // page (or the kiosk browser restarting) doesn't always land back on Forensic Acquisition - a real
-// reported annoyance for anyone mid-review on Reporting/Settings/etc. Scoped to exactly these 6 real
-// tabs (not sub-navs like Reporting's/Settings' own list-group-as-tabs, which reuse the same
+// reported annoyance for anyone mid-review on Reporting/Settings/etc. Scoped to exactly these 8 real
+// tabs (not sub-navs like Reporting's/Settings'/Help's own list-group-as-tabs, which reuse the same
 // Bootstrap Tab component and would otherwise also fire this listener).
 const LAST_TAB_STORAGE_KEY = 'pi_forensics_last_tab';
-const TOP_LEVEL_TAB_IDS = ['home-tab', 'acquisition-tab', 'mobile-tab', 'ddrescue-tab', 'explorer-tab', 'reports-tab', 'settings-tab'];
+const TOP_LEVEL_TAB_IDS = ['home-tab', 'acquisition-tab', 'mobile-tab', 'ddrescue-tab', 'explorer-tab', 'reports-tab', 'settings-tab', 'help-tab'];
 document.addEventListener('shown.bs.tab', (ev) => {
     if (TOP_LEVEL_TAB_IDS.includes(ev.target?.id)) {
         localStorage.setItem(LAST_TAB_STORAGE_KEY, ev.target.id);
@@ -376,40 +376,32 @@ function showGuideStep(scenario) {
         const goBtn = document.createElement('button');
         goBtn.className = 'btn btn-sm btn-info text-dark fw-bold';
         goBtn.innerHTML = '<i class="bi bi-arrow-right-circle me-1"></i>Take me there';
-        goBtn.onclick = () => {
-            if (helpModalInstance) helpModalInstance.hide();
-            switchToTab(data.tabId);
-        };
+        goBtn.onclick = () => switchToTab(data.tabId);
         wrap.appendChild(goBtn);
     }
 
     container.appendChild(wrap);
 }
 
-// ===================== HELP MODAL =====================
-let helpModalInstance = null;
+// ===================== HELP TAB =====================
+// Help used to be a Bootstrap modal (openHelpModal()) - converted to a real
+// sidebar tab (2026-08-23, at the user's own request: "the help page looks
+// pretty ugly, can we push that into a tab like Settings/Reporting instead
+// of a popup?"), same horizontal-top-tabs shell as Settings/Reporting.
+// populateFaq()/populateToolReference()/populateReportFieldMapping()/
+// populateHelpInfo() are still called from help-tab's own onclick in
+// index.html (they each build-once-and-guard, so repeated calls are safe).
 
-function openHelpModal() {
-    if (!helpModalInstance) {
-        helpModalInstance = new bootstrap.Modal(document.getElementById('helpModal'));
-    }
-    populateFaq();
-    populateToolReference();
-    populateReportFieldMapping();
-    populateHelpInfo();
-    helpModalInstance.show();
+// Lazy-loads one of the three embedded doc iframes (Quick-Start/User
+// Manual/Release Notes) only the first time its nav item is actually
+// clicked - avoids three extra requests on every page load for docs most
+// sessions never open. Idempotent: a second click on an already-loaded
+// pane is a no-op.
+function loadHelpDocFrame(frameId, docId) {
+    const frame = document.getElementById(frameId);
+    if (!frame || frame.src) return;
+    frame.src = `/docs/${docId}`;
 }
-
-document.addEventListener('click', (e) => {
-    const btn = e.target.closest('#helpTabNav .nav-link');
-    if (!btn) return;
-    document.querySelectorAll('#helpTabNav .nav-link').forEach(el => el.classList.remove('active'));
-    btn.classList.add('active');
-    const target = btn.getAttribute('data-help-tab');
-    document.querySelectorAll('.help-pane').forEach(pane => {
-        pane.classList.toggle('d-none', pane.id !== `helpPane-${target}`);
-    });
-});
 
 // Grouped by which sidebar tab (or cross-cutting topic) each question
 // belongs to, rendered as a flat accordion with a non-collapsible group
