@@ -310,6 +310,15 @@ install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in IN
 # grant read (never write) on a device that's already hardware read-only
 # via the udev blockdev --setro rule regardless.
 #
+# getfacl (unlike setfacl) needs no sudo grant at all - confirmed live that
+# an unprivileged read of a file's ACL/xattrs works regardless of the
+# file's own rwx bits for `other` (standard Unix metadata-visibility
+# semantics, distinct from data-access permission), even against a
+# root:disk-owned device node with no `other` access. Used unprivileged by
+# _device_preview_startup_reconciliation() (routes/image_browser.py) to
+# detect a stray read-ACL grant left over from a crashed/restarted process,
+# mirroring LUKS's own startup loop-device reconciliation.
+#
 # /usr/sbin/cryptsetup is DELIBERATELY pinned to two exact verbs
 # (luksOpen/luksClose), NOT granted unqualified like setfacl above - unlike
 # setfacl's device-path argument (genuinely too variable to pin), the

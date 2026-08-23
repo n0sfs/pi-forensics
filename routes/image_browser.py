@@ -18,6 +18,7 @@ entry for this refactor.
 import os
 import io
 import re
+import glob
 import time
 import json
 import base64
@@ -114,6 +115,54 @@ def _device_preview_sweep_loop():
                                   source_ip=None, user="system-idle-sweep")
 
 threading.Thread(target=_device_preview_sweep_loop, daemon=True).start()
+
+def _device_preview_startup_reconciliation():
+    """One-shot check at process start (not a recurring sweep - a leaked ACL
+    grant only ever happens via a process crash/restart, which this only
+    needs to check for once per process lifetime), found missing during the
+    2026-08-22 security audit and mirroring LUKS's own startup loop-device
+    reconciliation (routes/acquisition.py). active_device_previews is always
+    empty at a fresh start, so any read-ACL grant for this app's own service
+    account found on a candidate device at this point cannot be explained by
+    this process's own state - logs a disclosure, never auto-revokes
+    (matching this project's "disclose, don't silently act" posture used for
+    the LUKS case), even though the risk here is unusually low to actually
+    act on: this specific ACL entry can ONLY ever have been created by this
+    app's own code - no other legitimate reason exists for the service
+    account to hold an explicit read grant on a raw block device - unlike
+    LUKS's loop-device case, where a genuinely unrelated legitimate use
+    could theoretically exist.
+
+    Enumerates every /dev/sd*, /dev/nvme*, /dev/mmcblk* node, filtered to
+    exactly the whole-disk-or-partition whitelist
+    is_valid_block_device_or_partition() already enforces everywhere else in
+    this app, and runs plain UNPRIVILEGED `getfacl -p` against each - no sudo
+    grant needed at all, confirmed live: Unix metadata visibility (which
+    covers ACL/xattr reads) is governed separately from data-access
+    permission, so this succeeds even against a root:disk-owned device node
+    with no `other` access."""
+    try:
+        candidates = sorted(set(glob.glob('/dev/sd*') + glob.glob('/dev/nvme*') + glob.glob('/dev/mmcblk*')))
+    except Exception:
+        return
+    for device_path in candidates:
+        if not is_valid_block_device_or_partition(device_path):
+            continue
+        try:
+            res = subprocess.run(['getfacl', '-p', device_path], capture_output=True, text=True, timeout=5)
+        except Exception:
+            continue
+        if res.returncode != 0:
+            continue
+        if any(line.startswith(f'user:{_SERVICE_ACCOUNT_NAME}:') for line in res.stdout.splitlines()):
+            log_chain_of_custody(
+                "device_preview_orphan_acl_detected",
+                {"device": device_path,
+                 "note": "Found a read-ACL grant for this app's own service account at process startup, not explained by this process's own state - likely leaked by a prior crash/restart. Not auto-revoked."},
+                source_ip=None, user="system-startup",
+            )
+
+threading.Thread(target=_device_preview_startup_reconciliation, daemon=True).start()
 
 def _touch_device_preview(device_path):
     """Bumps last_activity for an active preview grant - called by every
