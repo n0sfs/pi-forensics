@@ -231,6 +231,14 @@ TSK_PREVIEW_IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
 TSK_HEX_PREVIEW_MAX_BYTES = 64 * 1024  # matches _HEX_PREVIEW_MAX_BYTES's rationale for the real-fs route
 TSK_PREVIEW_MIME = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
                      '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp'}
+# Same base64-embed technique already used for TSK_PREVIEW_IMAGE_EXT above -
+# there's no real on-disk path for a still-in-image file to hand a browser's
+# native PDF viewer via a plain URL (unlike the real-filesystem preview
+# route, which just points an iframe at /api/files/raw), so the whole file
+# has to be loaded and embedded as a data: URI instead. Same 8MB cap as
+# images for the same reason: base64 + an in-memory JSON payload doesn't
+# scale to an arbitrarily large file the way send_file()'s streaming does.
+TSK_PREVIEW_PDF_MAX_BYTES = 8_000_000
 
 def detect_image_format_support():
     # pytsk3's PyPI wheels bundle libewf support at build time, unlike the
@@ -400,6 +408,13 @@ def image_preview():
             _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_PREVIEW_IMAGE_MAX_BYTES)
             mime = TSK_PREVIEW_MIME.get(ext, 'application/octet-stream')
             return jsonify({"success": True, "kind": "image", "size": size, "mime": mime,
+                             "data": base64.b64encode(buf.getvalue()).decode('ascii')})
+        elif ext == '.pdf':
+            if size > TSK_PREVIEW_PDF_MAX_BYTES:
+                return jsonify({"success": True, "kind": "too_large", "size": size})
+            buf = io.BytesIO()
+            _tsk_stream_file(tsk_file, buf.write, max_bytes=TSK_PREVIEW_PDF_MAX_BYTES)
+            return jsonify({"success": True, "kind": "pdf", "size": size,
                              "data": base64.b64encode(buf.getvalue()).decode('ascii')})
         else:
             buf = io.BytesIO()
