@@ -324,6 +324,19 @@ def _do_network_mount(protocol, host, share_path, mount_point, user, password, s
     /api/mount_network route and attempt_startup_auto_mounts() below - one
     real implementation so the two can never drift apart. Returns
     (success: bool, error_message: str|None)."""
+    # host/share_path/user are examiner-typed free text that ends up
+    # combined into a single argv element for the mount tool (e.g.
+    # sftp_source = f"{user}@{host}:{share_path}" below) - list-form
+    # subprocess calls mean this was never a shell-injection risk, but a
+    # value starting with '-' could still be misread as a flag by sshfs/
+    # mount/smbclient's own argument parser rather than the positional data
+    # it's meant to be. Found during the 2026-08-22 security audit; checked
+    # once here for all three protocols rather than patching each branch
+    # separately, since they all build the same shape of combined argument.
+    for value, field_name in ((host, "Host"), (share_path, "Share path"), (user, "Username")):
+        if value and value.startswith('-'):
+            return False, f"{field_name} cannot start with '-'."
+
     # The service runs as an unprivileged user (see install.py), so
     # directories under /mnt must be created via sudo rather than
     # os.makedirs(), which would otherwise fail with a permission error.
