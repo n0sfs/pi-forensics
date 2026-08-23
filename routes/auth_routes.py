@@ -16,7 +16,7 @@ from flask import Blueprint, render_template, jsonify, request, g, session, redi
 from core.auth import (
     requires_auth, check_auth, is_local_kiosk_request, get_offline_tiles_info,
     get_current_user_permissions, get_current_user_role,
-    _session_user_still_valid, _safe_next_path,
+    _session_user_still_valid, _safe_next_path, _effective_client_ip,
     _record_last_login, _is_locked_out, _record_auth_failure, _record_auth_success,
 )
 from core.config import get_app_version
@@ -38,7 +38,7 @@ def login():
             app_version=get_app_version(),
         )
 
-    client_key = request.remote_addr or 'unknown'
+    client_key = _effective_client_ip()
     if _is_locked_out(client_key):
         return jsonify({
             "success": False,
