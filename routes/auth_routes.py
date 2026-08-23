@@ -19,7 +19,7 @@ from core.auth import (
     _session_user_still_valid, _safe_next_path, _effective_client_ip,
     _record_last_login, _is_locked_out, _record_auth_failure, _record_auth_success,
 )
-from core.config import get_app_version, get_doc_content
+from core.config import get_app_version, render_doc_html
 
 auth_routes_bp = Blueprint('auth_routes', __name__)
 
@@ -85,19 +85,16 @@ def view_doc(doc_id):
     # No extra permission gate beyond a valid login - this is static,
     # shipped-with-the-repo documentation (Quick-Start/User Manual/
     # CHANGELOG), not evidence or station configuration, same access level
-    # as the Help modal itself which any authenticated account can open.
-    content = get_doc_content(doc_id)
-    if content is None:
+    # as the Help tab itself which any authenticated account can open.
+    page_html = render_doc_html(doc_id)
+    if page_html is None:
         return "Not found.", 404
-    # text/plain, not text/markdown - guarantees every browser renders it
-    # inline (readable as-is; headings/lists/code fences are still clear in
-    # plain text) instead of some browsers offering it as a download.
-    # Bare "text/plain" (not "text/plain; charset=utf-8") - Werkzeug appends
+    # Bare "text/html" (not "text/html; charset=utf-8") - Werkzeug appends
     # its own default charset to a bare text/* mimetype automatically;
-    # passing one already-included here doubled up into a malformed
-    # "charset=utf-8; charset=utf-8" header, caught via a live content-type
-    # check rather than assumed correct from the code alone.
-    return Response(content, mimetype="text/plain")
+    # passing one already-included would double up into a malformed
+    # "charset=utf-8; charset=utf-8" header (a real bug caught live here
+    # once already, for the plain-text version this route used before).
+    return Response(page_html, mimetype="text/html")
 
 
 @auth_routes_bp.route('/api/whoami', methods=['GET'])

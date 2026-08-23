@@ -8,8 +8,10 @@ the dated CLAUDE.md entry for this refactor for the full rationale.
 import os
 import sys
 import json
+import html
 import threading
 import secrets
+import markdown
 from cryptography.fernet import Fernet, InvalidToken
 
 # Authentication Config
@@ -230,3 +232,110 @@ def get_doc_content(doc_id):
             return f.read()
     except Exception:
         return None
+
+
+DOC_TITLES = {
+    "quickstart": "Quick-Start Guide",
+    "user-manual": "User Manual",
+    "changelog": "Release Notes",
+}
+
+# Self-contained inline CSS (no external stylesheet/font/CDN dependency) so
+# these pages read correctly on a station with no internet access, matching
+# every other doc/report this app produces (the exported HTML report is the
+# same self-contained-on-purpose pattern). Palette/font-stack mirror the
+# main app's own :root variables (templates/index.html) so the doc reads as
+# part of the same product, not a jarring light-mode page bolted on.
+_DOC_HTML_STYLE = """
+:root {
+    --bg-dark: #090b10; --card-bg: #131722; --border-color: #2e364f;
+    --accent-cyan: #00f2fe; --text-bright: #ffffff; --text-subtle: #cbd5e1;
+}
+* { box-sizing: border-box; }
+body {
+    background: var(--bg-dark); color: var(--text-bright);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    margin: 0; padding: 0;
+}
+.doc-topbar {
+    position: sticky; top: 0; z-index: 10;
+    background: linear-gradient(90deg, #07090e 0%, #161b26 100%);
+    border-bottom: 1px solid var(--border-color);
+    padding: 10px 24px; display: flex; align-items: center; gap: 10px;
+}
+.doc-topbar a { color: var(--accent-cyan); text-decoration: none; font-weight: 700; font-size: 0.85rem; }
+.doc-topbar a:hover { text-decoration: underline; }
+.doc-topbar .doc-topbar-title { color: var(--text-subtle); font-size: 0.85rem; margin-left: auto; }
+article {
+    max-width: 780px; margin: 0 auto; padding: 32px 24px 80px;
+    line-height: 1.65; font-size: 1rem;
+}
+article h1, article h2, article h3, article h4 {
+    color: var(--accent-cyan); font-weight: 700; line-height: 1.3;
+    margin-top: 2em; margin-bottom: 0.6em;
+}
+article h1 { font-size: 1.9rem; margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 0.4em; }
+article h2 { font-size: 1.4rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.3em; }
+article h3 { font-size: 1.15rem; color: var(--text-bright); }
+article h4 { font-size: 1rem; color: var(--text-subtle); }
+article p, article ul, article ol { color: var(--text-subtle); margin-bottom: 1em; }
+article strong { color: var(--text-bright); }
+article a { color: var(--accent-cyan); }
+article ul, article ol { padding-left: 1.4em; }
+article li { margin-bottom: 0.35em; }
+article li > ul, article li > ol { margin-top: 0.35em; }
+article code {
+    background: var(--card-bg); border: 1px solid var(--border-color);
+    border-radius: 4px; padding: 0.1em 0.4em; font-size: 0.88em;
+    font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+    color: #7dd3fc;
+}
+article pre {
+    background: var(--card-bg); border: 1px solid var(--border-color);
+    border-radius: 6px; padding: 14px 16px; overflow-x: auto; margin-bottom: 1.2em;
+}
+article pre code { background: none; border: none; padding: 0; color: var(--text-bright); }
+article blockquote {
+    border-left: 3px solid var(--accent-cyan); margin: 1.2em 0; padding: 0.4em 1em;
+    background: rgba(0, 242, 254, 0.06); color: var(--text-subtle);
+}
+article blockquote p:last-child { margin-bottom: 0; }
+article table { border-collapse: collapse; width: 100%; margin-bottom: 1.4em; font-size: 0.92rem; }
+article th, article td { border: 1px solid var(--border-color); padding: 8px 12px; text-align: left; vertical-align: top; }
+article th { background: var(--card-bg); color: var(--accent-cyan); }
+article tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+article hr { border: none; border-top: 1px solid var(--border-color); margin: 2em 0; }
+"""
+
+
+def render_doc_html(doc_id):
+    """Renders a known doc_id's Markdown into a full, self-contained styled
+    HTML page. Returns None (same contract as get_doc_content()) when the
+    id is unrecognized or the file can't be read, so the route can turn
+    that into a clean 404. Markdown is trusted, first-party content shipped
+    with the repo, never user-supplied - the html.escape() below is only
+    for the page <title>, which is built from a fixed dict this module
+    controls, not derived from the markdown text itself."""
+    raw = get_doc_content(doc_id)
+    if raw is None:
+        return None
+    body_html = markdown.markdown(raw, extensions=["extra", "sane_lists", "toc"])
+    title = html.escape(DOC_TITLES.get(doc_id, "Documentation"))
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} - Pi Forensics Suite</title>
+<style>{_DOC_HTML_STYLE}</style>
+</head>
+<body>
+<div class="doc-topbar">
+<a href="/">&larr; Back to Pi Forensics Suite</a>
+<span class="doc-topbar-title">{title}</span>
+</div>
+<article>
+{body_html}
+</article>
+</body>
+</html>"""

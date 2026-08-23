@@ -1,0 +1,72 @@
+            <!-- APP: HELP & REFERENCE -->
+            <div class="tab-pane fade" id="help-app" role="tabpanel">
+                <div class="help-shell">
+                    <div class="help-nav list-group" id="helpNavList" role="tablist">
+                        <button class="list-group-item list-group-item-action active" id="helpNavStart" data-bs-toggle="list" data-bs-target="#help-pane-start" type="button" role="tab"><i class="bi bi-signpost-2-fill"></i>Getting Started</button>
+                        <button class="list-group-item list-group-item-action" id="helpNavFaq" data-bs-toggle="list" data-bs-target="#help-pane-faq" type="button" role="tab"><i class="bi bi-question-circle-fill"></i>FAQ</button>
+                        <button class="list-group-item list-group-item-action" id="helpNavTools" data-bs-toggle="list" data-bs-target="#help-pane-tools" type="button" role="tab"><i class="bi bi-tools"></i>Tool Reference</button>
+                        <button class="list-group-item list-group-item-action" id="helpNavReportFields" data-bs-toggle="list" data-bs-target="#help-pane-reportfields" type="button" role="tab"><i class="bi bi-table"></i>Report Field Mapping</button>
+                        <button class="list-group-item list-group-item-action" id="helpNavInfo" data-bs-toggle="list" data-bs-target="#help-pane-info" type="button" role="tab"><i class="bi bi-info-circle-fill"></i>Additional Info</button>
+                        <button class="list-group-item list-group-item-action" id="helpNavQuickstart" data-bs-toggle="list" data-bs-target="#help-pane-quickstart" type="button" role="tab" onclick="loadHelpDocFrame('helpQuickstartFrame', 'quickstart')"><i class="bi bi-rocket-takeoff"></i>Quick-Start Guide</button>
+                        <button class="list-group-item list-group-item-action" id="helpNavManual" data-bs-toggle="list" data-bs-target="#help-pane-manual" type="button" role="tab" onclick="loadHelpDocFrame('helpManualFrame', 'user-manual')"><i class="bi bi-book"></i>User Manual</button>
+                        <button class="list-group-item list-group-item-action" id="helpNavChangelog" data-bs-toggle="list" data-bs-target="#help-pane-changelog" type="button" role="tab" onclick="loadHelpDocFrame('helpChangelogFrame', 'changelog')"><i class="bi bi-list-check"></i>Release Notes</button>
+                    </div>
+
+                    <div class="help-content tab-content" id="helpTabContent">
+
+                        <div class="tab-pane fade show active" id="help-pane-start" role="tabpanel">
+                            <div class="mb-2 small text-subtle">Pick the situation closest to yours - the guide will point you to the right tab and settings. For the full written docs, see Quick-Start Guide / User Manual / Release Notes in the list on the left.</div>
+                            <div class="d-flex flex-wrap gap-2 mb-2">
+                                <button class="btn btn-sm btn-outline-info fw-bold" onclick="showGuideStep('healthy')"><i class="bi bi-check-circle me-1"></i>Drive works fine, I just need a copy</button>
+                                <button class="btn btn-sm btn-outline-warning fw-bold" onclick="showGuideStep('damaged')"><i class="bi bi-exclamation-triangle me-1"></i>Drive is damaged / clicking / not detected properly</button>
+                                <button class="btn btn-sm btn-outline-success fw-bold" onclick="showGuideStep('deleted')"><i class="bi bi-search me-1"></i>I need to recover deleted files</button>
+                                <button class="btn btn-sm btn-outline-danger fw-bold" onclick="showGuideStep('encrypted')"><i class="bi bi-shield-lock me-1"></i>The drive (or image) is BitLocker/LUKS encrypted</button>
+                                <button class="btn btn-sm btn-outline-primary fw-bold" onclick="showGuideStep('phone')"><i class="bi bi-phone me-1"></i>It's a phone, not a drive</button>
+                                <button class="btn btn-sm btn-outline-light fw-bold" onclick="showGuideStep('report')"><i class="bi bi-file-earmark-text me-1"></i>Documenting findings / writing a report</button>
+                            </div>
+                            <div id="guideStepsContainer"></div>
+                        </div>
+
+                        <div class="tab-pane fade" id="help-pane-faq" role="tabpanel">
+                            <div id="faqAccordion" class="accordion accordion-flush"></div>
+                        </div>
+
+                        <div class="tab-pane fade" id="help-pane-tools" role="tabpanel">
+                            <div class="table-responsive">
+                                <table class="table table-sm table-dark table-striped mb-0 small">
+                                    <tbody id="toolReferenceBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="tab-pane fade" id="help-pane-reportfields" role="tabpanel">
+                            <div class="small text-subtle mb-2">What populates each section of an exported report, and where to edit that data before you export. The Report Template Builder (Settings &gt; Case &amp; Reporting) lets you choose which sections appear, reorder them, rename them, and - for the text sections marked "Remappable" - choose which of your narrative fields fills that slot. It can't rewire structured sections (tables, logs) to a different source.</div>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-dark table-striped mb-0 small">
+                                    <thead>
+                                        <tr class="text-info text-uppercase small"><th>Section</th><th>What Populates It</th><th>Where To Edit It</th></tr>
+                                    </thead>
+                                    <tbody id="reportFieldMappingBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="tab-pane fade" id="help-pane-info" role="tabpanel">
+                            <div id="infoContent" class="small text-light"></div>
+                        </div>
+
+                        <div class="tab-pane fade" id="help-pane-quickstart" role="tabpanel">
+                            <iframe id="helpQuickstartFrame" class="help-doc-frame" title="Quick-Start Guide"></iframe>
+                        </div>
+
+                        <div class="tab-pane fade" id="help-pane-manual" role="tabpanel">
+                            <iframe id="helpManualFrame" class="help-doc-frame" title="User Manual"></iframe>
+                        </div>
+
+                        <div class="tab-pane fade" id="help-pane-changelog" role="tabpanel">
+                            <iframe id="helpChangelogFrame" class="help-doc-frame" title="Release Notes"></iframe>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
