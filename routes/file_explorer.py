@@ -163,6 +163,14 @@ def get_raw_file():
 
 @file_explorer_bp.route('/api/files/preview_text', methods=['POST'])
 @requires_auth
+# 'reporting' too, not just 'file_explorer': this route is also reached
+# from Reporting's own Geolocation section and its Files gallery's KML
+# viewer, not only File Explorer's Preview pane - same two-permission
+# pattern already used for attach_file_to_case()/report_templates_custom_
+# detail() for the identical reason. Found missing entirely during the
+# 2026-08-22 security audit (no permission check at all, letting a
+# 'file_explorer'-revoked account still read full evidence content).
+@requires_permission('file_explorer', 'reporting')
 def preview_text_file():
     req = request.get_json() or {}
     path = safe_path(req.get('path'))
@@ -181,6 +189,13 @@ def preview_text_file():
 
 @file_explorer_bp.route('/api/files/hex', methods=['POST'])
 @requires_auth
+# Found missing entirely during the 2026-08-22 security audit - every
+# sibling content route (copy/delete/verify_hash/exif/binwalk/etc.) has
+# this check; this one didn't, letting a 'file_explorer'-revoked account
+# still read the full raw bytes of any evidence file. Unlike
+# preview_text_file() above, the Hex tab is File-Explorer-only (no
+# Reporting call site), so a single permission key is correct here.
+@requires_permission('file_explorer')
 def get_file_hex():
     """Capped raw-byte read for the Hex tab - returns base64, not a
     pre-formatted dump; the client builds the offset/hex/ASCII columns
