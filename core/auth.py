@@ -154,8 +154,27 @@ def is_local_kiosk_request():
     connections from nginx itself (also loopback), so a naive remote_addr
     check would misidentify every remote client as local. nginx forwards
     the real client IP via X-Real-IP (see nginx/pi-forensics.conf), so that
-    takes priority when present.
+    takes priority when present - but ONLY once request.remote_addr - the
+    actual TCP peer, not anything header-based - is itself confirmed
+    loopback. That gate is the real security boundary, found missing during
+    a security audit (2026-08-22): TLS/nginx is an *optional* install.py
+    prompt (see GUNICORN_BIND there), and skipping it leaves gunicorn
+    listening on every interface, not just localhost - in that mode
+    request.remote_addr is a genuine, unspoofable TCP-layer value (a
+    LAN/remote attacker's connection always shows their real address), while
+    X-Real-IP is just a client-supplied header with no nginx there to
+    strip/overwrite it. Trusting X-Real-IP unconditionally let a remote
+    attacker send `X-Real-IP: 127.0.0.1` straight to gunicorn and get the
+    kiosk's full unauthenticated bypass. Gating on remote_addr first closes
+    that without touching the TLS-configured deployment mode at all: nginx's
+    proxy_pass always connects to gunicorn via 127.0.0.1 (nginx/pi-
+    forensics.conf), so remote_addr is unconditionally loopback there
+    already - this check is a pure no-op in that mode, and only ever
+    changes behavior when there's no nginx in front to have set X-Real-IP
+    honestly in the first place.
     """
+    if request.remote_addr not in ('127.0.0.1', '::1'):
+        return False
     real_ip = request.headers.get('X-Real-IP', request.remote_addr)
     return real_ip in ('127.0.0.1', '::1', 'localhost')
 
