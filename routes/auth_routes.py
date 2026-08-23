@@ -92,7 +92,12 @@ def view_doc(doc_id):
     # text/plain, not text/markdown - guarantees every browser renders it
     # inline (readable as-is; headings/lists/code fences are still clear in
     # plain text) instead of some browsers offering it as a download.
-    return Response(content, mimetype="text/plain; charset=utf-8")
+    # Bare "text/plain" (not "text/plain; charset=utf-8") - Werkzeug appends
+    # its own default charset to a bare text/* mimetype automatically;
+    # passing one already-included here doubled up into a malformed
+    # "charset=utf-8; charset=utf-8" header, caught via a live content-type
+    # check rather than assumed correct from the code alone.
+    return Response(content, mimetype="text/plain")
 
 
 @auth_routes_bp.route('/api/whoami', methods=['GET'])
