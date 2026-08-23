@@ -313,6 +313,16 @@ const GUIDE_SCENARIOS = {
         ],
         tabId: "ddrescue-tab"
     },
+    encrypted: {
+        title: "The drive (or image) is BitLocker or LUKS encrypted",
+        steps: [
+            "Recovery key/passphrase in hand? On the Forensic Acquisition tab, select the drive as usual, then look for the \"BitLocker-Encrypted Source\" or \"LUKS-Encrypted Source\" section below it (LUKS is the Linux equivalent of BitLocker) - click Detect to confirm which one applies, enter the key/passphrase, and click Unlock.",
+            "Once unlocked, the decrypted volume becomes the acquisition source automatically - proceed with Start Acquisition as normal. The volume re-locks itself the moment the job finishes, whether it succeeds or fails.",
+            "Already have an acquired image (.dd/.E01) that's encrypted, rather than a live drive? Right-click it in File Explorer and choose \"Unlock BitLocker & Browse...\" or \"Unlock LUKS & Browse...\" to browse the decrypted contents inline with the same Sleuth Kit tools used for any other image - no need to re-acquire.",
+            "The recovery key/passphrase you enter is recorded in the case report as plain-text documentation, not encrypted at rest - so whoever reviews the report later has what they need to decrypt the image again themselves.",
+        ],
+        tabId: "acquisition-tab"
+    },
     phone: {
         title: "It's a phone, not a drive",
         steps: [
@@ -425,6 +435,18 @@ const FAQ_GROUPS = [
                 q: "How do I know my acquisition actually completed successfully?",
                 a: "Check the status text and console during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, if the job ran against an active case, open Reporting - its hashes and telemetry are already recorded under the Jobs tab. Otherwise, right-click the resulting image in File Explorer and use \"Verify Image Hash\"."
             },
+            {
+                q: "The drive I need to image is BitLocker or LUKS encrypted - can this station handle that?",
+                a: "Yes. On the Forensic Acquisition tab, below drive selection, there's a \"BitLocker-Encrypted Source\" section (Windows) and a \"LUKS-Encrypted Source\" section (Linux's disk-encryption format) - click Detect to confirm which applies, enter the recovery key/passphrase, and Unlock. The decrypted volume becomes the acquisition source automatically, and locks itself again once the job completes. Already-acquired encrypted images can also be unlocked and browsed directly from File Explorer's right-click menu, without re-acquiring."
+            },
+            {
+                q: "Can I look inside a drive before committing to a full acquisition?",
+                a: "Yes - \"Preview This Drive (Read-Only)...\" on the Forensic Acquisition tab lets you browse a connected drive's real filesystem, read files, and run analysis tools against it read-only, before deciding whether (or how) to image it. It's clearly labeled as a live preview, not a substitute for a real acquisition - nothing is saved as evidence until you actually run Start Acquisition."
+            },
+            {
+                q: "I only need specific folders, not a full bit-for-bit image - is that possible?",
+                a: "Yes - Logical (Custom Content) Acquisition, also on the Forensic Acquisition tab, lets you pick one or more specific folders and package them into a single hash-verified container with a manifest, instead of imaging an entire drive. Useful when you only need a user's documents or a particular app's data, not the whole disk."
+            },
         ]
     },
     {
@@ -446,6 +468,22 @@ const FAQ_GROUPS = [
                 q: "What does the MVT scan check for?",
                 a: "Amnesty International's Mobile Verification Toolkit checks an already-acquired mobile backup against known spyware/compromise indicators. Right-click a backup folder in File Explorer and choose the MVT scan for its platform. iOS matches this station's backup format directly; Android is best-effort, since it needs a decrypted adb-backup-format folder rather than the pull/bugreport formats Mobile Forensics normally produces here - it'll error clearly rather than silently produce nothing if the format doesn't match."
             },
+            {
+                q: "Can I analyze a memory (RAM) dump on this station?",
+                a: "Yes, for Windows memory images. Right-click a memory-image file (.raw/.mem/.vmem/.dmp/.lime) in File Explorer and choose \"Memory Forensics...\" to run Volatility3 plugins against it - process lists, network connections, loaded DLLs, and more. This station only analyzes an already-captured memory image; it has no way to capture memory from a live system itself. The first run needs internet access, to fetch matching OS symbol information."
+            },
+            {
+                q: "Can I convert an image between raw (.dd) and E01 format after the fact?",
+                a: "Yes - right-click an already-acquired image in File Explorer and choose \"Convert Image Format...\". Works in both directions (raw to E01 and E01 to raw) and independently re-verifies the converted file's hash against the original rather than just trusting the conversion tool."
+            },
+            {
+                q: "Does this station recover browser history or bookmarks?",
+                a: "Yes - right-click a folder (or an acquired image) in File Explorer and choose \"Parse Browser Artifacts\" to extract history, bookmarks, downloads, and cookies from a Chrome/Chromium- or Firefox-family profile. Results show up under File Views' \"Web Artifacts\" category. Safari isn't supported - its data lives inside an iOS/macOS backup rather than a portable profile folder."
+            },
+            {
+                q: "What's File Views, and how is it different from tagging a file?",
+                a: "File Views (in File Explorer's folder tree) is a per-case index that automatically groups everything found so far - by file type, by keyword-scan hit, by tag, or by parsed browser artifact - so you don't have to remember where a specific result landed. Tagging is how you flag something yourself: right-click any file and choose Tag... to mark it Bookmark/Follow Up/Notable Item (or a custom tag you define in Settings), with an optional comment. Tagged files show up as their own File Views category and, once attached to the case, are called out in the exported report too."
+            },
         ]
     },
     {
@@ -458,6 +496,10 @@ const FAQ_GROUPS = [
             {
                 q: "Case Notes vs. Report Narrative - what's the difference?",
                 a: "Case Notes (Reporting tab) is a timestamped, append-only journal you add to as you work - each note gets an author and a local integrity hash, and editing keeps the original text rather than overwriting it. It becomes the exported report's \"Forensic Analysis / Steps Taken\" section. Report Narrative is the polished closing write-up (executive summary, objectives, findings, limitations, conclusion) you write once, near the end - a deliberately separate thing from the running notes journal."
+            },
+            {
+                q: "What's the Case Status field for?",
+                a: "Reporting's Case Details block has a Status dropdown (Open / In Review / On Hold / Closed / Archived) for your own case tracking. The Case Manager's case list shows a colored badge for each case's current status, and Reporting's own header shows a live breakdown of every case's status across the whole station."
             },
         ]
     },
@@ -552,6 +594,8 @@ const TOOL_REFERENCE_GROUPS = [
             ["affconvert", "Converts a raw image into AFF (.aff) format."],
             ["ddrescue", "Recovery-focused imaging for damaged/failing drives - select it as a Format on the Forensic Acquisition tab. Works around bad sectors instead of stopping."],
             ["smartctl", "Reads a drive's built-in health/diagnostic data (SMART) before committing to a long acquisition."],
+            ["dislocker", "Unlocks a BitLocker-encrypted drive or image so it can be imaged or browsed as a normal decrypted volume."],
+            ["cryptsetup", "Unlocks a LUKS-encrypted drive or image (the standard Linux disk-encryption format) the same way dislocker handles BitLocker."],
         ]
     },
     {
@@ -573,6 +617,8 @@ const TOOL_REFERENCE_GROUPS = [
             ["ClamAV", "Scans a file or folder against known malware signatures."],
             ["hashdeep", "Generates a fingerprint (hash) for every file in a folder at once, as a single manifest."],
             ["MVT (Mobile Verification Toolkit)", "Checks an already-acquired iOS or Android backup for spyware/compromise indicators. Right-click the backup folder and choose the scan for its platform."],
+            ["Volatility3", "Analyzes an already-captured Windows memory (RAM) image - process lists, network connections, loaded modules, and more. Right-click a memory-image file and choose \"Memory Forensics...\"."],
+            ["Browser Artifact Parser", "Extracts history, bookmarks, downloads, and cookies from a Chrome/Chromium- or Firefox-family browser profile, on disk or inside an acquired image. Built in, no external tool needed."],
         ]
     },
     {
@@ -671,6 +717,7 @@ function populateHelpInfo() {
         ["Case management", "The \"Case\" button at the top of every page creates or selects a case, storing its evidence under a real per-case folder instead of loosely filename-prefixed files scattered in one directory. An older case created before consolidated case files existed can be migrated to the new format from the Case Manager, non-destructively - the originals are kept, renamed with a backup suffix."],
         ["Physical kiosk vs. remote access", "The touchscreen kiosk skips the login prompt by default (a setting called FORENSIC_KIOSK_AUTH_BYPASS) - physical access to the device already implies a high level of trust. Remote/LAN access always requires a real login, with no exceptions."],
         ["HTTPS & certificates", "This station can run behind an nginx TLS reverse proxy with a self-signed certificate. Settings > Security can generate a fresh one - including every IP address the station currently has, so browsers don't also flag a hostname mismatch on top of the expected self-signed warning - or you can install your own certificate (e.g. one signed by a real CA) instead. The self-signed warning itself only goes away once a client device explicitly trusts the certificate; step-by-step instructions per OS/browser are right there in Settings."],
+        ["Encrypted drives & images (BitLocker/LUKS)", "A BitLocker- or LUKS-encrypted drive can be unlocked with its recovery key/passphrase directly on the Forensic Acquisition tab, making the decrypted volume available as an acquisition source - it re-locks automatically once the job finishes, whether it succeeds or fails. An already-acquired encrypted image can also be unlocked and browsed in place from File Explorer's right-click menu. The key/passphrase you enter is stored in the case report as plain-text documentation only, never used for anything beyond that one unlock."],
         ["Updating this station", "Settings > Service Controls & Diagnostics has buttons to pull the latest app code (git) or update OS packages (apt) - both need internet access and pull from external sources, so only use them on a station where you trust those sources."],
     ];
 
