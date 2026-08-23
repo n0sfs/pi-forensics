@@ -22,3 +22,9 @@ mvt>=2.5.0
 pytsk3>=20260715
 cryptography>=41.0.0
 volatility3>=2.11.0
+# Renders the in-app doc viewer (Help > Quick-Start/User Manual/Release
+# Notes; Settings > Diagnostics > View Release Notes) from the shipped
+# docs/*.md + CHANGELOG.md into real styled HTML instead of raw markdown
+# text - confirmed live on the real Pi venv (arm64/Debian trixie) before
+# adding: pure-Python wheel, zero native deps, installs cleanly.
+Markdown>=3.6
