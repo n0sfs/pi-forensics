@@ -338,6 +338,29 @@ install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in IN
 # mount_dir is already trusted the same way. isLuks needs no sudo grant at
 # all - LUKS detection uses blkid (already granted below) and a direct
 # unprivileged file read, never cryptsetup itself.
+#
+# Tightened 2026-08-23 (Informational finding from the 2026-08-22 security
+# audit): "luksOpen *" and "luksClose *" as originally written didn't
+# actually match this comment's own stated intent - sudo's fnmatch-style
+# `*` matches ANY text including spaces, so a single trailing `*` wildcards
+# the ENTIRE rest of the command line, not just "the variable trailing
+# argument" the comment above describes. Nothing reachable today can
+# exploit this (routes/acquisition.py's _luks_unlock()/_luks_lock() build
+# every argument server-side, confirmed by reading both functions before
+# writing this fix), but the grant itself provided no structural backstop
+# if that ever changed. Both patterns are now anchored on both sides
+# instead of trailing off into an open wildcard: luksOpen's mapper-name
+# argument and trailing "-d -" flags are pinned literally (only the source
+# path - which is legitimately either a /dev/* device or an arbitrary
+# already-validated evidence file, so it can't be pinned to one shape -
+# stays wildcarded), and luksClose's sole argument is pinned to the app's
+# own real mapper-name prefix (LUKS_MAPPER_PREFIX, routes/acquisition.py)
+# with no free-floating wildcard left at all. Verified live (this file's
+# own mandatory discipline for any sudoers change) that the tightened
+# patterns still match the exact real command lines
+# _luks_unlock()/_luks_lock() build, and that a deliberately malformed
+# variant (extra trailing arguments after "-d -") is correctly rejected by
+# sudo before ever reaching cryptsetup.
 sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/sbin/blockdev, /sbin/blockdev, \\
 /usr/sbin/smartctl, \\
@@ -348,7 +371,7 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/bin/ewfacquire, /usr/bin/ewfexport, /usr/bin/ewfinfo, /usr/bin/dd, /usr/bin/photorec, \\
 /usr/bin/extundelete, /usr/bin/foremost, /usr/bin/scalpel, /usr/bin/testdisk, \\
 /sbin/dislocker, /usr/bin/dislocker, /sbin/blkid, /usr/sbin/blkid, \\
-/usr/sbin/cryptsetup luksOpen *, /usr/sbin/cryptsetup luksClose *, \\
+/usr/sbin/cryptsetup luksOpen * pif_luks_* -d -, /usr/sbin/cryptsetup luksClose pif_luks_*, \\
 /sbin/losetup -o * --show -f *, /sbin/losetup -d /dev/loop*, /sbin/losetup -a, \\
 /bin/chown -R {SERVICE_USER} *, \\
 /bin/chgrp -R {SERVICE_USER} *, \\
