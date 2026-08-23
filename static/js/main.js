@@ -3910,6 +3910,60 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     memory_forensics_scan: (status) => `Memory forensics scan finished: ${status}\n\nClick a *_vol3_<plugin>.json file next to the image in File Explorer to view its results.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
+
+// --- Per-tab job-completion sidebar badges ----------------------------------------
+// This app has exactly one shared background job at a time (core/jobs.py's single
+// current_job), startable from any of 4 different tabs - Forensic Acquisition,
+// Mobile Forensics, File Recovery, or File Explorer's in-image tools (including the
+// standalone image_conversion action above). If the tab that started it isn't the
+// one currently visible when it finishes, the existing completion toast/alert for
+// that specific tool can easily go unnoticed entirely. This gives each of those 4
+// sidebar icons a small red count badge (templates/index.html's .nav-badge spans),
+// bumped on the exact same active->inactive transition fetchProgress() already
+// detects for IMAGE_JOB_COMPLETION_MESSAGES above, and cleared the moment the
+// examiner actually switches to that tab (see the shown.bs.tab listener below).
+const JOB_FORMAT_TO_NAV_BADGE = {
+    // Forensic Acquisition
+    dd: 'navBadgeAcquisition', raw: 'navBadgeAcquisition', dcfldd: 'navBadgeAcquisition',
+    plain_dd: 'navBadgeAcquisition', e01: 'navBadgeAcquisition', aff: 'navBadgeAcquisition',
+    ddrescue: 'navBadgeAcquisition', logical_acquisition: 'navBadgeAcquisition',
+    // Mobile Forensics
+    ios_backup: 'navBadgeMobile', android_pull: 'navBadgeMobile',
+    android_backup: 'navBadgeMobile', android_bugreport: 'navBadgeMobile',
+    // File Recovery (whole-device/whole-image tools reached from that tab)
+    photorec: 'navBadgeRecovery', extundelete: 'navBadgeRecovery',
+    foremost: 'navBadgeRecovery', scalpel: 'navBadgeRecovery', triage_scan: 'navBadgeRecovery',
+    // File Explorer (in-image background jobs, reached via right-click/toolbar there)
+    image_geolocation_kml: 'navBadgeExplorer', image_triage_scan: 'navBadgeExplorer',
+    memory_forensics_scan: 'navBadgeExplorer', image_conversion: 'navBadgeExplorer',
+};
+const NAV_BADGE_TO_TAB_ID = {
+    navBadgeAcquisition: 'acquisition-tab', navBadgeMobile: 'mobile-tab',
+    navBadgeRecovery: 'ddrescue-tab', navBadgeExplorer: 'explorer-tab',
+};
+let lastGlobalJobActive = false; // mirrors lastImageJobActiveByFormat's own pattern, just one shared flag since there's only ever one job station-wide
+let lastGlobalJobFormat = null;
+
+function bumpNavBadge(badgeId) {
+    const badge = document.getElementById(badgeId);
+    if (!badge) return;
+    const next = (parseInt(badge.textContent, 10) || 0) + 1;
+    badge.textContent = String(next);
+    badge.style.display = 'inline-block';
+}
+
+function clearNavBadge(badgeId) {
+    const badge = document.getElementById(badgeId);
+    if (!badge) return;
+    badge.textContent = '';
+    badge.style.display = 'none';
+}
+
+document.addEventListener('shown.bs.tab', (ev) => {
+    const badgeId = Object.keys(NAV_BADGE_TO_TAB_ID).find((k) => NAV_BADGE_TO_TAB_ID[k] === ev.target?.id);
+    if (badgeId) clearNavBadge(badgeId);
+});
+
 let explorerImagePath = null;
 let explorerImageOffset = 0;
 let explorerImageBitlockerMountId = null; // set only when the currently-browsed image is a decrypted dislocker volume, so exitExplorerImage() knows to lock/cleanup it
@@ -10870,14 +10924,122 @@ async function restartKioskDisplay() {
 
 async function gitUpdateApp() {
     if (!confirm("Pull the latest code from the configured git remote and restart the service? Only do this if you trust that remote.")) return;
+    switchToTab('settings-tab'); // so the Diagnostics output console below is visible if this was triggered from the update-available toast on a different tab
     diagRunning("Update App (Git Pull)");
     try {
         const res = await fetch('/api/system/git_update', { method: 'POST' });
         const data = await res.json();
         diagResult("Update App (Git Pull)", data.message || data.error);
+        if (data.success) {
+            const badge = document.getElementById('updateAvailableBadge');
+            if (badge) badge.style.display = 'none';
+        }
     } catch (err) {
         diagResult("Update App (Git Pull)", "[REQUEST FAILED]");
     }
+}
+
+// --- Update-available check + notification ---------------------------------------
+// Read-only /api/system/check_update (a plain `git fetch` + commit-count comparison,
+// never a pull) is polled once shortly after page load and then periodically in the
+// background - this is what lets an update surface as a proactive notification
+// instead of only ever being discovered by someone manually opening Settings and
+// clicking a button. Gated the same way the backend route itself is (requires
+// 'settings' permission) - an account that can't run the real update wouldn't be
+// able to act on the notification anyway, so this just quietly no-ops (a 403) for
+// anyone else rather than nagging them with something they can't do.
+let updateAvailableNotificationShown = false; // only pop the actionable toast once per page load - repeat checks just keep the Settings badge current
+
+async function checkForAppUpdate(manual) {
+    const btn = document.getElementById('btnCheckUpdate');
+    if (manual && btn) btn.disabled = true;
+    try {
+        const res = await fetch('/api/system/check_update');
+        if (res.status === 403) return; // no 'settings' permission - silent no-op, not an error the examiner needs to see
+        const data = await res.json();
+        const badge = document.getElementById('updateAvailableBadge');
+
+        if (!data.success) {
+            if (manual) showToast(`Could not check for updates: ${data.error}`, 'warning');
+            return;
+        }
+
+        if (data.update_available) {
+            const verText = data.latest_version ? `v${data.latest_version}` : 'a newer version';
+            if (badge) {
+                badge.textContent = `Update available: ${verText}`;
+                badge.style.display = 'inline-block';
+            }
+            if (!updateAvailableNotificationShown) {
+                showUpdateAvailableNotification(verText, data.commits_behind);
+                updateAvailableNotificationShown = true;
+            } else if (manual) {
+                showToast(`Update available: ${verText} (${data.commits_behind} commit(s) behind).`, 'info');
+            }
+        } else {
+            if (badge) badge.style.display = 'none';
+            if (manual) showToast(`You're up to date (v${data.current_version}).`, 'success');
+        }
+    } catch (err) {
+        if (manual) showToast('Could not check for updates.', 'warning');
+    } finally {
+        if (manual && btn) btn.disabled = false;
+    }
+}
+
+// A dedicated, non-auto-dismissing toast with real action buttons ("Update Now" /
+// "Dismiss") - the plain showToast() above is deliberately message-only/auto-hiding
+// (see its own comment), which doesn't fit an actionable "something you can act on
+// right now, and might want to leave visible until you do" notification like this.
+function showUpdateAvailableNotification(verText, commitsBehind) {
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+
+    const toastEl = document.createElement('div');
+    toastEl.className = 'toast align-items-center text-bg-primary border-0';
+    toastEl.setAttribute('role', 'alert');
+    toastEl.setAttribute('aria-live', 'assertive');
+    toastEl.setAttribute('aria-atomic', 'true');
+
+    const flexDiv = document.createElement('div');
+    flexDiv.className = 'd-flex';
+
+    const body = document.createElement('div');
+    body.className = 'toast-body';
+    body.textContent = `An update is available (${verText}, ${commitsBehind} commit(s) behind).`;
+    flexDiv.appendChild(body);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'btn-close btn-close-white me-2 m-auto';
+    closeBtn.setAttribute('data-bs-dismiss', 'toast');
+    closeBtn.setAttribute('aria-label', 'Close');
+    flexDiv.appendChild(closeBtn);
+    toastEl.appendChild(flexDiv);
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'pe-2 pb-2 d-flex gap-2';
+
+    const updateBtn = document.createElement('button');
+    updateBtn.type = 'button';
+    updateBtn.className = 'btn btn-sm btn-light fw-bold';
+    updateBtn.textContent = 'Update Now';
+    updateBtn.onclick = () => { bootstrap.Toast.getInstance(toastEl)?.hide(); gitUpdateApp(); };
+    btnRow.appendChild(updateBtn);
+
+    const laterBtn = document.createElement('button');
+    laterBtn.type = 'button';
+    laterBtn.className = 'btn btn-sm btn-outline-light';
+    laterBtn.textContent = 'Dismiss';
+    laterBtn.onclick = () => { bootstrap.Toast.getInstance(toastEl)?.hide(); };
+    btnRow.appendChild(laterBtn);
+
+    toastEl.appendChild(btnRow);
+    container.appendChild(toastEl);
+
+    const bsToast = new bootstrap.Toast(toastEl, { autohide: false });
+    toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    bsToast.show();
 }
 
 async function updateOperatingSystem() {
@@ -11039,6 +11201,23 @@ async function fetchProgress() {
             lastImageJobActiveByFormat[data.format] = data.active;
         }
 
+        // Same active->inactive transition, generalized across every job format (not
+        // just the in-image ones above) to bump that job's owning tab's sidebar badge -
+        // but only when the examiner isn't already looking at that tab, since there's
+        // nothing to notify them of if they watched it finish themselves.
+        if (lastGlobalJobActive && !data.active) {
+            const badgeId = JOB_FORMAT_TO_NAV_BADGE[lastGlobalJobFormat];
+            if (badgeId) {
+                const ownerTabId = NAV_BADGE_TO_TAB_ID[badgeId];
+                const activeTabBtn = document.querySelector('#forensicAppTabs .nav-link.active');
+                if (!activeTabBtn || activeTabBtn.id !== ownerTabId) {
+                    bumpNavBadge(badgeId);
+                }
+            }
+        }
+        lastGlobalJobActive = data.active;
+        lastGlobalJobFormat = data.format;
+
         // Mirrors start_imaging()'s own post-job cleanup thread, which
         // unmounts the dislocker volume automatically once the acquisition
         // that was using it finishes (success, failure, or Stop) - without
@@ -11127,6 +11306,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     setInterval(fetchSystemInfo, 2000);
     setInterval(fetchProgress, 1000);
     setInterval(fetchNetworkInterfaces, 15000);
+    // Deliberately delayed a few seconds past every other startup fetch above rather
+    // than fired immediately - this one hits an external git remote (git fetch), which
+    // on a station with no internet access (a real, common deployment state for this
+    // app - see CLAUDE.md) can take the route's own full 15s timeout to fail; no reason
+    // to make that compete with the startup calls that actually populate the page.
+    // Six-hour recheck after that - frequent enough to notice a real release without
+    // hammering the remote on every page load from every open tab.
+    setTimeout(() => checkForAppUpdate(false), 8000);
+    setInterval(() => checkForAppUpdate(false), 6 * 60 * 60 * 1000);
 
     // Restore the last-visited top-level tab, placed last so every other init call above
     // (activeCase, explorer tree, whoami/permissions, etc.) has already run before this tab's own

@@ -100,6 +100,28 @@
         .app-sidebar.compact .nav-link { justify-content: center; padding: 12px 0; }
 
         .app-sidebar .nav-link i { font-size: 1.15rem; flex-shrink: 0; }
+        /* Completion-notification badges (bumped by fetchProgress() in main.js when a
+           background job finishes while its owning tab isn't the one currently visible -
+           Forensic Acquisition/Mobile Forensics/File Recovery/File Explorer only, since
+           those are the only tabs a job can belong to). Wrapping just the icon (not the
+           whole .nav-link) means the dot stays anchored to the icon in both expanded and
+           compact/mobile sidebar widths, where the label itself is hidden entirely. */
+        .app-sidebar .nav-icon-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+        .nav-badge {
+            position: absolute;
+            top: -6px;
+            right: -9px;
+            min-width: 15px;
+            height: 15px;
+            padding: 0 3px;
+            border-radius: 8px;
+            background: var(--bs-danger, #dc3545);
+            color: #fff;
+            font-size: 0.62rem;
+            font-weight: 700;
+            line-height: 15px;
+            text-align: center;
+        }
         .app-sidebar .tab-label { overflow: hidden; text-overflow: ellipsis; }
         .app-sidebar.compact .tab-label { display: none; }
 
@@ -496,22 +518,22 @@
                 </li>
                 <li class="nav-item" role="presentation" id="navItemAcquisition">
                     <button class="nav-link" id="acquisition-tab" data-bs-toggle="tab" data-bs-target="#acquisition-app" type="button" role="tab" title="Forensic Acquisition">
-                        <i class="bi bi-hdd-stack"></i><span class="tab-label">Forensic Acquisition</span>
+                        <span class="nav-icon-wrap"><i class="bi bi-hdd-stack"></i><span class="nav-badge" id="navBadgeAcquisition" style="display:none;"></span></span><span class="tab-label">Forensic Acquisition</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation" id="navItemMobile">
                     <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()" title="Mobile Forensics">
-                        <i class="bi bi-phone"></i><span class="tab-label">Mobile Forensics</span>
+                        <span class="nav-icon-wrap"><i class="bi bi-phone"></i><span class="nav-badge" id="navBadgeMobile" style="display:none;"></span></span><span class="tab-label">Mobile Forensics</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation" id="navItemRecovery">
                     <button class="nav-link" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab" title="File Recovery (PhotoRec, extundelete, foremost, scalpel, Image Browser)">
-                        <i class="bi bi-life-preserver"></i><span class="tab-label">File Recovery</span>
+                        <span class="nav-icon-wrap"><i class="bi bi-life-preserver"></i><span class="nav-badge" id="navBadgeRecovery" style="display:none;"></span></span><span class="tab-label">File Recovery</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation" id="navItemExplorer">
                     <button class="nav-link" id="explorer-tab" data-bs-toggle="tab" data-bs-target="#explorer-app" type="button" role="tab" title="Forensic File Explorer">
-                        <i class="bi bi-folder-check"></i><span class="tab-label">File Explorer</span>
+                        <span class="nav-icon-wrap"><i class="bi bi-folder-check"></i><span class="nav-badge" id="navBadgeExplorer" style="display:none;"></span></span><span class="tab-label">File Explorer</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation" id="navItemReports">

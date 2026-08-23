@@ -56,6 +56,7 @@ from core.config import (
     EVIDENCE_ROOT,
     load_runtime_config, save_runtime_config, get_active_admin_pass,
     _get_or_create_mount_key, _encrypt_secret, _decrypt_secret,
+    get_app_version,
 )
 from core.jobs import job_lock, current_job, update_job
 from core.case_index_db import check_regex_pattern_for_redos
@@ -1580,6 +1581,67 @@ def restart_touch_kiosk():
     try:
         subprocess.run(['pkill', '-9', '-f', 'chromium'], capture_output=True, timeout=10)
         return jsonify({"success": True, "message": "Touchscreen kiosk display restarting - the running autostart watchdog will relaunch it within a few seconds."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@settings_bp.route('/api/system/check_update', methods=['GET'])
+@requires_auth
+@requires_permission('settings')
+def check_for_update():
+    """Read-only equivalent of git_update_application() below - `git fetch`
+    then compare local HEAD against origin/main, never pull/merge anything.
+    Gated behind the same 'settings' permission as the rest of this Updates
+    section (not left open to every logged-in account) since only an account
+    that can actually run the real update would ever act on this - which
+    also means the auto-popup this powers on the frontend only ever fires
+    for someone who can do something about it.
+
+    A short, explicit timeout on both git calls matters here specifically:
+    this station is frequently deployed with no internet access at all (see
+    CLAUDE.md), and this route is polled periodically in the background from
+    the frontend, not just on a manual click - a hung `git fetch` blocking
+    that background poll indefinitely would be a real regression, not a
+    theoretical one."""
+    try:
+        fetch_res = subprocess.run(
+            ['git', 'fetch', 'origin', 'main', '--quiet'],
+            cwd=INSTALL_DIR, capture_output=True, text=True, timeout=15,
+        )
+        if fetch_res.returncode != 0:
+            err = fetch_res.stderr.strip() or "git fetch failed."
+            return jsonify({"success": False, "error": err}), 502
+
+        count_res = subprocess.run(
+            ['git', 'rev-list', '--count', 'HEAD..origin/main'],
+            cwd=INSTALL_DIR, capture_output=True, text=True, timeout=10,
+        )
+        try:
+            commits_behind = int(count_res.stdout.strip()) if count_res.returncode == 0 else 0
+        except ValueError:
+            commits_behind = 0
+
+        # Best-effort only - a missing/unreadable VERSION on the remote tip
+        # (or the git show call itself failing) still reports
+        # update_available correctly, just without a friendly version
+        # string to show alongside the commit count.
+        latest_version = None
+        if commits_behind > 0:
+            ver_res = subprocess.run(
+                ['git', 'show', 'origin/main:VERSION'],
+                cwd=INSTALL_DIR, capture_output=True, text=True, timeout=10,
+            )
+            if ver_res.returncode == 0 and ver_res.stdout.strip():
+                latest_version = ver_res.stdout.strip()
+
+        return jsonify({
+            "success": True,
+            "update_available": commits_behind > 0,
+            "current_version": get_app_version(),
+            "latest_version": latest_version,
+            "commits_behind": commits_behind,
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Timed out reaching the git remote (no internet access?)."}), 504
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
