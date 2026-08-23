@@ -3,6 +3,14 @@ gunicorn>=21.0.0
 psutil>=5.8.0
 reportlab==4.0.8
 mvt>=2.5.0
-pytsk3>=20250312
+# >=20260715 specifically (not just "latest"): CVE-2026-40026 is an
+# out-of-bounds-read + infinite-loop DoS in libtsk's ISO9660 SUSP parser,
+# reachable via any pytsk3-backed route (Live Device Preview, Browse-as-
+# Image, every in-image tool) on a deliberately crafted evidence image -
+# exactly the anti-forensics scenario this appliance needs to be hardened
+# against. Confirmed via pytsk3's own PyPI page that 20260715 bundles
+# libtsk 4.15.0, the release that fixed this CVE (affected range is
+# "through 4.14.0"). Found via the 2026-08-22 security audit.
+pytsk3>=20260715
 cryptography>=41.0.0
 volatility3>=2.11.0
