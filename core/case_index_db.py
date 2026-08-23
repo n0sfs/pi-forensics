@@ -147,24 +147,27 @@ REDOS_PROBE_STRINGS = [
     b" " * 32 + b"!",
     b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaX",
 ]
-REGEX_VALIDATION_TIMEOUT_SECONDS = 2.0  # per probe string - generous relative to a real
-                                         # match (milliseconds), to absorb process-startup
-                                         # overhead on a platform without fork() (see below)
-
 # Prefer 'fork' when available (every real deployment - this app is Linux-
 # only in production): the child inherits already-imported module state
-# directly, so REGEX_VALIDATION_TIMEOUT_SECONDS mostly measures the actual
-# regex match, not process startup. The default context on a fork-less
-# platform (Windows, dev-only for this project) re-imports this whole
-# module chain from scratch per probe - confirmed empirically to cost real
-# time (multiple seconds across 4 probes) that has nothing to do with the
-# pattern being tested, which without this fallback would show up as false
-# positives (a perfectly safe pattern rejected only because process
-# startup itself outran the timeout). Not a concern in production.
+# directly, so the timeout below mostly measures the actual regex match,
+# not process startup. The default context on a fork-less platform
+# (Windows, dev-only for this project) re-imports this whole module chain
+# from scratch per probe - confirmed empirically to cost real, HIGHLY
+# variable time under any concurrent system load (a full local test-suite
+# run repeatedly outran even a 3-second budget, for probes that individually
+# complete in well under a second in isolation), which without a much wider
+# margin shows up as false positives - a perfectly safe pattern rejected
+# only because process startup itself outran the timeout, nothing to do
+# with the pattern being tested. So the timeout itself is platform-aware:
+# tight and meaningful on fork (production), generous on the spawn-only
+# fallback (Windows dev testing only) where the cost of extra margin is
+# purely local-test wall-clock time, never examiner-facing latency.
 try:
     _mp_ctx = multiprocessing.get_context('fork')
+    REGEX_VALIDATION_TIMEOUT_SECONDS = 1.5  # per probe string
 except ValueError:
     _mp_ctx = multiprocessing.get_context()
+    REGEX_VALIDATION_TIMEOUT_SECONDS = 10.0  # per probe string - Windows spawn() overhead only
 
 def _redos_probe_worker(pattern_bytes, flags, probe, out_queue):
     # Runs in the child process - re-compiles from the pattern's own source/
