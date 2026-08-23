@@ -143,40 +143,51 @@ def _session_user_still_valid(username):
         return find_user(username, users) is not None
     return hmac.compare_digest(username, ADMIN_USER)
 
+def _effective_client_ip():
+    """
+    The real, per-client IP - for anything that needs to tell one caller
+    apart from another (the kiosk-bypass check below, brute-force lockout
+    tracking) - as opposed to request.remote_addr, which is always nginx's
+    own loopback address once nginx is in front (TLS configured), collapsing
+    every remote/LAN client into one indistinguishable bucket. X-Real-IP
+    carries the true distinguishing address in that mode (nginx sets it,
+    see nginx/pi-forensics.conf) - but it's only trustworthy once
+    request.remote_addr - the actual TCP peer, not anything header-based -
+    is itself confirmed loopback. That gate is the real security boundary,
+    found missing during a security audit (2026-08-22): TLS/nginx is an
+    *optional* install.py prompt (see GUNICORN_BIND there), and skipping it
+    leaves gunicorn listening on every interface, not just localhost - in
+    that mode remote_addr is a genuine, unspoofable TCP-layer value (a
+    LAN/remote attacker's connection always shows their real address), while
+    X-Real-IP is just a client-supplied header with no nginx there to
+    strip/overwrite it. Trusting X-Real-IP unconditionally let a remote
+    attacker both spoof the kiosk bypass (send `X-Real-IP: 127.0.0.1`) and
+    evade/collapse the login lockout (send a forged X-Real-IP per attempt,
+    or ride the same shared bucket every other remote client - including a
+    legitimate login, which clears it on success - shares when nginx *is*
+    in front). Gating on remote_addr first closes both without touching the
+    TLS-configured deployment mode at all: nginx's proxy_pass always
+    connects to gunicorn via 127.0.0.1, so remote_addr is unconditionally
+    loopback there already - this is a pure no-op in that mode, distinct
+    per-client X-Real-IP values already flow through correctly, and this
+    only ever changes behavior when there's no nginx in front to have set
+    X-Real-IP honestly in the first place.
+    """
+    remote_addr = request.remote_addr or 'unknown'
+    if remote_addr in ('127.0.0.1', '::1'):
+        return request.headers.get('X-Real-IP', remote_addr)
+    return remote_addr
+
 def is_local_kiosk_request():
     """
     True if this request is coming from the Pi's own local kiosk session,
     not a remote LAN/WiFi client. The kiosk's chromium always talks to
     gunicorn directly over loopback (http://127.0.0.1:5000), regardless of
-    whether TLS/nginx is set up - see install.py's autostart script.
-
-    When nginx is in front of gunicorn (TLS setup), gunicorn only ever sees
-    connections from nginx itself (also loopback), so a naive remote_addr
-    check would misidentify every remote client as local. nginx forwards
-    the real client IP via X-Real-IP (see nginx/pi-forensics.conf), so that
-    takes priority when present - but ONLY once request.remote_addr - the
-    actual TCP peer, not anything header-based - is itself confirmed
-    loopback. That gate is the real security boundary, found missing during
-    a security audit (2026-08-22): TLS/nginx is an *optional* install.py
-    prompt (see GUNICORN_BIND there), and skipping it leaves gunicorn
-    listening on every interface, not just localhost - in that mode
-    request.remote_addr is a genuine, unspoofable TCP-layer value (a
-    LAN/remote attacker's connection always shows their real address), while
-    X-Real-IP is just a client-supplied header with no nginx there to
-    strip/overwrite it. Trusting X-Real-IP unconditionally let a remote
-    attacker send `X-Real-IP: 127.0.0.1` straight to gunicorn and get the
-    kiosk's full unauthenticated bypass. Gating on remote_addr first closes
-    that without touching the TLS-configured deployment mode at all: nginx's
-    proxy_pass always connects to gunicorn via 127.0.0.1 (nginx/pi-
-    forensics.conf), so remote_addr is unconditionally loopback there
-    already - this check is a pure no-op in that mode, and only ever
-    changes behavior when there's no nginx in front to have set X-Real-IP
-    honestly in the first place.
+    whether TLS/nginx is set up - see install.py's autostart script. See
+    _effective_client_ip() above for why this can't just check
+    request.remote_addr directly.
     """
-    if request.remote_addr not in ('127.0.0.1', '::1'):
-        return False
-    real_ip = request.headers.get('X-Real-IP', request.remote_addr)
-    return real_ip in ('127.0.0.1', '::1', 'localhost')
+    return _effective_client_ip() in ('127.0.0.1', '::1', 'localhost')
 
 def get_offline_tiles_info():
     """Read install.py's optional offline OSM tile cache manifest, if that setup step was run.
@@ -260,7 +271,7 @@ def requires_auth(f):
             else:
                 session.clear()
 
-        client_key = request.remote_addr or 'unknown'
+        client_key = _effective_client_ip()
 
         # Fallback path, /api/* only: plain HTTP Basic Auth, unchanged from
         # this app's original auth model - kept specifically so this
