@@ -97,6 +97,52 @@ def test_is_valid_block_device_whitelist():
     # Partitions, not whole disks - this whitelist is deliberately for
     # whole-disk device paths only (see the function's own docstring).
     assert not paths.is_valid_block_device("/dev/sda1")
+
+
+def _make_case_folder(root, name="2026-CASE-TEST"):
+    import json
+    import pathlib
+    folder = pathlib.Path(root) / name
+    folder.mkdir()
+    (folder / f"{name}_case.json").write_text(json.dumps({"schema_version": 1, "events": []}))
+    return str(folder)
+
+
+def test_case_consolidated_path_resolves_a_real_case_folder_inside_evidence_root(evidence_root):
+    folder = _make_case_folder(evidence_root)
+    result = paths.case_consolidated_path(folder)
+    assert result == os.path.join(os.path.realpath(folder), "2026-CASE-TEST_case.json")
+
+
+def test_case_consolidated_path_rejects_a_lookalike_folder_outside_evidence_root(evidence_root, tmp_path):
+    # THE FIX: before this, case_consolidated_path() only checked
+    # os.path.isdir() + a marker-file-name match - neither implies the
+    # path is anywhere near EVIDENCE_ROOT. Several routes pass a raw,
+    # client-supplied case_folder straight to functions gated only by this
+    # check (see core/paths.py's own docstring on this function) - a
+    # directory outside the sandbox with the right marker filename would
+    # have satisfied it. A downstream function happened to safe_path() its
+    # own derived path anyway, which is what kept this from being directly
+    # exploitable, but that was two functions incidentally agreeing, not a
+    # designed guarantee - and it left a real os.walk() side-channel open
+    # in at least one caller before that downstream check ever ran.
+    outside = tmp_path / "not_the_evidence_root"
+    outside.mkdir()
+    folder = _make_case_folder(str(outside))
+    assert paths.case_consolidated_path(folder) is None
+
+
+def test_case_consolidated_path_returns_none_for_a_folder_with_no_marker_file(evidence_root):
+    import pathlib
+    folder = pathlib.Path(evidence_root) / "not_a_real_case"
+    folder.mkdir()
+    assert paths.case_consolidated_path(str(folder)) is None
+
+
+def test_case_consolidated_path_returns_none_for_none_or_a_nonexistent_path(evidence_root):
+    assert paths.case_consolidated_path(None) is None
+    assert paths.case_consolidated_path("") is None
+    assert paths.case_consolidated_path(os.path.join(evidence_root, "does_not_exist")) is None
     assert not paths.is_valid_block_device("/dev/sda; rm -rf /")
     assert not paths.is_valid_block_device("")
     assert not paths.is_valid_block_device(None)
