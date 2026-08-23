@@ -6,6 +6,7 @@ module per feature area) - pure code motion, no behavior change. See
 the dated CLAUDE.md entry for this refactor for the full rationale.
 """
 import os
+import re
 import sys
 import json
 import html
@@ -266,7 +267,57 @@ body {
 .doc-topbar a { color: var(--accent-cyan); text-decoration: none; font-weight: 700; font-size: 0.85rem; }
 .doc-topbar a:hover { text-decoration: underline; }
 .doc-topbar .doc-topbar-title { color: var(--text-subtle); font-size: 0.85rem; margin-left: auto; }
+
+/* Two-column layout (User Manual's table-of-contents / Release Notes'
+   version list) - only present when render_doc_html() found real <h2>
+   sections to link to; Quick-Start renders as a plain single column with
+   neither of these wrapping it. */
+.doc-layout { display: flex; align-items: flex-start; }
+.doc-sidenav {
+    width: 250px; flex: 0 0 250px;
+    position: sticky; top: 48px; align-self: flex-start;
+    max-height: calc(100vh - 48px); overflow-y: auto;
+    border-right: 1px solid var(--border-color);
+    padding: 24px 12px 40px;
+}
+.doc-sidenav-title {
+    text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.6px;
+    color: var(--text-subtle); font-weight: 700; padding: 0 10px 10px;
+}
+.doc-sidenav a {
+    display: block; padding: 7px 10px; border-radius: 5px;
+    color: var(--text-subtle); text-decoration: none; font-size: 0.85rem;
+    font-weight: 600; line-height: 1.35; margin-bottom: 1px;
+}
+.doc-sidenav a:hover { background: rgba(255,255,255,0.05); color: var(--text-bright); }
+.doc-sidenav a.active { background: rgba(0, 242, 254, 0.09); color: var(--accent-cyan); }
+
+/* Release Notes' collapsible version entries - native <details>/<summary>,
+   no JS required for the expand/collapse itself (only for auto-opening one
+   on a left-nav click / deep link, and for highlighting the active nav
+   item - see _DOC_NAV_SCRIPT). Most recent version ships with the `open`
+   attribute; every other version starts collapsed. */
+.doc-entry {
+    border: 1px solid var(--border-color); border-radius: 8px;
+    margin-bottom: 14px; overflow: hidden; background: rgba(255,255,255,0.015);
+}
+.doc-entry > summary {
+    cursor: pointer; padding: 14px 18px; list-style: none;
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(255,255,255,0.025);
+}
+.doc-entry > summary::-webkit-details-marker { display: none; }
+.doc-entry > summary::before {
+    content: "\25B8"; color: var(--accent-cyan); font-size: 0.9em;
+    display: inline-block; transition: transform 0.15s ease; flex-shrink: 0;
+}
+.doc-entry[open] > summary::before { transform: rotate(90deg); }
+.doc-entry > summary h2 { margin: 0; padding: 0; border: none; font-size: 1.1rem; display: inline; }
+.doc-entry > .doc-entry-body { padding: 2px 18px 20px; }
+.doc-entry > .doc-entry-body > *:first-child { margin-top: 0; }
+
 article {
+    flex: 1; min-width: 0;
     max-width: 780px; margin: 0 auto; padding: 32px 24px 80px;
     line-height: 1.65; font-size: 1rem;
 }
@@ -305,6 +356,79 @@ article th, article td { border: 1px solid var(--border-color); padding: 8px 12p
 article th { background: var(--card-bg); color: var(--accent-cyan); }
 article tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
 article hr { border: none; border-top: 1px solid var(--border-color); margin: 2em 0; }
+
+@media (max-width: 767.98px) {
+    .doc-layout { flex-direction: column; }
+    .doc-sidenav {
+        width: 100%; flex: 0 0 auto; position: static; max-height: none;
+        border-right: none; border-bottom: 1px solid var(--border-color);
+        padding: 14px 16px;
+    }
+}
+"""
+
+
+# Every top-level <h2 id="..."> the toc extension produced, in document
+# order - the single source both the left-nav links and (for Release
+# Notes only) the collapsible-entry rewrap below are built from, so the
+# two can never drift out of sync with each other.
+_H2_RE = re.compile(r"<h2([^>]*)>(.*?)</h2>", re.S)
+
+
+def _split_html_by_h2(body_html):
+    """Splits rendered HTML at each top-level <h2> boundary. Returns
+    (intro_html, sections) - intro_html is everything before the first
+    <h2> (verbatim, untouched); sections is a list of dicts, one per <h2>
+    found, each {"id", "heading_html" (the full <h2>...</h2> tag, used
+    as-is inside a <summary> so its own id stays the real anchor target -
+    no second id is ever introduced), "heading_text" (tags stripped, for
+    the left-nav link label), "body_html" (everything up to the next <h2>,
+    or end of document for the last one)}."""
+    matches = list(_H2_RE.finditer(body_html))
+    if not matches:
+        return body_html, []
+    intro_html = body_html[:matches[0].start()]
+    sections = []
+    for i, m in enumerate(matches):
+        attrs, inner = m.group(1), m.group(2)
+        id_match = re.search(r'id="([^"]*)"', attrs)
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body_html)
+        sections.append({
+            "id": id_match.group(1) if id_match else None,
+            "heading_html": m.group(0),
+            "heading_text": re.sub(r"<[^>]+>", "", inner).strip(),
+            "body_html": body_html[m.end():end],
+        })
+    return intro_html, sections
+
+
+# Progressive enhancement only - every link/anchor already works via plain
+# browser navigation without this (a modern browser auto-opens a closed
+# <details> ancestor of a navigated-to fragment per the HTML living
+# standard's own "scroll to the fragment" algorithm). This just makes it
+# reliable across older browsers too, and adds the active-nav-item
+# highlight, which has no native equivalent.
+_DOC_NAV_SCRIPT = """
+<script>
+(function() {
+    function activate() {
+        var hash = location.hash;
+        var links = document.querySelectorAll('.doc-sidenav a');
+        links.forEach(function(a) {
+            a.classList.toggle('active', a.getAttribute('href') === hash);
+        });
+        if (!hash) { if (links[0]) links[0].classList.add('active'); return; }
+        var target;
+        try { target = document.querySelector(hash); } catch (e) { return; }
+        if (!target) return;
+        for (var el = target; el; el = el.parentElement) {
+            if (el.tagName === 'DETAILS') el.open = true;
+        }
+    }
+    window.addEventListener('hashchange', activate);
+    activate();
+})();
+</script>
 """
 
 
@@ -314,13 +438,49 @@ def render_doc_html(doc_id):
     id is unrecognized or the file can't be read, so the route can turn
     that into a clean 404. Markdown is trusted, first-party content shipped
     with the repo, never user-supplied - the html.escape() below is only
-    for the page <title>, which is built from a fixed dict this module
-    controls, not derived from the markdown text itself."""
+    for the page <title>/left-nav labels, which are either a fixed dict
+    this module controls or tag-stripped heading text from that same
+    trusted source, not user-submitted content.
+
+    Release Notes and the User Manual additionally get a left-hand nav
+    built from their own <h2> sections (Versions / Contents respectively);
+    Release Notes' sections are also rewrapped into collapsible <details>,
+    most-recent-first-and-open, everything else collapsed. Quick-Start has
+    no <h2> sections worth a nav for and renders as a plain single column,
+    unchanged."""
     raw = get_doc_content(doc_id)
     if raw is None:
         return None
     body_html = markdown.markdown(raw, extensions=["extra", "sane_lists", "toc"])
     title = html.escape(DOC_TITLES.get(doc_id, "Documentation"))
+
+    layout_open, sidenav_html, layout_close, script_html = "", "", "", ""
+
+    if doc_id in ("changelog", "user-manual"):
+        intro_html, sections = _split_html_by_h2(body_html)
+        linkable = [s for s in sections if s["id"]]
+        if linkable:
+            nav_label = "Versions" if doc_id == "changelog" else "Contents"
+            nav_links = "".join(
+                f'<a href="#{s["id"]}">{html.escape(s["heading_text"])}</a>'
+                for s in linkable
+            )
+            sidenav_html = f'<nav class="doc-sidenav"><div class="doc-sidenav-title">{nav_label}</div>{nav_links}</nav>'
+            layout_open, layout_close = '<div class="doc-layout">', "</div>"
+            script_html = _DOC_NAV_SCRIPT
+            if doc_id == "changelog":
+                entries = "".join(
+                    f'<details class="doc-entry"{" open" if i == 0 else ""}>'
+                    f'<summary>{s["heading_html"]}</summary>'
+                    f'<div class="doc-entry-body">{s["body_html"]}</div>'
+                    f"</details>"
+                    for i, s in enumerate(sections)
+                )
+                body_html = intro_html + entries
+            # user-manual: body_html is left exactly as rendered - only a
+            # nav derived from its existing headings is added alongside it,
+            # the flowing document itself is untouched.
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -334,8 +494,11 @@ def render_doc_html(doc_id):
 <a href="/">&larr; Back to Pi Forensics Suite</a>
 <span class="doc-topbar-title">{title}</span>
 </div>
+{layout_open}{sidenav_html}
 <article>
 {body_html}
 </article>
+{layout_close}
+{script_html}
 </body>
 </html>"""

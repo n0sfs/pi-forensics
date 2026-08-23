@@ -64,3 +64,84 @@ def test_render_doc_html_converts_markdown_syntax_not_just_passes_it_through():
 
 def test_render_doc_html_unknown_id_returns_none():
     assert config.render_doc_html("bogus-id") is None
+
+
+def _sidenav_links(page):
+    import re
+    m = re.search(r'<nav class="doc-sidenav">.*?</nav>', page, re.S)
+    if not m:
+        return []
+    return re.findall(r'<a href="#([^"]+)">', m.group())
+
+
+def test_quickstart_has_no_sidenav_or_two_column_layout():
+    # Only Release Notes/User Manual get the left-nav treatment - Quick-
+    # Start is short enough to stay a plain single column.
+    page = config.render_doc_html("quickstart")
+    assert '<div class="doc-layout">' not in page
+    assert 'class="doc-sidenav"' not in page
+
+
+def test_changelog_sidenav_lists_every_version_and_only_the_first_is_open():
+    page = config.render_doc_html("changelog")
+    links = _sidenav_links(page)
+    assert len(links) >= 2  # at least 1.0.0 and 1.0.1
+    entry_count = page.count('class="doc-entry"')
+    open_count = page.count('doc-entry" open')
+    assert entry_count == len(links)
+    assert open_count == 1
+    # The open one is the FIRST entry in the document (changelog is
+    # newest-first), not just any single entry - confirmed by checking the
+    # <details ... open> that appears earliest in the article body comes
+    # before every non-open one.
+    first_open_pos = page.index('doc-entry" open')
+    first_plain_pos = page.index('class="doc-entry">')
+    assert first_open_pos < first_plain_pos
+
+
+def test_changelog_sidenav_link_targets_resolve_to_real_ids_in_the_body():
+    page = config.render_doc_html("changelog")
+    for link_id in _sidenav_links(page):
+        assert f'id="{link_id}"' in page
+
+
+def test_user_manual_sidenav_lists_all_nine_top_level_sections_not_collapsible():
+    page = config.render_doc_html("user-manual")
+    links = _sidenav_links(page)
+    assert len(links) == 9
+    # No <details> wrapping in the article body itself (the shared <style>
+    # block mentions the .doc-entry class name regardless of doc, since
+    # it's one CSS stylesheet reused across all three pages - that's
+    # expected and harmless, only the body content matters here).
+    article_body = page.split("<article>", 1)[1].split("</article>", 1)[0]
+    assert "<details" not in article_body
+
+
+def test_user_manual_no_longer_has_the_old_inline_numbered_contents_list():
+    # The old "## Contents" heading + its 9 numbered markdown links were
+    # removed from the source (docs/user-manual.md) once the real left-nav
+    # made them redundant - confirms that edit stuck, not just that the new
+    # nav exists alongside a leftover duplicate.
+    raw = config.get_doc_content("user-manual")
+    assert "## Contents" not in raw
+
+
+def test_split_html_by_h2_basic_contract():
+    body = (
+        '<p>intro text</p>'
+        '<h2 id="a">Section A</h2><p>content a</p>'
+        '<h2 id="b">Section B</h2><p>content b</p>'
+    )
+    intro, sections = config._split_html_by_h2(body)
+    assert intro == "<p>intro text</p>"
+    assert [s["id"] for s in sections] == ["a", "b"]
+    assert sections[0]["heading_text"] == "Section A"
+    assert sections[0]["body_html"] == "<p>content a</p>"
+    assert sections[1]["body_html"] == "<p>content b</p>"
+
+
+def test_split_html_by_h2_no_headings_returns_everything_as_intro():
+    body = "<p>just a paragraph, no h2 at all</p>"
+    intro, sections = config._split_html_by_h2(body)
+    assert intro == body
+    assert sections == []
