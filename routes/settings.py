@@ -1963,6 +1963,10 @@ def toggle_onscreen_keyboard():
 # for this refactor.
 @settings_bp.route('/api/tools/mvt_update_iocs', methods=['POST'])
 @requires_auth
+# Found missing during the 2026-08-22 security audit - its sibling
+# install_tool() above already requires this; this one let any
+# authenticated account trigger a network fetch regardless of group.
+@requires_permission('settings')
 def mvt_update_iocs():
     results = {}
     ran_any = False
