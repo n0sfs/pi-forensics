@@ -60,6 +60,9 @@ station, especially any station reachable outside a fully trusted physical netwo
 - Updated the in-app Help (guided walkthroughs, FAQ, tool reference) to match - encrypted-volume
   support, Live Device Preview, Logical Acquisition, image format conversion, memory forensics, and
   browser-artifact parsing are now all covered there too.
+- The Quick-Start Guide, User Manual, and this changelog are now readable directly inside the app
+  (linked from Help and from Settings > Service Controls & Diagnostics) - no separate GitHub access
+  or internet connection needed to read them on an already-installed station.
 
 ---
 
