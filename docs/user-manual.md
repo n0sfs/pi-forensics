@@ -7,20 +7,6 @@ want to understand a specific feature in depth.
 This manual assumes no forensics background. Terms like "write-blocker," "hash," and "chain of
 custody" are explained the first time they come up.
 
-## Contents
-
-1. [What this station is (and isn't)](#1-what-this-station-is-and-isnt)
-2. [The Active Case](#2-the-active-case)
-3. [Forensic Acquisition](#3-forensic-acquisition)
-4. [Mobile Forensics](#4-mobile-forensics)
-5. [File Recovery](#5-file-recovery)
-6. [File Explorer](#6-file-explorer)
-7. [Reporting](#7-reporting)
-8. [Settings](#8-settings)
-9. [Getting help](#9-getting-help)
-
----
-
 ## 1. What this station is (and isn't)
 
 Pi Forensics Suite turns a Raspberry Pi (or similar ARM single-board computer) into a self-contained
