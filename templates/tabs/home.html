@@ -5,6 +5,67 @@
                          main.js), so an account without a given tab's permission never sees a tile
                          that would just 403 if clicked. -->
                     <div class="tab-pane fade show active" id="home-app" role="tabpanel">
+                        <!-- Guided Workflow: a stateful case -> acquisition -> tools checklist for
+                             whichever case is currently active. Distinct from the plain launcher
+                             tiles below (those never change) - see refreshGuidedWorkflow()/
+                             setWorkflowStepDone()/setWorkflowStepPending() in main.js, and
+                             /api/case_index/summary's has_analysis_activity field for step 3. -->
+                        <div class="card mb-3" id="guidedWorkflowCard">
+                            <div class="card-header d-flex align-items-center justify-content-between py-2">
+                                <span><i class="bi bi-signpost-2-fill me-2"></i>Guided Workflow</span>
+                                <button type="button" class="btn btn-sm btn-outline-light py-0 px-2" onclick="toggleGuidedWorkflowCollapse()" title="Collapse/expand">
+                                    <i class="bi bi-chevron-up" id="guidedWorkflowChevron"></i>
+                                </button>
+                            </div>
+                            <div class="card-body" id="guidedWorkflowBody">
+                                <div id="guidedWorkflowNoCase" class="text-subtle small" style="display:none;">
+                                    Create or select a case to track your progress through it here - every
+                                    acquisition and tool run below is scoped to whichever case is active.
+                                    <div class="mt-2">
+                                        <button class="btn btn-sm btn-info fw-bold" onclick="openCaseManagerModal()"><i class="bi bi-folder-plus me-1"></i>Create / Select Case</button>
+                                    </div>
+                                </div>
+
+                                <div id="guidedWorkflowSteps" style="display:none;">
+                                    <div class="text-subtle small mb-3">Following along for <strong id="guidedWorkflowCaseLabel">--</strong>:</div>
+
+                                    <div class="d-flex align-items-start gap-3 mb-3 pb-3" style="border-bottom: 1px solid var(--border-color);">
+                                        <div class="workflow-step-badge" id="wfBadge1">1</div>
+                                        <div class="flex-grow-1">
+                                            <div class="fw-bold small">1. Create or select a case</div>
+                                            <div class="text-subtle small">Every acquisition, tool run, and report ties back to one case.</div>
+                                            <div class="small mt-1" id="wfStatus1">--</div>
+                                        </div>
+                                        <button class="btn btn-sm btn-outline-info fw-bold text-nowrap" onclick="openCaseManagerModal()">Case Manager</button>
+                                    </div>
+
+                                    <div class="d-flex align-items-start gap-3 mb-3 pb-3" style="border-bottom: 1px solid var(--border-color);">
+                                        <div class="workflow-step-badge" id="wfBadge2">2</div>
+                                        <div class="flex-grow-1">
+                                            <div class="fw-bold small">2. Run an acquisition</div>
+                                            <div class="text-subtle small">Image a drive, pull a mobile backup, or recover deleted files into this case.</div>
+                                            <div class="small mt-1" id="wfStatus2">--</div>
+                                        </div>
+                                        <button class="btn btn-sm btn-outline-info fw-bold text-nowrap" onclick="switchToTab('acquisition-tab')">Go to Acquisition</button>
+                                    </div>
+
+                                    <div class="d-flex align-items-start gap-3">
+                                        <div class="workflow-step-badge" id="wfBadge3">3</div>
+                                        <div class="flex-grow-1">
+                                            <div class="fw-bold small">3. Run analysis tools</div>
+                                            <div class="text-subtle small">Hash, tag, scan, or extract artifacts from what you've acquired - right-click any file in File Explorer.</div>
+                                            <div class="small mt-1" id="wfStatus3">--</div>
+                                        </div>
+                                        <button class="btn btn-sm btn-outline-info fw-bold text-nowrap" onclick="switchToTab('explorer-tab')">Go to File Explorer</button>
+                                    </div>
+
+                                    <div id="guidedWorkflowDone" class="mt-3 pt-3 small text-success" style="display:none; border-top: 1px solid var(--border-color);">
+                                        <i class="bi bi-check-circle-fill me-1"></i>All three steps have activity for this case. Ready to write it up? <a href="#" onclick="switchToTab('reports-tab'); return false;" class="text-info fw-bold">Go to Reporting</a>.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="card">
                             <div class="card-header d-flex align-items-center gap-2 py-2">
                                 <i class="bi bi-house-door-fill"></i>Home

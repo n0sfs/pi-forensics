@@ -23,6 +23,7 @@ from core.case_index_db import (
     _case_index_open_readonly, _case_index_open_write,
     _tags_for_paths, _analysis_results_for_paths, TRIAGE_PATTERNS,
     _backfill_case_artifact_tags, KEYWORD_CATEGORY_PREFIX, resolve_scan_category_label,
+    has_case_analysis_activity,
 )
 
 case_index_bp = Blueprint('case_index', __name__)
@@ -75,6 +76,7 @@ def case_index_summary():
     deleted_files = 0
     total_files = 0
     tags = []
+    analysis_results_count = 0
     if conn:
         try:
             for row in conn.execute("SELECT category, COUNT(*) FROM indexed_files WHERE deleted=0 GROUP BY category"):
@@ -95,18 +97,30 @@ def case_index_summary():
                     "FROM tags t ORDER BY t.is_default DESC, t.name"):
                 tags.append({"id": row[0], "name": row[1], "color": row[2], "notable": bool(row[3]),
                              "is_default": bool(row[4]), "count": row[5]})
+            # Binwalk/ClamAV/Strings/Memory Forensics/Hash-Directory-Tree all
+            # write here via core.case_index_db._record_analysis_result() -
+            # the one signal below (has_analysis_activity) that isn't already
+            # covered by total_files/keyword_hits/parsed_artifact_counts, all
+            # three of which are specific to the whole-image Triage Scan /
+            # keyword-list scans / browser-artifact parsing respectively.
+            analysis_results_count = conn.execute("SELECT COUNT(*) FROM analysis_results").fetchone()[0]
         finally:
             conn.close()
+    keyword_hit_total = sum(keyword_hits.values()) + sum(c['count'] for c in custom_keyword_hits)
+    has_analysis_activity = has_case_analysis_activity(
+        analysis_results_count, total_files, keyword_hit_total, parsed_artifact_counts, tags)
     return jsonify({
         "success": True,
         "indexed": conn is not None,
         "total_files": total_files,
         "by_extension": by_extension,
         "deleted_files": deleted_files,
-        "keyword_hits": {"total": sum(keyword_hits.values()) + sum(c['count'] for c in custom_keyword_hits), **keyword_hits},
+        "keyword_hits": {"total": keyword_hit_total, **keyword_hits},
         "custom_keyword_hits": custom_keyword_hits,
         "parsed_artifact_counts": parsed_artifact_counts,
         "tags": tags,
+        "analysis_results_count": analysis_results_count,
+        "has_analysis_activity": has_analysis_activity,
     })
 
 PARSED_ARTIFACT_TYPE_LABELS = {
