@@ -8092,6 +8092,7 @@ function applyActiveCaseToFields() {
     // of which call this function already.
     loadCaseForEditing();
     resyncExplorerRootToActiveCase();
+    refreshGuidedWorkflow();
 }
 
 function openCaseManagerModal() {
@@ -8294,8 +8295,121 @@ function clearActiveCase() {
     renderActiveCaseBar();
     loadCaseForEditing();
     resyncExplorerRootToActiveCase(); // falls File Explorer back to /mnt
+    refreshGuidedWorkflow();
     if (caseManagerModalInstance) caseManagerModalInstance.hide();
 }
+
+// --- Home tab: Guided Workflow (2026-08-24) -----------------------------------
+// A stateful case -> acquisition -> tools checklist for whichever case is
+// currently active, distinct from the plain always-the-same launcher tiles
+// below it on Home. "Done" for each step is derived from real data already
+// on disk, not client-side-only state, so it survives a reload and is
+// correct even if the examiner did the actual work from a different browser
+// tab/session: step 1 from activeCase itself, step 2 from /api/cases/list's
+// existing per-case event_count, step 3 from /api/case_index/summary's
+// has_analysis_activity (added alongside this feature - see routes/
+// case_index.py). Refreshed from every place this app already treats as
+// "the case may have changed" (applyActiveCaseToFields()/clearActiveCase()
+// above), on Home-tab visits/return, a light poll while Home stays visible
+// (mirrors the Audit Log auto-refresh pattern), and on any background job
+// finishing while Home happens to be the visible tab.
+async function refreshGuidedWorkflow() {
+    const noCaseEl = document.getElementById('guidedWorkflowNoCase');
+    const stepsEl = document.getElementById('guidedWorkflowSteps');
+    if (!noCaseEl || !stepsEl) return;
+
+    if (!activeCase) {
+        noCaseEl.style.display = 'block';
+        stepsEl.style.display = 'none';
+        return;
+    }
+    noCaseEl.style.display = 'none';
+    stepsEl.style.display = 'block';
+
+    const caseLabelEl = document.getElementById('guidedWorkflowCaseLabel');
+    if (caseLabelEl) caseLabelEl.textContent = activeCase.case_number;
+
+    // Step 1 is always "done" the instant a case is active - this whole
+    // block is hidden entirely otherwise (see above).
+    setWorkflowStepDone('wfBadge1', 'wfStatus1', `Active case: ${activeCase.case_number}`);
+
+    let eventCount = 0;
+    let hasActivity = false;
+    try {
+        const casesRes = await fetch('/api/cases/list');
+        const casesData = await casesRes.json();
+        if (casesData.success) {
+            const thisCase = casesData.cases.find((c) => c.case_folder === activeCase.case_folder);
+            if (thisCase && typeof thisCase.event_count === 'number') eventCount = thisCase.event_count;
+        }
+    } catch (err) {}
+
+    try {
+        const idxRes = await fetch('/api/case_index/summary', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder }),
+        });
+        const idxData = await idxRes.json();
+        if (idxData.success) hasActivity = !!idxData.has_analysis_activity;
+    } catch (err) {}
+
+    if (eventCount > 0) {
+        setWorkflowStepDone('wfBadge2', 'wfStatus2', `${eventCount} acquisition event${eventCount === 1 ? '' : 's'} recorded`);
+    } else {
+        setWorkflowStepPending('wfBadge2', 'wfStatus2', 'Not started yet', '2');
+    }
+
+    if (hasActivity) {
+        setWorkflowStepDone('wfBadge3', 'wfStatus3', 'Analysis activity recorded');
+    } else {
+        setWorkflowStepPending('wfBadge3', 'wfStatus3', 'No analysis activity yet', '3');
+    }
+
+    const doneEl = document.getElementById('guidedWorkflowDone');
+    if (doneEl) doneEl.style.display = (eventCount > 0 && hasActivity) ? 'block' : 'none';
+}
+
+function setWorkflowStepDone(badgeId, statusId, statusText) {
+    const badge = document.getElementById(badgeId);
+    const status = document.getElementById(statusId);
+    if (badge) { badge.className = 'workflow-step-badge done'; badge.innerHTML = '<i class="bi bi-check-lg"></i>'; }
+    if (status) { status.className = 'small mt-1 text-success'; status.textContent = statusText; }
+}
+
+function setWorkflowStepPending(badgeId, statusId, statusText, num) {
+    const badge = document.getElementById(badgeId);
+    const status = document.getElementById(statusId);
+    if (badge) { badge.className = 'workflow-step-badge'; badge.textContent = num; }
+    if (status) { status.className = 'small mt-1 text-subtle'; status.textContent = statusText; }
+}
+
+function toggleGuidedWorkflowCollapse() {
+    const body = document.getElementById('guidedWorkflowBody');
+    const chevron = document.getElementById('guidedWorkflowChevron');
+    if (!body || !chevron) return;
+    const collapsing = body.style.display !== 'none';
+    body.style.display = collapsing ? 'none' : 'block';
+    chevron.className = collapsing ? 'bi bi-chevron-down' : 'bi bi-chevron-up';
+    localStorage.setItem('pi_forensics_guided_workflow_collapsed', collapsing ? '1' : '0');
+}
+
+let guidedWorkflowAutoRefreshTimer = null;
+function startGuidedWorkflowAutoRefresh() {
+    if (guidedWorkflowAutoRefreshTimer) return;
+    guidedWorkflowAutoRefreshTimer = setInterval(refreshGuidedWorkflow, 20000);
+}
+function stopGuidedWorkflowAutoRefresh() {
+    if (guidedWorkflowAutoRefreshTimer) {
+        clearInterval(guidedWorkflowAutoRefreshTimer);
+        guidedWorkflowAutoRefreshTimer = null;
+    }
+}
+document.addEventListener('shown.bs.tab', (ev) => {
+    if (ev.target.id === 'home-tab') { refreshGuidedWorkflow(); startGuidedWorkflowAutoRefresh(); }
+});
+document.addEventListener('hidden.bs.tab', (ev) => {
+    if (ev.target.id === 'home-tab') stopGuidedWorkflowAutoRefresh();
+});
 
 // --- Modular Folder & File Modals ---
 function openFolderModal(mode = 'folder', targetInputId = 'destPath') {
@@ -11214,6 +11328,12 @@ async function fetchProgress() {
                     bumpNavBadge(badgeId);
                 }
             }
+            // Same transition, refreshing the Home tab's Guided Workflow checklist so a job
+            // started elsewhere and left to finish while browsing Home updates without waiting
+            // for that card's own slower 20s poll.
+            if (document.getElementById('home-tab')?.classList.contains('active')) {
+                refreshGuidedWorkflow();
+            }
         }
         lastGlobalJobActive = data.active;
         lastGlobalJobFormat = data.format;
@@ -11277,6 +11397,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (sidebar) sidebar.classList.add("compact");
         if (icon) icon.className = "bi bi-chevron-double-right";
     }
+    if (localStorage.getItem("pi_forensics_guided_workflow_collapsed") === "1") {
+        const gwBody = document.getElementById("guidedWorkflowBody");
+        const gwChevron = document.getElementById("guidedWorkflowChevron");
+        if (gwBody) gwBody.style.display = "none";
+        if (gwChevron) gwChevron.className = "bi bi-chevron-down";
+    }
 
     initThroughputGraph();
     refreshDrives();
@@ -11296,6 +11422,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     // re-trigger a render once the cache did arrive (real bug, found via live testing).
     await fetchCustomFieldDefs();
     initActiveCaseBar(); // sets activeCase synchronously (if restored) - must run before File Explorer's first build below so it roots at the right case from the start, not '/mnt' then a moment later re-rooting
+    // Explicit call, not just relying on applyActiveCaseToFields()'s own internal call above -
+    // that function returns early with no case active, which would otherwise leave the Guided
+    // Workflow card showing its default "--" markup instead of the real empty state on a fresh
+    // page load with no active case.
+    refreshGuidedWorkflow();
     initExplorerTree();
     loadExplorer(getExplorerRootPath());
     fetchWhoami();

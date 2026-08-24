@@ -374,3 +374,43 @@ def test_parsed_artifact_counts_reflects_real_types_and_counts(case_folder):
 
 def test_parsed_artifact_counts_empty_dict_when_never_indexed(case_folder):
     assert case_index_db._parsed_artifact_counts(case_folder) == {}
+
+
+# --- has_case_analysis_activity (the Home tab Guided Workflow's step-3 signal) ---
+
+def _tag(is_default, count):
+    return {"is_default": is_default, "count": count}
+
+
+def test_has_case_analysis_activity_false_when_nothing_has_happened():
+    assert case_index_db.has_case_analysis_activity(0, 0, 0, {}, []) is False
+
+
+def test_has_case_analysis_activity_false_for_only_default_role_tags():
+    # The exact false-positive this function exists to avoid: an acquisition
+    # (or a report export) alone gets the case auto-tagged under one of the
+    # four role-specific default tags (Report Export etc.) with zero real
+    # analysis ever having run - that must not read as "tools were run".
+    tags = [_tag(is_default=True, count=1), _tag(is_default=True, count=3)]
+    assert case_index_db.has_case_analysis_activity(0, 0, 0, {}, tags) is False
+
+
+@pytest.mark.parametrize("analysis_results_count,total_files,keyword_hit_total,parsed_artifact_counts,tags,label", [
+    (1, 0, 0, {}, [], "a Binwalk/ClamAV/Strings/Memory-Forensics analysis_results row"),
+    (0, 1, 0, {}, [], "the whole-image Triage Scan indexed at least one file"),
+    (0, 0, 1, {}, [], "a keyword/Quick-Triage-Scan hit was found"),
+    (0, 0, 0, {"chrome_history": 2}, [], "a browser artifact was parsed"),
+    (0, 0, 0, {}, [_tag(is_default=False, count=1)], "an examiner applied a real (non-default) tag"),
+])
+def test_has_case_analysis_activity_true_for_each_independent_signal(
+        analysis_results_count, total_files, keyword_hit_total, parsed_artifact_counts, tags, label):
+    assert case_index_db.has_case_analysis_activity(
+        analysis_results_count, total_files, keyword_hit_total, parsed_artifact_counts, tags) is True, label
+
+
+def test_has_case_analysis_activity_false_for_a_real_tag_that_was_created_but_never_applied():
+    # A custom tag can exist (created via Settings > Manage Tags) with
+    # nothing tagged under it yet - count=0 - which must not count as
+    # activity even though it's not one of the four default role tags.
+    tags = [_tag(is_default=False, count=0)]
+    assert case_index_db.has_case_analysis_activity(0, 0, 0, {}, tags) is False
