@@ -241,6 +241,21 @@
         }
         .home-stat-value { color: #ffffff; font-size: 1.9rem; font-weight: 800; line-height: 1.2; }
 
+        /* Home tab: Guided Workflow card (2026-08-24) - a stateful, 3-step
+           case -> acquisition -> tools checklist, distinct from the launcher
+           tiles below it (those are always the same; this reflects whatever
+           the active case has actually had done to it so far). */
+        .workflow-step-badge {
+            width: 32px; height: 32px; min-width: 32px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 0.85rem;
+            background: rgba(255,255,255,0.06); color: var(--text-subtle);
+            border: 1px solid var(--border-color);
+        }
+        .workflow-step-badge.done {
+            background: rgba(25, 135, 84, 0.18); color: #34d399; border-color: rgba(52, 211, 153, 0.4);
+        }
+
         /* Help > Getting Started: reuses .home-tile's exact card/hover shape
            (2026-08-23, replacing a flat row of outline buttons per the
            user's own "make it look nicer" ask) - only the icon box gets a

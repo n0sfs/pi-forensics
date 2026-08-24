@@ -576,6 +576,29 @@ def _parsed_artifact_counts(case_folder):
     finally:
         conn.close()
 
+
+def has_case_analysis_activity(analysis_results_count, total_files, keyword_hit_total, parsed_artifact_counts, tags):
+    """The Home tab's Guided Workflow checklist (main.js's refreshGuidedWorkflow())
+    needs one boolean answering "has any analysis tool actually been run against
+    this case yet" - this is that composite, factored out of routes/case_index.py's
+    case_index_summary() as a plain function so it's unit-testable without a Flask
+    app/DB (core.jobs, which routes/case_index.py needs to import at all, is
+    POSIX-only and can't load on a Windows dev machine).
+
+    Deliberately excludes the four self-applied "Case Artifact" role tags
+    (Report Export / Analysis Log & Hash / Geolocation Export / Backup Snapshot,
+    see classify_case_role()/CASE_ROLE_TAG_NAMES) from counting as activity -
+    those get auto-tagged the instant ANY report/hash-manifest/KML/backup file
+    exists, which would make a case that's only ever had an acquisition (never an
+    examiner-run analysis action) look like it had tool activity too. Only a real
+    examiner-applied tag (is_default=0) with at least one item under it counts.
+    `tags` is the same list case_index_summary() already builds - dicts with
+    `is_default` and `count` keys."""
+    return bool(
+        analysis_results_count > 0 or total_files > 0 or keyword_hit_total > 0
+        or parsed_artifact_counts or any((not t['is_default']) and t['count'] > 0 for t in tags)
+    )
+
 # One default tag per classify_case_role() outcome - see the schema seed
 # comment above for why this exists as four tags instead of one lump one.
 CASE_ROLE_TAG_NAMES = {
