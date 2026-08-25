@@ -128,6 +128,19 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "chrome_bookmarks": "Chrome/Chromium Bookmarks", "chrome_cookies": "Chrome/Chromium Cookies",
     "firefox_history": "Firefox History", "firefox_downloads": "Firefox Downloads",
     "firefox_bookmarks": "Firefox Bookmarks", "firefox_cookies": "Firefox Cookies",
+    # Part C (2026-08-25) - Registry/Event Log/LNK parsing. A real bug was
+    # caught live while verifying this: this allowlist is what actually
+    # gates case_index_parsed_artifacts() below - forgetting an entry here
+    # meant the summary count (case_index_summary(), which has no such
+    # gate) correctly showed real rows existed, while the row-fetch route
+    # silently returned an empty list for every one of these 7 new types.
+    "registry_recent_docs": "Registry: Recent Documents", "registry_typed_urls": "Registry: Typed URLs/Paths",
+    "registry_run_history": "Registry: Run History", "registry_usb_history": "Registry: USB Device History",
+    "registry_installed_programs": "Registry: Installed Programs",
+    "evtx_logon_success": "Event Log: Successful Logons", "evtx_logon_failure": "Event Log: Failed Logons",
+    "evtx_process_creation": "Event Log: Process Creation", "evtx_account_created": "Event Log: Account Created",
+    "evtx_service_installed": "Event Log: Service Installed", "evtx_audit_log_cleared": "Event Log: Audit Log Cleared",
+    "lnk_shortcut": "LNK Shortcuts",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])
