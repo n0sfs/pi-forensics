@@ -53,7 +53,7 @@ from core.config import (
     ADMIN_USER, ADMIN_PASS, INSTALL_DIR, HISTORY_FILE,
     TLS_CERT_PATH, TLS_KEY_PATH, MVT_BIN_DIR, MVT_IOS_BIN, MVT_ANDROID_BIN,
     VOL3_PIP_BIN,
-    EVIDENCE_ROOT,
+    EVIDENCE_ROOT, ALLOWED_HASH_ALGOS,
     load_runtime_config, save_runtime_config, get_active_admin_pass,
     _get_or_create_mount_key, _encrypt_secret, _decrypt_secret,
     get_app_version,
@@ -673,6 +673,136 @@ def keyword_list_detail(list_id):
     log_chain_of_custody("keyword_list_updated", {"id": list_id, "name": record['name'], "term_count": len(record['terms'])})
     return jsonify({"success": True, "list": record})
 
+# --- Hash-set filtering (D2): station-wide known-good/known-bad hash lists ---
+# Mirrors the Keyword Lists feature above structurally (CRUD, save-time
+# validation, a station-wide list an examiner picks from at scan time) -
+# the one deliberate difference: a hash list can run to thousands of
+# lines, so only metadata lives inline in runtime_config.json (id/name/
+# algorithm/label/hash_count/timestamps); the actual hash values live in
+# their own flat file under config.HASH_LISTS_DIR, one hash per line -
+# same "large blob gets its own file" precedent report_logo.<ext> already
+# established, referenced via the module-qualified config.HASH_LISTS_DIR
+# (not a bare imported name) for the same test-safety reason
+# config.INSTALL_DIR/config.RUNTIME_CONFIG_FILE/config.MOUNT_KEY_FILE are
+# already accessed that way elsewhere in this file - see this file's own
+# comment on that near the top of the Configuration Backup section.
+HASH_LIST_MAX_HASHES = 500_000  # station-appropriate, not NSRL-scale
+HASH_LIST_MAX_LISTS = 50
+_HASH_LEN_BY_ALGO = {'md5': 32, 'sha1': 40, 'sha256': 64}
+_HEX_RE = re.compile(r'^[0-9a-fA-F]+$')
+
+def _parse_hash_list_text(text, algorithm):
+    """Validates and normalizes a pasted/uploaded hash blob - one hash per
+    line (blank lines and a leading '#' comment line both tolerated, since
+    many real-world hash-set exports use one or the other), each must be a
+    plausible hex string of exactly the length the declared algorithm
+    produces. Returns (hashes, error) - error is a string naming the first
+    bad line if validation fails, so an examiner pasting a garbled/wrong-
+    algorithm list gets a clear reason rather than a silent partial import."""
+    expected_len = _HASH_LEN_BY_ALGO.get(algorithm)
+    if not expected_len:
+        return None, f"Unsupported algorithm '{algorithm}'. Use any of {sorted(_HASH_LEN_BY_ALGO)}."
+    hashes = []
+    for i, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if len(line) != expected_len or not _HEX_RE.match(line):
+            return None, f"Line {i} ('{line[:40]}') is not a valid {expected_len}-character {algorithm} hash."
+        hashes.append(line.lower())
+        if len(hashes) > HASH_LIST_MAX_HASHES:
+            return None, f"Too many hashes - max {HASH_LIST_MAX_HASHES} per list."
+    if not hashes:
+        return None, "No valid hashes found in the pasted text."
+    return hashes, None
+
+@settings_bp.route('/api/settings/hash_lists', methods=['GET', 'POST'])
+@requires_auth
+def hash_lists():
+    cfg = load_runtime_config()
+    if request.method == 'GET':
+        return jsonify({"success": True, "lists": cfg.get('hash_lists', [])})
+
+    perms = get_current_user_permissions()
+    if not perms.get('settings', False):
+        return jsonify({"success": False, "error": "Your account's user group doesn't have permission to perform this action."}), 403
+
+    lists = cfg.setdefault('hash_lists', [])
+    if len(lists) >= HASH_LIST_MAX_LISTS:
+        return jsonify({"success": False, "error": f"Station already has the maximum of {HASH_LIST_MAX_LISTS} hash lists."}), 400
+
+    req = request.get_json() or {}
+    name = (req.get('name') or '').strip()
+    algorithm = (req.get('algorithm') or '').strip().lower()
+    label = req.get('label') if req.get('label') in ('known_good', 'known_bad') else 'known_bad'
+    if not name:
+        return jsonify({"success": False, "error": "Name is required."}), 400
+    hashes, error = _parse_hash_list_text(req.get('hashes_text') or '', algorithm)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+
+    base_id = re.sub(r'[^a-z0-9_]+', '_', name.lower()).strip('_') or 'hashlist'
+    existing_ids = {r['id'] for r in lists}
+    list_id = base_id
+    n = 2
+    while list_id in existing_ids:
+        list_id = f"{base_id}_{n}"
+        n += 1
+
+    os.makedirs(config.HASH_LISTS_DIR, exist_ok=True)
+    with open(config.hash_list_file_path(list_id), 'w') as f:
+        f.write('\n'.join(hashes) + '\n')
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    record = {"id": list_id, "name": name, "algorithm": algorithm, "label": label,
+              "hash_count": len(hashes), "created_at": now, "updated_at": now}
+    lists.append(record)
+    save_runtime_config(cfg)
+    log_chain_of_custody("hash_list_created", {"id": list_id, "name": name, "algorithm": algorithm, "hash_count": len(hashes)})
+    return jsonify({"success": True, "list": record})
+
+@settings_bp.route('/api/settings/hash_lists/<list_id>', methods=['PUT', 'DELETE'])
+@requires_auth
+@requires_permission('settings')
+def hash_list_detail(list_id):
+    cfg = load_runtime_config()
+    lists = cfg.get('hash_lists', [])
+    idx = next((i for i, r in enumerate(lists) if r.get('id') == list_id), None)
+    if idx is None:
+        return jsonify({"success": False, "error": "Hash list not found."}), 404
+
+    if request.method == 'DELETE':
+        removed = lists.pop(idx)
+        cfg['hash_lists'] = lists
+        save_runtime_config(cfg)
+        try:
+            os.remove(config.hash_list_file_path(list_id))
+        except OSError:
+            pass
+        log_chain_of_custody("hash_list_deleted", {"id": list_id, "name": removed.get('name')})
+        return jsonify({"success": True})
+
+    req = request.get_json() or {}
+    name = (req.get('name') or '').strip() or lists[idx]['name']
+    label = req.get('label') if req.get('label') in ('known_good', 'known_bad') else lists[idx].get('label', 'known_bad')
+    algorithm = lists[idx]['algorithm']  # algorithm is fixed at creation, matching every hash already on disk
+    hashes_text = req.get('hashes_text')
+    if hashes_text is not None:
+        hashes, error = _parse_hash_list_text(hashes_text, algorithm)
+        if error:
+            return jsonify({"success": False, "error": error}), 400
+        with open(config.hash_list_file_path(list_id), 'w') as f:
+            f.write('\n'.join(hashes) + '\n')
+        hash_count = len(hashes)
+    else:
+        hash_count = lists[idx]['hash_count']  # name/label-only edit - hashes on disk untouched
+
+    lists[idx] = {**lists[idx], "name": name, "label": label, "hash_count": hash_count,
+                  "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    cfg['hash_lists'] = lists
+    save_runtime_config(cfg)
+    log_chain_of_custody("hash_list_updated", {"id": list_id, "name": name, "hash_count": hash_count})
+    return jsonify({"success": True, "list": lists[idx]})
 
 @settings_bp.route('/api/network/auto_mounts', methods=['GET'])
 @requires_auth

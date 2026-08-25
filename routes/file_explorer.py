@@ -28,7 +28,7 @@ from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, load_hash_list_sets
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
@@ -251,6 +251,51 @@ def verify_file_hash():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+@file_explorer_bp.route('/api/files/check_hash_lists', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def check_hash_lists():
+    """D2 (hash-set filtering) - hashes a single selected file with
+    whichever algorithm(s) the requested hash lists actually use (a file
+    is only ever hashed once per distinct algorithm, even if several
+    selected lists share one), then checks membership against each list's
+    loaded set. No new hashing implementation - this is the same plain
+    read-and-update-in-chunks pattern verify_file_hash() above already
+    uses, just possibly repeated for more than one algorithm."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    hash_list_ids = req.get('hash_list_ids') or []
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+    if not hash_list_ids:
+        return jsonify({"success": False, "error": "No hash lists selected."}), 400
+
+    hash_sets = load_hash_list_sets(hash_list_ids)
+    if not hash_sets:
+        return jsonify({"success": False, "error": "None of the selected hash lists could be loaded."}), 400
+
+    needed_algos = {s["algorithm"] for s in hash_sets.values()}
+    computed = {}
+    try:
+        for algo in needed_algos:
+            hasher = hashlib.new(algo)
+            with open(file_path, 'rb') as f:
+                while chunk := f.read(65536):
+                    hasher.update(chunk)
+            computed[algo] = hasher.hexdigest()
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    matches = []
+    for list_id, s in hash_sets.items():
+        digest = computed.get(s["algorithm"])
+        if digest and digest in s["hashes"]:
+            matches.append({"list_id": list_id, "list_name": s["name"], "label": s.get("label", "known_bad"),
+                             "algorithm": s["algorithm"], "hash": digest})
+
+    log_chain_of_custody("hash_list_check", {"path": file_path, "lists_checked": len(hash_sets), "matches": len(matches)})
+    return jsonify({"success": True, "file_name": os.path.basename(file_path), "computed_hashes": computed, "matches": matches})
 
 # --- File Metadata (ExifTool) ---
 @file_explorer_bp.route('/api/files/exif', methods=['POST'])
