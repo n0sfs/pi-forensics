@@ -39,7 +39,8 @@
                                         </div>
                                         <div class="reports-shell">
                                             <div class="reports-nav list-group" id="reportsNavList" role="tablist">
-                                                <button class="list-group-item list-group-item-action active" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
+                                                <button class="list-group-item list-group-item-action active" id="repOverviewTab" data-bs-toggle="list" data-bs-target="#repOverviewPane" type="button" role="tab"><i class="bi bi-speedometer2"></i>Overview</button>
+                                                <button class="list-group-item list-group-item-action" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
                                                 <button class="list-group-item list-group-item-action" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
                                                 <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab" onclick="renderReportFilesGallery()"><i class="bi bi-paperclip"></i>Files</button>
                                                 <button class="list-group-item list-group-item-action" id="repGeoTab" data-bs-toggle="list" data-bs-target="#repGeoPane" type="button" role="tab" onclick="renderReportGeolocationList()"><i class="bi bi-geo-alt"></i>Geolocation</button>
@@ -49,6 +50,80 @@
                                                 <button class="list-group-item list-group-item-action" id="repExportTab" data-bs-toggle="list" data-bs-target="#repExportPane" type="button" role="tab" onclick="prepareExportPane()"><i class="bi bi-file-earmark-arrow-down-fill"></i>Export</button>
                                             </div>
                                             <div class="reports-content tab-content" id="reportDetailTabContent">
+                                                <div class="tab-pane fade show active" id="repOverviewPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-3">Everything that's happened in this case at a glance - complements the step-by-step Guided Workflow on Home, which tracks whether you've done each stage rather than what's actually in the case.</div>
+                                                    <div class="row g-2" id="caseDashboardGrid">
+                                                        <div class="col-md-6 col-lg-4">
+                                                            <div class="card home-tile" style="cursor: default;">
+                                                                <div class="card-body">
+                                                                    <div class="d-flex align-items-center gap-3 mb-1">
+                                                                        <div class="home-tile-icon"><i class="bi bi-hdd-stack"></i></div>
+                                                                        <div class="fw-bold fs-6" id="dashEvidenceCount">--</div>
+                                                                    </div>
+                                                                    <div class="text-subtle small">Evidence Items</div>
+                                                                    <div id="dashEvidenceDetail" class="small mt-1"></div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6 col-lg-4">
+                                                            <div class="card home-tile" style="cursor: default;">
+                                                                <div class="card-body">
+                                                                    <div class="d-flex align-items-center gap-3 mb-1">
+                                                                        <div class="home-tile-icon"><i class="bi bi-tags-fill"></i></div>
+                                                                        <div class="fw-bold fs-6" id="dashTagCount">--</div>
+                                                                    </div>
+                                                                    <div class="text-subtle small">Tagged Items</div>
+                                                                    <div id="dashTagDetail" class="small mt-1"></div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6 col-lg-4">
+                                                            <div class="card home-tile" style="cursor: default;">
+                                                                <div class="card-body">
+                                                                    <div class="d-flex align-items-center gap-3 mb-1">
+                                                                        <div class="home-tile-icon"><i class="bi bi-search"></i></div>
+                                                                        <div class="fw-bold fs-6" id="dashAnalysisCount">--</div>
+                                                                    </div>
+                                                                    <div class="text-subtle small">Analysis Activity</div>
+                                                                    <div id="dashAnalysisDetail" class="small mt-1"></div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6 col-lg-4">
+                                                            <div class="card home-tile" style="cursor: default;">
+                                                                <div class="card-body">
+                                                                    <div class="d-flex align-items-center gap-3 mb-1">
+                                                                        <div class="home-tile-icon"><i class="bi bi-clipboard2-pulse"></i></div>
+                                                                        <div class="fw-bold fs-6" id="dashNotesCount">--</div>
+                                                                    </div>
+                                                                    <div class="text-subtle small">Case Notes</div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6 col-lg-4">
+                                                            <div class="card home-tile" style="cursor: default;">
+                                                                <div class="card-body">
+                                                                    <div class="d-flex align-items-center gap-3 mb-1">
+                                                                        <div class="home-tile-icon"><i class="bi bi-paperclip"></i></div>
+                                                                        <div class="fw-bold fs-6" id="dashAttachmentCount">--</div>
+                                                                    </div>
+                                                                    <div class="text-subtle small">Exhibits Attached</div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6 col-lg-4">
+                                                            <div class="card home-tile" style="cursor: default;">
+                                                                <div class="card-body">
+                                                                    <div class="d-flex align-items-center gap-3 mb-1">
+                                                                        <div class="home-tile-icon"><i class="bi bi-calendar3"></i></div>
+                                                                        <div class="fw-bold fs-6" id="dashCaseAge">--</div>
+                                                                    </div>
+                                                                    <div class="text-subtle small">Case Age</div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
                                                 <div class="tab-pane fade" id="repCaseNotesPane" role="tabpanel">
                                                     <div class="small text-subtle mb-2">
                                                         A chronological, append-only journal of what was done and observed - this is the "Forensic Analysis / Steps Taken" section of the exported report. Each note gets a timestamp, author, and a local SHA-256 integrity hash computed at save time (a tamper-evidence check on this station only, not a legal timestamp authority). Editing a note keeps its original text in an "Edited" history rather than overwriting it.
@@ -84,7 +159,7 @@
                                                         <span class="text-subtle small italic">No case notes recorded yet.</span>
                                                     </div>
                                                 </div>
-                                                <div class="tab-pane fade show active" id="repNarrativePane" role="tabpanel">
+                                                <div class="tab-pane fade" id="repNarrativePane" role="tabpanel">
                                                     <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-flag-fill me-1"></i>Case Status</h6>
                                                     <div class="small text-subtle mb-2">Where this case stands in its own lifecycle - shown in the Case Manager list and included in exported reports. New cases start Open.</div>
                                                     <div class="mb-3" style="max-width: 260px;">
