@@ -94,11 +94,19 @@ def find_linux_shell_history_files(root_dir):
                            LINUX_SHELL_HISTORY_MAX_CANDIDATES, LINUX_SHELL_HISTORY_MAX_WALKED)
 
 
-def parse_linux_shell_history_file(path):
+def parse_linux_shell_history_file(path, filename=None):
     """.bash_history/.zsh_history/.python_history - one command per line.
     No reliable timestamp unless HISTTIMEFORMAT was set (bash then prefixes
     each command with a '#<epoch>' marker line) - handled, but never
-    guessed when absent."""
+    guessed when absent.
+
+    filename defaults to path's own basename (correct for a real-fs call,
+    where path already IS the real file) - the in-image route passes the
+    real in-image entry name explicitly, since path there is a meaningless
+    temp-extracted filename, mirroring core/registry_utils.py's
+    parse_registry_hive_file(path, filename) precedent for the exact same
+    reason."""
+    display_name = filename or os.path.basename(path)
     records = []
     try:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
@@ -117,7 +125,7 @@ def parse_linux_shell_history_file(path):
                 records.append({
                     "artifact_type": "linux_shell_history", "title": cmd, "url": "",
                     "value": cmd, "timestamp": pending_ts,
-                    "extra": {"shell_history_file": os.path.basename(path)},
+                    "extra": {"shell_history_file": display_name},
                 })
                 pending_ts = None
     except Exception as e:
@@ -145,12 +153,15 @@ def find_linux_passwd_files(root_dir):
                            LINUX_PASSWD_MAX_CANDIDATES, LINUX_PASSWD_MAX_WALKED)
 
 
-def parse_linux_passwd_file(path):
+def parse_linux_passwd_file(path, filename=None):
     """/etc/passwd - colon-delimited username:x:uid:gid:gecos:home:shell.
     No per-record timestamp exists in this format at all - the file's own
     mtime is used as an honest 'state as of' proxy, same convention this
     app's core/registry_utils.py already established for Amcache/Uninstall
-    keys when no dedicated timestamp value exists."""
+    keys when no dedicated timestamp value exists. filename is accepted
+    (unused - the passwd record shape has no filename field to fill) only
+    to keep all 5 parse_linux_*_file() signatures uniform, so the shared
+    dispatchers below can call every one of them the same way."""
     records = []
     mtime = _mtime_epoch(path)
     try:
@@ -195,10 +206,12 @@ def find_linux_cron_files(root_dir):
                            LINUX_CRON_MAX_CANDIDATES, LINUX_CRON_MAX_WALKED)
 
 
-def parse_linux_cron_file(path):
+def parse_linux_cron_file(path, filename=None):
     """/etc/crontab, /etc/cron.d/*, /var/spool/cron/**  - plain cron
     syntax lines. Skips comments, blank lines, and shell-style env-var
-    assignment lines (e.g. PATH=/usr/bin) that aren't real scheduled jobs."""
+    assignment lines (e.g. PATH=/usr/bin) that aren't real scheduled jobs.
+    filename - see parse_linux_shell_history_file()'s own docstring."""
+    display_name = filename or os.path.basename(path)
     records = []
     mtime = _mtime_epoch(path)
     try:
@@ -212,7 +225,7 @@ def parse_linux_cron_file(path):
                 records.append({
                     "artifact_type": "linux_cron_job", "title": line, "url": "",
                     "value": line, "timestamp": mtime,
-                    "extra": {"cron_file": os.path.basename(path), "timestamp_is_file_mtime": True},
+                    "extra": {"cron_file": display_name, "timestamp_is_file_mtime": True},
                 })
     except Exception as e:
         print(f"Warning: could not parse cron file {path}: {e}")
@@ -278,13 +291,15 @@ def _infer_syslog_year(month_num, mtime_epoch):
     return year
 
 
-def parse_linux_auth_log_file(path):
+def parse_linux_auth_log_file(path, filename=None):
     """auth.log/secure - curated regex allowlist for SSH login success/
     failure, sudo command execution, and PAM session open/close.
     Compressed (.gz) rotated logs are explicitly skipped (this module does
     no decompression anywhere) and reported as skipped, not silently
-    dropped - see find_linux_auth_log_files()'s caller for the count."""
-    if _AUTH_LOG_COMPRESSED_RE.match(os.path.basename(path)):
+    dropped - see find_linux_auth_log_files()'s caller for the count.
+    filename - see parse_linux_shell_history_file()'s own docstring."""
+    display_name = filename or os.path.basename(path)
+    if _AUTH_LOG_COMPRESSED_RE.match(display_name):
         return []
     records = []
     mtime = _mtime_epoch(path)
@@ -319,7 +334,7 @@ def parse_linux_auth_log_file(path):
                         "artifact_type": "linux_auth_log", "title": event_kind.replace('_', ' ').title(),
                         "url": "", "value": msg[:300], "timestamp": ts,
                         "extra": {"event_kind": event_kind, "host": m.group('host'),
-                                  "year_inferred": True, "log_file": os.path.basename(path)},
+                                  "year_inferred": True, "log_file": display_name},
                     })
                     matches_this_file += 1
                     break
@@ -379,13 +394,15 @@ def _wtmp_layout_plausible(records_raw):
     return True
 
 
-def parse_linux_wtmp_file(path):
+def parse_linux_wtmp_file(path, filename=None):
     """wtmp/btmp - fixed-size 400-byte records (this exact system's real,
     live-verified layout - see the module-level comment above). Only
     ut_type == USER_PROCESS (7, a real login) records are emitted as
     forensic events; boot/runlevel/init housekeeping record types are
     walked (for the layout self-check) but not surfaced individually,
-    matching this app's 'curated, not exhaustive' output philosophy."""
+    matching this app's 'curated, not exhaustive' output philosophy.
+    filename - see parse_linux_shell_history_file()'s own docstring."""
+    display_name = filename or os.path.basename(path)
     try:
         with open(path, 'rb') as f:
             data = f.read()
@@ -398,7 +415,7 @@ def parse_linux_wtmp_file(path):
             "artifact_type": "linux_wtmp_login", "title": "Layout mismatch - not parsed", "url": "",
             "value": "", "timestamp": None,
             "extra": {"layout_check_failed": True, "reason": "file size is not a multiple of 400 bytes",
-                      "wtmp_file": os.path.basename(path)},
+                      "wtmp_file": display_name},
         }]
 
     n_records = len(data) // UTMP_RECORD_STRUCT.size
@@ -411,7 +428,7 @@ def parse_linux_wtmp_file(path):
             "value": "", "timestamp": None,
             "extra": {"layout_check_failed": True,
                       "reason": "decoded fields did not look like real utmp records under this app's verified 400-byte layout",
-                      "wtmp_file": os.path.basename(path)},
+                      "wtmp_file": display_name},
         }]
 
     records = []
@@ -428,7 +445,7 @@ def parse_linux_wtmp_file(path):
             "artifact_type": "linux_wtmp_login", "title": f"Login: {user}", "url": "",
             "value": f"{line}{' from ' + host if host else ''}",
             "timestamp": float(sec) if sec else None,
-            "extra": {"tty": line, "host": host, "wtmp_file": os.path.basename(path)},
+            "extra": {"tty": line, "host": host, "wtmp_file": display_name},
         })
     return records
 
