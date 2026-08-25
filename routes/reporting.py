@@ -3848,10 +3848,26 @@ def export_report():
     # kind of surprise this app avoids elsewhere (case-folder collisions are
     # a 409, never an auto-rename).
     template_value = req.get('template') or report_defaults.get('template') or 'standard'
-    try:
-        template, custom_record = _resolve_template_ref(template_value, cfg)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+    # An ad-hoc, not-yet-saved section list from the Report Template
+    # Builder's own "Preview" button - lets an examiner see what a template
+    # would actually produce while still editing it, without forcing a save
+    # first (matching this app's existing Export-pane preview philosophy:
+    # preview never mutates saved state). Deliberately preview-only - a
+    # real (non-preview) export always has to trace to a named, saved
+    # template (built-in or custom:<id>), never an ephemeral one-off
+    # editor state, so the resulting artifact's provenance is always
+    # reproducible from what's actually on disk.
+    custom_sections_override = req.get('custom_sections') if req.get('preview') else None
+    if custom_sections_override is not None:
+        template, custom_record = 'custom', {
+            "sections": custom_sections_override,
+            "job_fields": {"telemetry": True, "params": True, "hashes": True},
+        }
+    else:
+        try:
+            template, custom_record = _resolve_template_ref(template_value, cfg)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
 
     # sections/job_fields (the Export modal's checkboxes / station defaults)
     # only ever apply to the 'standard' template - reading them regardless

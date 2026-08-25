@@ -137,6 +137,28 @@ def test_resolve_section_order_non_remappable_block_has_no_source_field():
     assert resolved[0]["source_field"] is None
 
 
+def test_resolve_section_order_accepts_the_exact_shape_the_builders_live_preview_constructs():
+    # export_report()'s custom_sections preview override (added for the
+    # Report Template Builder's own "Preview" button, 2026-08-25) builds a
+    # custom_record dict in exactly this shape from the in-progress editor
+    # state, before anything's been saved - confirms it resolves correctly
+    # through the same path a real saved template already does, with no
+    # special-casing needed for "this record was never actually persisted."
+    custom_record = {
+        "sections": [
+            {"key": "case_info", "title": "", "enabled": True, "source_field": None},
+            {"key": "relevant_findings", "title": "Key Findings", "enabled": True, "source_field": "iocs"},
+            {"key": "exhibits", "title": "", "enabled": False, "source_field": None},
+        ],
+        "job_fields": {"telemetry": True, "params": True, "hashes": True},
+    }
+    resolved = reporting._resolve_section_order("custom", {}, custom_record, event_count=0)
+    # exhibits was enabled=False - only the 2 enabled entries survive, in order.
+    assert [r["key"] for r in resolved] == ["case_info", "relevant_findings"]
+    assert resolved[1]["title"] == "Key Findings"
+    assert resolved[1]["source_field"] == "iocs"
+
+
 def test_resolve_section_order_legacy_mode_always_uses_each_blocks_own_default():
     # The plain Export-modal-checkbox path has no per-section remapping
     # capability at all - every remappable block must resolve to its own
