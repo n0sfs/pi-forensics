@@ -482,7 +482,7 @@ const FAQ_GROUPS = [
             },
             {
                 q: "Does this station recover browser history or bookmarks?",
-                a: "Yes - right-click a folder (or an acquired image) in File Explorer and choose \"Parse Browser Artifacts\" to extract history, bookmarks, downloads, and cookies from a Chrome/Chromium- or Firefox-family profile. Results show up under File Views' \"Web Artifacts\" category. Safari isn't supported - its data lives inside an iOS/macOS backup rather than a portable profile folder."
+                a: "Yes - right-click a folder (or an acquired image) in File Explorer and choose \"Parse Browser Artifacts\" to extract history, bookmarks, downloads, and cookies from a Chrome/Chromium- or Firefox-family profile. Results show up under File Views' \"Parsed Artifacts\" category, alongside anything found by the Registry hive, Event Log (.evtx), and .lnk shortcut parsers (also reached from the right-click menu). Safari isn't supported - its data lives inside an iOS/macOS backup rather than a portable profile folder."
             },
             {
                 q: "What's File Views, and how is it different from tagging a file?",
@@ -1644,6 +1644,13 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     chrome_bookmarks: 'Chrome/Chromium Bookmarks', chrome_cookies: 'Chrome/Chromium Cookies',
     firefox_history: 'Firefox History', firefox_downloads: 'Firefox Downloads',
     firefox_bookmarks: 'Firefox Bookmarks', firefox_cookies: 'Firefox Cookies',
+    registry_recent_docs: 'Registry: Recent Documents', registry_typed_urls: 'Registry: Typed URLs/Paths',
+    registry_run_history: 'Registry: Run History', registry_usb_history: 'Registry: USB Device History',
+    registry_installed_programs: 'Registry: Installed Programs',
+    evtx_logon_success: 'Event Log: Successful Logons', evtx_logon_failure: 'Event Log: Failed Logons',
+    evtx_process_creation: 'Event Log: Process Creation', evtx_account_created: 'Event Log: Account Created',
+    evtx_service_installed: 'Event Log: Service Installed', evtx_audit_log_cleared: 'Event Log: Audit Log Cleared',
+    lnk_shortcut: 'LNK Shortcuts',
 };
 
 function buildFileViewsHierarchy(summary) {
@@ -1698,15 +1705,18 @@ function buildFileViewsHierarchy(summary) {
         },
     ];
     // Only shown once something's actually been parsed (right-click a
-    // folder or a whole image -> "Parse Browser Artifacts") - unlike the 5
-    // built-in keyword-hit categories above, there's no fixed set of
-    // artifact_types to always render at 0; which ones exist depends
-    // entirely on what's been scanned.
+    // folder or a whole image -> Parse Browser Artifacts/Registry Hives/
+    // Event Logs/LNK) - unlike the 5 built-in keyword-hit categories
+    // above, there's no fixed set of artifact_types to always render at
+    // 0; which ones exist depends entirely on what's been scanned.
+    // Labeled "Parsed Artifacts" (not "Web Artifacts") since browser
+    // history/bookmarks/etc. are no longer the only source feeding this
+    // category - Registry/Event Log/LNK parsing (Part C) all land here too.
     const parsedCounts = summary.parsed_artifact_counts || {};
     const webArtifactTypes = Object.keys(parsedCounts);
     if (webArtifactTypes.length > 0) {
         children.push({
-            id: 'fv-web-artifacts', name: 'Web Artifacts', kind: 'dir',
+            id: 'fv-web-artifacts', name: 'Parsed Artifacts', kind: 'dir',
             staticChildren: webArtifactTypes.map(type => ({
                 id: `fv-webart-${type}`, name: `${FILE_VIEWS_WEB_ARTIFACT_LABELS[type] || type} (${parsedCounts[type]})`,
                 kind: 'file', queryType: 'parsed_artifacts', queryCategory: type,
@@ -3223,6 +3233,11 @@ function showExplorerImageContextMenu(ev, entry) {
     if (binwalkBtn) binwalkBtn.disabled = entry.is_dir;
     const stringsBtn = document.getElementById('ctxMenuImageStrings');
     if (stringsBtn) stringsBtn.disabled = entry.is_dir;
+    const lnkBtn = document.getElementById('ctxMenuImageLnk');
+    if (lnkBtn) {
+        const isLnk = !entry.is_dir && (entry.name || '').toLowerCase().endsWith('.lnk');
+        lnkBtn.style.display = isLnk ? '' : 'none';
+    }
     resetCtxMenuSections('ctxMenuImageActions');
     positionContextMenu(ev);
 }
@@ -3266,6 +3281,9 @@ function updateContextToolbar(item) {
     const btnHashdeep = document.getElementById("btnRunHashdeep");
     const btnGeolocation = document.getElementById("btnExtractGeolocation");
     const btnBrowserArtifacts = document.getElementById("btnParseBrowserArtifacts");
+    const btnRegistryHives = document.getElementById("btnParseRegistryHives");
+    const btnEvtxLogs = document.getElementById("btnParseEvtxLogs");
+    const btnParseLnk = document.getElementById("btnParseLnk");
     const btnMvtIos = document.getElementById("btnRunMvtIos");
     const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
     const btnMemoryForensics = document.getElementById("btnMemoryForensics");
@@ -3279,6 +3297,9 @@ function updateContextToolbar(item) {
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
     if (btnGeolocation) btnGeolocation.disabled = !item.is_dir;  // scans a whole folder of photos at once
     if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium + Firefox profile files
+    if (btnRegistryHives) btnRegistryHives.disabled = !item.is_dir;    // recursively walks a folder for NTUSER.DAT/SYSTEM/SOFTWARE
+    if (btnEvtxLogs) btnEvtxLogs.disabled = !item.is_dir;              // recursively walks a folder for .evtx files
+    if (btnParseLnk) btnParseLnk.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.lnk');  // single-file, unlike the two whole-folder scanners above
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnMemoryForensics) btnMemoryForensics.disabled = item.is_dir || !isMemoryImageFile(item.name);
@@ -3296,7 +3317,8 @@ function updateContextToolbar(item) {
     // contextMenuBrowseImageAnd()) before running its own tool.
     const wholeImageDisabled = item.is_dir || !isImageFile(item.name);
     ['btnEnterSearchImage', 'btnEnterTimelineImage', 'btnEnterGeoImage', 'btnEnterHashImage',
-     'btnEnterTriageImage', 'btnEnterBrowserArtifactsImage', 'btnEnterRecoverImage'].forEach(id => {
+     'btnEnterTriageImage', 'btnEnterBrowserArtifactsImage', 'btnEnterRegistryImage', 'btnEnterEvtxImage',
+     'btnEnterRecoverImage'].forEach(id => {
         const btn = document.getElementById(id);
         if (btn) btn.disabled = wholeImageDisabled;
     });
@@ -3323,6 +3345,8 @@ async function contextMenuBrowseImageAnd(action) {
         hash: runImageHashManifest,
         triage: startImageTriageScan,
         browserartifacts: runImageBrowserArtifactsParse,
+        registryhives: runImageRegistryParse,
+        evtxlogs: runImageEvtxParse,
         recover: runImageRecoverDeleted,
     };
     if (actions[action]) actions[action]();
@@ -3838,11 +3862,167 @@ async function runSelectedBrowserArtifactsParse() {
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
         } else {
-            showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. See File Views > Web Artifacts.`, 'success');
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
             initFileViewsTree(true);
         }
     } catch (err) {
         showToast('Browser artifact scan failed: request error.', 'danger');
+    }
+}
+
+// --- Registry / Event Log / LNK parsing (Part C) ---
+// Shared by all 6 new entry points below (real-fs + in-image, x Registry/
+// EVTX/LNK) - a generic "N found across M type(s)" summary from a plain
+// {artifact_type: count} dict, not browser-specific like
+// summarizeBrowserArtifactCounts() above.
+function summarizeParsedArtifactCounts(counts) {
+    const entries = Object.entries(counts || {});
+    if (!entries.length) return 'nothing recognized';
+    return entries.map(([type, n]) => `${n} ${type.replace(/^registry_|^evtx_/, '').replace(/_/g, ' ')}`).join(', ');
+}
+
+async function runSelectedRegistryParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_registry', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Registry hive scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Windows Registry hive files (NTUSER.DAT/SYSTEM/SOFTWARE) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} hive file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} hive file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Registry hive scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageRegistryParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_registry', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Registry hive scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Windows Registry hive files found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} hive file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} hive file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Registry hive scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedEvtxParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_evtx', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Event log scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Windows Event Log (.evtx) files found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} event log(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} event log(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Event log scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageEvtxParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_evtx', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Event log scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Windows Event Log (.evtx) files found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} event log(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} event log(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Event log scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedLnkParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_lnk', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(data.error || 'Could not parse this .lnk file.', 'danger'); return; }
+        const r = data.record;
+        const msg = `Shortcut target: ${r.value || '(none)'}${r.extra.arguments ? ' ' + r.extra.arguments : ''}`;
+        showToast(data.indexed ? `${msg}. See File Views > Parsed Artifacts.` : `${msg}. Select an active case to save this into File Views.`, data.indexed ? 'success' : 'info');
+        if (data.indexed) initFileViewsTree(true);
+    } catch (err) {
+        showToast('LNK parse failed: request error.', 'danger');
+    }
+}
+
+async function runImageLnkParse() {
+    if (!explorerImageSelected || explorerImageSelected.is_dir) return;
+    try {
+        const res = await fetch('/api/image/parse_lnk', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: explorerImagePath, offset: explorerImageOffset,
+                inode: explorerImageSelected.inode, name: explorerImageSelected.name,
+                path: explorerImageSelected.path || null,
+                case_folder: activeCase ? activeCase.case_folder : null,
+            })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(data.error || 'Could not parse this .lnk file.', 'danger'); return; }
+        const r = data.record;
+        const msg = `Shortcut target: ${r.value || '(none)'}${r.extra.arguments ? ' ' + r.extra.arguments : ''}`;
+        showToast(data.indexed ? `${msg}. See File Views > Parsed Artifacts.` : `${msg}. Select an active case to save this into File Views.`, data.indexed ? 'success' : 'info');
+        if (data.indexed) initFileViewsTree(true);
+    } catch (err) {
+        showToast('LNK parse failed: request error.', 'danger');
     }
 }
 
@@ -5124,7 +5304,7 @@ async function runImageBrowserArtifactsParse() {
         if (!data.indexed) {
             showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
         } else {
-            showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. See File Views > Web Artifacts.`, 'success');
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} profile file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
             initFileViewsTree(true);
         }
     } catch (err) {
