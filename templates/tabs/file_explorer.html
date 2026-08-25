@@ -96,6 +96,8 @@
                          since Metadata/Binwalk/ClamAV/etc. all need a real path on disk. -->
                     <div id="fileContextMenu" class="dropdown-menu dropdown-menu-dark" style="display:none; position:fixed; z-index:2000; max-height: calc(100vh - 16px); overflow-y: auto;">
                         <div id="ctxMenuRealActions">
+                            <button id="btnAutoAnalyze" class="dropdown-item fw-bold text-info" onclick="openAutoAnalyzeModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Detects what this evidence item is (Windows/Linux disk image, memory image, or mobile backup) and runs a curated set of the tools above automatically, as one background job - the fast default path. Every step also stays available individually below."><i class="bi bi-lightning-fill me-2"></i>Auto Analyze...</button>
+                            <div class="dropdown-divider"></div>
                             <button type="button" class="ctx-menu-section-toggle" data-ctx-section="ctxSecImageCase" onclick="toggleCtxMenuSection('ctxSecImageCase')"><span>Image &amp; Case</span><i class="bi bi-chevron-down"></i></button>
                             <div id="ctxSecImageCase" class="ctx-menu-section" style="display:none;">
                             <button id="btnBrowseImage" class="dropdown-item" onclick="enterExplorerImage()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Look inside an acquired image as if it were a real drive - browse its folders and files right here, without needing to mount anything."><i class="bi bi-hdd-stack me-2"></i>Browse as Image (Sleuth Kit)</button>
@@ -247,6 +249,51 @@
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-sm btn-info text-dark fw-bold" onclick="startImageConversion()"><i class="bi bi-play-fill me-1"></i>Start Conversion</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade" id="autoAnalyzeModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-lightning-fill me-2"></i>Auto Analyze: <span id="autoAnalyzeFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div id="autoAnalyzeDetecting" class="small text-subtle mb-2"><i class="bi bi-hourglass-split me-1"></i>Detecting evidence type...</div>
+                    <div id="autoAnalyzeDetectedInfo" class="small text-info mb-3" style="display:none;"></div>
+
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">Profile:</label>
+                        <select id="autoAnalyzeProfileSelect" class="form-select form-select-sm" onchange="onAutoAnalyzeProfileChange()">
+                            <option value="">-- select a profile --</option>
+                            <option value="windows">Windows Disk Image</option>
+                            <option value="linux">Linux Disk Image</option>
+                            <option value="memory">Memory Image</option>
+                            <option value="mobile_ios">Mobile Backup (iOS)</option>
+                            <option value="mobile_android">Mobile Backup (Android)</option>
+                        </select>
+                    </div>
+
+                    <div id="autoAnalyzeImageStepsGroup" style="display:none;">
+                        <label class="telemetry-grid-label d-block mb-1">Steps to run (as one background job, in order):</label>
+                        <div id="autoAnalyzeStepsList" class="mb-2"></div>
+                        <div class="small text-subtle">Every step also stays available individually via the right-click menu, one at a time.</div>
+                    </div>
+
+                    <div id="autoAnalyzeMemoryGroup" class="small text-subtle" style="display:none;">
+                        Opens Memory Forensics with a curated default plugin set (OS &amp; Kernel Info, Process List, Process Tree, Command Lines, Network Connections, Injected Code Detection) pre-selected - review and adjust before starting the scan there.
+                    </div>
+                    <div id="autoAnalyzeMobileGroup" class="small text-subtle" style="display:none;">
+                        Runs a Mobile Verification Toolkit (MVT) spyware/IOC scan against this backup - the same check the standalone MVT Scan action runs.
+                    </div>
+
+                    <div id="autoAnalyzeStatus" class="small text-subtle mt-2"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" id="autoAnalyzeStartBtn" class="btn btn-sm btn-info text-dark fw-bold" onclick="startAutoAnalyze()" disabled><i class="bi bi-play-fill me-1"></i>Run</button>
                 </div>
             </div>
         </div>
