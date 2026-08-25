@@ -10,11 +10,46 @@ Skipped (not failed) on a non-POSIX dev machine: routes/reporting.py needs
 core.jobs, which imports POSIX-only pwd/fcntl at module level - see
 tests/conftest.py's module docstring.
 """
+import ast
+import inspect
+
 import pytest
 
 pytest.importorskip("core.jobs", reason="routes.reporting needs core.jobs, which imports POSIX-only pwd/fcntl")
 
 import routes.reporting as reporting
+
+
+def _local_dict_literal_keys(func, var_name="dispatch"):
+    """Parses func's own source to find `var_name = {...}` and returns the
+    dict literal's string keys - used to check the PDF/HTML per-key
+    dispatch dicts (both are plain local variables inside their builder
+    functions, not module-level, so they can't be imported/introspected
+    directly). This is the regression test the A3 (Physical Evidence
+    Custody Log) plan called for: a REPORT_SECTION_BLOCKS entry with no
+    matching key in either dispatch dict is an uncaught KeyError on every
+    default Standard export that includes it (in_legacy_default=True means
+    that's every existing case, immediately on deploy) - this must fail
+    loudly here instead."""
+    tree = ast.parse(inspect.getsource(func))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name) and node.targets[0].id == var_name \
+                and isinstance(node.value, ast.Dict):
+            return {k.value for k in node.value.keys}
+    raise AssertionError(f"no '{var_name} = {{...}}' dict literal found in {func.__name__}")
+
+
+def test_pdf_standard_dispatch_dict_covers_every_report_section_block():
+    all_keys = {b["key"] for b in reporting.REPORT_SECTION_BLOCKS}
+    dispatch_keys = _local_dict_literal_keys(reporting._build_pdf_report_standard)
+    assert dispatch_keys == all_keys
+
+
+def test_html_standard_dispatch_dict_covers_every_report_section_block():
+    all_keys = {b["key"] for b in reporting.REPORT_SECTION_BLOCKS}
+    dispatch_keys = _local_dict_literal_keys(reporting._build_html_report_standard)
+    assert dispatch_keys == all_keys
 
 
 def test_registry_marks_exactly_the_seven_narrative_blocks_remappable():

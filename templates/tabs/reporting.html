@@ -42,6 +42,7 @@
                                                 <button class="list-group-item list-group-item-action active" id="repOverviewTab" data-bs-toggle="list" data-bs-target="#repOverviewPane" type="button" role="tab"><i class="bi bi-speedometer2"></i>Overview</button>
                                                 <button class="list-group-item list-group-item-action" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
                                                 <button class="list-group-item list-group-item-action" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
+                                                <button class="list-group-item list-group-item-action" id="repCustodyTab" data-bs-toggle="list" data-bs-target="#repCustodyPane" type="button" role="tab" onclick="renderCustodyLogList()"><i class="bi bi-people-fill"></i>Custody Log</button>
                                                 <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab" onclick="renderReportFilesGallery()"><i class="bi bi-paperclip"></i>Files</button>
                                                 <button class="list-group-item list-group-item-action" id="repGeoTab" data-bs-toggle="list" data-bs-target="#repGeoPane" type="button" role="tab" onclick="renderReportGeolocationList()"><i class="bi bi-geo-alt"></i>Geolocation</button>
                                                 <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
@@ -158,6 +159,33 @@
                                                     <hr class="border-secondary my-3">
                                                     <div id="caseNotesContainer" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
                                                         <span class="text-subtle small italic">No case notes recorded yet.</span>
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repCustodyPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">
+                                                        A record of physical evidence handoffs between people (e.g. field examiner &rarr; evidence locker) - distinct from the investigative Case Notes journal above and the software Audit Trail, which only records actions taken in this application. Append-only: a correction is logged as a new entry, matching real physical chain-of-custody practice.
+                                                    </div>
+                                                    <div class="row g-2 mb-2">
+                                                        <div class="col-md-6"><input type="text" id="newCustodyFrom" class="form-control form-control-sm" placeholder="From (custodian)"></div>
+                                                        <div class="col-md-6"><input type="text" id="newCustodyTo" class="form-control form-control-sm" placeholder="To (custodian)"></div>
+                                                    </div>
+                                                    <div class="row g-2 mb-2">
+                                                        <div class="col-md-6"><input type="text" id="newCustodyReason" class="form-control form-control-sm" placeholder="Reason (e.g. transport to lab)"></div>
+                                                        <div class="col-md-6">
+                                                            <select id="newCustodyMethod" class="form-select form-select-sm">
+                                                                <option value="In-Person">In-Person</option>
+                                                                <option value="Evidence Locker">Evidence Locker</option>
+                                                                <option value="Shipped">Shipped</option>
+                                                                <option value="Other">Other</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <textarea id="newCustodyNotes" class="form-control form-control-sm mb-2" rows="2" placeholder="Notes (optional)"></textarea>
+                                                    <button class="btn btn-sm btn-success fw-bold" onclick="addCustodyEntry()"><i class="bi bi-plus-lg me-1"></i>Log Custody Transfer</button>
+                                                    <div id="custodyAddStatus" class="small mt-1"></div>
+                                                    <hr class="border-secondary my-3">
+                                                    <div id="custodyLogContainer" class="mb-3 bg-black border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
+                                                        <span class="text-subtle small italic">No custody log entries recorded yet.</span>
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repNarrativePane" role="tabpanel">

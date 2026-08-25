@@ -824,6 +824,52 @@ def _draw_pdf_audit_trail(c, y, entries, title="Case Activity Log (Audit Trail)"
             y -= 11
     return y
 
+def _draw_pdf_custody_log_block(c, y, custody_log, title="Physical Evidence Custody Log"):
+    """Renders the append-only physical-evidence custody_log[] (from-person
+    -> to-person handoffs, distinct from the software Audit Trail above) -
+    same internal-pagination-guard shape as _draw_pdf_audit_trail, not the
+    header/job_section pattern (those two lack their own guard and are only
+    safe because REPORT_SECTION_BLOCKS forces them to always draw first -
+    see that registry's force_page_break docstring; this block has no such
+    restriction, so it must guard itself)."""
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, title)
+    y -= 20
+    c.setFont("Helvetica", 8)
+    if not custody_log:
+        c.drawString(50, y, "No custody log entries recorded for this case.")
+        y -= 12
+        return y
+    for entry in custody_log:
+        if y < 65:
+            c.showPage()
+            y = 750
+            c.setFont("Helvetica", 8)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(50, y, f"{entry.get('timestamp', '')}  {entry.get('from_custodian', '')} -> {entry.get('to_custodian', '')}"[:120])
+        y -= 11
+        c.setFont("Helvetica", 8)
+        detail = f"Reason: {entry.get('reason', '')}   Method: {entry.get('method', '')}"[:130]
+        c.drawString(60, y, detail)
+        y -= 11
+        if entry.get('notes'):
+            c.setFillColorRGB(0.4, 0.4, 0.4)
+            c.drawString(60, y, f"Notes: {entry.get('notes', '')}"[:130])
+            c.setFillColorRGB(0, 0, 0)
+            y -= 11
+        logged_by = entry.get('logged_by')
+        if logged_by:
+            c.setFillColorRGB(0.4, 0.4, 0.4)
+            c.drawString(60, y, f"Logged by: {logged_by}"[:130])
+            c.setFillColorRGB(0, 0, 0)
+            y -= 11
+        y -= 4
+    return y
+
 # --- Case File Attachments: discovery + embedding ---
 # Images and small text-ish files get their actual content embedded into
 # the exported report (not just listed by path), since the point of
@@ -1193,6 +1239,59 @@ def edit_case_note():
 
     log_chain_of_custody("case_note_edit", {"report_path": report_file, "note_id": note_id})
     return jsonify({"success": True, "note": note})
+
+@reporting_bp.route('/api/cases/custody/add', methods=['POST'])
+@requires_auth
+@requires_permission('reporting')
+def add_custody_entry():
+    """Appends one physical evidence custody-transfer entry (from-person ->
+    to-person, e.g. 'field examiner' -> 'evidence locker') - a genuinely
+    different concept from a Case Note (investigative narrative) or the
+    software Audit Trail (who did what in the app), closing a gap this
+    codebase's own Police report template comment already disclosed. No
+    edit endpoint on purpose - a correction is a new entry, matching real
+    physical chain-of-custody practice, and deliberately simpler than Case
+    Notes' own edit_history mechanism."""
+    req = request.get_json() or {}
+    report_file = safe_path(req.get('report_path'))
+    if not report_file or not os.path.exists(report_file):
+        return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
+
+    from_custodian = (req.get('from_custodian') or '').strip()
+    to_custodian = (req.get('to_custodian') or '').strip()
+    if not from_custodian or not to_custodian:
+        return jsonify({"success": False, "error": "Both From and To custodian are required."}), 400
+
+    try:
+        with open(report_file, 'r') as f:
+            data = json.load(f)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read report: {e}"}), 500
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    entry = {
+        "entry_id": uuid.uuid4().hex,
+        "timestamp": now,
+        "from_custodian": from_custodian,
+        "to_custodian": to_custodian,
+        "reason": (req.get('reason') or '').strip(),
+        "method": (req.get('method') or '').strip(),
+        "notes": (req.get('notes') or '').strip(),
+        "logged_by": getattr(g, 'forensic_user', None),
+    }
+
+    data.setdefault('custody_log', []).append(entry)
+    if 'updated_at' in data:
+        data['updated_at'] = now
+
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not save custody entry: {e}"}), 500
+
+    log_chain_of_custody("custody_log_add", {"report_path": report_file, "entry_id": entry["entry_id"]})
+    return jsonify({"success": True, "entry": entry})
 
 def _embed_file_into_pdf(c, y, file_path, caption=None, exhibit_number=None, category=None, tags=None, analysis_summary=None):
     """Draws one file's content (image/text embedded, or a path+size
@@ -2100,6 +2199,8 @@ REPORT_SECTION_BLOCKS = [
      "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
     {"key": "timeline", "default_title": "Filesystem Timeline (MACB)",
      "in_legacy_default": False, "requires_events": True, "force_page_break": True, "remappable": False},
+    {"key": "custody_log", "default_title": "Physical Evidence Custody Log",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
 ]
 # key -> the header dict field a remappable block draws from by default -
 # also the full set of choices a custom template's Report Template Builder
@@ -2253,7 +2354,7 @@ def _resolve_template_ref(value, cfg):
         raise ValueError(f"Selected custom template '{template_id}' no longer exists.")
     return 'standard', None
 
-def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None):
+def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None):
     from reportlab.lib.pagesizes import letter
 
     c = _numbered_canvas_class()(pdf_path, pagesize=letter)
@@ -2318,6 +2419,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
         "audit_trail": lambda y, title, field: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
         "timeline": lambda y, title, field: _draw_pdf_timeline_block(c, y, events, title=title),
         "geolocation": lambda y, title, field: _draw_pdf_geolocation_block(c, y, geo_data or [], title=title),
+        "custody_log": lambda y, title, field: _draw_pdf_custody_log_block(c, y, custody_log or [], title=title),
     }
 
     for i, entry in enumerate(resolved_sections):
@@ -2973,6 +3075,30 @@ def _html_audit_trail_block(audit_entries, anchor_id=None, title="Case Activity 
         parts.append('<p class="muted">No activity log entries found for this case.</p>')
     return ''.join(parts)
 
+def _html_custody_log_block(custody_log, anchor_id=None, title="Physical Evidence Custody Log"):
+    """HTML counterpart to _draw_pdf_custody_log_block - see that function
+    for the from/to-custodian, append-only physical-handoff shape this
+    renders (distinct from the software Audit Trail above)."""
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [f'<h2{id_attr}>{esc(title)}</h2>']
+    if custody_log:
+        parts.append('<table><tr><th>Timestamp</th><th>From</th><th>To</th><th>Reason</th><th>Method</th><th>Notes</th><th>Logged By</th></tr>')
+        for entry in custody_log:
+            parts.append(
+                '<tr><td>' + esc(str(entry.get('timestamp', ''))) + '</td>'
+                '<td>' + esc(str(entry.get('from_custodian', ''))) + '</td>'
+                '<td>' + esc(str(entry.get('to_custodian', ''))) + '</td>'
+                '<td>' + esc(str(entry.get('reason', ''))) + '</td>'
+                '<td>' + esc(str(entry.get('method', ''))) + '</td>'
+                '<td>' + esc(str(entry.get('notes', ''))) + '</td>'
+                '<td>' + esc(str(entry.get('logged_by', ''))) + '</td></tr>'
+            )
+        parts.append('</table>')
+    else:
+        parts.append('<p class="muted">No custody log entries recorded for this case.</p>')
+    return ''.join(parts)
+
 def _html_report_style_block():
     """Shared CSS for all three report-template HTML builders below - one
     definition, so restyling the report format doesn't mean editing it in
@@ -3112,7 +3238,7 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         parts.append('</div>')
     return ''.join(parts)
 
-def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None):
+def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None):
     """Self-contained HTML report - every value is escaped since it may
     contain examiner-entered text or evidence-derived strings (filenames,
     device paths) that this file could later be reopened/served from disk.
@@ -3157,6 +3283,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         "audit_trail": lambda anchor, title, field: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
         "timeline": lambda anchor, title, field: _html_timeline_block(events, title=title, anchor_id=anchor),
         "geolocation": lambda anchor, title, field: _html_geolocation_block(geo_data or [], title=title, anchor_id=anchor),
+        "custody_log": lambda anchor, title, field: _html_custody_log_block(custody_log or [], anchor_id=anchor, title=title),
     }
 
     for entry in resolved_sections:
@@ -3472,6 +3599,10 @@ def export_report():
     # case_notes is top-level in both schemas (same precedent as
     # attachments) - not nested under case_metadata for the legacy branch.
     case_notes = data.get('case_notes', [])
+    # custody_log is top-level in both schemas too, same precedent as
+    # case_notes/attachments - a case written before this feature existed
+    # simply has no key, so this must always fall back to [].
+    custody_log = data.get('custody_log', [])
 
     # Examiner-entered per-attachment captions, keyed by the same path string
     # used in attachments['files'] - looked up at render time regardless of
@@ -3574,10 +3705,10 @@ def export_report():
                                            tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data)
         elif fmt == 'html':
             html_content = _build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
-                                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data)
+                                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log)
         else:
             _build_pdf_report_standard(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
-                                        tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data)
+                                        tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log)
 
         if fmt == 'html':
             content_bytes = html_content.encode('utf-8')
