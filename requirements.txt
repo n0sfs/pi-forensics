@@ -65,6 +65,15 @@ Markdown>=3.6
 # same "verify before committing" discipline this project has applied to
 # every native/compiled dependency before it.
 yara-python>=4.5.0
+# Windows Prefetch (.pf) parsing (Part C follow-up, 2026-08-25) - like
+# yara-python above, bundles a native library (libscca) via its own wheel,
+# not pure Python. Confirmed live on the real Pi venv (arm64/Debian trixie)
+# that a prebuilt manylinux2014_aarch64 wheel installs with no compile step
+# (libscca_python-20260527-cp313-cp313-manylinux2014_aarch64...) before
+# being added here. Recycle Bin parsing (the other artifact type added
+# alongside this) needed no new dependency at all - see
+# core/recyclebin_utils.py's own module docstring for why.
+libscca-python>=20220717
 # Hardens KML parsing (routes/reporting.py's _parse_kml_placemarks(), which
 # parses examiner-uploaded/hand-edited/third-party .kml files, not just
 # ones this app generated) against billion-laughs/XXE-style XML entity

@@ -1,4 +1,4 @@
-"""Windows Registry hive parsing (NTUSER.DAT / SYSTEM / SOFTWARE) - a
+"""Windows Registry hive parsing (NTUSER.DAT / SYSTEM / SOFTWARE / AMCACHE.HVE) - a
 curated, not exhaustive, set of forensically useful keys, matching this
 app's own established "curated allowlist, not exhaustive" philosophy
 already used for Volatility3's plugin list and MVT. Mirrors
@@ -25,7 +25,7 @@ import os
 
 from Registry import Registry
 
-REGISTRY_HIVE_FILENAMES = {'NTUSER.DAT', 'SYSTEM', 'SOFTWARE'}
+REGISTRY_HIVE_FILENAMES = {'NTUSER.DAT', 'SYSTEM', 'SOFTWARE', 'AMCACHE.HVE'}
 _REGISTRY_HIVE_FILENAMES_UPPER = {n.upper() for n in REGISTRY_HIVE_FILENAMES}
 
 # Same skip-list convention as core/browser_artifacts.py's own whole-folder
@@ -65,6 +65,31 @@ def _dt_to_epoch(dt):
     try:
         return dt.timestamp()
     except (OverflowError, OSError, ValueError):
+        return None
+
+
+# FILETIME (100-nanosecond intervals since 1601-01-01) -> Unix epoch seconds.
+# A genuinely third, distinct epoch/unit from this app's two existing
+# conversions (WebKit microseconds-since-1601, Firefox PRTime microseconds-
+# since-1970 - core/browser_artifacts.py) - not needed anywhere in this
+# module itself (python-registry's own RegistryKey.timestamp() already
+# hands back a native datetime, see the module docstring above), but Part C's
+# two newest artifact families (core/prefetch_utils.py's pyscca
+# get_last_run_time_as_integer(), core/recyclebin_utils.py's raw $I-file
+# deletion-time field) both read a raw FILETIME int64 directly with no
+# library-side datetime conversion, and both need this exact same math - a
+# shared helper here rather than two copies, so a future third instance of
+# this exact class of bug (already hit twice before, for the WebKit and
+# Firefox epochs) stays one tested conversion, not a third copy-paste.
+_FILETIME_EPOCH_OFFSET_SECONDS = 11_644_473_600  # seconds between 1601-01-01 and 1970-01-01
+
+
+def filetime_to_unix(raw_filetime):
+    if not raw_filetime:
+        return None
+    try:
+        return (raw_filetime / 10_000_000) - _FILETIME_EPOCH_OFFSET_SECONDS
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -252,6 +277,50 @@ def _parse_installed_programs(root_key):
     return records
 
 
+def _parse_amcache(root_key):
+    """AMCACHE.HVE\\Root\\InventoryApplicationFile - Windows 10/11's
+    per-executable inventory (name, full path, publisher, version, and a
+    FileId that's a SHA1 hash of the file's contents when present) - a
+    genuinely valuable execution-evidence artifact distinct from the
+    Uninstall-key based _parse_installed_programs() above (Amcache records
+    an executable was present/run even for portable/non-installed
+    software, which never touches the Uninstall keys at all).
+
+    Same honest-proxy timestamp choice already established by
+    _parse_installed_programs(): Amcache doesn't reliably carry a
+    dedicated FILETIME value across every Windows build, so the subkey's
+    own LastWriteTime (already available for free via RegistryKey.timestamp(),
+    same as every other parser in this module) is used instead of chasing
+    a value that may not exist."""
+    records = []
+    try:
+        key = root_key.find_key(r'InventoryApplicationFile')
+    except Registry.RegistryKeyNotFoundException:
+        return records
+    ts_fallback = _dt_to_epoch(key.timestamp())
+    for sub in key.subkeys():
+        values = {}
+        for v in sub.values():
+            try:
+                values[v.name()] = v.value()
+            except Exception:
+                continue
+        path_val = values.get('LowerCaseLongPath') or values.get('Name') or sub.name()
+        if not path_val:
+            continue
+        records.append({
+            "artifact_type": "registry_amcache", "title": str(path_val), "url": "",
+            "value": str(values.get('FileId', '')),
+            "timestamp": _dt_to_epoch(sub.timestamp()) or ts_fallback,
+            "extra": {
+                "publisher": str(values.get('Publisher', '')),
+                "version": str(values.get('Version', '')),
+                "size": str(values.get('Size', '')),
+            },
+        })
+    return records
+
+
 def parse_registry_hive_file(path, filename):
     """Dispatches a candidate hive file (matched by exact basename against
     REGISTRY_HIVE_FILENAMES) to the right curated key set, returning a flat
@@ -271,6 +340,8 @@ def parse_registry_hive_file(path, filename):
                 return _parse_usb_history(root)
             if upper == 'SOFTWARE':
                 return _parse_installed_programs(root)
+            if upper == 'AMCACHE.HVE':
+                return _parse_amcache(root)
     except Exception as e:
         print(f"Warning: could not parse registry hive {path} ({filename}): {e}")
     return []

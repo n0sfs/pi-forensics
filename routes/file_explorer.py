@@ -38,6 +38,8 @@ from core.case_index_db import (
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
 from core.browser_artifacts import find_browser_artifact_files, parse_browser_profile_file, _open_sqlite_readonly
 from core.registry_utils import find_registry_hive_files, parse_registry_hive_file
+from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
+from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
 from core.evtx_utils import find_evtx_files, parse_evtx_file
 from core.lnk_utils import parse_lnk_file
 from core.jobs import job_lock, current_job, update_job, snapshot_job
@@ -727,6 +729,81 @@ def parse_evtx():
             _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
 
     log_chain_of_custody("evtx_files_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_prefetch', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_prefetch():
+    """Whole-directory scan for Windows Prefetch (.pf) files - same shape
+    as parse_registry()/parse_evtx() above, just a different candidate-file
+    matcher/dispatcher pair (core/prefetch_utils.py)."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_prefetch_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        records = parse_prefetch_file(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("prefetch_files_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_recyclebin', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_recyclebin():
+    """Whole-directory scan for Recycle Bin $I metadata files - same shape
+    as the other whole-directory scanners above (core/recyclebin_utils.py)."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_recyclebin_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        records = parse_recyclebin_file(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("recyclebin_files_parsed", {
         "directory": target_dir, "candidates_found": len(candidate_paths),
         "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
     })
