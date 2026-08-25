@@ -7286,8 +7286,14 @@ async function saveCaseReportingSettings() {
         hashes: document.getElementById("defFieldHashes")?.checked ?? true,
     };
     const headerText = document.getElementById("reportBrandingText")?.value || '';
+    // key is included (not just label/default_value) so the backend can
+    // preserve an existing field's key across a label rename, rather than
+    // regenerating it fresh every save - see settings_case_reporting()'s
+    // own comment on why that used to silently drop already-saved case
+    // data. addCustomFieldDefRow() always seeds a brand-new row's key as
+    // '', which the backend correctly treats as "generate a fresh one."
     const customFields = caseReportingFieldsEditing
-        .map(f => ({ label: (f.label || '').trim(), default_value: (f.default_value || '').trim() }))
+        .map(f => ({ key: f.key || '', label: (f.label || '').trim(), default_value: (f.default_value || '').trim() }))
         .filter(f => f.label.length > 0);
 
     try {
