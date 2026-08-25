@@ -54,6 +54,16 @@ def mount_key_file(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def secret_key_file(tmp_path, monkeypatch):
+    """Points core.config's Flask session-signing key file at a temp path,
+    mirroring mount_key_file above."""
+    import core.config as config
+    key_path = tmp_path / ".flask_secret_key"
+    monkeypatch.setattr(config, "SECRET_KEY_FILE", str(key_path))
+    return key_path
+
+
+@pytest.fixture
 def hash_lists_dir(tmp_path, monkeypatch):
     """Points core.config's D2 hash-list storage directory at a fresh temp
     dir, so a test never touches (or depends on) a real station's saved
