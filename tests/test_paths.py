@@ -90,6 +90,31 @@ def test_classify_extension(name, expected_category, expected_ext):
     assert category in paths.FILE_VIEW_EXTENSION_CATEGORIES
 
 
+@pytest.mark.parametrize("name,expected_role", [
+    ("2026-CASE-01_case.json", "report"),
+    ("2026-CASE-01_case.pdf", "report"),
+    ("2026-CASE-01_case_index.db", "report"),
+    ("case_info.json", "report"),
+    ("ITEM-01_report.json", "report"),
+    ("2026-CASE-01_USBDrive-1_hash_manifest_sha256.txt", "analysis_log"),
+    ("2026-CASE-01_USBDrive-1_triage_scan_report.txt", "analysis_log"),
+    ("2026-CASE-01_USBDrive-1_vol3_pslist.json", "analysis_log"),
+    ("dc3dd_output.log", "analysis_log"),
+    ("geolocation_export.kml", "geolocation"),
+    ("2026-CASE-01_case.json.pre_restore_backup", "backup"),
+    ("2026-CASE-01_case.json.pre_consolidation_backup", "backup"),
+    # A5 (Case Bundle Export): matched by its own timestamped pattern, NOT
+    # by the plain .zip extension - a real bug the design review caught
+    # before this shipped (an examiner-added .zip must stay unclassified).
+    ("2026-CASE-01_case_bundle_20260825-080000.zip", "case_bundle"),
+    ("evidence_photos.zip", None),
+    ("suspect_photo.jpg", None),
+    ("random_notes.txt", None),
+])
+def test_classify_case_role(name, expected_role):
+    assert paths.classify_case_role(name) == expected_role
+
+
 def test_is_valid_block_device_whitelist():
     assert paths.is_valid_block_device("/dev/sda")
     assert paths.is_valid_block_device("/dev/nvme0n1")

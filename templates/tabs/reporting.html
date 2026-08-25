@@ -138,6 +138,22 @@
                                                         </div>
                                                     </div>
                                                     <div id="verifyAllEvidenceLastResult" class="small mt-2"></div>
+                                                    <hr class="border-secondary my-3">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-file-earmark-zip-fill me-1"></i>Case Bundle Export</h6>
+                                                    <div class="small text-subtle mb-2">
+                                                        Zips the entire case folder for archival or handoff to another examiner - everything a case actually contains, not just the exported report. Uses the one station-wide job slot; a bundle that includes raw acquisition images will block a new acquisition/recovery job from starting for as long as it runs.
+                                                    </div>
+                                                    <div class="form-check mb-2">
+                                                        <input type="checkbox" class="form-check-input" id="bundleIncludeImages">
+                                                        <label class="form-check-label small" for="bundleIncludeImages">Include raw acquisition images (can be very large - blocks new jobs for longer)</label>
+                                                    </div>
+                                                    <button class="btn btn-sm btn-outline-info fw-bold" id="btnCaseBundleExport" onclick="startCaseBundleExport()"><i class="bi bi-file-earmark-zip me-1"></i>Export Case Bundle</button>
+                                                    <div id="caseBundleExportProgress" style="display:none;" class="mt-2">
+                                                        <div id="caseBundleExportStatus" class="small text-info mb-1">Status: --</div>
+                                                        <div class="progress" style="height: 6px;">
+                                                            <div id="caseBundleExportBar" class="progress-bar bg-info" style="width: 0%;"></div>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repCaseNotesPane" role="tabpanel">
                                                     <div class="small text-subtle mb-2">

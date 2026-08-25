@@ -31,7 +31,7 @@ def case_folder(evidence_root):
     return str(folder)
 
 
-def test_schema_seeds_exactly_seven_default_tags_and_is_idempotent(case_folder):
+def test_schema_seeds_exactly_eight_default_tags_and_is_idempotent(case_folder):
     db_path = case_index_db.case_index_db_path(case_folder)
     conn = case_index_db._case_index_connect(db_path)
     rows = conn.execute("SELECT name, is_default FROM tags ORDER BY name").fetchall()
@@ -40,6 +40,7 @@ def test_schema_seeds_exactly_seven_default_tags_and_is_idempotent(case_folder):
     assert names == {
         "Bookmark", "Follow Up", "Notable Item",
         "Report Export", "Analysis Log / Hash", "Geolocation Export", "Backup Snapshot",
+        "Case Bundle Export",
     }
     assert all(r[1] == 1 for r in rows)  # every seeded default tag is_default=1
 
@@ -48,7 +49,7 @@ def test_schema_seeds_exactly_seven_default_tags_and_is_idempotent(case_folder):
     conn2 = case_index_db._case_index_connect(db_path)
     count = conn2.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
     conn2.close()
-    assert count == 7
+    assert count == 8
 
 
 def test_auto_tag_case_artifact_creates_a_real_row(case_folder):

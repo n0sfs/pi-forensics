@@ -38,6 +38,8 @@ import hashlib
 import textwrap
 import subprocess
 import threading
+import zipfile
+import fnmatch
 import xml.etree.ElementTree as ET
 import urllib.request
 
@@ -1464,6 +1466,146 @@ def start_verify_all_evidence():
 
     log_chain_of_custody("verify_all_evidence_start", {"case_folder": case_folder})
     return jsonify({"success": True, "message": "Case-wide evidence verification started."})
+
+def execution_worker_case_bundle_export(case_folder, include_images, requester_ip=None, requester_user=None):
+    """Background job: zips the entire case folder (minus raw acquisition
+    images, unless include_images is set, and this bundle mechanism's own
+    prior output) for archival/handoff.
+
+    Deliberately does NOT reuse _discover_case_files() for enumeration -
+    confirmed that function hard-caps at ATTACHMENT_DISCOVERY_MAX_FILES
+    (200) mid-directory (a real truncation, not just a warning), which is a
+    reasonable limit for an attachment-picker UI but would silently produce
+    an incomplete archival bundle for a case with more real files. It also
+    doesn't reuse that function's ATTACHMENT_DISCOVERY_SKIP_DIRS skip-list
+    (recovery-tool output directories like RECOVERED_FILES) - that
+    exclusion exists because "thousands of tiny carved files" are
+    impractical to list *individually as attachments*, a reason that
+    doesn't apply to an archival export whose whole point is capturing
+    everything the case folder actually contains. This worker does its own
+    unbounded os.walk instead, excluding only raw acquisition image
+    extensions (unless include_images) and its own prior bundle output."""
+    global current_job
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-200:]))
+
+    try:
+        slug = os.path.basename(case_folder.rstrip(os.sep))
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        zip_name = f"{slug}_case_bundle_{stamp}.zip"
+        zip_path = os.path.join(case_folder, zip_name)
+        # os.walk() is a LIVE directory scan, not a pre-walk snapshot - once
+        # zip_path itself starts growing inside case_folder, an unguarded
+        # walk would see it and try to add it to itself. Matched by glob
+        # pattern (not an exact-name set like every other self-exclusion in
+        # this app) since the timestamp makes each run's filename unique.
+        self_pattern = f"{slug}_case_bundle_*.zip"
+
+        update_job(format="case_bundle_export", status="Enumerating case folder...", progress_percent=0.0,
+                   transferred_bytes=0, total_bytes=0)
+        append_log(f"[*] Enumerating {case_folder} for a case bundle export...")
+
+        candidates = []  # (abs_path, arcname, size)
+        total_size = 0
+        for root, dirs, files in os.walk(case_folder):
+            for fname in files:
+                if fnmatch.fnmatch(fname, self_pattern):
+                    continue
+                ext = os.path.splitext(fname)[1].lower()
+                if not include_images and ext in ATTACHMENT_EXCLUDE_EXT:
+                    continue
+                fpath = os.path.join(root, fname)
+                try:
+                    size = os.path.getsize(fpath)
+                except OSError:
+                    continue
+                candidates.append((fpath, os.path.relpath(fpath, case_folder), size))
+                total_size += size
+
+        update_job(status="Building bundle...", total_bytes=total_size)
+        append_log(f"[*] {len(candidates)} file(s), {total_size / (1024**2):.1f} MB total, will be included "
+                   f"({'includes' if include_images else 'excludes'} raw acquisition images).")
+
+        written = 0
+        errored = 0
+        bytes_done = 0
+        last_update = time.time()
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            for fpath, arcname, size in candidates:
+                if snapshot_job()["status"] == "Stopped":
+                    append_log("[-] Stopped by user - bundle contains only what was added before the stop.")
+                    break
+                try:
+                    zf.write(fpath, arcname=arcname)
+                    written += 1
+                except Exception as e:
+                    errored += 1
+                    append_log(f"[!] Could not add {arcname}: {e}")
+                bytes_done += size
+                if time.time() - last_update > 0.5:
+                    update_job(transferred_bytes=bytes_done,
+                               progress_percent=round((bytes_done / total_size) * 100, 1) if total_size else 100.0)
+                    last_update = time.time()
+
+        update_job(transferred_bytes=total_size, progress_percent=100.0)
+        # No sudo/root involvement anywhere in this worker (unlike the
+        # acquisition tools' output), so there's no ownership to reclaim -
+        # the zip is already written by, and owned by, this app's own
+        # service account.
+        _auto_tag_case_artifact(case_folder, zip_path)
+
+        if snapshot_job()["status"] != "Stopped":
+            update_job(status="Completed Successfully")
+        append_log(f"[+] Bundle export complete: {written} file(s) added, {errored} error(s) -> {zip_path}")
+        log_chain_of_custody("case_bundle_export_complete", {
+            "case_folder": case_folder, "zip_path": zip_path, "files_added": written,
+            "files_errored": errored, "include_images": include_images,
+        }, source_ip=requester_ip, user=requester_user)
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+@reporting_bp.route('/api/cases/export_bundle', methods=['POST'])
+@requires_auth
+@requires_permission('reporting')
+def start_case_bundle_export():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    case_folder = safe_path(req.get('case_folder'))
+    include_images = bool(req.get('include_images'))
+    if not case_folder or not os.path.isdir(case_folder):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Case folder not found or outside the permitted evidence directory."}), 400
+
+    update_job(format="case_bundle_export", progress_percent=0.0, speed_mbps=0.0,
+               transferred_bytes=0, total_bytes=0, status="Initializing...",
+               log=f"[*] Initializing case bundle export of {case_folder}...")
+
+    # Captured now, in the real request thread - same capture-before-spawn
+    # requirement as every other background-thread log call in this app.
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_case_bundle_export,
+        args=(case_folder, include_images, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("case_bundle_export_start", {"case_folder": case_folder, "include_images": include_images})
+    return jsonify({"success": True, "message": "Case bundle export started."})
 
 def _embed_file_into_pdf(c, y, file_path, caption=None, exhibit_number=None, category=None, tags=None, analysis_summary=None):
     """Draws one file's content (image/text embedded, or a path+size
