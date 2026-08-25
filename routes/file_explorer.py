@@ -14,6 +14,7 @@ import re
 import time
 import json
 import stat
+import sqlite3
 import pwd
 import grp
 import mimetypes
@@ -34,7 +35,7 @@ from core.case_index_db import (
     _record_parsed_artifacts,
 )
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
-from core.browser_artifacts import find_browser_artifact_files, parse_browser_profile_file
+from core.browser_artifacts import find_browser_artifact_files, parse_browser_profile_file, _open_sqlite_readonly
 from core.registry_utils import find_registry_hive_files, parse_registry_hive_file
 from core.evtx_utils import find_evtx_files, parse_evtx_file
 from core.lnk_utils import parse_lnk_file
@@ -642,6 +643,86 @@ def parse_evtx():
     return jsonify({
         "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+SQLITE_QUERY_MAX_ROWS = 500  # a page's worth - real pagination via limit/offset, not a hard cap on total table size
+
+def _sqlite_list_tables(conn):
+    """Real table names + row counts - `table` here is always read back from
+    sqlite_master itself (never client-supplied) before being interpolated
+    into a COUNT(*) query, so this is safe despite the f-string: the only
+    way a name reaches this loop is if SQLite itself already reports it as
+    a real table in this exact file."""
+    tables = []
+    for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
+        try:
+            count = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+        except sqlite3.DatabaseError:
+            count = None
+        tables.append({"name": name, "row_count": count})
+    return tables
+
+@file_explorer_bp.route('/api/files/sqlite/tables', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def sqlite_list_tables():
+    """Generic SQLite viewer (D1) - lists every real table in a selected
+    .db/.sqlite/.sqlite3 file, read-only. No raw client-supplied SQL
+    anywhere in this feature - see sqlite_query_table() below."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+    try:
+        conn = _open_sqlite_readonly(file_path)
+        try:
+            tables = _sqlite_list_tables(conn)
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as e:
+        return jsonify({"success": False, "error": f"Not a readable SQLite database: {e}"}), 400
+    return jsonify({"success": True, "tables": tables})
+
+@file_explorer_bp.route('/api/files/sqlite/query', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def sqlite_query_table():
+    """Paginated row browser for one table - `table` is validated against
+    the file's own live sqlite_master listing before ever being
+    interpolated into a query (never raw client-supplied SQL, and never a
+    name that wasn't already confirmed to be a real table in this exact
+    file), then only `limit`/`offset` (always parameterized) vary the
+    actual SELECT."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    table = req.get('table', '')
+    try:
+        offset = max(0, int(req.get('offset', 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+    if not table:
+        return jsonify({"success": False, "error": "No table specified."}), 400
+
+    try:
+        conn = _open_sqlite_readonly(file_path)
+        try:
+            real_tables = {t["name"] for t in _sqlite_list_tables(conn)}
+            if table not in real_tables:
+                return jsonify({"success": False, "error": "Not a real table in this database."}), 400
+            cur = conn.execute(f'SELECT * FROM "{table}" LIMIT ? OFFSET ?', (SQLITE_QUERY_MAX_ROWS, offset))
+            columns = [d[0] for d in cur.description]
+            rows = [list(r) for r in cur.fetchall()]
+            total_rows = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as e:
+        return jsonify({"success": False, "error": f"Query failed: {e}"}), 400
+
+    return jsonify({
+        "success": True, "columns": columns, "rows": rows, "total_rows": total_rows,
+        "offset": offset, "returned": len(rows), "page_size": SQLITE_QUERY_MAX_ROWS,
     })
 
 @file_explorer_bp.route('/api/files/parse_lnk', methods=['POST'])

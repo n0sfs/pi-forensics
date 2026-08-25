@@ -2962,6 +2962,17 @@ async function previewSelectedFile(item) {
     const preview = document.getElementById('explorerPreview');
     if (!preview) return;
 
+    const dbBtn = document.getElementById('explorerViewDatabaseBtn');
+    if (dbBtn) {
+        const showDb = !item.is_dir && isSqliteFile(item.name);
+        dbBtn.style.display = showDb ? '' : 'none';
+        // Switching away from a .db to a non-.db file while Database was
+        // the active view would otherwise leave a stale table browser
+        // showing - fall back to Preview, matching every other view's own
+        // "selection changed underneath me" handling.
+        if (!showDb && explorerRightView === 'database') switchExplorerRightView('preview');
+    }
+
     if (item.is_dir) {
         preview.innerHTML = '';
         const icon = document.createElement('i');
@@ -3435,15 +3446,19 @@ function switchExplorerRightView(view) {
     const previewPane = document.getElementById('explorerPreview');
     const hexPane = document.getElementById('explorerHex');
     const metadataPane = document.getElementById('explorerMetadata');
+    const databasePane = document.getElementById('explorerDatabase');
     const previewBtn = document.getElementById('explorerViewPreviewBtn');
     const hexBtn = document.getElementById('explorerViewHexBtn');
     const metadataBtn = document.getElementById('explorerViewMetadataBtn');
+    const databaseBtn = document.getElementById('explorerViewDatabaseBtn');
     setPaneVisible(previewPane, view === 'preview');
     setPaneVisible(hexPane, view === 'hex');
     setPaneVisible(metadataPane, view === 'metadata');
+    setPaneVisible(databasePane, view === 'database');
     if (previewBtn) previewBtn.className = `btn btn-xs py-0 px-2 ${view === 'preview' ? 'btn-info' : 'btn-outline-info'}`;
     if (hexBtn) hexBtn.className = `btn btn-xs py-0 px-2 ${view === 'hex' ? 'btn-info' : 'btn-outline-info'}`;
     if (metadataBtn) metadataBtn.className = `btn btn-xs py-0 px-2 ${view === 'metadata' ? 'btn-info' : 'btn-outline-info'}`;
+    if (databaseBtn) databaseBtn.className = `btn btn-xs py-0 px-2 ${view === 'database' ? 'btn-info' : 'btn-outline-info'}`;
     // Preview doesn't need a load call here - previewSelectedFile()/
     // previewExplorerImageEntry() already populated it at selection time.
     // Hex/Metadata are fetched lazily instead, so switching to either one
@@ -3466,6 +3481,9 @@ function refreshExplorerDetailsView() {
     } else if (explorerRightView === 'metadata') {
         if (explorerDetailsIsImage) loadExplorerImageMetadataPane();
         else loadExplorerMetadataPane();
+    } else if (explorerRightView === 'database') {
+        if (explorerDetailsIsImage) loadExplorerImageDatabasePane();
+        else loadExplorerDatabasePane();
     }
 }
 
@@ -3664,6 +3682,218 @@ async function loadExplorerMetadataPane() {
         container.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
         container.innerHTML = '<span class="text-danger small">Request failed.</span>';
     }
+}
+
+// --- Generic SQLite Artifact Viewer (D1) ---
+// Table list first, then a paginated read-only row browser for whichever
+// table is clicked - shares the exact same explorerRightView='database'
+// dispatch (switchExplorerRightView()/refreshExplorerDetailsView()) every
+// other Details tab already uses, real-fs and in-image alike.
+let explorerDbCurrentTable = null;  // null = showing the table list, not a specific table's rows
+let explorerDbOffset = 0;
+
+function _renderSqliteTableList(container, tables, onTableClick) {
+    container.className = 'file-pane p-2 d-block text-start';
+    container.innerHTML = '';
+    if (!tables.length) {
+        container.innerHTML = '<span class="text-subtle small">No tables found in this database.</span>';
+        return;
+    }
+    const list = document.createElement('div');
+    list.className = 'list-group list-group-flush';
+    tables.forEach(t => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'list-group-item list-group-item-action bg-black text-light border-secondary d-flex justify-content-between align-items-center py-1 px-2';
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = t.name; // untrusted (table name from the evidence file), text node only
+        const countSpan = document.createElement('span');
+        countSpan.className = 'badge bg-secondary';
+        countSpan.textContent = t.row_count === null ? '?' : t.row_count;
+        row.appendChild(nameSpan);
+        row.appendChild(countSpan);
+        row.onclick = () => onTableClick(t.name);
+        list.appendChild(row);
+    });
+    container.appendChild(list);
+}
+
+function _renderSqliteRowTable(container, data, onBack, onPage) {
+    container.className = 'file-pane p-2 d-block text-start';
+    container.innerHTML = '';
+
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'btn btn-xs btn-outline-info py-0 px-2 mb-2';
+    backBtn.innerHTML = '<i class="bi bi-arrow-left me-1"></i>Back to Tables';
+    backBtn.onclick = onBack;
+    container.appendChild(backBtn);
+
+    const wrap = document.createElement('div');
+    wrap.style.overflowX = 'auto';
+    const table = document.createElement('table');
+    table.className = 'table table-sm table-dark table-striped mb-2';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    data.columns.forEach(col => {
+        const th = document.createElement('th');
+        th.textContent = col; // untrusted (column name), text node only
+        headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    data.rows.forEach(row => {
+        const tr = document.createElement('tr');
+        row.forEach(cell => {
+            const td = document.createElement('td');
+            td.textContent = cell === null ? 'NULL' : String(cell); // untrusted (evidence cell content), text node only
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    container.appendChild(wrap);
+
+    const pager = document.createElement('div');
+    pager.className = 'd-flex justify-content-between align-items-center small text-subtle';
+    const rangeStart = data.total_rows === 0 ? 0 : data.offset + 1;
+    const rangeEnd = data.offset + data.returned;
+    const rangeSpan = document.createElement('span');
+    rangeSpan.textContent = `Rows ${rangeStart}-${rangeEnd} of ${data.total_rows}`;
+    pager.appendChild(rangeSpan);
+    const btnGroup = document.createElement('div');
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button';
+    prevBtn.className = 'btn btn-xs btn-outline-info py-0 px-2 me-1';
+    prevBtn.textContent = 'Prev';
+    prevBtn.disabled = data.offset <= 0;
+    prevBtn.onclick = () => onPage(Math.max(0, data.offset - data.page_size));
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button';
+    nextBtn.className = 'btn btn-xs btn-outline-info py-0 px-2';
+    nextBtn.textContent = 'Next';
+    nextBtn.disabled = data.offset + data.returned >= data.total_rows;
+    nextBtn.onclick = () => onPage(data.offset + data.page_size);
+    btnGroup.appendChild(prevBtn);
+    btnGroup.appendChild(nextBtn);
+    pager.appendChild(btnGroup);
+    container.appendChild(pager);
+}
+
+async function loadExplorerDatabasePane() {
+    const container = document.getElementById('explorerDatabase');
+    if (!container) return;
+    if (!activeSelectedFile || !isSqliteFile(activeSelectedFile)) {
+        container.className = 'file-pane p-2';
+        container.innerHTML = '<div class="text-subtle small text-center p-3">Select a .db/.sqlite/.sqlite3 file on the left to browse it.</div>';
+        return;
+    }
+    explorerDbCurrentTable = null;
+    explorerDbOffset = 0;
+    const requestedPath = activeSelectedFile;
+    container.innerHTML = '<span class="text-subtle small">Loading tables...</span>';
+
+    const showTables = async () => {
+        try {
+            const res = await fetch('/api/files/sqlite/tables', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: requestedPath }),
+            });
+            const data = await res.json();
+            if (activeSelectedFile !== requestedPath) return;
+            if (!data.success) {
+                container.innerHTML = `<span class="text-danger small">${data.error}</span>`;
+                return;
+            }
+            _renderSqliteTableList(container, data.tables, (tableName) => showRows(tableName, 0));
+        } catch (err) {
+            if (activeSelectedFile !== requestedPath) return;
+            container.innerHTML = '<span class="text-danger small">Request failed.</span>';
+        }
+    };
+    const showRows = async (tableName, offset) => {
+        explorerDbCurrentTable = tableName;
+        explorerDbOffset = offset;
+        container.innerHTML = '<span class="text-subtle small">Loading rows...</span>';
+        try {
+            const res = await fetch('/api/files/sqlite/query', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: requestedPath, table: tableName, offset }),
+            });
+            const data = await res.json();
+            if (activeSelectedFile !== requestedPath) return;
+            if (!data.success) {
+                container.innerHTML = `<span class="text-danger small">${data.error}</span>`;
+                return;
+            }
+            _renderSqliteRowTable(container, data, showTables, (newOffset) => showRows(tableName, newOffset));
+        } catch (err) {
+            if (activeSelectedFile !== requestedPath) return;
+            container.innerHTML = '<span class="text-danger small">Request failed.</span>';
+        }
+    };
+    showTables();
+}
+
+async function loadExplorerImageDatabasePane() {
+    const container = document.getElementById('explorerDatabase');
+    if (!container) return;
+    const entry = explorerImageSelected;
+    if (!entry || entry.is_dir === true || !isSqliteFile(entry.name || '')) {
+        container.className = 'file-pane p-2';
+        container.innerHTML = '<div class="text-subtle small text-center p-3">Select a .db/.sqlite/.sqlite3 file on the left to browse it.</div>';
+        return;
+    }
+    explorerDbCurrentTable = null;
+    explorerDbOffset = 0;
+    const requestedInode = entry.inode;
+    container.innerHTML = '<span class="text-subtle small">Loading tables...</span>';
+
+    const showTables = async () => {
+        try {
+            const res = await fetch('/api/image/sqlite/tables', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image_path: explorerImagePath, offset: explorerImageOffset, inode: entry.inode }),
+            });
+            const data = await res.json();
+            if (!explorerImageSelected || explorerImageSelected.inode !== requestedInode) return;
+            if (!data.success) {
+                container.innerHTML = `<span class="text-danger small">${data.error}</span>`;
+                return;
+            }
+            _renderSqliteTableList(container, data.tables, (tableName) => showRows(tableName, 0));
+        } catch (err) {
+            if (!explorerImageSelected || explorerImageSelected.inode !== requestedInode) return;
+            container.innerHTML = '<span class="text-danger small">Request failed.</span>';
+        }
+    };
+    const showRows = async (tableName, rowOffset) => {
+        explorerDbCurrentTable = tableName;
+        explorerDbOffset = rowOffset;
+        container.innerHTML = '<span class="text-subtle small">Loading rows...</span>';
+        try {
+            const res = await fetch('/api/image/sqlite/query', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    image_path: explorerImagePath, offset: explorerImageOffset, inode: entry.inode,
+                    table: tableName, row_offset: rowOffset,
+                }),
+            });
+            const data = await res.json();
+            if (!explorerImageSelected || explorerImageSelected.inode !== requestedInode) return;
+            if (!data.success) {
+                container.innerHTML = `<span class="text-danger small">${data.error}</span>`;
+                return;
+            }
+            _renderSqliteRowTable(container, data, showTables, (newOffset) => showRows(tableName, newOffset));
+        } catch (err) {
+            if (!explorerImageSelected || explorerImageSelected.inode !== requestedInode) return;
+            container.innerHTML = '<span class="text-danger small">Request failed.</span>';
+        }
+    };
+    showTables();
 }
 
 // --- Shared "run a scan, show text output" modal (binwalk / strings / clamscan) ---
@@ -4192,6 +4422,12 @@ function isMemoryImageFile(name) {
     return MEMORY_IMAGE_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
 }
 
+// Generic SQLite artifact viewer (D1) - gates the Database Details tab.
+function isSqliteFile(name) {
+    const SQLITE_EXTENSIONS = ['.db', '.sqlite', '.sqlite3'];
+    return SQLITE_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
+}
+
 // Photo/picture extensions (distinct from isImageFile() above, which
 // detects forensic disk images) - used to decide whether a case attachment
 // gets a thumbnail preview via /api/files/raw.
@@ -4693,6 +4929,14 @@ function renderExplorerImageEntryRow(container, entry, displayName) {
 async function previewExplorerImageEntry(entry) {
     const preview = document.getElementById("explorerPreview");
     if (!preview) return;
+
+    const dbBtn = document.getElementById('explorerViewDatabaseBtn');
+    if (dbBtn) {
+        const showDb = !entry.is_dir && isSqliteFile(entry.name || '');
+        dbBtn.style.display = showDb ? '' : 'none';
+        if (!showDb && explorerRightView === 'database') switchExplorerRightView('preview');
+    }
+
     preview.className = 'file-pane p-2';
     preview.innerHTML = '<span class="text-subtle small">Loading preview...</span>';
 

@@ -23,6 +23,7 @@ import time
 import json
 import base64
 import hashlib
+import sqlite3
 import tempfile
 import subprocess
 import threading
@@ -51,6 +52,7 @@ from core.case_index_db import (
 )
 from core.browser_artifacts import (
     BROWSER_ARTIFACT_FILENAMES, BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES, parse_browser_profile_file,
+    _open_sqlite_readonly,
 )
 from core.registry_utils import REGISTRY_HIVE_FILENAMES, REGISTRY_SCAN_MAX_CANDIDATES, parse_registry_hive_file
 from core.evtx_utils import EVTX_EXTENSION, EVTX_SCAN_MAX_CANDIDATES, parse_evtx_file
@@ -1174,6 +1176,121 @@ def image_parse_lnk():
         "success": bool(records), "record": records[0] if records else None,
         "indexed": bool(case_folder and records),
         "error": None if records else "Could not parse this file as a valid .lnk shortcut.",
+    })
+
+SQLITE_QUERY_MAX_ROWS = 500  # matches routes/file_explorer.py's own real-fs cap
+
+def _sqlite_list_tables(conn):
+    """Local copy of routes/file_explorer.py's own helper - no cross-
+    blueprint import exists anywhere in this app (confirmed before writing
+    this), so a small duplicate here is lower-risk than introducing the
+    first one for two small functions."""
+    tables = []
+    for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
+        try:
+            count = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+        except sqlite3.DatabaseError:
+            count = None
+        tables.append({"name": name, "row_count": count})
+    return tables
+
+@image_browser_bp.route('/api/image/sqlite/tables', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_sqlite_list_tables():
+    """In-image counterpart to sqlite_list_tables() (routes/file_explorer.py)
+    - one selected in-image .db/.sqlite/.sqlite3 file, extract-to-temp-then-
+    open, same pattern image_strings()/image_exif() already use."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix='.db')
+        conn = _open_sqlite_readonly(tmp_path)
+        try:
+            tables = _sqlite_list_tables(conn)
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as e:
+        return jsonify({"success": False, "error": f"Not a readable SQLite database: {e}"}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read file: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    return jsonify({"success": True, "tables": tables})
+
+@image_browser_bp.route('/api/image/sqlite/query', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_sqlite_query_table():
+    """In-image counterpart to sqlite_query_table() (routes/file_explorer.py)
+    - same table-name-validated-against-a-live-listing safety, re-extracted
+    fresh per call (matching every other in-image single-file tool's
+    stateless extract-use-remove pattern - no session-held temp file)."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    table = req.get('table', '')
+    try:
+        row_offset = max(0, int(req.get('row_offset', 0)))
+    except (TypeError, ValueError):
+        row_offset = 0
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not table:
+        return jsonify({"success": False, "error": "No table specified."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix='.db')
+        conn = _open_sqlite_readonly(tmp_path)
+        try:
+            real_tables = {t["name"] for t in _sqlite_list_tables(conn)}
+            if table not in real_tables:
+                return jsonify({"success": False, "error": "Not a real table in this database."}), 400
+            cur = conn.execute(f'SELECT * FROM "{table}" LIMIT ? OFFSET ?', (SQLITE_QUERY_MAX_ROWS, row_offset))
+            columns = [d[0] for d in cur.description]
+            rows = [list(r) for r in cur.fetchall()]
+            total_rows = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as e:
+        return jsonify({"success": False, "error": f"Query failed: {e}"}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read file: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    return jsonify({
+        "success": True, "columns": columns, "rows": rows, "total_rows": total_rows,
+        "offset": row_offset, "returned": len(rows), "page_size": SQLITE_QUERY_MAX_ROWS,
     })
 
 # --- Filesystem-aware triage scan, directly against an acquired image ---
