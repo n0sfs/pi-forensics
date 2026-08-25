@@ -170,6 +170,53 @@ def get_custom_case_fields():
 def get_keyword_lists():
     return load_runtime_config().get('keyword_lists', [])
 
+# Station-wide known-good/known-bad hash lists (Settings > Case &
+# Reporting) - checked at scan time by File Explorer's "Check Against
+# Hash Lists" action and by Hash Manifest. Unlike keyword_lists/custom_
+# report_templates (small, structured, stay fully inline in
+# runtime_config.json), a hash list can run to thousands of lines - only
+# metadata (id/name/algorithm/label/hash_count/timestamps) lives inline
+# here; the actual hash values live in their own flat file under
+# HASH_LISTS_DIR, one hash per line, matching the same "large blob
+# gets its own file, only a path/id stored inline" precedent
+# report_logo.<ext> already established for the branding logo.
+def get_hash_lists():
+    return load_runtime_config().get('hash_lists', [])
+
+HASH_LISTS_DIR = os.path.join(INSTALL_DIR, "hash_lists")
+
+def hash_list_file_path(list_id):
+    return os.path.join(HASH_LISTS_DIR, f"{list_id}.txt")
+
+def load_hash_list_sets(hash_list_ids):
+    """Loads the requested hash lists' actual hash values into memory as
+    {list_id: {"name", "label", "algorithm", "hashes": set(...)}} - lives in
+    core/ (not routes/settings.py, where the CRUD routes for these lists
+    live) since both routes/file_explorer.py's single-file Check-Against-
+    Hash-Lists action and routes/image_browser.py's Hash Manifest cross-
+    reference need it, and this app has no cross-blueprint import between
+    routes/*.py modules anywhere (confirmed before writing this) - matches
+    this project's own stated rule that anything more than one routes/*.py
+    module needs belongs in core/. A missing/unreadable list file is
+    skipped (not a fatal error for the caller's whole scan)."""
+    if not hash_list_ids:
+        return {}
+    cfg = load_runtime_config()
+    by_id = {r['id']: r for r in cfg.get('hash_lists', [])}
+    result = {}
+    for list_id in hash_list_ids:
+        record = by_id.get(list_id)
+        if not record:
+            continue
+        try:
+            with open(hash_list_file_path(list_id)) as f:
+                hashes = {line.strip().lower() for line in f if line.strip()}
+        except OSError:
+            continue
+        result[list_id] = {"name": record["name"], "label": record.get("label", "known_bad"),
+                            "algorithm": record["algorithm"], "hashes": hashes}
+    return result
+
 # Root directory that all file-explorer / report / attachment / imaging-destination
 # endpoints are sandboxed to. Nothing outside this tree can be browsed, read,
 # written, or deleted via the API, regardless of what path a client sends.

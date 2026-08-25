@@ -2578,6 +2578,283 @@ async function deleteKeywordList(listId, name) {
     }
 }
 
+// --- Settings > Case & Reporting > Hash Lists (D2) - station-wide known-
+// good/known-bad hash sets, mirrors Keyword Lists above structurally.
+// The management view here always re-fetches fresh (forceRefresh) since
+// it IS the management view - fetchHashLists()'s own cache is for the
+// lighter-weight consumers (the File Explorer checklist, Hash Manifest's
+// in-image checklist). ---
+let hashListModalInstance = null;
+let hashListModalMode = 'create'; // 'create' | 'edit'
+let hashListModalId = null;
+let hashListsCache = null;
+
+async function fetchHashLists(forceRefresh) {
+    if (hashListsCache && !forceRefresh) return hashListsCache;
+    try {
+        const res = await fetch('/api/settings/hash_lists');
+        const data = await res.json();
+        hashListsCache = (data.success && data.lists) || [];
+    } catch (err) {
+        hashListsCache = [];
+    }
+    return hashListsCache;
+}
+
+async function loadHashListsSection() {
+    const listEl = document.getElementById('hashListsListContainer');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="text-subtle small p-2">Loading hash lists...</div>';
+    const lists = await fetchHashLists(true);
+    renderHashListsList(lists);
+}
+
+function renderHashListsList(lists) {
+    const listEl = document.getElementById('hashListsListContainer');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    if (lists.length === 0) {
+        listEl.innerHTML = '<div class="text-subtle small p-2">No hash lists yet - create one below.</div>';
+        return;
+    }
+    const table = document.createElement('table');
+    table.className = 'table table-dark table-sm mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>List</th><th>Algorithm</th><th>Label</th><th>Hashes</th><th></th></tr>'; // static/trusted markup
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    lists.forEach(l => {
+        const tr = document.createElement('tr');
+
+        const nameTd = document.createElement('td');
+        nameTd.appendChild(document.createTextNode(l.name)); // examiner-entered, text node only
+        tr.appendChild(nameTd);
+
+        const algoTd = document.createElement('td');
+        algoTd.className = 'text-subtle';
+        algoTd.textContent = (l.algorithm || '').toUpperCase();
+        tr.appendChild(algoTd);
+
+        const labelTd = document.createElement('td');
+        const labelBadge = document.createElement('span');
+        labelBadge.className = `badge ${l.label === 'known_good' ? 'bg-success' : 'bg-danger'}`;
+        labelBadge.textContent = l.label === 'known_good' ? 'Known Good' : 'Known Bad';
+        labelTd.appendChild(labelBadge);
+        tr.appendChild(labelTd);
+
+        const countTd = document.createElement('td');
+        countTd.className = 'text-subtle';
+        countTd.textContent = l.hash_count;
+        tr.appendChild(countTd);
+
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'text-end';
+        const editBtn = document.createElement('button');
+        editBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 me-1';
+        editBtn.innerHTML = '<i class="bi bi-pencil"></i>';
+        editBtn.title = 'Edit';
+        editBtn.onclick = () => openEditHashListModal(l);
+        actionsTd.appendChild(editBtn);
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-1';
+        delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+        delBtn.title = 'Delete list';
+        delBtn.onclick = () => deleteHashList(l.id, l.name);
+        actionsTd.appendChild(delBtn);
+        tr.appendChild(actionsTd);
+
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    listEl.appendChild(table);
+}
+
+function openCreateHashListModal() {
+    hashListModalMode = 'create';
+    hashListModalId = null;
+    document.getElementById('hashListModalTitle').textContent = 'New Hash List';
+    document.getElementById('hashListName').value = '';
+    document.getElementById('hashListAlgorithm').value = 'sha256';
+    document.getElementById('hashListAlgorithm').disabled = false;
+    document.getElementById('hashListLabel').value = 'known_bad';
+    document.getElementById('hashListHashes').value = '';
+    document.getElementById('hashListModalStatus').textContent = '';
+    if (!hashListModalInstance) {
+        hashListModalInstance = new bootstrap.Modal(document.getElementById('hashListModal'));
+    }
+    hashListModalInstance.show();
+}
+
+function openEditHashListModal(list) {
+    hashListModalMode = 'edit';
+    hashListModalId = list.id;
+    document.getElementById('hashListModalTitle').textContent = `Edit Hash List: ${list.name}`;
+    document.getElementById('hashListName').value = list.name;
+    document.getElementById('hashListAlgorithm').value = list.algorithm;
+    document.getElementById('hashListAlgorithm').disabled = true; // fixed at creation - every hash already on disk matches it
+    document.getElementById('hashListLabel').value = list.label || 'known_bad';
+    document.getElementById('hashListHashes').value = '';
+    document.getElementById('hashListModalStatus').textContent = '';
+    if (!hashListModalInstance) {
+        hashListModalInstance = new bootstrap.Modal(document.getElementById('hashListModal'));
+    }
+    hashListModalInstance.show();
+}
+
+async function saveHashListModal() {
+    const name = document.getElementById('hashListName').value.trim();
+    const algorithm = document.getElementById('hashListAlgorithm').value;
+    const label = document.getElementById('hashListLabel').value;
+    const hashesText = document.getElementById('hashListHashes').value;
+    const statusEl = document.getElementById('hashListModalStatus');
+    if (!name) { statusEl.textContent = 'List name is required.'; return; }
+    if (hashListModalMode === 'create' && !hashesText.trim()) { statusEl.textContent = 'At least one hash is required.'; return; }
+    statusEl.textContent = 'Saving...';
+    const endpoint = hashListModalMode === 'edit' ? `/api/settings/hash_lists/${hashListModalId}` : '/api/settings/hash_lists';
+    const method = hashListModalMode === 'edit' ? 'PUT' : 'POST';
+    const body = { name, label };
+    if (hashListModalMode === 'create') {
+        body.algorithm = algorithm;
+        body.hashes_text = hashesText;
+    } else if (hashesText.trim()) {
+        body.hashes_text = hashesText; // omitted entirely on an edit that only changes name/label - leaves hashes on disk untouched
+    }
+    try {
+        const res = await fetch(endpoint, {
+            method, headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.success) {
+            hashListModalInstance.hide();
+            hashListsCache = null; // invalidate - the File Explorer/Hash Manifest checklists and this list must both see the change
+            loadHashListsSection();
+        } else {
+            statusEl.textContent = `Failed: ${data.error}`;
+        }
+    } catch (err) {
+        statusEl.textContent = 'Failed: request error.';
+    }
+}
+
+async function deleteHashList(listId, name) {
+    if (!confirm(`Delete hash list "${name}"? This cannot be undone.`)) return;
+    try {
+        const res = await fetch(`/api/settings/hash_lists/${listId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+            hashListsCache = null;
+            loadHashListsSection();
+        } else {
+            showToast(`Delete failed: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast('Delete failed: request error.', 'danger');
+    }
+}
+
+// --- File Explorer: "Check Against Hash Lists" single-file action (D2) ---
+// One modal, two modes (isImage=false real-fs / true in-image) - reads
+// whichever selection state (activeSelectedFile / explorerImageSelected)
+// is currently active at the moment it's opened, mirroring how the tag/
+// verify-hash modals already scope themselves to "whatever was right-
+// clicked" rather than tracking a separate target reference.
+let hashListCheckModalInstance = null;
+let hashListCheckIsImage = false;
+
+async function openHashListCheckModal(isImage) {
+    hashListCheckIsImage = isImage;
+    const nameEl = document.getElementById('hashListCheckFileName');
+    const fileName = isImage ? (explorerImageSelected && explorerImageSelected.name) : (activeSelectedFile && activeSelectedFile.split('/').pop());
+    if (nameEl) nameEl.textContent = fileName || '--'; // untrusted (filename) - text node only via textContent
+    document.getElementById('hashListCheckResult').innerHTML = '';
+
+    const container = document.getElementById('hashListCheckContainer');
+    container.innerHTML = '<span class="text-subtle small">Loading hash lists...</span>';
+    const lists = await fetchHashLists();
+    container.innerHTML = '';
+    if (lists.length === 0) {
+        container.innerHTML = '<span class="text-subtle small">No saved hash lists yet - create one in Settings &gt; Case &amp; Reporting &gt; Hash Lists.</span>';
+    } else {
+        lists.forEach(l => {
+            const row = document.createElement('div');
+            row.className = 'form-check';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.className = 'form-check-input hash-list-check-cb';
+            input.id = `hashListCheckCb_${l.id}`;
+            input.value = l.id;
+            input.checked = true; // opt-out, not opt-in - the whole point of the action is checking against what's saved
+            const label = document.createElement('label');
+            label.className = 'form-check-label';
+            label.htmlFor = input.id;
+            label.textContent = `${l.name} (${l.algorithm.toUpperCase()}, ${l.label === 'known_good' ? 'Known Good' : 'Known Bad'}, ${l.hash_count} hash${l.hash_count === 1 ? '' : 'es'})`; // examiner-entered name - text node only
+            row.appendChild(input);
+            row.appendChild(label);
+            container.appendChild(row);
+        });
+    }
+
+    if (!hashListCheckModalInstance) {
+        hashListCheckModalInstance = new bootstrap.Modal(document.getElementById('hashListCheckModal'));
+    }
+    hashListCheckModalInstance.show();
+}
+
+async function runHashListCheck() {
+    const resultEl = document.getElementById('hashListCheckResult');
+    const hashListIds = Array.from(document.querySelectorAll('.hash-list-check-cb:checked')).map(cb => cb.value);
+    if (hashListIds.length === 0) {
+        resultEl.innerHTML = '<span class="text-warning">Select at least one hash list.</span>';
+        return;
+    }
+    resultEl.innerHTML = '<span class="text-subtle">Hashing and checking...</span>';
+
+    const endpoint = hashListCheckIsImage ? '/api/image/check_hash_lists' : '/api/files/check_hash_lists';
+    const body = hashListCheckIsImage
+        ? { image_path: explorerImagePath, offset: explorerImageOffset, inode: explorerImageSelected?.inode, hash_list_ids: hashListIds }
+        : { path: activeSelectedFile, hash_list_ids: hashListIds };
+
+    try {
+        const res = await fetch(endpoint, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!data.success) {
+            resultEl.innerHTML = '';
+            const err = document.createElement('span');
+            err.className = 'text-danger';
+            err.textContent = data.error; // untrusted, text node only
+            resultEl.appendChild(err);
+            return;
+        }
+        resultEl.innerHTML = '';
+        const hashesLine = document.createElement('div');
+        hashesLine.className = 'text-subtle mb-1';
+        hashesLine.textContent = Object.entries(data.computed_hashes).map(([a, h]) => `${a.toUpperCase()}: ${h}`).join('  |  '); // computed hex digests, text node only
+        resultEl.appendChild(hashesLine);
+
+        if (data.matches.length === 0) {
+            const clean = document.createElement('div');
+            clean.className = 'text-success fw-bold';
+            clean.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i>No matches - clean against all checked lists.';
+            resultEl.appendChild(clean);
+        } else {
+            data.matches.forEach(m => {
+                const line = document.createElement('div');
+                line.className = m.label === 'known_good' ? 'text-success fw-bold' : 'text-danger fw-bold';
+                const icon = m.label === 'known_good' ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill';
+                line.innerHTML = `<i class="bi ${icon} me-1"></i>`; // static/trusted markup
+                line.appendChild(document.createTextNode(`MATCH: ${m.list_name} (${m.label === 'known_good' ? 'Known Good' : 'Known Bad'})`)); // examiner-entered list name - text node only
+                resultEl.appendChild(line);
+            });
+        }
+    } catch (err) {
+        resultEl.innerHTML = '<span class="text-danger">Request failed.</span>';
+    }
+}
+
 // "Browse this image" - jumps into full Sleuth Kit navigation for the row's
 // source image (its root, not deep-linked to the row's own directory/offset -
 // a reasonable best-effort for a first pass, not a hard requirement).
@@ -3290,6 +3567,7 @@ function updateContextToolbar(item) {
     const btnStrings = document.getElementById("btnRunStrings");
     const btnQuickTriage = document.getElementById("btnQuickTriageScan");
     const btnHashdeep = document.getElementById("btnRunHashdeep");
+    const btnCheckHashLists = document.getElementById("btnCheckHashLists");
     const btnGeolocation = document.getElementById("btnExtractGeolocation");
     const btnBrowserArtifacts = document.getElementById("btnParseBrowserArtifacts");
     const btnRegistryHives = document.getElementById("btnParseRegistryHives");
@@ -3306,6 +3584,7 @@ function updateContextToolbar(item) {
     if (btnQuickTriage) btnQuickTriage.disabled = item.is_dir;
     if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
+    if (btnCheckHashLists) btnCheckHashLists.disabled = item.is_dir;  // single-file, like Verify Image Hash
     if (btnGeolocation) btnGeolocation.disabled = !item.is_dir;  // scans a whole folder of photos at once
     if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium + Firefox profile files
     if (btnRegistryHives) btnRegistryHives.disabled = !item.is_dir;    // recursively walks a folder for NTUSER.DAT/SYSTEM/SOFTWARE
@@ -5504,11 +5783,19 @@ async function runImageGeolocationExport() {
 async function runImageHashManifest() {
     if (!explorerImagePath) return;
     const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    // D2: automatically cross-references against every saved SHA256 hash
+    // list (matching this action's own hardcoded algorithm below) - opt-
+    // out, not opt-in, same reasoning the single-file Check Against Hash
+    // Lists action uses: this button has no options prompt at all today,
+    // so requiring a new modal just to pick lists would be a bigger UI
+    // change than this one action's own established fire-and-forget shape.
+    const allLists = await fetchHashLists();
+    const hashListIds = allLists.filter(l => l.algorithm === 'sha256').map(l => l.id);
     try {
         const res = await fetch('/api/image/hash_manifest', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir, algorithm: 'sha256' })
+            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir, algorithm: 'sha256', hash_list_ids: hashListIds })
         });
         const data = await res.json();
         if (!data.success) {
@@ -5522,7 +5809,12 @@ async function runImageHashManifest() {
         if (data.truncated) {
             msg += `\n\nNote: this image has more files than could be hashed in one pass - results are partial.`;
         }
-        showToast(msg, 'success');
+        if (hashListIds.length > 0) {
+            msg += data.hash_list_match_count > 0
+                ? `\n\n${data.hash_list_match_count} file(s) matched a saved hash list - see the manifest for details.`
+                : `\n\nChecked against ${hashListIds.length} saved SHA256 hash list(s) - no matches.`;
+        }
+        showToast(msg, data.hash_list_match_count > 0 ? 'warning' : 'success');
     } catch (err) {}
 }
 
@@ -8770,6 +9062,7 @@ document.getElementById('secAuditLog')?.addEventListener('hidden.bs.collapse', (
 document.getElementById('secNetConfig')?.addEventListener('shown.bs.collapse', () => loadNetworkConfig());
 document.getElementById('secManageTags')?.addEventListener('shown.bs.collapse', () => loadManageTagsSection());
 document.getElementById('secKeywordLists')?.addEventListener('shown.bs.collapse', () => loadKeywordListsSection());
+document.getElementById('secHashLists')?.addEventListener('shown.bs.collapse', () => loadHashListsSection());
 
 document.addEventListener('shown.bs.tab', (ev) => {
     // Returning to the whole Settings sidebar tab while the Audit Log

@@ -54,6 +54,17 @@ def mount_key_file(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def hash_lists_dir(tmp_path, monkeypatch):
+    """Points core.config's D2 hash-list storage directory at a fresh temp
+    dir, so a test never touches (or depends on) a real station's saved
+    hash lists."""
+    import core.config as config
+    hl_dir = tmp_path / "hash_lists"
+    monkeypatch.setattr(config, "HASH_LISTS_DIR", str(hl_dir))
+    return hl_dir
+
+
+@pytest.fixture
 def evidence_root(tmp_path, monkeypatch):
     """Points core.paths.safe_path()'s sandbox root at a fresh temp dir."""
     import core.paths as paths
