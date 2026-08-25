@@ -35,6 +35,9 @@ from core.case_index_db import (
 )
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
 from core.browser_artifacts import find_browser_artifact_files, parse_browser_profile_file
+from core.registry_utils import find_registry_hive_files, parse_registry_hive_file
+from core.evtx_utils import find_evtx_files, parse_evtx_file
+from core.lnk_utils import parse_lnk_file
 from core.jobs import job_lock, current_job, update_job, snapshot_job
 
 file_explorer_bp = Blueprint('file_explorer', __name__)
@@ -563,6 +566,109 @@ def parse_browser_artifacts():
         "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated,
         "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_registry', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_registry():
+    """Whole-directory scan for Windows Registry hives (NTUSER.DAT/SYSTEM/
+    SOFTWARE) - same shape as parse_browser_artifacts() above, just a
+    different candidate-file matcher/dispatcher pair."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_registry_hive_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        filename = os.path.basename(path)
+        records = parse_registry_hive_file(path, filename)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("registry_hives_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_evtx', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_evtx():
+    """Whole-directory scan for Windows Event Log (.evtx) files - same
+    shape as parse_browser_artifacts()/parse_registry() above."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_evtx_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        records = parse_evtx_file(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("evtx_files_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_lnk', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_lnk():
+    """Single selected .lnk file - unlike Registry/EVTX above, an LNK is
+    one artifact, not a container to scan for candidates, so this mirrors
+    run_strings()'s single-file shape instead."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    records = parse_lnk_file(file_path, name_hint=os.path.basename(file_path))
+    if case_folder and records:
+        _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": file_path}, records)
+
+    log_chain_of_custody("lnk_file_parsed", {"path": file_path, "parsed": bool(records)})
+    return jsonify({
+        "success": bool(records), "record": records[0] if records else None,
+        "indexed": bool(case_folder and records),
+        "error": None if records else "Could not parse this file as a valid .lnk shortcut.",
     })
 
 # --- strings: Extract Printable Text From a Binary File ---
