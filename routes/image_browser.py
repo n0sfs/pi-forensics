@@ -36,7 +36,7 @@ from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path, classify_extension,
     is_valid_block_device_or_partition,
 )
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets
 from core.jobs import job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME
 from core.tsk_utils import (
     _tsk_walk, _tsk_resolve_filesystems, _tsk_entry_dict,
@@ -827,6 +827,7 @@ def image_hash_manifest():
     image_path = _resolve_browsable_source(req.get('image_path'))
     dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
     algo = req.get('algorithm', 'sha256').lower()
+    hash_list_ids = req.get('hash_list_ids') or []
 
     if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
@@ -835,12 +836,22 @@ def image_hash_manifest():
     if algo not in ALLOWED_HASH_ALGOS:
         return jsonify({"success": False, "error": f"Unsupported algorithm '{algo}'. Use one of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
 
+    # D2 (hash-set filtering) - only a hash list whose OWN algorithm
+    # matches this manifest's algorithm can meaningfully cross-reference
+    # against it (a saved sha256 list can never match an md5 manifest) -
+    # a mismatched list is silently skipped here rather than surfaced as
+    # an error, since "check whichever of my selected lists actually
+    # apply" is a more forgiving default than forcing the examiner to
+    # re-select per algorithm.
+    hash_sets = {lid: s for lid, s in load_hash_list_sets(hash_list_ids).items() if s["algorithm"] == algo}
+
     filesystems = _tsk_resolve_filesystems(image_path)
     if not filesystems:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
 
     start_time = time.time()
     rows = []  # (hash_hex, size, in-image path)
+    matches = []  # (hash_hex, path, [list_name, ...])
     files_hashed = 0
     files_errored = 0
     truncated = False
@@ -859,8 +870,13 @@ def image_hash_manifest():
                 tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
                 h = hashlib.new(algo)
                 size = _tsk_stream_file(tsk_file, h.update)
-                rows.append((h.hexdigest(), size, path))
+                digest = h.hexdigest()
+                rows.append((digest, size, path))
                 files_hashed += 1
+                if hash_sets:
+                    hit_lists = [s["name"] for s in hash_sets.values() if digest in s["hashes"]]
+                    if hit_lists:
+                        matches.append((digest, path, hit_lists))
             except Exception:
                 files_errored += 1
                 continue  # one unreadable/corrupt file shouldn't fail the whole manifest
@@ -877,11 +893,21 @@ def image_hash_manifest():
         f"# Files hashed: {files_hashed}" + (f" (capped - more files remained unscanned)" if truncated else ""),
         f"# Files skipped (unreadable): {files_errored}",
         "# Deleted files are excluded - see route documentation for why.",
+    ]
+    if hash_sets:
+        checked_names = ', '.join(s["name"] for s in hash_sets.values())
+        lines.append(f"# Checked against hash list(s): {checked_names} ({len(matches)} match(es))")
+    lines += [
         "#",
         f"# {'hash'.ljust(len(rows[0][0]) if rows else 64)}  size(bytes)  path",
     ]
     for digest, size, path in rows:
         lines.append(f"{digest}  {size}  {path}")
+    if matches:
+        lines.append("")
+        lines.append("# --- HASH LIST MATCHES ---")
+        for digest, path, hit_lists in matches:
+            lines.append(f"# MATCH  {digest}  {path}  <- {', '.join(hit_lists)}")
     try:
         with open(manifest_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(lines) + "\n")
@@ -891,12 +917,65 @@ def image_hash_manifest():
 
     log_chain_of_custody("hash_manifest_export_image", {
         "image_path": image_path, "algorithm": algo, "files_hashed": files_hashed,
-        "files_errored": files_errored, "truncated": truncated
+        "files_errored": files_errored, "truncated": truncated, "hash_list_matches": len(matches),
     })
     return jsonify({
         "success": True, "manifest_path": manifest_path, "files_hashed": files_hashed,
-        "files_errored": files_errored, "truncated": truncated
+        "files_errored": files_errored, "truncated": truncated,
+        "hash_list_match_count": len(matches),
+        "hash_list_matches": [{"hash": d, "path": p, "lists": ls} for d, p, ls in matches[:50]],
     })
+
+@image_browser_bp.route('/api/image/check_hash_lists', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_check_hash_lists():
+    """In-image counterpart to routes/file_explorer.py's check_hash_lists()
+    - one selected in-image file, hashed in memory (no temp-file extraction
+    needed, unlike Binwalk/Strings/EXIF - hashlib can stream straight off
+    the pytsk3 read the same way image_hash_manifest() above already does
+    per-file) and checked against the requested lists' loaded sets."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    hash_list_ids = req.get('hash_list_ids') or []
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not hash_list_ids:
+        return jsonify({"success": False, "error": "No hash lists selected."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    hash_sets = load_hash_list_sets(hash_list_ids)
+    if not hash_sets:
+        return jsonify({"success": False, "error": "None of the selected hash lists could be loaded."}), 400
+    needed_algos = {s["algorithm"] for s in hash_sets.values()}
+
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tsk_file = fs.open_meta(inode=inode_num)
+        computed = {}
+        for algo in needed_algos:
+            h = hashlib.new(algo)
+            _tsk_stream_file(tsk_file, h.update)
+            computed[algo] = h.hexdigest()
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read file: {e}"}), 500
+
+    matches = []
+    for list_id, s in hash_sets.items():
+        digest = computed.get(s["algorithm"])
+        if digest and digest in s["hashes"]:
+            matches.append({"list_id": list_id, "list_name": s["name"], "label": s.get("label", "known_bad"),
+                             "algorithm": s["algorithm"], "hash": digest})
+
+    log_chain_of_custody("hash_list_check_image", {"image_path": image_path, "inode": str(inode),
+                                                     "lists_checked": len(hash_sets), "matches": len(matches)})
+    return jsonify({"success": True, "computed_hashes": computed, "matches": matches})
 
 # --- Browser Artifacts (in-image): real per-app parsing (Chrome/Chromium
 # family + Firefox), directly against an acquired image's filesystem ---
