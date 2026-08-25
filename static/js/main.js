@@ -6813,7 +6813,11 @@ function renderCustomReportTemplatesList() {
         editBtn.title = 'Edit';
         editBtn.onclick = () => openReportTemplateBuilder(t.id);
         const dupBtn = document.createElement('button');
-        dupBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
+        // btn-outline-secondary's default gray read as barely visible
+        // against this app's near-black theme at btn-xs size (caught live,
+        // not assumed) - btn-outline-light gives real contrast while
+        // staying visually distinct from Edit's cyan and Delete's red.
+        dupBtn.className = 'btn btn-xs btn-outline-light py-0 px-2';
         dupBtn.innerHTML = '<i class="bi bi-copy"></i>';
         dupBtn.title = 'Duplicate';
         dupBtn.onclick = () => duplicateCustomReportTemplate(t.id);
