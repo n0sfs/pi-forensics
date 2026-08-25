@@ -701,6 +701,7 @@ const REPORT_FIELD_MAPPING = [
     ["Geolocation / GPS Evidence", "KML files attached to or found in the case folder", "Auto-discovered; generate via File Explorer's \"Extract Geolocation (KML)\""],
     ["Case Activity Log (Audit Trail)", "Chain-of-custody entries matching this case #", "Automatic"],
     ["Filesystem Timeline (MACB)", "MACB walk of the acquired image", "Automatic, needs the image still on disk"],
+    ["Physical Evidence Custody Log", "From/To custodian handoff entries, append-only", "Custody Log tab"],
 ];
 
 function populateReportFieldMapping() {
@@ -6469,6 +6470,7 @@ async function loadCaseForEditing() {
         if (recommendationsEl) recommendationsEl.value = narrativeSrc.recommendations_next_steps || "";
 
         renderCaseNotesList();
+        renderCustodyLogList();
         loadCaseHistory();
         renderCaseJobs();
         renderCaseDashboard();
@@ -6907,6 +6909,103 @@ async function addCaseNote() {
             document.getElementById("newCaseNoteText").value = '';
             if (filesInput) filesInput.value = '';
             if (statusEl) { statusEl.textContent = 'Note added.'; statusEl.className = 'small mt-1 text-success'; }
+            await loadCaseForEditing();
+        } else {
+            if (statusEl) { statusEl.textContent = `Error: ${data.error}`; statusEl.className = 'small mt-1 text-danger'; }
+        }
+    } catch (err) {
+        if (statusEl) { statusEl.textContent = `Failed: ${err.message}`; statusEl.className = 'small mt-1 text-danger'; }
+    }
+}
+
+// --- Physical Evidence Custody Log (distinct from Case Notes above and
+// the software Audit Trail - a record of who physically had the evidence,
+// append-only, no edit endpoint by design). ---
+function renderCustodyLogList() {
+    const container = document.getElementById("custodyLogContainer");
+    if (!container) return;
+
+    if (!currentLoadedReportData) {
+        container.innerHTML = '<span class="text-subtle small italic">Load a case above, then open this tab to see and log custody transfers.</span>';
+        return;
+    }
+    const entries = currentLoadedReportData.custody_log || [];
+    if (entries.length === 0) {
+        container.innerHTML = '<span class="text-subtle small italic">No custody log entries recorded yet - log the first transfer below.</span>';
+        return;
+    }
+
+    container.innerHTML = '';
+    const sorted = [...entries].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+    sorted.forEach(entry => {
+        const card = document.createElement('div');
+        card.className = 'mb-2 pb-2 border-bottom border-secondary small';
+
+        const headerLine = document.createElement('div');
+        headerLine.className = 'fw-bold mb-1';
+        headerLine.textContent = `${entry.timestamp || '--'} · ${entry.from_custodian || '?'} → ${entry.to_custodian || '?'}`; // untrusted, text node only
+        card.appendChild(headerLine);
+
+        const detailLine = document.createElement('div');
+        detailLine.className = 'text-subtle';
+        detailLine.textContent = `Reason: ${entry.reason || '(none given)'}   ·   Method: ${entry.method || '(none given)'}`; // untrusted, text node only
+        card.appendChild(detailLine);
+
+        if (entry.notes) {
+            const notesLine = document.createElement('div');
+            notesLine.className = 'text-subtle';
+            notesLine.style.whiteSpace = 'pre-wrap';
+            notesLine.textContent = `Notes: ${entry.notes}`; // untrusted, text node only
+            card.appendChild(notesLine);
+        }
+
+        if (entry.logged_by) {
+            const loggedLine = document.createElement('div');
+            loggedLine.className = 'text-subtle';
+            loggedLine.textContent = `Logged by: ${entry.logged_by}`; // untrusted, text node only
+            card.appendChild(loggedLine);
+        }
+
+        container.appendChild(card);
+    });
+}
+
+async function addCustodyEntry() {
+    const reportPath = currentReportPath;
+    const statusEl = document.getElementById("custodyAddStatus");
+    if (!reportPath || !currentLoadedReportData) {
+        if (statusEl) { statusEl.textContent = 'Select an active case first.'; statusEl.className = 'small mt-1 text-danger'; }
+        return;
+    }
+    const fromCustodian = document.getElementById("newCustodyFrom")?.value.trim() || "";
+    const toCustodian = document.getElementById("newCustodyTo")?.value.trim() || "";
+    if (!fromCustodian || !toCustodian) {
+        if (statusEl) { statusEl.textContent = 'Both From and To custodian are required.'; statusEl.className = 'small mt-1 text-danger'; }
+        return;
+    }
+    const body = {
+        report_path: reportPath,
+        from_custodian: fromCustodian,
+        to_custodian: toCustodian,
+        reason: document.getElementById("newCustodyReason")?.value.trim() || "",
+        method: document.getElementById("newCustodyMethod")?.value || "",
+        notes: document.getElementById("newCustodyNotes")?.value.trim() || "",
+    };
+
+    if (statusEl) { statusEl.textContent = 'Logging...'; statusEl.className = 'small mt-1 text-info'; }
+    try {
+        const res = await fetch('/api/cases/custody/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById("newCustodyFrom").value = '';
+            document.getElementById("newCustodyTo").value = '';
+            document.getElementById("newCustodyReason").value = '';
+            document.getElementById("newCustodyNotes").value = '';
+            if (statusEl) { statusEl.textContent = 'Custody transfer logged.'; statusEl.className = 'small mt-1 text-success'; }
             await loadCaseForEditing();
         } else {
             if (statusEl) { statusEl.textContent = `Error: ${data.error}`; statusEl.className = 'small mt-1 text-danger'; }
