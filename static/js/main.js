@@ -3846,6 +3846,7 @@ function updateContextToolbar(item) {
     const btnMvtIos = document.getElementById("btnRunMvtIos");
     const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
     const btnMemoryForensics = document.getElementById("btnMemoryForensics");
+    const btnAutoAnalyze = document.getElementById("btnAutoAnalyze");
 
     if (btnDelete) btnDelete.disabled = false;
     if (btnCopy) btnCopy.disabled = false;
@@ -3867,6 +3868,11 @@ function updateContextToolbar(item) {
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnMemoryForensics) btnMemoryForensics.disabled = item.is_dir || !isMemoryImageFile(item.name);
+    // Any folder (a potential mobile backup - detection gracefully falls
+    // back to "pick manually" if it doesn't recognize the shape) or any
+    // recognized disk/memory image file - never enabled for an unrelated
+    // plain file, since Auto Analyze has nothing to detect/run against one.
+    if (btnAutoAnalyze) btnAutoAnalyze.disabled = !(item.is_dir || isImageFile(item.name) || isMemoryImageFile(item.name));
     if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnUnlockBitlockerImage) btnUnlockBitlockerImage.disabled = item.is_dir || !isImageFile(item.name);
     if (btnUnlockLuksImage) btnUnlockLuksImage.disabled = item.is_dir || !isImageFile(item.name);
@@ -5034,6 +5040,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     memory_forensics_scan: (status) => `Memory forensics scan finished: ${status}\n\nClick a *_vol3_<plugin>.json file next to the image in File Explorer to view its results.`,
     verify_all_evidence: (status) => `Case-wide evidence verification finished: ${status}\n\nSee the Overview tab in Reporting for the full result.`,
     case_bundle_export: (status) => `Case bundle export finished: ${status}\n\nCheck the case folder for the generated *_case_bundle_<timestamp>.zip file.`,
+    auto_analyze_image: (status) => `Auto Analyze finished: ${status}\n\nSee the Audit Log (Settings > Security) for the full per-step results, or File Views > Parsed Artifacts for the individual tools' output.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
 
@@ -5062,6 +5069,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     // File Explorer (in-image background jobs, reached via right-click/toolbar there)
     image_geolocation_kml: 'navBadgeExplorer', image_triage_scan: 'navBadgeExplorer',
     memory_forensics_scan: 'navBadgeExplorer', image_conversion: 'navBadgeExplorer',
+    auto_analyze_image: 'navBadgeExplorer',
 };
 const NAV_BADGE_TO_TAB_ID = {
     navBadgeAcquisition: 'acquisition-tab', navBadgeMobile: 'mobile-tab',
@@ -9683,6 +9691,179 @@ async function openKmlViewerModal(filePath) {
 
 let verifyHashModalInstance = null;
 let imageConversionModalInstance = null;
+
+// --- Auto Analyze (Phase 3, 2026-08-25) ---
+// Detects an evidence item's profile, then either starts a real sequenced
+// background job (Windows/Linux disk images - /api/image/auto_analyze/start)
+// or hands off to the already-existing single-tool flows for Memory/Mobile
+// (openMemoryForensicsModal()/runSelectedMvtScan(), just pre-filled with a
+// curated default) - see routes/auto_analyze.py's own module docstring for
+// why Memory/Mobile don't get their own new orchestrated-job route.
+let autoAnalyzeModalInstance = null;
+const AUTO_ANALYZE_STEP_LABELS = {
+    hash_manifest: "Hash Manifest (SHA256)",
+    registry: "Registry Hives (incl. Amcache)",
+    evtx: "Event Logs",
+    prefetch: "Prefetch Files",
+    recyclebin: "Recycle Bin",
+    browser_artifacts: "Browser Artifacts (Chrome/Firefox)",
+    linux_artifacts: "Linux Artifacts (shell history/passwd/cron/auth log)",
+    recover_deleted: "Recover Deleted Files (Filesystem-Aware)",
+};
+const AUTO_ANALYZE_WINDOWS_DEFAULTS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts"];
+const AUTO_ANALYZE_LINUX_DEFAULTS = ["hash_manifest", "linux_artifacts"];
+const AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted"];
+const AUTO_ANALYZE_MEMORY_DEFAULT_PLUGINS = ["info", "pslist", "pstree", "cmdline", "netscan", "malfind"];
+
+function _resetAutoAnalyzeModal() {
+    document.getElementById('autoAnalyzeDetecting').style.display = '';
+    document.getElementById('autoAnalyzeDetectedInfo').style.display = 'none';
+    document.getElementById('autoAnalyzeImageStepsGroup').style.display = 'none';
+    document.getElementById('autoAnalyzeMemoryGroup').style.display = 'none';
+    document.getElementById('autoAnalyzeMobileGroup').style.display = 'none';
+    document.getElementById('autoAnalyzeStatus').textContent = '';
+    document.getElementById('autoAnalyzeStartBtn').disabled = true;
+    document.getElementById('autoAnalyzeProfileSelect').value = '';
+}
+
+async function openAutoAnalyzeModal() {
+    if (!activeSelectedFile) return;
+    document.getElementById('autoAnalyzeFileName').textContent = activeSelectedFile.split('/').pop();
+    _resetAutoAnalyzeModal();
+
+    if (!autoAnalyzeModalInstance) {
+        autoAnalyzeModalInstance = new bootstrap.Modal(document.getElementById('autoAnalyzeModal'));
+    }
+    autoAnalyzeModalInstance.show();
+
+    try {
+        const res = await fetch('/api/auto_analyze/detect', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        document.getElementById('autoAnalyzeDetecting').style.display = 'none';
+        if (!data.success) {
+            document.getElementById('autoAnalyzeStatus').textContent = `Detection failed: ${data.error}`;
+            return;
+        }
+
+        const select = document.getElementById('autoAnalyzeProfileSelect');
+        let initialValue = '';
+        let infoText = '';
+        if (data.profile === 'ambiguous') {
+            infoText = 'Could not determine whether this is a memory image or a disk image (no recognizable filesystem found inside it) - pick the correct profile below.';
+        } else if (data.profile === 'unknown_mobile') {
+            infoText = "This looks like a folder, but doesn't match a known case acquisition record or a recognizable backup structure - pick the correct profile below if you know what it is, or leave unselected.";
+        } else if (data.profile === 'unknown') {
+            infoText = 'Could not determine what this evidence item is - pick a profile manually if you know what it is.';
+        } else if (data.profile === 'mixed') {
+            const fsList = (data.filesystems || []).map(f => `${f.fs_type} (${f.bucket})`).join(', ');
+            infoText = `Detected multiple filesystem types - a likely dual-boot image: ${fsList}. Pick which profile to run now; run Auto Analyze again for the other.`;
+            initialValue = (data.filesystems || []).find(f => f.bucket === 'windows') ? 'windows' : 'linux';
+        } else if (data.profile === 'windows' || data.profile === 'linux') {
+            const fsList = (data.filesystems || []).map(f => f.fs_type).join(', ') || data.signal;
+            infoText = `Detected: ${data.profile === 'windows' ? 'Windows' : 'Linux'} disk image (${fsList}).`;
+            initialValue = data.profile;
+        } else if (data.profile === 'memory') {
+            infoText = 'Detected: memory image (by file extension).';
+            initialValue = 'memory';
+        } else if (data.profile === 'mobile_ios') {
+            infoText = `Detected: iOS mobile backup (${data.signal === 'case_event' ? 'matches a case acquisition record' : 'real backup folder structure'}).`;
+            initialValue = 'mobile_ios';
+        } else if (data.profile === 'mobile_android') {
+            infoText = 'Detected: Android mobile backup (matches a case acquisition record).';
+            initialValue = 'mobile_android';
+        }
+        const infoEl = document.getElementById('autoAnalyzeDetectedInfo');
+        infoEl.textContent = infoText;
+        infoEl.style.display = infoText ? '' : 'none';
+        select.value = initialValue;
+        onAutoAnalyzeProfileChange();
+    } catch (err) {
+        document.getElementById('autoAnalyzeDetecting').style.display = 'none';
+        document.getElementById('autoAnalyzeStatus').textContent = 'Detection request failed.';
+    }
+}
+
+function onAutoAnalyzeProfileChange() {
+    const profile = document.getElementById('autoAnalyzeProfileSelect').value;
+    document.getElementById('autoAnalyzeImageStepsGroup').style.display = 'none';
+    document.getElementById('autoAnalyzeMemoryGroup').style.display = 'none';
+    document.getElementById('autoAnalyzeMobileGroup').style.display = 'none';
+    document.getElementById('autoAnalyzeStartBtn').disabled = !profile;
+
+    if (profile === 'windows' || profile === 'linux') {
+        const defaults = profile === 'windows' ? AUTO_ANALYZE_WINDOWS_DEFAULTS : AUTO_ANALYZE_LINUX_DEFAULTS;
+        const allSteps = [...defaults, ...AUTO_ANALYZE_EXTRA_STEPS];
+        const list = document.getElementById('autoAnalyzeStepsList');
+        list.innerHTML = '';
+        allSteps.forEach(key => {
+            const row = document.createElement('div');
+            row.className = 'form-check';
+            const cb = document.createElement('input');
+            cb.className = 'form-check-input';
+            cb.type = 'checkbox';
+            cb.value = key;
+            cb.id = `autoAnalyzeStep_${key}`;
+            cb.checked = defaults.includes(key);
+            const label = document.createElement('label');
+            label.className = 'form-check-label small';
+            label.htmlFor = cb.id;
+            label.textContent = AUTO_ANALYZE_STEP_LABELS[key] || key;
+            row.appendChild(cb);
+            row.appendChild(label);
+            list.appendChild(row);
+        });
+        document.getElementById('autoAnalyzeImageStepsGroup').style.display = '';
+    } else if (profile === 'memory') {
+        document.getElementById('autoAnalyzeMemoryGroup').style.display = '';
+    } else if (profile === 'mobile_ios' || profile === 'mobile_android') {
+        document.getElementById('autoAnalyzeMobileGroup').style.display = '';
+    }
+}
+
+async function startAutoAnalyze() {
+    const profile = document.getElementById('autoAnalyzeProfileSelect').value;
+    if (!profile) return;
+    const statusEl = document.getElementById('autoAnalyzeStatus');
+
+    if (profile === 'memory') {
+        if (autoAnalyzeModalInstance) autoAnalyzeModalInstance.hide();
+        openMemoryForensicsModal();
+        document.querySelectorAll('#memForensicsPluginList input[type=checkbox]').forEach(cb => {
+            cb.checked = AUTO_ANALYZE_MEMORY_DEFAULT_PLUGINS.includes(cb.value);
+        });
+        return;
+    }
+    if (profile === 'mobile_ios' || profile === 'mobile_android') {
+        if (autoAnalyzeModalInstance) autoAnalyzeModalInstance.hide();
+        runSelectedMvtScan(profile === 'mobile_ios' ? 'ios' : 'android');
+        return;
+    }
+
+    // windows / linux - the one genuinely orchestrated multi-step job
+    const steps = Array.from(document.querySelectorAll('#autoAnalyzeStepsList input[type=checkbox]:checked')).map(el => el.value);
+    if (!steps.length) return showToast('Select at least one step to run.', 'warning');
+
+    statusEl.textContent = 'Starting Auto Analyze job...';
+    try {
+        const res = await fetch('/api/image/auto_analyze/start', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null, steps })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            statusEl.textContent = `Failed to start: ${data.error}`;
+            showToast(`Auto Analyze failed to start: ${data.error}`, 'danger');
+            return;
+        }
+        if (autoAnalyzeModalInstance) autoAnalyzeModalInstance.hide();
+        showToast(data.message || 'Auto Analyze started.', 'success');
+    } catch (err) {
+        statusEl.textContent = 'Request failed.';
+    }
+}
 
 function openVerifyHashModal() {
     if (!activeSelectedFile) return;

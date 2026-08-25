@@ -60,6 +60,8 @@ from routes.reporting import reporting_bp
 app.register_blueprint(reporting_bp)
 from routes.settings import settings_bp, attempt_startup_auto_mounts
 app.register_blueprint(settings_bp)
+from routes.auto_analyze import auto_analyze_bp
+app.register_blueprint(auto_analyze_bp)
 
 # Replay saved auto-mount shares once per process start - module-level (not
 # inside the __main__ guard below) so this also runs under gunicorn, which
