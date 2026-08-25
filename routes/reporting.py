@@ -53,7 +53,7 @@ from core.config import (
     get_report_defaults, get_custom_case_fields,
 )
 from core.jobs import _read_case_file, _write_case_file
-from core.case_index_db import _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact
+from core.case_index_db import _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact, _case_index_open_readonly
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
 reporting_bp = Blueprint('reporting', __name__)
@@ -604,6 +604,94 @@ def _collect_case_timeline(events):
     if len(all_events) > TSK_MAX_TIMELINE_ENTRIES:
         truncated = True
     return {"events": all_events[:TSK_MAX_TIMELINE_ENTRIES], "notes": notes, "truncated": truncated}
+
+
+def _epoch_from_case_timestamp(ts_str):
+    """Every string timestamp this app writes into a case JSON (case_notes[],
+    custody_log[], events[].timestamp_start) uses the exact same
+    "%Y-%m-%d %H:%M:%S" format - converts to a Unix epoch float so it can be
+    sorted/merged alongside _collect_case_timeline()'s own epoch-typed MACB
+    rows. Returns None (never raises) for an unset/malformed value, matching
+    this file's established "graceful, not an error" handling for optional
+    fields."""
+    if not ts_str:
+        return None
+    try:
+        return time.mktime(time.strptime(ts_str, "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, TypeError):
+        return None
+
+
+CASE_TIMELINE_MAX_TOTAL_ENTRIES = 6000  # a bit above TSK_MAX_TIMELINE_ENTRIES (5000) to leave room for the 3 merged non-MACB sources without starving the MACB contribution
+
+@reporting_bp.route('/api/cases/timeline', methods=['GET'])
+@requires_auth
+@requires_permission('reporting')
+def case_timeline():
+    """Interactive, case-wide timeline - merges _collect_case_timeline()'s
+    existing MACB aggregation (unmodified, reused exactly as the PDF/HTML
+    report builders already use it) with three more already-timestamped
+    sources: case_notes[], custody_log[] (empty until that feature ships -
+    reading via .get() so this never errors on a case predating it), and
+    parsed_artifacts rows (browser/registry/event-log records once those
+    exist). Every row gets a "source" tag for client-side filtering, since a
+    busy case's MACB contribution alone can run to thousands of rows."""
+    case_folder = safe_path(request.args.get('case_folder'))
+    if not case_folder or not case_consolidated_path(case_folder):
+        return jsonify({"success": False, "error": "Not a valid consolidated case folder."}), 400
+
+    case_file = case_consolidated_path(case_folder)
+    data = _read_case_file(case_file)
+    events = data.get('events', [])
+
+    macb = _collect_case_timeline(events)
+    combined = []
+    for row in macb["events"]:
+        combined.append({
+            "timestamp": row["timestamp"], "source": "macb",
+            "activity": row["activity"], "detail": row["path"],
+            "evidence_id": row["evidence_id"],
+        })
+
+    for note in data.get('case_notes', []):
+        ts = _epoch_from_case_timestamp(note.get('timestamp'))
+        if ts is None:
+            continue
+        combined.append({
+            "timestamp": ts, "source": "case_note",
+            "activity": f"Case Note: {note.get('category', 'General')}",
+            "detail": (note.get('text') or '')[:200], "evidence_id": None,
+        })
+
+    for entry in data.get('custody_log', []):
+        ts = _epoch_from_case_timestamp(entry.get('timestamp'))
+        if ts is None:
+            continue
+        combined.append({
+            "timestamp": ts, "source": "custody",
+            "activity": f"Custody: {entry.get('from_custodian', '?')} → {entry.get('to_custodian', '?')}",
+            "detail": entry.get('reason') or '', "evidence_id": None,
+        })
+
+    conn = _case_index_open_readonly(case_folder)
+    if conn:
+        try:
+            for row in conn.execute(
+                    "SELECT artifact_type, title, value, timestamp FROM parsed_artifacts WHERE timestamp IS NOT NULL"):
+                combined.append({
+                    "timestamp": row[3], "source": "parsed_artifact",
+                    "activity": row[0], "detail": row[1] or row[2] or '', "evidence_id": None,
+                })
+        finally:
+            conn.close()
+
+    combined.sort(key=lambda r: r["timestamp"], reverse=True)
+    truncated = macb["truncated"] or len(combined) > CASE_TIMELINE_MAX_TOTAL_ENTRIES
+    return jsonify({
+        "success": True, "events": combined[:CASE_TIMELINE_MAX_TOTAL_ENTRIES],
+        "notes": macb["notes"], "truncated": truncated,
+    })
+
 
 # --- Forensic Audit Report Exporter (PDF / HTML, configurable sections) ---
 def _draw_pdf_job_section(c, y, event, job_fields=None):

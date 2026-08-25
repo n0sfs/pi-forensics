@@ -6630,6 +6630,86 @@ async function renderCaseDashboard() {
     } catch (err) {}
 }
 
+// --- Case Timeline (B1) ------------------------------------------------------------------
+// Fetched once per tab-open (real work: filesystem walks + a SQLite query, not something to
+// re-run per checkbox toggle), then filtered/re-rendered client-side by the 4 source checkboxes.
+let caseTimelineCache = null;
+const CASE_TIMELINE_SOURCE_BADGE = {
+    macb: 'bg-info text-dark', case_note: 'bg-success',
+    custody: 'bg-warning text-dark', parsed_artifact: 'bg-secondary',
+};
+const CASE_TIMELINE_SOURCE_LABEL = {
+    macb: 'Filesystem', case_note: 'Case Note', custody: 'Custody', parsed_artifact: 'Artifact',
+};
+
+async function loadCaseTimeline() {
+    const body = document.getElementById('caseTimelineBody');
+    if (!body || !activeCase) return;
+    body.innerHTML = '<tr><td colspan="4" class="text-subtle p-2">Building timeline...</td></tr>';
+    try {
+        const res = await fetch(`/api/cases/timeline?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
+        const data = await res.json();
+        if (!data.success) {
+            body.innerHTML = `<tr><td colspan="4" class="text-danger p-2">${data.error || 'Request failed.'}</td></tr>`;
+            return;
+        }
+        caseTimelineCache = data;
+        renderCaseTimeline();
+    } catch (err) {
+        body.innerHTML = '<tr><td colspan="4" class="text-danger p-2">Request failed.</td></tr>';
+    }
+}
+
+function renderCaseTimeline() {
+    const body = document.getElementById('caseTimelineBody');
+    const notesEl = document.getElementById('caseTimelineNotes');
+    if (!body || !caseTimelineCache) return;
+
+    const enabledSources = new Set(
+        [...document.querySelectorAll('.case-timeline-source-check:checked')].map((el) => el.value)
+    );
+    const rows = caseTimelineCache.events.filter((e) => enabledSources.has(e.source));
+
+    if (notesEl) {
+        const noteLines = [...(caseTimelineCache.notes || [])];
+        if (caseTimelineCache.truncated) noteLines.push('This timeline was truncated - not every event may be shown.');
+        notesEl.textContent = noteLines.join(' ');
+        notesEl.style.display = noteLines.length ? 'block' : 'none';
+    }
+
+    if (rows.length === 0) {
+        body.innerHTML = '<tr><td colspan="4" class="text-subtle p-2">No timeline entries match the current filters.</td></tr>';
+        return;
+    }
+
+    body.innerHTML = '';
+    rows.forEach((e) => {
+        const tr = document.createElement('tr');
+
+        const tsTd = document.createElement('td');
+        tsTd.className = 'text-nowrap';
+        tsTd.textContent = new Date(e.timestamp * 1000).toLocaleString();
+
+        const srcTd = document.createElement('td');
+        const badge = document.createElement('span');
+        badge.className = `badge ${CASE_TIMELINE_SOURCE_BADGE[e.source] || 'bg-secondary'}`;
+        badge.textContent = CASE_TIMELINE_SOURCE_LABEL[e.source] || e.source;
+        srcTd.appendChild(badge);
+
+        const actTd = document.createElement('td');
+        actTd.textContent = e.activity || '';
+
+        const detailTd = document.createElement('td');
+        detailTd.textContent = e.evidence_id ? `[${e.evidence_id}] ${e.detail || ''}` : (e.detail || '');
+
+        tr.appendChild(tsTd);
+        tr.appendChild(srcTd);
+        tr.appendChild(actTd);
+        tr.appendChild(detailTd);
+        body.appendChild(tr);
+    });
+}
+
 // --- Case Notes: timestamped, append-only journal (Forensic Analysis / Steps Taken) ---
 // case_notes[] rides along inside currentLoadedReportData exactly like
 // events[] does for Jobs - no separate list endpoint. Editing never
