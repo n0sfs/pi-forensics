@@ -2345,10 +2345,27 @@ def stop_imaging():
         except Exception:
             pass
 
-        with job_lock:
-            current_job["status"] = "Stopped"
-            current_job["active"] = False
-            current_job["log"] += "\n[!] Acquisition manually terminated by user."
+        # Routed through update_job() (not a direct current_job[...] = ...
+        # write, which this used to be) specifically so Auto Analyze's
+        # begin_suppress_active_false()/end_suppress_active_false()
+        # mechanism (core/jobs.py) actually applies here. Caught live,
+        # not by design review: with the old direct-write version, Stop
+        # released the shared job slot (active=False) IMMEDIATELY even
+        # while an Auto Analyze step's own background thread was still
+        # mid-flight (e.g. still walking a multi-GB image for Hash
+        # Manifest) - confirmed via a real `ps`/`top` check showing the
+        # orphaned worker thread still consuming real CPU/IO seconds
+        # after the job already read back as inactive, which would have
+        # let a second, unrelated job start and run concurrently with it,
+        # defeating the entire point of Auto Analyze's "one continuously-
+        # held job-slot claim" design. status="Stopped" still needs to
+        # land immediately (every worker's own between-step/between-
+        # iteration check reads it), so only `active` goes through the
+        # suppressible path - update_job() applies both together, and the
+        # suppress flag (when set) simply drops `active` from that one
+        # call while `status`/`log` still update normally.
+        current_log = snapshot_job()["log"]
+        update_job(status="Stopped", active=False, log=current_log + "\n[!] Acquisition manually terminated by user.")
         return jsonify({"success": True, "message": "Acquisition stopped."})
         
     return jsonify({"error": "No active job running."}), 400

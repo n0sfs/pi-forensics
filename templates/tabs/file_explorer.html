@@ -283,10 +283,10 @@
                     </div>
 
                     <div id="autoAnalyzeMemoryGroup" class="small text-subtle" style="display:none;">
-                        Opens Memory Forensics with a curated default plugin set (OS &amp; Kernel Info, Process List, Process Tree, Command Lines, Network Connections, Injected Code Detection) pre-selected - review and adjust before starting the scan there.
+                        Opens Memory Forensics with a curated default plugin set (OS &amp; Kernel Info, Process List, Process Tree, Command Lines, Network Connections, Injected Code Detection) pre-selected - review and adjust before starting the scan there. Note: once a plugin is running, Stop takes effect only between plugins, not mid-scan - a single plugin can take several minutes.
                     </div>
                     <div id="autoAnalyzeMobileGroup" class="small text-subtle" style="display:none;">
-                        Runs a Mobile Verification Toolkit (MVT) spyware/IOC scan against this backup - the same check the standalone MVT Scan action runs.
+                        Runs a Mobile Verification Toolkit (MVT) spyware/IOC scan against this backup - the same check the standalone MVT Scan action runs. Note: this scan cannot be stopped once started; it runs to completion or its own internal timeout.
                     </div>
 
                     <div id="autoAnalyzeStatus" class="small text-subtle mt-2"></div>
