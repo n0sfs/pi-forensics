@@ -1662,6 +1662,16 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     registry_amcache: 'Registry: Amcache Application Inventory',
     prefetch_execution: 'Prefetch: Program Execution',
     recyclebin_deleted_file: 'Recycle Bin: Deleted Files',
+    // Linux Artifact Parsing (2026-08-25) - kept in sync with routes/
+    // case_index.py's PARSED_ARTIFACT_TYPE_LABELS by hand, same as every
+    // entry above (this is the exact class of gap this project's own
+    // history already caught once for Amcache/Prefetch/Recycle Bin -
+    // updated here proactively this time, not found live a second time).
+    linux_shell_history: 'Linux: Shell History',
+    linux_passwd_account: 'Linux: /etc/passwd Accounts',
+    linux_cron_job: 'Linux: Cron Jobs',
+    linux_auth_log: 'Linux: Auth Log (SSH/sudo/session)',
+    linux_wtmp_login: 'Linux: Login History (wtmp, Experimental)',
 };
 
 function buildFileViewsHierarchy(summary) {
@@ -3831,6 +3841,7 @@ function updateContextToolbar(item) {
     const btnEvtxLogs = document.getElementById("btnParseEvtxLogs");
     const btnPrefetch = document.getElementById("btnParsePrefetch");
     const btnRecycleBin = document.getElementById("btnParseRecycleBin");
+    const btnLinuxArtifacts = document.getElementById("btnParseLinuxArtifacts");
     const btnParseLnk = document.getElementById("btnParseLnk");
     const btnMvtIos = document.getElementById("btnRunMvtIos");
     const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
@@ -3851,6 +3862,7 @@ function updateContextToolbar(item) {
     if (btnEvtxLogs) btnEvtxLogs.disabled = !item.is_dir;              // recursively walks a folder for .evtx files
     if (btnPrefetch) btnPrefetch.disabled = !item.is_dir;              // recursively walks a folder for .pf files
     if (btnRecycleBin) btnRecycleBin.disabled = !item.is_dir;          // recursively walks a folder for $Recycle.Bin/$I* files
+    if (btnLinuxArtifacts) btnLinuxArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Linux artifact files
     if (btnParseLnk) btnParseLnk.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.lnk');  // single-file, unlike the whole-folder scanners above
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
@@ -3870,7 +3882,7 @@ function updateContextToolbar(item) {
     const wholeImageDisabled = item.is_dir || !isImageFile(item.name);
     ['btnEnterSearchImage', 'btnEnterTimelineImage', 'btnEnterGeoImage', 'btnEnterHashImage',
      'btnEnterTriageImage', 'btnEnterBrowserArtifactsImage', 'btnEnterRegistryImage', 'btnEnterEvtxImage',
-     'btnEnterPrefetchImage', 'btnEnterRecycleBinImage',
+     'btnEnterPrefetchImage', 'btnEnterRecycleBinImage', 'btnEnterLinuxArtifactsImage',
      'btnEnterRecoverImage'].forEach(id => {
         const btn = document.getElementById(id);
         if (btn) btn.disabled = wholeImageDisabled;
@@ -3902,6 +3914,7 @@ async function contextMenuBrowseImageAnd(action) {
         evtxlogs: runImageEvtxParse,
         prefetch: runImagePrefetchParse,
         recyclebin: runImageRecycleBinParse,
+        linuxartifacts: runImageLinuxArtifactsParse,
         recover: runImageRecoverDeleted,
     };
     if (actions[action]) actions[action]();
@@ -4652,7 +4665,7 @@ async function runSelectedBrowserArtifactsParse() {
 function summarizeParsedArtifactCounts(counts) {
     const entries = Object.entries(counts || {});
     if (!entries.length) return 'nothing recognized';
-    return entries.map(([type, n]) => `${n} ${type.replace(/^registry_|^evtx_|^prefetch_|^recyclebin_/, '').replace(/_/g, ' ')}`).join(', ');
+    return entries.map(([type, n]) => `${n} ${type.replace(/^registry_|^evtx_|^prefetch_|^recyclebin_|^linux_/, '').replace(/_/g, ' ')}`).join(', ');
 }
 
 async function runSelectedRegistryParse() {
@@ -4860,6 +4873,58 @@ async function runImageRecycleBinParse() {
         }
     } catch (err) {
         showToast('Recycle Bin scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedLinuxArtifactsParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_linux_artifacts', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Linux artifact scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Linux forensic artifacts (shell history, /etc/passwd, cron, auth.log) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} artifact file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} artifact file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Linux artifact scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageLinuxArtifactsParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_linux_artifacts', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Linux artifact scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Linux forensic artifacts found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} artifact file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} artifact file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Linux artifact scan failed: request error.', 'danger');
     }
 }
 
