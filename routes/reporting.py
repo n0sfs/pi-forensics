@@ -125,24 +125,39 @@ def settings_case_reporting():
         }
 
     if 'custom_case_fields' in req:
-        # Each field's key is derived from its label (whitelisted charset,
-        # matching sanitize_case_slug()'s approach elsewhere) rather than
-        # accepted from the client directly, and de-duplicated - this is
-        # what every case record's custom_fields dict gets keyed by, so it
-        # must stay a safe, stable identifier even if two examiners pick
-        # the same display label.
+        # A field's key is what every case's own custom_fields dict is
+        # actually keyed by - it must stay stable across a label rename, the
+        # same "id never regenerates from a name change" precedent every
+        # other custom-list feature in this app already follows (Custom
+        # Report Templates/Keyword Lists/Hash Sets/YARA Rulesets/User
+        # Groups). This one field previously didn't: the key was recomputed
+        # fresh from the label on every single save, so renaming a field
+        # silently orphaned (and then, on the case's next save, permanently
+        # deleted - a full-object replace, not a merge, on the Reporting
+        # side) every existing case's already-typed value for it. Fixed
+        # 2026-08-25 - a field whose incoming key matches one already on
+        # file keeps that exact key; only a genuinely new field (empty/
+        # unrecognized key - addCustomFieldDefRow() in main.js always sends
+        # '' for a brand-new row) gets a freshly-derived one. Never trusts
+        # an arbitrary client-supplied key outright - it must already exist
+        # in this station's own stored config, or it's treated as new.
+        existing_keys = {f['key'] for f in cfg.get('custom_case_fields', [])}
         fields = []
         seen_keys = set()
         for f in (req['custom_case_fields'] or []):
             label = (f.get('label') or '').strip()[:60]
             if not label:
                 continue
-            base_key = re.sub(r'[^a-z0-9_]+', '_', label.lower()).strip('_') or 'field'
-            key = base_key
-            n = 2
-            while key in seen_keys:
-                key = f"{base_key}_{n}"
-                n += 1
+            incoming_key = (f.get('key') or '').strip()
+            if incoming_key and incoming_key in existing_keys and incoming_key not in seen_keys:
+                key = incoming_key
+            else:
+                base_key = re.sub(r'[^a-z0-9_]+', '_', label.lower()).strip('_') or 'field'
+                key = base_key
+                n = 2
+                while key in seen_keys:
+                    key = f"{base_key}_{n}"
+                    n += 1
             seen_keys.add(key)
             # Optional per-field default - seeded into every NEW case's own
             # custom_fields value at creation time (see create_case() in
