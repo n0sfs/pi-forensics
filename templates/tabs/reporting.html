@@ -316,9 +316,13 @@
                                                 </div>
                                                 <div class="tab-pane fade" id="repTimelinePane" role="tabpanel">
                                                     <div class="small text-subtle mb-2">Every acquired image's MACB filesystem timeline, merged with parsed browser/registry/event-log artifacts - evidence pulled from the drive/phone itself, not examiner workflow entries (see the Case Notes and Custody Log tabs for those). A large image's MACB data can run to thousands of rows; use the filters below to narrow it.</div>
-                                                    <div class="d-flex flex-wrap gap-3 mb-2 small">
+                                                    <div class="d-flex flex-wrap align-items-center gap-3 mb-2 small">
                                                         <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="macb" checked onchange="renderCaseTimeline()">Filesystem (MACB)</label>
                                                         <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="parsed_artifact" checked onchange="renderCaseTimeline()">Parsed Artifacts</label>
+                                                        <select id="caseTimelineEvidenceSelect" class="form-select form-select-sm w-auto" onchange="renderCaseTimeline()">
+                                                            <option value="__all__">All Evidence Items</option>
+                                                        </select>
+                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2 ms-auto" onclick="exportCaseTimelineCsv()"><i class="bi bi-download me-1"></i>Export CSV</button>
                                                     </div>
                                                     <div class="border border-secondary rounded-2 mb-2 p-2" style="height: 180px; background-color:#090b10;"><canvas id="caseTimelineChart"></canvas></div>
                                                     <div id="caseTimelineFilterIndicator" class="small mb-2" style="display:none;">

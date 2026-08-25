@@ -597,7 +597,8 @@ def _collect_case_timeline(events):
                     ts = entry.get(ts_field)
                     if ts:
                         all_events.append({"timestamp": ts, "activity": label, "path": path,
-                                            "evidence_id": evidence_id, "filesystem": fs_info['label']})
+                                            "evidence_id": evidence_id, "filesystem": fs_info['label'],
+                                            "deleted": bool(entry.get('deleted'))})
                         count += 1
                 if count >= per_fs_budget:
                     truncated = True
@@ -610,6 +611,13 @@ def _collect_case_timeline(events):
 
 
 CASE_TIMELINE_MAX_TOTAL_ENTRIES = 6000  # a bit above TSK_MAX_TIMELINE_ENTRIES (5000) to leave room for the parsed_artifacts contribution without starving the MACB one
+# Artifact types flagged "suspicious" in the interactive Evidence Timeline -
+# deliberately narrow (just the one unambiguous anti-forensic indicator
+# core/evtx_utils.py's own allowlist comment already calls out by name), not
+# every "could theoretically matter" event type, to avoid the flag becoming
+# noise (e.g. a failed logon is common and rarely itself evidence of
+# tampering, unlike an audit log being cleared).
+CASE_TIMELINE_SUSPICIOUS_ARTIFACT_TYPES = {'evtx_audit_log_cleared'}
 
 @reporting_bp.route('/api/cases/timeline', methods=['GET'])
 @requires_auth
@@ -640,17 +648,41 @@ def case_timeline():
         combined.append({
             "timestamp": row["timestamp"], "source": "macb",
             "activity": row["activity"], "detail": row["path"],
-            "evidence_id": row["evidence_id"],
+            "evidence_id": row["evidence_id"], "deleted": row.get("deleted", False),
+            "suspicious": False,
         })
+
+    # Resolves a parsed_artifacts row's own image_path column back to the
+    # evidence_id of whichever acquisition produced it, mirroring
+    # _collect_case_timeline()'s own COMPLETED/output_image_path/safe_path
+    # resolution above - kept as a second small pass here rather than having
+    # that function return it too, since parsed_artifacts is a File Explorer/
+    # image_browser concern that function has no other reason to know about.
+    # A real-fs-sourced artifact (never inside an acquired image) correctly
+    # resolves to no evidence_id at all, not a guessed one.
+    image_path_to_evidence_id = {}
+    for event in events:
+        if event.get('acquisition_status') != 'COMPLETED':
+            continue
+        raw_path = event.get('acquisition_parameters', {}).get('output_image_path')
+        if not raw_path:
+            continue
+        resolved = safe_path(raw_path)
+        if resolved:
+            image_path_to_evidence_id[resolved] = event.get('case_metadata', {}).get('evidence_id', 'N/A')
 
     conn = _case_index_open_readonly(case_folder)
     if conn:
         try:
             for row in conn.execute(
-                    "SELECT artifact_type, title, value, timestamp FROM parsed_artifacts WHERE timestamp IS NOT NULL"):
+                    "SELECT artifact_type, title, value, timestamp, image_path FROM parsed_artifacts WHERE timestamp IS NOT NULL"):
+                artifact_type, title, value, ts, image_path = row
                 combined.append({
-                    "timestamp": row[3], "source": "parsed_artifact",
-                    "activity": row[0], "detail": row[1] or row[2] or '', "evidence_id": None,
+                    "timestamp": ts, "source": "parsed_artifact",
+                    "activity": artifact_type, "detail": title or value or '',
+                    "evidence_id": image_path_to_evidence_id.get(image_path) if image_path else None,
+                    "deleted": False,
+                    "suspicious": artifact_type in CASE_TIMELINE_SUSPICIOUS_ARTIFACT_TYPES,
                 })
         finally:
             conn.close()
