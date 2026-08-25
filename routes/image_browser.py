@@ -1376,7 +1376,7 @@ def image_parse_linux_artifacts():
             tmp_path = None
             try:
                 tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
-                records = parse_fn(tmp_path)
+                records = parse_fn(tmp_path, entry['name'])
             except Exception:
                 records = []
             finally:
