@@ -59,6 +59,7 @@
                                                         <button type="button" id="explorerViewPreviewBtn" class="btn btn-xs btn-info py-0 px-2" onclick="switchExplorerRightView('preview')">Preview</button>
                                                         <button type="button" id="explorerViewHexBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="switchExplorerRightView('hex')" title="Raw byte view (offset / hex / ASCII) of the first part of the file">Hex</button>
                                                         <button type="button" id="explorerViewMetadataBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="switchExplorerRightView('metadata')" title="Embedded file metadata via ExifTool">Metadata</button>
+                                                        <button type="button" id="explorerViewDatabaseBtn" class="btn btn-xs btn-outline-info py-0 px-2" onclick="switchExplorerRightView('database')" title="Browse tables and rows in this SQLite database file, read-only" style="display:none;">Database</button>
                                                     </div>
                                                 </div>
                                                 <div id="explorerPreview" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="height: clamp(160px, 40vh, 460px);">
@@ -76,6 +77,9 @@
                                                 <div id="explorerMetadata" class="file-pane d-flex flex-column align-items-center justify-content-center text-center p-3" style="display:none !important; height: clamp(160px, 40vh, 460px);">
                                                     <i class="bi bi-info-circle fs-1 text-subtle mb-2"></i>
                                                     <span class="text-subtle small">Select a file on the left to view its metadata.</span>
+                                                </div>
+                                                <div id="explorerDatabase" class="file-pane p-2" style="display:none !important; height: clamp(160px, 40vh, 460px); overflow:auto;">
+                                                    <div class="text-subtle small text-center p-3">Select a .db/.sqlite/.sqlite3 file on the left to browse it.</div>
                                                 </div>
                                             </div>
                                         </div>
