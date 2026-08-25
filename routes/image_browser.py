@@ -59,6 +59,9 @@ from core.registry_utils import REGISTRY_HIVE_FILENAMES, REGISTRY_SCAN_MAX_CANDI
 from core.evtx_utils import EVTX_EXTENSION, EVTX_SCAN_MAX_CANDIDATES, parse_evtx_file
 from core.prefetch_utils import PREFETCH_EXTENSION, PREFETCH_SCAN_MAX_CANDIDATES, parse_prefetch_file
 from core.recyclebin_utils import RECYCLEBIN_SCAN_MAX_CANDIDATES, parse_recyclebin_file
+from core.linux_artifacts import LINUX_ARTIFACT_IMAGE_MATCHERS, LINUX_ARTIFACT_DEFAULT_TYPES
+
+LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES = 100  # combined across whichever types are requested per run
 from core.lnk_utils import parse_lnk_file
 
 image_browser_bp = Blueprint('image_browser', __name__)
@@ -1330,6 +1333,78 @@ def image_parse_recyclebin():
     })
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_linux_artifacts', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_linux_artifacts():
+    """In-image counterpart to parse_linux_artifacts() (routes/
+    file_explorer.py). Loops once per requested artifact type (mirroring
+    the real-fs route's own per-type find_fn() loop) rather than one
+    combined walk with post-hoc type dispatch - each type gets its own
+    _image_scan_candidate_files() call with that type's own specific
+    matcher, keeping "which type did this candidate match" unambiguous."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    requested_types = req.get('types') or LINUX_ARTIFACT_DEFAULT_TYPES
+    requested_types = [t for t in requested_types if t in LINUX_ARTIFACT_IMAGE_MATCHERS]
+
+    counts = {}
+    files_parsed = 0
+    candidates_found_total = 0
+    truncated = False
+    filesystem_found = False
+    for artifact_key in requested_types:
+        matcher_fn, parse_fn = LINUX_ARTIFACT_IMAGE_MATCHERS[artifact_key]
+        candidates, this_truncated = _image_scan_candidate_files(
+            image_path, matcher_fn, LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES)
+        if candidates is None:
+            continue  # no recognized filesystem - handled once, below, after the loop
+        filesystem_found = True
+        truncated = truncated or this_truncated
+        candidates_found_total += len(candidates)
+        for fs, fsinfo, entry, path in candidates:
+            tmp_path = None
+            try:
+                tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+                records = parse_fn(tmp_path)
+            except Exception:
+                records = []
+            finally:
+                if tmp_path:
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+            if not records:
+                continue
+            files_parsed += 1
+            for r in records:
+                counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+            if case_folder:
+                _record_parsed_artifacts(case_folder, {
+                    "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                    "inode": entry['inode'], "path": path,
+                }, records)
+
+    if not filesystem_found:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    log_chain_of_custody("linux_artifacts_parsed_image", {
+        "image_path": image_path, "types": requested_types, "candidates_found": candidates_found_total,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": candidates_found_total, "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 
