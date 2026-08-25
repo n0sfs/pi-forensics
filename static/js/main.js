@@ -1651,6 +1651,17 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     evtx_process_creation: 'Event Log: Process Creation', evtx_account_created: 'Event Log: Account Created',
     evtx_service_installed: 'Event Log: Service Installed', evtx_audit_log_cleared: 'Event Log: Audit Log Cleared',
     lnk_shortcut: 'LNK Shortcuts',
+    // Follow-up (2026-08-25) - Amcache/Prefetch/Recycle Bin. This is the
+    // client-side mirror of routes/case_index.py's PARSED_ARTIFACT_TYPE_
+    // LABELS (used here, in Reporting's Web Artifacts gallery, and in the
+    // Evidence Timeline's activity-label rendering/CSV export) - a real
+    // gap caught live while verifying this exact follow-up: the tree
+    // rendered correctly (real counts, real data) but fell back to the
+    // raw artifact_type string instead of a readable label everywhere
+    // this map is consulted, since only the backend copy had been updated.
+    registry_amcache: 'Registry: Amcache Application Inventory',
+    prefetch_execution: 'Prefetch: Program Execution',
+    recyclebin_deleted_file: 'Recycle Bin: Deleted Files',
 };
 
 function buildFileViewsHierarchy(summary) {
