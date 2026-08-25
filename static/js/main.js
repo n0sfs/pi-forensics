@@ -7671,25 +7671,28 @@ async function startVerifyAllEvidence() {
     }
 }
 
-// --- Case Timeline (B1) ------------------------------------------------------------------
+// --- Evidence Timeline (B1) --------------------------------------------------------------
 // Fetched once per tab-open (real work: filesystem walks + a SQLite query, not something to
-// re-run per checkbox toggle), then filtered/re-rendered client-side by the 4 source checkboxes.
+// re-run per checkbox toggle), then filtered/re-rendered client-side by the 2 source checkboxes.
+// Deliberately evidence-only (MACB + parsed artifacts) - case_notes[]/custody_log[] were dropped
+// from this view (2026-08-25, confirmed with the user): both are examiner-authored workflow
+// entries, not evidence pulled off a drive/phone, and both already have their own dedicated
+// Reporting tabs - mixing them in here diluted what this view is actually for.
 let caseTimelineCache = null;
 const CASE_TIMELINE_SOURCE_BADGE = {
-    macb: 'bg-info text-dark', case_note: 'bg-success',
-    custody: 'bg-warning text-dark', parsed_artifact: 'bg-secondary',
+    macb: 'bg-info text-dark', parsed_artifact: 'bg-secondary',
 };
 const CASE_TIMELINE_SOURCE_LABEL = {
-    macb: 'Filesystem', case_note: 'Case Note', custody: 'Custody', parsed_artifact: 'Artifact',
+    macb: 'Filesystem', parsed_artifact: 'Artifact',
 };
-// Same 4 sources as the badges above, as real hex values for Chart.js
-// (Bootstrap's actual default palette for info/success/warning/secondary) -
-// kept as a separate map rather than deriving from the badge classes so the
-// chart never depends on parsing a computed CSS color at render time.
+// Same sources as the badges above, as real hex values for Chart.js
+// (Bootstrap's actual default palette for info/secondary) - kept as a
+// separate map rather than deriving from the badge classes so the chart
+// never depends on parsing a computed CSS color at render time.
 const CASE_TIMELINE_SOURCE_COLOR = {
-    macb: '#0dcaf0', case_note: '#198754', custody: '#ffc107', parsed_artifact: '#6c757d',
+    macb: '#0dcaf0', parsed_artifact: '#6c757d',
 };
-const CASE_TIMELINE_SOURCES = ['macb', 'case_note', 'custody', 'parsed_artifact'];
+const CASE_TIMELINE_SOURCES = ['macb', 'parsed_artifact'];
 
 async function loadCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
@@ -7710,7 +7713,7 @@ async function loadCaseTimeline() {
     }
 }
 
-// --- Case Timeline density chart - a stacked bar chart of event counts per
+// --- Evidence Timeline density chart - a stacked bar chart of event counts per
 // time bucket, colored by source, sitting above the existing table. Bucket
 // granularity is picked adaptively from the span of the currently
 // source-filtered events (not the bucket filter itself, so the chart always
