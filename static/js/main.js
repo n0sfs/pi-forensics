@@ -2578,8 +2578,11 @@ async function deleteKeywordList(listId, name) {
     }
 }
 
-// --- Settings > Case & Reporting > Hash Lists (D2) - station-wide known-
+// --- Settings > Case & Reporting > Hash Sets (D2) - station-wide known-
 // good/known-bad hash sets, mirrors Keyword Lists above structurally.
+// Displayed as "Hash Sets" (matching the standard NSRL/EnCase/FTK term for
+// this exact concept) - the internal ids/functions/routes below all still
+// say hash_list(s), a deliberate display-text-only rename (2026-08-25).
 // The management view here always re-fetches fresh (forceRefresh) since
 // it IS the management view - fetchHashLists()'s own cache is for the
 // lighter-weight consumers (the File Explorer checklist, Hash Manifest's
@@ -2614,13 +2617,13 @@ function renderHashListsList(lists) {
     if (!listEl) return;
     listEl.innerHTML = '';
     if (lists.length === 0) {
-        listEl.innerHTML = '<div class="text-subtle small p-2">No hash lists yet - create one below.</div>';
+        listEl.innerHTML = '<div class="text-subtle small p-2">No hash sets yet - create one below.</div>';
         return;
     }
     const table = document.createElement('table');
     table.className = 'table table-dark table-sm mb-0';
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th>List</th><th>Algorithm</th><th>Label</th><th>Hashes</th><th></th></tr>'; // static/trusted markup
+    thead.innerHTML = '<tr><th>Set</th><th>Algorithm</th><th>Label</th><th>Hashes</th><th></th></tr>'; // static/trusted markup
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
     lists.forEach(l => {
@@ -2658,7 +2661,7 @@ function renderHashListsList(lists) {
         const delBtn = document.createElement('button');
         delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-1';
         delBtn.innerHTML = '<i class="bi bi-trash"></i>';
-        delBtn.title = 'Delete list';
+        delBtn.title = 'Delete set';
         delBtn.onclick = () => deleteHashList(l.id, l.name);
         actionsTd.appendChild(delBtn);
         tr.appendChild(actionsTd);
@@ -2672,7 +2675,7 @@ function renderHashListsList(lists) {
 function openCreateHashListModal() {
     hashListModalMode = 'create';
     hashListModalId = null;
-    document.getElementById('hashListModalTitle').textContent = 'New Hash List';
+    document.getElementById('hashListModalTitle').textContent = 'New Hash Set';
     document.getElementById('hashListName').value = '';
     document.getElementById('hashListAlgorithm').value = 'sha256';
     document.getElementById('hashListAlgorithm').disabled = false;
@@ -2688,7 +2691,7 @@ function openCreateHashListModal() {
 function openEditHashListModal(list) {
     hashListModalMode = 'edit';
     hashListModalId = list.id;
-    document.getElementById('hashListModalTitle').textContent = `Edit Hash List: ${list.name}`;
+    document.getElementById('hashListModalTitle').textContent = `Edit Hash Set: ${list.name}`;
     document.getElementById('hashListName').value = list.name;
     document.getElementById('hashListAlgorithm').value = list.algorithm;
     document.getElementById('hashListAlgorithm').disabled = true; // fixed at creation - every hash already on disk matches it
@@ -2738,7 +2741,7 @@ async function saveHashListModal() {
 }
 
 async function deleteHashList(listId, name) {
-    if (!confirm(`Delete hash list "${name}"? This cannot be undone.`)) return;
+    if (!confirm(`Delete hash set "${name}"? This cannot be undone.`)) return;
     try {
         const res = await fetch(`/api/settings/hash_lists/${listId}`, { method: 'DELETE' });
         const data = await res.json();
@@ -2894,7 +2897,7 @@ async function deleteYaraRuleset(rulesetId, name) {
     }
 }
 
-// --- File Explorer: "Check Against Hash Lists" single-file action (D2) ---
+// --- File Explorer: "Check Against Hash Sets" single-file action (D2) ---
 // One modal, two modes (isImage=false real-fs / true in-image) - reads
 // whichever selection state (activeSelectedFile / explorerImageSelected)
 // is currently active at the moment it's opened, mirroring how the tag/
@@ -2915,7 +2918,7 @@ async function openHashListCheckModal(isImage) {
     const lists = await fetchHashLists();
     container.innerHTML = '';
     if (lists.length === 0) {
-        container.innerHTML = '<span class="text-subtle small">No saved hash lists yet - create one in Settings &gt; Case &amp; Reporting &gt; Hash Lists.</span>';
+        container.innerHTML = '<span class="text-subtle small">No saved hash sets yet - create one in Settings &gt; Case &amp; Reporting &gt; Hash Sets.</span>';
     } else {
         lists.forEach(l => {
             const row = document.createElement('div');
@@ -2997,7 +3000,7 @@ async function runHashListCheck() {
 }
 
 // --- File Explorer: "Scan with YARA Rules" single-file action (D3) ---
-// Same isImage=false/true dual-mode shape as the Hash Lists check modal
+// Same isImage=false/true dual-mode shape as the Hash Sets check modal
 // right above - one modal, reads whichever selection state is currently
 // active. Unlike the hash-list check (a pure membership test, no analysis-
 // history entry), a YARA scan's result IS persisted server-side via
@@ -3828,7 +3831,7 @@ function updateContextToolbar(item) {
     if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
     if (btnCheckHashLists) btnCheckHashLists.disabled = item.is_dir;  // single-file, like Verify Image Hash
-    if (btnRunYaraScan) btnRunYaraScan.disabled = item.is_dir;  // single-file, like Check Against Hash Lists
+    if (btnRunYaraScan) btnRunYaraScan.disabled = item.is_dir;  // single-file, like Check Against Hash Sets
     if (btnGeolocation) btnGeolocation.disabled = !item.is_dir;  // scans a whole folder of photos at once
     if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium + Firefox profile files
     if (btnRegistryHives) btnRegistryHives.disabled = !item.is_dir;    // recursively walks a folder for NTUSER.DAT/SYSTEM/SOFTWARE

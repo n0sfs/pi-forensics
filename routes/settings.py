@@ -730,7 +730,7 @@ def hash_lists():
 
     lists = cfg.setdefault('hash_lists', [])
     if len(lists) >= HASH_LIST_MAX_LISTS:
-        return jsonify({"success": False, "error": f"Station already has the maximum of {HASH_LIST_MAX_LISTS} hash lists."}), 400
+        return jsonify({"success": False, "error": f"Station already has the maximum of {HASH_LIST_MAX_LISTS} hash sets."}), 400
 
     req = request.get_json() or {}
     name = (req.get('name') or '').strip()
