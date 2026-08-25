@@ -65,3 +65,13 @@ Markdown>=3.6
 # same "verify before committing" discipline this project has applied to
 # every native/compiled dependency before it.
 yara-python>=4.5.0
+# Hardens KML parsing (routes/reporting.py's _parse_kml_placemarks(), which
+# parses examiner-uploaded/hand-edited/third-party .kml files, not just
+# ones this app generated) against billion-laughs/XXE-style XML entity
+# attacks, independent of whatever billion-laughs protection the deployed
+# system's own libexpat build may or may not have (2026-08-22 security
+# audit, Informational finding, closed 2026-08-25). Confirmed live on the
+# real Pi venv: pure-Python wheel, zero native deps, installs cleanly, and
+# a drop-in replacement for xml.etree.ElementTree (ParseError is literally
+# the same class, re-exported).
+defusedxml>=0.7.1
