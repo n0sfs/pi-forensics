@@ -57,3 +57,11 @@ LnkParse3>=1.6.0
 # text - confirmed live on the real Pi venv (arm64/Debian trixie) before
 # adding: pure-Python wheel, zero native deps, installs cleanly.
 Markdown>=3.6
+# YARA rule scanning (Part D, D3 - the last item of the case-management
+# expansion). Unlike C1-C3's pure-Python parsers, this bundles native
+# libyara via its own wheel - confirmed live on the real Pi venv (arm64/
+# Debian trixie) that a prebuilt manylinux2014_aarch64 wheel installs with
+# no compile step (yara_python-4.5.4-cp313-cp313-manylinux_2_17_aarch64...),
+# same "verify before committing" discipline this project has applied to
+# every native/compiled dependency before it.
+yara-python>=4.5.0

@@ -60,6 +60,7 @@ from core.config import (
 )
 from core.jobs import job_lock, current_job, update_job
 from core.case_index_db import check_regex_pattern_for_redos
+import yara
 
 settings_bp = Blueprint('settings', __name__)
 
@@ -803,6 +804,116 @@ def hash_list_detail(list_id):
     save_runtime_config(cfg)
     log_chain_of_custody("hash_list_updated", {"id": list_id, "name": name, "hash_count": hash_count})
     return jsonify({"success": True, "list": lists[idx]})
+
+# --- YARA rule scanning (D3): station-wide rulesets ---
+# Mirrors Keyword Lists structurally, not Hash Lists - a YARA ruleset's rule
+# text is typically small (a few KB, unlike a hash list's thousands of
+# lines), so it stays fully inline in runtime_config.json rather than
+# getting its own file under INSTALL_DIR. Save-time validation compiles the
+# rule text via yara.compile() itself (the real thing that will run it
+# later), so a syntax error is caught immediately at save time, not
+# discovered mid-scan.
+YARA_RULESET_NAME_MAX = 100
+YARA_RULESET_MAX_RULE_TEXT = 50_000  # a station-appropriate cap, not a real limit YARA itself imposes
+YARA_RULESET_MAX_RULESETS = 100
+
+def _yara_ruleset_from_payload(req):
+    """Validates and normalizes a create/update payload into the stored
+    record shape (minus id/created_at, which the caller fills in). Returns
+    (record_dict, None) or (None, error_message). Compiling here (not just
+    checking the text looks plausible) is deliberate - it's the exact same
+    compile step the scan routes themselves will run, so a rule that's
+    accepted here is guaranteed to actually compile at scan time too."""
+    name = (req.get('name') or '').strip()[:YARA_RULESET_NAME_MAX]
+    if not name:
+        return None, "Ruleset name is required."
+
+    rule_text = req.get('rule_text') or ''
+    if not rule_text.strip():
+        return None, "Rule text is required."
+    if len(rule_text) > YARA_RULESET_MAX_RULE_TEXT:
+        return None, f"Rule text too long - max {YARA_RULESET_MAX_RULE_TEXT} characters."
+
+    try:
+        yara.compile(source=rule_text)
+    except yara.Error as e:
+        return None, f"YARA rule did not compile: {e}"
+
+    return {
+        "name": name,
+        "rule_text": rule_text,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }, None
+
+@settings_bp.route('/api/settings/yara_rules', methods=['GET', 'POST'])
+@requires_auth
+def yara_rules():
+    cfg = load_runtime_config()
+    if request.method == 'GET':
+        return jsonify({"success": True, "rulesets": cfg.get('yara_rulesets', [])})
+
+    perms = get_current_user_permissions()
+    if not perms.get('settings', False):
+        return jsonify({"success": False, "error": "Your account's user group doesn't have permission to perform this action."}), 403
+
+    rulesets = cfg.setdefault('yara_rulesets', [])
+    if len(rulesets) >= YARA_RULESET_MAX_RULESETS:
+        return jsonify({"success": False, "error": f"Station already has the maximum of {YARA_RULESET_MAX_RULESETS} YARA rulesets."}), 400
+
+    req = request.get_json() or {}
+    record, error = _yara_ruleset_from_payload(req)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+
+    # Soft-dedupe on name collision (numeric suffix), same precedent as
+    # keyword lists / custom report templates - no on-disk artifact at
+    # stake for a duplicate ruleset *name*.
+    base_id = re.sub(r'[^a-z0-9_]+', '_', record['name'].lower()).strip('_') or 'yara_ruleset'
+    existing_ids = {r['id'] for r in rulesets}
+    ruleset_id = base_id
+    n = 2
+    while ruleset_id in existing_ids:
+        ruleset_id = f"{base_id}_{n}"
+        n += 1
+
+    record['id'] = ruleset_id
+    record['created_at'] = record['updated_at']
+    rulesets.append(record)
+    save_runtime_config(cfg)
+    log_chain_of_custody("yara_ruleset_created", {"id": ruleset_id, "name": record['name']})
+    return jsonify({"success": True, "ruleset": record})
+
+@settings_bp.route('/api/settings/yara_rules/<ruleset_id>', methods=['PUT', 'DELETE'])
+@requires_auth
+@requires_permission('settings')
+def yara_rule_detail(ruleset_id):
+    cfg = load_runtime_config()
+    rulesets = cfg.get('yara_rulesets', [])
+    idx = next((i for i, r in enumerate(rulesets) if r.get('id') == ruleset_id), None)
+    if idx is None:
+        return jsonify({"success": False, "error": "YARA ruleset not found."}), 404
+
+    if request.method == 'DELETE':
+        removed = rulesets.pop(idx)
+        cfg['yara_rulesets'] = rulesets
+        save_runtime_config(cfg)
+        log_chain_of_custody("yara_ruleset_deleted", {"id": ruleset_id, "name": removed.get('name')})
+        return jsonify({"success": True})
+
+    req = request.get_json() or {}
+    record, error = _yara_ruleset_from_payload(req)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+    # id is fixed at creation and never regenerated from a new name - a
+    # rename must not invalidate a scan launcher's already-checked
+    # yara_ruleset_ids selection or any other stored reference.
+    record['id'] = ruleset_id
+    record['created_at'] = rulesets[idx].get('created_at', record['updated_at'])
+    rulesets[idx] = record
+    cfg['yara_rulesets'] = rulesets
+    save_runtime_config(cfg)
+    log_chain_of_custody("yara_ruleset_updated", {"id": ruleset_id, "name": record['name']})
+    return jsonify({"success": True, "ruleset": record})
 
 @settings_bp.route('/api/network/auto_mounts', methods=['GET'])
 @requires_auth

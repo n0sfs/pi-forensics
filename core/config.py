@@ -217,6 +217,31 @@ def load_hash_list_sets(hash_list_ids):
                             "algorithm": record["algorithm"], "hashes": hashes}
     return result
 
+# Station-wide YARA rulesets (Settings > Case & Reporting, D3) - selectable
+# at scan time by File Explorer's "Scan with YARA Rules" action. Unlike
+# hash_lists (can run to thousands of lines, stored in a separate file per
+# list), a YARA ruleset's rule text is typically a few KB at most, so it
+# stays fully inline in runtime_config.json - same precedent as
+# keyword_lists/custom_report_templates, no separate-file mechanism needed.
+def get_yara_rulesets():
+    return load_runtime_config().get('yara_rulesets', [])
+
+def load_yara_ruleset_sources(ruleset_ids):
+    """Loads the requested rulesets' {id: name} + rule text as a
+    {ruleset_id: {"name", "rule_text"}} dict, ready to hand straight to
+    yara.compile(sources=...) - lives in core/ (not routes/settings.py,
+    where the CRUD routes live) for the same cross-blueprint reason
+    load_hash_list_sets() above does: both routes/file_explorer.py's
+    single-file "Scan with YARA Rules" action and routes/image_browser.py's
+    in-image equivalent need it, and this app has no cross-blueprint import
+    between routes/*.py modules anywhere. A ruleset id with no matching
+    record is silently skipped (not a fatal error for the caller's scan)."""
+    if not ruleset_ids:
+        return {}
+    by_id = {r['id']: r for r in load_runtime_config().get('yara_rulesets', [])}
+    return {rid: {"name": by_id[rid]['name'], "rule_text": by_id[rid]['rule_text']}
+            for rid in ruleset_ids if rid in by_id}
+
 # Root directory that all file-explorer / report / attachment / imaging-destination
 # endpoints are sandboxed to. Nothing outside this tree can be browsed, read,
 # written, or deleted via the API, regardless of what path a client sends.

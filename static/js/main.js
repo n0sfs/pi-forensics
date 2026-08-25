@@ -2753,6 +2753,147 @@ async function deleteHashList(listId, name) {
     }
 }
 
+// --- Settings > Case & Reporting > YARA Rulesets (D3) - station-wide
+// rulesets, mirrors Keyword Lists structurally (rule text stays fully
+// inline, unlike Hash Lists' own-file-per-list treatment - see
+// core/config.py's load_yara_ruleset_sources() comment for why). ---
+let yaraRulesetModalInstance = null;
+let yaraRulesetModalMode = 'create'; // 'create' | 'edit'
+let yaraRulesetModalId = null;
+let yaraRulesetsCache = null;
+
+async function fetchYaraRulesets(forceRefresh) {
+    if (yaraRulesetsCache && !forceRefresh) return yaraRulesetsCache;
+    try {
+        const res = await fetch('/api/settings/yara_rules');
+        const data = await res.json();
+        yaraRulesetsCache = (data.success && data.rulesets) || [];
+    } catch (err) {
+        yaraRulesetsCache = [];
+    }
+    return yaraRulesetsCache;
+}
+
+async function loadYaraRulesetsSection() {
+    const listEl = document.getElementById('yaraRulesListContainer');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="text-subtle small p-2">Loading YARA rulesets...</div>';
+    const rulesets = await fetchYaraRulesets(true);
+    renderYaraRulesetsList(rulesets);
+}
+
+function renderYaraRulesetsList(rulesets) {
+    const listEl = document.getElementById('yaraRulesListContainer');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    if (rulesets.length === 0) {
+        listEl.innerHTML = '<div class="text-subtle small p-2">No YARA rulesets yet - create one below.</div>';
+        return;
+    }
+    const table = document.createElement('table');
+    table.className = 'table table-dark table-sm mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>Ruleset</th><th></th></tr>'; // static/trusted markup
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    rulesets.forEach(rs => {
+        const tr = document.createElement('tr');
+
+        const nameTd = document.createElement('td');
+        nameTd.appendChild(document.createTextNode(rs.name)); // examiner-entered, text node only
+        tr.appendChild(nameTd);
+
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'text-end';
+        const editBtn = document.createElement('button');
+        editBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 me-1';
+        editBtn.innerHTML = '<i class="bi bi-pencil"></i>';
+        editBtn.title = 'Edit';
+        editBtn.onclick = () => openEditYaraRulesetModal(rs);
+        actionsTd.appendChild(editBtn);
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-1';
+        delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+        delBtn.title = 'Delete ruleset';
+        delBtn.onclick = () => deleteYaraRuleset(rs.id, rs.name);
+        actionsTd.appendChild(delBtn);
+        tr.appendChild(actionsTd);
+
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    listEl.appendChild(table);
+}
+
+function openCreateYaraRulesetModal() {
+    yaraRulesetModalMode = 'create';
+    yaraRulesetModalId = null;
+    document.getElementById('yaraRulesetModalTitle').textContent = 'New YARA Ruleset';
+    document.getElementById('yaraRulesetName').value = '';
+    document.getElementById('yaraRulesetText').value = '';
+    document.getElementById('yaraRulesetModalStatus').textContent = '';
+    if (!yaraRulesetModalInstance) {
+        yaraRulesetModalInstance = new bootstrap.Modal(document.getElementById('yaraRulesetModal'));
+    }
+    yaraRulesetModalInstance.show();
+}
+
+function openEditYaraRulesetModal(rs) {
+    yaraRulesetModalMode = 'edit';
+    yaraRulesetModalId = rs.id;
+    document.getElementById('yaraRulesetModalTitle').textContent = `Edit YARA Ruleset: ${rs.name}`;
+    document.getElementById('yaraRulesetName').value = rs.name;
+    document.getElementById('yaraRulesetText').value = rs.rule_text;
+    document.getElementById('yaraRulesetModalStatus').textContent = '';
+    if (!yaraRulesetModalInstance) {
+        yaraRulesetModalInstance = new bootstrap.Modal(document.getElementById('yaraRulesetModal'));
+    }
+    yaraRulesetModalInstance.show();
+}
+
+async function saveYaraRulesetModal() {
+    const name = document.getElementById('yaraRulesetName').value.trim();
+    const ruleText = document.getElementById('yaraRulesetText').value;
+    const statusEl = document.getElementById('yaraRulesetModalStatus');
+    if (!name) { statusEl.textContent = 'Ruleset name is required.'; return; }
+    if (!ruleText.trim()) { statusEl.textContent = 'Rule text is required.'; return; }
+    statusEl.textContent = 'Compiling and saving...';
+    const endpoint = yaraRulesetModalMode === 'edit' ? `/api/settings/yara_rules/${yaraRulesetModalId}` : '/api/settings/yara_rules';
+    const method = yaraRulesetModalMode === 'edit' ? 'PUT' : 'POST';
+    try {
+        const res = await fetch(endpoint, {
+            method, headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, rule_text: ruleText })
+        });
+        const data = await res.json();
+        if (data.success) {
+            yaraRulesetModalInstance.hide();
+            yaraRulesetsCache = null; // invalidate - the File Explorer scan checklist and this list must both see the change
+            loadYaraRulesetsSection();
+        } else {
+            statusEl.textContent = `Failed: ${data.error}`;
+        }
+    } catch (err) {
+        statusEl.textContent = 'Failed: request error.';
+    }
+}
+
+async function deleteYaraRuleset(rulesetId, name) {
+    if (!confirm(`Delete YARA ruleset "${name}"? This cannot be undone.`)) return;
+    try {
+        const res = await fetch(`/api/settings/yara_rules/${rulesetId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+            yaraRulesetsCache = null;
+            loadYaraRulesetsSection();
+        } else {
+            showToast(`Delete failed: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast('Delete failed: request error.', 'danger');
+    }
+}
+
 // --- File Explorer: "Check Against Hash Lists" single-file action (D2) ---
 // One modal, two modes (isImage=false real-fs / true in-image) - reads
 // whichever selection state (activeSelectedFile / explorerImageSelected)
@@ -2847,6 +2988,107 @@ async function runHashListCheck() {
                 const icon = m.label === 'known_good' ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill';
                 line.innerHTML = `<i class="bi ${icon} me-1"></i>`; // static/trusted markup
                 line.appendChild(document.createTextNode(`MATCH: ${m.list_name} (${m.label === 'known_good' ? 'Known Good' : 'Known Bad'})`)); // examiner-entered list name - text node only
+                resultEl.appendChild(line);
+            });
+        }
+    } catch (err) {
+        resultEl.innerHTML = '<span class="text-danger">Request failed.</span>';
+    }
+}
+
+// --- File Explorer: "Scan with YARA Rules" single-file action (D3) ---
+// Same isImage=false/true dual-mode shape as the Hash Lists check modal
+// right above - one modal, reads whichever selection state is currently
+// active. Unlike the hash-list check (a pure membership test, no analysis-
+// history entry), a YARA scan's result IS persisted server-side via
+// _record_analysis_result() - matching Binwalk/ClamAV/Strings' own
+// per-exhibit analysis-history convention, since case_folder is sent here.
+let yaraScanModalInstance = null;
+let yaraScanIsImage = false;
+
+async function openYaraScanModal(isImage) {
+    yaraScanIsImage = isImage;
+    const nameEl = document.getElementById('yaraScanFileName');
+    const fileName = isImage ? (explorerImageSelected && explorerImageSelected.name) : (activeSelectedFile && activeSelectedFile.split('/').pop());
+    if (nameEl) nameEl.textContent = fileName || '--'; // untrusted (filename) - text node only via textContent
+    document.getElementById('yaraScanResult').innerHTML = '';
+
+    const container = document.getElementById('yaraScanContainer');
+    container.innerHTML = '<span class="text-subtle small">Loading YARA rulesets...</span>';
+    const rulesets = await fetchYaraRulesets();
+    container.innerHTML = '';
+    if (rulesets.length === 0) {
+        container.innerHTML = '<span class="text-subtle small">No saved YARA rulesets yet - create one in Settings &gt; Case &amp; Reporting &gt; YARA Rulesets.</span>';
+    } else {
+        rulesets.forEach(rs => {
+            const row = document.createElement('div');
+            row.className = 'form-check';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.className = 'form-check-input yara-scan-cb';
+            input.id = `yaraScanCb_${rs.id}`;
+            input.value = rs.id;
+            input.checked = true; // opt-out, not opt-in - the whole point of the action is scanning against what's saved
+            const label = document.createElement('label');
+            label.className = 'form-check-label';
+            label.htmlFor = input.id;
+            label.textContent = rs.name; // examiner-entered name - text node only
+            row.appendChild(input);
+            row.appendChild(label);
+            container.appendChild(row);
+        });
+    }
+
+    if (!yaraScanModalInstance) {
+        yaraScanModalInstance = new bootstrap.Modal(document.getElementById('yaraScanModal'));
+    }
+    yaraScanModalInstance.show();
+}
+
+async function runYaraScan() {
+    const resultEl = document.getElementById('yaraScanResult');
+    const rulesetIds = Array.from(document.querySelectorAll('.yara-scan-cb:checked')).map(cb => cb.value);
+    if (rulesetIds.length === 0) {
+        resultEl.innerHTML = '<span class="text-warning">Select at least one YARA ruleset.</span>';
+        return;
+    }
+    resultEl.innerHTML = '<span class="text-subtle">Scanning...</span>';
+
+    const endpoint = yaraScanIsImage ? '/api/image/yara_scan' : '/api/files/yara_scan';
+    const caseFolder = activeCase ? activeCase.case_folder : null;
+    const body = yaraScanIsImage
+        ? { image_path: explorerImagePath, offset: explorerImageOffset, inode: explorerImageSelected?.inode,
+            name: explorerImageSelected?.name, path: explorerImageSelected?.path || null,
+            ruleset_ids: rulesetIds, case_folder: caseFolder }
+        : { path: activeSelectedFile, ruleset_ids: rulesetIds, case_folder: caseFolder };
+
+    try {
+        const res = await fetch(endpoint, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!data.success) {
+            resultEl.innerHTML = '';
+            const err = document.createElement('span');
+            err.className = 'text-danger';
+            err.textContent = data.error; // untrusted, text node only
+            resultEl.appendChild(err);
+            return;
+        }
+        resultEl.innerHTML = '';
+        if (data.matches.length === 0) {
+            const clean = document.createElement('div');
+            clean.className = 'text-success fw-bold';
+            clean.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i>No matches against the selected ruleset(s).';
+            resultEl.appendChild(clean);
+        } else {
+            data.matches.forEach(m => {
+                const line = document.createElement('div');
+                line.className = 'text-danger fw-bold';
+                line.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>'; // static/trusted markup
+                const tagsSuffix = m.tags && m.tags.length ? ` (tags: ${m.tags.join(', ')})` : '';
+                line.appendChild(document.createTextNode(`MATCH: ${m.rule} [${m.ruleset_name}]${tagsSuffix}`)); // examiner-entered ruleset/rule names - text node only
                 resultEl.appendChild(line);
             });
         }
@@ -3568,6 +3810,7 @@ function updateContextToolbar(item) {
     const btnQuickTriage = document.getElementById("btnQuickTriageScan");
     const btnHashdeep = document.getElementById("btnRunHashdeep");
     const btnCheckHashLists = document.getElementById("btnCheckHashLists");
+    const btnRunYaraScan = document.getElementById("btnRunYaraScan");
     const btnGeolocation = document.getElementById("btnExtractGeolocation");
     const btnBrowserArtifacts = document.getElementById("btnParseBrowserArtifacts");
     const btnRegistryHives = document.getElementById("btnParseRegistryHives");
@@ -3585,6 +3828,7 @@ function updateContextToolbar(item) {
     if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
     if (btnCheckHashLists) btnCheckHashLists.disabled = item.is_dir;  // single-file, like Verify Image Hash
+    if (btnRunYaraScan) btnRunYaraScan.disabled = item.is_dir;  // single-file, like Check Against Hash Lists
     if (btnGeolocation) btnGeolocation.disabled = !item.is_dir;  // scans a whole folder of photos at once
     if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium + Firefox profile files
     if (btnRegistryHives) btnRegistryHives.disabled = !item.is_dir;    // recursively walks a folder for NTUSER.DAT/SYSTEM/SOFTWARE
@@ -9063,6 +9307,7 @@ document.getElementById('secNetConfig')?.addEventListener('shown.bs.collapse', (
 document.getElementById('secManageTags')?.addEventListener('shown.bs.collapse', () => loadManageTagsSection());
 document.getElementById('secKeywordLists')?.addEventListener('shown.bs.collapse', () => loadKeywordListsSection());
 document.getElementById('secHashLists')?.addEventListener('shown.bs.collapse', () => loadHashListsSection());
+document.getElementById('secYaraRules')?.addEventListener('shown.bs.collapse', () => loadYaraRulesetsSection());
 
 document.addEventListener('shown.bs.tab', (ev) => {
     // Returning to the whole Settings sidebar tab while the Audit Log
