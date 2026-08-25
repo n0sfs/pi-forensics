@@ -148,3 +148,70 @@ def _tsk_resolve_filesystems(image_path):
             continue
         filesystems.append({"offset": part.start, "label": part.desc.decode('utf-8', errors='replace')})
     return filesystems
+
+
+# Windows-vs-Linux filesystem-type detection (Auto Analyze, Phase 3,
+# 2026-08-25) - reads fs.info.ftype (the REAL, opened filesystem's own
+# type), not _tsk_resolve_filesystems()'s 'label' field above (that's the
+# PARTITION TABLE's own description string, which can be stale/wrong on
+# damaged or reformatted media - the actual opened filesystem is
+# authoritative). Verified live against the real installed pytsk3 before
+# writing this: there is no pytsk3.TSK_FS_TYPE_ENUM_TO_NAME reverse-lookup
+# dict (an incorrect assumption from this feature's own design research,
+# caught here rather than shipped) - the individual TSK_FS_TYPE_* integer
+# constants are the only real API, confirmed via a direct enumeration
+# (fs.info.ftype == 8192 == pytsk3.TSK_FS_TYPE_EXT4 on a real ext4 test
+# image). Also confirmed live: this pytsk3 build exposes NO TSK_FS_TYPE_XFS
+# or TSK_FS_TYPE_BTRFS constant at all - only EXT2/EXT3/EXT4 are
+# Linux-detectable through these bindings, a real, pre-existing limitation
+# of this app's whole Sleuth Kit layer (File Explorer's own image browsing
+# would already fail to open an XFS/Btrfs image today, independent of
+# Auto Analyze), not something newly introduced here.
+_FS_TYPE_LABELS = {
+    pytsk3.TSK_FS_TYPE_NTFS: "NTFS", pytsk3.TSK_FS_TYPE_FAT12: "FAT12",
+    pytsk3.TSK_FS_TYPE_FAT16: "FAT16", pytsk3.TSK_FS_TYPE_FAT32: "FAT32",
+    pytsk3.TSK_FS_TYPE_EXFAT: "exFAT", pytsk3.TSK_FS_TYPE_EXT2: "ext2",
+    pytsk3.TSK_FS_TYPE_EXT3: "ext3", pytsk3.TSK_FS_TYPE_EXT4: "ext4",
+    pytsk3.TSK_FS_TYPE_HFS: "HFS+", pytsk3.TSK_FS_TYPE_APFS: "APFS",
+    pytsk3.TSK_FS_TYPE_ISO9660: "ISO9660", pytsk3.TSK_FS_TYPE_YAFFS2: "YAFFS2",
+}
+_WINDOWS_FS_TYPES = {pytsk3.TSK_FS_TYPE_NTFS, pytsk3.TSK_FS_TYPE_FAT12,
+                      pytsk3.TSK_FS_TYPE_FAT16, pytsk3.TSK_FS_TYPE_FAT32, pytsk3.TSK_FS_TYPE_EXFAT}
+_LINUX_FS_TYPES = {pytsk3.TSK_FS_TYPE_EXT2, pytsk3.TSK_FS_TYPE_EXT3, pytsk3.TSK_FS_TYPE_EXT4}
+
+
+def classify_image_profile(image_path):
+    """Returns {"profile": "windows"|"linux"|"mixed"|"unknown",
+    "filesystems": [{"offset", "fs_type", "bucket"}]} - "mixed" when both a
+    Windows-ish and Linux-ish filesystem appear across partitions (a real
+    dual-boot image), surfaced explicitly rather than silently picking one.
+    Reuses _tsk_resolve_filesystems()'s own already-hardened partition
+    selection (allocated partitions only, whole-image fallback when there's
+    no partition table) - this function only adds the real filesystem-type
+    read on top of it."""
+    resolved = _tsk_resolve_filesystems(image_path)
+    filesystems = []
+    saw_windows = False
+    saw_linux = False
+    for fsinfo in resolved:
+        try:
+            fs = _tsk_open_fs(image_path, fsinfo['offset'])
+            ftype = fs.info.ftype
+        except Exception:
+            continue
+        bucket = "windows" if ftype in _WINDOWS_FS_TYPES else "linux" if ftype in _LINUX_FS_TYPES else "other"
+        saw_windows = saw_windows or bucket == "windows"
+        saw_linux = saw_linux or bucket == "linux"
+        filesystems.append({
+            "offset": fsinfo['offset'], "fs_type": _FS_TYPE_LABELS.get(ftype, f"unknown ({ftype})"),
+            "bucket": bucket,
+        })
+    if saw_windows and saw_linux:
+        profile = "mixed"
+    elif saw_windows:
+        profile = "windows"
+    elif saw_linux:
+        profile = "linux"
+    else:
+        profile = "unknown"
+    return {"profile": profile, "filesystems": filesystems}

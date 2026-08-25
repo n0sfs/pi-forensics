@@ -2243,3 +2243,331 @@ def image_recover_deleted():
         "truncated": result["truncated"],
     })
     return jsonify(result)
+
+# --- Auto Analyze: Windows/Linux disk-image profiles (Phase 3, 2026-08-25) ---
+# Detects an image's filesystem type (core.tsk_utils.classify_image_profile,
+# examiner-confirmed before this ever runs - see routes/auto_analyze.py's
+# own /api/auto_analyze/detect) and runs a curated, station-hardware-
+# appropriate default set of already-existing tools against it sequentially,
+# as ONE background job.
+#
+# Scoped down from the original design (confirmed with the user, per this
+# session's own AskUserQuestion round): the three async whole-image tools
+# that already have their own current_job-driven progress (Geolocation,
+# Triage Scan, Memory Forensics) live in a DIFFERENT blueprint
+# (routes/file_explorer.py's Memory Forensics; the other two are also in
+# THIS file but still deliberately excluded here) - reaching them would
+# have needed either a cross-blueprint import (a pattern this app has
+# never used anywhere - confirmed via a full grep before deciding against
+# it) or moving substantial already-shipped async workers into core/ (real
+# regression risk to already-tested code). Narrowed instead: only tools
+# with NO current_job involvement at all are sequenced here (Hash
+# Manifest, the artifact parsers, optionally Recover Deleted) - Triage
+# Scan/Geolocation stay one manual click away, just not automatic.
+#
+# Every step function below has the exact same (image_path, case_folder)
+# -> dict signature the generic loop expects, and NONE of them touch
+# current_job/update_job internally - this orchestrator is the only thing
+# in the whole run that owns job-slot progress, unlike Auto Analyze's
+# originally-designed (and since narrowed away) need to coexist with a
+# step that manages its own progress.
+AUTO_ANALYZE_STEP_LABELS = {
+    "hash_manifest": "Hash Manifest (SHA256)",
+    "registry": "Registry Hives (incl. Amcache)",
+    "evtx": "Event Logs",
+    "prefetch": "Prefetch Files",
+    "recyclebin": "Recycle Bin",
+    "browser_artifacts": "Browser Artifacts (Chrome/Firefox)",
+    "linux_artifacts": "Linux Artifacts (shell history/passwd/cron/auth log)",
+    "recover_deleted": "Recover Deleted Files (Filesystem-Aware)",
+}
+AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts"]
+AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts"]
+AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted"]  # opt-in, either profile
+AUTO_ANALYZE_ALL_VALID_STEPS = set(AUTO_ANALYZE_STEP_LABELS.keys())
+
+
+def _auto_analyze_run_generic_artifact_scan(image_path, case_folder, matcher_fn, parse_fn, max_candidates, coc_action):
+    """Shared whole-image discovery+extract+parse+record loop - the exact
+    same shape every existing image_parse_X() route in this file already
+    has (_image_scan_candidate_files + extract-to-temp + parse + tally +
+    _record_parsed_artifacts), reused here instead of duplicated 5 times.
+    Also logs its own chain-of-custody entry under the SAME action name
+    the equivalent standalone route uses, so an Auto Analyze run produces
+    the same granular per-tool audit trail running each tool individually
+    would have, in addition to Auto Analyze's own rollup log entry."""
+    candidates, truncated = _image_scan_candidate_files(image_path, matcher_fn, max_candidates)
+    if candidates is None:
+        return {"success": False, "error": "No recognized filesystem found in this image."}
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+            try:
+                records = parse_fn(tmp_path, entry['name'])
+            except TypeError:
+                records = parse_fn(tmp_path)  # a couple of the older parsers take no filename arg at all
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+    log_chain_of_custody(coc_action, {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return {"success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+            "counts": counts, "truncated": truncated}
+
+
+def _auto_analyze_step_registry(image_path, case_folder):
+    upper_names = {n.upper() for n in REGISTRY_HIVE_FILENAMES}
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, lambda name, path: name.upper() in upper_names,
+        parse_registry_hive_file, REGISTRY_SCAN_MAX_CANDIDATES, "registry_hives_parsed_image")
+
+
+def _auto_analyze_step_evtx(image_path, case_folder):
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, lambda name, path: name.lower().endswith(EVTX_EXTENSION),
+        parse_evtx_file, EVTX_SCAN_MAX_CANDIDATES, "evtx_files_parsed_image")
+
+
+def _auto_analyze_step_prefetch(image_path, case_folder):
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, lambda name, path: name.lower().endswith(PREFETCH_EXTENSION),
+        parse_prefetch_file, PREFETCH_SCAN_MAX_CANDIDATES, "prefetch_files_parsed_image")
+
+
+def _auto_analyze_step_recyclebin(image_path, case_folder):
+    def _is_recyclebin_candidate(name, path):
+        if not name.upper().startswith('$I'):
+            return False
+        return any(p.lower() == '$recycle.bin' for p in path.split('/'))
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, _is_recyclebin_candidate,
+        parse_recyclebin_file, RECYCLEBIN_SCAN_MAX_CANDIDATES, "recyclebin_files_parsed_image")
+
+
+def _auto_analyze_step_browser_artifacts(image_path, case_folder):
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, lambda name, path: name in BROWSER_ARTIFACT_FILENAMES,
+        parse_browser_profile_file, BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES, "browser_artifacts_parsed_image")
+
+
+def _auto_analyze_step_linux_artifacts(image_path, case_folder):
+    """Unlike the 5 Windows-artifact steps above (5 separate parser types,
+    5 separate scan passes), core.linux_artifacts's own LINUX_ARTIFACT_
+    DEFAULT_TYPES already bundles shell history/passwd/cron/auth log into
+    one logical unit (matching /api/image/parse_linux_artifacts' own
+    default behavior) - one combined result dict covering all 4, not 4
+    separate calls."""
+    counts = {}
+    files_parsed = 0
+    candidates_found_total = 0
+    truncated = False
+    filesystem_found = False
+    for artifact_key in LINUX_ARTIFACT_DEFAULT_TYPES:
+        matcher_fn, parse_fn = LINUX_ARTIFACT_IMAGE_MATCHERS[artifact_key]
+        candidates, this_truncated = _image_scan_candidate_files(image_path, matcher_fn, LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES)
+        if candidates is None:
+            continue
+        filesystem_found = True
+        truncated = truncated or this_truncated
+        candidates_found_total += len(candidates)
+        for fs, fsinfo, entry, path in candidates:
+            tmp_path = None
+            try:
+                tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+                records = parse_fn(tmp_path, entry['name'])
+            except Exception:
+                records = []
+            finally:
+                if tmp_path:
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+            if not records:
+                continue
+            files_parsed += 1
+            for r in records:
+                counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+            if case_folder:
+                _record_parsed_artifacts(case_folder, {
+                    "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                    "inode": entry['inode'], "path": path,
+                }, records)
+    if not filesystem_found:
+        return {"success": False, "error": "No recognized filesystem found in this image."}
+    log_chain_of_custody("linux_artifacts_parsed_image", {
+        "image_path": image_path, "types": LINUX_ARTIFACT_DEFAULT_TYPES, "candidates_found": candidates_found_total,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return {"success": True, "candidates_found": candidates_found_total, "files_parsed": files_parsed,
+            "counts": counts, "truncated": truncated}
+
+
+def _auto_analyze_step_hash_manifest(image_path, case_folder):
+    result = _run_hash_manifest_body(image_path, case_folder, 'sha256', {})
+    if result["success"]:
+        log_chain_of_custody("hash_manifest_export_image", {
+            "image_path": image_path, "algorithm": "sha256", "files_hashed": result["files_hashed"],
+            "files_errored": result["files_errored"], "truncated": result["truncated"],
+            "hash_list_matches": result["hash_list_match_count"],
+        })
+    return result
+
+
+def _auto_analyze_step_recover_deleted(image_path, case_folder):
+    result = _run_recover_deleted_body(image_path, case_folder)
+    if result["success"]:
+        log_chain_of_custody("recover_deleted_files_image", {
+            "image_path": image_path, "output_dir": result["output_dir"], "files_recovered": result["files_recovered"],
+            "total_bytes": result["total_bytes"], "files_skipped_too_large": result["files_skipped_too_large"],
+            "files_skipped_empty": result["files_skipped_empty"], "files_errored": result["files_errored"],
+            "truncated": result["truncated"],
+        })
+    return result
+
+
+_AUTO_ANALYZE_STEP_FUNCTIONS = {
+    "hash_manifest": _auto_analyze_step_hash_manifest,
+    "registry": _auto_analyze_step_registry,
+    "evtx": _auto_analyze_step_evtx,
+    "prefetch": _auto_analyze_step_prefetch,
+    "recyclebin": _auto_analyze_step_recyclebin,
+    "browser_artifacts": _auto_analyze_step_browser_artifacts,
+    "linux_artifacts": _auto_analyze_step_linux_artifacts,
+    "recover_deleted": _auto_analyze_step_recover_deleted,
+}
+
+
+def execution_worker_auto_analyze_image(image_path, case_folder, steps, source_ip=None, user=None):
+    """Runs each requested step in turn against image_path, as ONE
+    continuously-held job-slot claim. Each step gets its OWN try/except -
+    a deliberate, pressure-test-driven design choice (see the plan this
+    was built from): a naive one-big-try/except-around-the-whole-loop
+    shape (the pattern execution_worker_verify_all_evidence uses) would
+    silently abort every remaining step on the first unhandled exception,
+    with no record distinguishing "never attempted" from "failed" - a
+    materially misleading result for a tool whose whole point is a
+    complete, auditable sweep."""
+    global current_job
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-200:]))
+
+    total = len(steps)
+    step_results = []
+    try:
+        update_job(format="auto_analyze_image", status="Starting Auto Analyze...", progress_percent=0.0,
+                    transferred_bytes=0, total_bytes=total)
+        append_log(f"[*] Auto Analyze starting against {image_path} - {total} step(s): "
+                   + ", ".join(AUTO_ANALYZE_STEP_LABELS.get(s, s) for s in steps))
+
+        for i, step_key in enumerate(steps):
+            label = AUTO_ANALYZE_STEP_LABELS.get(step_key, step_key)
+            if snapshot_job()["status"] == "Stopped":
+                step_results.append({"step": step_key, "status": "skipped", "reason": "stopped by user"})
+                continue
+            append_log(f"=== Step {i + 1}/{total}: {label} ===")
+            update_job(status=f"Step {i + 1}/{total}: {label}...")
+            try:
+                fn = _AUTO_ANALYZE_STEP_FUNCTIONS[step_key]
+                result = fn(image_path, case_folder)
+                if result.get("success"):
+                    step_results.append({"step": step_key, "status": "ok", "detail": result})
+                    append_log(f"[+] Step {i + 1}/{total} complete.")
+                else:
+                    step_results.append({"step": step_key, "status": "error", "detail": result.get("error")})
+                    append_log(f"[-] Step {i + 1}/{total} reported an error: {result.get('error')}")
+            except Exception as e:
+                step_results.append({"step": step_key, "status": "error", "detail": str(e)})
+                append_log(f"[-] Step {i + 1}/{total} raised an exception: {e}")
+            update_job(transferred_bytes=i + 1, progress_percent=round((i + 1) / total * 100, 1))
+
+        steps_ok = sum(1 for r in step_results if r["status"] == "ok")
+        steps_failed = sum(1 for r in step_results if r["status"] == "error")
+        steps_skipped = sum(1 for r in step_results if r["status"] == "skipped")
+
+        if snapshot_job()["status"] == "Stopped":
+            append_log(f"[!] Auto Analyze stopped by user - {steps_ok} of {total} step(s) completed before stopping.")
+        else:
+            update_job(status="Completed Successfully", progress_percent=100.0)
+            append_log(f"[+] Auto Analyze complete - {steps_ok} ok, {steps_failed} failed, {steps_skipped} skipped, of {total} step(s).")
+
+        log_chain_of_custody("auto_analyze_complete", {
+            "image_path": image_path, "steps_requested": steps, "steps_ok": steps_ok,
+            "steps_failed": steps_failed, "steps_skipped": steps_skipped, "results": step_results,
+        }, source_ip=source_ip, user=user)
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+@image_browser_bp.route('/api/image/auto_analyze/start', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def start_auto_analyze_image():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    requested_steps = req.get('steps') or []
+    steps = [s for s in requested_steps if s in AUTO_ANALYZE_ALL_VALID_STEPS]
+
+    if not image_path:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    if not steps:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "No valid steps selected."}), 400
+
+    # dest_dir for every step is EITHER the active case folder or, with no
+    # case active, the image's own containing directory - matches this
+    # app's own "case selection optional, nothing breaks if none is
+    # active" convention (every other whole-image tool defaults to
+    # EVIDENCE_ROOT via destination_dir; Auto Analyze uses the image's own
+    # folder instead so its several output files land next to the image
+    # rather than scattered at the evidence root).
+    dest_dir = case_folder or os.path.dirname(image_path)
+
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_auto_analyze_image,
+        args=(image_path, dest_dir, steps, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("auto_analyze_start", {"image_path": image_path, "steps": steps})
+    return jsonify({"success": True, "message": f"Auto Analyze started - {len(steps)} step(s)."})

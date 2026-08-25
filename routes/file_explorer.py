@@ -1138,22 +1138,24 @@ def quick_triage_scan():
 # extraction, which doesn't line up with this app's adb pull/bugreport
 # output; it will error clearly on those rather than silently finding
 # nothing, so it's still exposed rather than blocked outright.
-@file_explorer_bp.route('/api/files/mvt_scan', methods=['POST'])
-@requires_auth
-@requires_permission('file_explorer')
-def run_mvt_scan():
-    req = request.get_json() or {}
-    target_dir = safe_path(req.get('path'))
-    platform = req.get('platform', '')
+def _run_mvt_scan_body(target_dir, platform):
+    """The actual mvt-ios/mvt-android subprocess call, extracted verbatim
+    out of run_mvt_scan() (Phase 3 of Linux Artifacts + Auto Analyze,
+    2026-08-25) so Auto Analyze's mobile profile can call it directly as
+    its one sequenced step - same reasoning/shape as _run_hash_manifest_
+    body()/_run_recover_deleted_body() in routes/image_browser.py (this
+    function never touched current_job/job_lock either). Returns a plain
+    dict; the route builds its jsonify() response from it.
 
-    if not target_dir or not os.path.isdir(target_dir):
-        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
-    if platform not in ('ios', 'android'):
-        return jsonify({"success": False, "error": "platform must be 'ios' or 'android'."}), 400
-
+    Disclosed, not silently fixed here: this subprocess.run(timeout=900)
+    call is not killable mid-call via this app's Stop button (it never
+    registers set_active_proc()) - a pre-existing gap, unchanged by this
+    extraction, surfaced to the examiner in Auto Analyze's own UI rather
+    than fixed as part of this unrelated refactor."""
     mvt_bin = MVT_IOS_BIN if platform == 'ios' else MVT_ANDROID_BIN
     if not os.path.isfile(mvt_bin):
-        return jsonify({"success": False, "error": f"{os.path.basename(mvt_bin)} is not installed. Check Advanced Settings > Tool Versions."}), 400
+        return {"success": False, "status_code": 400,
+                "error": f"{os.path.basename(mvt_bin)} is not installed. Check Advanced Settings > Tool Versions."}
 
     output_dir = os.path.join(target_dir, f"_mvt_{platform}_scan")
     os.makedirs(output_dir, exist_ok=True)
@@ -1164,12 +1166,33 @@ def run_mvt_scan():
             capture_output=True, text=True, timeout=900
         )
         output = ((res.stdout or "") + (("\n" + res.stderr) if res.stderr else "")).strip() or "[no output]"
-        log_chain_of_custody("mvt_scan", {"path": target_dir, "platform": platform, "output_dir": output_dir})
-        return jsonify({"success": True, "platform": platform, "output_dir": output_dir, "output": output})
+        return {"success": True, "platform": platform, "output_dir": output_dir, "output": output}
     except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "MVT scan timed out (large backup - partial results may still be in output_dir)."}), 500
+        return {"success": False, "status_code": 500,
+                "error": "MVT scan timed out (large backup - partial results may still be in output_dir)."}
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return {"success": False, "status_code": 500, "error": str(e)}
+
+@file_explorer_bp.route('/api/files/mvt_scan', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def run_mvt_scan():
+    """Request-parsing here, real work in _run_mvt_scan_body() above."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    platform = req.get('platform', '')
+
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+    if platform not in ('ios', 'android'):
+        return jsonify({"success": False, "error": "platform must be 'ios' or 'android'."}), 400
+
+    result = _run_mvt_scan_body(target_dir, platform)
+    if not result["success"]:
+        status_code = result.pop("status_code", 500)
+        return jsonify(result), status_code
+    log_chain_of_custody("mvt_scan", {"path": target_dir, "platform": platform, "output_dir": result["output_dir"]})
+    return jsonify(result)
 
 # --- Memory Forensics: Volatility3 analysis of an already-captured Windows
 # RAM image. This app never acquires memory itself (there's no live target
