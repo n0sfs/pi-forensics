@@ -322,6 +322,12 @@
                                                         <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="custody" checked onchange="renderCaseTimeline()">Custody Log</label>
                                                         <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="parsed_artifact" checked onchange="renderCaseTimeline()">Parsed Artifacts</label>
                                                     </div>
+                                                    <div class="border border-secondary rounded-2 mb-2 p-2" style="height: 180px; background-color:#090b10;"><canvas id="caseTimelineChart"></canvas></div>
+                                                    <div id="caseTimelineFilterIndicator" class="small mb-2" style="display:none;">
+                                                        <span class="badge bg-info text-dark">Filtered to <span class="timeline-filter-label"></span></span>
+                                                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2 ms-1" onclick="clearCaseTimelineBucketFilter()">Clear</button>
+                                                        <span class="text-subtle ms-1">(click a bar above to filter the table below to that time bucket)</span>
+                                                    </div>
                                                     <div id="caseTimelineNotes" class="small text-warning mb-2" style="display:none;"></div>
                                                     <div class="table-responsive font-monospace small border border-secondary rounded-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
                                                         <table class="table table-sm table-dark mb-0">
