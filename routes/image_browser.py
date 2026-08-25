@@ -817,43 +817,21 @@ def start_image_geolocation_kml():
 IMAGE_HASH_MAX_FILES = 5000
 IMAGE_HASH_MAX_SECONDS = 300
 
-@image_browser_bp.route('/api/image/hash_manifest', methods=['POST'])
-@requires_auth
-@requires_permission('file_explorer')
-def image_hash_manifest():
-    """Recursively hashes every real, non-deleted file inside an acquired
-    image without extracting anything to disk first. Deleted files are
-    excluded for the same reason the geolocation/timeline routes exclude
-    them - a deleted file's data blocks may already be partially overwritten
-    on a live evidence filesystem, and a hash computed over that isn't a
-    trustworthy fingerprint of the original file, so including it in a
-    manifest meant to prove integrity would be actively misleading rather
-    than just incomplete."""
-    req = request.get_json() or {}
-    image_path = _resolve_browsable_source(req.get('image_path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
-    algo = req.get('algorithm', 'sha256').lower()
-    hash_list_ids = req.get('hash_list_ids') or []
-
-    if not image_path:
-        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
-    if not dest_dir or not os.path.isdir(dest_dir):
-        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
-    if algo not in ALLOWED_HASH_ALGOS:
-        return jsonify({"success": False, "error": f"Unsupported algorithm '{algo}'. Use one of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
-
-    # D2 (hash-set filtering) - only a hash list whose OWN algorithm
-    # matches this manifest's algorithm can meaningfully cross-reference
-    # against it (a saved sha256 list can never match an md5 manifest) -
-    # a mismatched list is silently skipped here rather than surfaced as
-    # an error, since "check whichever of my selected lists actually
-    # apply" is a more forgiving default than forcing the examiner to
-    # re-select per algorithm.
-    hash_sets = {lid: s for lid, s in load_hash_list_sets(hash_list_ids).items() if s["algorithm"] == algo}
-
+def _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets):
+    """The actual walk-and-hash work, extracted verbatim out of
+    image_hash_manifest() (Phase 2 of Linux Artifacts + Auto Analyze,
+    2026-08-25) so Auto Analyze can call it directly, in-process, as one
+    step of a sequenced run - this function has zero current_job/job_lock
+    involvement either way (unlike the async whole-image tools, this one
+    never touched job state at all even before this extraction), so no
+    suppress-flag wrapping is needed to call it safely from an orchestrator.
+    Request-parsing/validation and log_chain_of_custody() stay in the
+    route below, unchanged - only the core loop and manifest-writing moved
+    here. Returns a plain dict; the route builds its jsonify() response
+    from it, Auto Analyze reads the same dict directly."""
     filesystems = _tsk_resolve_filesystems(image_path)
     if not filesystems:
-        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+        return {"success": False, "error": "No recognized filesystem found in this image."}
 
     start_time = time.time()
     rows = []  # (hash_hex, size, in-image path)
@@ -918,19 +896,64 @@ def image_hash_manifest():
         with open(manifest_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(lines) + "\n")
     except Exception as e:
-        return jsonify({"success": False, "error": f"Failed to write manifest file: {e}"}), 500
+        return {"success": False, "error": f"Failed to write manifest file: {e}"}
     _auto_tag_case_artifact(dest_dir, manifest_path)
 
-    log_chain_of_custody("hash_manifest_export_image", {
-        "image_path": image_path, "algorithm": algo, "files_hashed": files_hashed,
-        "files_errored": files_errored, "truncated": truncated, "hash_list_matches": len(matches),
-    })
-    return jsonify({
+    return {
         "success": True, "manifest_path": manifest_path, "files_hashed": files_hashed,
         "files_errored": files_errored, "truncated": truncated,
         "hash_list_match_count": len(matches),
         "hash_list_matches": [{"hash": d, "path": p, "lists": ls} for d, p, ls in matches[:50]],
+    }
+
+@image_browser_bp.route('/api/image/hash_manifest', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_hash_manifest():
+    """Recursively hashes every real, non-deleted file inside an acquired
+    image without extracting anything to disk first. Deleted files are
+    excluded for the same reason the geolocation/timeline routes exclude
+    them - a deleted file's data blocks may already be partially overwritten
+    on a live evidence filesystem, and a hash computed over that isn't a
+    trustworthy fingerprint of the original file, so including it in a
+    manifest meant to prove integrity would be actively misleading rather
+    than just incomplete. Request-parsing here, real work in
+    _run_hash_manifest_body() above."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    algo = req.get('algorithm', 'sha256').lower()
+    hash_list_ids = req.get('hash_list_ids') or []
+
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    if algo not in ALLOWED_HASH_ALGOS:
+        return jsonify({"success": False, "error": f"Unsupported algorithm '{algo}'. Use one of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
+
+    # D2 (hash-set filtering) - only a hash list whose OWN algorithm
+    # matches this manifest's algorithm can meaningfully cross-reference
+    # against it (a saved sha256 list can never match an md5 manifest) -
+    # a mismatched list is silently skipped here rather than surfaced as
+    # an error, since "check whichever of my selected lists actually
+    # apply" is a more forgiving default than forcing the examiner to
+    # re-select per algorithm.
+    hash_sets = {lid: s for lid, s in load_hash_list_sets(hash_list_ids).items() if s["algorithm"] == algo}
+
+    result = _run_hash_manifest_body(image_path, dest_dir, algo, hash_sets)
+    if not result["success"]:
+        # Both of _run_hash_manifest_body()'s own failure paths (no
+        # recognized filesystem, manifest write failure) were already 500
+        # in the pre-extraction code - preserved as-is here.
+        return jsonify(result), 500
+
+    log_chain_of_custody("hash_manifest_export_image", {
+        "image_path": image_path, "algorithm": algo, "files_hashed": result["files_hashed"],
+        "files_errored": result["files_errored"], "truncated": result["truncated"],
+        "hash_list_matches": result["hash_list_match_count"],
     })
+    return jsonify(result)
 
 @image_browser_bp.route('/api/image/check_hash_lists', methods=['POST'])
 @requires_auth
@@ -2110,22 +2133,18 @@ IMAGE_RECOVER_MAX_FILE_BYTES = 500 * 1024 * 1024
 IMAGE_RECOVER_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 IMAGE_RECOVER_MAX_SECONDS = 600
 
-@image_browser_bp.route('/api/image/recover_deleted', methods=['POST'])
-@requires_auth
-@requires_permission('file_explorer')
-def image_recover_deleted():
-    req = request.get_json() or {}
-    image_path = _resolve_browsable_source(req.get('image_path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
-
-    if not image_path:
-        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
-    if not dest_dir or not os.path.isdir(dest_dir):
-        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
-
+def _run_recover_deleted_body(image_path, dest_dir):
+    """The actual walk-and-recover work, extracted verbatim out of
+    image_recover_deleted() (Phase 2 of Linux Artifacts + Auto Analyze,
+    2026-08-25) so Auto Analyze can call it directly as one sequenced step
+    - same reasoning/shape as _run_hash_manifest_body() above (this
+    function never touched current_job/job_lock either, so no
+    suppress-flag wrapping is needed). Request-parsing and
+    log_chain_of_custody() stay in the route below, unchanged. Returns a
+    plain dict; the route builds its jsonify() response from it."""
     filesystems = _tsk_resolve_filesystems(image_path)
     if not filesystems:
-        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+        return {"success": False, "error": "No recognized filesystem found in this image."}
 
     image_base = os.path.splitext(os.path.basename(image_path))[0]
     output_root = os.path.join(dest_dir, f"{image_base}_recovered_deleted")
@@ -2192,14 +2211,35 @@ def image_recover_deleted():
         if truncated:
             break
 
-    log_chain_of_custody("recover_deleted_files_image", {
-        "image_path": image_path, "output_dir": output_root, "files_recovered": files_recovered,
-        "total_bytes": total_bytes, "files_skipped_too_large": files_skipped_too_large,
-        "files_skipped_empty": files_skipped_empty, "files_errored": files_errored, "truncated": truncated
-    })
-    return jsonify({
+    return {
         "success": True, "output_dir": output_root if files_recovered else None,
         "files_recovered": files_recovered, "total_bytes": total_bytes,
         "files_skipped_too_large": files_skipped_too_large, "files_skipped_empty": files_skipped_empty,
         "files_errored": files_errored, "truncated": truncated
+    }
+
+@image_browser_bp.route('/api/image/recover_deleted', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_recover_deleted():
+    """Request-parsing here, real work in _run_recover_deleted_body() above."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    result = _run_recover_deleted_body(image_path, dest_dir)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    log_chain_of_custody("recover_deleted_files_image", {
+        "image_path": image_path, "output_dir": result["output_dir"], "files_recovered": result["files_recovered"],
+        "total_bytes": result["total_bytes"], "files_skipped_too_large": result["files_skipped_too_large"],
+        "files_skipped_empty": result["files_skipped_empty"], "files_errored": result["files_errored"],
+        "truncated": result["truncated"],
     })
+    return jsonify(result)

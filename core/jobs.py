@@ -37,10 +37,36 @@ from core.paths import case_consolidated_path
 # request-handling threads.
 job_lock = threading.Lock()
 
+_suppress_active_false = False  # see begin/end_suppress_active_false() below
+
 def update_job(**kwargs):
-    """Atomically update one or more fields of the shared current_job dict."""
+    """Atomically update one or more fields of the shared current_job dict.
+
+    While _suppress_active_false is set, an incoming active=False is
+    silently dropped from this call (every other field still updates
+    normally) - built for Auto Analyze (routes/auto_analyze.py), which
+    needs to run several existing execution_worker_* functions
+    sequentially inside ONE continuously-held job-slot claim. Each of
+    those workers already ends with its own `finally: update_job
+    (active=False)`, correct and unchanged for their normal standalone
+    use - calling one directly from inside Auto Analyze's own job would
+    otherwise release the shared slot after the first step, ending the
+    whole orchestrated run early. A plain module-level bool (not
+    threading.local) is safe here specifically because job_lock already
+    serializes the entire app down to one active job at a time - there is
+    never a second thread that could race this flag."""
     with job_lock:
+        if _suppress_active_false and kwargs.get('active') is False:
+            kwargs = {k: v for k, v in kwargs.items() if k != 'active'}
         current_job.update(kwargs)
+
+def begin_suppress_active_false():
+    global _suppress_active_false
+    _suppress_active_false = True
+
+def end_suppress_active_false():
+    global _suppress_active_false
+    _suppress_active_false = False
 
 def snapshot_job():
     """Return a consistent point-in-time copy of current_job for reading."""
