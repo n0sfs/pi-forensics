@@ -446,6 +446,7 @@ DHCP — with an automatic safety rollback if a change would otherwise lock you 
   situations, a searchable FAQ, and a full tool reference — all without leaving the app.
 - This manual and the [Quick-Start Guide](quickstart.md) live in the project's `docs/` folder and are
   always available offline on the station itself.
-- [README.md](../README.md) has the full security model, environment variables, and a longer
-  troubleshooting reference for install-time and system-level issues.
+- [README.md](../README.md) has the full security model, environment variables, a system
+  architecture diagram, and a longer troubleshooting reference for install-time and system-level
+  issues.
 - [CHANGELOG.md](../CHANGELOG.md) lists what's changed in each released version.
