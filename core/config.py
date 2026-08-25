@@ -12,6 +12,7 @@ import json
 import html
 import threading
 import secrets
+import tempfile
 import markdown
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -97,9 +98,22 @@ def _get_or_create_secret_key():
             with open(SECRET_KEY_FILE, 'r') as f:
                 return f.read().strip()
         key = secrets.token_hex(32)
-        with open(SECRET_KEY_FILE, 'w') as f:
+        # os.open() with an explicit mode creates the file with that mode
+        # atomically - no window where it briefly exists world/group-
+        # readable before a later chmod() catches up (2026-08-22 security
+        # audit, Informational finding, closed 2026-08-25). O_EXCL also
+        # means a second process racing to create this same file (this
+        # station runs gunicorn with a single worker, so that race can't
+        # happen here today, but the code shouldn't assume it never will)
+        # gets a clean FileExistsError instead of silently overwriting a
+        # key another process already generated and started signing with.
+        try:
+            fd = os.open(SECRET_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            with open(SECRET_KEY_FILE, 'r') as f:
+                return f.read().strip()
+        with os.fdopen(fd, 'w') as f:
             f.write(key)
-        os.chmod(SECRET_KEY_FILE, 0o600)
         return key
 
 MOUNT_KEY_FILE = os.path.join(INSTALL_DIR, ".mount_key")
@@ -111,9 +125,17 @@ def _get_or_create_mount_key():
             with open(MOUNT_KEY_FILE, 'rb') as f:
                 return f.read().strip()
         key = Fernet.generate_key()
-        with open(MOUNT_KEY_FILE, 'wb') as f:
+        # Same atomic-create-with-mode fix as _get_or_create_secret_key()
+        # above, for the same reason - this key encrypts every saved
+        # network-share password/SSH key in runtime_config.json, so the
+        # same brief world/group-readable window mattered here too.
+        try:
+            fd = os.open(MOUNT_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            with open(MOUNT_KEY_FILE, 'rb') as f:
+                return f.read().strip()
+        with os.fdopen(fd, 'wb') as f:
             f.write(key)
-        os.chmod(MOUNT_KEY_FILE, 0o600)
         return key
 
 def _encrypt_secret(plaintext):
@@ -142,9 +164,34 @@ def load_runtime_config():
 def save_runtime_config(cfg):
     with runtime_config_lock:
         try:
-            with open(RUNTIME_CONFIG_FILE, 'w') as f:
-                json.dump(cfg, f, indent=2)
-            os.chmod(RUNTIME_CONFIG_FILE, 0o600)
+            # Write-to-temp-then-atomic-rename, not write-then-chmod - this
+            # file holds password hashes and Fernet-encrypted network-mount
+            # credentials, and unlike the two secret-key files above (create
+            # once, ever), this one rewrites on *every* settings save, so a
+            # plain open()-then-chmod() window would reopen every single
+            # time, not just once at first boot (2026-08-22 security audit,
+            # a third instance of the same Informational finding found while
+            # fixing the other two, closed 2026-08-25). The temp file is
+            # created with its final 0600 mode from the start (no window of
+            # its own), and os.replace() is atomic on POSIX - whatever lands
+            # at RUNTIME_CONFIG_FILE is always either the complete old
+            # content or the complete new content, never a partial write and
+            # never briefly world/group-readable, and always in the same
+            # directory so the rename can't cross filesystems. mkstemp()
+            # itself already creates the file atomically at mode 0600 (a
+            # documented CPython guarantee), so no separate chmod is needed.
+            tmp_dir = os.path.dirname(RUNTIME_CONFIG_FILE) or '.'
+            fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, prefix='.runtime_config_', suffix='.tmp')
+            try:
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(cfg, f, indent=2)
+                os.replace(tmp_path, RUNTIME_CONFIG_FILE)
+            except Exception:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             print(f"Error saving runtime config: {e}")
 
