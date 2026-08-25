@@ -3818,6 +3818,8 @@ function updateContextToolbar(item) {
     const btnBrowserArtifacts = document.getElementById("btnParseBrowserArtifacts");
     const btnRegistryHives = document.getElementById("btnParseRegistryHives");
     const btnEvtxLogs = document.getElementById("btnParseEvtxLogs");
+    const btnPrefetch = document.getElementById("btnParsePrefetch");
+    const btnRecycleBin = document.getElementById("btnParseRecycleBin");
     const btnParseLnk = document.getElementById("btnParseLnk");
     const btnMvtIos = document.getElementById("btnRunMvtIos");
     const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
@@ -3836,7 +3838,9 @@ function updateContextToolbar(item) {
     if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium + Firefox profile files
     if (btnRegistryHives) btnRegistryHives.disabled = !item.is_dir;    // recursively walks a folder for NTUSER.DAT/SYSTEM/SOFTWARE
     if (btnEvtxLogs) btnEvtxLogs.disabled = !item.is_dir;              // recursively walks a folder for .evtx files
-    if (btnParseLnk) btnParseLnk.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.lnk');  // single-file, unlike the two whole-folder scanners above
+    if (btnPrefetch) btnPrefetch.disabled = !item.is_dir;              // recursively walks a folder for .pf files
+    if (btnRecycleBin) btnRecycleBin.disabled = !item.is_dir;          // recursively walks a folder for $Recycle.Bin/$I* files
+    if (btnParseLnk) btnParseLnk.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.lnk');  // single-file, unlike the whole-folder scanners above
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnMemoryForensics) btnMemoryForensics.disabled = item.is_dir || !isMemoryImageFile(item.name);
@@ -3855,6 +3859,7 @@ function updateContextToolbar(item) {
     const wholeImageDisabled = item.is_dir || !isImageFile(item.name);
     ['btnEnterSearchImage', 'btnEnterTimelineImage', 'btnEnterGeoImage', 'btnEnterHashImage',
      'btnEnterTriageImage', 'btnEnterBrowserArtifactsImage', 'btnEnterRegistryImage', 'btnEnterEvtxImage',
+     'btnEnterPrefetchImage', 'btnEnterRecycleBinImage',
      'btnEnterRecoverImage'].forEach(id => {
         const btn = document.getElementById(id);
         if (btn) btn.disabled = wholeImageDisabled;
@@ -3884,6 +3889,8 @@ async function contextMenuBrowseImageAnd(action) {
         browserartifacts: runImageBrowserArtifactsParse,
         registryhives: runImageRegistryParse,
         evtxlogs: runImageEvtxParse,
+        prefetch: runImagePrefetchParse,
+        recyclebin: runImageRecycleBinParse,
         recover: runImageRecoverDeleted,
     };
     if (actions[action]) actions[action]();
@@ -4634,7 +4641,7 @@ async function runSelectedBrowserArtifactsParse() {
 function summarizeParsedArtifactCounts(counts) {
     const entries = Object.entries(counts || {});
     if (!entries.length) return 'nothing recognized';
-    return entries.map(([type, n]) => `${n} ${type.replace(/^registry_|^evtx_/, '').replace(/_/g, ' ')}`).join(', ');
+    return entries.map(([type, n]) => `${n} ${type.replace(/^registry_|^evtx_|^prefetch_|^recyclebin_/, '').replace(/_/g, ' ')}`).join(', ');
 }
 
 async function runSelectedRegistryParse() {
@@ -4738,6 +4745,110 @@ async function runImageEvtxParse() {
         }
     } catch (err) {
         showToast('Event log scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedPrefetchParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_prefetch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Prefetch scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Windows Prefetch (.pf) files found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} prefetch file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} prefetch file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Prefetch scan failed: request error.', 'danger');
+    }
+}
+
+async function runImagePrefetchParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_prefetch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Prefetch scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Windows Prefetch (.pf) files found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} prefetch file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} prefetch file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Prefetch scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedRecycleBinParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_recyclebin', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Recycle Bin scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Recycle Bin ($I) metadata files found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} deleted-file record(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} deleted-file record(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Recycle Bin scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageRecycleBinParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_recyclebin', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Recycle Bin scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Recycle Bin ($I) metadata files found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} deleted-file record(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} deleted-file record(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Recycle Bin scan failed: request error.', 'danger');
     }
 }
 

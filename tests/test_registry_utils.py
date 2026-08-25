@@ -246,3 +246,140 @@ def test_find_registry_hive_files_matches_case_insensitively(tmp_path):
     names = {p.split('/')[-1].split('\\')[-1] for p in found}
     assert names == {"ntuser.dat", "System"}
     assert truncated is False
+
+
+def test_filetime_to_unix_epoch_boundary_is_exact():
+    # 1601-01-01 to 1970-01-01 is exactly 11,644,473,600 seconds (a fixed,
+    # well-known constant, not derived from any external sample) -
+    # FILETIME 116444736000000000 (that many 100ns intervals) must convert
+    # to exactly Unix epoch 0, a self-verifying correctness check that
+    # doesn't depend on recalling any external reference value.
+    assert ru.filetime_to_unix(116_444_736_000_000_000) == 0.0
+
+
+def test_filetime_to_unix_is_genuinely_different_math_from_webkit_and_firefox_epochs():
+    # The same class of bug this codebase has already been bitten by twice
+    # (WebKit vs. Firefox epochs) - a copy-paste of either existing
+    # conversion here would silently produce timestamps roughly 369 years
+    # off (WebKit's own epoch is also 1601, but in microseconds not
+    # 100ns units) or off by a completely different, much larger margin
+    # (Firefox's epoch is 1970 in microseconds - dividing a raw FILETIME
+    # value by 1_000_000 instead of 10_000_000 would be wrong by 10x on
+    # top of the epoch difference). Asserted directly, not just trusted.
+    from core.browser_artifacts import webkit_time_to_unix, firefox_time_to_unix
+    raw_filetime = 128_930_364_000_000_000  # an arbitrary real-shaped FILETIME value
+    assert ru.filetime_to_unix(raw_filetime) != webkit_time_to_unix(raw_filetime)
+    assert ru.filetime_to_unix(raw_filetime) != firefox_time_to_unix(raw_filetime)
+
+
+def test_filetime_to_unix_handles_none_and_zero_without_raising():
+    assert ru.filetime_to_unix(None) is None
+    assert ru.filetime_to_unix(0) is None
+
+
+def test_find_registry_hive_files_recognizes_amcache(tmp_path):
+    (tmp_path / "Amcache.hve").write_bytes(b"x")
+    found, truncated = ru.find_registry_hive_files(str(tmp_path))
+    names = {p.split('/')[-1].split('\\')[-1] for p in found}
+    assert names == {"Amcache.hve"}
+
+
+# --- Amcache (follow-up, 2026-08-25) ---
+# A second, standalone hive-fixture builder for AMCACHE.HVE's own
+# Root\InventoryApplicationFile shape - a genuinely different key
+# structure from _build_test_hive()'s NTUSER.DAT-shaped fixture above, so
+# it gets its own small copy of the same low-level REGF primitives rather
+# than trying to force one builder to cover two unrelated shapes.
+def _build_amcache_hive(path):
+    h = _HiveBuilder()
+
+    def make_vk(name, data_str, reg_type=1):
+        data_bytes = _utf16(data_str)
+        data_off = h.alloc(data_bytes)
+        name_b = name.encode('ascii')
+        vk = b'vk' + struct.pack('<H', len(name_b)) + struct.pack('<I', len(data_bytes))
+        vk += struct.pack('<I', data_off) + struct.pack('<I', reg_type)
+        vk += struct.pack('<H', 1) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(vk))
+
+    def make_values_list(vk_offsets):
+        return h.alloc(b''.join(struct.pack('<I', o) for o in vk_offsets))
+
+    def make_nk(name, subkey_list_off, subkey_count, values_list_off, values_count, is_root=False):
+        flags = 0x0020 | (0x0004 if is_root else 0)
+        name_b = name.encode('ascii')
+        nk = b'nk' + struct.pack('<H', flags) + struct.pack('<Q', _FT_NOW)
+        nk += struct.pack('<I', 0) + struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', subkey_count if subkey_count else 0xFFFFFFFF) + struct.pack('<I', 0)
+        nk += struct.pack('<I', subkey_list_off if subkey_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', values_count if values_count else 0xFFFFFFFF)
+        nk += struct.pack('<I', values_list_off if values_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF) + struct.pack('<I', 0xFFFFFFFF)
+        nk += b'\x00' * (0x48 - 0x34)
+        nk += struct.pack('<H', len(name_b)) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(nk))
+
+    def make_lf(nk_offsets):
+        body = b'lf' + struct.pack('<H', len(nk_offsets))
+        for off in nk_offsets:
+            body += struct.pack('<I', off) + b'\x00\x00\x00\x00'
+        return h.alloc(body)
+
+    vl_entry = make_values_list([
+        make_vk('Name', 'chrome.exe'),
+        make_vk('LowerCaseLongPath', 'c:\\program files\\google\\chrome\\application\\chrome.exe'),
+        make_vk('Publisher', 'Google LLC'),
+        make_vk('Version', '120.0.6099.129'),
+        make_vk('FileId', '0000abcdef1234567890abcdef1234567890abcd'),
+    ])
+    nk_entry = make_nk('c1c2d55a08356e5c9c6fbf1f92e3b0b90f2b0000', None, 0, vl_entry, 5)
+    lf_entries = make_lf([nk_entry])
+    nk_invfile = make_nk('InventoryApplicationFile', lf_entries, 1, None, 0)
+    lf_root = make_lf([nk_invfile])
+    root_off = make_nk('ROOT', lf_root, 1, None, 0, is_root=True)
+
+    h.set_parent(nk_invfile, root_off)
+    h.set_parent(nk_entry, nk_invfile)
+
+    hbin_data = bytes(h.buf)
+    hbin_total = 0x20 + len(hbin_data)
+    hbin_size = ((hbin_total + 0xFFF) // 0x1000) * 0x1000
+    hbin = b'hbin' + struct.pack('<I', 0) + struct.pack('<I', hbin_size)
+    hbin += b'\x00' * (0x20 - 0xC) + hbin_data + b'\x00' * (hbin_size - hbin_total)
+
+    regf = struct.pack('<I', 0x66676572) + struct.pack('<I', 1) + struct.pack('<I', 1)
+    regf += struct.pack('<Q', _FT_NOW) + struct.pack('<I', 1) + struct.pack('<I', 5)
+    regf += struct.pack('<I', 0) + struct.pack('<I', 1) + struct.pack('<I', root_off)
+    regf += struct.pack('<I', hbin_size) + struct.pack('<I', 1)
+    regf += _utf16('Amcache.hve').ljust(64, b'\x00')
+    regf += b'\x00' * (0x1000 - len(regf))
+    regf = regf[:0x1000]
+
+    with open(path, 'wb') as f:
+        f.write(regf)
+        f.write(hbin)
+
+
+def test_parse_amcache_extracts_application_inventory_entry(tmp_path):
+    hive_path = tmp_path / "Amcache.hve"
+    _build_amcache_hive(hive_path)
+    records = ru.parse_registry_hive_file(str(hive_path), 'AMCACHE.HVE')
+    assert len(records) == 1
+    r = records[0]
+    assert r["artifact_type"] == "registry_amcache"
+    assert r["title"] == 'c:\\program files\\google\\chrome\\application\\chrome.exe'
+    assert r["value"] == '0000abcdef1234567890abcdef1234567890abcd'
+    assert r["extra"]["publisher"] == 'Google LLC'
+    assert r["extra"]["version"] == '120.0.6099.129'
+    assert r["timestamp"] is not None
+
+
+def test_parse_amcache_dispatches_only_for_amcache_filename(tmp_path):
+    # The same fixture, opened under a different (wrong) declared filename,
+    # must not be mistaken for NTUSER.DAT/SYSTEM/SOFTWARE - confirms
+    # dispatch is genuinely by exact uppercased basename, not "parse
+    # whatever key paths happen to exist."
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_amcache_hive(hive_path)
+    assert ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT') == []
