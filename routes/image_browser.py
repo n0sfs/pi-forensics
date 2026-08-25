@@ -38,7 +38,10 @@ from core.paths import (
 )
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, load_yara_ruleset_sources
 import yara
-from core.jobs import job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME
+from core.jobs import (
+    job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME,
+    begin_suppress_active_false, end_suppress_active_false,
+)
 from core.tsk_utils import (
     _tsk_walk, _tsk_resolve_filesystems, _tsk_entry_dict,
     _tsk_open_fs, _tsk_list_dir, _tsk_stream_file, _tsk_parse_inode,
@@ -2483,7 +2486,31 @@ def execution_worker_auto_analyze_image(image_path, case_folder, steps, source_i
     silently abort every remaining step on the first unhandled exception,
     with no record distinguishing "never attempted" from "failed" - a
     materially misleading result for a tool whose whole point is a
-    complete, auditable sweep."""
+    complete, auditable sweep.
+
+    begin_suppress_active_false()/end_suppress_active_false() wrap the
+    ENTIRE run (not just calls into a specific pre-existing async worker,
+    which is what this mechanism was originally built for in Phase 2,
+    before "narrow the defaults" removed Triage Scan/Geolocation - the two
+    steps that would have needed it for that original reason - from Auto
+    Analyze's step set entirely). A second, equally real need for it
+    surfaced live during Stop-button testing on the very first real run:
+    stop_imaging() (routes/acquisition.py) sets active=False the moment
+    Stop is clicked, from a completely different HTTP request/thread than
+    this one - with no suppression in place, that immediately released the
+    shared job slot while THIS thread's current step (e.g. a multi-minute
+    Hash Manifest walk over a real multi-GB image) was still genuinely
+    running in the background, confirmed live via `ps`/`top` showing the
+    orphaned thread still consuming real CPU/IO seconds after the job
+    already read back as inactive - exactly the "another job could sneak
+    in mid-run" failure this whole mechanism exists to prevent. Suppressing
+    for the whole run (not just around individual step calls) closes both
+    the original and the newly-found reason with one wrap: `status`/`log`
+    still flip to "Stopped" immediately either way (only `active` is ever
+    filtered), so the between-step Stop-check below is unaffected -
+    Stop still take effect at the next step boundary, same latency this
+    was always going to have, it just no longer also drops the job slot
+    early."""
     global current_job
     log_history = []
 
@@ -2494,6 +2521,7 @@ def execution_worker_auto_analyze_image(image_path, case_folder, steps, source_i
 
     total = len(steps)
     step_results = []
+    begin_suppress_active_false()
     try:
         update_job(format="auto_analyze_image", status="Starting Auto Analyze...", progress_percent=0.0,
                     transferred_bytes=0, total_bytes=total)
@@ -2539,6 +2567,10 @@ def execution_worker_auto_analyze_image(image_path, case_folder, steps, source_i
         update_job(status="Failed")
         append_log(f"[-] Execution Exception: {str(e)}")
     finally:
+        # end_suppress_active_false() MUST run before this update_job(active=False)
+        # or that call would itself still be suppressed - suppression is only
+        # ever meant to hold while THIS run is genuinely still in flight.
+        end_suppress_active_false()
         update_job(active=False)
 
 @image_browser_bp.route('/api/image/auto_analyze/start', methods=['POST'])
