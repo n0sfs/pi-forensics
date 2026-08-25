@@ -122,12 +122,12 @@
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-light border-secondary">
                 <div class="modal-header border-secondary py-2">
-                    <h5 class="modal-title text-info fs-6"><i class="bi bi-list-check me-2"></i><span id="hashListModalTitle">New Hash List</span></h5>
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-list-check me-2"></i><span id="hashListModalTitle">New Hash Set</span></h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body py-2">
                     <div class="mb-2">
-                        <label class="telemetry-grid-label d-block mb-1">List Name:</label>
+                        <label class="telemetry-grid-label d-block mb-1">Set Name:</label>
                         <input type="text" id="hashListName" class="form-control form-control-sm" maxlength="100">
                     </div>
                     <div class="row g-2 mb-2">
@@ -150,7 +150,7 @@
                     <div class="mb-2">
                         <label class="telemetry-grid-label d-block mb-1">Hashes (one per line, all in the algorithm above):</label>
                         <textarea id="hashListHashes" class="form-control form-control-sm font-monospace" rows="8" placeholder="e.g.&#10;09abe58e1025b54b8e020ce1560652f77d13f169f6dc596b5f2bb30111df3c8&#10;5d41402abc4b2a76b9719d911017c592"></textarea>
-                        <div class="small text-subtle mt-1">Leave blank when editing an existing list's name/label only - the hashes already on disk stay untouched. Fill it in to replace them entirely.</div>
+                        <div class="small text-subtle mt-1">Leave blank when editing an existing set's name/label only - the hashes already on disk stay untouched. Fill it in to replace them entirely.</div>
                     </div>
                     <div id="hashListModalStatus" class="small mt-2"></div>
                 </div>
