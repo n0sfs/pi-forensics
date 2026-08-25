@@ -7682,11 +7682,20 @@ const CASE_TIMELINE_SOURCE_BADGE = {
 const CASE_TIMELINE_SOURCE_LABEL = {
     macb: 'Filesystem', case_note: 'Case Note', custody: 'Custody', parsed_artifact: 'Artifact',
 };
+// Same 4 sources as the badges above, as real hex values for Chart.js
+// (Bootstrap's actual default palette for info/success/warning/secondary) -
+// kept as a separate map rather than deriving from the badge classes so the
+// chart never depends on parsing a computed CSS color at render time.
+const CASE_TIMELINE_SOURCE_COLOR = {
+    macb: '#0dcaf0', case_note: '#198754', custody: '#ffc107', parsed_artifact: '#6c757d',
+};
+const CASE_TIMELINE_SOURCES = ['macb', 'case_note', 'custody', 'parsed_artifact'];
 
 async function loadCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
     if (!body || !activeCase) return;
     body.innerHTML = '<tr><td colspan="4" class="text-subtle p-2">Building timeline...</td></tr>';
+    caseTimelineBucketFilter = null; // a fresh case load shouldn't carry over a stale drill-down from a previous case
     try {
         const res = await fetch(`/api/cases/timeline?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
         const data = await res.json();
@@ -7701,6 +7710,125 @@ async function loadCaseTimeline() {
     }
 }
 
+// --- Case Timeline density chart - a stacked bar chart of event counts per
+// time bucket, colored by source, sitting above the existing table. Bucket
+// granularity is picked adaptively from the span of the currently
+// source-filtered events (not the bucket filter itself, so the chart always
+// shows every bucket available to drill into) - a case spanning a couple of
+// days gets hourly bars, one spanning years gets monthly ones, so the bar
+// count stays readable regardless of how wide a timeline this case has.
+// Clicking a bar sets caseTimelineBucketFilter, which renderCaseTimeline()
+// then applies to the table below (the chart itself is never re-bucketed by
+// its own click - only the table narrows, matching a drill-down, not a zoom).
+let caseTimelineChart = null;
+let caseTimelineBucketFilter = null; // null | {start, end, label} (start/end are Unix seconds)
+let caseTimelineBuckets = [];        // the chart's current bucket list, index-aligned with its bars
+
+function pickTimelineGranularity(minTs, maxTs) {
+    const spanSeconds = maxTs - minTs;
+    const DAY = 86400;
+    if (spanSeconds <= 2 * DAY) return 'hour';
+    if (spanSeconds <= 60 * DAY) return 'day';
+    if (spanSeconds <= 2 * 365 * DAY) return 'week';
+    return 'month';
+}
+
+function timelineBucketStart(epochMs, granularity) {
+    const d = new Date(epochMs);
+    if (granularity === 'hour') { d.setMinutes(0, 0, 0); return d; }
+    d.setHours(0, 0, 0, 0);
+    if (granularity === 'day') return d;
+    if (granularity === 'week') { d.setDate(d.getDate() - d.getDay()); return d; } // week starts Sunday
+    d.setDate(1); // month
+    return d;
+}
+
+function timelineBucketEnd(start, granularity) {
+    const d = new Date(start);
+    if (granularity === 'hour') d.setHours(d.getHours() + 1);
+    else if (granularity === 'day') d.setDate(d.getDate() + 1);
+    else if (granularity === 'week') d.setDate(d.getDate() + 7);
+    else d.setMonth(d.getMonth() + 1);
+    return d;
+}
+
+function timelineBucketLabel(start, granularity) {
+    if (granularity === 'hour') return start.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric' });
+    if (granularity === 'day') return start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    if (granularity === 'week') return `Wk of ${start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+    return start.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+}
+
+function renderCaseTimelineChart(rows) {
+    const canvas = document.getElementById('caseTimelineChart');
+    if (!canvas) return;
+    if (rows.length === 0) {
+        if (caseTimelineChart) { caseTimelineChart.destroy(); caseTimelineChart = null; }
+        canvas.style.display = 'none';
+        return;
+    }
+    canvas.style.display = '';
+
+    const timestamps = rows.map((e) => e.timestamp);
+    const granularity = pickTimelineGranularity(Math.min(...timestamps), Math.max(...timestamps));
+
+    const bucketMap = new Map(); // bucket-start epoch ms -> {start, end, label, counts:{source:n}}
+    rows.forEach((e) => {
+        const start = timelineBucketStart(e.timestamp * 1000, granularity);
+        const key = start.getTime();
+        if (!bucketMap.has(key)) {
+            bucketMap.set(key, { start, end: timelineBucketEnd(start, granularity), label: timelineBucketLabel(start, granularity), counts: {} });
+        }
+        const bucket = bucketMap.get(key);
+        bucket.counts[e.source] = (bucket.counts[e.source] || 0) + 1;
+    });
+    caseTimelineBuckets = [...bucketMap.values()].sort((a, b) => a.start - b.start);
+
+    const labels = caseTimelineBuckets.map((b) => b.label);
+    const datasets = CASE_TIMELINE_SOURCES.map((src) => ({
+        label: CASE_TIMELINE_SOURCE_LABEL[src],
+        data: caseTimelineBuckets.map((b) => b.counts[src] || 0),
+        backgroundColor: CASE_TIMELINE_SOURCE_COLOR[src],
+    }));
+
+    if (caseTimelineChart) {
+        caseTimelineChart.data.labels = labels;
+        caseTimelineChart.data.datasets = datasets;
+        caseTimelineChart.update();
+        return;
+    }
+
+    caseTimelineChart = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: { labels, datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            scales: {
+                x: { stacked: true, ticks: { color: '#94a3b8', maxRotation: 0, autoSkip: true }, grid: { display: false } },
+                y: { stacked: true, beginAtZero: true, ticks: { color: '#94a3b8', precision: 0 }, grid: { color: 'rgba(255,255,255,0.06)' } },
+            },
+            plugins: {
+                legend: { labels: { color: '#cbd5e1', boxWidth: 12, font: { size: 11 } } },
+                tooltip: { callbacks: { title: (items) => (items[0] ? caseTimelineBuckets[items[0].dataIndex]?.label : '') || '' } },
+            },
+            onClick: (evt, elements) => {
+                if (!elements.length) return;
+                const bucket = caseTimelineBuckets[elements[0].index];
+                if (!bucket) return;
+                caseTimelineBucketFilter = { start: bucket.start.getTime() / 1000, end: bucket.end.getTime() / 1000, label: bucket.label };
+                renderCaseTimeline();
+            },
+        },
+    });
+}
+
+function clearCaseTimelineBucketFilter() {
+    caseTimelineBucketFilter = null;
+    renderCaseTimeline();
+}
+
 function renderCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
     const notesEl = document.getElementById('caseTimelineNotes');
@@ -7709,7 +7837,20 @@ function renderCaseTimeline() {
     const enabledSources = new Set(
         [...document.querySelectorAll('.case-timeline-source-check:checked')].map((el) => el.value)
     );
-    const rows = caseTimelineCache.events.filter((e) => enabledSources.has(e.source));
+    const sourceFiltered = caseTimelineCache.events.filter((e) => enabledSources.has(e.source));
+    renderCaseTimelineChart(sourceFiltered);
+
+    let rows = sourceFiltered;
+    const filterIndicator = document.getElementById('caseTimelineFilterIndicator');
+    if (caseTimelineBucketFilter) {
+        rows = rows.filter((e) => e.timestamp >= caseTimelineBucketFilter.start && e.timestamp < caseTimelineBucketFilter.end);
+        if (filterIndicator) {
+            filterIndicator.style.display = '';
+            filterIndicator.querySelector('.timeline-filter-label').textContent = caseTimelineBucketFilter.label;
+        }
+    } else if (filterIndicator) {
+        filterIndicator.style.display = 'none';
+    }
 
     if (notesEl) {
         const noteLines = [...(caseTimelineCache.notes || [])];
