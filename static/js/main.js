@@ -6471,6 +6471,7 @@ async function loadCaseForEditing() {
         renderCaseNotesList();
         loadCaseHistory();
         renderCaseJobs();
+        renderCaseDashboard();
 
         const attach = currentLoadedReportData.attachments || {};
         currentAttachedFilesList = attach.files || [];
@@ -6551,6 +6552,82 @@ function renderCaseJobs() {
         wrapper.appendChild(detail);
         container.appendChild(wrapper);
     });
+}
+
+// --- Case Dashboard ("Overview" tab) ---------------------------------------------------
+// Aggregates two already-existing, already-case-wide data sources into one at-a-glance view -
+// currentLoadedReportData (already loaded on case open) for evidence/notes/attachments/age, and
+// /api/case_index/summary (confirmed case-wide, not scoped to whichever image happens to be open in
+// File Explorer right now - every query in that route has zero image_path filter) for tags/analysis
+// activity. No new backend route needed. Complements the Home tab's Guided Workflow (that answers
+// "have I done X/Y/Z"; this answers "here's everything that's happened in this case").
+async function renderCaseDashboard() {
+    if (!currentLoadedReportData || !activeCase) return;
+
+    const isConsolidated = Array.isArray(currentLoadedReportData.events);
+    const events = isConsolidated ? currentLoadedReportData.events : [];
+    const caseNotes = currentLoadedReportData.case_notes || [];
+    const files = (currentLoadedReportData.attachments || {}).files || [];
+
+    const evEl = document.getElementById('dashEvidenceCount');
+    const evDetailEl = document.getElementById('dashEvidenceDetail');
+    if (evEl) evEl.textContent = isConsolidated ? String(events.length) : '1';
+    if (evDetailEl) {
+        if (isConsolidated) {
+            const completed = events.filter((e) => (e.acquisition_status || '') === 'COMPLETED').length;
+            evDetailEl.textContent = `${completed} of ${events.length} completed`;
+        } else {
+            evDetailEl.textContent = 'Legacy single-job report';
+        }
+    }
+
+    const notesEl = document.getElementById('dashNotesCount');
+    if (notesEl) notesEl.textContent = String(caseNotes.length);
+    const attachEl = document.getElementById('dashAttachmentCount');
+    if (attachEl) attachEl.textContent = String(files.length);
+
+    const ageEl = document.getElementById('dashCaseAge');
+    if (ageEl) {
+        const createdAt = isConsolidated ? currentLoadedReportData.created_at
+            : (currentLoadedReportData.case_metadata || {}).created_at;
+        if (createdAt) {
+            const created = new Date(String(createdAt).replace(' ', 'T'));
+            const days = Math.max(0, Math.floor((Date.now() - created.getTime()) / 86400000));
+            ageEl.textContent = Number.isFinite(days) ? `${days}d` : '--';
+        } else {
+            ageEl.textContent = '--';
+        }
+    }
+
+    const tagCountEl = document.getElementById('dashTagCount');
+    const tagDetailEl = document.getElementById('dashTagDetail');
+    const analysisCountEl = document.getElementById('dashAnalysisCount');
+    const analysisDetailEl = document.getElementById('dashAnalysisDetail');
+    try {
+        const res = await fetch('/api/case_index/summary', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder }),
+        });
+        const data = await res.json();
+        if (data.success) {
+            const tags = data.tags || [];
+            const taggedItems = tags.reduce((sum, t) => sum + (t.count || 0), 0);
+            const notableTag = tags.find((t) => t.notable);
+            if (tagCountEl) tagCountEl.textContent = String(taggedItems);
+            if (tagDetailEl) {
+                tagDetailEl.textContent = (notableTag && notableTag.count > 0)
+                    ? `${notableTag.count} Notable Item(s) flagged` : 'No notable items flagged';
+                tagDetailEl.className = (notableTag && notableTag.count > 0) ? 'small mt-1 text-danger fw-bold' : 'small mt-1 text-subtle';
+            }
+
+            const parsedArtifactTotal = Object.values(data.parsed_artifact_counts || {}).reduce((a, b) => a + b, 0);
+            const analysisTotal = (data.analysis_results_count || 0) + (data.total_files || 0)
+                + ((data.keyword_hits || {}).total || 0) + parsedArtifactTotal;
+            if (analysisCountEl) analysisCountEl.textContent = data.has_analysis_activity ? String(analysisTotal) : '0';
+            if (analysisDetailEl) analysisDetailEl.textContent = data.has_analysis_activity
+                ? 'Tools have been run against this case' : 'No analysis tools run yet';
+        }
+    } catch (err) {}
 }
 
 // --- Case Notes: timestamped, append-only journal (Forensic Analysis / Steps Taken) ---
