@@ -114,6 +114,41 @@ for anything missing. All from a left-nav Settings screen, not a shell.
 
 ---
 
+## Architecture
+
+A birds-eye view of how the pieces fit together, from the browser down to the hardware:
+
+```mermaid
+flowchart TD
+    Client["Browser<br/>kiosk touchscreen or remote/LAN"]
+    Web["gunicorn &rarr; Flask (app.py)<br/>session auth &middot; RBAC"]
+    App["Application &mdash; 10 Flask Blueprints<br/>routes/*.py"]
+    Core["Shared Core &mdash; core/*.py<br/>single background-job slot &middot; safe_path() sandbox"]
+    Tools["External Tools<br/>dc3dd &middot; PhotoRec &middot; The Sleuth Kit &middot; Volatility3 &middot; MVT &middot; ..."]
+    Data[("Data & Storage<br/>/mnt evidence root &middot; runtime_config.json &middot; per-case SQLite index")]
+    OS["OS & Hardware<br/>Raspberry Pi / ARM SBC &middot; udev write-blocker &middot; systemd"]
+
+    Client --> Web --> App --> Core
+    Core -. "sudo, exact-match grants only" .-> Tools
+    Core --> Data
+    Tools --> Data
+    Web --> OS
+    Tools --> OS
+```
+
+| Layer | What lives there |
+|---|---|
+| **Client** | Server-rendered Jinja2 templates (`templates/`) + one vanilla-JS file (`static/js/main.js`) — no build step, no framework. Bootstrap 5, Bootstrap Icons, Chart.js, and Leaflet load from CDN (Leaflet is also vendored locally so maps still render on an offline kiosk). |
+| **Web & Auth** | `gunicorn` runs `app.py` (a thin ~85-line entry point) behind an optional nginx TLS reverse proxy. A signed session cookie handles real login; HTTP Basic Auth is kept only as an `/api/*` fallback for scripting; the physical kiosk touchscreen bypasses login entirely (scoped to genuinely-local requests). RBAC is 7 permission keys across built-in Admin/Analyst groups plus custom ones. |
+| **Application** | 10 Flask Blueprints (`routes/*.py`) — one per feature area: `acquisition`, `mobile`, `recovery`, `file_explorer`, `image_browser`, `case_index`, `reporting`, `case_management`, `settings`, `auth_routes`. |
+| **Shared Core** | `core/*.py` — anything more than one Blueprint needs. Most notable: `jobs.py`, which holds the **one** shared background-job slot for the whole app (only one acquisition/recovery/analysis job ever runs station-wide, regardless of which tab started it), and `paths.py`, whose `safe_path()` is the single reused path-traversal boundary every filesystem-touching route goes through. |
+| **Privilege boundary** | The service account is unprivileged by design. Every tool that needs to read a raw device is launched via `sudo` with an **exact-match** grant (full absolute binary path, arguments pinned wherever feasible) — never a wildcard on the command itself. |
+| **External Tools** | Real, independently-trusted forensic tools, wired together rather than reimplemented — see [What it does](#what-it-does) above for the full list by category. |
+| **Data & Storage** | No external database. Everything lives under the evidence root (`/mnt`) as plain files or a per-case SQLite index, plus `runtime_config.json` (station config, `0600`) and an append-only `chain_of_custody.log`. |
+| **OS & Hardware** | Raspberry Pi (or similar ARM SBC) running Debian, with a `udev` rule that write-blocks every newly-connected block device and `systemd` managing the service. |
+
+---
+
 ## Screenshots
 
 <p align="center">
