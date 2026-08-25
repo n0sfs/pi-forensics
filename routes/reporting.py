@@ -37,6 +37,7 @@ import base64
 import hashlib
 import textwrap
 import subprocess
+import threading
 import xml.etree.ElementTree as ET
 import urllib.request
 
@@ -52,7 +53,7 @@ from core.config import (
     load_runtime_config, save_runtime_config,
     get_report_defaults, get_custom_case_fields,
 )
-from core.jobs import _read_case_file, _write_case_file
+from core.jobs import _read_case_file, _write_case_file, current_job, job_lock, update_job, snapshot_job
 from core.case_index_db import _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact, _case_index_open_readonly
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
@@ -1292,6 +1293,177 @@ def add_custody_entry():
 
     log_chain_of_custody("custody_log_add", {"report_path": report_file, "entry_id": entry["entry_id"]})
     return jsonify({"success": True, "entry": entry})
+
+def _verify_recompute_hashes(file_path, algos, chunk_size=8 * 1024 * 1024):
+    """Local, deliberately-not-shared copy of routes/acquisition.py's own
+    compute_file_hashes() - no route module in this app imports from
+    another (confirmed before writing this), so a small self-contained
+    helper here is lower-risk than introducing the first cross-blueprint
+    dependency for one caller."""
+    hashers = {a: hashlib.new(a) for a in algos if a in ALLOWED_HASH_ALGOS}
+    if not hashers or not os.path.exists(file_path):
+        return {}
+    try:
+        with open(file_path, 'rb') as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                for h in hashers.values():
+                    h.update(chunk)
+        return {a: h.hexdigest() for a, h in hashers.items()}
+    except Exception:
+        return {}
+
+def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=None, requester_user=None):
+    """Background job: re-hashes every completed acquisition's own output
+    file and compares against the hashes recorded at acquisition time -
+    the case-wide equivalent of the existing single-file 'Verify Image
+    Hash' action. Mirrors execution_worker_image_triage_scan's exact
+    scaffolding (routes/image_browser.py) - single shared job slot,
+    request-context values captured by the caller before this thread
+    starts, Stop-button interruption via snapshot_job(), finally:
+    update_job(active=False) unconditionally.
+
+    Three correctness rules, each real and each found before this shipped:
+    1. A COMPLETED event with an EMPTY computed_verification_hashes dict
+       (a real, previously-shipped bug elsewhere in this app once let this
+       happen for an E01 acquisition) must never read as "verified" -
+       comparing against nothing is vacuously true. Reported as
+       "unverifiable", same bucket as an event type this tool can't check.
+    2. Event types with no walkable output_image_path (Logical Acquisition,
+       iOS backup, Android pull/bugreport) are explicitly listed in
+       `skipped` with a reason, never silently omitted - a forensic
+       examiner needs to know a tool DIDN'T check something, not just see
+       it absent from the results.
+    3. The final write is merge-only: the case file is re-read fresh
+       immediately before writing, and only the last_verification key is
+       touched - narrows (does not fully close - case JSON has no locking
+       anywhere in this app) the race with a concurrent case-note/report
+       edit landing while this potentially-long-running job is still
+       walking multiple large image files.
+    """
+    global current_job
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-200:]))
+
+    results = []
+    skipped = []
+    mismatch_count = 0
+    try:
+        data = _read_case_file(case_file)
+        events = data.get('events', [])
+        candidates = [e for e in events if e.get('acquisition_status') == 'COMPLETED']
+
+        update_job(format="verify_all_evidence", status="Verifying evidence...", progress_percent=0.0,
+                   transferred_bytes=0, total_bytes=len(candidates))
+        append_log(f"[*] Re-verifying {len(candidates)} completed acquisition event(s) for this case...")
+
+        for i, event in enumerate(candidates):
+            if snapshot_job()["status"] == "Stopped":
+                append_log("[-] Stopped by user - results below reflect only what finished before the stop.")
+                break
+
+            event_id = event.get('event_id')
+            evidence_id = (event.get('case_metadata') or {}).get('evidence_id') or 'UNKNOWN'
+            tool = event.get('tool', 'unknown')
+            recorded_hashes = event.get('computed_verification_hashes') or {}
+            image_path = (event.get('acquisition_parameters') or {}).get('output_image_path')
+
+            if not image_path:
+                skipped.append({"event_id": event_id, "evidence_id": evidence_id, "tool": tool,
+                                 "reason": "not verifiable by this tool"})
+                append_log(f"[i] {evidence_id} ({tool}): no walkable output image path recorded - skipped.")
+            elif not recorded_hashes:
+                results.append({"event_id": event_id, "evidence_id": evidence_id, "status": "unverifiable",
+                                 "current_hashes": {}})
+                append_log(f"[!] {evidence_id}: no hashes were ever recorded for this acquisition - cannot verify.")
+            elif not os.path.exists(image_path):
+                results.append({"event_id": event_id, "evidence_id": evidence_id, "status": "missing_file",
+                                 "current_hashes": {}})
+                append_log(f"[!] {evidence_id}: output file no longer exists at {image_path}.")
+            else:
+                algos = [a for a in recorded_hashes if a in ALLOWED_HASH_ALGOS]
+                current_hashes = _verify_recompute_hashes(image_path, algos)
+                is_match = bool(current_hashes) and all(current_hashes.get(a) == recorded_hashes.get(a) for a in algos)
+                status = "match" if is_match else "mismatch"
+                results.append({"event_id": event_id, "evidence_id": evidence_id, "status": status,
+                                 "current_hashes": current_hashes})
+                if status == "mismatch":
+                    mismatch_count += 1
+                    append_log(f"[!!!] MISMATCH for {evidence_id} ({image_path}) - recorded hashes no longer match computed hashes.")
+                    log_chain_of_custody("evidence_verification_mismatch", {
+                        "case_folder": case_folder, "event_id": event_id, "evidence_id": evidence_id,
+                        "image_path": image_path, "recorded_hashes": recorded_hashes, "current_hashes": current_hashes,
+                    }, source_ip=requester_ip, user=requester_user)
+                else:
+                    append_log(f"[+] {evidence_id}: hashes match.")
+
+            update_job(transferred_bytes=i + 1,
+                       progress_percent=round(((i + 1) / len(candidates)) * 100, 1) if candidates else 100.0)
+
+        # Merge-only final write - see rule 3 in the docstring above.
+        fresh = _read_case_file(case_file)
+        fresh['last_verification'] = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "results": results,
+            "skipped": skipped,
+        }
+        _write_case_file(case_file, fresh)
+
+        if snapshot_job()["status"] != "Stopped":
+            update_job(status="Completed Successfully", progress_percent=100.0)
+        append_log(f"[+] Verification complete. {len(results)} checked, {mismatch_count} mismatch(es), {len(skipped)} not verifiable by this tool.")
+        log_chain_of_custody("verify_all_evidence_complete", {
+            "case_folder": case_folder, "checked": len(results), "mismatches": mismatch_count, "skipped": len(skipped),
+        }, source_ip=requester_ip, user=requester_user)
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+@reporting_bp.route('/api/cases/verify_all_evidence', methods=['POST'])
+@requires_auth
+@requires_permission('reporting')
+def start_verify_all_evidence():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    case_folder = safe_path(req.get('case_folder'))
+    case_file = case_folder and case_consolidated_path(case_folder)
+    if not case_file:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Not a valid consolidated case folder."}), 400
+
+    update_job(format="verify_all_evidence", progress_percent=0.0, speed_mbps=0.0,
+               transferred_bytes=0, total_bytes=0, status="Initializing...",
+               log="[*] Initializing case-wide evidence verification...")
+
+    # Captured now, in the real request thread - the worker runs in a
+    # background daemon thread with no Flask request context (the same
+    # capture-before-spawn gotcha this codebase has already hit and fixed
+    # twice before for other background-thread log calls).
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_verify_all_evidence,
+        args=(case_folder, case_file, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("verify_all_evidence_start", {"case_folder": case_folder})
+    return jsonify({"success": True, "message": "Case-wide evidence verification started."})
 
 def _embed_file_into_pdf(c, y, file_path, caption=None, exhibit_number=None, category=None, tags=None, analysis_summary=None):
     """Draws one file's content (image/text embedded, or a path+size

@@ -125,6 +125,19 @@
                                                             </div>
                                                         </div>
                                                     </div>
+                                                    <hr class="border-secondary my-3">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-patch-check-fill me-1"></i>Case-wide Integrity Check</h6>
+                                                    <div class="small text-subtle mb-2">
+                                                        Re-hashes every completed acquisition's own output file and compares it against the hashes recorded at acquisition time - the case-wide equivalent of File Explorer's single-file "Verify Image Hash" action. Runs as a background job and uses the one station-wide job slot, so it will block a new acquisition/recovery job from starting until it finishes.
+                                                    </div>
+                                                    <button class="btn btn-sm btn-warning fw-bold" id="btnVerifyAllEvidence" onclick="startVerifyAllEvidence()"><i class="bi bi-patch-check me-1"></i>Verify All Evidence</button>
+                                                    <div id="verifyAllEvidenceProgress" style="display:none;" class="mt-2">
+                                                        <div id="verifyAllEvidenceStatus" class="small text-info mb-1">Status: --</div>
+                                                        <div class="progress" style="height: 6px;">
+                                                            <div id="verifyAllEvidenceBar" class="progress-bar bg-warning" style="width: 0%;"></div>
+                                                        </div>
+                                                    </div>
+                                                    <div id="verifyAllEvidenceLastResult" class="small mt-2"></div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repCaseNotesPane" role="tabpanel">
                                                     <div class="small text-subtle mb-2">
