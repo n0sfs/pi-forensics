@@ -3909,6 +3909,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     image_geolocation_kml: (status) => `Geolocation scan finished: ${status}\n\nCheck the case folder for the generated *_geolocation_export.kml file (only written if GPS-tagged photos were found).`,
     image_conversion: (status) => `Image conversion finished: ${status}\n\nSee the report event's "Hash Verified" field for whether the independently-computed source/output hashes matched.`,
     memory_forensics_scan: (status) => `Memory forensics scan finished: ${status}\n\nClick a *_vol3_<plugin>.json file next to the image in File Explorer to view its results.`,
+    verify_all_evidence: (status) => `Case-wide evidence verification finished: ${status}\n\nSee the Overview tab in Reporting for the full result.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
 
@@ -6566,6 +6567,8 @@ function renderCaseJobs() {
 async function renderCaseDashboard() {
     if (!currentLoadedReportData || !activeCase) return;
 
+    renderVerifyAllEvidenceLastResult();
+
     const isConsolidated = Array.isArray(currentLoadedReportData.events);
     const events = isConsolidated ? currentLoadedReportData.events : [];
     const caseNotes = currentLoadedReportData.case_notes || [];
@@ -6630,6 +6633,53 @@ async function renderCaseDashboard() {
                 ? 'Tools have been run against this case' : 'No analysis tools run yet';
         }
     } catch (err) {}
+}
+
+// --- Case-wide "Verify All Evidence" (A4) -------------------------------------------------
+// Shows the case's last_verification result (if any) on the Overview pane - purely a render
+// of already-loaded currentLoadedReportData, no fetch. Live progress while a run is active is
+// handled separately in fetchProgress()'s data.format === 'verify_all_evidence' block below.
+function renderVerifyAllEvidenceLastResult() {
+    const el = document.getElementById('verifyAllEvidenceLastResult');
+    if (!el) return;
+    const lv = currentLoadedReportData && currentLoadedReportData.last_verification;
+    if (!lv) {
+        el.innerHTML = '';
+        return;
+    }
+    const results = lv.results || [];
+    const skipped = lv.skipped || [];
+    const mismatches = results.filter((r) => r.status === 'mismatch').length;
+    const matches = results.filter((r) => r.status === 'match').length;
+    const unverifiable = results.filter((r) => r.status === 'unverifiable' || r.status === 'missing_file').length;
+    el.className = mismatches > 0 ? 'small mt-2 text-danger fw-bold' : 'small mt-2 text-subtle';
+    el.textContent = `Last verified ${lv.timestamp || '--'}: ${matches} match(es), ${mismatches} mismatch(es), `
+        + `${unverifiable} unverifiable, ${skipped.length} not checkable by this tool.`; // static/derived text only
+}
+
+async function startVerifyAllEvidence() {
+    if (!activeCase) {
+        showToast('Select an active case first.', 'warning');
+        return;
+    }
+    if (!confirm('Re-hash every completed acquisition in this case and compare against the hashes recorded at acquisition time?\n\nThis runs as a background job and uses the one station-wide job slot - it will block a new acquisition/recovery/mobile job from starting until it finishes. This may take a while on a case with large images.')) {
+        return;
+    }
+    const btn = document.getElementById('btnVerifyAllEvidence');
+    try {
+        const res = await fetch('/api/cases/verify_all_evidence', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder }),
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Case-wide evidence verification started.', 'info');
+        } else {
+            showToast(data.error || 'Failed to start verification.', 'danger');
+        }
+    } catch (err) {
+        showToast(`Failed: ${err.message}`, 'danger');
+    }
 }
 
 // --- Case Timeline (B1) ------------------------------------------------------------------
@@ -11591,6 +11641,26 @@ async function fetchProgress() {
         }
         if (document.getElementById("explorerImageTriageBtn")) document.getElementById("explorerImageTriageBtn").disabled = data.active;
         if (document.getElementById("explorerImageGeoBtn")) document.getElementById("explorerImageGeoBtn").disabled = data.active;
+
+        // Case-wide "Verify All Evidence" (A4) - same one-shared-job mirror pattern as the
+        // Mobile/Explorer blocks above, scoped to its own format so it never shows stale
+        // progress from an unrelated job.
+        const verifyProgress = document.getElementById("verifyAllEvidenceProgress");
+        const verifyBtn = document.getElementById("btnVerifyAllEvidence");
+        if (verifyBtn) verifyBtn.disabled = data.active;
+        if (data.format === "verify_all_evidence" && data.active) {
+            if (verifyProgress) verifyProgress.style.display = 'block';
+            if (document.getElementById("verifyAllEvidenceStatus")) document.getElementById("verifyAllEvidenceStatus").innerText = `Status: ${data.status}`;
+            if (document.getElementById("verifyAllEvidenceBar")) document.getElementById("verifyAllEvidenceBar").style.width = `${data.progress_percent}%`;
+        } else if (verifyProgress) {
+            verifyProgress.style.display = 'none';
+        }
+        // On the exact active->inactive transition for this format, re-load the case so
+        // renderCaseDashboard()/renderVerifyAllEvidenceLastResult() pick up the fresh
+        // last_verification result the job just wrote - not on every poll, just once.
+        if (data.format === "verify_all_evidence" && lastImageJobActiveByFormat["verify_all_evidence"] && !data.active && activeCase) {
+            loadCaseForEditing();
+        }
 
         // The progress row above hides the instant the job goes inactive,
         // which could hide a "Completed Successfully"/"Failed"/"Stopped"
