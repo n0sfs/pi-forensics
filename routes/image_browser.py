@@ -52,6 +52,9 @@ from core.case_index_db import (
 from core.browser_artifacts import (
     BROWSER_ARTIFACT_FILENAMES, BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES, parse_browser_profile_file,
 )
+from core.registry_utils import REGISTRY_HIVE_FILENAMES, REGISTRY_SCAN_MAX_CANDIDATES, parse_registry_hive_file
+from core.evtx_utils import EVTX_EXTENSION, EVTX_SCAN_MAX_CANDIDATES, parse_evtx_file
+from core.lnk_utils import parse_lnk_file
 
 image_browser_bp = Blueprint('image_browser', __name__)
 
@@ -975,6 +978,202 @@ def image_parse_browser_artifacts():
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+IMAGE_REGISTRY_EVTX_MAX_WALKED_SECONDS = 300  # same backstop image_parse_browser_artifacts() above already uses
+
+def _image_scan_candidate_files(image_path, matcher, max_candidates):
+    """Shared whole-image walk for both Registry and EVTX in-image scans -
+    matcher(entry_name) -> bool decides what counts as a candidate (exact
+    hive basename match for Registry, .evtx extension match for EVTX).
+    Returns (candidates, truncated) where each candidate is
+    (fs, fsinfo, entry, in-image path)."""
+    filesystems = _tsk_resolve_filesystems(image_path)
+    if not filesystems:
+        return None, False
+    start_time = time.time()
+    candidates = []
+    truncated = False
+    for fsinfo in filesystems:
+        try:
+            fs = _tsk_open_fs(image_path, fsinfo['offset'])
+        except Exception:
+            continue
+        for entry, path in _tsk_walk(fs):
+            if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
+                continue
+            if time.time() - start_time > IMAGE_REGISTRY_EVTX_MAX_WALKED_SECONDS:
+                truncated = True
+                break
+            if matcher(entry['name']):
+                candidates.append((fs, fsinfo, entry, path))
+                if len(candidates) >= max_candidates:
+                    truncated = True
+                    break
+        if truncated:
+            break
+    return candidates, truncated
+
+@image_browser_bp.route('/api/image/parse_registry', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_registry():
+    """In-image counterpart to parse_registry() (routes/file_explorer.py) -
+    same extract-to-temp-then-parse pattern image_parse_browser_artifacts()
+    above already established."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    upper_names = {n.upper() for n in REGISTRY_HIVE_FILENAMES}
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, lambda name: name.upper() in upper_names, REGISTRY_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+            records = parse_registry_hive_file(tmp_path, entry['name'])
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("registry_hives_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_evtx', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_evtx():
+    """In-image counterpart to parse_evtx() (routes/file_explorer.py)."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, lambda name: name.lower().endswith(EVTX_EXTENSION), EVTX_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']), suffix='.evtx')
+            records = parse_evtx_file(tmp_path)
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("evtx_files_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_lnk', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_lnk():
+    """In-image counterpart to parse_lnk() (routes/file_explorer.py) - one
+    selected in-image .lnk file, same extract-to-temp-then-parse pattern
+    image_strings() below already uses for a single selected file."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    name_hint = req.get('name', '') or 'selected_file.lnk'
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix='.lnk')
+        records = parse_lnk_file(tmp_path, name_hint=name_hint)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read file: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    if case_folder and records:
+        _record_parsed_artifacts(case_folder, {
+            "source_type": "image", "image_path": image_path, "fs_offset": offset,
+            "inode": str(inode), "path": req.get('path'),
+        }, records)
+
+    log_chain_of_custody("lnk_file_parsed_image", {"image_path": image_path, "inode": str(inode), "name": name_hint, "parsed": bool(records)})
+    return jsonify({
+        "success": bool(records), "record": records[0] if records else None,
+        "indexed": bool(case_folder and records),
+        "error": None if records else "Could not parse this file as a valid .lnk shortcut.",
     })
 
 # --- Filesystem-aware triage scan, directly against an acquired image ---
