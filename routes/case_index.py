@@ -141,6 +141,14 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "evtx_process_creation": "Event Log: Process Creation", "evtx_account_created": "Event Log: Account Created",
     "evtx_service_installed": "Event Log: Service Installed", "evtx_audit_log_cleared": "Event Log: Audit Log Cleared",
     "lnk_shortcut": "LNK Shortcuts",
+    # Follow-up (2026-08-25) - Amcache (a 4th registry hive, folded into
+    # the existing registry_utils.py dispatch), Prefetch, and Recycle Bin -
+    # the same "add every new artifact_type here or the row-fetch route
+    # silently returns nothing for it" gate this comment already warns
+    # about above.
+    "registry_amcache": "Registry: Amcache Application Inventory",
+    "prefetch_execution": "Prefetch: Program Execution",
+    "recyclebin_deleted_file": "Recycle Bin: Deleted Files",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])

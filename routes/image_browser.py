@@ -57,6 +57,8 @@ from core.browser_artifacts import (
 )
 from core.registry_utils import REGISTRY_HIVE_FILENAMES, REGISTRY_SCAN_MAX_CANDIDATES, parse_registry_hive_file
 from core.evtx_utils import EVTX_EXTENSION, EVTX_SCAN_MAX_CANDIDATES, parse_evtx_file
+from core.prefetch_utils import PREFETCH_EXTENSION, PREFETCH_SCAN_MAX_CANDIDATES, parse_prefetch_file
+from core.recyclebin_utils import RECYCLEBIN_SCAN_MAX_CANDIDATES, parse_recyclebin_file
 from core.lnk_utils import parse_lnk_file
 
 image_browser_bp = Blueprint('image_browser', __name__)
@@ -1065,10 +1067,13 @@ def image_parse_browser_artifacts():
 IMAGE_REGISTRY_EVTX_MAX_WALKED_SECONDS = 300  # same backstop image_parse_browser_artifacts() above already uses
 
 def _image_scan_candidate_files(image_path, matcher, max_candidates):
-    """Shared whole-image walk for both Registry and EVTX in-image scans -
-    matcher(entry_name) -> bool decides what counts as a candidate (exact
-    hive basename match for Registry, .evtx extension match for EVTX).
-    Returns (candidates, truncated) where each candidate is
+    """Shared whole-image walk for Registry/EVTX/Prefetch/Recycle Bin
+    in-image scans - matcher(entry_name, in_image_path) -> bool decides
+    what counts as a candidate (exact hive basename match for Registry,
+    extension match for EVTX/Prefetch, basename+parent-directory-name
+    match for Recycle Bin - the second argument exists specifically for
+    that last case, unused by every other matcher). Returns
+    (candidates, truncated) where each candidate is
     (fs, fsinfo, entry, in-image path)."""
     filesystems = _tsk_resolve_filesystems(image_path)
     if not filesystems:
@@ -1087,7 +1092,7 @@ def _image_scan_candidate_files(image_path, matcher, max_candidates):
             if time.time() - start_time > IMAGE_REGISTRY_EVTX_MAX_WALKED_SECONDS:
                 truncated = True
                 break
-            if matcher(entry['name']):
+            if matcher(entry['name'], path):
                 candidates.append((fs, fsinfo, entry, path))
                 if len(candidates) >= max_candidates:
                     truncated = True
@@ -1114,7 +1119,7 @@ def image_parse_registry():
 
     upper_names = {n.upper() for n in REGISTRY_HIVE_FILENAMES}
     candidates, truncated = _image_scan_candidate_files(
-        image_path, lambda name: name.upper() in upper_names, REGISTRY_SCAN_MAX_CANDIDATES)
+        image_path, lambda name, path: name.upper() in upper_names, REGISTRY_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
 
@@ -1168,7 +1173,7 @@ def image_parse_evtx():
         case_folder = None
 
     candidates, truncated = _image_scan_candidate_files(
-        image_path, lambda name: name.lower().endswith(EVTX_EXTENSION), EVTX_SCAN_MAX_CANDIDATES)
+        image_path, lambda name, path: name.lower().endswith(EVTX_EXTENSION), EVTX_SCAN_MAX_CANDIDATES)
     if candidates is None:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
 
@@ -1199,6 +1204,127 @@ def image_parse_evtx():
             }, records)
 
     log_chain_of_custody("evtx_files_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_prefetch', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_prefetch():
+    """In-image counterpart to parse_prefetch() (routes/file_explorer.py)."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, lambda name, path: name.lower().endswith(PREFETCH_EXTENSION), PREFETCH_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']), suffix='.pf')
+            records = parse_prefetch_file(tmp_path)
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("prefetch_files_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_recyclebin', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_recyclebin():
+    """In-image counterpart to parse_recyclebin() (routes/file_explorer.py) -
+    the matcher checks both the entry's own name (starts with '$I') and
+    whether '$Recycle.Bin' appears anywhere in its in-image ancestor path
+    (a real $I file's immediate parent is always a per-SID subfolder, e.g.
+    '$Recycle.Bin/S-1-5-21-.../$IABCDEF.txt', never '$Recycle.Bin' itself -
+    the same real bug core/recyclebin_utils.py's find_recyclebin_files()
+    was caught and fixed for before either was exercised against real
+    data), which is exactly why _image_scan_candidate_files()'s matcher
+    signature carries the full in-image path alongside the bare filename."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    def _is_recyclebin_candidate(name, path):
+        if not name.upper().startswith('$I'):
+            return False
+        return any(p.lower() == '$recycle.bin' for p in path.split('/'))
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, _is_recyclebin_candidate, RECYCLEBIN_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+            records = parse_recyclebin_file(tmp_path)
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("recyclebin_files_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
         "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
     })
