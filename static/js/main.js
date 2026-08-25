@@ -1352,7 +1352,7 @@ function explorerTreeImageAdapter() {
 // log) to warrant its own. Keeping case_role itself more granular than the
 // grouping (see core/paths.py) matters for auto-tagging these into the
 // case database, even though the tree only needs the coarser split.
-const CASE_ROLE_TREE_GROUP = { report: 'artifacts', analysis_log: 'artifacts', backup: 'artifacts', geolocation: 'geolocation' };
+const CASE_ROLE_TREE_GROUP = { report: 'artifacts', analysis_log: 'artifacts', backup: 'artifacts', case_bundle: 'artifacts', geolocation: 'geolocation' };
 
 function buildExplorerTreeDivider() {
     const divider = document.createElement('li');
@@ -3910,6 +3910,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     image_conversion: (status) => `Image conversion finished: ${status}\n\nSee the report event's "Hash Verified" field for whether the independently-computed source/output hashes matched.`,
     memory_forensics_scan: (status) => `Memory forensics scan finished: ${status}\n\nClick a *_vol3_<plugin>.json file next to the image in File Explorer to view its results.`,
     verify_all_evidence: (status) => `Case-wide evidence verification finished: ${status}\n\nSee the Overview tab in Reporting for the full result.`,
+    case_bundle_export: (status) => `Case bundle export finished: ${status}\n\nCheck the case folder for the generated *_case_bundle_<timestamp>.zip file.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
 
@@ -6655,6 +6656,34 @@ function renderVerifyAllEvidenceLastResult() {
     el.className = mismatches > 0 ? 'small mt-2 text-danger fw-bold' : 'small mt-2 text-subtle';
     el.textContent = `Last verified ${lv.timestamp || '--'}: ${matches} match(es), ${mismatches} mismatch(es), `
         + `${unverifiable} unverifiable, ${skipped.length} not checkable by this tool.`; // static/derived text only
+}
+
+async function startCaseBundleExport() {
+    if (!activeCase) {
+        showToast('Select an active case first.', 'warning');
+        return;
+    }
+    const includeImages = document.getElementById('bundleIncludeImages')?.checked || false;
+    const warnExtra = includeImages
+        ? '\n\nRaw acquisition images are INCLUDED - this bundle may be very large and will block new acquisition/recovery jobs for a while.'
+        : '\n\nRaw acquisition images are excluded from this bundle (check the box above to include them).';
+    if (!confirm(`Zip the entire case folder for archival/handoff?\n\nThis runs as a background job and uses the one station-wide job slot.${warnExtra}`)) {
+        return;
+    }
+    try {
+        const res = await fetch('/api/cases/export_bundle', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder, include_images: includeImages }),
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Case bundle export started.', 'info');
+        } else {
+            showToast(data.error || 'Failed to start bundle export.', 'danger');
+        }
+    } catch (err) {
+        showToast(`Failed: ${err.message}`, 'danger');
+    }
 }
 
 async function startVerifyAllEvidence() {
@@ -11660,6 +11689,18 @@ async function fetchProgress() {
         // last_verification result the job just wrote - not on every poll, just once.
         if (data.format === "verify_all_evidence" && lastImageJobActiveByFormat["verify_all_evidence"] && !data.active && activeCase) {
             loadCaseForEditing();
+        }
+
+        // Case Bundle Export (A5) - same one-shared-job mirror pattern.
+        const bundleProgress = document.getElementById("caseBundleExportProgress");
+        const bundleBtn = document.getElementById("btnCaseBundleExport");
+        if (bundleBtn) bundleBtn.disabled = data.active;
+        if (data.format === "case_bundle_export" && data.active) {
+            if (bundleProgress) bundleProgress.style.display = 'block';
+            if (document.getElementById("caseBundleExportStatus")) document.getElementById("caseBundleExportStatus").innerText = `Status: ${data.status}`;
+            if (document.getElementById("caseBundleExportBar")) document.getElementById("caseBundleExportBar").style.width = `${data.progress_percent}%`;
+        } else if (bundleProgress) {
+            bundleProgress.style.display = 'none';
         }
 
         // The progress row above hides the instant the job goes inactive,

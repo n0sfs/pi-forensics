@@ -150,6 +150,7 @@ _CASE_ROLE_REPORT_SUFFIXES = (
     '_report.json',  # legacy per-job report (pre-consolidated-schema cases)
 )
 _CASE_ROLE_ANALYSIS_LOG_RE = re.compile(r'(_hash_manifest_\w+\.txt|_triage_scan_report\.txt|_vol3_\w+\.json)$')
+_CASE_ROLE_BUNDLE_RE = re.compile(r'_case_bundle_\d{8}-\d{6}\.zip$')
 
 def classify_case_role(name):
     """Best-effort classification of a filename as one of this app's own
@@ -157,16 +158,22 @@ def classify_case_role(name):
     and their .sha256 sidecars, the per-case SQLite index, a legacy per-job
     report), 'analysis_log' (a hash-manifest report, a triage-scan report,
     or a Volatility3 memory-forensics plugin result), 'geolocation' (a
-    .kml), 'backup' (a pre-consolidation/pre-restore snapshot), or None for
-    anything that isn't a recognized artifact kind
-    (real evidence, an examiner-added note, etc.). Deliberately narrow and
-    pattern-matched against this app's own actual naming conventions, not a
-    general file-type classifier - see classify_extension() above for that.
-    Used to visually group these files in File Explorer's folder tree
-    (case_role dividers, separate from actual case data) and to auto-tag
-    them into the per-case analysis index at the moment each is generated.
+    .kml), 'backup' (a pre-consolidation/pre-restore snapshot), 'case_bundle'
+    (a Case Bundle Export zip - matched by its own timestamped naming
+    pattern, NOT the plain .zip extension, which classify_extension()
+    already treats as a generic 'archives' file an examiner might have
+    added themselves), or None for anything that isn't a recognized
+    artifact kind (real evidence, an examiner-added note, etc.).
+    Deliberately narrow and pattern-matched against this app's own actual
+    naming conventions, not a general file-type classifier - see
+    classify_extension() above for that. Used to visually group these
+    files in File Explorer's folder tree (case_role dividers, separate
+    from actual case data) and to auto-tag them into the per-case analysis
+    index at the moment each is generated.
     """
     lower = name.lower()
+    if _CASE_ROLE_BUNDLE_RE.search(name):
+        return 'case_bundle'
     if lower.endswith(_CASE_ROLE_BACKUP_SUFFIXES):
         return 'backup'
     if name == 'case_info.json' or lower.endswith(tuple(s.lower() for s in _CASE_ROLE_REPORT_SUFFIXES)):
