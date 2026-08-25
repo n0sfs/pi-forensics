@@ -298,7 +298,12 @@ CREATE TABLE IF NOT EXISTS tags (
 -- app's own housekeeping output apart from real evidence, split by kind,
 -- without a separate mechanism. (Originally one lump 'Case Artifact' tag -
 -- split into these four; see _migrate_legacy_case_artifact_tag below for
--- the one-time per-case migration off the old name.)
+-- the one-time per-case migration off the old name.) 'Case Bundle Export'
+-- is a genuinely separate fifth role, not a reuse of 'Backup Snapshot' -
+-- classify_case_role() only recognizes the two exact
+-- .pre_consolidation_backup/.pre_restore_backup suffixes as 'backup', which
+-- a bundle zip's own timestamped filename never matches, so reusing that
+-- tag would have silently no-op'd (confirmed before this was added).
 INSERT OR IGNORE INTO tags (name, color, notable, is_default, created_at) VALUES
     ('Bookmark', 'info', 0, 1, datetime('now')),
     ('Follow Up', 'warning', 0, 1, datetime('now')),
@@ -306,7 +311,8 @@ INSERT OR IGNORE INTO tags (name, color, notable, is_default, created_at) VALUES
     ('Report Export', 'secondary', 0, 1, datetime('now')),
     ('Analysis Log / Hash', 'secondary', 0, 1, datetime('now')),
     ('Geolocation Export', 'secondary', 0, 1, datetime('now')),
-    ('Backup Snapshot', 'secondary', 0, 1, datetime('now'));
+    ('Backup Snapshot', 'secondary', 0, 1, datetime('now')),
+    ('Case Bundle Export', 'secondary', 0, 1, datetime('now'));
 
 CREATE TABLE IF NOT EXISTS tagged_items (
     id INTEGER PRIMARY KEY,
@@ -606,6 +612,7 @@ CASE_ROLE_TAG_NAMES = {
     'analysis_log': 'Analysis Log / Hash',
     'geolocation': 'Geolocation Export',
     'backup': 'Backup Snapshot',
+    'case_bundle': 'Case Bundle Export',
 }
 
 def _auto_tag_case_artifact(case_folder, file_path):
