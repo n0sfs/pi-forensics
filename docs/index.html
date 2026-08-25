@@ -320,7 +320,7 @@
 <div class="spec-strip">
   <div class="wrap spec-grid">
     <div class="spec-item"><b>10</b><span>Acquisition formats &mdash; dc3dd, dcfldd, dd, E01, AFF, ddrescue, plus iOS backup and Android pull/backup/bugreport</span></div>
-    <div class="spec-item"><b>21</b><span>Forensic tools integrated &mdash; from dc3dd to The Sleuth Kit to MVT, version-checked from Settings</span></div>
+    <div class="spec-item"><b>21</b><span>Forensic tools integrated &mdash; from dc3dd to The Sleuth Kit to Volatility3, version-checked from Settings</span></div>
     <div class="spec-item"><b>3</b><span>Hash algorithms verified on every acquisition &mdash; MD5 / SHA-1 / SHA-256</span></div>
   </div>
 </div>
@@ -347,7 +347,7 @@
         <h3>An ARM board and this software</h3>
         <ul>
           <li>A Raspberry Pi or comparable ARM SBC, storage, and a USB write-blocker adapter &mdash; commodity hardware</li>
-          <li>The same acquisition engines examiners already trust (dc3dd, ewfacquire, ddrescue, PhotoRec, The Sleuth Kit, ExifTool, MVT) wired together, not reimplemented</li>
+          <li>The same acquisition engines examiners already trust (dc3dd, ewfacquire, ddrescue, PhotoRec, The Sleuth Kit, ExifTool, MVT, Volatility3) wired together, not reimplemented</li>
           <li>Self-hosted and GPLv3 &mdash; inspect it, extend it, run it entirely offline</li>
         </ul>
       </div>
@@ -368,7 +368,7 @@
       <div class="feat-card">
         <span class="tag">01 &mdash; ACQUISITION</span>
         <h3>Bit-for-bit imaging</h3>
-        <p>dc3dd, dcfldd, plain dd, E01, and AFF, plus ddrescue for failing drives with a Mapfile Inspector. MD5/SHA-1/SHA-256 verification on every job, with every USB device write-blocked by default.</p>
+        <p>dc3dd, dcfldd, plain dd, E01, and AFF, plus ddrescue for failing drives with a Mapfile Inspector. BitLocker/LUKS-encrypted sources unlock directly, a read-only Live Preview lets you look before you image, and raw&harr;E01 conversion runs after the fact. MD5/SHA-1/SHA-256 verification on every job, every USB device write-blocked by default.</p>
       </div>
       <div class="feat-card">
         <span class="tag">02 &mdash; RECOVERY</span>
@@ -383,7 +383,7 @@
       <div class="feat-card">
         <span class="tag">04 &mdash; FILE EXPLORER</span>
         <h3>Browse inside an image</h3>
-        <p>An in-process Sleuth Kit engine (pytsk3) walks a real folder tree down to individual files &mdash; recursive search, a MACB timeline, hex dumps, EXIF/GPS metadata, and an inline KML map, all with no mount step.</p>
+        <p>An in-process Sleuth Kit engine (pytsk3) walks a real folder tree down to individual files &mdash; recursive search, a MACB timeline, hex dumps, EXIF/GPS metadata, and an inline KML map, all with no mount step. Also runs Volatility3 against a captured memory image, and browses a BitLocker/LUKS-decrypted volume the same way.</p>
       </div>
       <div class="feat-card">
         <span class="tag">05 &mdash; REPORTING</span>
