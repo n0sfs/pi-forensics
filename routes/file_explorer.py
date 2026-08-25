@@ -40,6 +40,33 @@ from core.browser_artifacts import find_browser_artifact_files, parse_browser_pr
 from core.registry_utils import find_registry_hive_files, parse_registry_hive_file
 from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
 from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
+from core.linux_artifacts import (
+    find_linux_shell_history_files, parse_linux_shell_history_file,
+    find_linux_passwd_files, parse_linux_passwd_file,
+    find_linux_cron_files, parse_linux_cron_file,
+    find_linux_auth_log_files, parse_linux_auth_log_file,
+    find_linux_wtmp_files, parse_linux_wtmp_file,
+    LINUX_ARTIFACT_DEFAULT_TYPES,
+)
+
+# Dispatcher for the real-fs Linux-artifact route below - keeps the scan
+# loop generic across all 5 types instead of 5 near-identical copy-pasted
+# routes, matching the "one dispatcher, not N copies" precedent already
+# used elsewhere in this app (e.g. EVENT_ID_ALLOWLIST). The in-image
+# counterpart (routes/image_browser.py) uses core.linux_artifacts.
+# LINUX_ARTIFACT_IMAGE_MATCHERS instead, since it drives a different
+# discovery mechanism (_image_scan_candidate_files' single-matcher-
+# callback shape, not a real os.walk). 'wtmp_login' is deliberately not
+# in LINUX_ARTIFACT_DEFAULT_TYPES - it's an Experimental, opt-in-only
+# type (see core/linux_artifacts.py's own module docstring for why),
+# only run when explicitly requested via the 'types' request field.
+LINUX_ARTIFACT_DISCOVERERS = {
+    "shell_history": (find_linux_shell_history_files, parse_linux_shell_history_file),
+    "passwd_account": (find_linux_passwd_files, parse_linux_passwd_file),
+    "cron_job": (find_linux_cron_files, parse_linux_cron_file),
+    "auth_log": (find_linux_auth_log_files, parse_linux_auth_log_file),
+    "wtmp_login": (find_linux_wtmp_files, parse_linux_wtmp_file),
+}
 from core.evtx_utils import find_evtx_files, parse_evtx_file
 from core.lnk_utils import parse_lnk_file
 from core.jobs import job_lock, current_job, update_job, snapshot_job
@@ -809,6 +836,54 @@ def parse_recyclebin():
     })
     return jsonify({
         "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_linux_artifacts', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_linux_artifacts():
+    """Whole-directory scan for Linux forensic artifacts (shell history,
+    /etc/passwd, cron jobs, auth.log, and - only if explicitly requested -
+    the Experimental wtmp/btmp login-record parser) - same shape as the
+    other whole-directory scanners above (core/linux_artifacts.py)."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    requested_types = req.get('types') or LINUX_ARTIFACT_DEFAULT_TYPES
+    requested_types = [t for t in requested_types if t in LINUX_ARTIFACT_DISCOVERERS]
+
+    counts = {}
+    files_parsed = 0
+    candidates_found_total = 0
+    truncated = False
+    for artifact_key in requested_types:
+        find_fn, parse_fn = LINUX_ARTIFACT_DISCOVERERS[artifact_key]
+        candidate_paths, this_truncated = find_fn(target_dir)
+        truncated = truncated or this_truncated
+        candidates_found_total += len(candidate_paths)
+        for path in candidate_paths:
+            records = parse_fn(path)
+            if not records:
+                continue
+            files_parsed += 1
+            for r in records:
+                counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+            if case_folder:
+                _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("linux_artifacts_parsed", {
+        "directory": target_dir, "types": requested_types, "candidates_found": candidates_found_total,
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": candidates_found_total, "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 

@@ -149,6 +149,16 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "registry_amcache": "Registry: Amcache Application Inventory",
     "prefetch_execution": "Prefetch: Program Execution",
     "recyclebin_deleted_file": "Recycle Bin: Deleted Files",
+    # Linux Artifact Parsing (2026-08-25) - this app's first Linux-specific
+    # artifact parsers (core/linux_artifacts.py). wtmp is deliberately
+    # labeled "Experimental" - see that module's own docstring for why
+    # (an architecture/glibc-build-dependent raw struct layout, not a
+    # stable OS-defined wire format like every other binary artifact here).
+    "linux_shell_history": "Linux: Shell History",
+    "linux_passwd_account": "Linux: /etc/passwd Accounts",
+    "linux_cron_job": "Linux: Cron Jobs",
+    "linux_auth_log": "Linux: Auth Log (SSH/sudo/session)",
+    "linux_wtmp_login": "Linux: Login History (wtmp, Experimental)",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])
