@@ -6810,12 +6810,20 @@ function renderCustomReportTemplatesList() {
         const editBtn = document.createElement('button');
         editBtn.className = 'btn btn-xs btn-outline-info py-0 px-2';
         editBtn.innerHTML = '<i class="bi bi-pencil-square"></i>';
+        editBtn.title = 'Edit';
         editBtn.onclick = () => openReportTemplateBuilder(t.id);
+        const dupBtn = document.createElement('button');
+        dupBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
+        dupBtn.innerHTML = '<i class="bi bi-copy"></i>';
+        dupBtn.title = 'Duplicate';
+        dupBtn.onclick = () => duplicateCustomReportTemplate(t.id);
         const delBtn = document.createElement('button');
         delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-2';
         delBtn.innerHTML = '<i class="bi bi-trash3"></i>';
+        delBtn.title = 'Delete';
         delBtn.onclick = () => deleteCustomReportTemplate(t.id);
         btns.appendChild(editBtn);
+        btns.appendChild(dupBtn);
         btns.appendChild(delBtn);
         row.appendChild(name);
         row.appendChild(btns);
@@ -6828,6 +6836,7 @@ function openReportTemplateBuilder(existingId = null) {
     const nameEl = document.getElementById("rtbName");
     const statusEl = document.getElementById("rtbStatus");
     if (statusEl) { statusEl.textContent = ''; statusEl.className = 'small mt-2'; }
+    resetReportTemplateBuilderPreview(); // a stale preview from a previously-edited template must never linger into this one
 
     if (existingId) {
         const record = customReportTemplatesCache.find(t => t.id === existingId);
@@ -6940,6 +6949,73 @@ function moveTemplateBuilderRow(idx, direction) {
     renderReportTemplateBuilderRows();
 }
 
+// Object URL for the builder's own PDF preview, if any - same leak-
+// prevention pattern as exportPreviewObjectUrl (each refresh revokes the
+// previous one before creating a new one).
+let rtbPreviewObjectUrl = null;
+
+function resetReportTemplateBuilderPreview() {
+    const iframe = document.getElementById("rtbPreviewFrame");
+    const statusEl = document.getElementById("rtbPreviewStatus");
+    if (rtbPreviewObjectUrl) { URL.revokeObjectURL(rtbPreviewObjectUrl); rtbPreviewObjectUrl = null; }
+    if (iframe) { iframe.removeAttribute('src'); iframe.style.display = 'none'; }
+    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'small text-subtle'; }
+}
+
+// Renders exactly what this in-progress template would produce, without
+// saving it first - reuses /api/export_report's existing preview:true
+// contract (build the document, return it inline, skip the disk write),
+// extended with an ad-hoc custom_sections override specifically for this
+// not-yet-saved editor state (see export_report()'s own comment on why
+// that's preview-only, never available to a real export). Always previews
+// against the currently active case (matching how the builder is most
+// often reached, from Settings) - if none is active, currentReportPath is
+// unset and this says so rather than attempting a request that can't
+// succeed.
+async function refreshReportTemplateBuilderPreview() {
+    const iframe = document.getElementById("rtbPreviewFrame");
+    const statusEl = document.getElementById("rtbPreviewStatus");
+    if (!iframe || !reportTemplateBuilderEditing) return;
+
+    if (!currentReportPath) {
+        if (statusEl) { statusEl.textContent = 'Select an active case first (top bar) to preview against real data.'; statusEl.className = 'small text-warning'; }
+        return;
+    }
+
+    if (statusEl) { statusEl.textContent = 'Rendering preview...'; statusEl.className = 'small text-info'; }
+
+    const customSections = reportTemplateBuilderEditing.map(r => ({
+        key: r.key, title: r.title || '', enabled: r.enabled !== false,
+        source_field: r.source_field || defaultSourceFieldFor(r.key),
+    }));
+
+    try {
+        const res = await fetch('/api/export_report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report_path: currentReportPath, format: 'pdf', preview: true, custom_sections: customSections })
+        });
+        if (!res.ok) {
+            const data = await res.json();
+            if (statusEl) { statusEl.textContent = `Preview failed: ${data.error}`; statusEl.className = 'small text-danger'; }
+            return;
+        }
+        if (rtbPreviewObjectUrl) { URL.revokeObjectURL(rtbPreviewObjectUrl); rtbPreviewObjectUrl = null; }
+        const blob = await res.blob();
+        rtbPreviewObjectUrl = URL.createObjectURL(blob);
+        // No sandbox for PDF - Chrome's native PDF viewer refuses to render
+        // inside a sandboxed iframe regardless of which tokens are set,
+        // matching the exact same constraint the Export pane's own PDF
+        // preview already documented and worked around.
+        iframe.removeAttribute('sandbox');
+        iframe.src = rtbPreviewObjectUrl;
+        iframe.style.display = '';
+        if (statusEl) { statusEl.textContent = 'Preview rendered.'; statusEl.className = 'small text-success'; }
+    } catch (err) {
+        if (statusEl) { statusEl.textContent = 'Preview request failed.'; statusEl.className = 'small text-danger'; }
+    }
+}
+
 async function saveReportTemplateBuilder() {
     const statusEl = document.getElementById("rtbStatus");
     const name = document.getElementById("rtbName")?.value.trim();
@@ -6976,6 +7052,34 @@ async function saveReportTemplateBuilder() {
         }
     } catch (err) {
         if (statusEl) { statusEl.textContent = 'Request failed.'; statusEl.className = 'small mt-2 text-danger'; }
+    }
+}
+
+// Creates a genuine, independent saved copy immediately (reusing the
+// existing create endpoint's own soft-dedupe-by-name handling for a
+// colliding "Copy of X" name - no new backend route needed), then jumps
+// straight into the builder on that new copy so the examiner can rename/
+// tweak it right away. Duplicating first (not just pre-filling an unsaved
+// draft) means the copy genuinely exists even if the examiner closes the
+// modal without changing anything further - correct duplicate semantics.
+async function duplicateCustomReportTemplate(id) {
+    const record = customReportTemplatesCache.find(t => t.id === id);
+    if (!record) return;
+    try {
+        const res = await fetch('/api/report_templates/custom', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: `Copy of ${record.name}`,
+                sections: record.sections.map(s => ({ ...s })),
+                job_fields: record.job_fields || { telemetry: true, params: true, hashes: true },
+            }),
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(data.error || 'Duplicate failed.', 'danger'); return; }
+        await fetchCustomReportTemplates();
+        openReportTemplateBuilder(data.template.id);
+    } catch (err) {
+        showToast('Request failed.', 'danger');
     }
 }
 
@@ -7229,7 +7333,30 @@ function renderCustomFieldDefsEditor() {
     }
     caseReportingFieldsEditing.forEach((def, idx) => {
         const row = document.createElement('div');
-        row.className = 'd-flex gap-2 mb-2';
+        row.className = 'd-flex gap-2 mb-2 align-items-center';
+
+        // Same tap-to-reorder shape as the Report Template Builder's own
+        // rows (moveTemplateBuilderRow) - this app avoids drag-and-drop
+        // throughout for touchscreen-kiosk reasons, so every reorderable
+        // list here uses this same up/down-arrow convention.
+        const moveWrap = document.createElement('div');
+        moveWrap.className = 'd-flex flex-column';
+        const upBtn = document.createElement('button');
+        upBtn.type = 'button';
+        upBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-1';
+        upBtn.innerHTML = '<i class="bi bi-caret-up-fill"></i>';
+        upBtn.disabled = idx === 0;
+        upBtn.onclick = () => moveCustomFieldDefRow(idx, -1);
+        const downBtn = document.createElement('button');
+        downBtn.type = 'button';
+        downBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-1';
+        downBtn.innerHTML = '<i class="bi bi-caret-down-fill"></i>';
+        downBtn.disabled = idx === caseReportingFieldsEditing.length - 1;
+        downBtn.onclick = () => moveCustomFieldDefRow(idx, 1);
+        moveWrap.appendChild(upBtn);
+        moveWrap.appendChild(downBtn);
+        row.appendChild(moveWrap);
+
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'form-control form-control-sm';
@@ -7257,6 +7384,14 @@ function renderCustomFieldDefsEditor() {
         row.appendChild(delBtn);
         container.appendChild(row);
     });
+}
+
+function moveCustomFieldDefRow(idx, direction) {
+    const target = idx + direction;
+    if (target < 0 || target >= caseReportingFieldsEditing.length) return;
+    const [row] = caseReportingFieldsEditing.splice(idx, 1);
+    caseReportingFieldsEditing.splice(target, 0, row);
+    renderCustomFieldDefsEditor();
 }
 
 function addCustomFieldDefRow() {
