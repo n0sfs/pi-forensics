@@ -7693,12 +7693,23 @@ const CASE_TIMELINE_SOURCE_COLOR = {
     macb: '#0dcaf0', parsed_artifact: '#6c757d',
 };
 const CASE_TIMELINE_SOURCES = ['macb', 'parsed_artifact'];
+// Spelled-out labels for the single-letter MACB codes and the raw
+// artifact_type strings, used only when rendering the interactive table -
+// the underlying data (and the PDF/HTML report's own Filesystem Timeline
+// section, which reuses the same backend collector) keeps the compact "M"/
+// "A"/"C"/"B" codes unchanged, this is presentation-only. Parsed-artifact
+// rows reuse FILE_VIEWS_WEB_ARTIFACT_LABELS (defined above) rather than a
+// second copy of the same type->label mapping.
+const MACB_ACTIVITY_LABEL = { M: 'Modified', A: 'Accessed', C: 'Changed', B: 'Created (Born)' };
+let caseTimelineEvidenceFilter = '__all__'; // '__all__' | a real evidence_id string
+let caseTimelineFilteredRows = [];          // the table's currently-visible rows, stashed for CSV export
 
 async function loadCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
     if (!body || !activeCase) return;
     body.innerHTML = '<tr><td colspan="4" class="text-subtle p-2">Building timeline...</td></tr>';
-    caseTimelineBucketFilter = null; // a fresh case load shouldn't carry over a stale drill-down from a previous case
+    caseTimelineBucketFilter = null;   // a fresh case load shouldn't carry over a stale drill-down from a previous case
+    caseTimelineEvidenceFilter = '__all__';
     try {
         const res = await fetch(`/api/cases/timeline?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
         const data = await res.json();
@@ -7707,10 +7718,29 @@ async function loadCaseTimeline() {
             return;
         }
         caseTimelineCache = data;
+        populateCaseTimelineEvidenceFilter(data.events);
         renderCaseTimeline();
     } catch (err) {
         body.innerHTML = '<tr><td colspan="4" class="text-danger p-2">Request failed.</td></tr>';
     }
+}
+
+function populateCaseTimelineEvidenceFilter(events) {
+    const sel = document.getElementById('caseTimelineEvidenceSelect');
+    if (!sel) return;
+    const ids = [...new Set(events.map((e) => e.evidence_id).filter(Boolean))].sort();
+    sel.innerHTML = '';
+    const allOpt = document.createElement('option');
+    allOpt.value = '__all__';
+    allOpt.textContent = 'All Evidence Items';
+    sel.appendChild(allOpt);
+    ids.forEach((id) => {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = id; // examiner-entered evidence_id, but option.textContent is always a safe text node
+        sel.appendChild(opt);
+    });
+    sel.value = '__all__';
 }
 
 // --- Evidence Timeline density chart - a stacked bar chart of event counts per
@@ -7775,15 +7805,16 @@ function renderCaseTimelineChart(rows) {
     const timestamps = rows.map((e) => e.timestamp);
     const granularity = pickTimelineGranularity(Math.min(...timestamps), Math.max(...timestamps));
 
-    const bucketMap = new Map(); // bucket-start epoch ms -> {start, end, label, counts:{source:n}}
+    const bucketMap = new Map(); // bucket-start epoch ms -> {start, end, label, counts:{source:n}, suspiciousCount}
     rows.forEach((e) => {
         const start = timelineBucketStart(e.timestamp * 1000, granularity);
         const key = start.getTime();
         if (!bucketMap.has(key)) {
-            bucketMap.set(key, { start, end: timelineBucketEnd(start, granularity), label: timelineBucketLabel(start, granularity), counts: {} });
+            bucketMap.set(key, { start, end: timelineBucketEnd(start, granularity), label: timelineBucketLabel(start, granularity), counts: {}, suspiciousCount: 0 });
         }
         const bucket = bucketMap.get(key);
         bucket.counts[e.source] = (bucket.counts[e.source] || 0) + 1;
+        if (e.suspicious) bucket.suspiciousCount += 1;
     });
     caseTimelineBuckets = [...bucketMap.values()].sort((a, b) => a.start - b.start);
 
@@ -7814,7 +7845,15 @@ function renderCaseTimelineChart(rows) {
             },
             plugins: {
                 legend: { labels: { color: '#cbd5e1', boxWidth: 12, font: { size: 11 } } },
-                tooltip: { callbacks: { title: (items) => (items[0] ? caseTimelineBuckets[items[0].dataIndex]?.label : '') || '' } },
+                tooltip: {
+                    callbacks: {
+                        title: (items) => (items[0] ? caseTimelineBuckets[items[0].dataIndex]?.label : '') || '',
+                        afterBody: (items) => {
+                            const b = items[0] ? caseTimelineBuckets[items[0].dataIndex] : null;
+                            return b && b.suspiciousCount ? [`⚠ ${b.suspiciousCount} suspicious event(s) in this bucket`] : [];
+                        },
+                    },
+                },
             },
             onClick: (evt, elements) => {
                 if (!elements.length) return;
@@ -7824,6 +7863,36 @@ function renderCaseTimelineChart(rows) {
                 renderCaseTimeline();
             },
         },
+        // A small red dot above any bucket containing a "suspicious" event
+        // (currently just an EVTX 1102 audit-log-cleared record - see
+        // CASE_TIMELINE_SUSPICIOUS_ARTIFACT_TYPES in routes/reporting.py).
+        // A plain Chart.js plugin, not a new dependency - reads
+        // caseTimelineBuckets fresh on every draw, so it stays correct
+        // across both chart creation and every later .update() call with no
+        // extra wiring needed.
+        plugins: [{
+            id: 'caseTimelineSuspiciousMarker',
+            afterDatasetsDraw(chart) {
+                const buckets = caseTimelineBuckets;
+                if (!buckets.length) return;
+                const topMeta = chart.getDatasetMeta(chart.data.datasets.length - 1);
+                const ctx = chart.ctx;
+                ctx.save();
+                buckets.forEach((b, i) => {
+                    if (!b.suspiciousCount) return;
+                    const el = topMeta.data[i];
+                    if (!el) return;
+                    ctx.fillStyle = '#ff4d4f';
+                    ctx.strokeStyle = '#1a0000';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.arc(el.x, el.y - 10, 4, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+                });
+                ctx.restore();
+            },
+        }],
     });
 }
 
@@ -7840,10 +7909,15 @@ function renderCaseTimeline() {
     const enabledSources = new Set(
         [...document.querySelectorAll('.case-timeline-source-check:checked')].map((el) => el.value)
     );
-    const sourceFiltered = caseTimelineCache.events.filter((e) => enabledSources.has(e.source));
-    renderCaseTimelineChart(sourceFiltered);
+    const evidenceSel = document.getElementById('caseTimelineEvidenceSelect');
+    caseTimelineEvidenceFilter = evidenceSel ? evidenceSel.value : '__all__';
 
-    let rows = sourceFiltered;
+    let rows = caseTimelineCache.events.filter((e) => enabledSources.has(e.source));
+    if (caseTimelineEvidenceFilter !== '__all__') {
+        rows = rows.filter((e) => e.evidence_id === caseTimelineEvidenceFilter);
+    }
+    renderCaseTimelineChart(rows); // chart reflects source + evidence-item filters, never the bucket-click drill-down below (so every bucket stays clickable)
+
     const filterIndicator = document.getElementById('caseTimelineFilterIndicator');
     if (caseTimelineBucketFilter) {
         rows = rows.filter((e) => e.timestamp >= caseTimelineBucketFilter.start && e.timestamp < caseTimelineBucketFilter.end);
@@ -7854,6 +7928,8 @@ function renderCaseTimeline() {
     } else if (filterIndicator) {
         filterIndicator.style.display = 'none';
     }
+
+    caseTimelineFilteredRows = rows; // whatever's currently visible in the table - CSV export reads this directly, no separate filter pass
 
     if (notesEl) {
         const noteLines = [...(caseTimelineCache.notes || [])];
@@ -7870,6 +7946,15 @@ function renderCaseTimeline() {
     body.innerHTML = '';
     rows.forEach((e) => {
         const tr = document.createElement('tr');
+        if (e.suspicious) {
+            // Inline style, not a Bootstrap .table-danger class - this app's
+            // tables are already .table-dark, and layering a light-mode
+            // utility class on top of that has bitten this project before
+            // (see CLAUDE.md's repeated ".d-flex !important" gotcha for the
+            // same class of Bootstrap-vs-custom-dark-theme conflict). A
+            // plain translucent red composites correctly over any theme.
+            tr.style.backgroundColor = 'rgba(220, 53, 69, 0.18)';
+        }
 
         const tsTd = document.createElement('td');
         tsTd.className = 'text-nowrap';
@@ -7880,9 +7965,17 @@ function renderCaseTimeline() {
         badge.className = `badge ${CASE_TIMELINE_SOURCE_BADGE[e.source] || 'bg-secondary'}`;
         badge.textContent = CASE_TIMELINE_SOURCE_LABEL[e.source] || e.source;
         srcTd.appendChild(badge);
+        if (e.deleted) {
+            const delBadge = document.createElement('span');
+            delBadge.className = 'badge bg-danger ms-1';
+            delBadge.textContent = 'Deleted';
+            srcTd.appendChild(delBadge);
+        }
 
         const actTd = document.createElement('td');
-        actTd.textContent = e.activity || '';
+        const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
+                                                    : (FILE_VIEWS_WEB_ARTIFACT_LABELS[e.activity] || e.activity);
+        actTd.textContent = e.suspicious ? `⚠ ${activityLabel || ''}` : (activityLabel || '');
 
         const detailTd = document.createElement('td');
         detailTd.textContent = e.evidence_id ? `[${e.evidence_id}] ${e.detail || ''}` : (e.detail || '');
@@ -7893,6 +7986,40 @@ function renderCaseTimeline() {
         tr.appendChild(detailTd);
         body.appendChild(tr);
     });
+}
+
+function exportCaseTimelineCsv() {
+    if (!caseTimelineFilteredRows.length) {
+        showToast('No timeline rows to export - check your current filters.', 'warning');
+        return;
+    }
+    const csvCell = (val) => {
+        const s = (val === null || val === undefined) ? '' : String(val);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = ['Timestamp', 'Source', 'Activity', 'Detail', 'Evidence ID', 'Deleted', 'Suspicious'];
+    const lines = [header];
+    caseTimelineFilteredRows.forEach((e) => {
+        const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
+                                                    : (FILE_VIEWS_WEB_ARTIFACT_LABELS[e.activity] || e.activity);
+        lines.push([
+            new Date(e.timestamp * 1000).toLocaleString(),
+            CASE_TIMELINE_SOURCE_LABEL[e.source] || e.source,
+            activityLabel || '', e.detail || '', e.evidence_id || '',
+            e.deleted ? 'Yes' : 'No', e.suspicious ? 'Yes' : 'No',
+        ]);
+    });
+    const csvText = lines.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+    const blob = new Blob([csvText], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const caseLabel = (activeCase && activeCase.case_number ? activeCase.case_number : 'case').replace(/[^a-zA-Z0-9_-]+/g, '_');
+    a.download = `${caseLabel}_evidence_timeline.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
 }
 
 // --- Case Notes: timestamped, append-only journal (Forensic Analysis / Steps Taken) ---
