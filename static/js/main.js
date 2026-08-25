@@ -8161,6 +8161,12 @@ const CASE_STATUS_BADGE_CLASS = {
     'Archived': 'bg-dark border border-secondary text-subtle',
 };
 
+// Fetched once per loadExistingCases() call, then filtered client-side by renderCaseList() as the
+// examiner types/picks a status - the list is already small and already fully fetched in one call
+// (routes/case_management.py's /api/cases/list has no pagination/query-param support at all), so
+// re-fetching per keystroke would be pure waste. null until the first successful fetch.
+let caseManagerCasesCache = null;
+
 async function loadExistingCases() {
     const listEl = document.getElementById("caseList");
     if (!listEl) return;
@@ -8173,63 +8179,90 @@ async function loadExistingCases() {
             listEl.innerHTML = `<div class="text-danger small p-2">${data.error}</div>`;
             return;
         }
-        if (data.cases.length === 0) {
-            listEl.innerHTML = '<div class="text-subtle small p-2">No cases found yet - create one above.</div>';
-            return;
-        }
-
-        listEl.innerHTML = '';
-        data.cases.forEach(c => {
-            // A plain div, not a <button>, because legacy rows nest their
-            // own Migrate <button> inside it below - button-in-button is
-            // invalid HTML.
-            const btn = document.createElement("div");
-            btn.className = "list-group-item list-group-item-action bg-dark text-light border-secondary py-2";
-            btn.style.cursor = 'pointer';
-
-            const topRow = document.createElement('div');
-            topRow.className = 'd-flex justify-content-between align-items-center';
-            const nameSpan = document.createElement('span');
-            nameSpan.className = 'fw-bold text-info';
-            nameSpan.appendChild(document.createTextNode(c.case_number)); // examiner-entered, text-only
-            const statusBadge = document.createElement('span');
-            statusBadge.className = `badge ms-2 ${CASE_STATUS_BADGE_CLASS[c.case_status] || 'bg-info text-dark'}`;
-            statusBadge.textContent = (c.case_status || 'Open').toUpperCase();
-            nameSpan.appendChild(statusBadge);
-            if (c.schema === 'legacy') {
-                const legacyBadge = document.createElement('span');
-                legacyBadge.className = 'badge bg-warning text-dark ms-2';
-                legacyBadge.textContent = 'LEGACY';
-                nameSpan.appendChild(legacyBadge);
-            }
-            const dateSpan = document.createElement('small');
-            dateSpan.className = 'text-subtle';
-            dateSpan.textContent = c.created_at;
-            topRow.appendChild(nameSpan);
-            topRow.appendChild(dateSpan);
-
-            const subRow = document.createElement('div');
-            subRow.className = 'small text-subtle font-monospace';
-            subRow.appendChild(document.createTextNode(`${c.examiner || '--'} · ${c.case_folder}`));
-
-            btn.appendChild(topRow);
-            btn.appendChild(subRow);
-            btn.onclick = () => selectCase(c);
-
-            if (c.schema === 'legacy') {
-                const migrateBtn = document.createElement('button');
-                migrateBtn.type = 'button';
-                migrateBtn.className = 'btn btn-xs btn-outline-warning py-0 px-2 mt-2';
-                migrateBtn.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>Migrate to Consolidated Format';
-                migrateBtn.onclick = (ev) => { ev.stopPropagation(); migrateCase(c); };
-                btn.appendChild(migrateBtn);
-            }
-
-            listEl.appendChild(btn);
-        });
+        caseManagerCasesCache = data.cases;
+        renderCaseList();
     } catch (err) {
         listEl.innerHTML = '<div class="text-danger small p-2">Request failed.</div>';
     }
+}
+
+// Applies the search text + status dropdown (both above #caseList) to the already-fetched
+// caseManagerCasesCache and rebuilds the row list - called on every filter change AND once after
+// each real fetch, so it's the one place that actually builds #caseList's rows.
+function renderCaseList() {
+    const listEl = document.getElementById("caseList");
+    if (!listEl || !caseManagerCasesCache) return;
+
+    const searchTerm = (document.getElementById("caseSearchFilter")?.value || '').trim().toLowerCase();
+    const statusFilter = document.getElementById("caseStatusFilter")?.value || '__active__';
+
+    const cases = caseManagerCasesCache.filter(c => {
+        const status = c.case_status || 'Open';
+        if (statusFilter === '__active__' && status === 'Archived') return false;
+        if (statusFilter !== '__active__' && statusFilter !== '__all__' && status !== statusFilter) return false;
+        if (searchTerm) {
+            const haystack = `${c.case_number || ''} ${c.examiner || ''}`.toLowerCase();
+            if (!haystack.includes(searchTerm)) return false;
+        }
+        return true;
+    });
+
+    if (cases.length === 0) {
+        listEl.innerHTML = caseManagerCasesCache.length === 0
+            ? '<div class="text-subtle small p-2">No cases found yet - create one above.</div>'
+            : '<div class="text-subtle small p-2">No cases match this filter.</div>';
+        return;
+    }
+
+    listEl.innerHTML = '';
+    cases.forEach(c => {
+        // A plain div, not a <button>, because legacy rows nest their
+        // own Migrate <button> inside it below - button-in-button is
+        // invalid HTML.
+        const btn = document.createElement("div");
+        btn.className = "list-group-item list-group-item-action bg-dark text-light border-secondary py-2";
+        btn.style.cursor = 'pointer';
+
+        const topRow = document.createElement('div');
+        topRow.className = 'd-flex justify-content-between align-items-center';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'fw-bold text-info';
+        nameSpan.appendChild(document.createTextNode(c.case_number)); // examiner-entered, text-only
+        const statusBadge = document.createElement('span');
+        statusBadge.className = `badge ms-2 ${CASE_STATUS_BADGE_CLASS[c.case_status] || 'bg-info text-dark'}`;
+        statusBadge.textContent = (c.case_status || 'Open').toUpperCase();
+        nameSpan.appendChild(statusBadge);
+        if (c.schema === 'legacy') {
+            const legacyBadge = document.createElement('span');
+            legacyBadge.className = 'badge bg-warning text-dark ms-2';
+            legacyBadge.textContent = 'LEGACY';
+            nameSpan.appendChild(legacyBadge);
+        }
+        const dateSpan = document.createElement('small');
+        dateSpan.className = 'text-subtle';
+        dateSpan.textContent = c.created_at;
+        topRow.appendChild(nameSpan);
+        topRow.appendChild(dateSpan);
+
+        const subRow = document.createElement('div');
+        subRow.className = 'small text-subtle font-monospace';
+        subRow.appendChild(document.createTextNode(`${c.examiner || '--'} · ${c.case_folder}`));
+
+        btn.appendChild(topRow);
+        btn.appendChild(subRow);
+        btn.onclick = () => selectCase(c);
+
+        if (c.schema === 'legacy') {
+            const migrateBtn = document.createElement('button');
+            migrateBtn.type = 'button';
+            migrateBtn.className = 'btn btn-xs btn-outline-warning py-0 px-2 mt-2';
+            migrateBtn.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>Migrate to Consolidated Format';
+            migrateBtn.onclick = (ev) => { ev.stopPropagation(); migrateCase(c); };
+            btn.appendChild(migrateBtn);
+        }
+
+        listEl.appendChild(btn);
+    });
 }
 
 // Non-destructive: originals are renamed with a ".pre_consolidation_backup"
