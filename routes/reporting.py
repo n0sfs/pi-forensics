@@ -40,7 +40,19 @@ import subprocess
 import threading
 import zipfile
 import fnmatch
-import xml.etree.ElementTree as ET
+# defusedxml, not the bare stdlib xml.etree.ElementTree - _parse_kml_placemarks()
+# below parses KML files that may be hand-edited or third-party (not
+# necessarily ones this app generated itself), and defusedxml is a drop-in
+# replacement (same fromstring()/ParseError/.iter()/.tag surface - confirmed
+# ParseError is literally the identical class, re-exported) that rejects
+# entity declarations outright rather than relying on whichever libexpat
+# happens to be bundled with the deployed Python to have its own billion-
+# laughs/XXE protections active (2026-08-22 security audit, Informational
+# finding, closed 2026-08-25 - both attack classes were empirically
+# confirmed already blocked by the Pi's real installed libexpat 2.8.2
+# before this change, but that's an environmental property this app has no
+# control over and shouldn't depend on staying true forever).
+import defusedxml.ElementTree as ET
 import urllib.request
 
 from flask import Blueprint, jsonify, request, g, send_file, Response
@@ -945,17 +957,19 @@ def _kml_find_local(elem, tag_name):
 
 
 def _parse_kml_placemarks(kml_text):
-    """Mirrors parseKmlPlacemarks() (main.js) - stdlib ElementTree,
-    namespace-agnostic tag matching, Placemark -> Point -> coordinates
-    (lon,lat[,alt]) + name + description. Skips any Placemark without valid
-    parseable coordinates. Returns [] (never raises) on malformed/
-    unparseable XML, matching the JS side's own try/except-and-return-
-    whatever-was-collected behavior - this may be a hand-edited or
-    third-party KML file, not necessarily one this app generated itself."""
+    """Mirrors parseKmlPlacemarks() (main.js) - defusedxml's ElementTree
+    (not the bare stdlib one - see the import comment above), namespace-
+    agnostic tag matching, Placemark -> Point -> coordinates (lon,lat[,alt])
+    + name + description. Skips any Placemark without valid parseable
+    coordinates. Returns [] (never raises) on malformed/unparseable XML *or*
+    a KML file that tries to declare entities at all (billion-laughs/XXE) -
+    matching the JS side's own try/except-and-return-whatever-was-collected
+    behavior - this may be a hand-edited or third-party KML file, not
+    necessarily one this app generated itself."""
     placemarks = []
     try:
         root = ET.fromstring(kml_text)
-    except ET.ParseError:
+    except (ET.ParseError, ET.EntitiesForbidden, ET.DTDForbidden, ET.ExternalReferenceForbidden):
         return placemarks
 
     for elem in root.iter():
