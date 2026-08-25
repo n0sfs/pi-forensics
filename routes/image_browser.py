@@ -2287,7 +2287,8 @@ AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted"]  # opt-in, either profile
 AUTO_ANALYZE_ALL_VALID_STEPS = set(AUTO_ANALYZE_STEP_LABELS.keys())
 
 
-def _auto_analyze_run_generic_artifact_scan(image_path, case_folder, matcher_fn, parse_fn, max_candidates, coc_action):
+def _auto_analyze_run_generic_artifact_scan(image_path, case_folder, matcher_fn, parse_fn, max_candidates, coc_action,
+                                             source_ip=None, user=None):
     """Shared whole-image discovery+extract+parse+record loop - the exact
     same shape every existing image_parse_X() route in this file already
     has (_image_scan_candidate_files + extract-to-temp + parse + tally +
@@ -2295,7 +2296,17 @@ def _auto_analyze_run_generic_artifact_scan(image_path, case_folder, matcher_fn,
     Also logs its own chain-of-custody entry under the SAME action name
     the equivalent standalone route uses, so an Auto Analyze run produces
     the same granular per-tool audit trail running each tool individually
-    would have, in addition to Auto Analyze's own rollup log entry."""
+    would have, in addition to Auto Analyze's own rollup log entry.
+
+    source_ip/user MUST be threaded through explicitly (not left to
+    log_chain_of_custody()'s own request/g fallback) - this function runs
+    inside execution_worker_auto_analyze_image()'s background daemon
+    thread, which has no Flask application context at all. This is the
+    exact same class of bug this project has hit and fixed before for
+    other background-thread log calls (network config's delayed-revert
+    thread, the image triage scan job) - caught live here via a real
+    "Working outside of application context" exception on the very first
+    end-to-end Auto Analyze run, not caught by design review."""
     candidates, truncated = _image_scan_candidate_files(image_path, matcher_fn, max_candidates)
     if candidates is None:
         return {"success": False, "error": "No recognized filesystem found in this image."}
@@ -2330,47 +2341,52 @@ def _auto_analyze_run_generic_artifact_scan(image_path, case_folder, matcher_fn,
     log_chain_of_custody(coc_action, {
         "image_path": image_path, "candidates_found": len(candidates),
         "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
-    })
+    }, source_ip=source_ip, user=user)
     return {"success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
             "counts": counts, "truncated": truncated}
 
 
-def _auto_analyze_step_registry(image_path, case_folder):
+def _auto_analyze_step_registry(image_path, case_folder, source_ip=None, user=None):
     upper_names = {n.upper() for n in REGISTRY_HIVE_FILENAMES}
     return _auto_analyze_run_generic_artifact_scan(
         image_path, case_folder, lambda name, path: name.upper() in upper_names,
-        parse_registry_hive_file, REGISTRY_SCAN_MAX_CANDIDATES, "registry_hives_parsed_image")
+        parse_registry_hive_file, REGISTRY_SCAN_MAX_CANDIDATES, "registry_hives_parsed_image",
+        source_ip=source_ip, user=user)
 
 
-def _auto_analyze_step_evtx(image_path, case_folder):
+def _auto_analyze_step_evtx(image_path, case_folder, source_ip=None, user=None):
     return _auto_analyze_run_generic_artifact_scan(
         image_path, case_folder, lambda name, path: name.lower().endswith(EVTX_EXTENSION),
-        parse_evtx_file, EVTX_SCAN_MAX_CANDIDATES, "evtx_files_parsed_image")
+        parse_evtx_file, EVTX_SCAN_MAX_CANDIDATES, "evtx_files_parsed_image",
+        source_ip=source_ip, user=user)
 
 
-def _auto_analyze_step_prefetch(image_path, case_folder):
+def _auto_analyze_step_prefetch(image_path, case_folder, source_ip=None, user=None):
     return _auto_analyze_run_generic_artifact_scan(
         image_path, case_folder, lambda name, path: name.lower().endswith(PREFETCH_EXTENSION),
-        parse_prefetch_file, PREFETCH_SCAN_MAX_CANDIDATES, "prefetch_files_parsed_image")
+        parse_prefetch_file, PREFETCH_SCAN_MAX_CANDIDATES, "prefetch_files_parsed_image",
+        source_ip=source_ip, user=user)
 
 
-def _auto_analyze_step_recyclebin(image_path, case_folder):
+def _auto_analyze_step_recyclebin(image_path, case_folder, source_ip=None, user=None):
     def _is_recyclebin_candidate(name, path):
         if not name.upper().startswith('$I'):
             return False
         return any(p.lower() == '$recycle.bin' for p in path.split('/'))
     return _auto_analyze_run_generic_artifact_scan(
         image_path, case_folder, _is_recyclebin_candidate,
-        parse_recyclebin_file, RECYCLEBIN_SCAN_MAX_CANDIDATES, "recyclebin_files_parsed_image")
+        parse_recyclebin_file, RECYCLEBIN_SCAN_MAX_CANDIDATES, "recyclebin_files_parsed_image",
+        source_ip=source_ip, user=user)
 
 
-def _auto_analyze_step_browser_artifacts(image_path, case_folder):
+def _auto_analyze_step_browser_artifacts(image_path, case_folder, source_ip=None, user=None):
     return _auto_analyze_run_generic_artifact_scan(
         image_path, case_folder, lambda name, path: name in BROWSER_ARTIFACT_FILENAMES,
-        parse_browser_profile_file, BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES, "browser_artifacts_parsed_image")
+        parse_browser_profile_file, BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES, "browser_artifacts_parsed_image",
+        source_ip=source_ip, user=user)
 
 
-def _auto_analyze_step_linux_artifacts(image_path, case_folder):
+def _auto_analyze_step_linux_artifacts(image_path, case_folder, source_ip=None, user=None):
     """Unlike the 5 Windows-artifact steps above (5 separate parser types,
     5 separate scan passes), core.linux_artifacts's own LINUX_ARTIFACT_
     DEFAULT_TYPES already bundles shell history/passwd/cron/auth log into
@@ -2418,23 +2434,23 @@ def _auto_analyze_step_linux_artifacts(image_path, case_folder):
     log_chain_of_custody("linux_artifacts_parsed_image", {
         "image_path": image_path, "types": LINUX_ARTIFACT_DEFAULT_TYPES, "candidates_found": candidates_found_total,
         "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
-    })
+    }, source_ip=source_ip, user=user)
     return {"success": True, "candidates_found": candidates_found_total, "files_parsed": files_parsed,
             "counts": counts, "truncated": truncated}
 
 
-def _auto_analyze_step_hash_manifest(image_path, case_folder):
+def _auto_analyze_step_hash_manifest(image_path, case_folder, source_ip=None, user=None):
     result = _run_hash_manifest_body(image_path, case_folder, 'sha256', {})
     if result["success"]:
         log_chain_of_custody("hash_manifest_export_image", {
             "image_path": image_path, "algorithm": "sha256", "files_hashed": result["files_hashed"],
             "files_errored": result["files_errored"], "truncated": result["truncated"],
             "hash_list_matches": result["hash_list_match_count"],
-        })
+        }, source_ip=source_ip, user=user)
     return result
 
 
-def _auto_analyze_step_recover_deleted(image_path, case_folder):
+def _auto_analyze_step_recover_deleted(image_path, case_folder, source_ip=None, user=None):
     result = _run_recover_deleted_body(image_path, case_folder)
     if result["success"]:
         log_chain_of_custody("recover_deleted_files_image", {
@@ -2442,7 +2458,7 @@ def _auto_analyze_step_recover_deleted(image_path, case_folder):
             "total_bytes": result["total_bytes"], "files_skipped_too_large": result["files_skipped_too_large"],
             "files_skipped_empty": result["files_skipped_empty"], "files_errored": result["files_errored"],
             "truncated": result["truncated"],
-        })
+        }, source_ip=source_ip, user=user)
     return result
 
 
@@ -2493,7 +2509,7 @@ def execution_worker_auto_analyze_image(image_path, case_folder, steps, source_i
             update_job(status=f"Step {i + 1}/{total}: {label}...")
             try:
                 fn = _AUTO_ANALYZE_STEP_FUNCTIONS[step_key]
-                result = fn(image_path, case_folder)
+                result = fn(image_path, case_folder, source_ip=source_ip, user=user)
                 if result.get("success"):
                     step_results.append({"step": step_key, "status": "ok", "detail": result})
                     append_log(f"[+] Step {i + 1}/{total} complete.")
