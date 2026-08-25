@@ -28,7 +28,8 @@ from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, load_hash_list_sets
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, load_hash_list_sets, load_yara_ruleset_sources
+import yara
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
@@ -296,6 +297,50 @@ def check_hash_lists():
 
     log_chain_of_custody("hash_list_check", {"path": file_path, "lists_checked": len(hash_sets), "matches": len(matches)})
     return jsonify({"success": True, "file_name": os.path.basename(file_path), "computed_hashes": computed, "matches": matches})
+
+@file_explorer_bp.route('/api/files/yara_scan', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def yara_scan():
+    """D3 - scans a single selected file against one or more saved YARA
+    rulesets. Mirrors run_binwalk()/run_clamscan() above: a synchronous,
+    single-file "Analyze" action whose result is recorded via the same
+    already-generic _record_analysis_result() every other tool here already
+    uses - no new storage layer needed for this one. rules.match(filepath=)
+    reads the file directly (no need to load it into Python memory first),
+    with an explicit timeout as a safety net against a pathological rule/
+    file combination."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    ruleset_ids = req.get('ruleset_ids') or []
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+    if not ruleset_ids:
+        return jsonify({"success": False, "error": "No YARA rulesets selected."}), 400
+
+    sources = load_yara_ruleset_sources(ruleset_ids)
+    if not sources:
+        return jsonify({"success": False, "error": "None of the selected YARA rulesets could be loaded."}), 400
+
+    try:
+        compiled = yara.compile(sources={rid: s['rule_text'] for rid, s in sources.items()})
+        raw_matches = compiled.match(filepath=file_path, timeout=60)
+    except yara.Error as e:
+        return jsonify({"success": False, "error": f"YARA scan failed: {e}"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    matches = [{"ruleset_id": m.namespace, "ruleset_name": sources[m.namespace]["name"],
+                "rule": m.rule, "tags": list(m.tags), "meta": dict(m.meta)} for m in raw_matches]
+
+    summary = f"{len(matches)} match(es)" if matches else "No matches"
+    output = "\n".join(f"[{m['ruleset_name']}] {m['rule']}" + (f" (tags: {', '.join(m['tags'])})" if m['tags'] else "")
+                        for m in matches) or "No matches against the selected ruleset(s)."
+    log_chain_of_custody("yara_scan", {"path": file_path, "rulesets_checked": len(sources), "matches": len(matches)})
+    _record_analysis_result(case_folder, {"source_type": "real_fs", "path": file_path,
+                                           "name": os.path.basename(file_path)}, "YARA", summary, output)
+    return jsonify({"success": True, "file_name": os.path.basename(file_path), "matches": matches})
 
 # --- File Metadata (ExifTool) ---
 @file_explorer_bp.route('/api/files/exif', methods=['POST'])
