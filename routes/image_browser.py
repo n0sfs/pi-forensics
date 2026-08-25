@@ -36,7 +36,8 @@ from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path, classify_extension,
     is_valid_block_device_or_partition,
 )
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, load_yara_ruleset_sources
+import yara
 from core.jobs import job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME
 from core.tsk_utils import (
     _tsk_walk, _tsk_resolve_filesystems, _tsk_entry_dict,
@@ -1816,6 +1817,65 @@ def image_exif():
 
     log_chain_of_custody("exif_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
     return jsonify({"success": True, "file_name": name_hint, "metadata": metadata})
+
+@image_browser_bp.route('/api/image/yara_scan', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_yara_scan():
+    """In-image counterpart to routes/file_explorer.py's yara_scan() - same
+    extract-to-temp-then-run pattern image_binwalk()/image_strings()/
+    image_exif() above already use, since yara's match(filepath=) needs a
+    real path on disk just like those tools' own subprocess calls do."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    name_hint = req.get('name', '') or 'selected_file'
+    ruleset_ids = req.get('ruleset_ids') or []
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
+
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not ruleset_ids:
+        return jsonify({"success": False, "error": "No YARA rulesets selected."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    sources = load_yara_ruleset_sources(ruleset_ids)
+    if not sources:
+        return jsonify({"success": False, "error": "None of the selected YARA rulesets could be loaded."}), 400
+
+    tmp_path = None
+    try:
+        compiled = yara.compile(sources={rid: s['rule_text'] for rid, s in sources.items()})
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix=os.path.splitext(name_hint)[1])
+        raw_matches = compiled.match(filepath=tmp_path, timeout=60)
+    except yara.Error as e:
+        return jsonify({"success": False, "error": f"YARA scan failed: {e}"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not scan file: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    matches = [{"ruleset_id": m.namespace, "ruleset_name": sources[m.namespace]["name"],
+                "rule": m.rule, "tags": list(m.tags), "meta": dict(m.meta)} for m in raw_matches]
+    summary = f"{len(matches)} match(es)" if matches else "No matches"
+    output = "\n".join(f"[{m['ruleset_name']}] {m['rule']}" + (f" (tags: {', '.join(m['tags'])})" if m['tags'] else "")
+                        for m in matches) or "No matches against the selected ruleset(s)."
+    log_chain_of_custody("yara_scan_image", {"image_path": image_path, "inode": str(inode),
+                                              "rulesets_checked": len(sources), "matches": len(matches)})
+    _record_analysis_result(case_folder, {"source_type": "image", "image_path": image_path, "fs_offset": offset,
+                                           "inode": str(inode), "path": req.get('path'), "name": name_hint},
+                             "YARA", summary, output)
+    return jsonify({"success": True, "file_name": name_hint, "matches": matches})
 
 # --- Filesystem-aware deleted file recovery, directly inside an acquired image ---
 # Unlike PhotoRec/foremost/scalpel/extundelete (raw signature-based carving, no

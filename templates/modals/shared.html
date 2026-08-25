@@ -95,6 +95,27 @@
             </div>
         </div>
     </div>
+    <div class="modal fade" id="yaraScanModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-bug me-2"></i>Scan with YARA Rules: <span id="yaraScanFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-2">Runs this file against the checked ruleset(s) below. Manage rulesets in Settings &gt; Case &amp; Reporting &gt; YARA Rulesets.</div>
+                    <div id="yaraScanContainer" class="mb-2" style="max-height: 160px; overflow-y: auto;">
+                        <span class="text-subtle small">Loading YARA rulesets...</span>
+                    </div>
+                    <button class="btn btn-sm btn-info text-dark fw-bold" onclick="runYaraScan()"><i class="bi bi-play-fill me-1"></i>Scan</button>
+                    <div id="yaraScanResult" class="small mt-2"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
     <div class="modal fade" id="changePasswordModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-sm">
             <div class="modal-content bg-dark text-light border-secondary">
