@@ -132,28 +132,32 @@
                                         </div>
                                     </div>
                                 </div>
-                                <!-- Hash Lists are station-wide too - checked against at File Explorer's
-                                     "Check Against Hash Lists" single-file action and at Hash Manifest
+                                <!-- Hash Sets are station-wide too - checked against at File Explorer's
+                                     "Check Against Hash Sets" single-file action and at Hash Manifest
                                      time (both real-fs and in-image). Unlike Keyword Lists (small,
                                      structured, stay fully inline), the actual hash values live in their
-                                     own file per list - only metadata is edited/shown here. -->
+                                     own file per set - only metadata is edited/shown here. Named "Hash
+                                     Sets" (not "Hash Lists") to match the standard NSRL/EnCase/FTK term
+                                     for this exact concept - internal ids/routes/config keys were left
+                                     as hash_list(s) throughout, this is a display-text-only rename
+                                     (2026-08-25, confirmed with the user). -->
                                 <div class="accordion-item bg-dark border-secondary">
                                     <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secHashLists"><i class="bi bi-list-check me-2"></i>Hash Lists</button>
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secHashLists"><i class="bi bi-list-check me-2"></i>Hash Sets</button>
                                     </h2>
                                     <div id="secHashLists" class="accordion-collapse collapse">
                                         <div class="accordion-body">
-                                            <div class="small text-subtle mb-2">Saved known-good/known-bad hash sets, selectable at File Explorer's "Check Against Hash Lists" single-file action and at Hash Manifest time (whole-folder/whole-image). Paste one hash per line, all in the same algorithm - a list is tied to the algorithm it was created with.</div>
+                                            <div class="small text-subtle mb-2">Saved known-good/known-bad hash sets, selectable at File Explorer's "Check Against Hash Sets" single-file action and at Hash Manifest time (whole-folder/whole-image). Paste one hash per line, all in the same algorithm - a set is tied to the algorithm it was created with.</div>
                                             <div id="hashListsListContainer" class="mb-2">
-                                                <div class="text-subtle small p-2">Loading hash lists...</div>
+                                                <div class="text-subtle small p-2">Loading hash sets...</div>
                                             </div>
-                                            <button class="btn btn-sm btn-outline-info fw-bold" onclick="openCreateHashListModal()"><i class="bi bi-plus-lg me-1"></i>New List</button>
+                                            <button class="btn btn-sm btn-outline-info fw-bold" onclick="openCreateHashListModal()"><i class="bi bi-plus-lg me-1"></i>New Set</button>
                                         </div>
                                     </div>
                                 </div>
                                 <!-- YARA Rulesets (D3) are station-wide too - selectable at File
                                      Explorer's "Scan with YARA Rules" action (real-fs and in-image).
-                                     Unlike Hash Lists, rule text is small enough to stay fully inline,
+                                     Unlike Hash Sets, rule text is small enough to stay fully inline,
                                      matching Keyword Lists - only the compile-time validation differs. -->
                                 <div class="accordion-item bg-dark border-secondary">
                                     <h2 class="accordion-header">

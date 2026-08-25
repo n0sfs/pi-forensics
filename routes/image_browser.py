@@ -897,7 +897,7 @@ def image_hash_manifest():
     ]
     if hash_sets:
         checked_names = ', '.join(s["name"] for s in hash_sets.values())
-        lines.append(f"# Checked against hash list(s): {checked_names} ({len(matches)} match(es))")
+        lines.append(f"# Checked against hash set(s): {checked_names} ({len(matches)} match(es))")
     lines += [
         "#",
         f"# {'hash'.ljust(len(rows[0][0]) if rows else 64)}  size(bytes)  path",
@@ -944,7 +944,7 @@ def image_check_hash_lists():
     if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     if not hash_list_ids:
-        return jsonify({"success": False, "error": "No hash lists selected."}), 400
+        return jsonify({"success": False, "error": "No hash sets selected."}), 400
     try:
         offset = int(offset)
         inode_num = _tsk_parse_inode(inode)
@@ -953,7 +953,7 @@ def image_check_hash_lists():
 
     hash_sets = load_hash_list_sets(hash_list_ids)
     if not hash_sets:
-        return jsonify({"success": False, "error": "None of the selected hash lists could be loaded."}), 400
+        return jsonify({"success": False, "error": "None of the selected hash sets could be loaded."}), 400
     needed_algos = {s["algorithm"] for s in hash_sets.values()}
 
     try:

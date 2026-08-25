@@ -270,11 +270,11 @@ def check_hash_lists():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
     if not hash_list_ids:
-        return jsonify({"success": False, "error": "No hash lists selected."}), 400
+        return jsonify({"success": False, "error": "No hash sets selected."}), 400
 
     hash_sets = load_hash_list_sets(hash_list_ids)
     if not hash_sets:
-        return jsonify({"success": False, "error": "None of the selected hash lists could be loaded."}), 400
+        return jsonify({"success": False, "error": "None of the selected hash sets could be loaded."}), 400
 
     needed_algos = {s["algorithm"] for s in hash_sets.values()}
     computed = {}
