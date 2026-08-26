@@ -805,6 +805,197 @@ def hash_list_detail(list_id):
     log_chain_of_custody("hash_list_updated", {"id": list_id, "name": name, "hash_count": hash_count})
     return jsonify({"success": True, "list": lists[idx]})
 
+# --- URL lists (2026-08-26, Linux-DFIR-tools follow-up): station-wide
+# known-bad URL lists, checked automatically against every URL a browser-
+# artifact scan extracts (core/browser_artifacts.py's own
+# _match_urls_against_lists()). Mirrors Hash Sets' exact CRUD shape (large
+# blob gets its own file under INSTALL_DIR, only metadata inline in
+# runtime_config.json) - the one real difference is a plain URL has no
+# "algorithm" concept and no fixed length the way a hex hash does, so
+# validation here is a plausibility check (a real http(s) scheme, a sane
+# max length), not a byte-exact format check.
+URL_LIST_MAX_URLS = 100_000
+URL_LIST_MAX_LISTS = 20
+URL_LIST_MAX_URL_LENGTH = 2048  # generous - real-world URLs are almost always far shorter; a much longer "URL" is more likely garbage/binary than a real one
+_URL_SCHEME_RE = re.compile(r'^https?://', re.IGNORECASE)
+
+
+def _parse_url_list_text(text):
+    """Same shape as _parse_hash_list_text() above - one URL per line,
+    blank lines and '#'-prefixed comment lines tolerated. Returns
+    (urls, error)."""
+    urls = []
+    for i, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if len(line) > URL_LIST_MAX_URL_LENGTH or not _URL_SCHEME_RE.match(line):
+            return None, f"Line {i} ('{line[:60]}') doesn't look like a real http(s) URL."
+        urls.append(line)
+        if len(urls) > URL_LIST_MAX_URLS:
+            return None, f"Too many URLs - max {URL_LIST_MAX_URLS} per list."
+    if not urls:
+        return None, "No valid URLs found in the pasted text."
+    return urls, None
+
+
+@settings_bp.route('/api/settings/url_lists', methods=['GET', 'POST'])
+@requires_auth
+def url_lists():
+    cfg = load_runtime_config()
+    if request.method == 'GET':
+        return jsonify({"success": True, "lists": cfg.get('url_lists', [])})
+
+    perms = get_current_user_permissions()
+    if not perms.get('settings', False):
+        return jsonify({"success": False, "error": "Your account's user group doesn't have permission to perform this action."}), 403
+
+    lists = cfg.setdefault('url_lists', [])
+    if len(lists) >= URL_LIST_MAX_LISTS:
+        return jsonify({"success": False, "error": f"Station already has the maximum of {URL_LIST_MAX_LISTS} URL lists."}), 400
+
+    req = request.get_json() or {}
+    name = (req.get('name') or '').strip()
+    if not name:
+        return jsonify({"success": False, "error": "Name is required."}), 400
+    urls, error = _parse_url_list_text(req.get('urls_text') or '')
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+
+    base_id = re.sub(r'[^a-z0-9_]+', '_', name.lower()).strip('_') or 'urllist'
+    existing_ids = {r['id'] for r in lists}
+    list_id = base_id
+    n = 2
+    while list_id in existing_ids:
+        list_id = f"{base_id}_{n}"
+        n += 1
+
+    os.makedirs(config.URL_LISTS_DIR, exist_ok=True)
+    with open(config.url_list_file_path(list_id), 'w', encoding='utf-8') as f:
+        f.write('\n'.join(urls) + '\n')
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    record = {"id": list_id, "name": name, "source": "manual", "url_count": len(urls), "created_at": now, "updated_at": now}
+    lists.append(record)
+    save_runtime_config(cfg)
+    log_chain_of_custody("url_list_created", {"id": list_id, "name": name, "url_count": len(urls)})
+    return jsonify({"success": True, "list": record})
+
+
+@settings_bp.route('/api/settings/url_lists/<list_id>', methods=['PUT', 'DELETE'])
+@requires_auth
+@requires_permission('settings')
+def url_list_detail(list_id):
+    cfg = load_runtime_config()
+    lists = cfg.get('url_lists', [])
+    idx = next((i for i, r in enumerate(lists) if r.get('id') == list_id), None)
+    if idx is None:
+        return jsonify({"success": False, "error": "URL list not found."}), 404
+
+    if request.method == 'DELETE':
+        removed = lists.pop(idx)
+        cfg['url_lists'] = lists
+        save_runtime_config(cfg)
+        try:
+            os.remove(config.url_list_file_path(list_id))
+        except OSError:
+            pass
+        log_chain_of_custody("url_list_deleted", {"id": list_id, "name": removed.get('name')})
+        return jsonify({"success": True})
+
+    req = request.get_json() or {}
+    name = (req.get('name') or '').strip() or lists[idx]['name']
+    urls_text = req.get('urls_text')
+    if urls_text is not None:
+        urls, error = _parse_url_list_text(urls_text)
+        if error:
+            return jsonify({"success": False, "error": error}), 400
+        with open(config.url_list_file_path(list_id), 'w', encoding='utf-8') as f:
+            f.write('\n'.join(urls) + '\n')
+        url_count = len(urls)
+    else:
+        url_count = lists[idx]['url_count']  # name-only edit - urls on disk untouched
+
+    lists[idx] = {**lists[idx], "name": name, "url_count": url_count,
+                  "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    cfg['url_lists'] = lists
+    save_runtime_config(cfg)
+    log_chain_of_custody("url_list_updated", {"id": list_id, "name": name, "url_count": url_count})
+    return jsonify({"success": True, "list": lists[idx]})
+
+
+URLHAUS_RECENT_CSV_URL = "https://urlhaus.abuse.ch/downloads/csv_recent/"
+URLHAUS_LIST_ID = "urlhaus_recent"
+URLHAUS_FETCH_TIMEOUT_SECONDS = 30
+URLHAUS_MAX_URLS = 50_000  # the real recent-URLs feed runs a few thousand entries (48h window) - generous headroom, not expected to ever actually hit this
+
+
+@settings_bp.route('/api/settings/url_lists/refresh_urlhaus', methods=['POST'])
+@requires_auth
+@requires_permission('settings')
+def refresh_urlhaus_url_list():
+    """Creates (first run) or refreshes (every run after) one fixed,
+    idempotent list - "URLhaus Recent Malicious URLs" - from abuse.ch's
+    OPEN bulk CSV dump (confirmed live before building this: unlike
+    MalwareBazaar's hash exports below, this specific endpoint needs no
+    Auth-Key at all - only URLhaus's own per-URL *query* API does).
+    Deliberately a plain urllib.request call, not the `requests` package -
+    matches install.py's own established precedent for outbound HTTP here
+    (the offline OSM tile downloader), and `requests` isn't a declared
+    dependency of this app anywhere (only pulled in transitively by mvt),
+    so using it directly would be an undeclared-dependency risk."""
+    import urllib.request
+    import urllib.error
+
+    try:
+        req = urllib.request.Request(
+            URLHAUS_RECENT_CSV_URL,
+            headers={"User-Agent": "pi-forensics-suite/1.0 (DFIR appliance, station-operated)"})
+        with urllib.request.urlopen(req, timeout=URLHAUS_FETCH_TIMEOUT_SECONDS) as resp:
+            raw = resp.read().decode('utf-8', errors='replace')
+    except (urllib.error.URLError, OSError) as e:
+        return jsonify({"success": False, "error": f"Could not reach urlhaus.abuse.ch: {e}"}), 502
+
+    # The dump's own format (confirmed live 2026-08-25): a handful of
+    # '#'-prefixed comment/header lines, then real quoted-CSV rows -
+    # id,dateadded,url,url_status,last_online,threat,tags,urlhaus_link,reporter.
+    urls = []
+    reader = csv.reader(io.StringIO(raw))
+    for row in reader:
+        if not row or row[0].startswith('#'):
+            continue
+        if len(row) < 3:
+            continue
+        url = row[2].strip()
+        if _URL_SCHEME_RE.match(url) and len(url) <= URL_LIST_MAX_URL_LENGTH:
+            urls.append(url)
+        if len(urls) >= URLHAUS_MAX_URLS:
+            break
+
+    if not urls:
+        return jsonify({"success": False, "error": "URLhaus responded, but no valid URL rows were found in the feed - it may have changed format."}), 502
+
+    os.makedirs(config.URL_LISTS_DIR, exist_ok=True)
+    with open(config.url_list_file_path(URLHAUS_LIST_ID), 'w', encoding='utf-8') as f:
+        f.write('\n'.join(urls) + '\n')
+
+    cfg = load_runtime_config()
+    lists = cfg.setdefault('url_lists', [])
+    idx = next((i for i, r in enumerate(lists) if r.get('id') == URLHAUS_LIST_ID), None)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    record = {"id": URLHAUS_LIST_ID, "name": "URLhaus Recent Malicious URLs", "source": "urlhaus_recent",
+              "url_count": len(urls), "updated_at": now, "created_at": lists[idx]['created_at'] if idx is not None else now}
+    if idx is not None:
+        lists[idx] = record
+    else:
+        if len(lists) >= URL_LIST_MAX_LISTS:
+            return jsonify({"success": False, "error": f"Station already has the maximum of {URL_LIST_MAX_LISTS} URL lists - delete one first."}), 400
+        lists.append(record)
+    cfg['url_lists'] = lists
+    save_runtime_config(cfg)
+    log_chain_of_custody("url_list_refreshed_from_urlhaus", {"url_count": len(urls)})
+    return jsonify({"success": True, "list": record})
+
 # --- YARA rule scanning (D3): station-wide rulesets ---
 # Mirrors Keyword Lists structurally, not Hash Lists - a YARA ruleset's rule
 # text is typically small (a few KB, unlike a hash list's thousands of

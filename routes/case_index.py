@@ -160,6 +160,10 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "linux_auth_log": "Linux: Auth Log (SSH/sudo/session)",
     "linux_journald_log": "Linux: Journal Log (SSH/sudo/session)",
     "linux_wtmp_login": "Linux: Login History (wtmp, Experimental)",
+    # URL Lists (2026-08-26) - a flagged match between a parsed browser
+    # history/bookmark/download URL and a station-wide known-bad URL list
+    # (e.g. an imported URLhaus feed).
+    "browser_url_ioc_match": "Browser: Known-Bad URL Match",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])

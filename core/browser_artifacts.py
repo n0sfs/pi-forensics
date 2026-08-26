@@ -434,7 +434,33 @@ def parse_firefox_cookies_db(path):
     return cookies
 
 
-def parse_browser_profile_file(path, filename):
+def _match_urls_against_lists(records, url_list_sets):
+    """Cross-references every record's own url field (history/bookmark/
+    download entries only - cookie records never have one, so they're
+    naturally skipped) against the loaded URL lists, emitting one new
+    browser_url_ioc_match record per match rather than mutating the
+    original record - keeps the original browser-artifact record exactly
+    as every other consumer (File Views, Reporting) already expects it,
+    while a flagged match gets its own distinct, filterable category
+    instead of being buried inside another record's extra field."""
+    ioc_records = []
+    for r in records:
+        url = r.get("url")
+        if not url:
+            continue
+        matched_names = [info["name"] for info in url_list_sets.values() if url in info["urls"]]
+        if not matched_names:
+            continue
+        ioc_records.append({
+            "artifact_type": "browser_url_ioc_match",
+            "title": f"Known-Bad URL Match: {', '.join(matched_names)}",
+            "url": url, "value": r.get("value") or url, "timestamp": r.get("timestamp"),
+            "extra": {"matched_lists": matched_names, "source_artifact_type": r["artifact_type"]},
+        })
+    return ioc_records
+
+
+def parse_browser_profile_file(path, filename, url_list_sets=None):
     """Dispatches a candidate file (matched by exact basename against
     BROWSER_ARTIFACT_FILENAMES) to the right parser, returning a flat list
     of records (each already shaped {artifact_type, title, url, value,
@@ -444,20 +470,32 @@ def parse_browser_profile_file(path, filename):
     not actually a browser file despite the matching name) is swallowed and
     returns an empty list - matches this app's established best-effort
     tolerance for a single bad input during a broader scan (e.g.
-    _backfill_case_artifact_tags)."""
+    _backfill_case_artifact_tags).
+
+    url_list_sets (optional, {list_id: {"name", "urls": set(...)}} from
+    core/config.py's load_url_list_sets()) cross-references every
+    extracted url-bearing record against loaded known-bad URL lists (2026-
+    08-26, Linux-DFIR-tools follow-up) - post-processing after the normal
+    dispatch, not threaded into each individual sub-parser, since every
+    sub-parser already funnels into this one shared return point."""
+    records = []
     try:
         if filename == 'History':
             parsed = parse_chrome_history_db(path)
-            return parsed["history"] + parsed["downloads"]
-        if filename == 'Cookies':
-            return parse_chrome_cookies_db(path)
-        if filename == 'Bookmarks':
-            return parse_chrome_bookmarks_json(path)
-        if filename == 'places.sqlite':
+            records = parsed["history"] + parsed["downloads"]
+        elif filename == 'Cookies':
+            records = parse_chrome_cookies_db(path)
+        elif filename == 'Bookmarks':
+            records = parse_chrome_bookmarks_json(path)
+        elif filename == 'places.sqlite':
             parsed = parse_firefox_places_db(path)
-            return parsed["history"] + parsed["bookmarks"] + parsed["downloads"]
-        if filename == 'cookies.sqlite':
-            return parse_firefox_cookies_db(path)
+            records = parsed["history"] + parsed["bookmarks"] + parsed["downloads"]
+        elif filename == 'cookies.sqlite':
+            records = parse_firefox_cookies_db(path)
     except Exception as e:
         print(f"Warning: could not parse browser artifact file {path} ({filename}): {e}")
-    return []
+        return []
+
+    if url_list_sets and records:
+        records = records + _match_urls_against_lists(records, url_list_sets)
+    return records

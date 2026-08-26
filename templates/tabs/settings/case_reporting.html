@@ -155,6 +155,24 @@
                                         </div>
                                     </div>
                                 </div>
+                                <!-- URL Lists (2026-08-26, Linux-DFIR-tools follow-up) - checked
+                                     AUTOMATICALLY (no per-scan checklist, unlike Hash Sets above)
+                                     against every URL a browser-artifact scan extracts. -->
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secUrlLists"><i class="bi bi-link-45deg me-2"></i>URL Lists</button>
+                                    </h2>
+                                    <div id="secUrlLists" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Known-bad URL lists, checked automatically against every URL a "Parse Browser Artifacts" scan extracts (history/bookmarks/downloads, real-fs or in-image) - a match shows up as its own "Browser: Known-Bad URL Match" row in File Views. Paste one URL per line, or import abuse.ch's URLhaus recent-malicious-URLs feed (no account/API key needed).</div>
+                                            <div id="urlListsListContainer" class="mb-2">
+                                                <div class="text-subtle small p-2">Loading URL lists...</div>
+                                            </div>
+                                            <button class="btn btn-sm btn-outline-info fw-bold me-1" onclick="openCreateUrlListModal()"><i class="bi bi-plus-lg me-1"></i>New List</button>
+                                            <button id="btnRefreshUrlhaus" class="btn btn-sm btn-outline-info fw-bold" onclick="refreshUrlhausList()"><i class="bi bi-cloud-download me-1"></i>Import/Refresh URLhaus Recent</button>
+                                        </div>
+                                    </div>
+                                </div>
                                 <!-- YARA Rulesets (D3) are station-wide too - selectable at File
                                      Explorer's "Scan with YARA Rules" action (real-fs and in-image).
                                      Unlike Hash Sets, rule text is small enough to stay fully inline,

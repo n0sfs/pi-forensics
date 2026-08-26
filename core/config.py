@@ -274,6 +274,45 @@ def load_hash_list_sets(hash_list_ids):
                             "algorithm": record["algorithm"], "hashes": hashes}
     return result
 
+# Station-wide URL lists (2026-08-26 Linux-DFIR-tools follow-up) - known-
+# malicious URLs, checked automatically against every URL a browser-
+# artifact scan extracts (history/bookmarks/downloads). Same "large blob
+# gets its own file, only metadata stored inline" precedent hash_lists
+# already established just above - a URLhaus recent-URLs feed alone is
+# several MB, nowhere near small enough to keep inline in
+# runtime_config.json the way keyword_lists/yara_rulesets do.
+def get_url_lists():
+    return load_runtime_config().get('url_lists', [])
+
+URL_LISTS_DIR = os.path.join(INSTALL_DIR, "url_lists")
+
+def url_list_file_path(list_id):
+    return os.path.join(URL_LISTS_DIR, f"{list_id}.txt")
+
+def load_url_list_sets(url_list_ids):
+    """Mirrors load_hash_list_sets() exactly, one URL per line instead of
+    one hash - {list_id: {"name", "urls": set(...)}}. Lives in core/ for
+    the identical cross-blueprint reason load_hash_list_sets() does:
+    routes/file_explorer.py's/routes/image_browser.py's browser-artifact-
+    parsing routes both need this, and this app has no cross-blueprint
+    import between routes/*.py modules anywhere."""
+    if not url_list_ids:
+        return {}
+    cfg = load_runtime_config()
+    by_id = {r['id']: r for r in cfg.get('url_lists', [])}
+    result = {}
+    for list_id in url_list_ids:
+        record = by_id.get(list_id)
+        if not record:
+            continue
+        try:
+            with open(url_list_file_path(list_id), encoding='utf-8', errors='replace') as f:
+                urls = {line.strip() for line in f if line.strip()}
+        except OSError:
+            continue
+        result[list_id] = {"name": record["name"], "urls": urls}
+    return result
+
 # Station-wide YARA rulesets (Settings > Case & Reporting, D3) - selectable
 # at scan time by File Explorer's "Scan with YARA Rules" action. Unlike
 # hash_lists (can run to thousands of lines, stored in a separate file per
