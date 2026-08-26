@@ -1296,7 +1296,7 @@ def execution_worker_memory_forensics_scan(image_path, dest_dir, plugin_keys, so
                 failed += 1
                 err = (res.stderr or res.stdout or "Unknown volatility3 error.").strip()
                 append_log(f"[-] {info['plugin']} failed: {err[:300]}")
-                _record_analysis_result(dest_dir, identity, tool_label, "FAILED", err)
+                _record_analysis_result(dest_dir, identity, tool_label, "FAILED", err, run_by=user)
                 continue
 
             out_path = os.path.join(dest_dir, f"{base_name}_vol3_{key}.json")
@@ -1312,7 +1312,7 @@ def execution_worker_memory_forensics_scan(image_path, dest_dir, plugin_keys, so
 
             completed += 1
             summary = f"{row_count} row(s)"
-            _record_analysis_result(dest_dir, identity, tool_label, summary, res.stdout[:20000])
+            _record_analysis_result(dest_dir, identity, tool_label, summary, res.stdout[:20000], run_by=user)
             log_chain_of_custody("memory_forensics_scan", {
                 "image_path": image_path, "plugin": info["plugin"], "row_count": row_count,
                 "output_path": out_path,
@@ -1491,7 +1491,7 @@ def execution_worker_mquire_scan(image_path, dest_dir, table_keys, source_ip=Non
                 failed += 1
                 err = (res.stderr or res.stdout or "Unknown mquire error.").strip()
                 append_log(f"[-] {info['table']} failed: {err[:300]}")
-                _record_analysis_result(dest_dir, identity, tool_label, "FAILED", err)
+                _record_analysis_result(dest_dir, identity, tool_label, "FAILED", err, run_by=user)
                 continue
 
             out_path = os.path.join(dest_dir, f"{base_name}_mquire_{key}.json")
@@ -1507,7 +1507,7 @@ def execution_worker_mquire_scan(image_path, dest_dir, table_keys, source_ip=Non
 
             completed += 1
             summary = f"{row_count} row(s)"
-            _record_analysis_result(dest_dir, identity, tool_label, summary, res.stdout[:20000])
+            _record_analysis_result(dest_dir, identity, tool_label, summary, res.stdout[:20000], run_by=user)
             log_chain_of_custody("mquire_scan", {
                 "image_path": image_path, "table": info["table"], "row_count": row_count,
                 "output_path": out_path,
