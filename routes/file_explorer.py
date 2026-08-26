@@ -39,6 +39,7 @@ from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entri
 from core.browser_artifacts import find_browser_artifact_files, parse_browser_profile_file, _open_sqlite_readonly
 from core.registry_utils import find_registry_hive_files, parse_registry_hive_file
 from core.crypto_artifacts import find_crypto_wallet_files, parse_crypto_wallet_file
+from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_backup_manifest
 from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
 from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
 from core.linux_artifacts import (
@@ -934,6 +935,55 @@ def parse_linux_artifacts():
     return jsonify({
         "success": True, "candidates_found": candidates_found_total, "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_mobile_artifacts', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_mobile_artifacts():
+    """Whole-directory scan for an already-pulled, unencrypted iOS backup
+    (idevicebackup2 --full output) - SMS/iMessage, Contacts, and Call
+    History (core/mobile_artifacts.py). Unlike every other whole-directory
+    scanner above, "just try it, report 0 candidates if nothing matches" -
+    left ungated in the frontend the same way, no directory-content
+    sniffing needed before offering the button; a candidate here is a whole
+    backup folder (one Manifest.db/Info.plist pair), not an individual
+    file, so candidates_found/files_parsed count backup folders found/
+    yielded-any-records respectively, not files."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    requested_types = req.get('types') or None
+
+    manifest_dirs, truncated = find_mobile_backup_manifest(target_dir)
+    counts = {}
+    files_parsed = 0
+    any_encrypted = False
+    for manifest_dir in manifest_dirs:
+        records, summary = parse_mobile_backup_manifest(manifest_dir, requested_types)
+        if summary.get("encrypted"):
+            any_encrypted = True
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": manifest_dir}, records)
+
+    log_chain_of_custody("mobile_artifacts_parsed", {
+        "directory": target_dir, "candidates_found": len(manifest_dirs),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated, "any_encrypted": any_encrypted,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(manifest_dirs), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder), "any_encrypted": any_encrypted,
     })
 
 SQLITE_QUERY_MAX_ROWS = 500  # a page's worth - real pagination via limit/offset, not a hard cap on total table size

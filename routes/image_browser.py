@@ -23,6 +23,7 @@ import time
 import json
 import base64
 import hashlib
+import shutil
 import sqlite3
 import tempfile
 import subprocess
@@ -62,6 +63,7 @@ from core.registry_utils import REGISTRY_HIVE_FILENAMES, REGISTRY_SCAN_MAX_CANDI
 from core.crypto_artifacts import (
     CRYPTO_WALLET_MAX_CANDIDATES, parse_crypto_wallet_file, is_crypto_wallet_candidate,
 )
+from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_backup_manifest
 from core.evtx_utils import EVTX_EXTENSION, EVTX_SCAN_MAX_CANDIDATES, parse_evtx_file
 from core.prefetch_utils import PREFETCH_EXTENSION, PREFETCH_SCAN_MAX_CANDIDATES, parse_prefetch_file
 from core.recyclebin_utils import RECYCLEBIN_SCAN_MAX_CANDIDATES, parse_recyclebin_file
@@ -1256,6 +1258,166 @@ def image_parse_crypto_wallets():
     return jsonify({
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+MOBILE_BACKUP_IMAGE_MAX_FILES = 5  # Manifest.db/Info.plist/Manifest.plist + the (at most 3) resolved content files below
+MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES = 500 * 1024 * 1024  # generous per-content-file cap - sms.db/AddressBook/CallHistory are never remotely this large in practice
+
+def _find_ios_backup_dir_in_image(fs, root_inode=None):
+    """Walks a filesystem looking for a directory whose NAME is UDID-shaped
+    and whose immediate children include both Manifest.db and Info.plist -
+    the in-image counterpart to core/mobile_artifacts.py's
+    find_mobile_backup_manifest() real-fs walk. Returns (dir_inode,
+    in_image_path) or (None, None). Deliberately only checks directories
+    (not every file, unlike _image_scan_candidate_files's matcher shape) -
+    a full os.walk-equivalent over every directory in a large image is
+    already what _tsk_walk provides, this just filters its output down to
+    directory entries and probes each UDID-shaped one."""
+    from core.mobile_artifacts import _udid_like
+    for entry, path in _tsk_walk(fs, root_inode):
+        if not entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
+            continue
+        if not _udid_like(entry['name']):
+            continue
+        try:
+            children = {c['name'] for c in _tsk_list_dir(fs, int(entry['inode']))}
+        except Exception:
+            continue
+        if 'Manifest.db' in children and 'Info.plist' in children:
+            return int(entry['inode']), path
+    return None, None
+
+
+def _extract_ios_backup_essentials_to_temp(fs, backup_dir_inode):
+    """Extracts just Manifest.db/Info.plist/Manifest.plist (never the whole
+    backup - photos/app data under a real backup can be many GB, and
+    core/mobile_artifacts.py's parsers only ever need these 3 files plus
+    whichever specific content files Manifest.db's own Files table resolves
+    to for the target apps) into a fresh temp directory mirroring the
+    backup folder's own top level, queries the extracted Manifest.db for
+    the 3 target apps' fileIDs, then extracts exactly those resolved
+    content files (if found) into the same temp dir at their real
+    <fileID[0:2]>/<fileID> relative layout - so
+    parse_mobile_backup_manifest() can run against this temp copy exactly
+    as it would against a real-fs backup, zero parsing-logic duplication.
+    Returns the temp dir path (caller must shutil.rmtree() it) or None if
+    Manifest.db itself couldn't be extracted."""
+    temp_dir = tempfile.mkdtemp(prefix="pif_ios_backup_")
+    try:
+        children = {c['name']: c for c in _tsk_list_dir(fs, backup_dir_inode)}
+        for fname in ('Manifest.db', 'Info.plist', 'Manifest.plist'):
+            entry = children.get(fname)
+            if not entry or entry['is_dir']:
+                continue
+            try:
+                tsk_file = fs.open_meta(inode=int(entry['inode']))
+                with open(os.path.join(temp_dir, fname), 'wb') as out:
+                    _tsk_stream_file(tsk_file, out.write, max_bytes=MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES)
+            except Exception:
+                continue
+        if not os.path.isfile(os.path.join(temp_dir, 'Manifest.db')):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+
+        from core.mobile_artifacts import _resolve_manifest_files_query_only, MOBILE_ARTIFACT_TARGET_PATHS
+        for domain, relative_path in MOBILE_ARTIFACT_TARGET_PATHS.values():
+            file_id = _resolve_manifest_files_query_only(temp_dir, domain, relative_path)
+            if not file_id:
+                continue
+            try:
+                subdir_entry = children.get(file_id[0:2])
+                if not subdir_entry or not subdir_entry['is_dir']:
+                    continue
+                target_entry = None
+                for c in _tsk_list_dir(fs, int(subdir_entry['inode'])):
+                    if c['name'] == file_id and not c['is_dir']:
+                        target_entry = c
+                        break
+                if not target_entry:
+                    continue
+                out_subdir = os.path.join(temp_dir, file_id[0:2])
+                os.makedirs(out_subdir, exist_ok=True)
+                tsk_file = fs.open_meta(inode=int(target_entry['inode']))
+                with open(os.path.join(out_subdir, file_id), 'wb') as out:
+                    _tsk_stream_file(tsk_file, out.write, max_bytes=MOBILE_BACKUP_IMAGE_MAX_CONTENT_BYTES)
+            except Exception:
+                continue
+        return temp_dir
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return None
+
+
+@image_browser_bp.route('/api/image/parse_mobile_artifacts', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_mobile_artifacts():
+    """In-image counterpart to parse_mobile_artifacts() (routes/
+    file_explorer.py) - genuinely low relative value (an examiner virtually
+    never has a mobile backup embedded inside a disk image rather than
+    sitting as a real folder from this app's own mobile-acquisition
+    output), implemented for consistency with the real-fs+in-image pair
+    convention every other parser follows, not over-invested in. Extracts
+    only the 3 target apps' essential files (never the whole backup - see
+    _extract_ios_backup_essentials_to_temp()'s own docstring) into a
+    short-lived temp dir, then reuses core/mobile_artifacts.py's real-fs
+    parsing functions unmodified against that temp copy."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    requested_types = req.get('types') or None
+
+    filesystems = _tsk_resolve_filesystems(image_path)
+    if not filesystems:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    candidates_found = 0
+    any_encrypted = False
+    temp_dir = None
+    try:
+        for fsinfo in filesystems:
+            try:
+                fs = _tsk_open_fs(image_path, fsinfo['offset'])
+            except Exception:
+                continue
+            backup_inode, backup_path = _find_ios_backup_dir_in_image(fs)
+            if backup_inode is None:
+                continue
+            candidates_found += 1
+            temp_dir = _extract_ios_backup_essentials_to_temp(fs, backup_inode)
+            if not temp_dir:
+                continue
+            records, summary = parse_mobile_backup_manifest(temp_dir, requested_types)
+            if summary.get("encrypted"):
+                any_encrypted = True
+            if not records:
+                continue
+            files_parsed += 1
+            for r in records:
+                counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+            if case_folder:
+                _record_parsed_artifacts(case_folder, {
+                    "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                    "inode": str(backup_inode), "path": backup_path,
+                }, records)
+    finally:
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    log_chain_of_custody("mobile_artifacts_parsed_image", {
+        "image_path": image_path, "candidates_found": candidates_found,
+        "files_parsed": files_parsed, "counts": counts, "any_encrypted": any_encrypted,
+    })
+    return jsonify({
+        "success": True, "candidates_found": candidates_found, "files_parsed": files_parsed,
+        "counts": counts, "truncated": False, "indexed": bool(case_folder), "any_encrypted": any_encrypted,
     })
 
 @image_browser_bp.route('/api/image/parse_evtx', methods=['POST'])

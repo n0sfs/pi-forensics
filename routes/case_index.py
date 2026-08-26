@@ -168,6 +168,12 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     # filename/path classifier only (core/crypto_artifacts.py), not internal
     # wallet-content parsing - see that module's docstring for why.
     "crypto_wallet_file": "Cryptocurrency Wallet File",
+    # Mobile chat/app artifact parsing (2026-08-26, gap-closing round) - an
+    # already-pulled, unencrypted iOS backup's SMS/iMessage/Contacts/Call
+    # History (core/mobile_artifacts.py).
+    "mobile_sms_message": "Mobile: SMS/iMessage",
+    "mobile_contact": "Mobile: Contacts",
+    "mobile_call_log": "Mobile: Call History",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])
