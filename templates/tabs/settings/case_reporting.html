@@ -2,12 +2,22 @@
                         <div class="tab-pane fade" id="settings-pane-casereporting" role="tabpanel">
                             <h6 class="text-info fw-bold mb-3"><i class="bi bi-collection me-2"></i>Case & Reporting</h6>
                             <div class="accordion accordion-flush mb-3" id="caseReportingAccordion">
+                                <!-- Report Configuration: merges what used to be 4 separate accordion
+                                     items (Default Report Template / Custom Report Templates / Report
+                                     Export Defaults / Report Branding) into one, sub-divided by <hr> +
+                                     small bold labels - same sub-grouping style already used inside
+                                     Hash Sets below for its own MalwareBazaar sub-feature. Condensed
+                                     2026-08-26 (too many top-level accordion items) - every element id
+                                     inside is unchanged, so no JS needed any changes for this group;
+                                     everything here is already populated unconditionally by
+                                     loadCaseReportingSettings() on page load, not lazily per-item. -->
                                 <div class="accordion-item bg-dark border-secondary">
                                     <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secReportTemplate"><i class="bi bi-file-earmark-text me-2"></i>Default Report Template</button>
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secReportConfig"><i class="bi bi-file-earmark-text me-2"></i>Report Configuration</button>
                                     </h2>
-                                    <div id="secReportTemplate" class="accordion-collapse collapse">
+                                    <div id="secReportConfig" class="accordion-collapse collapse">
                                         <div class="accordion-body">
+                                            <div class="small text-info fw-bold mb-1">Default Template</div>
                                             <div class="small text-subtle mb-2">Pre-selected when opening the Export Report modal from Reporting - still changeable per-export there.</div>
                                             <select id="defReportTemplate" class="form-select form-select-sm mb-1" style="max-width:320px;" onchange="onDefReportTemplateChange()">
                                                 <option value="standard">Standard - configurable sections (default)</option>
@@ -16,31 +26,19 @@
                                                 <option value="caseuco">CASE/UCO Report - fixed structure aligned with the CASE/UCO forensic ontology</option>
                                             </select>
                                             <div id="defTemplateHint" class="small text-subtle" style="display:none;"></div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="accordion-item bg-dark border-secondary">
-                                    <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secCustomTemplates"><i class="bi bi-file-earmark-ruled me-2"></i>Custom Report Templates</button>
-                                    </h2>
-                                    <div id="secCustomTemplates" class="accordion-collapse collapse">
-                                        <div class="accordion-body">
-                                            <div class="d-flex justify-content-end align-items-center mb-2">
+
+                                            <hr class="border-secondary">
+                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                <span class="small text-info fw-bold">Custom Templates</span>
                                                 <button class="btn btn-xs btn-outline-info py-0 px-2" onclick="openReportTemplateBuilder()"><i class="bi bi-plus-lg me-1"></i>New Template</button>
                                             </div>
                                             <div class="small text-subtle mb-2">Build your own report shape from the same sections Standard uses - pick which to include, reorder them, and rename their titles. Saved templates appear above and in the Export pane's Report Template list.</div>
                                             <div id="customReportTemplatesList" class="bg-black border border-secondary p-2 rounded-2" style="max-height: 160px; overflow-y: auto;">
                                                 <span class="text-subtle small italic">No custom templates yet.</span>
                                             </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="accordion-item bg-dark border-secondary">
-                                    <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secExportDefaults"><i class="bi bi-list-check me-2"></i>Report Export Defaults</button>
-                                    </h2>
-                                    <div id="secExportDefaults" class="accordion-collapse collapse">
-                                        <div class="accordion-body">
+
+                                            <hr class="border-secondary">
+                                            <div class="small text-info fw-bold mb-1">Export Defaults</div>
                                             <div class="small text-subtle mb-2">Pre-checks these sections/fields when opening the Export Report modal from Reporting - still adjustable per-export there. Applies to the Standard template only.</div>
                                             <div class="row g-2 mb-2">
                                                 <div class="col-md-6">
@@ -61,15 +59,9 @@
                                                     <div class="form-check"><input class="form-check-input" type="checkbox" id="defFieldHashes" checked><label class="form-check-label small" for="defFieldHashes">Verification Hashes</label></div>
                                                 </div>
                                             </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="accordion-item bg-dark border-secondary">
-                                    <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secBranding"><i class="bi bi-image me-2"></i>Report Branding</button>
-                                    </h2>
-                                    <div id="secBranding" class="accordion-collapse collapse">
-                                        <div class="accordion-body">
+
+                                            <hr class="border-secondary">
+                                            <div class="small text-info fw-bold mb-1">Branding</div>
                                             <div class="mb-2">
                                                 <label class="telemetry-grid-label d-block mb-1">Header Text (shown as a subtitle under the report title)</label>
                                                 <input type="text" id="reportBrandingText" class="form-control form-control-sm" placeholder="e.g. Acme Digital Forensics Lab" maxlength="200">
@@ -99,7 +91,9 @@
                                      Views reads/writes), not as a station-wide default like the other
                                      sections in this accordion - this is a management tool scoped to
                                      whichever case is currently active, not a setting applied to every
-                                     future case. -->
+                                     future case. Kept as its own item (not folded into Analysis & IOC
+                                     Lists below) specifically because of this per-case-vs-station-wide
+                                     scope difference. -->
                                 <div class="accordion-item bg-dark border-secondary">
                                     <h2 class="accordion-header">
                                         <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secManageTags"><i class="bi bi-tags me-2"></i>Manage Tags</button>
@@ -115,38 +109,30 @@
                                         </div>
                                     </div>
                                 </div>
-                                <!-- Keyword Lists ARE station-wide (unlike Manage Tags above) - saved
-                                     terms selectable at Triage Scan time from any case, in File
-                                     Recovery's Triage Scan tool. -->
+                                <!-- Analysis & IOC Lists: merges what used to be 4 separate accordion
+                                     items (Keyword Lists / Hash Sets [+ MalwareBazaar] / URL Lists /
+                                     YARA Rulesets) into one, sub-divided by <hr> + small bold labels.
+                                     All 4 are station-wide (unlike Manage Tags above), selectable at
+                                     scan time from any case. Condensed 2026-08-26 - the 4 former
+                                     per-item lazy-load listeners (shown.bs.collapse -> load*Section())
+                                     were combined into one listener on this merged item's own id,
+                                     firing all 4 load functions together; every inner element id is
+                                     otherwise unchanged. -->
                                 <div class="accordion-item bg-dark border-secondary">
                                     <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secKeywordLists"><i class="bi bi-search me-2"></i>Keyword Lists</button>
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secAnalysisLists"><i class="bi bi-search me-2"></i>Analysis &amp; IOC Lists</button>
                                     </h2>
-                                    <div id="secKeywordLists" class="accordion-collapse collapse">
+                                    <div id="secAnalysisLists" class="accordion-collapse collapse">
                                         <div class="accordion-body">
+                                            <div class="small text-info fw-bold mb-1">Keyword Lists</div>
                                             <div class="small text-subtle mb-2">Saved search terms selectable when running Triage Scan (File Recovery tab), additive to the 5 built-in categories (emails/URLs/IPs/card-like numbers/phone numbers). Plain terms match as case-insensitive substrings; a list can instead be marked Regex to use each term as a full regular expression.</div>
                                             <div id="keywordListsListContainer" class="mb-2">
                                                 <div class="text-subtle small p-2">Loading keyword lists...</div>
                                             </div>
                                             <button class="btn btn-sm btn-outline-info fw-bold" onclick="openCreateKeywordListModal()"><i class="bi bi-plus-lg me-1"></i>New List</button>
-                                        </div>
-                                    </div>
-                                </div>
-                                <!-- Hash Sets are station-wide too - checked against at File Explorer's
-                                     "Check Against Hash Sets" single-file action and at Hash Manifest
-                                     time (both real-fs and in-image). Unlike Keyword Lists (small,
-                                     structured, stay fully inline), the actual hash values live in their
-                                     own file per set - only metadata is edited/shown here. Named "Hash
-                                     Sets" (not "Hash Lists") to match the standard NSRL/EnCase/FTK term
-                                     for this exact concept - internal ids/routes/config keys were left
-                                     as hash_list(s) throughout, this is a display-text-only rename
-                                     (2026-08-25, confirmed with the user). -->
-                                <div class="accordion-item bg-dark border-secondary">
-                                    <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secHashLists"><i class="bi bi-list-check me-2"></i>Hash Sets</button>
-                                    </h2>
-                                    <div id="secHashLists" class="accordion-collapse collapse">
-                                        <div class="accordion-body">
+
+                                            <hr class="border-secondary">
+                                            <div class="small text-info fw-bold mb-1">Hash Sets</div>
                                             <div class="small text-subtle mb-2">Saved known-good/known-bad hash sets, selectable at File Explorer's "Check Against Hash Sets" single-file action and at Hash Manifest time (whole-folder/whole-image). Paste one hash per line, all in the same algorithm - a set is tied to the algorithm it was created with.</div>
                                             <div id="hashListsListContainer" class="mb-2">
                                                 <div class="text-subtle small p-2">Loading hash sets...</div>
@@ -163,37 +149,18 @@
                                             </div>
                                             <div id="malwarebazaarKeyStatus" class="small text-subtle mb-2">Checking...</div>
                                             <button id="btnRefreshMalwarebazaar" class="btn btn-sm btn-outline-info fw-bold" onclick="refreshMalwarebazaarList()"><i class="bi bi-cloud-download me-1"></i>Import/Refresh MalwareBazaar Recent</button>
-                                        </div>
-                                    </div>
-                                </div>
-                                <!-- URL Lists (2026-08-26, Linux-DFIR-tools follow-up) - checked
-                                     AUTOMATICALLY (no per-scan checklist, unlike Hash Sets above)
-                                     against every URL a browser-artifact scan extracts. -->
-                                <div class="accordion-item bg-dark border-secondary">
-                                    <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secUrlLists"><i class="bi bi-link-45deg me-2"></i>URL Lists</button>
-                                    </h2>
-                                    <div id="secUrlLists" class="accordion-collapse collapse">
-                                        <div class="accordion-body">
+
+                                            <hr class="border-secondary">
+                                            <div class="small text-info fw-bold mb-1">URL Lists</div>
                                             <div class="small text-subtle mb-2">Known-bad URL lists, checked automatically against every URL a "Parse Browser Artifacts" scan extracts (history/bookmarks/downloads, real-fs or in-image) - a match shows up as its own "Browser: Known-Bad URL Match" row in File Views. Paste one URL per line, or import abuse.ch's URLhaus recent-malicious-URLs feed (no account/API key needed).</div>
                                             <div id="urlListsListContainer" class="mb-2">
                                                 <div class="text-subtle small p-2">Loading URL lists...</div>
                                             </div>
                                             <button class="btn btn-sm btn-outline-info fw-bold me-1" onclick="openCreateUrlListModal()"><i class="bi bi-plus-lg me-1"></i>New List</button>
                                             <button id="btnRefreshUrlhaus" class="btn btn-sm btn-outline-info fw-bold" onclick="refreshUrlhausList()"><i class="bi bi-cloud-download me-1"></i>Import/Refresh URLhaus Recent</button>
-                                        </div>
-                                    </div>
-                                </div>
-                                <!-- YARA Rulesets (D3) are station-wide too - selectable at File
-                                     Explorer's "Scan with YARA Rules" action (real-fs and in-image).
-                                     Unlike Hash Sets, rule text is small enough to stay fully inline,
-                                     matching Keyword Lists - only the compile-time validation differs. -->
-                                <div class="accordion-item bg-dark border-secondary">
-                                    <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secYaraRules"><i class="bi bi-bug me-2"></i>YARA Rulesets</button>
-                                    </h2>
-                                    <div id="secYaraRules" class="accordion-collapse collapse">
-                                        <div class="accordion-body">
+
+                                            <hr class="border-secondary">
+                                            <div class="small text-info fw-bold mb-1">YARA Rulesets</div>
                                             <div class="small text-subtle mb-2">Saved YARA rulesets selectable at File Explorer's "Scan with YARA Rules" action (single file, real-fs or in-image). Rule text is compile-checked when saved, so a syntax error is caught here rather than mid-scan.</div>
                                             <div id="yaraRulesListContainer" class="mb-2">
                                                 <div class="text-subtle small p-2">Loading YARA rulesets...</div>
