@@ -434,6 +434,25 @@ install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in IN
 # _luks_unlock()/_luks_lock() build, and that a deliberately malformed
 # variant (extra trailing arguments after "-d -") is correctly rejected by
 # sudo before ever reaching cryptsetup.
+#
+# VeraCrypt (2026-08-26, gap-closing round) reuses this exact same
+# cryptsetup binary and verb-pinning discipline - confirmed live that
+# cryptsetup 2.7.5 (this station's real installed version) has NATIVE
+# VeraCrypt-format support built in (`open --type tcrypt --veracrypt`),
+# so no new binary/package dependency was needed at all (the real
+# `veracrypt` CLI is confirmed NOT in Debian's mainline ARM64 repo; a
+# throwaway `tcplay` install - never shipped, only used to build a real
+# test container for this verification - confirmed cryptsetup can open
+# what it creates). --veracrypt-pim is ALWAYS present in the real command
+# (0 when not specified by the examiner, a real valid value, never
+# omitted) specifically so this grant can be ONE fully-anchored pattern
+# rather than two variants with/without a PIM segment - the two wildcarded
+# segments (PIM value, source path) are separated by the literal "-r -q"
+# tokens on both sides, giving each `*` real anchoring text immediately
+# before and after it, the same principle the LUKS patterns above already
+# rely on. Verified live the same mandatory way: the real generated
+# command line matches this pattern, and a deliberately malformed variant
+# is rejected.
 sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/sbin/blockdev, /sbin/blockdev, \\
 /usr/sbin/smartctl, \\
@@ -445,6 +464,8 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/bin/extundelete, /usr/bin/foremost, /usr/bin/scalpel, /usr/bin/testdisk, \\
 /sbin/dislocker, /usr/bin/dislocker, /sbin/blkid, /usr/sbin/blkid, \\
 /usr/sbin/cryptsetup luksOpen * pif_luks_* -d -, /usr/sbin/cryptsetup luksClose pif_luks_*, \\
+/usr/sbin/cryptsetup open --type tcrypt --veracrypt --veracrypt-pim * -r -q * pif_veracrypt_* -d -, \\
+/usr/sbin/cryptsetup close pif_veracrypt_*, \\
 /sbin/losetup -o * --show -f *, /sbin/losetup -d /dev/loop*, /sbin/losetup -a, \\
 /bin/chown -R {SERVICE_USER} *, \\
 /bin/chgrp -R {SERVICE_USER} *, \\
