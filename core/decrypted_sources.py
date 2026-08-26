@@ -1,5 +1,5 @@
 """Minimal, single-purpose registry of currently-active decrypted virtual
-sources (BitLocker dislocker mounts, LUKS dm-mapper devices).
+sources (BitLocker dislocker mounts, LUKS and VeraCrypt dm-mapper devices).
 
 Exists for exactly one reason: routes/image_browser.py's
 _resolve_browsable_source() needs to know "is this path currently a
@@ -30,7 +30,7 @@ persistence layer - this isn't a new category of risk).
 import threading
 
 _lock = threading.Lock()
-_active = {}  # path -> kind ("bitlocker" | "luks")
+_active = {}  # path -> kind ("bitlocker" | "luks" | "veracrypt")
 
 
 def register_decrypted_source(path, kind):
@@ -44,6 +44,9 @@ def unregister_decrypted_source(path):
 
 
 def get_decrypted_source_kind(path):
-    """Returns "bitlocker"/"luks"/None."""
+    """Returns "bitlocker"/"luks"/"veracrypt"/None. routes/image_browser.py's
+    _resolve_browsable_source() only ever checks "is not None" - confirmed
+    zero code change was needed there when VeraCrypt added a 3rd kind
+    string, since that check was already kind-agnostic."""
     with _lock:
         return _active.get(path)

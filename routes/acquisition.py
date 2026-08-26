@@ -276,18 +276,22 @@ def _resolve_acquisition_source(source):
     source_kind is one of 'real_device' (an actual whitelisted /dev/sdX-
     style device), 'decrypted_file' (a BitLocker dislocker-file - a regular
     file, needs os.path.getsize() not blockdev), or 'decrypted_block_device'
-    (a LUKS dm-mapper device - block-device-shaped, needs blockdev like a
-    real device, but not SMART-queryable since it's virtual). mount_meta is
-    None for 'real_device', else {"kind": "bitlocker"|"luks", "mount_id":
-    ..., "device": <original encrypted source>}.
+    (a LUKS or VeraCrypt dm-mapper device - block-device-shaped, needs
+    blockdev like a real device, but not SMART-queryable since it's
+    virtual; VeraCrypt reuses this exact same kind rather than a new one,
+    confirmed live that cryptsetup's own `open --type tcrypt` produces the
+    identical /dev/mapper/<name> shape LUKS's `luksOpen` already does).
+    mount_meta is None for 'real_device', else {"kind":
+    "bitlocker"|"luks"|"veracrypt", "mount_id": ..., "device": <original
+    encrypted source>}.
 
     If `source` exactly matches a currently-registered dislocker mount's own
-    decrypted virtual file path, or a currently-registered LUKS mapper
-    device's own path, it's trusted as a valid acquisition source without
-    needing to pass is_valid_block_device() - only a path this app's own
-    _dislocker_unlock()/_luks_unlock() just created can ever match, since
-    mountpoints/mapper names live under server-controlled roots and are
-    never client-supplied.
+    decrypted virtual file path, or a currently-registered LUKS/VeraCrypt
+    mapper device's own path, it's trusted as a valid acquisition source
+    without needing to pass is_valid_block_device() - only a path this
+    app's own _dislocker_unlock()/_luks_unlock()/_veracrypt_unlock() just
+    created can ever match, since mountpoints/mapper names live under
+    server-controlled roots and are never client-supplied.
 
     Deliberately reads active_bitlocker_mounts/active_luks_mounts directly
     (not the shared core/decrypted_sources.py registry, which exists only
@@ -303,6 +307,10 @@ def _resolve_acquisition_source(source):
         for mapper_name, info in active_luks_mounts.items():
             if info["mapper_path"] == source:
                 return source, "decrypted_block_device", {"kind": "luks", "mount_id": mapper_name, "device": info["device"]}
+    with veracrypt_lock:
+        for mapper_name, info in active_veracrypt_mounts.items():
+            if info["mapper_path"] == source:
+                return source, "decrypted_block_device", {"kind": "veracrypt", "mount_id": mapper_name, "device": info["device"]}
     return source, "real_device", None
 
 # --- LUKS: unlock an encrypted source via cryptsetup, so it can be imaged/
@@ -497,6 +505,197 @@ def _luks_lock(mapper_name):
         except Exception:
             pass  # best-effort, matching _dislocker_lock's own best-effort cleanup pattern
     return True, None
+
+VERACRYPT_MAPPER_PREFIX = "pif_veracrypt_"
+veracrypt_lock = threading.Lock()
+active_veracrypt_mounts = {}  # mapper_name -> {mapper_path, device, loop_device (None if no offset), unlocked_at}
+
+def _detect_veracrypt(partition):
+    """Unlike _detect_bitlocker/_detect_luks, there is NO best-effort
+    signature check possible here at all - a VeraCrypt volume's whole
+    first sector is deliberately designed to look like random noise (no
+    fixed magic bytes), by design, so it can't be distinguished from
+    unallocated space without a password. Always returns is_veracrypt:
+    None (not True/False) - the frontend shows this as "cannot be
+    auto-detected, try Unlock directly" rather than presenting a
+    definitive-looking but meaningless answer. The honest, disclosure-over-
+    silent-promise application of the same pattern _detect_bitlocker/
+    _detect_luks already use for their own "best-effort, not authoritative"
+    framing, taken to its logical limit here since there's genuinely
+    nothing byte-level to check."""
+    if not is_valid_bitlocker_source(partition):
+        return None
+    return {"is_veracrypt": None, "note": "VeraCrypt volumes have no fixed signature - use Unlock directly; a wrong password/format is reported clearly."}
+
+def _detect_veracrypt_image(image_path, offset=0):
+    """Same honest non-answer as _detect_veracrypt() above, for an
+    already-acquired evidence image."""
+    validated = safe_path(image_path)
+    if not validated or not os.path.isfile(validated):
+        return None
+    return {"is_veracrypt": None, "note": "VeraCrypt volumes have no fixed signature - use Unlock directly; a wrong password/format is reported clearly."}
+
+def _veracrypt_unlock(source_path, password, offset=None, pim=None):
+    """Mounts a VeraCrypt-encrypted volume via cryptsetup's own built-in
+    tcrypt/VeraCrypt support (`cryptsetup open --type tcrypt --veracrypt`) -
+    confirmed live against a real VeraCrypt-format test container (created
+    with tcplay's SHA256-VC PBKDF variant, the genuine VeraCrypt-compatible
+    KDF, not legacy TrueCrypt) that cryptsetup 2.7.5 (this station's real
+    installed version) supports this natively - no new binary/package
+    dependency needed at all, unlike the original plan's assumption of
+    needing the real `veracrypt` CLI (confirmed NOT in Debian's mainline
+    ARM64 repo) or `tcplay` (used only for this live test, never shipped -
+    see the dated CLAUDE.md entry for the full verification trail).
+
+    Mirrors _luks_unlock()'s exact two-mode shape (offset=None: live
+    device/partition; offset=<int>: an evidence image file, with the same
+    losetup-loop-device pre-step for offset>0 - deliberately reused rather
+    than trusting cryptsetup's own generic -o/--offset flag to work
+    correctly for --type tcrypt against a plain file, which was not itself
+    live-verified; the loop-device path IS already proven, for LUKS, so
+    reusing it here carries zero incremental risk). Mount output shape
+    confirmed identical to LUKS too (a /dev/mapper/<name> block device,
+    per cryptsetup's own --help: "<name> is the device to create under
+    /dev/mapper" - not type-specific), so _resolve_acquisition_source()
+    reuses the exact same "decrypted_block_device" source_kind LUKS
+    already uses, no new kind needed.
+
+    password is piped via stdin (-d -), never argv - same proven approach
+    already used for LUKS, not the weaker "password possibly visible in
+    /proc/<pid>/cmdline" alternative the original plan flagged as a real
+    concern for a bare veracrypt-CLI-based design. pim (VeraCrypt's
+    Personal Iteration Multiplier) defaults to 0 (cryptsetup's/VeraCrypt's
+    own "use the default max-iteration behavior" value) when not given -
+    --veracrypt-pim is ALWAYS included in the command with a real integer,
+    never conditionally omitted, so the resulting argv shape is uniform and
+    the sudoers grant can be one single, fully-anchored pattern rather than
+    two variants."""
+    loop_device = None
+    if offset is None:
+        if not is_valid_bitlocker_source(source_path):
+            return False, None, None, "Invalid or unrecognized device/partition path."
+        target = source_path
+        original_source = source_path
+    else:
+        validated = safe_path(source_path)
+        if not validated or not os.path.isfile(validated):
+            return False, None, None, "Image file not found or outside the permitted evidence directory."
+        original_source = validated
+        try:
+            offset = int(offset)
+        except (TypeError, ValueError):
+            return False, None, None, "Invalid partition offset."
+        if offset > 0:
+            try:
+                res = subprocess.run(
+                    ["sudo", "/sbin/losetup", "-o", str(offset), "--show", "-f", validated],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                return False, None, None, "losetup timed out."
+            except FileNotFoundError:
+                return False, None, None, "losetup is not available on this station."
+            if res.returncode != 0 or not res.stdout.strip():
+                err = (res.stderr or res.stdout or "Unknown losetup error.").strip()
+                return False, None, None, f"Could not create a loop device at this offset: {err[:300]}"
+            loop_device = res.stdout.strip()
+            target = loop_device
+        else:
+            target = validated
+
+    password = (password or '').strip()
+    if not password:
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        return False, None, None, "Password is required."
+
+    try:
+        pim_value = int(pim) if pim else 0
+    except (TypeError, ValueError):
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        return False, None, None, "Invalid PIM value."
+    if pim_value < 0:
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        return False, None, None, "Invalid PIM value."
+
+    mapper_name = f"{VERACRYPT_MAPPER_PREFIX}{uuid.uuid4().hex}"
+    # --veracrypt-pim is ALWAYS present (0 = "use VeraCrypt's own default
+    # max-iteration behavior", a real, valid value - not merely "unset"),
+    # never conditionally appended - this keeps the command's argv shape
+    # fixed/uniform so the sudoers grant below can be one single, fully
+    # left-and-right-anchored pattern instead of two variants (with/without
+    # a PIM segment), matching this file's own "anchor every wildcard on
+    # both sides" discipline for cryptsetup grants.
+    cmd = ["sudo", "/usr/sbin/cryptsetup", "open", "--type", "tcrypt", "--veracrypt",
+           "--veracrypt-pim", str(pim_value), "-r", "-q", target, mapper_name, "-d", "-"]
+    try:
+        res = subprocess.run(cmd, input=password, capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        return False, None, None, "cryptsetup timed out - the device may be unresponsive."
+    except FileNotFoundError:
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        return False, None, None, "cryptsetup is not installed on this station."
+
+    mapper_path = f"/dev/mapper/{mapper_name}"
+    if res.returncode != 0 or not os.path.exists(mapper_path):
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        err = (res.stderr or res.stdout or "Unknown cryptsetup error.").strip()
+        return False, None, None, f"Unlock failed - check the password/PIM/keyfile: {err[:300]}"
+
+    subprocess.run(
+        ["sudo", "/usr/bin/setfacl", "-m", f"u:{_SERVICE_ACCOUNT_NAME}:r", mapper_path],
+        capture_output=True, timeout=15,
+    )
+
+    with veracrypt_lock:
+        active_veracrypt_mounts[mapper_name] = {
+            "mapper_path": mapper_path,
+            "device": original_source,
+            "loop_device": loop_device,
+            "unlocked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    register_decrypted_source(mapper_path, "veracrypt")
+    return True, mapper_name, mapper_path, None
+
+def _veracrypt_lock(mapper_name):
+    """Mirrors _luks_lock() exactly - safe to call more than once, same
+    revoke-ACL / cryptsetup-close / detach-loop-device-last order."""
+    if not mapper_name:
+        return True, None
+    with veracrypt_lock:
+        info = active_veracrypt_mounts.pop(mapper_name, None)
+    if not info:
+        return True, None
+    unregister_decrypted_source(info["mapper_path"])
+    subprocess.run(
+        ["sudo", "/usr/bin/setfacl", "-x", f"u:{_SERVICE_ACCOUNT_NAME}", info["mapper_path"]],
+        capture_output=True, timeout=15,
+    )
+    try:
+        subprocess.run(["sudo", "/usr/sbin/cryptsetup", "close", mapper_name], capture_output=True, timeout=15)
+    except Exception as e:
+        return False, f"Failed to close VeraCrypt mapping: {e}"
+    if info.get("loop_device"):
+        try:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", info["loop_device"]], capture_output=True, timeout=10)
+        except Exception:
+            pass
+    return True, None
+
+# Shared dispatch for anything that needs to act generically across all 3
+# decrypted-source kinds (BitLocker/LUKS/VeraCrypt) - added once VeraCrypt
+# made the previous 2-way if/else's implicit "else means luks" fragile (a
+# genuine 3rd kind exposes exactly the assumption that shape was quietly
+# relying on). Used by start_imaging()'s post-job mount cleanup and its
+# label/logging call sites below, rather than a growing pile of ternaries.
+DECRYPTED_SOURCE_KIND_LABELS = {"bitlocker": "BitLocker", "luks": "LUKS", "veracrypt": "VeraCrypt"}
+DECRYPTED_SOURCE_LOCK_FN = {"bitlocker": _dislocker_lock, "luks": _luks_lock, "veracrypt": _veracrypt_lock}
 
 def _luks_startup_loop_device_reconciliation():
     """One-shot check at process start (not a recurring sweep - unlike Live
@@ -1819,6 +2018,91 @@ def luks_status():
         mounts = [{"mount_id": mid, **info} for mid, info in active_luks_mounts.items()]
     return jsonify({"success": True, "mounts": mounts})
 
+# --- VeraCrypt: mirrors the LUKS route set exactly, 1:1 - same decorators,
+# same request/response shapes, same permission gating per route type. ---
+
+@acquisition_bp.route('/api/veracrypt/partitions', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def veracrypt_partitions():
+    req = request.get_json() or {}
+    device = req.get('device', '')
+    if not is_valid_block_device(device):
+        return jsonify({"success": False, "error": "Not a recognized whole-disk device."}), 400
+    return jsonify({"success": True, "partitions": _list_device_partitions(device)})
+
+@acquisition_bp.route('/api/veracrypt/detect', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def veracrypt_detect():
+    req = request.get_json() or {}
+    partition = req.get('partition', '')
+    result = _detect_veracrypt(partition)
+    if result is None:
+        return jsonify({"success": False, "error": "Invalid or unrecognized device/partition path."}), 400
+    return jsonify({"success": True, **result})
+
+@acquisition_bp.route('/api/veracrypt/unlock', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def veracrypt_unlock():
+    req = request.get_json() or {}
+    partition = req.get('partition', '')
+    password = req.get('password', '')
+    pim = req.get('pim')
+    success, mapper_name, source_path, error = _veracrypt_unlock(partition, password, pim=pim)
+    if not success:
+        return jsonify({"success": False, "error": error}), 400
+    log_chain_of_custody("veracrypt_unlock", {"device": partition, "mount_id": mapper_name})
+    return jsonify({"success": True, "mount_id": mapper_name, "source_path": source_path})
+
+@acquisition_bp.route('/api/veracrypt/detect_image', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def veracrypt_detect_image():
+    req = request.get_json() or {}
+    image_path = req.get('image_path', '')
+    offset = req.get('offset', 0)
+    result = _detect_veracrypt_image(image_path, offset)
+    if result is None:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    return jsonify({"success": True, **result})
+
+@acquisition_bp.route('/api/veracrypt/unlock_image', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def veracrypt_unlock_image():
+    req = request.get_json() or {}
+    image_path = req.get('image_path', '')
+    offset = req.get('offset', 0)
+    password = req.get('password', '')
+    pim = req.get('pim')
+    success, mapper_name, source_path, error = _veracrypt_unlock(image_path, password, offset=offset, pim=pim)
+    if not success:
+        return jsonify({"success": False, "error": error}), 400
+    log_chain_of_custody("veracrypt_unlock_image", {"image_path": image_path, "offset": offset, "mount_id": mapper_name})
+    return jsonify({"success": True, "mount_id": mapper_name, "source_path": source_path})
+
+@acquisition_bp.route('/api/veracrypt/lock', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition', 'file_explorer')
+def veracrypt_lock_route():
+    req = request.get_json() or {}
+    mount_id = req.get('mount_id', '')
+    success, error = _veracrypt_lock(mount_id)
+    if not success:
+        return jsonify({"success": False, "error": error}), 500
+    log_chain_of_custody("veracrypt_lock", {"mount_id": mount_id})
+    return jsonify({"success": True})
+
+@acquisition_bp.route('/api/veracrypt/status', methods=['GET'])
+@requires_auth
+@requires_permission('acquisition')
+def veracrypt_status():
+    with veracrypt_lock:
+        mounts = [{"mount_id": mid, **info} for mid, info in active_veracrypt_mounts.items()]
+    return jsonify({"success": True, "mounts": mounts})
+
 @acquisition_bp.route('/api/start_imaging', methods=['POST'])
 @requires_auth
 @requires_permission('acquisition')
@@ -1849,6 +2133,7 @@ def start_imaging():
     # Same rationale/plaintext-at-rest tradeoff as bitlocker_key above -
     # documentation only, never used to decrypt anything.
     luks_passphrase_doc = (req.get('luks_passphrase') or '').strip()
+    veracrypt_password_doc = (req.get('veracrypt_password') or '').strip()
 
     compression = req.get('compression', 'fast')
     split_size = req.get('split_size', '2000M')
@@ -1871,7 +2156,7 @@ def start_imaging():
             return jsonify({"error": f"Source device {source} not found or not a recognized whole-disk device."}), 400
     elif not os.path.exists(source):
         update_job(active=False)
-        kind_label = "BitLocker" if mount_meta["kind"] == "bitlocker" else "LUKS"
+        kind_label = DECRYPTED_SOURCE_KIND_LABELS.get(mount_meta["kind"], mount_meta["kind"])
         return jsonify({"error": f"The unlocked {kind_label} volume is no longer available - it may have been locked/unmounted."}), 400
 
     invalid_hashes = set(hashes) - ALLOWED_HASH_ALGOS
@@ -1933,8 +2218,11 @@ def start_imaging():
     family = smart_data.get('model_family') or smart_data.get('family_name')
     vendor_model = f"{family} ({model})" if (family and family.lower() not in model.lower()) else model
     if mount_meta:
-        vendor_model = ("LUKS-Decrypted Volume (via cryptsetup)" if mount_meta["kind"] == "luks"
-                         else "BitLocker-Decrypted Volume (via dislocker)")
+        vendor_model = {
+            "luks": "LUKS-Decrypted Volume (via cryptsetup)",
+            "veracrypt": "VeraCrypt-Decrypted Volume (via cryptsetup)",
+            "bitlocker": "BitLocker-Decrypted Volume (via dislocker)",
+        }.get(mount_meta["kind"], "Decrypted Volume")
 
     serial = smart_data.get('serial_number', 'N/A')
     healthy = smart_data.get('smart_status', {}).get('passed', True)
@@ -2089,6 +2377,8 @@ def start_imaging():
             **({"bitlocker_decrypted": True} if mount_meta and mount_meta["kind"] == "bitlocker" else {}),
             **({"luks_passphrase": luks_passphrase_doc} if luks_passphrase_doc else {}),
             **({"luks_decrypted": True} if mount_meta and mount_meta["kind"] == "luks" else {}),
+            **({"veracrypt_password": veracrypt_password_doc} if veracrypt_password_doc else {}),
+            **({"veracrypt_decrypted": True} if mount_meta and mount_meta["kind"] == "veracrypt" else {}),
         },
         "attachments": {
             "files": [],
@@ -2126,8 +2416,8 @@ def start_imaging():
     if mount_meta:
         requester_ip = request.remote_addr
         requester_user = getattr(g, 'forensic_user', None)
-        lock_fn = _dislocker_lock if mount_meta["kind"] == "bitlocker" else _luks_lock
-        log_action = "bitlocker_lock" if mount_meta["kind"] == "bitlocker" else "luks_lock"
+        lock_fn = DECRYPTED_SOURCE_LOCK_FN[mount_meta["kind"]]
+        log_action = f"{mount_meta['kind']}_lock"
 
         def _cleanup_decrypted_mount_after_job(worker_thread, fn, mid, action, src_ip, user):
             worker_thread.join()
@@ -2144,7 +2434,8 @@ def start_imaging():
 
     log_chain_of_custody("acquisition_start", {"format": fmt, "source": source, "destination": dest_path,
                                                 **({"bitlocker_decrypted": True} if mount_meta and mount_meta["kind"] == "bitlocker" else {}),
-                                                **({"luks_decrypted": True} if mount_meta and mount_meta["kind"] == "luks" else {})})
+                                                **({"luks_decrypted": True} if mount_meta and mount_meta["kind"] == "luks" else {}),
+                                                **({"veracrypt_decrypted": True} if mount_meta and mount_meta["kind"] == "veracrypt" else {})})
     return jsonify({"success": True, "message": "Acquisition started."})
 
 @acquisition_bp.route('/api/ddrescue/inspect_map', methods=['POST'])
@@ -2201,6 +2492,7 @@ def start_ddrescue():
     # afterward with dislocker) - a different workflow than this route.
     bitlocker_key = (req.get('bitlocker_key') or '').strip()
     luks_passphrase_doc = (req.get('luks_passphrase') or '').strip()
+    veracrypt_password_doc = (req.get('veracrypt_password') or '').strip()
 
     # This runs ddrescue via a passwordless sudo rule (see install.py), so
     # source/destination MUST be tightly validated - otherwise any caller
@@ -2299,6 +2591,7 @@ def start_ddrescue():
             "execution_command": " ".join(cmd),
             **({"bitlocker_key": bitlocker_key} if bitlocker_key else {}),
             **({"luks_passphrase": luks_passphrase_doc} if luks_passphrase_doc else {}),
+            **({"veracrypt_password": veracrypt_password_doc} if veracrypt_password_doc else {}),
         },
         "acquisition_status": "IN_PROGRESS",
         "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
