@@ -488,7 +488,7 @@ def _analysis_results_for_paths(case_folder, paths):
         conn.close()
     return result
 
-def _record_analysis_result(case_folder, identity, tool, summary, output):
+def _record_analysis_result(case_folder, identity, tool, summary, output, run_by=None):
     """Best-effort persistence of one analysis-tool run, mirroring
     quick_triage_scan()'s exact optional/non-blocking case-index write
     pattern: `case_folder` is optional (None/invalid just means "don't
@@ -496,7 +496,25 @@ def _record_analysis_result(case_folder, identity, tool, summary, output):
     a broken or locked index write must never turn a successful scan into a
     reported tool failure. `identity` is the same shape
     _resolve_tag_identity() produces: {source_type, image_path, fs_offset,
-    inode, path, name}."""
+    inode, path, name}.
+
+    run_by lets a caller running outside a Flask request context (a
+    background-job worker thread, like the Volatility3/mquire memory-
+    forensics scans) supply the username captured earlier - g is a
+    request-context-bound proxy and raises "Working outside of application
+    context" if touched from a thread that never received the HTTP request
+    itself. This was a REAL, pre-existing bug (not something new to
+    mquire): both memory-forensics workers already called this from their
+    own background thread with no override, so the exception was silently
+    caught by this function's own try/except below and printed as a
+    warning - every "FAILED"/success analysis-result row either worker ever
+    tried to record was silently dropped, confirmed live via a direct
+    reproduction (a background thread calling this function really does
+    raise RuntimeError on the bare `getattr(g, ...)` read) before deciding
+    this needed a real fix, not just a mquire-specific workaround. Every
+    other (synchronous, request-thread) caller of this function is
+    unaffected - they never pass run_by, so the fallback below reads the
+    exact same g.forensic_user they always have."""
     if not case_folder:
         return
     if not case_consolidated_path(case_folder):
@@ -511,7 +529,7 @@ def _record_analysis_result(case_folder, identity, tool, summary, output):
             "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (identity["source_type"], identity.get("image_path"), identity.get("fs_offset"), identity.get("inode"),
              identity.get("path"), identity["name"], tool, summary, (output or "")[:ANALYSIS_RESULT_MAX_OUTPUT_CHARS],
-             getattr(g, 'forensic_user', None), time.strftime("%Y-%m-%d %H:%M:%S")))
+             run_by if run_by is not None else getattr(g, 'forensic_user', None), time.strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         conn.close()
     except Exception as e:
