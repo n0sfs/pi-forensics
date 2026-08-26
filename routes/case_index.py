@@ -164,6 +164,10 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     # history/bookmark/download URL and a station-wide known-bad URL list
     # (e.g. an imported URLhaus feed).
     "browser_url_ioc_match": "Browser: Known-Bad URL Match",
+    # Crypto wallet-file detection (2026-08-26, gap-closing round) - a
+    # filename/path classifier only (core/crypto_artifacts.py), not internal
+    # wallet-content parsing - see that module's docstring for why.
+    "crypto_wallet_file": "Cryptocurrency Wallet File",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])
