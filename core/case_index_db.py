@@ -36,11 +36,23 @@ TRIAGE_PATTERNS = {
     "ip_addresses": re.compile(rb'\b(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\b'),
     "credit_card_numbers": re.compile(rb'\b(?:\d[ -]?){13,19}\b'),
     "phone_numbers": re.compile(rb'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'),
+    # Same "loose pattern, over-flag for a human to review" philosophy as
+    # credit_card_numbers above - neither is a strict validator. Bitcoin's
+    # legacy/P2SH pattern is reasonably precise (base58 already excludes
+    # 0/O/I/l); Bech32 doesn't verify the real checksum, just the charset/
+    # length shape. Ethereum's pattern (0x + 40 hex chars) is genuinely loose
+    # - any 40-hex-char string prefixed 0x matches, so this will false-
+    # positive against unrelated hex blobs coincidentally starting with "0x"
+    # far more than the other categories here - disclosed, not silently
+    # shipped as precise.
+    "btc_addresses": re.compile(rb'\b(?:[13][a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[a-z0-9]{39,59})\b'),
+    "eth_addresses": re.compile(rb'\b0x[a-fA-F0-9]{40}\b'),
 }
 TRIAGE_MAX_MATCHES_PER_CATEGORY = 50000  # protects memory on very large images
 TRIAGE_CATEGORY_LABELS = {
     "emails": "Email Addresses", "urls": "URLs", "ip_addresses": "IP Addresses",
     "credit_card_numbers": "Credit Card-like Numbers", "phone_numbers": "Phone Numbers",
+    "btc_addresses": "Bitcoin Addresses (Legacy/Bech32)", "eth_addresses": "Ethereum Addresses",
 }
 
 # --- Examiner-defined keyword lists (Settings > Case & Reporting) ---
