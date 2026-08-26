@@ -23,7 +23,7 @@ from core.case_index_db import (
     _case_index_open_readonly, _case_index_open_write,
     _tags_for_paths, _analysis_results_for_paths, TRIAGE_PATTERNS,
     _backfill_case_artifact_tags, KEYWORD_CATEGORY_PREFIX, resolve_scan_category_label,
-    has_case_analysis_activity,
+    has_case_analysis_activity, cross_case_hash_search,
 )
 
 case_index_bp = Blueprint('case_index', __name__)
@@ -55,6 +55,30 @@ def case_index_analysis_for_paths():
     paths = [safe_path(p) for p in (req.get('paths') or [])]
     paths = [p for p in paths if p]
     return jsonify({"success": True, "results": _analysis_results_for_paths(req.get('case_folder'), paths)})
+
+@case_index_bp.route('/api/cases/cross_search', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def cases_cross_search():
+    """Station-wide hash lookup across EVERY case's own case JSON (not
+    scoped to whichever case is currently active) - v1 of a genuinely new
+    capability, not an extension of anything that existed before (confirmed
+    via a full repo search: no cross-case query mechanism existed anywhere
+    prior to this). No new permission key was introduced for this - an
+    account with 'reporting' or 'file_explorer' already has broad evidence-
+    reading capability station-wide via other routes (e.g. File Explorer's
+    own path browsing is bounded only by EVIDENCE_ROOT, not by which case
+    is "active"), so this doesn't cross a genuinely new privilege boundary,
+    just adds a new UI surface onto already-reachable data - see core/
+    case_index_db.py's cross_case_hash_search() for the actual search and
+    its documented v1 scope (hash-only; keyword/tag search is an explicit,
+    deferred v2)."""
+    req = request.get_json() or {}
+    hash_value = (req.get('hash') or '').strip()
+    if not hash_value:
+        return jsonify({"success": False, "error": "No hash value provided."}), 400
+    results, truncated = cross_case_hash_search(hash_value)
+    return jsonify({"success": True, "results": results, "truncated": truncated})
 
 @case_index_bp.route('/api/case_index/summary', methods=['POST'])
 @requires_auth
