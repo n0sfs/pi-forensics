@@ -51,6 +51,16 @@ MVT_ANDROID_BIN = os.path.join(MVT_BIN_DIR, "mvt-android")
 VOL3_BIN = os.path.join(MVT_BIN_DIR, "vol")
 VOL3_PIP_BIN = os.path.join(MVT_BIN_DIR, "pip")
 
+# mquire (Linux memory forensics, x86_64-only - see its own worker docstring
+# in routes/file_explorer.py for why) is a compiled Rust binary, not a pip
+# package - Trail of Bits publishes zero binary assets on any GitHub release
+# (confirmed directly against the API before deciding this), so install.py
+# builds it from source via the Debian-packaged cargo/rustc and drops the
+# result here, inside the managed install tree - not a venv-relative path
+# like MVT/Volatility3 above, since it's not part of that Python environment
+# at all.
+MQUIRE_BIN = os.path.join(INSTALL_DIR, "bin", "mquire")
+
 # Written by install.py's optional TLS setup (self-signed, via openssl) at
 # a fixed path also hardcoded in nginx/pi-forensics.conf's ssl_certificate/
 # ssl_certificate_key directives - keep all three in sync if this ever

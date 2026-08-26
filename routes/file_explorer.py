@@ -28,7 +28,7 @@ from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, load_hash_list_sets, load_yara_ruleset_sources
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, load_hash_list_sets, load_yara_ruleset_sources
 import yara
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
@@ -1374,4 +1374,201 @@ def start_memory_forensics_scan():
 
     log_chain_of_custody("memory_forensics_scan_start", {"image_path": image_path, "plugins": plugin_keys, "destination": dest_dir})
     return jsonify({"success": True, "message": "Memory forensics scan started."})
+
+
+# mquire (Linux memory forensics, 2026-08-25) - Volatility3 above is
+# Windows-only by deliberate scoping decision (see its own docstring:
+# Linux/Mac need a symbol bank built from the exact source kernel, which a
+# downstream station essentially never has). mquire sidesteps that entirely
+# by reading BTF (BPF Type Format) type info and kallsyms symbol info that
+# modern Linux kernels embed directly in the memory image itself - no
+# external debug info needed at all. Confirmed live before writing this:
+# built cleanly from source on this station's own real ARM64/Debian-trixie
+# hardware (native compile, no cross-compilation), and fails gracefully
+# (a real, readable error, not a crash) against a non-snapshot file.
+#
+# Scoped to x86_64 ("Intel", in mquire's own terminology) Linux targets
+# ONLY for this v1 - confirmed directly against mquire's own source
+# (src/architecture/ has exactly one implementation, intel/) that ARM/
+# aarch64 target support doesn't exist yet, with no visible open issue or
+# roadmap item for it either. This does NOT mean mquire can't run on this
+# Pi's own ARM64 host - the analysis host and the memory dump's own
+# architecture are two different things, and mquire runs here just fine;
+# it just can't yet make sense of a memory dump that was itself captured
+# from an ARM Linux target (another Pi, an embedded device, etc.) - not
+# silently broken, just not offered, exactly like Volatility3's own
+# Windows-only scoping above.
+#
+# A curated table allowlist, not the full ~14+N tables mquire exposes -
+# matches this project's own established curation philosophy (Volatility3's
+# plugin list right above, scalpel.conf's curated signature set, MVT's
+# curated indicator set) and is a real security boundary too: the table
+# name is passed directly into a SQL query string built by this app, so it
+# must only ever come from this fixed server-side map, never an arbitrary
+# client-supplied string - confirmed via mquire's own real table registry
+# (src/bin/mquire/database/table_registry.rs) before picking this set, not
+# guessed from documentation alone. mquire_diagnostics (a tool-health
+# self-check table, not examiner-facing forensic content) is deliberately
+# excluded entirely, matching Volatility3's own exclusion of Volatility3's
+# purely-internal machinery from its curated plugin list.
+MQUIRE_TABLES = {
+    "os_version": {"table": "os_version", "label": "OS & Kernel Version"},
+    "tasks": {"table": "tasks", "label": "Process List"},
+    "network_connections": {"table": "network_connections", "label": "Network Connections"},
+    "kernel_modules": {"table": "kernel_modules", "label": "Loaded Kernel Modules"},
+    "memory_mappings": {"table": "memory_mappings", "label": "Process Memory Mappings"},
+    "dmesg": {"table": "dmesg", "label": "Kernel Log (dmesg)"},
+    "task_open_files": {"table": "task_open_files", "label": "Open File Handles"},
+    "task_capabilities": {"table": "task_capabilities", "label": "Process Capabilities"},
+    "task_ptrace_flags": {"table": "task_ptrace_flags", "label": "Ptrace Flags"},
+    "ftrace_ops": {"table": "ftrace_ops", "label": "Function Tracing Hooks (ftrace)"},
+    "kernel_module_mem_entries": {"table": "kernel_module_mem_entries", "label": "Kernel Module Memory Regions"},
+    "network_interfaces": {"table": "network_interfaces", "label": "Network Interfaces"},
+    "boot_time": {"table": "boot_time", "label": "System Boot Time"},
+    "kallsyms": {"table": "kallsyms", "label": "Kernel Symbol Table"},
+    "system_info": {"table": "system_info", "label": "General System Info"},
+}
+MQUIRE_QUERY_TIMEOUT_SECONDS = 1800  # matches Volatility3's own per-plugin timeout above - kallsyms/tasks can run long on a busy system's memory image
+
+
+def execution_worker_mquire_scan(image_path, dest_dir, table_keys, source_ip=None, user=None):
+    """Runs each requested mquire table query in turn against image_path -
+    same overall shape as execution_worker_memory_forensics_scan() above
+    (one real output file per query, a failing query records its own error
+    and the scan continues rather than aborting), adapted for mquire's own
+    CLI (`mquire query <snapshot> "SELECT * FROM <table>" -f json` instead
+    of Volatility3's `-f <image> -r json <plugin>`)."""
+    global current_job
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    total = len(table_keys)
+    completed = 0
+    failed = 0
+
+    try:
+        update_job(format="mquire_scan", status="Initializing...", progress_percent=0.0,
+                   transferred_bytes=0, total_bytes=total)
+        append_log(f"[*] Starting mquire memory forensics scan of {image_path} ({total} table(s) requested)...")
+
+        for key in table_keys:
+            if snapshot_job()["status"] == "Stopped":
+                append_log("[!] Stopped by user.")
+                return
+
+            info = MQUIRE_TABLES.get(key)
+            if not info:
+                append_log(f"[-] Skipping unrecognized table key '{key}'.")
+                continue
+
+            update_job(status=f"Querying {info['label']}...", transferred_bytes=completed + failed)
+            append_log(f"[*] Querying {info['table']}...")
+
+            try:
+                res = subprocess.run(
+                    [MQUIRE_BIN, "query", "--operating-system", "linux", "--architecture", "intel",
+                     "-f", "json", image_path, f"SELECT * FROM {info['table']}"],
+                    capture_output=True, text=True, timeout=MQUIRE_QUERY_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                failed += 1
+                append_log(f"[-] {info['table']} timed out after {MQUIRE_QUERY_TIMEOUT_SECONDS}s.")
+                continue
+            except FileNotFoundError:
+                append_log("[-] mquire is not installed on this station. Check Settings > Service Controls & Diagnostics > Tool Versions.")
+                update_job(status="Failed")
+                return
+
+            identity = {"source_type": "real_fs", "path": image_path, "name": os.path.basename(image_path)}
+            tool_label = f"mquire {info['table']}"
+
+            if res.returncode != 0 or not res.stdout.strip():
+                failed += 1
+                err = (res.stderr or res.stdout or "Unknown mquire error.").strip()
+                append_log(f"[-] {info['table']} failed: {err[:300]}")
+                _record_analysis_result(dest_dir, identity, tool_label, "FAILED", err)
+                continue
+
+            out_path = os.path.join(dest_dir, f"{base_name}_mquire_{key}.json")
+            with open(out_path, 'w', encoding='utf-8') as f:
+                f.write(res.stdout)
+            _auto_tag_case_artifact(dest_dir, out_path)
+
+            try:
+                rows = json.loads(res.stdout)
+                row_count = len(rows) if isinstance(rows, list) else 0
+            except (ValueError, TypeError):
+                row_count = 0
+
+            completed += 1
+            summary = f"{row_count} row(s)"
+            _record_analysis_result(dest_dir, identity, tool_label, summary, res.stdout[:20000])
+            log_chain_of_custody("mquire_scan", {
+                "image_path": image_path, "table": info["table"], "row_count": row_count,
+                "output_path": out_path,
+            }, source_ip=source_ip, user=user)
+            append_log(f"[+] {info['table']} complete - {summary} -> {out_path}")
+
+        update_job(status="Completed Successfully" if failed == 0 or completed > 0 else "Failed",
+                  progress_percent=100.0, transferred_bytes=completed + failed)
+        append_log(f"[+] Scan complete: {completed} table(s) succeeded, {failed} failed.")
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+@file_explorer_bp.route('/api/files/memory/start_mquire_scan', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def start_mquire_scan():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    table_keys = [k for k in (req.get('tables') or []) if k in MQUIRE_TABLES]
+
+    if not image_path or not os.path.isfile(image_path):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Memory image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    if not table_keys:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Select at least one table to query."}), 400
+
+    update_job(
+        format="mquire_scan", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=len(table_keys), status="Initializing...",
+        log=f"[*] Initializing mquire memory forensics scan of {image_path}..."
+    )
+
+    # Captured now, in the real request thread - the worker runs in a
+    # background daemon thread with no Flask request context (request/g
+    # would raise RuntimeError if touched directly there) - the same
+    # capture-before-spawn treatment this project has already hit and fixed
+    # more than once for other background-thread log calls.
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_mquire_scan,
+        args=(image_path, dest_dir, table_keys, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("mquire_scan_start", {"image_path": image_path, "tables": table_keys, "destination": dest_dir})
+    return jsonify({"success": True, "message": "mquire memory forensics scan started."})
 

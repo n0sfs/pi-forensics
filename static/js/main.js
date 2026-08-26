@@ -5038,6 +5038,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     image_geolocation_kml: (status) => `Geolocation scan finished: ${status}\n\nCheck the case folder for the generated *_geolocation_export.kml file (only written if GPS-tagged photos were found).`,
     image_conversion: (status) => `Image conversion finished: ${status}\n\nSee the report event's "Hash Verified" field for whether the independently-computed source/output hashes matched.`,
     memory_forensics_scan: (status) => `Memory forensics scan finished: ${status}\n\nClick a *_vol3_<plugin>.json file next to the image in File Explorer to view its results.`,
+    mquire_scan: (status) => `mquire memory forensics scan finished: ${status}\n\nClick a *_mquire_<table>.json file next to the image in File Explorer to view its results.`,
     verify_all_evidence: (status) => `Case-wide evidence verification finished: ${status}\n\nSee the Overview tab in Reporting for the full result.`,
     case_bundle_export: (status) => `Case bundle export finished: ${status}\n\nCheck the case folder for the generated *_case_bundle_<timestamp>.zip file.`,
     auto_analyze_image: (status) => `Auto Analyze finished: ${status}\n\nSee the Audit Log (Settings > Security) for the full per-step results, or File Views > Parsed Artifacts for the individual tools' output.`,
@@ -5068,7 +5069,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     foremost: 'navBadgeRecovery', scalpel: 'navBadgeRecovery', triage_scan: 'navBadgeRecovery',
     // File Explorer (in-image background jobs, reached via right-click/toolbar there)
     image_geolocation_kml: 'navBadgeExplorer', image_triage_scan: 'navBadgeExplorer',
-    memory_forensics_scan: 'navBadgeExplorer', image_conversion: 'navBadgeExplorer',
+    memory_forensics_scan: 'navBadgeExplorer', mquire_scan: 'navBadgeExplorer', image_conversion: 'navBadgeExplorer',
     auto_analyze_image: 'navBadgeExplorer',
 };
 const NAV_BADGE_TO_TAB_ID = {
@@ -10008,14 +10009,37 @@ async function startImageConversion() {
     }
 }
 
-// --- Memory Forensics (Volatility3) ---
+// --- Memory Forensics (Volatility3 for Windows, mquire for Linux/x86_64) ---
+// One modal, one Engine selector - mirrors how BitLocker/LUKS share one
+// "unlock an encrypted volume" UI shape with two distinct backends, rather
+// than two separate modals for what an examiner experiences as the same
+// task ("analyze this memory image").
 let memoryForensicsModalInstance = null;
+
+function onMemForensicsEngineChange() {
+    const engine = document.getElementById("memForensicsEngine").value;
+    const isMquire = engine === 'mquire';
+    document.getElementById("memForensicsVol3Desc").style.display = isMquire ? 'none' : '';
+    document.getElementById("memForensicsMquireDesc").style.display = isMquire ? '' : 'none';
+    document.getElementById("memForensicsPluginList").style.display = isMquire ? 'none' : '';
+    document.getElementById("mquireTableList").style.display = isMquire ? '' : 'none';
+}
 
 function openMemoryForensicsModal() {
     if (!activeSelectedFile) return;
     document.getElementById("memForensicsFileName").textContent = activeSelectedFile.split('/').pop();
     const status = document.getElementById("memForensicsStatus");
     if (status) status.textContent = 'Select the plugins to run, then click Start Scan.';
+
+    // .lime is LiME's own Linux-only memory-acquisition output format
+    // (confirmed against mquire's own accepted-input-format list) -
+    // unambiguous enough to default the engine choice, unlike .raw/.mem/
+    // .vmem/.dmp which are shared/ambiguous across tools and OSes and stay
+    // defaulted to Volatility3 (this feature's original, longer-standing
+    // engine) rather than guessed.
+    const engineSelect = document.getElementById("memForensicsEngine");
+    engineSelect.value = activeSelectedFile.toLowerCase().endsWith('.lime') ? 'mquire' : 'vol3';
+    onMemForensicsEngineChange();
 
     if (!memoryForensicsModalInstance) {
         memoryForensicsModalInstance = new bootstrap.Modal(document.getElementById('memoryForensicsModal'));
@@ -10025,8 +10049,11 @@ function openMemoryForensicsModal() {
 
 async function startMemoryForensicsScan() {
     if (!activeSelectedFile) return;
-    const plugins = Array.from(document.querySelectorAll('#memForensicsPluginList input[type=checkbox]:checked')).map(el => el.value);
-    if (!plugins.length) return showToast('Select at least one plugin to run.', 'warning');
+    const engine = document.getElementById("memForensicsEngine").value;
+    const isMquire = engine === 'mquire';
+    const listSelector = isMquire ? '#mquireTableList' : '#memForensicsPluginList';
+    const selected = Array.from(document.querySelectorAll(`${listSelector} input[type=checkbox]:checked`)).map(el => el.value);
+    if (!selected.length) return showToast(isMquire ? 'Select at least one table to query.' : 'Select at least one plugin to run.', 'warning');
 
     const status = document.getElementById("memForensicsStatus");
     if (status) status.textContent = 'Starting scan job...';
@@ -10037,11 +10064,16 @@ async function startMemoryForensicsScan() {
     // uses for every other in-image/whole-image tool's output destination.
     const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
 
+    const endpoint = isMquire ? '/api/files/memory/start_mquire_scan' : '/api/files/memory/start_scan';
+    const body = isMquire
+        ? { path: activeSelectedFile, tables: selected, destination_dir: destinationDir }
+        : { path: activeSelectedFile, plugins: selected, destination_dir: destinationDir };
+
     try {
-        const res = await fetch('/api/files/memory/start_scan', {
+        const res = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile, plugins: plugins, destination_dir: destinationDir })
+            body: JSON.stringify(body)
         });
         const data = await res.json();
         if (!data.success) {

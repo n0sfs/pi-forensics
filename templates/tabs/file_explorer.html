@@ -364,7 +364,13 @@
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body py-2">
-                    <div class="small text-subtle mb-3">Analyzes this Windows RAM image with Volatility3. Runs as a background job (see the progress bar below the toolbar) - large images or plugins like Handles/FileScan can take a while. Needs internet access the first time each Windows build is analyzed, to fetch its matching symbol table (cached afterward). Results are saved as real files (<span class="font-monospace">_vol3_&lt;plugin&gt;.json</span>) next to the image, viewable by clicking them in File Explorer.</div>
+                    <label class="telemetry-grid-label d-block mb-1">Engine:</label>
+                    <select class="form-select form-select-sm bg-dark text-light border-secondary mb-2" id="memForensicsEngine" onchange="onMemForensicsEngineChange()">
+                        <option value="vol3">Volatility3 (Windows)</option>
+                        <option value="mquire">mquire (Linux, x86_64 only)</option>
+                    </select>
+                    <div class="small text-subtle mb-3" id="memForensicsVol3Desc">Analyzes this Windows RAM image with Volatility3. Runs as a background job (see the progress bar below the toolbar) - large images or plugins like Handles/FileScan can take a while. Needs internet access the first time each Windows build is analyzed, to fetch its matching symbol table (cached afterward). Results are saved as real files (<span class="font-monospace">_vol3_&lt;plugin&gt;.json</span>) next to the image, viewable by clicking them in File Explorer.</div>
+                    <div class="small text-subtle mb-3" id="memForensicsMquireDesc" style="display:none;">Analyzes this Linux RAM image with mquire - needs no external debug symbols (reads BTF/kallsyms embedded directly in the image itself). <strong>x86_64 Linux kernels only for now</strong> - mquire has no ARM/aarch64 target support yet, so this will not work on a memory dump taken from another Pi or an ARM-based embedded device. Runs as a background job. Results are saved as real files (<span class="font-monospace">_mquire_&lt;table&gt;.json</span>) next to the image, viewable by clicking them in File Explorer.</div>
                     <label class="telemetry-grid-label d-block mb-1">Plugins to Run:</label>
                     <div class="mb-3" id="memForensicsPluginList">
                         <div class="form-check"><input class="form-check-input" type="checkbox" value="info" id="memPluginInfo" checked><label class="form-check-label small" for="memPluginInfo">OS &amp; Kernel Info</label></div>
@@ -378,6 +384,23 @@
                         <div class="form-check"><input class="form-check-input" type="checkbox" value="malfind" id="memPluginMalfind"><label class="form-check-label small" for="memPluginMalfind">Injected Code Detection (malfind)</label></div>
                         <div class="form-check"><input class="form-check-input" type="checkbox" value="svcscan" id="memPluginSvcscan"><label class="form-check-label small" for="memPluginSvcscan">Windows Services</label></div>
                         <div class="form-check"><input class="form-check-input" type="checkbox" value="handles" id="memPluginHandles"><label class="form-check-label small" for="memPluginHandles">Process Handles</label></div>
+                    </div>
+                    <div class="mb-3" id="mquireTableList" style="display:none;">
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="os_version" id="mquireTableOsVersion" checked><label class="form-check-label small" for="mquireTableOsVersion">OS &amp; Kernel Version</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="tasks" id="mquireTableTasks" checked><label class="form-check-label small" for="mquireTableTasks">Process List</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="network_connections" id="mquireTableNetworkConnections" checked><label class="form-check-label small" for="mquireTableNetworkConnections">Network Connections</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="kernel_modules" id="mquireTableKernelModules" checked><label class="form-check-label small" for="mquireTableKernelModules">Loaded Kernel Modules</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="memory_mappings" id="mquireTableMemoryMappings" checked><label class="form-check-label small" for="mquireTableMemoryMappings">Process Memory Mappings</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="dmesg" id="mquireTableDmesg" checked><label class="form-check-label small" for="mquireTableDmesg">Kernel Log (dmesg)</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="task_open_files" id="mquireTableTaskOpenFiles"><label class="form-check-label small" for="mquireTableTaskOpenFiles">Open File Handles</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="task_capabilities" id="mquireTableTaskCapabilities"><label class="form-check-label small" for="mquireTableTaskCapabilities">Process Capabilities</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="task_ptrace_flags" id="mquireTableTaskPtraceFlags"><label class="form-check-label small" for="mquireTableTaskPtraceFlags">Ptrace Flags</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="ftrace_ops" id="mquireTableFtraceOps"><label class="form-check-label small" for="mquireTableFtraceOps">Function Tracing Hooks (ftrace)</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="kernel_module_mem_entries" id="mquireTableKernelModuleMemEntries"><label class="form-check-label small" for="mquireTableKernelModuleMemEntries">Kernel Module Memory Regions</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="network_interfaces" id="mquireTableNetworkInterfaces"><label class="form-check-label small" for="mquireTableNetworkInterfaces">Network Interfaces</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="boot_time" id="mquireTableBootTime"><label class="form-check-label small" for="mquireTableBootTime">System Boot Time</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="kallsyms" id="mquireTableKallsyms"><label class="form-check-label small" for="mquireTableKallsyms">Kernel Symbol Table</label></div>
+                        <div class="form-check"><input class="form-check-input" type="checkbox" value="system_info" id="mquireTableSystemInfo"><label class="form-check-label small" for="mquireTableSystemInfo">General System Info</label></div>
                     </div>
                     <div id="memForensicsStatus" class="small text-subtle">Select the plugins to run, then click Start Scan.</div>
                 </div>
