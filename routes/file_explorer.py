@@ -28,7 +28,7 @@ from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, load_hash_list_sets, load_yara_ruleset_sources
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets
 import yara
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
@@ -666,12 +666,18 @@ def parse_browser_artifacts():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
+    # Automatic, not per-scan-selectable like Hash Sets - a url_list here is
+    # always "known bad" (no known-good-URL concept makes sense the way
+    # hash_lists' known_good/known_bad split does), so there's no ambiguity
+    # to resolve via a checklist; every saved list is simply always checked.
+    url_list_sets = load_url_list_sets([r['id'] for r in get_url_lists()])
+
     candidate_paths, truncated = find_browser_artifact_files(target_dir)
     counts = {}
     files_parsed = 0
     for path in candidate_paths:
         filename = os.path.basename(path)
-        records = parse_browser_profile_file(path, filename)
+        records = parse_browser_profile_file(path, filename, url_list_sets=url_list_sets)
         if not records:
             continue
         files_parsed += 1
