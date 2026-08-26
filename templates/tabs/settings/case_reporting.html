@@ -152,6 +152,17 @@
                                                 <div class="text-subtle small p-2">Loading hash sets...</div>
                                             </div>
                                             <button class="btn btn-sm btn-outline-info fw-bold" onclick="openCreateHashListModal()"><i class="bi bi-plus-lg me-1"></i>New Set</button>
+                                            <hr class="border-secondary">
+                                            <!-- MalwareBazaar (2026-08-26) needs a free, personal Auth-Key the
+                                                 examiner registers themselves at auth.abuse.ch - never entered/
+                                                 displayed in plaintext once saved, only "configured: yes/no". -->
+                                            <div class="small text-subtle mb-1">MalwareBazaar (abuse.ch) recent-malware hash feed - needs a free Auth-Key, registered at <a href="https://auth.abuse.ch/" target="_blank" rel="noopener" class="text-info">auth.abuse.ch</a>, entered here once.</div>
+                                            <div class="d-flex gap-1 mb-1">
+                                                <input type="password" id="malwarebazaarAuthKey" class="form-control form-control-sm" placeholder="Auth-Key" autocomplete="off">
+                                                <button class="btn btn-sm btn-outline-info" onclick="saveMalwarebazaarKey()">Save Key</button>
+                                            </div>
+                                            <div id="malwarebazaarKeyStatus" class="small text-subtle mb-2">Checking...</div>
+                                            <button id="btnRefreshMalwarebazaar" class="btn btn-sm btn-outline-info fw-bold" onclick="refreshMalwarebazaarList()"><i class="bi bi-cloud-download me-1"></i>Import/Refresh MalwareBazaar Recent</button>
                                         </div>
                                     </div>
                                 </div>
