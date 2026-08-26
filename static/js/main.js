@@ -10383,10 +10383,15 @@ document.getElementById('secAuditLog')?.addEventListener('shown.bs.collapse', ()
 document.getElementById('secAuditLog')?.addEventListener('hidden.bs.collapse', () => stopCocAutoRefresh());
 document.getElementById('secNetConfig')?.addEventListener('shown.bs.collapse', () => loadNetworkConfig());
 document.getElementById('secManageTags')?.addEventListener('shown.bs.collapse', () => loadManageTagsSection());
-document.getElementById('secKeywordLists')?.addEventListener('shown.bs.collapse', () => loadKeywordListsSection());
-document.getElementById('secHashLists')?.addEventListener('shown.bs.collapse', () => loadHashListsSection());
-document.getElementById('secUrlLists')?.addEventListener('shown.bs.collapse', () => loadUrlListsSection());
-document.getElementById('secYaraRules')?.addEventListener('shown.bs.collapse', () => loadYaraRulesetsSection());
+// Keyword Lists/Hash Sets/URL Lists/YARA Rulesets were merged into one
+// "Analysis & IOC Lists" accordion item (2026-08-26, too many top-level
+// items) - one listener now fires all 4 former per-item load functions.
+document.getElementById('secAnalysisLists')?.addEventListener('shown.bs.collapse', () => {
+    loadKeywordListsSection();
+    loadHashListsSection();
+    loadUrlListsSection();
+    loadYaraRulesetsSection();
+});
 
 document.addEventListener('shown.bs.tab', (ev) => {
     // Returning to the whole Settings sidebar tab while the Audit Log
