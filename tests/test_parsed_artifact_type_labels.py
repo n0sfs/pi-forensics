@@ -32,7 +32,7 @@ _PREFETCH_ARTIFACT_TYPES = {"prefetch_execution"}
 _RECYCLEBIN_ARTIFACT_TYPES = {"recyclebin_deleted_file"}
 _LINUX_ARTIFACT_TYPES = {
     "linux_shell_history", "linux_passwd_account", "linux_cron_job",
-    "linux_auth_log", "linux_wtmp_login",
+    "linux_auth_log", "linux_journald_log", "linux_wtmp_login",
 }
 
 

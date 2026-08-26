@@ -158,6 +158,7 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "linux_passwd_account": "Linux: /etc/passwd Accounts",
     "linux_cron_job": "Linux: Cron Jobs",
     "linux_auth_log": "Linux: Auth Log (SSH/sudo/session)",
+    "linux_journald_log": "Linux: Journal Log (SSH/sudo/session)",
     "linux_wtmp_login": "Linux: Login History (wtmp, Experimental)",
 }
 
