@@ -27,8 +27,10 @@ this, not a safer shortcut, so it was not used.
 """
 import os
 import re
+import json
 import struct
 import time
+import subprocess
 
 _SCAN_SKIP_DIR_NAMES = {'RECOVERED_FILES'}
 _SCAN_SKIP_DIR_SUFFIXES = ('_photorec', '_foremost', '_scalpel', '_triagescan')
@@ -344,6 +346,121 @@ def parse_linux_auth_log_file(path, filename=None):
     return records
 
 
+# --- systemd journal (journald) logs ---
+# Unlike every other artifact type in this module, this one deliberately
+# shells out to `journalctl` rather than hand-parsing the binary journal
+# format directly. The journal format is genuinely complex (a hash-table-
+# indexed structure with optional per-field XZ/LZ4/ZSTD compression and
+# real format-version differences across systemd releases) - a much higher
+# hand-rolling risk than wtmp's fixed-size C struct above, and unlike
+# wtmp, there's an authoritative parser already sitting on every systemd
+# Linux system for free: journalctl is part of the base `systemd` package
+# (not a new dependency to add anywhere), and is the same tool that
+# produced the format in the first place. Same "use the canonical system
+# tool for a genuinely complex format" reasoning already applied to
+# dislocker/cryptsetup for BitLocker/LUKS rather than hand-rolling
+# decryption there.
+#
+# Confirmed live (2026-08-25) against this app's own deployed Pi that
+# `journalctl --file=<path> -o json` correctly reads an ARBITRARY journal
+# file given by path - not just the live system's own active journal -
+# which is exactly what offline/dead-box analysis of an extracted journal
+# file from acquired evidence needs. Real per-entry fields confirmed live
+# too (not assumed from documentation): __REALTIME_TIMESTAMP (integer
+# microseconds since the standard Unix epoch - simpler than every other
+# timestamp format this app already converts, no offset math needed),
+# MESSAGE, _SYSTEMD_UNIT, _HOSTNAME, SYSLOG_IDENTIFIER, _COMM, _PID, _UID.
+#
+# Reuses _AUTH_LOG_PATTERNS (the exact same curated SSH/sudo/session
+# detection already used for classic syslog auth.log parsing above)
+# against each entry's MESSAGE field, rather than inventing a second
+# detection ruleset - a modern systemd-based Debian/Ubuntu install often
+# has NOTHING useful in /var/log/auth.log at all (many minimal installs
+# never configure rsyslog to also mirror to text files), making this the
+# more reliable of the two sources on current real-world Linux evidence,
+# not just a nice-to-have alongside it - hence a default type, not
+# Experimental/opt-in like wtmp.
+JOURNALD_MAX_CANDIDATES = 20
+JOURNALD_MAX_WALKED = 20_000
+JOURNALD_MAX_ENTRIES_PER_FILE = 50_000
+JOURNALD_MAX_MATCHES_PER_FILE = 5_000
+JOURNALCTL_TIMEOUT_SECONDS = 120
+
+
+def is_journald_candidate(name, containing_dir):
+    if not name.lower().endswith('.journal'):
+        return False
+    # Any-ancestor check (like cron's own /etc/cron.d vs /var/spool/cron
+    # shapes), not an immediate-parent check like auth_log's - a real
+    # journal file's immediate parent is always a random machine-id hex
+    # folder, not literally named "journal" (that's the grandparent):
+    # /var/log/journal/<machine-id>/system.journal or the volatile
+    # /run/log/journal/<machine-id>/system.journal equivalent.
+    parts = [p.lower() for p in (containing_dir or '').replace('\\', '/').split('/') if p]
+    return 'journal' in parts
+
+
+def find_linux_journald_files(root_dir):
+    return _walk_matching(root_dir, lambda dirpath, fname: is_journald_candidate(fname, dirpath),
+                           JOURNALD_MAX_CANDIDATES, JOURNALD_MAX_WALKED)
+
+
+def parse_linux_journald_file(path, filename=None):
+    """filename - see parse_linux_shell_history_file()'s own docstring
+    (the in-image caller passes the real in-image name, since `path` there
+    is a meaningless extracted temp-file path)."""
+    display_name = filename or os.path.basename(path)
+    try:
+        res = subprocess.run(
+            ['journalctl', '--file', path, '-o', 'json', '--no-pager',
+             '-n', str(JOURNALD_MAX_ENTRIES_PER_FILE)],
+            capture_output=True, text=True, timeout=JOURNALCTL_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        print(f"Warning: could not run journalctl against {path}: {e}")
+        return []
+    if res.returncode != 0:
+        print(f"Warning: journalctl failed against {path}: {res.stderr.strip()[:300]}")
+        return []
+
+    records = []
+    matches_this_file = 0
+    for line in res.stdout.splitlines():
+        if matches_this_file >= JOURNALD_MAX_MATCHES_PER_FILE:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        msg = entry.get('MESSAGE')
+        if not isinstance(msg, str):
+            continue
+        for event_kind, pattern in _AUTH_LOG_PATTERNS:
+            pm = pattern.search(msg)
+            if not pm:
+                continue
+            ts = None
+            raw_ts = entry.get('__REALTIME_TIMESTAMP')
+            if raw_ts:
+                try:
+                    ts = int(raw_ts) / 1_000_000
+                except (TypeError, ValueError):
+                    ts = None
+            records.append({
+                "artifact_type": "linux_journald_log", "title": event_kind.replace('_', ' ').title(),
+                "url": "", "value": msg[:300], "timestamp": ts,
+                "extra": {"event_kind": event_kind, "unit": entry.get('_SYSTEMD_UNIT'),
+                          "hostname": entry.get('_HOSTNAME'), "syslog_identifier": entry.get('SYSLOG_IDENTIFIER'),
+                          "journal_file": display_name},
+            })
+            matches_this_file += 1
+            break
+    return records
+
+
 # --- wtmp/btmp login records (Experimental) ---
 # Verified live (2026-08-25) against the real deployed Pi's own installed
 # glibc (aarch64, glibc 2.41) by compiling a small C program against its
@@ -462,6 +579,7 @@ LINUX_ARTIFACT_IMAGE_MATCHERS = {
     "passwd_account": (lambda name, path: is_passwd_candidate(name, path.rsplit('/', 1)[0] if '/' in path else ''), parse_linux_passwd_file),
     "cron_job": (lambda name, path: is_cron_candidate(name, path.rsplit('/', 1)[0] if '/' in path else ''), parse_linux_cron_file),
     "auth_log": (lambda name, path: is_auth_log_candidate(name, path.rsplit('/', 1)[0] if '/' in path else ''), parse_linux_auth_log_file),
+    "journald_log": (lambda name, path: is_journald_candidate(name, path.rsplit('/', 1)[0] if '/' in path else ''), parse_linux_journald_file),
     "wtmp_login": (lambda name, path: is_wtmp_candidate(name, path.rsplit('/', 1)[0] if '/' in path else ''), parse_linux_wtmp_file),
 }
-LINUX_ARTIFACT_DEFAULT_TYPES = ["shell_history", "passwd_account", "cron_job", "auth_log"]
+LINUX_ARTIFACT_DEFAULT_TYPES = ["shell_history", "passwd_account", "cron_job", "auth_log", "journald_log"]
