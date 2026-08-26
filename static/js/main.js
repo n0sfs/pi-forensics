@@ -3181,6 +3181,67 @@ async function deleteYaraRuleset(rulesetId, name) {
     }
 }
 
+// --- Cross-Case Search (2026-08-26, gap-closing round) - a station-wide
+// hash lookup across every case's own case JSON, not scoped to whichever
+// case is currently active. Renders every result via real DOM text nodes
+// (never innerHTML) since case_number/examiner/case_folder/evidence_id are
+// all examiner-entered content, matching this app's established discipline
+// for any examiner/evidence-derived text throughout the frontend. ---
+async function runCrossCaseSearch() {
+    const input = document.getElementById('crossCaseSearchHash');
+    const resultsEl = document.getElementById('crossCaseSearchResults');
+    if (!input || !resultsEl) return;
+    const hashValue = input.value.trim();
+    resultsEl.textContent = '';
+    if (!hashValue) {
+        resultsEl.appendChild(document.createTextNode('Enter a hash above and click Search.'));
+        return;
+    }
+    resultsEl.appendChild(document.createTextNode('Searching...'));
+    try {
+        const res = await fetch('/api/cases/cross_search', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hash: hashValue })
+        });
+        const data = await res.json();
+        resultsEl.textContent = '';
+        if (!data.success) {
+            resultsEl.appendChild(document.createTextNode(`Search failed: ${data.error}`));
+            return;
+        }
+        if (data.results.length === 0) {
+            resultsEl.appendChild(document.createTextNode('No matches found in any case on this station.'));
+            return;
+        }
+        const table = document.createElement('table');
+        table.className = 'table table-dark table-sm mb-0';
+        const thead = document.createElement('thead');
+        thead.innerHTML = '<tr><th>Case</th><th>Examiner</th><th>Evidence ID</th><th>Algorithm</th></tr>'; // static/trusted markup
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        data.results.forEach(r => {
+            const tr = document.createElement('tr');
+            [r.case_number, r.examiner, r.evidence_id, r.algorithm.toUpperCase()].forEach(val => {
+                const td = document.createElement('td');
+                td.appendChild(document.createTextNode(val));
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        resultsEl.appendChild(table);
+        if (data.truncated) {
+            const note = document.createElement('div');
+            note.className = 'small text-warning mt-1';
+            note.appendChild(document.createTextNode('Results capped - narrow your search or check individual cases directly.'));
+            resultsEl.appendChild(note);
+        }
+    } catch (err) {
+        resultsEl.textContent = '';
+        resultsEl.appendChild(document.createTextNode('Search failed: request error.'));
+    }
+}
+
 // --- File Explorer: "Check Against Hash Sets" single-file action (D2) ---
 // One modal, two modes (isImage=false real-fs / true in-image) - reads
 // whichever selection state (activeSelectedFile / explorerImageSelected)
