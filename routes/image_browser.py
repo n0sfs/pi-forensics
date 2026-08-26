@@ -59,6 +59,9 @@ from core.browser_artifacts import (
     _open_sqlite_readonly,
 )
 from core.registry_utils import REGISTRY_HIVE_FILENAMES, REGISTRY_SCAN_MAX_CANDIDATES, parse_registry_hive_file
+from core.crypto_artifacts import (
+    CRYPTO_WALLET_MAX_CANDIDATES, parse_crypto_wallet_file, is_crypto_wallet_candidate,
+)
 from core.evtx_utils import EVTX_EXTENSION, EVTX_SCAN_MAX_CANDIDATES, parse_evtx_file
 from core.prefetch_utils import PREFETCH_EXTENSION, PREFETCH_SCAN_MAX_CANDIDATES, parse_prefetch_file
 from core.recyclebin_utils import RECYCLEBIN_SCAN_MAX_CANDIDATES, parse_recyclebin_file
@@ -1183,6 +1186,70 @@ def image_parse_registry():
             }, records)
 
     log_chain_of_custody("registry_hives_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_crypto_wallets', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_crypto_wallets():
+    """In-image counterpart to parse_crypto_wallets() (routes/
+    file_explorer.py) - same extract-to-temp-then-parse pattern
+    image_parse_registry() above already established."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    def _is_wallet_candidate(name, path):
+        # path is the full in-image pytsk3 path (always '/'-separated,
+        # includes the filename itself) - the containing directory is
+        # everything before the last segment, mirroring
+        # _is_recyclebin_candidate's own path.split('/') idiom above.
+        containing_dir = path.rsplit('/', 1)[0] if '/' in path else ''
+        return is_crypto_wallet_candidate(name, containing_dir)
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, _is_wallet_candidate, CRYPTO_WALLET_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+            records = parse_crypto_wallet_file(tmp_path, entry['name'])
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("crypto_wallets_scanned_image", {
         "image_path": image_path, "candidates_found": len(candidates),
         "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
     })

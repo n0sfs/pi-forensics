@@ -35,13 +35,14 @@ _LINUX_ARTIFACT_TYPES = {
     "linux_auth_log", "linux_journald_log", "linux_wtmp_login",
 }
 _URL_IOC_ARTIFACT_TYPES = {"browser_url_ioc_match"}
+_CRYPTO_ARTIFACT_TYPES = {"crypto_wallet_file"}
 
 
 def test_parsed_artifact_type_labels_covers_every_known_producer():
     evtx_types = {v[0] for v in evtx_utils.EVENT_ID_ALLOWLIST.values()}
     expected = (_BROWSER_ARTIFACT_TYPES | _REGISTRY_ARTIFACT_TYPES | evtx_types | _LNK_ARTIFACT_TYPES
                 | _PREFETCH_ARTIFACT_TYPES | _RECYCLEBIN_ARTIFACT_TYPES | _LINUX_ARTIFACT_TYPES
-                | _URL_IOC_ARTIFACT_TYPES)
+                | _URL_IOC_ARTIFACT_TYPES | _CRYPTO_ARTIFACT_TYPES)
     actual = set(case_index.PARSED_ARTIFACT_TYPE_LABELS.keys())
     missing = expected - actual
     assert not missing, f"artifact_type(s) producible by a parser but missing from PARSED_ARTIFACT_TYPE_LABELS (row-fetch route would silently return no rows for these): {missing}"
