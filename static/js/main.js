@@ -1673,6 +1673,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     linux_auth_log: 'Linux: Auth Log (SSH/sudo/session)',
     linux_journald_log: 'Linux: Journal Log (SSH/sudo/session)',
     linux_wtmp_login: 'Linux: Login History (wtmp, Experimental)',
+    browser_url_ioc_match: 'Browser: Known-Bad URL Match',
 };
 
 function buildFileViewsHierarchy(summary) {
@@ -2775,6 +2776,185 @@ async function deleteHashList(listId, name) {
         }
     } catch (err) {
         showToast('Delete failed: request error.', 'danger');
+    }
+}
+
+// --- Settings > Case & Reporting > URL Lists (2026-08-26, Linux-DFIR-
+// tools follow-up) - station-wide known-bad URL lists, checked
+// AUTOMATICALLY (no per-scan checklist, unlike Hash Sets) against every
+// URL a browser-artifact scan extracts. Mirrors Hash Sets' management UI
+// shape exactly, minus the algorithm concept a plain URL doesn't have. ---
+let urlListModalInstance = null;
+let urlListModalMode = 'create'; // 'create' | 'edit'
+let urlListModalId = null;
+
+async function loadUrlListsSection() {
+    const listEl = document.getElementById('urlListsListContainer');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="text-subtle small p-2">Loading URL lists...</div>';
+    try {
+        const res = await fetch('/api/settings/url_lists');
+        const data = await res.json();
+        renderUrlListsList((data.success && data.lists) || []);
+    } catch (err) {
+        listEl.innerHTML = '<div class="text-danger small p-2">Failed to load URL lists.</div>';
+    }
+}
+
+function renderUrlListsList(lists) {
+    const listEl = document.getElementById('urlListsListContainer');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    if (lists.length === 0) {
+        listEl.innerHTML = '<div class="text-subtle small p-2">No URL lists yet - create one, or import URLhaus\'s recent feed, below.</div>';
+        return;
+    }
+    const table = document.createElement('table');
+    table.className = 'table table-dark table-sm mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>List</th><th>Source</th><th>URLs</th><th>Updated</th><th></th></tr>'; // static/trusted markup
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    lists.forEach(l => {
+        const tr = document.createElement('tr');
+
+        const nameTd = document.createElement('td');
+        nameTd.appendChild(document.createTextNode(l.name)); // examiner-entered, text node only
+        tr.appendChild(nameTd);
+
+        const sourceTd = document.createElement('td');
+        sourceTd.className = 'text-subtle';
+        sourceTd.textContent = l.source === 'urlhaus_recent' ? 'URLhaus (auto)' : 'Manual';
+        tr.appendChild(sourceTd);
+
+        const countTd = document.createElement('td');
+        countTd.className = 'text-subtle';
+        countTd.textContent = l.url_count;
+        tr.appendChild(countTd);
+
+        const updatedTd = document.createElement('td');
+        updatedTd.className = 'text-subtle';
+        updatedTd.textContent = l.updated_at || '';
+        tr.appendChild(updatedTd);
+
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'text-end';
+        if (l.source === 'urlhaus_recent') {
+            const refreshBtn = document.createElement('button');
+            refreshBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 me-1';
+            refreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+            refreshBtn.title = 'Refresh from URLhaus';
+            refreshBtn.onclick = () => refreshUrlhausList();
+            actionsTd.appendChild(refreshBtn);
+        } else {
+            const editBtn = document.createElement('button');
+            editBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 me-1';
+            editBtn.innerHTML = '<i class="bi bi-pencil"></i>';
+            editBtn.title = 'Edit';
+            editBtn.onclick = () => openEditUrlListModal(l);
+            actionsTd.appendChild(editBtn);
+        }
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-1';
+        delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+        delBtn.title = 'Delete list';
+        delBtn.onclick = () => deleteUrlList(l.id, l.name);
+        actionsTd.appendChild(delBtn);
+        tr.appendChild(actionsTd);
+
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    listEl.appendChild(table);
+}
+
+function openCreateUrlListModal() {
+    urlListModalMode = 'create';
+    urlListModalId = null;
+    document.getElementById('urlListModalTitle').textContent = 'New URL List';
+    document.getElementById('urlListName').value = '';
+    document.getElementById('urlListUrls').value = '';
+    document.getElementById('urlListModalStatus').textContent = '';
+    if (!urlListModalInstance) {
+        urlListModalInstance = new bootstrap.Modal(document.getElementById('urlListModal'));
+    }
+    urlListModalInstance.show();
+}
+
+function openEditUrlListModal(list) {
+    urlListModalMode = 'edit';
+    urlListModalId = list.id;
+    document.getElementById('urlListModalTitle').textContent = `Edit URL List: ${list.name}`;
+    document.getElementById('urlListName').value = list.name;
+    document.getElementById('urlListUrls').value = '';
+    document.getElementById('urlListModalStatus').textContent = '';
+    if (!urlListModalInstance) {
+        urlListModalInstance = new bootstrap.Modal(document.getElementById('urlListModal'));
+    }
+    urlListModalInstance.show();
+}
+
+async function saveUrlListModal() {
+    const name = document.getElementById('urlListName').value.trim();
+    const urlsText = document.getElementById('urlListUrls').value;
+    const statusEl = document.getElementById('urlListModalStatus');
+    if (!name) { statusEl.textContent = 'List name is required.'; return; }
+    if (urlListModalMode === 'create' && !urlsText.trim()) { statusEl.textContent = 'At least one URL is required.'; return; }
+    statusEl.textContent = 'Saving...';
+    const endpoint = urlListModalMode === 'edit' ? `/api/settings/url_lists/${urlListModalId}` : '/api/settings/url_lists';
+    const method = urlListModalMode === 'edit' ? 'PUT' : 'POST';
+    const body = { name };
+    if (urlListModalMode === 'create' || urlsText.trim()) {
+        body.urls_text = urlsText; // omitted on an edit that only changes the name - leaves URLs on disk untouched
+    }
+    try {
+        const res = await fetch(endpoint, {
+            method, headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.success) {
+            urlListModalInstance.hide();
+            loadUrlListsSection();
+        } else {
+            statusEl.textContent = `Failed: ${data.error}`;
+        }
+    } catch (err) {
+        statusEl.textContent = 'Failed: request error.';
+    }
+}
+
+async function deleteUrlList(listId, name) {
+    if (!confirm(`Delete URL list "${name}"? This cannot be undone.`)) return;
+    try {
+        const res = await fetch(`/api/settings/url_lists/${listId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+            loadUrlListsSection();
+        } else {
+            showToast(`Delete failed: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast('Delete failed: request error.', 'danger');
+    }
+}
+
+async function refreshUrlhausList() {
+    const btn = document.getElementById('btnRefreshUrlhaus');
+    if (btn) { btn.disabled = true; btn.textContent = 'Fetching...'; }
+    try {
+        const res = await fetch('/api/settings/url_lists/refresh_urlhaus', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showToast(`URLhaus list refreshed - ${data.list.url_count} URLs.`, 'success');
+        } else {
+            showToast(`URLhaus refresh failed: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast('URLhaus refresh failed: request error.', 'danger');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-cloud-download me-1"></i>Import/Refresh URLhaus Recent'; }
+        loadUrlListsSection();
     }
 }
 
@@ -10127,6 +10307,7 @@ document.getElementById('secNetConfig')?.addEventListener('shown.bs.collapse', (
 document.getElementById('secManageTags')?.addEventListener('shown.bs.collapse', () => loadManageTagsSection());
 document.getElementById('secKeywordLists')?.addEventListener('shown.bs.collapse', () => loadKeywordListsSection());
 document.getElementById('secHashLists')?.addEventListener('shown.bs.collapse', () => loadHashListsSection());
+document.getElementById('secUrlLists')?.addEventListener('shown.bs.collapse', () => loadUrlListsSection());
 document.getElementById('secYaraRules')?.addEventListener('shown.bs.collapse', () => loadYaraRulesetsSection());
 
 document.addEventListener('shown.bs.tab', (ev) => {

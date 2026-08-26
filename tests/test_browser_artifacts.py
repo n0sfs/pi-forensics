@@ -503,3 +503,50 @@ def test_dispatch_swallows_a_firefox_parse_exception_and_returns_empty(tmp_path)
     bad_path.write_text("not a real sqlite file")
     result = ba.parse_browser_profile_file(str(bad_path), "places.sqlite")
     assert result == []
+
+
+# --- URL list IOC matching (2026-08-26, Linux-DFIR-tools follow-up) ---
+
+def test_match_urls_against_lists_flags_a_real_match_and_ignores_non_matches():
+    records = [
+        {"artifact_type": "chrome_history", "url": "http://evil.example/bin.sh", "value": "evil page", "timestamp": 123},
+        {"artifact_type": "chrome_history", "url": "https://example.com/", "value": "safe page", "timestamp": 456},
+        {"artifact_type": "chrome_cookies", "url": "", "value": "no url on a cookie record", "timestamp": None},
+    ]
+    url_list_sets = {"bad1": {"name": "Test Bad List", "urls": {"http://evil.example/bin.sh"}}}
+    matches = ba._match_urls_against_lists(records, url_list_sets)
+    assert len(matches) == 1
+    m = matches[0]
+    assert m["artifact_type"] == "browser_url_ioc_match"
+    assert m["url"] == "http://evil.example/bin.sh"
+    assert m["extra"]["matched_lists"] == ["Test Bad List"]
+    assert m["extra"]["source_artifact_type"] == "chrome_history"
+    assert m["timestamp"] == 123
+
+
+def test_match_urls_against_lists_names_every_list_that_matched():
+    records = [{"artifact_type": "chrome_history", "url": "http://evil.example/x", "value": "v", "timestamp": None}]
+    url_list_sets = {
+        "a": {"name": "List A", "urls": {"http://evil.example/x"}},
+        "b": {"name": "List B", "urls": {"http://evil.example/x"}},
+        "c": {"name": "List C", "urls": {"http://something-else"}},
+    }
+    matches = ba._match_urls_against_lists(records, url_list_sets)
+    assert len(matches) == 1
+    assert sorted(matches[0]["extra"]["matched_lists"]) == ["List A", "List B"]
+
+
+def test_parse_browser_profile_file_appends_ioc_matches_without_url_list_sets_being_a_noop(tmp_path, monkeypatch):
+    monkeypatch.setattr(ba, "parse_chrome_bookmarks_json",
+                         lambda p: [{"artifact_type": "chrome_bookmarks", "title": "t", "url": "http://evil.example/x",
+                                     "value": "v", "timestamp": None, "extra": {}}])
+    url_list_sets = {"bad1": {"name": "Test Bad List", "urls": {"http://evil.example/x"}}}
+    # No url_list_sets at all - identical to today's pre-existing behavior, no IOC records appended.
+    result_without = ba.parse_browser_profile_file("/x/Bookmarks", "Bookmarks")
+    assert len(result_without) == 1
+    assert result_without[0]["artifact_type"] == "chrome_bookmarks"
+    # With url_list_sets - the original record survives untouched, plus one new IOC match record.
+    result_with = ba.parse_browser_profile_file("/x/Bookmarks", "Bookmarks", url_list_sets=url_list_sets)
+    assert len(result_with) == 2
+    assert result_with[0]["artifact_type"] == "chrome_bookmarks"
+    assert result_with[1]["artifact_type"] == "browser_url_ioc_match"

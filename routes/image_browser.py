@@ -36,7 +36,7 @@ from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path, classify_extension,
     is_valid_block_device_or_partition,
 )
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, load_yara_ruleset_sources
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets
 import yara
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME,
@@ -1032,6 +1032,10 @@ def image_parse_browser_artifacts():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
 
+    # Automatic, not per-scan-selectable - see routes/file_explorer.py's
+    # own parse_browser_artifacts() for the identical reasoning.
+    url_list_sets = load_url_list_sets([r['id'] for r in get_url_lists()])
+
     filesystems = _tsk_resolve_filesystems(image_path)
     if not filesystems:
         return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
@@ -1064,7 +1068,7 @@ def image_parse_browser_artifacts():
         tmp_path = None
         try:
             tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
-            records = parse_browser_profile_file(tmp_path, entry['name'])
+            records = parse_browser_profile_file(tmp_path, entry['name'], url_list_sets=url_list_sets)
         except Exception:
             records = []
         finally:
