@@ -9,8 +9,10 @@ needed. wtmp is the one binary format, built from the same verified
 No skip guard needed - this module is pure stdlib, no optional pip
 dependency.
 """
+import json
 import struct
 import time
+from unittest.mock import patch, MagicMock
 
 import core.linux_artifacts as la
 
@@ -253,3 +255,107 @@ def test_find_wtmp_files_requires_log_parent_directory(tmp_path):
     (other / "wtmp").write_bytes(b"\x00" * 400)
     found, truncated = la.find_linux_wtmp_files(str(tmp_path))
     assert len(found) == 2
+
+
+# --- systemd journal (journald) ---
+# Deliberately no skip guard, unlike a genuine binary-fixture test would
+# need - these mock subprocess.run() entirely rather than requiring a real
+# journalctl binary or a hand-constructed .journal file (impractical - only
+# journald's own writer can produce a valid one), so they run identically
+# on the Windows dev machine and the real Pi. The mocked stdout shape below
+# matches real journalctl -o json output confirmed live against this app's
+# own deployed station (2026-08-25) - see core/linux_artifacts.py's own
+# module comment for the live verification.
+
+def test_is_journald_candidate_requires_journal_ancestor_and_extension(tmp_path):
+    assert la.is_journald_candidate("system.journal", "/var/log/journal/abc123") is True
+    assert la.is_journald_candidate("system@boot-1-real.journal", "/run/log/journal/abc123") is True
+    assert la.is_journald_candidate("system.journal", "/var/log/elsewhere") is False
+    assert la.is_journald_candidate("notes.txt", "/var/log/journal/abc123") is False
+
+
+def test_find_journald_files_matches_real_and_rotated_names(tmp_path):
+    jdir = tmp_path / "var" / "log" / "journal" / "abc123"
+    jdir.mkdir(parents=True)
+    (jdir / "system.journal").write_bytes(b"")
+    (jdir / "system@boot-1-real.journal").write_bytes(b"")
+    (jdir / "user-1000.journal").write_bytes(b"")
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / "system.journal").write_bytes(b"")
+    found, truncated = la.find_linux_journald_files(str(tmp_path))
+    assert len(found) == 3
+    assert not truncated
+
+
+def _mock_journalctl_result(entries):
+    res = MagicMock()
+    res.returncode = 0
+    res.stdout = "\n".join(json.dumps(e) for e in entries)
+    res.stderr = ""
+    return res
+
+
+def test_parse_journald_extracts_curated_event_kinds_and_real_timestamp(tmp_path):
+    p = tmp_path / "system.journal"
+    p.write_bytes(b"")
+    entries = [
+        {"MESSAGE": "sshd[1234]: Accepted publickey for nospi from 192.168.86.49 port 21662 ssh2",
+         "__REALTIME_TIMESTAMP": "1787708799712997", "_SYSTEMD_UNIT": "ssh.service",
+         "_HOSTNAME": "nospi4", "SYSLOG_IDENTIFIER": "sshd"},
+        {"MESSAGE": "some unrelated kernel message with no curated pattern match",
+         "__REALTIME_TIMESTAMP": "1787708800000000"},
+    ]
+    with patch("core.linux_artifacts.subprocess.run", return_value=_mock_journalctl_result(entries)):
+        records = la.parse_linux_journald_file(str(p), "system.journal")
+    assert len(records) == 1
+    r = records[0]
+    assert r["artifact_type"] == "linux_journald_log"
+    assert r["extra"]["event_kind"] == "ssh_login_success"
+    assert r["extra"]["unit"] == "ssh.service"
+    assert r["extra"]["journal_file"] == "system.journal"
+    # 1787708799712997 microseconds -> 1787708799.712997 seconds - real
+    # __REALTIME_TIMESTAMP unit confirmed live (microseconds since the
+    # standard Unix epoch, no offset math needed unlike WebKit/Firefox-
+    # PRTime/FILETIME elsewhere in this app).
+    assert r["timestamp"] == 1787708799.712997
+
+
+def test_parse_journald_caps_matches_and_stops_at_the_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(la, "JOURNALD_MAX_MATCHES_PER_FILE", 2)
+    p = tmp_path / "system.journal"
+    p.write_bytes(b"")
+    entries = [{"MESSAGE": f"sudo: nospi : TTY=pts/0 ; PWD=/home ; USER=root ; COMMAND=/bin/ls{i}",
+                "__REALTIME_TIMESTAMP": "1787708799712997"} for i in range(5)]
+    with patch("core.linux_artifacts.subprocess.run", return_value=_mock_journalctl_result(entries)):
+        records = la.parse_linux_journald_file(str(p))
+    assert len(records) == 2
+
+
+def test_parse_journald_returns_empty_list_on_journalctl_nonzero_exit(tmp_path):
+    p = tmp_path / "system.journal"
+    p.write_bytes(b"")
+    res = MagicMock(returncode=1, stdout="", stderr="Failed to open files: No such file or directory")
+    with patch("core.linux_artifacts.subprocess.run", return_value=res):
+        records = la.parse_linux_journald_file(str(p))
+    assert records == []
+
+
+def test_parse_journald_returns_empty_list_when_journalctl_binary_missing(tmp_path):
+    p = tmp_path / "system.journal"
+    p.write_bytes(b"")
+    with patch("core.linux_artifacts.subprocess.run", side_effect=FileNotFoundError("journalctl")):
+        records = la.parse_linux_journald_file(str(p))
+    assert records == []
+
+
+def test_parse_journald_skips_unparseable_json_lines_without_crashing(tmp_path):
+    p = tmp_path / "system.journal"
+    p.write_bytes(b"")
+    res = MagicMock(returncode=0, stderr="")
+    res.stdout = "not valid json\n" + json.dumps({
+        "MESSAGE": "sudo: admin : COMMAND=/usr/bin/whoami", "__REALTIME_TIMESTAMP": "1787708799712997"})
+    with patch("core.linux_artifacts.subprocess.run", return_value=res):
+        records = la.parse_linux_journald_file(str(p))
+    assert len(records) == 1
+    assert records[0]["extra"]["event_kind"] == "sudo_command"

@@ -45,6 +45,7 @@ from core.linux_artifacts import (
     find_linux_passwd_files, parse_linux_passwd_file,
     find_linux_cron_files, parse_linux_cron_file,
     find_linux_auth_log_files, parse_linux_auth_log_file,
+    find_linux_journald_files, parse_linux_journald_file,
     find_linux_wtmp_files, parse_linux_wtmp_file,
     LINUX_ARTIFACT_DEFAULT_TYPES,
 )
@@ -65,6 +66,7 @@ LINUX_ARTIFACT_DISCOVERERS = {
     "passwd_account": (find_linux_passwd_files, parse_linux_passwd_file),
     "cron_job": (find_linux_cron_files, parse_linux_cron_file),
     "auth_log": (find_linux_auth_log_files, parse_linux_auth_log_file),
+    "journald_log": (find_linux_journald_files, parse_linux_journald_file),
     "wtmp_login": (find_linux_wtmp_files, parse_linux_wtmp_file),
 }
 from core.evtx_utils import find_evtx_files, parse_evtx_file
