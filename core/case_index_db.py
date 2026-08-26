@@ -18,6 +18,7 @@ from flask import g
 
 from core.paths import safe_path, case_consolidated_path, classify_case_role
 from core.config import get_keyword_lists
+import core.config as config
 
 # --- Quick Triage Scan: pattern definitions ---
 # Deliberately built in-house rather than depending on bulk_extractor,
@@ -773,3 +774,133 @@ def _backfill_case_artifact_tags(case_folder):
                     _auto_tag_case_artifact(case_folder, os.path.join(root, fname))
     except Exception as e:
         print(f"Warning: case artifact backfill sweep failed for {case_folder}: {e}")
+
+
+# --- Cross-case search (2026-08-26, gap-closing round) ---
+# "Has this hash shown up in any OTHER case on this station?" - v1 scoped
+# to exact hash-lookup only (unambiguous, high-value); free-text/keyword/
+# tag cross-case search is an explicitly-deferred v2, not built here (fuzzy
+# matching across cases needs its own relevance-ranking design this
+# doesn't need). Reads each case's own case JSON directly rather than the
+# per-case SQLite index - confirmed indexed_files has NO hash column at
+# all (its schema is image_path/fs_offset/inode/path/name/extension/
+# category/size/deleted/is_virtual/mtime/atime/ctime/crtime, above) -
+# acquisition hashes live only in each case's own
+# events[].computed_verification_hashes inside its case JSON, so there is
+# nothing to migrate/index here, this just reads what's already on disk.
+CROSS_CASE_SEARCH_MAX_CASES = 200
+CROSS_CASE_SEARCH_MAX_RESULTS = 500
+
+
+def list_case_folders():
+    """Walks EVIDENCE_ROOT for every real case folder (both the modern
+    consolidated {slug}_case.json schema and the legacy case_info.json one
+    not yet migrated) - factored out of routes/case_management.py's
+    list_cases() (which now just calls this and jsonify()s the result
+    unchanged - pure code motion, zero behavior change) once this became a
+    2nd caller (cross_case_hash_search() below), matching this project's
+    own established bar for factoring something out of a single inline
+    route body. Returns a list of dicts: {case_number, examiner,
+    case_folder, created_at, notes, case_status, event_count, schema},
+    sorted newest-created-first.
+
+    Reads config.EVIDENCE_ROOT module-qualified (not a bare imported name)
+    - the exact same "read through config.X, not a copied binding" fix
+    already applied once before in this codebase (routes/settings.py's
+    config-backup functions, after a bare import there caused a real test
+    run to write to the live station's actual config files instead of a
+    test temp dir) - here it's what makes this function's own new test
+    suite able to genuinely redirect EVIDENCE_ROOT via monkeypatch."""
+    root_dir = config.EVIDENCE_ROOT
+    cases = []
+    for root, dirs, files in os.walk(root_dir):
+        # Bound the scan depth so this can't turn into a very slow crawl of
+        # a huge or deeply-mounted evidence tree.
+        depth = root[len(root_dir):].count(os.sep)
+        if depth >= 6:
+            dirs[:] = []
+            continue
+
+        consolidated_name = f"{os.path.basename(root)}_case.json"
+        if consolidated_name in files:
+            try:
+                with open(os.path.join(root, consolidated_name), 'r') as f:
+                    data = json.load(f)
+                cases.append({
+                    "case_number": data.get('case_number', '--'),
+                    "examiner": data.get('examiner', '--'),
+                    "case_folder": data.get('case_folder', root),
+                    "created_at": data.get('created_at', '--'),
+                    "notes": data.get('notes', ''),
+                    "case_status": data.get('case_status') or 'Open',
+                    "event_count": len(data.get('events', [])),
+                    "schema": "consolidated",
+                })
+            except (json.JSONDecodeError, OSError):
+                pass
+            dirs[:] = []  # a case folder never contains another case folder
+        elif 'case_info.json' in files:
+            try:
+                with open(os.path.join(root, 'case_info.json'), 'r') as f:
+                    data = json.load(f)
+                cases.append({
+                    "case_number": data.get('case_number', '--'),
+                    "examiner": data.get('examiner', '--'),
+                    "case_folder": data.get('case_folder', root),
+                    "created_at": data.get('created_at', '--'),
+                    "notes": data.get('notes', ''),
+                    "case_status": data.get('case_status') or 'Open',
+                    "event_count": None,
+                    "schema": "legacy",
+                })
+            except (json.JSONDecodeError, OSError):
+                pass
+            dirs[:] = []
+
+    cases.sort(key=lambda c: c.get('created_at', ''), reverse=True)
+    return cases
+
+
+def cross_case_hash_search(hash_value):
+    """Searches every case's own case JSON for an event whose
+    computed_verification_hashes contains hash_value (case-insensitive
+    exact match against any recorded algorithm's value). One corrupt/
+    unreadable case JSON is skipped, not fatal to the whole search - the
+    same per-case failure isolation list_case_folders() itself already has
+    via its own try/except per case. Returns (results, truncated) where
+    each result is {case_number, examiner, case_folder, evidence_id,
+    algorithm, matched_hash}."""
+    hash_value_lower = (hash_value or '').strip().lower()
+    if not hash_value_lower:
+        return [], False
+    results = []
+    truncated = False
+    cases = list_case_folders()
+    if len(cases) > CROSS_CASE_SEARCH_MAX_CASES:
+        cases = cases[:CROSS_CASE_SEARCH_MAX_CASES]
+        truncated = True
+    for case in cases:
+        if case.get('schema') != 'consolidated':
+            continue  # legacy single-job reports have their own report JSON shape, out of scope for this pass
+        case_file = case_consolidated_path(case['case_folder'])
+        if not case_file:
+            continue
+        try:
+            with open(case_file, 'r') as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        for event in data.get('events', []):
+            hashes = event.get('computed_verification_hashes') or {}
+            for algorithm, matched_hash in hashes.items():
+                if isinstance(matched_hash, str) and matched_hash.strip().lower() == hash_value_lower:
+                    results.append({
+                        "case_number": case['case_number'], "examiner": case['examiner'],
+                        "case_folder": case['case_folder'],
+                        "evidence_id": event.get('case_metadata', {}).get('evidence_id')
+                            or event.get('evidence_id') or '--',
+                        "algorithm": algorithm, "matched_hash": matched_hash,
+                    })
+                    if len(results) >= CROSS_CASE_SEARCH_MAX_RESULTS:
+                        return results, True
+    return results, truncated

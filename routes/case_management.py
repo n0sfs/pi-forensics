@@ -29,6 +29,7 @@ from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, sanitize_case_slug
 from core.config import EVIDENCE_ROOT, get_custom_case_fields
 from core.jobs import job_lock, current_job, _write_case_file
+from core.case_index_db import list_case_folders
 
 case_management_bp = Blueprint('case_management', __name__)
 
@@ -106,63 +107,13 @@ def create_case():
 @case_management_bp.route('/api/cases/list', methods=['GET'])
 @requires_auth
 def list_cases():
-    cases = []
+    """Thin wrapper - the actual EVIDENCE_ROOT walk lives in core/
+    case_index_db.py's list_case_folders() now, factored out once cross-
+    case search (routes/case_index.py's cross_case_hash_search()) became a
+    2nd caller (2026-08-26, gap-closing round). Pure code motion, verified
+    zero behavior change - same response shape, same sort order."""
     try:
-        for root, dirs, files in os.walk(EVIDENCE_ROOT):
-            # Bound the scan depth so this can't turn into a very slow crawl
-            # of a huge or deeply-mounted evidence tree.
-            depth = root[len(EVIDENCE_ROOT):].count(os.sep)
-            if depth >= 6:
-                dirs[:] = []
-                continue
-
-            # A case folder's marker filename is always derived from its own
-            # basename (see case_consolidated_path) - check for that exact
-            # name first (new consolidated schema), falling back to the old
-            # generic case_info.json for cases created before this existed
-            # and not yet migrated (see /api/cases/migrate_preview/_apply).
-            consolidated_name = f"{os.path.basename(root)}_case.json"
-            if consolidated_name in files:
-                try:
-                    with open(os.path.join(root, consolidated_name), 'r') as f:
-                        data = json.load(f)
-                    cases.append({
-                        "case_number": data.get('case_number', '--'),
-                        "examiner": data.get('examiner', '--'),
-                        "case_folder": data.get('case_folder', root),
-                        "created_at": data.get('created_at', '--'),
-                        "notes": data.get('notes', ''),
-                        # Absent on any case created before this field
-                        # existed - defaults to Open (assume active) rather
-                        # than a blank/unknown state, matching the same
-                        # default new cases get at creation.
-                        "case_status": data.get('case_status') or 'Open',
-                        "event_count": len(data.get('events', [])),
-                        "schema": "consolidated",
-                    })
-                except (json.JSONDecodeError, OSError):
-                    pass
-                dirs[:] = []  # a case folder never contains another case folder
-            elif 'case_info.json' in files:
-                try:
-                    with open(os.path.join(root, 'case_info.json'), 'r') as f:
-                        data = json.load(f)
-                    cases.append({
-                        "case_number": data.get('case_number', '--'),
-                        "examiner": data.get('examiner', '--'),
-                        "case_folder": data.get('case_folder', root),
-                        "created_at": data.get('created_at', '--'),
-                        "notes": data.get('notes', ''),
-                        "case_status": data.get('case_status') or 'Open',
-                        "event_count": None,
-                        "schema": "legacy",
-                    })
-                except (json.JSONDecodeError, OSError):
-                    pass
-                dirs[:] = []
-
-        cases.sort(key=lambda c: c.get('created_at', ''), reverse=True)
-        return jsonify({"success": True, "cases": cases})
+        return jsonify({"success": True, "cases": list_case_folders()})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

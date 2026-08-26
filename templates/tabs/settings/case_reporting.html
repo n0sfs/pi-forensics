@@ -169,6 +169,30 @@
                                         </div>
                                     </div>
                                 </div>
+                                <!-- Cross-Case Search (2026-08-26, gap-closing round) - "has this hash
+                                     shown up in any OTHER case on this station?", station-wide and not
+                                     scoped to the currently active case, same reasoning that already
+                                     puts Keyword/Hash/URL/YARA Lists here rather than in Reporting's own
+                                     (single-case-scoped) Search tab. v1 is hash-lookup only - see
+                                     core/case_index_db.py's cross_case_hash_search() docstring for why
+                                     keyword/tag search is a deliberately deferred v2, not built here. -->
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secCrossCaseSearch"><i class="bi bi-search-heart me-2"></i>Cross-Case Search</button>
+                                    </h2>
+                                    <div id="secCrossCaseSearch" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="small text-subtle mb-2">Search every case on this station for a real acquisition hash (SHA256/SHA1/MD5) - useful for confirming the same physical drive/evidence item was never processed twice under two different case numbers. Free-text/keyword search across cases is not yet built.</div>
+                                            <div class="d-flex gap-1 mb-2">
+                                                <input type="text" id="crossCaseSearchHash" class="form-control form-control-sm" placeholder="Paste a hash value...">
+                                                <button class="btn btn-sm btn-outline-info fw-bold" onclick="runCrossCaseSearch()"><i class="bi bi-search me-1"></i>Search</button>
+                                            </div>
+                                            <div id="crossCaseSearchResults" class="bg-black border border-secondary p-2 rounded-2" style="max-height: 260px; overflow-y: auto;">
+                                                <span class="text-subtle small">Enter a hash above and click Search.</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
 
                             <button class="btn btn-sm btn-success fw-bold w-100" onclick="saveCaseReportingSettings()"><i class="bi bi-check2-circle me-1"></i>Save Settings</button>
