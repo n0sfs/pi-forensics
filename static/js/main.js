@@ -2633,6 +2633,7 @@ async function loadHashListsSection() {
     listEl.innerHTML = '<div class="text-subtle small p-2">Loading hash lists...</div>';
     const lists = await fetchHashLists(true);
     renderHashListsList(lists);
+    loadMalwarebazaarKeyStatus();
 }
 
 function renderHashListsList(lists) {
@@ -2646,7 +2647,7 @@ function renderHashListsList(lists) {
     const table = document.createElement('table');
     table.className = 'table table-dark table-sm mb-0';
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th>Set</th><th>Algorithm</th><th>Label</th><th>Hashes</th><th></th></tr>'; // static/trusted markup
+    thead.innerHTML = '<tr><th>Set</th><th>Algorithm</th><th>Label</th><th>Source</th><th>Hashes</th><th></th></tr>'; // static/trusted markup
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
     lists.forEach(l => {
@@ -2668,6 +2669,11 @@ function renderHashListsList(lists) {
         labelTd.appendChild(labelBadge);
         tr.appendChild(labelTd);
 
+        const sourceTd = document.createElement('td');
+        sourceTd.className = 'text-subtle';
+        sourceTd.textContent = l.source === 'malwarebazaar_recent' ? 'MalwareBazaar (auto)' : 'Manual';
+        tr.appendChild(sourceTd);
+
         const countTd = document.createElement('td');
         countTd.className = 'text-subtle';
         countTd.textContent = l.hash_count;
@@ -2675,12 +2681,21 @@ function renderHashListsList(lists) {
 
         const actionsTd = document.createElement('td');
         actionsTd.className = 'text-end';
-        const editBtn = document.createElement('button');
-        editBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 me-1';
-        editBtn.innerHTML = '<i class="bi bi-pencil"></i>';
-        editBtn.title = 'Edit';
-        editBtn.onclick = () => openEditHashListModal(l);
-        actionsTd.appendChild(editBtn);
+        if (l.source === 'malwarebazaar_recent') {
+            const refreshBtn = document.createElement('button');
+            refreshBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 me-1';
+            refreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+            refreshBtn.title = 'Refresh from MalwareBazaar';
+            refreshBtn.onclick = () => refreshMalwarebazaarList();
+            actionsTd.appendChild(refreshBtn);
+        } else {
+            const editBtn = document.createElement('button');
+            editBtn.className = 'btn btn-xs btn-outline-info py-0 px-1 me-1';
+            editBtn.innerHTML = '<i class="bi bi-pencil"></i>';
+            editBtn.title = 'Edit';
+            editBtn.onclick = () => openEditHashListModal(l);
+            actionsTd.appendChild(editBtn);
+        }
         const delBtn = document.createElement('button');
         delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-1';
         delBtn.innerHTML = '<i class="bi bi-trash"></i>';
@@ -2776,6 +2791,69 @@ async function deleteHashList(listId, name) {
         }
     } catch (err) {
         showToast('Delete failed: request error.', 'danger');
+    }
+}
+
+// --- MalwareBazaar (abuse.ch) hash feed for Hash Sets (2026-08-26,
+// Linux-DFIR-tools follow-up) - needs a free personal Auth-Key the
+// examiner registers themselves at auth.abuse.ch, unlike URLhaus below.
+// The key field is a plain <input type=password>, never pre-filled with
+// the real value once saved (this app never sends it back down at all -
+// GET only ever returns {configured: bool}).
+async function loadMalwarebazaarKeyStatus() {
+    const statusEl = document.getElementById('malwarebazaarKeyStatus');
+    if (!statusEl) return;
+    statusEl.textContent = 'Checking...';
+    try {
+        const res = await fetch('/api/settings/malwarebazaar_key');
+        const data = await res.json();
+        statusEl.textContent = data.configured
+            ? 'Auth-Key configured.'
+            : 'No Auth-Key configured yet - get a free one at auth.abuse.ch, then paste it above.';
+    } catch (err) {
+        statusEl.textContent = 'Could not check Auth-Key status.';
+    }
+}
+
+async function saveMalwarebazaarKey() {
+    const input = document.getElementById('malwarebazaarAuthKey');
+    const statusEl = document.getElementById('malwarebazaarKeyStatus');
+    const authKey = input.value.trim();
+    statusEl.textContent = 'Saving...';
+    try {
+        const res = await fetch('/api/settings/malwarebazaar_key', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ auth_key: authKey })
+        });
+        const data = await res.json();
+        if (data.success) {
+            input.value = '';
+            showToast(data.configured ? 'MalwareBazaar Auth-Key saved.' : 'MalwareBazaar Auth-Key cleared.', 'success');
+            loadMalwarebazaarKeyStatus();
+        } else {
+            showToast(`Failed to save Auth-Key: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast('Failed to save Auth-Key: request error.', 'danger');
+    }
+}
+
+async function refreshMalwarebazaarList() {
+    const btn = document.getElementById('btnRefreshMalwarebazaar');
+    if (btn) { btn.disabled = true; btn.textContent = 'Fetching...'; }
+    try {
+        const res = await fetch('/api/settings/hash_lists/refresh_malwarebazaar', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showToast(`MalwareBazaar list refreshed - ${data.list.hash_count} hashes.`, 'success');
+        } else {
+            showToast(`MalwareBazaar refresh failed: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast('MalwareBazaar refresh failed: request error.', 'danger');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-cloud-download me-1"></i>Import/Refresh MalwareBazaar Recent'; }
+        loadHashListsSection();
     }
 }
 

@@ -755,7 +755,12 @@ def hash_lists():
         f.write('\n'.join(hashes) + '\n')
 
     now = time.strftime("%Y-%m-%d %H:%M:%S")
-    record = {"id": list_id, "name": name, "algorithm": algorithm, "label": label,
+    # source added 2026-08-26 alongside MalwareBazaar's own feed-backed list
+    # below (mirrors url_lists' identical field) - every list created
+    # through this route is examiner-pasted, hence "manual"; a pre-existing
+    # list from before this field existed just reads as source: None, which
+    # the frontend already treats the same way ("not malwarebazaar_recent").
+    record = {"id": list_id, "name": name, "algorithm": algorithm, "label": label, "source": "manual",
               "hash_count": len(hashes), "created_at": now, "updated_at": now}
     lists.append(record)
     save_runtime_config(cfg)
@@ -804,6 +809,114 @@ def hash_list_detail(list_id):
     save_runtime_config(cfg)
     log_chain_of_custody("hash_list_updated", {"id": list_id, "name": name, "hash_count": hash_count})
     return jsonify({"success": True, "list": lists[idx]})
+
+
+# --- MalwareBazaar (abuse.ch) hash feed for Hash Sets (2026-08-26,
+# Linux-DFIR-tools follow-up) ---
+# Unlike URLhaus above, MalwareBazaar's exports genuinely require a free,
+# personal Auth-Key (confirmed live against bazaar.abuse.ch/export/ before
+# building this: "In order to access the datasets... you need to obtain an
+# Auth-Key first... required") - registered by the EXAMINER themselves at
+# https://auth.abuse.ch/, never by this app or its own account creation
+# would be needed to test that, which this project is not in a position to
+# do (account creation on the user's behalf is explicitly out of scope).
+# The Auth-Key is a per-station operator secret, so it's Fernet-encrypted
+# at rest via the exact same _encrypt_secret()/_decrypt_secret() helpers
+# already established for network-mount credentials - never displayed back
+# once saved, only a "configured: yes/no" indicator.
+#
+# Endpoint/response shape confirmed from bazaar.abuse.ch's own official API
+# docs plus a corroborating third-party client library's documented usage
+# (mb-api.abuse.ch/api/v1/, POST, header Auth-Key: <key>, form data
+# query=get_recent&selector=100 -> {"query_status": "ok", "data": [{...,
+# "sha256_hash": "..."}, ...]}), NOT empirically verified end-to-end
+# against a real key (this app has none to test with) - disclosed as an
+# open item rather than silently assumed correct.
+MALWAREBAZAAR_API_URL = "https://mb-api.abuse.ch/api/v1/"
+MALWAREBAZAAR_LIST_ID = "malwarebazaar_recent"
+MALWAREBAZAAR_FETCH_TIMEOUT_SECONDS = 30
+
+
+@settings_bp.route('/api/settings/malwarebazaar_key', methods=['GET', 'POST'])
+@requires_auth
+def malwarebazaar_key():
+    cfg = load_runtime_config()
+    if request.method == 'GET':
+        return jsonify({"success": True, "configured": bool(cfg.get('malwarebazaar_auth_key_enc'))})
+
+    perms = get_current_user_permissions()
+    if not perms.get('settings', False):
+        return jsonify({"success": False, "error": "Your account's user group doesn't have permission to perform this action."}), 403
+
+    req = request.get_json() or {}
+    auth_key = (req.get('auth_key') or '').strip()
+    cfg['malwarebazaar_auth_key_enc'] = _encrypt_secret(auth_key) if auth_key else None
+    save_runtime_config(cfg)
+    log_chain_of_custody("malwarebazaar_key_updated", {"configured": bool(auth_key)})
+    return jsonify({"success": True, "configured": bool(auth_key)})
+
+
+@settings_bp.route('/api/settings/hash_lists/refresh_malwarebazaar', methods=['POST'])
+@requires_auth
+@requires_permission('settings')
+def refresh_malwarebazaar_hash_list():
+    import urllib.request
+    import urllib.error
+
+    cfg = load_runtime_config()
+    auth_key = _decrypt_secret(cfg.get('malwarebazaar_auth_key_enc'))
+    if not auth_key:
+        return jsonify({"success": False, "error": "No MalwareBazaar Auth-Key configured. Get a free one at "
+                        "https://auth.abuse.ch/ and enter it above first."}), 400
+
+    body = "query=get_recent&selector=100".encode('ascii')
+    req = urllib.request.Request(
+        MALWAREBAZAAR_API_URL, data=body, method='POST',
+        headers={"Auth-Key": auth_key, "User-Agent": "pi-forensics-suite/1.0 (DFIR appliance, station-operated)"})
+    try:
+        with urllib.request.urlopen(req, timeout=MALWAREBAZAAR_FETCH_TIMEOUT_SECONDS) as resp:
+            raw = resp.read().decode('utf-8', errors='replace')
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return jsonify({"success": False, "error": "MalwareBazaar rejected the configured Auth-Key (401 Unauthorized) - check it's correct and still active."}), 401
+        return jsonify({"success": False, "error": f"MalwareBazaar returned HTTP {e.code}."}), 502
+    except (urllib.error.URLError, OSError) as e:
+        return jsonify({"success": False, "error": f"Could not reach mb-api.abuse.ch: {e}"}), 502
+
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return jsonify({"success": False, "error": "MalwareBazaar returned a response that wasn't valid JSON - the API may have changed."}), 502
+
+    if payload.get('query_status') != 'ok':
+        return jsonify({"success": False, "error": f"MalwareBazaar query_status was '{payload.get('query_status')}', not 'ok'."}), 502
+
+    hashes = sorted({row['sha256_hash'].lower() for row in (payload.get('data') or [])
+                      if isinstance(row, dict) and row.get('sha256_hash')})
+    if not hashes:
+        return jsonify({"success": False, "error": "MalwareBazaar responded successfully but returned no hashes."}), 502
+
+    os.makedirs(config.HASH_LISTS_DIR, exist_ok=True)
+    with open(config.hash_list_file_path(MALWAREBAZAAR_LIST_ID), 'w') as f:
+        f.write('\n'.join(hashes) + '\n')
+
+    lists = cfg.setdefault('hash_lists', [])
+    idx = next((i for i, r in enumerate(lists) if r.get('id') == MALWAREBAZAAR_LIST_ID), None)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    record = {"id": MALWAREBAZAAR_LIST_ID, "name": "MalwareBazaar Recent Hashes", "algorithm": "sha256",
+              "label": "known_bad", "source": "malwarebazaar_recent", "hash_count": len(hashes),
+              "updated_at": now, "created_at": lists[idx]['created_at'] if idx is not None else now}
+    if idx is not None:
+        lists[idx] = record
+    else:
+        if len(lists) >= HASH_LIST_MAX_LISTS:
+            return jsonify({"success": False, "error": f"Station already has the maximum of {HASH_LIST_MAX_LISTS} hash sets - delete one first."}), 400
+        lists.append(record)
+    cfg['hash_lists'] = lists
+    save_runtime_config(cfg)
+    log_chain_of_custody("hash_list_refreshed_from_malwarebazaar", {"hash_count": len(hashes)})
+    return jsonify({"success": True, "list": record})
+
 
 # --- URL lists (2026-08-26, Linux-DFIR-tools follow-up): station-wide
 # known-bad URL lists, checked automatically against every URL a browser-
