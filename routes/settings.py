@@ -52,7 +52,7 @@ import core.config as config
 from core.config import (
     ADMIN_USER, ADMIN_PASS, INSTALL_DIR, HISTORY_FILE,
     TLS_CERT_PATH, TLS_KEY_PATH, MVT_BIN_DIR, MVT_IOS_BIN, MVT_ANDROID_BIN,
-    VOL3_PIP_BIN,
+    VOL3_PIP_BIN, MQUIRE_BIN,
     EVIDENCE_ROOT, ALLOWED_HASH_ALGOS,
     load_runtime_config, save_runtime_config, get_active_admin_pass,
     _get_or_create_mount_key, _encrypt_secret, _decrypt_secret,
@@ -1038,6 +1038,10 @@ TOOL_VERSION_COMMANDS = [
     # fit the existing "prefer a 'Version:' line, else line 1" parsing logic
     # below with zero special-casing needed.
     {"tool": "volatility3", "cmd": [VOL3_PIP_BIN, "show", "volatility3"], "package": None},
+    # package=None (not apt): mquire is built from source at install time
+    # (see install.py's own MQUIRE_VERSION step) - no apt package exists for
+    # it, and Trail of Bits publishes no binary releases either.
+    {"tool": "mquire", "cmd": [MQUIRE_BIN, "--version"], "package": None},
 ]
 # Every installable package this endpoint will ever run apt-get for - the
 # same allowlist install.py's sudoers file grants exact NOPASSWD entries

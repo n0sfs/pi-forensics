@@ -7,6 +7,8 @@ import time
 import math
 import pwd
 import getpass
+import shutil
+import tempfile
 import subprocess
 import urllib.request
 
@@ -164,6 +166,18 @@ apt_packages = [
                        # (2:2.7.5-2, deps: libblkid1/libc6/libcryptsetup12/libpopt0/libuuid1
                        # only) via apt-cache before adding here. losetup/dmsetup (also used by
                        # the LUKS unlock flow) are already provided by util-linux above.
+    "cargo", "rustc",  # build-time only, needed to compile mquire (Linux memory forensics,
+                       # see the mquire build step below) from source - Trail of Bits publishes
+                       # no binary releases at all (confirmed against the GitHub API before
+                       # deciding this), so this is genuinely required, not a convenience.
+                       # Deliberately the Debian-packaged toolchain (1.85.0+dfsg3-1 on trixie/
+                       # arm64, confirmed present via apt-cache first) rather than rustup - a
+                       # reproducible, pinned-by-the-distro version instead of pulling whatever
+                       # "latest stable" rustup's installer script resolves to at install time,
+                       # and a much smaller footprint (~31MB installed vs. rustup's ~600MB full
+                       # toolchain-with-docs). Left installed permanently rather than removed
+                       # after the build, matching every other apt-installed tool's own
+                       # permanent-install pattern in this list.
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
@@ -274,6 +288,65 @@ for mvt_bin in (mvt_ios_bin, mvt_android_bin):
         if res.returncode != 0:
             print(f"[!] Could not download IOC indicators for {os.path.basename(mvt_bin)} right now - "
                   f"use the dashboard's Tool Versions > 'Update MVT Indicators' button once online.")
+
+# 2c. Build mquire (Linux memory forensics, x86_64-only for v1 - see its own
+# worker docstring for why) from source. Pinned to a known-tested tag, not
+# `main`/HEAD, matching this project's own "pinned known-working version"
+# discipline elsewhere (e.g. pytsk3's own version floor in requirements.txt) -
+# a moving upstream target here would mean install.py's own success/failure
+# on a given day depends on whatever trailofbits/mquire's default branch
+# happens to look like at that moment, not something worth risking for a
+# build step that already needs real network access and several minutes of
+# CPU time. Idempotent - skipped entirely if the binary already exists, the
+# same "if not os.path.exists(...)" pattern the venv setup above already
+# uses, so re-running install.py doesn't rebuild this every time.
+MQUIRE_VERSION = "1.4.1"
+mquire_bin_dir = os.path.join(INSTALL_DIR, "bin")
+mquire_bin_path = os.path.join(mquire_bin_dir, "mquire")
+if not os.path.exists(mquire_bin_path):
+    print(f"\n[*] Building mquire {MQUIRE_VERSION} from source (Linux memory forensics)...")
+    mquire_build_dir = tempfile.mkdtemp(prefix="mquire_build_")
+    try:
+        clone_res = subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", MQUIRE_VERSION,
+             "https://github.com/trailofbits/mquire", mquire_build_dir],
+            capture_output=True, text=True, timeout=120,
+        )
+        if clone_res.returncode != 0:
+            print(f"[!] Could not clone mquire (no internet access right now?) - Linux memory "
+                  f"forensics will not be available until this is retried. "
+                  f"Error: {clone_res.stderr.strip()[:300]}")
+        else:
+            # -j 2 (not cargo's own default of one job per core) deliberately caps
+            # peak memory on this board's own class of hardware - confirmed live on
+            # a real low-RAM Pi that an uncapped build risks starving the machine
+            # (though the already-running pi-forensics service itself stayed
+            # responsive throughout in that test) while an install-time build has
+            # no live service running yet anyway, so this is a conservative choice
+            # rather than one proven strictly necessary at install time specifically.
+            build_res = subprocess.run(
+                ["cargo", "build", "--release", "-j", "2"],
+                cwd=mquire_build_dir, capture_output=True, text=True, timeout=1800,
+            )
+            if build_res.returncode != 0:
+                print(f"[!] mquire build failed - Linux memory forensics will not be available. "
+                      f"Error: {build_res.stderr.strip()[-500:]}")
+            else:
+                built_binary = os.path.join(mquire_build_dir, "target", "release", "mquire")
+                if os.path.exists(built_binary):
+                    os.makedirs(mquire_bin_dir, exist_ok=True)
+                    shutil.copy2(built_binary, mquire_bin_path)
+                    os.chmod(mquire_bin_path, 0o755)
+                    print(f"[+] mquire {MQUIRE_VERSION} built and installed to {mquire_bin_path}.")
+                else:
+                    print("[!] mquire build reported success but the binary wasn't found where expected - "
+                          "Linux memory forensics will not be available.")
+    except subprocess.TimeoutExpired:
+        print("[!] mquire build timed out - Linux memory forensics will not be available. "
+              "Retry manually later: git clone the repo, run `cargo build --release`, and copy "
+              f"target/release/mquire to {mquire_bin_path}.")
+    finally:
+        shutil.rmtree(mquire_build_dir, ignore_errors=True)
 
 # 3. Directory Ownership Setup
 print(f"\n[*] Setting directory permissions on {INSTALL_DIR} for '{SERVICE_USER}'...")
