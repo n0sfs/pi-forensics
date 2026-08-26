@@ -1675,6 +1675,9 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     linux_wtmp_login: 'Linux: Login History (wtmp, Experimental)',
     browser_url_ioc_match: 'Browser: Known-Bad URL Match',
     crypto_wallet_file: 'Cryptocurrency Wallet File',
+    mobile_sms_message: 'Mobile: SMS/iMessage',
+    mobile_contact: 'Mobile: Contacts',
+    mobile_call_log: 'Mobile: Call History',
 };
 
 function buildFileViewsHierarchy(summary) {
@@ -4103,6 +4106,7 @@ function updateContextToolbar(item) {
     const btnRecycleBin = document.getElementById("btnParseRecycleBin");
     const btnLinuxArtifacts = document.getElementById("btnParseLinuxArtifacts");
     const btnCryptoWallets = document.getElementById("btnParseCryptoWallets");
+    const btnMobileArtifacts = document.getElementById("btnParseMobileArtifacts");
     const btnParseLnk = document.getElementById("btnParseLnk");
     const btnMvtIos = document.getElementById("btnRunMvtIos");
     const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
@@ -4126,6 +4130,7 @@ function updateContextToolbar(item) {
     if (btnRecycleBin) btnRecycleBin.disabled = !item.is_dir;          // recursively walks a folder for $Recycle.Bin/$I* files
     if (btnLinuxArtifacts) btnLinuxArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Linux artifact files
     if (btnCryptoWallets) btnCryptoWallets.disabled = !item.is_dir;  // recursively walks a folder for wallet files
+    if (btnMobileArtifacts) btnMobileArtifacts.disabled = !item.is_dir;  // scans a folder for an iOS backup (Manifest.db + Info.plist)
     if (btnParseLnk) btnParseLnk.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.lnk');  // single-file, unlike the whole-folder scanners above
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
@@ -4184,6 +4189,7 @@ async function contextMenuBrowseImageAnd(action) {
         recyclebin: runImageRecycleBinParse,
         linuxartifacts: runImageLinuxArtifactsParse,
         cryptowallets: runImageCryptoWalletParse,
+        mobileartifacts: runImageMobileArtifactsParse,
         recover: runImageRecoverDeleted,
     };
     if (actions[action]) actions[action]();
@@ -5246,6 +5252,65 @@ async function runImageCryptoWalletParse() {
         }
     } catch (err) {
         showToast('Crypto wallet scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedMobileArtifactsParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_mobile_artifacts', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Mobile artifact scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No iOS backup (Manifest.db + Info.plist) found under this folder.', 'success');
+            return;
+        }
+        if (data.any_encrypted) {
+            showToast('Found a backup here, but it is password-encrypted - cannot extract app data without the backup password.', 'info');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Mobile artifact scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageMobileArtifactsParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_mobile_artifacts', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Mobile artifact scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No iOS backup found in this image.', 'success');
+            return;
+        }
+        if (data.any_encrypted) {
+            showToast('Found a backup here, but it is password-encrypted - cannot extract app data without the backup password.', 'info');
+            return;
+        }
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} backup(s): ${summary}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Mobile artifact scan failed: request error.', 'danger');
     }
 }
 
