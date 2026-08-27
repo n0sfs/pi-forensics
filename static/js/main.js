@@ -10074,6 +10074,12 @@ let imageConversionModalInstance = null;
 // curated default) - see routes/auto_analyze.py's own module docstring for
 // why Memory/Mobile don't get their own new orchestrated-job route.
 let autoAnalyzeModalInstance = null;
+// The path the modal is currently scoped to - deliberately NOT read from
+// activeSelectedFile inside startAutoAnalyze() (see openAutoAnalyzeModal()'s
+// explicitPath param below), so a Guided-Workflow-triggered run can never
+// silently clobber or depend on whatever File Explorer's own selection
+// state happens to be at the moment Start is clicked.
+let autoAnalyzeTargetPath = null;
 const AUTO_ANALYZE_STEP_LABELS = {
     hash_manifest: "Hash Manifest (SHA256)",
     registry: "Registry Hives (incl. Amcache)",
@@ -10100,9 +10106,17 @@ function _resetAutoAnalyzeModal() {
     document.getElementById('autoAnalyzeProfileSelect').value = '';
 }
 
-async function openAutoAnalyzeModal() {
-    if (!activeSelectedFile) return;
-    document.getElementById('autoAnalyzeFileName').textContent = activeSelectedFile.split('/').pop();
+// explicitPath: optional - lets a caller other than the File Explorer context
+// menu (e.g. Guided Workflow's step 3, which resolves the active case's own
+// acquired-evidence path itself) open this modal pre-scoped to a specific
+// path without needing activeSelectedFile to already point at it. Defaults
+// to activeSelectedFile, unchanged from before this param existed, so the
+// one pre-existing File Explorer call site needs no changes.
+async function openAutoAnalyzeModal(explicitPath) {
+    const path = explicitPath || activeSelectedFile;
+    if (!path) return;
+    autoAnalyzeTargetPath = path;
+    document.getElementById('autoAnalyzeFileName').textContent = path.split('/').pop();
     _resetAutoAnalyzeModal();
 
     if (!autoAnalyzeModalInstance) {
@@ -10113,7 +10127,7 @@ async function openAutoAnalyzeModal() {
     try {
         const res = await fetch('/api/auto_analyze/detect', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+            body: JSON.stringify({ path: path, case_folder: activeCase ? activeCase.case_folder : null })
         });
         const data = await res.json();
         document.getElementById('autoAnalyzeDetecting').style.display = 'none';
@@ -10204,6 +10218,12 @@ async function startAutoAnalyze() {
 
     if (profile === 'memory') {
         if (autoAnalyzeModalInstance) autoAnalyzeModalInstance.hide();
+        // openMemoryForensicsModal()/runSelectedMvtScan() below both read
+        // activeSelectedFile directly, not a passed-in path - already implicitly
+        // true for the File Explorer-triggered case (that's where autoAnalyzeTargetPath
+        // itself came from), made explicit here so it also holds for a Guided
+        // Workflow-triggered run, where activeSelectedFile was never touched.
+        activeSelectedFile = autoAnalyzeTargetPath;
         openMemoryForensicsModal();
         document.querySelectorAll('#memForensicsPluginList input[type=checkbox]').forEach(cb => {
             cb.checked = AUTO_ANALYZE_MEMORY_DEFAULT_PLUGINS.includes(cb.value);
@@ -10212,6 +10232,7 @@ async function startAutoAnalyze() {
     }
     if (profile === 'mobile_ios' || profile === 'mobile_android') {
         if (autoAnalyzeModalInstance) autoAnalyzeModalInstance.hide();
+        activeSelectedFile = autoAnalyzeTargetPath; // see the memory branch's comment above
         runSelectedMvtScan(profile === 'mobile_ios' ? 'ios' : 'android');
         return;
     }
@@ -10224,7 +10245,7 @@ async function startAutoAnalyze() {
     try {
         const res = await fetch('/api/image/auto_analyze/start', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image_path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null, steps })
+            body: JSON.stringify({ image_path: autoAnalyzeTargetPath, case_folder: activeCase ? activeCase.case_folder : null, steps })
         });
         const data = await res.json();
         if (!data.success) {
@@ -10895,8 +10916,139 @@ async function refreshGuidedWorkflow() {
         setWorkflowStepPending('wfBadge3', 'wfStatus3', 'No analysis activity yet', '3');
     }
 
+    // Own fresh fetch of the case's full events[], deliberately not read from
+    // currentLoadedReportData (populated by Reporting's loadCaseForEditing() -
+    // could be stale by the time this function's own periodic poll runs, e.g.
+    // an acquisition completing in the background between Reporting visits)
+    // - matches this function's own existing pattern of each concern fetching
+    // its own current truth rather than trusting another feature's cache.
+    let evidenceCandidates = [];
+    try {
+        const slug = activeCase.case_folder.split('/').filter(Boolean).pop();
+        const reportRes = await fetch('/api/report/load', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report_path: `${activeCase.case_folder}/${slug}_case.json` }),
+        });
+        const reportData = await reportRes.json();
+        if (reportData.success) evidenceCandidates = guidedWorkflowEvidenceCandidates(reportData.report.events);
+    } catch (err) {}
+    updateGuidedWorkflowStep3Button(evidenceCandidates);
+
     const doneEl = document.getElementById('guidedWorkflowDone');
     if (doneEl) doneEl.style.display = (eventCount > 0 && hasActivity) ? 'block' : 'none';
+}
+
+// Mirrors the exact COMPLETED + output_image_path/output_destination
+// resolution _collect_case_timeline()/_mobile_profile_from_case_event()
+// already use server-side (routes/reporting.py, routes/auto_analyze.py) -
+// disk-image events use output_image_path, mobile-backup events use
+// output_destination (confirmed genuinely different field names before
+// relying on it, not assumed). Order follows events[]'s own on-disk order
+// (oldest-first, this app's existing report-JSON convention), so the last
+// entry is the most recently completed acquisition.
+//
+// output_destination is ONLY trusted when the event's own tool is a real
+// mobile-acquisition tool (ios_backup / android_*) - mirroring
+// _mobile_profile_from_case_event()'s exact same gate, not just "any
+// COMPLETED event that happens to carry a destination field." Caught live
+// against this app's own oldest real test case: a pre-schema-evolution
+// event with tool=null had output_destination set to the bare case-folder
+// path (its own generic job destination, not a specific evidence item) -
+// without this gate it would have shown up as a bogus "evidence candidate"
+// pointing Auto Analyze at the whole case folder instead of a real file.
+const GUIDED_WORKFLOW_MOBILE_TOOLS = (tool) => tool === 'ios_backup' || (typeof tool === 'string' && tool.startsWith('android_'));
+
+function guidedWorkflowEvidenceCandidates(events) {
+    if (!Array.isArray(events)) return [];
+    const seen = new Set();
+    const candidates = [];
+    events.forEach(event => {
+        if (event.acquisition_status !== 'COMPLETED') return;
+        const params = event.acquisition_parameters || {};
+        const path = params.output_image_path || (GUIDED_WORKFLOW_MOBILE_TOOLS(event.tool) ? params.output_destination : null);
+        if (!path || seen.has(path)) return;
+        seen.add(path);
+        const evidenceId = (event.case_metadata || {}).evidence_id || 'Evidence';
+        candidates.push({ path, label: `${evidenceId} (${event.tool || 'unknown'})` });
+    });
+    return candidates;
+}
+
+// Cached alongside the button/select DOM update so runGuidedWorkflowAutoAnalyze()
+// can resolve the single-candidate case without re-deriving it (the select
+// stays hidden - and therefore unreadable - when there's only one candidate).
+let guidedWorkflowEvidenceCandidatesCache = [];
+
+function updateGuidedWorkflowStep3Button(candidates) {
+    guidedWorkflowEvidenceCandidatesCache = candidates;
+    const btn = document.getElementById('wfStep3Btn');
+    const select = document.getElementById('wfStep3EvidenceSelect');
+    if (!btn || !select) return;
+
+    if (!candidates.length) {
+        btn.textContent = 'Go to File Explorer';
+        btn.title = '';
+        btn.onclick = () => switchToTab('explorer-tab');
+        select.style.display = 'none';
+        select.innerHTML = '';
+        return;
+    }
+
+    btn.textContent = 'Run Auto Analyze';
+    btn.title = 'Detects what this evidence item is (Windows/Linux disk image, memory image, or mobile backup) and runs a curated set of analysis tools automatically - the same Auto Analyze already reachable from File Explorer, pre-scoped to this case\'s own acquired evidence.';
+    btn.onclick = () => runGuidedWorkflowAutoAnalyze();
+
+    if (candidates.length === 1) {
+        select.style.display = 'none';
+        select.innerHTML = '';
+        return;
+    }
+
+    select.style.display = '';
+    const prevValue = select.value;
+    select.innerHTML = '';
+    candidates.forEach((c) => {
+        const opt = document.createElement('option');
+        opt.value = c.path;
+        opt.textContent = c.label;
+        select.appendChild(opt);
+    });
+    // Preserve the examiner's own prior pick across a refresh if it's still a
+    // valid candidate; otherwise default to the most recently completed one.
+    select.value = candidates.some((c) => c.path === prevValue) ? prevValue : candidates[candidates.length - 1].path;
+}
+
+function runGuidedWorkflowAutoAnalyze() {
+    const select = document.getElementById('wfStep3EvidenceSelect');
+    const path = (select && select.style.display !== 'none') ? select.value : guidedWorkflowEvidenceCandidatesCache[0]?.path;
+    if (!path) return;
+    openAutoAnalyzeModal(path);
+}
+
+// Tier 1b: pre-select the target drive on the way to Acquisition, but only
+// when the choice is genuinely unambiguous right now - re-scans first
+// (refreshDrives(), rather than trusting a possibly-stale currentDrivesList
+// from page load) so "exactly one" reflects what's actually connected at
+// the moment of the click, and never overwrites a selection the examiner
+// already made manually.
+// mmcblk* = this Pi's own SD-card boot media; zram* = a virtual RAM-backed
+// compressed-swap block device Linux always exposes, never a real
+// evidence-acquisition target - both confirmed live against the real
+// deployed station's own /api/drives response (a fresh Pi commonly reports
+// nothing else connected but these two, which would otherwise wrongly read
+// as "exactly one real candidate" and auto-select the zram device).
+const GUIDED_WORKFLOW_NON_CANDIDATE_DRIVE_PREFIXES = ['mmcblk', 'zram'];
+
+async function goToAcquisitionWithSmartDriveSelect() {
+    switchToTab('acquisition-tab');
+    await refreshDrives();
+    const sel = document.getElementById('driveSelect');
+    if (!sel || sel.value) return;
+    const nonBoot = (currentDrivesList || []).filter((d) => !GUIDED_WORKFLOW_NON_CANDIDATE_DRIVE_PREFIXES.some((prefix) => (d.name || '').startsWith(prefix)));
+    if (nonBoot.length === 1) {
+        sel.value = nonBoot[0].device;
+        checkSmartTelemetry();
+    }
 }
 
 function setWorkflowStepDone(badgeId, statusId, statusText) {
