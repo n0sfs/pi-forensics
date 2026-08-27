@@ -41,8 +41,30 @@ from core.jobs import (
     _stream_subprocess, reclaim_ownership,
     build_report_target, write_initial_report, _write_report,
     _SERVICE_ACCOUNT_NAME,
+    begin_suppress_active_false, end_suppress_active_false,
 )
 from core.decrypted_sources import register_decrypted_source, unregister_decrypted_source
+from core.tsk_utils import classify_image_profile
+# Guided Workflow automation Tier 2 (2026-08-27) - the one deliberate,
+# documented exception to this project's own established "every routes/*.py
+# Blueprint only ever imports from core/, never from another routes/*.py
+# file" convention (see routes/auto_analyze.py's own module docstring for
+# why that convention exists and was upheld once already). Moving Auto
+# Analyze's actual step-sequence orchestrator into core/ was considered and
+# rejected: it - and the 8 step functions it dispatches through - are
+# deeply Blueprint-local, calling many private routes/image_browser.py
+# helpers (_tsk_extract_to_temp, _run_hash_manifest_body,
+# parse_registry_hive_file, etc.) that aren't in core/ and would need a
+# large, disproportionately risky refactor to move for this one caller.
+# One-directional, not circular: routes/image_browser.py has no import of
+# routes/acquisition.py (confirmed via a full-repo grep before adding this),
+# and app.py already imports routes.acquisition before routes.image_browser,
+# so Python resolves this import-order dependency the moment it's first
+# needed with no cycle.
+from routes.image_browser import (
+    execution_worker_auto_analyze_image,
+    AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS, AUTO_ANALYZE_LINUX_DEFAULT_STEPS,
+)
 
 acquisition_bp = Blueprint('acquisition', __name__)
 
@@ -1023,6 +1045,61 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
         reclaim_ownership(os.path.dirname(out_file))
         update_job(active=False)
         clear_active_proc()
+
+def execution_worker_chained_auto_analyze(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes, case_folder, source_ip, user):
+    """Guided Workflow automation Tier 2 (2026-08-27) - wraps execution_worker()
+    with an opt-in hand-off into Auto Analyze's own step sequence once
+    acquisition genuinely COMPLETEs. Only ever spawned by start_imaging()
+    when the examiner explicitly checked "Automatically run Auto Analyze
+    when this finishes" for this one run - never a silent/default trigger
+    (see the dated CLAUDE.md entry for the full design reasoning, including
+    why this extends Auto Analyze's own existing single-job-claim-holding
+    mechanism one level up rather than a new generic "job A triggers job B"
+    system).
+
+    core/jobs.py's _suppress_active_false is a plain bool, not a counter -
+    the hand-off below only composes correctly because
+    execution_worker_auto_analyze_image() is always the LAST stage when it
+    runs: its own internal end_suppress_active_false()+update_job(active=False)
+    correctly finishes the whole combined job exactly once, at the true end.
+    The `finally` below is this function's OWN safety net for every other
+    exit path (acquisition failed/stopped, or the evidence type couldn't be
+    determined) - without it, an early return here would leave
+    current_job["active"]=True forever, a station-wide lockup until a
+    service restart.
+    """
+    chained_into_analyze = False
+    begin_suppress_active_false()
+    try:
+        execution_worker(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes)
+        if report_data.get("acquisition_status") != "COMPLETED":
+            return  # failed, or stopped mid-run - nothing valid to analyze
+
+        profile_result = classify_image_profile(out_file)
+        profile = profile_result.get("profile")
+        steps = {
+            "windows": AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS,
+            "linux": AUTO_ANALYZE_LINUX_DEFAULT_STEPS,
+        }.get(profile)
+
+        if not steps:
+            # A real, disclosed outcome, not a silent no-op - "mixed"/
+            # "unknown" images (or a filesystem classify_image_profile()
+            # couldn't open) are never guessed at, matching Auto Analyze's
+            # own detect route's identical honesty principle.
+            log_chain_of_custody("chained_auto_analyze_skipped", {
+                "image_path": out_file,
+                "reason": f"Could not determine evidence type (detected: {profile}) - automatic analysis was not started.",
+            }, source_ip=source_ip, user=user)
+            update_job(status=f"Acquisition completed - automatic analysis skipped (could not determine evidence type: {profile}).")
+            return
+
+        execution_worker_auto_analyze_image(out_file, case_folder, steps, source_ip=source_ip, user=user)
+        chained_into_analyze = True
+    finally:
+        if not chained_into_analyze:
+            end_suppress_active_false()
+            update_job(active=False)
 
 def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_file_path, report_data, total_bytes):
     """
@@ -2138,6 +2215,22 @@ def start_imaging():
     compression = req.get('compression', 'fast')
     split_size = req.get('split_size', '2000M')
 
+    # Guided Workflow automation Tier 2 (2026-08-27) - opt-in, examiner-
+    # confirmed-once-up-front chain into Auto Analyze on a genuine COMPLETED
+    # acquisition. Never applies to AFF (which runs execution_worker_aff(),
+    # not the shared execution_worker() the chain hooks into) - the frontend
+    # already hides/skips sending this for AFF, checked again here
+    # defensively. A case_folder is required (Auto Analyze's own step
+    # functions need one to index results against) - chaining is simply
+    # skipped, not an error, if the examiner checked the box with no active
+    # case (the frontend already warns about this before ever sending the
+    # request, so reaching here with the flag set and no case_folder would
+    # only happen via a direct API call bypassing the UI).
+    chain_auto_analyze = bool(req.get('chain_auto_analyze', False)) and fmt != 'aff'
+    chain_case_folder = safe_path(req.get('case_folder')) if chain_auto_analyze else None
+    if chain_auto_analyze and not chain_case_folder:
+        chain_auto_analyze = False
+
     VALID_FORMATS = {'dd', 'raw', 'dcfldd', 'plain_dd', 'e01', 'aff'}
     if fmt not in VALID_FORMATS:
         update_job(active=False)
@@ -2397,6 +2490,19 @@ def start_imaging():
             target=execution_worker_aff,
             args=(source, dest_path, base_name, hashes, keep_raw, report_target, report_data, total_bytes)
         )
+    elif chain_auto_analyze:
+        # Captured here (in the real request thread, before spawning) rather
+        # than read from request/g inside the worker - the same
+        # capture-before-spawn discipline every other background-thread
+        # log_chain_of_custody() call in this app already needs, since
+        # request/g are request-context-bound proxies that raise off-thread.
+        chain_requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+        chain_requester_user = getattr(g, 'forensic_user', None)
+        thread = threading.Thread(
+            target=execution_worker_chained_auto_analyze,
+            args=(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes,
+                  chain_case_folder, chain_requester_ip, chain_requester_user)
+        )
     else:
         thread = threading.Thread(
             target=execution_worker,
@@ -2435,7 +2541,8 @@ def start_imaging():
     log_chain_of_custody("acquisition_start", {"format": fmt, "source": source, "destination": dest_path,
                                                 **({"bitlocker_decrypted": True} if mount_meta and mount_meta["kind"] == "bitlocker" else {}),
                                                 **({"luks_decrypted": True} if mount_meta and mount_meta["kind"] == "luks" else {}),
-                                                **({"veracrypt_decrypted": True} if mount_meta and mount_meta["kind"] == "veracrypt" else {})})
+                                                **({"veracrypt_decrypted": True} if mount_meta and mount_meta["kind"] == "veracrypt" else {}),
+                                                **({"chain_auto_analyze": True} if chain_auto_analyze else {})})
     return jsonify({"success": True, "message": "Acquisition started."})
 
 @acquisition_bp.route('/api/ddrescue/inspect_map', methods=['POST'])

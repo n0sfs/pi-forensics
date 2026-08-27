@@ -157,6 +157,15 @@ function toggleFormatControls() {
     // hide the checkboxes rather than show controls that don't apply.
     if (hashRow) hashRow.style.display = (fmt === 'ddrescue') ? 'none' : '';
 
+    // Guided Workflow automation Tier 2's chain-into-Auto-Analyze checkbox
+    // only applies to the shared execution_worker() path (dc3dd/dcfldd/plain
+    // dd/E01) - ddrescue and AFF each run their own separate worker function
+    // server-side (execution_worker_aff() for AFF; a wholly different route,
+    // /api/start_ddrescue, for ddrescue) that the chaining logic was never
+    // extended to. Hidden rather than left checked-but-silently-ignored.
+    const chainRow = document.getElementById("chainAutoAnalyzeRow");
+    if (chainRow) chainRow.style.display = (fmt === 'ddrescue' || fmt === 'aff') ? 'none' : '';
+
     const FORMAT_HELP = {
         dd: "Raw bit-for-bit copy using dc3dd, with hashing built in. A solid default for most acquisitions.",
         dcfldd: "Same idea as dc3dd (raw copy + hashing), from a different tool - useful if you specifically need dcfldd's output style.",
@@ -12180,6 +12189,20 @@ async function startAcquisition() {
         if (document.getElementById("hashSha256")?.checked) selectedHashes.push("sha256");
         endpoint = '/api/start_imaging';
         body = { source, destination: dest, format: fmt, compression, split_size, hashes: selectedHashes, metadata, keep_raw, bitlocker_key: bitlockerKey, luks_passphrase: luksPassphrase, veracrypt_password: veracryptPassword };
+        // Tier 2 chaining - AFF is excluded even though it shares this branch/
+        // endpoint, since it runs execution_worker_aff() server-side, not the
+        // shared execution_worker() the chaining logic hooks into (matches
+        // toggleFormatControls() already hiding the checkbox for AFF, but
+        // checked again here defensively in case the row's display state and
+        // the format dropdown's value were ever out of sync).
+        if (fmt !== 'aff' && document.getElementById("chainAutoAnalyzeCheck")?.checked) {
+            if (activeCase) {
+                body.chain_auto_analyze = true;
+                body.case_folder = activeCase.case_folder;
+            } else {
+                showToast('No active case - "Automatically run Auto Analyze" needs one, so it was not enabled for this run.', 'warning');
+            }
+        }
     }
 
     if (fmt === 'ddrescue' && encVolUnlockedSourcePath) {

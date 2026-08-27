@@ -195,6 +195,21 @@
                                                 <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="hashSha256" value="sha256" checked><label class="form-check-label small text-light" for="hashSha256">SHA256</label></div>
                                             </div>
 
+                                            <!-- Guided Workflow automation, Tier 2 (2026-08-27) - opt-in,
+                                                 unchecked by default, hidden entirely for ddrescue/AFF (they
+                                                 use their own separate worker functions, not execution_worker() -
+                                                 see toggleFormatControls()/startAcquisition()'s own scoping). -->
+                                            <div id="chainAutoAnalyzeRow" class="mb-2">
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox" id="chainAutoAnalyzeCheck">
+                                                    <label class="form-check-label small text-light" for="chainAutoAnalyzeCheck">
+                                                        Automatically run Auto Analyze when this finishes
+                                                    </label>
+                                                    <i class="bi bi-info-circle text-subtle ms-1" data-bs-toggle="tooltip" data-bs-placement="right"
+                                                       title="If the acquisition completes successfully, detects the evidence type (Windows/Linux disk image) and immediately runs Auto Analyze's curated default tools against it - no second click needed. Only runs if a type could be determined; requires an active case."></i>
+                                                </div>
+                                            </div>
+
                                             <div class="d-flex gap-2 mb-3">
                                                 <button id="startBtn" class="btn btn-primary flex-fill fw-bold py-2" onclick="startAcquisition()"><i class="bi bi-play-circle me-1"></i>Start Acquisition</button>
                                                 <button id="stopBtn" class="btn btn-danger flex-fill fw-bold py-2" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop Acquisition</button>
