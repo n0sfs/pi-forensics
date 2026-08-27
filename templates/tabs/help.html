@@ -2,6 +2,7 @@
             <div class="tab-pane fade" id="help-app" role="tabpanel">
                 <div class="help-shell">
                     <div class="help-nav list-group" id="helpNavList" role="tablist">
+                        <button class="list-group-item list-group-item-action" id="helpNavWorkflow" data-bs-toggle="list" data-bs-target="#help-pane-workflow" type="button" role="tab"><i class="bi bi-check2-square"></i>Guided Workflow</button>
                         <button class="list-group-item list-group-item-action active" id="helpNavManual" data-bs-toggle="list" data-bs-target="#help-pane-manual" type="button" role="tab" onclick="loadHelpDocFrame('helpManualFrame', 'user-manual')"><i class="bi bi-book"></i>User Manual</button>
                         <button class="list-group-item list-group-item-action" id="helpNavStart" data-bs-toggle="list" data-bs-target="#help-pane-start" type="button" role="tab"><i class="bi bi-signpost-2-fill"></i>Getting Started</button>
                         <button class="list-group-item list-group-item-action" id="helpNavFaq" data-bs-toggle="list" data-bs-target="#help-pane-faq" type="button" role="tab"><i class="bi bi-question-circle-fill"></i>FAQ</button>
@@ -12,6 +13,60 @@
                     </div>
 
                     <div class="help-content tab-content" id="helpTabContent">
+
+                        <!-- Guided Workflow: a stateful case -> acquisition -> tools checklist for
+                             whichever case is currently active. Moved here from Home (2026-08-26) to
+                             keep Home a plain launcher grid - see refreshGuidedWorkflow()/
+                             setWorkflowStepDone()/setWorkflowStepPending() in main.js, and
+                             /api/case_index/summary's has_analysis_activity field for step 3. -->
+                        <div class="tab-pane fade" id="help-pane-workflow" role="tabpanel">
+                            <div class="mb-3 small text-subtle">A live checklist for whichever case is currently active - tracks case creation, acquisition, and analysis activity based on what's actually on disk, not a static guide.</div>
+                            <div id="guidedWorkflowNoCase" class="text-subtle small" style="display:none;">
+                                Create or select a case to track your progress through it here - every
+                                acquisition and tool run below is scoped to whichever case is active.
+                                <div class="mt-2">
+                                    <button class="btn btn-sm btn-info fw-bold" onclick="openCaseManagerModal()"><i class="bi bi-folder-plus me-1"></i>Create / Select Case</button>
+                                </div>
+                            </div>
+
+                            <div id="guidedWorkflowSteps" style="display:none;">
+                                <div class="text-subtle small mb-3">Following along for <strong id="guidedWorkflowCaseLabel">--</strong>:</div>
+
+                                <div class="d-flex align-items-start gap-3 mb-3 pb-3" style="border-bottom: 1px solid var(--border-color);">
+                                    <div class="workflow-step-badge" id="wfBadge1">1</div>
+                                    <div class="flex-grow-1">
+                                        <div class="fw-bold small">1. Create or select a case</div>
+                                        <div class="text-subtle small">Every acquisition, tool run, and report ties back to one case.</div>
+                                        <div class="small mt-1" id="wfStatus1">--</div>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-info fw-bold text-nowrap" onclick="openCaseManagerModal()">Case Manager</button>
+                                </div>
+
+                                <div class="d-flex align-items-start gap-3 mb-3 pb-3" style="border-bottom: 1px solid var(--border-color);">
+                                    <div class="workflow-step-badge" id="wfBadge2">2</div>
+                                    <div class="flex-grow-1">
+                                        <div class="fw-bold small">2. Run an acquisition</div>
+                                        <div class="text-subtle small">Image a drive, pull a mobile backup, or recover deleted files into this case.</div>
+                                        <div class="small mt-1" id="wfStatus2">--</div>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-info fw-bold text-nowrap" onclick="switchToTab('acquisition-tab')">Go to Acquisition</button>
+                                </div>
+
+                                <div class="d-flex align-items-start gap-3">
+                                    <div class="workflow-step-badge" id="wfBadge3">3</div>
+                                    <div class="flex-grow-1">
+                                        <div class="fw-bold small">3. Run analysis tools</div>
+                                        <div class="text-subtle small">Hash, tag, scan, or extract artifacts from what you've acquired - right-click any file in File Explorer.</div>
+                                        <div class="small mt-1" id="wfStatus3">--</div>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-info fw-bold text-nowrap" onclick="switchToTab('explorer-tab')">Go to File Explorer</button>
+                                </div>
+
+                                <div id="guidedWorkflowDone" class="mt-3 pt-3 small text-success" style="display:none; border-top: 1px solid var(--border-color);">
+                                    <i class="bi bi-check-circle-fill me-1"></i>All three steps have activity for this case. Ready to write it up? <a href="#" onclick="switchToTab('reports-tab'); return false;" class="text-info fw-bold">Go to Reporting</a>.
+                                </div>
+                            </div>
+                        </div>
 
                         <div class="tab-pane fade show active" id="help-pane-manual" role="tabpanel">
                             <iframe id="helpManualFrame" class="help-doc-frame" title="User Manual"></iframe>

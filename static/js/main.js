@@ -8240,7 +8240,7 @@ function renderCaseJobs() {
 // currentLoadedReportData (already loaded on case open) for evidence/notes/attachments/age, and
 // /api/case_index/summary (confirmed case-wide, not scoped to whichever image happens to be open in
 // File Explorer right now - every query in that route has zero image_path filter) for tags/analysis
-// activity. No new backend route needed. Complements the Home tab's Guided Workflow (that answers
+// activity. No new backend route needed. Complements Help's Guided Workflow (that answers
 // "have I done X/Y/Z"; this answers "here's everything that's happened in this case").
 async function renderCaseDashboard() {
     if (!currentLoadedReportData || !activeCase) return;
@@ -10827,20 +10827,22 @@ function clearActiveCase() {
     if (caseManagerModalInstance) caseManagerModalInstance.hide();
 }
 
-// --- Home tab: Guided Workflow (2026-08-24) -----------------------------------
+// --- Help > Guided Workflow (2026-08-24, moved from Home 2026-08-26) ----------
 // A stateful case -> acquisition -> tools checklist for whichever case is
 // currently active, distinct from the plain always-the-same launcher tiles
-// below it on Home. "Done" for each step is derived from real data already
-// on disk, not client-side-only state, so it survives a reload and is
-// correct even if the examiner did the actual work from a different browser
-// tab/session: step 1 from activeCase itself, step 2 from /api/cases/list's
-// existing per-case event_count, step 3 from /api/case_index/summary's
-// has_analysis_activity (added alongside this feature - see routes/
-// case_index.py). Refreshed from every place this app already treats as
-// "the case may have changed" (applyActiveCaseToFields()/clearActiveCase()
-// above), on Home-tab visits/return, a light poll while Home stays visible
-// (mirrors the Audit Log auto-refresh pattern), and on any background job
-// finishing while Home happens to be the visible tab.
+// on Home (this pane moved out of Home to keep that page a plain launcher
+// grid - see the dated CLAUDE.md entry). "Done" for each step is derived
+// from real data already on disk, not client-side-only state, so it
+// survives a reload and is correct even if the examiner did the actual work
+// from a different browser tab/session: step 1 from activeCase itself, step
+// 2 from /api/cases/list's existing per-case event_count, step 3 from
+// /api/case_index/summary's has_analysis_activity (added alongside this
+// feature - see routes/case_index.py). Refreshed from every place this app
+// already treats as "the case may have changed" (applyActiveCaseToFields()/
+// clearActiveCase() above), on visits/return to Help's own Guided Workflow
+// sub-tab, a light poll while that sub-tab stays visible (mirrors the Audit
+// Log auto-refresh pattern), and on any background job finishing while it
+// happens to be the visible sub-tab.
 async function refreshGuidedWorkflow() {
     const noCaseEl = document.getElementById('guidedWorkflowNoCase');
     const stepsEl = document.getElementById('guidedWorkflowSteps');
@@ -10911,16 +10913,6 @@ function setWorkflowStepPending(badgeId, statusId, statusText, num) {
     if (status) { status.className = 'small mt-1 text-subtle'; status.textContent = statusText; }
 }
 
-function toggleGuidedWorkflowCollapse() {
-    const body = document.getElementById('guidedWorkflowBody');
-    const chevron = document.getElementById('guidedWorkflowChevron');
-    if (!body || !chevron) return;
-    const collapsing = body.style.display !== 'none';
-    body.style.display = collapsing ? 'none' : 'block';
-    chevron.className = collapsing ? 'bi bi-chevron-down' : 'bi bi-chevron-up';
-    localStorage.setItem('pi_forensics_guided_workflow_collapsed', collapsing ? '1' : '0');
-}
-
 let guidedWorkflowAutoRefreshTimer = null;
 function startGuidedWorkflowAutoRefresh() {
     if (guidedWorkflowAutoRefreshTimer) return;
@@ -10932,11 +10924,24 @@ function stopGuidedWorkflowAutoRefresh() {
         guidedWorkflowAutoRefreshTimer = null;
     }
 }
+// Guided Workflow now lives as its own sub-tab inside Help (helpNavWorkflow),
+// not the whole Home tab - start/stop on that specific nested tab becoming
+// shown/hidden (covers switching between Help's own sub-panes), plus a
+// second check on the outer Help tab itself (below), matching the exact
+// two-tier pattern already established for Settings' Audit Log auto-refresh
+// (a nested Bootstrap tab/collapse keeps its own active state even while its
+// ancestor tab-pane is hidden via display:none, which fires neither
+// hidden.bs.tab nor hidden.bs.collapse on the inner element).
+document.getElementById('helpNavWorkflow')?.addEventListener('shown.bs.tab', () => { refreshGuidedWorkflow(); startGuidedWorkflowAutoRefresh(); });
+document.getElementById('helpNavWorkflow')?.addEventListener('hidden.bs.tab', () => stopGuidedWorkflowAutoRefresh());
 document.addEventListener('shown.bs.tab', (ev) => {
-    if (ev.target.id === 'home-tab') { refreshGuidedWorkflow(); startGuidedWorkflowAutoRefresh(); }
+    if (ev.target.id === 'help-tab' && document.getElementById('helpNavWorkflow')?.classList.contains('active')) {
+        refreshGuidedWorkflow();
+        startGuidedWorkflowAutoRefresh();
+    }
 });
 document.addEventListener('hidden.bs.tab', (ev) => {
-    if (ev.target.id === 'home-tab') stopGuidedWorkflowAutoRefresh();
+    if (ev.target.id === 'help-tab') stopGuidedWorkflowAutoRefresh();
 });
 
 // --- Modular Folder & File Modals ---
@@ -13797,10 +13802,10 @@ async function fetchProgress() {
                     bumpNavBadge(badgeId);
                 }
             }
-            // Same transition, refreshing the Home tab's Guided Workflow checklist so a job
-            // started elsewhere and left to finish while browsing Home updates without waiting
-            // for that card's own slower 20s poll.
-            if (document.getElementById('home-tab')?.classList.contains('active')) {
+            // Same transition, refreshing the Guided Workflow checklist (now under Help) so a
+            // job started elsewhere and left to finish while looking at it updates without
+            // waiting for its own slower 20s poll.
+            if (document.getElementById('help-tab')?.classList.contains('active') && document.getElementById('helpNavWorkflow')?.classList.contains('active')) {
                 refreshGuidedWorkflow();
             }
         }
@@ -13858,13 +13863,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (sidebar) sidebar.classList.add("compact");
         if (icon) icon.className = "bi bi-chevron-double-right";
     }
-    if (localStorage.getItem("pi_forensics_guided_workflow_collapsed") === "1") {
-        const gwBody = document.getElementById("guidedWorkflowBody");
-        const gwChevron = document.getElementById("guidedWorkflowChevron");
-        if (gwBody) gwBody.style.display = "none";
-        if (gwChevron) gwChevron.className = "bi bi-chevron-down";
-    }
-
     initThroughputGraph();
     refreshDrives();
     loadNetworkHistory();
