@@ -140,6 +140,7 @@ function toggleFormatControls() {
     const splitSelect = document.getElementById("splitSizeSelect");
     const affRow = document.getElementById("affRawOptionRow");
     const ddrescueRow = document.getElementById("ddrescueOptionRow");
+    const logicalRow = document.getElementById("logicalAcqOptionRow");
     const hashRow = document.getElementById("hashRow");
     const helpText = document.getElementById("formatHelpText");
 
@@ -153,8 +154,13 @@ function toggleFormatControls() {
 
     if (affRow) affRow.style.display = (fmt === 'aff') ? '' : 'none';
     if (ddrescueRow) ddrescueRow.style.display = (fmt === 'ddrescue') ? '' : 'none';
+    // Logical Acquisition (folded into this same Format dropdown 2026-08-27,
+    // mirroring ddrescue's own precedent) - its own folder-list/zip controls.
+    if (logicalRow) logicalRow.style.display = (fmt === 'logical') ? '' : 'none';
     // ddrescue has no built-in hashing the way dc3dd/dcfldd/ewfacquire do -
-    // hide the checkboxes rather than show controls that don't apply.
+    // hide the checkboxes rather than show controls that don't apply. Logical
+    // Acquisition DOES hash (each copied file + the manifest itself), via
+    // these same shared checkboxes - see startLogicalAcquisition().
     if (hashRow) hashRow.style.display = (fmt === 'ddrescue') ? 'none' : '';
 
     // Guided Workflow automation Tier 2's chain-into-Auto-Analyze checkbox
@@ -162,9 +168,11 @@ function toggleFormatControls() {
     // dd/E01) - ddrescue and AFF each run their own separate worker function
     // server-side (execution_worker_aff() for AFF; a wholly different route,
     // /api/start_ddrescue, for ddrescue) that the chaining logic was never
-    // extended to. Hidden rather than left checked-but-silently-ignored.
+    // extended to, and Logical Acquisition produces a folder bundle, not a
+    // disk image classify_image_profile() can make sense of. Hidden rather
+    // than left checked-but-silently-ignored.
     const chainRow = document.getElementById("chainAutoAnalyzeRow");
-    if (chainRow) chainRow.style.display = (fmt === 'ddrescue' || fmt === 'aff') ? 'none' : '';
+    if (chainRow) chainRow.style.display = (fmt === 'ddrescue' || fmt === 'aff' || fmt === 'logical') ? 'none' : '';
 
     const FORMAT_HELP = {
         dd: "Raw bit-for-bit copy using dc3dd, with hashing built in. A solid default for most acquisitions.",
@@ -173,6 +181,7 @@ function toggleFormatControls() {
         e01: "EnCase-compatible format (.E01) - widely used in law enforcement/EnCase workflows, supports compression and splitting into segments.",
         aff: "Advanced Forensic Format - acquires a raw image first, then converts it to .aff. You'll be asked whether to keep the intermediate raw file.",
         ddrescue: "For damaged, clicking, or failing drives - works around bad sectors instead of stopping, with configurable retry strategy below. No built-in hashing; verify the result separately once you have a usable copy.",
+        logical: "Copies specific folders from an already-mounted evidence source into one hash-verified container with a manifest - without imaging the whole device. No target drive selection needed above; add folders below, then Start.",
     };
     if (helpText) helpText.textContent = FORMAT_HELP[fmt] || '';
 }
@@ -11285,13 +11294,19 @@ function renderLogicalAcqFolders() {
 }
 
 async function startLogicalAcquisition() {
-    const status = document.getElementById("logicalAcqStatus");
+    // Condensed 2026-08-27 - Logical Acquisition is now a Format option
+    // (mirroring ddrescue's own precedent) sharing the main Start/Stop
+    // buttons and the same #jobStatus/#logOutput Output panel every other
+    // acquisition format already does (fetchProgress() already mirrors ANY
+    // active job into that panel unconditionally, regardless of format - no
+    // separate status echo needed here anymore). Also reuses the shared
+    // #hashMd5/#hashSha1/#hashSha256 checkboxes instead of its own set.
     if (!logicalAcqFolders.length) return showToast('Add at least one folder first.', 'warning');
 
     const hashes = [];
-    if (document.getElementById("logicalAcqHashMd5")?.checked) hashes.push('md5');
-    if (document.getElementById("logicalAcqHashSha1")?.checked) hashes.push('sha1');
-    if (document.getElementById("logicalAcqHashSha256")?.checked) hashes.push('sha256');
+    if (document.getElementById("hashMd5")?.checked) hashes.push('md5');
+    if (document.getElementById("hashSha1")?.checked) hashes.push('sha1');
+    if (document.getElementById("hashSha256")?.checked) hashes.push('sha256');
     if (!hashes.length) return showToast('Select at least one verification hash algorithm.', 'warning');
 
     const makeZip = document.getElementById("logicalAcqMakeZip")?.checked || false;
@@ -11303,7 +11318,6 @@ async function startLogicalAcquisition() {
         notes: document.getElementById("notes")?.value || "None",
     };
 
-    if (status) status.textContent = 'Starting logical acquisition job...';
     try {
         const res = await fetch('/api/start_logical_acquisition', {
             method: 'POST',
@@ -11318,14 +11332,12 @@ async function startLogicalAcquisition() {
         });
         const data = await res.json();
         if (!data.success) {
-            if (status) status.textContent = `Failed to start: ${data.error}`;
             showToast(`Logical acquisition failed to start: ${data.error}`, 'danger');
             return;
         }
-        if (status) status.textContent = 'Running - see the Output console above for live progress.';
-        showToast('Logical acquisition started.', 'success');
+        showToast('Logical acquisition started - see the Output console for live progress.', 'success');
     } catch (err) {
-        if (status) status.textContent = 'Request failed - see console.';
+        showToast('Request failed - see console.', 'danger');
     }
 }
 
@@ -11536,41 +11548,35 @@ function toggleEncVolSection() {
     const on = document.getElementById("encVolSourceToggle")?.checked ?? false;
     const controls = document.getElementById("encVolSourceControls");
     if (controls) controls.style.display = on ? '' : 'none';
-    updateEncVolDocHelpText();
+    updateEncVolCredentialHelp();
     if (on) loadEncVolPartitions();
 }
 
-function updateEncVolDocHelpText() {
-    // The 3 doc-only fields at the bottom of the page (bitlockerKey/
-    // luksPassphrase/veracryptPassword) each get their own help text
-    // reflecting whether the currently-selected type's live-unlock flow is
-    // active - kept as 3 separate fields (not consolidated into one) since
-    // an examiner may want to record a key/passphrase purely as
-    // documentation without ever using Unlock at all, independent of
-    // which type (if any) is currently toggled on.
+// Condensed 2026-08-27 from 3 separate always-visible doc-only fields (one
+// per type, each with its own paragraph help text) down to ONE field
+// (#encVolCredential) that now serves both purposes at once - optional
+// case-report documentation regardless of whether "Also unlock..." is
+// checked, AND (when it is checked) the actual unlock() credential itself,
+// keyed by whichever type is currently selected in #encVolTypeSelect. This
+// also removes the old double-entry annoyance (typing the same key twice -
+// once to unlock, once again in a separate field just to have it recorded).
+function updateEncVolCredentialHelp() {
     const on = document.getElementById("encVolSourceToggle")?.checked ?? false;
-    const activeType = document.getElementById("encVolTypeSelect")?.value;
-    const helpByType = {
-        bitlocker: { id: "bitlockerKeyHelp", noun: "key" },
-        luks: { id: "luksPassphraseHelp", noun: "passphrase" },
-        veracrypt: { id: "veracryptPasswordHelp", noun: "password" },
-    };
-    Object.entries(helpByType).forEach(([type, { id, noun }]) => {
-        const help = document.getElementById(id);
-        if (!help) return;
-        const label = ENC_VOL_TYPE_LABELS[type];
-        help.textContent = (on && activeType === type)
-            ? `Used both to unlock the encrypted volume above AND recorded in the case report as documentation.`
-            : `Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the ${noun} is not used to decrypt anything during acquisition. Enable "This source drive is encrypted" above (type: ${label}) to unlock and acquire the decrypted volume instead.`;
-    });
+    const type = document.getElementById("encVolTypeSelect")?.value || 'bitlocker';
+    const noun = { bitlocker: 'key', luks: 'passphrase', veracrypt: 'password' }[type] || 'key';
+    const help = document.getElementById("encVolCredentialHelp");
+    if (!help) return;
+    help.textContent = on
+        ? `Used both to unlock the encrypted volume above AND recorded in the case report as documentation.`
+        : `Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the ${noun} is not used to decrypt anything unless "Also unlock this volume now" below is checked.`;
 }
 
 function onEncVolTypeChange() {
     const status = document.getElementById("encVolStatus");
-    if (status) status.textContent = "Select the type and encrypted partition, enter the recovery key/password above, then click Unlock.";
+    if (status) status.textContent = "Select the encrypted partition, enter the recovery key/password above, then click Unlock.";
     const credInput = document.getElementById("encVolCredential");
-    if (credInput) credInput.placeholder = ENC_VOL_CREDENTIAL_PLACEHOLDER[document.getElementById("encVolTypeSelect")?.value] || 'Recovery Key / Password';
-    updateEncVolDocHelpText();
+    if (credInput) credInput.placeholder = `${ENC_VOL_CREDENTIAL_PLACEHOLDER[document.getElementById("encVolTypeSelect")?.value] || 'Recovery Key / Password'} (optional)`;
+    updateEncVolCredentialHelp();
     if (document.getElementById("encVolSourceToggle")?.checked) loadEncVolPartitions();
 }
 
@@ -12140,9 +12146,14 @@ function hideNetworkRevertBanner() {
 }
 
 async function startAcquisition() {
+    const fmt = document.getElementById("imageFormatSelect")?.value;
+    // Logical Acquisition doesn't image a raw device at all (it copies
+    // already-mounted folders), so it's dispatched here before the
+    // drive-selection guard below, which doesn't apply to it.
+    if (fmt === 'logical') return startLogicalAcquisition();
+
     const rawSource = document.getElementById("driveSelect")?.value;
     const dest = document.getElementById("destPath")?.value;
-    const fmt = document.getElementById("imageFormatSelect")?.value;
 
     if (!rawSource) return showToast("Select target evidence drive first.", 'warning');
 
@@ -12167,9 +12178,16 @@ async function startAcquisition() {
         examiner: document.getElementById("examiner")?.value || "UNSPECIFIED",
         notes: document.getElementById("notes")?.value || "None"
     };
-    const bitlockerKey = document.getElementById("bitlockerKey")?.value || "";
-    const luksPassphrase = document.getElementById("luksPassphrase")?.value || "";
-    const veracryptPassword = document.getElementById("veracryptPassword")?.value || "";
+    // Condensed 2026-08-27 - one credential field (#encVolCredential) now
+    // covers all 3 encryption types (see updateEncVolCredentialHelp()'s own
+    // comment); dispatched here by whichever type is currently selected
+    // into the 3 distinct backend field names start_imaging()/
+    // start_ddrescue() still expect, leaving the other two empty.
+    const encVolDocType = document.getElementById("encVolTypeSelect")?.value || 'bitlocker';
+    const encVolDocCredential = document.getElementById("encVolCredential")?.value || "";
+    const bitlockerKey = encVolDocType === 'bitlocker' ? encVolDocCredential : "";
+    const luksPassphrase = encVolDocType === 'luks' ? encVolDocCredential : "";
+    const veracryptPassword = encVolDocType === 'veracrypt' ? encVolDocCredential : "";
 
     let endpoint, body;
 
@@ -13969,6 +13987,42 @@ async function fetchProgress() {
         // but only when the examiner isn't already looking at that tab, since there's
         // nothing to notify them of if they watched it finish themselves.
         if (lastGlobalJobActive && !data.active) {
+            // The status/progress/log fields above only update while data.active
+            // is true - a fast job (e.g. a small Logical Acquisition, now sharing
+            // this same Output panel as of 2026-08-27) can start and finish
+            // between two ~2s polls with no active:true frame ever observed,
+            // leaving the last mid-run text (e.g. "Copying files...") frozen on
+            // screen forever instead of ever showing "Completed Successfully".
+            // One final render here, on the exact active->inactive transition,
+            // catches that for every shared Output panel in the app.
+            if (document.getElementById("jobStatus")) document.getElementById("jobStatus").innerText = `Status: ${data.status}`;
+            if (document.getElementById("progressBar")) document.getElementById("progressBar").style.width = `${data.progress_percent || 0}%`;
+            if (document.getElementById("progressPct")) document.getElementById("progressPct").innerText = `${(data.progress_percent || 0).toFixed(1)}%`;
+            const finalLogOutput = document.getElementById("logOutput");
+            if (finalLogOutput && data.log) {
+                finalLogOutput.innerText = data.log;
+                finalLogOutput.scrollTop = finalLogOutput.scrollHeight;
+            }
+
+            if (document.getElementById("recoveryJobStatus")) document.getElementById("recoveryJobStatus").innerText = `Status: ${data.status}`;
+            if (document.getElementById("recoveryProgressBar")) document.getElementById("recoveryProgressBar").style.width = `${data.progress_percent || 0}%`;
+            if (document.getElementById("recoveryProgressPct")) document.getElementById("recoveryProgressPct").innerText = `${(data.progress_percent || 0).toFixed(1)}%`;
+            const finalRecoveryLogOutput = document.getElementById("recoveryLogOutput");
+            if (finalRecoveryLogOutput && data.log) {
+                finalRecoveryLogOutput.innerText = data.log;
+                finalRecoveryLogOutput.scrollTop = finalRecoveryLogOutput.scrollHeight;
+            }
+
+            if (document.getElementById("mobileJobStatus")) document.getElementById("mobileJobStatus").innerText = `Status: ${data.status}`;
+            if (document.getElementById("mobileBytesVal")) {
+                document.getElementById("mobileBytesVal").innerText = `${((data.transferred_bytes || 0) / (1024**2)).toFixed(1)} MB`;
+            }
+            const finalMobileLogOutput = document.getElementById("mobileLogOutput");
+            if (finalMobileLogOutput && data.log) {
+                finalMobileLogOutput.innerText = data.log;
+                finalMobileLogOutput.scrollTop = finalMobileLogOutput.scrollHeight;
+            }
+
             const badgeId = JOB_FORMAT_TO_NAV_BADGE[lastGlobalJobFormat];
             if (badgeId) {
                 const ownerTabId = NAV_BADGE_TO_TAB_ID[badgeId];
@@ -14010,17 +14064,14 @@ async function fetchProgress() {
             throughputChart.update('none');
         }
 
+        // Logical Acquisition no longer has its own Start/Stop/status mirror
+        // (removed 2026-08-27 when it folded into the Format dropdown) - it
+        // shares startBtn/stopBtn/jobStatus/logOutput below like every other
+        // acquisition format already does, so no separate handling is needed.
         if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = data.active;
         if (document.getElementById("btnRecoveryStart")) document.getElementById("btnRecoveryStart").disabled = data.active;
-        if (document.getElementById("logicalAcqStartBtn")) document.getElementById("logicalAcqStartBtn").disabled = data.active;
         if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = !data.active;
         if (document.getElementById("btnRecoveryStop")) document.getElementById("btnRecoveryStop").disabled = !data.active;
-        if (document.getElementById("logicalAcqStopBtn")) document.getElementById("logicalAcqStopBtn").disabled = !data.active;
-        if (data.format === 'logical_acquisition' && document.getElementById("logicalAcqStatus")) {
-            document.getElementById("logicalAcqStatus").textContent = data.active
-                ? `Status: ${data.status} (${(data.progress_percent || 0).toFixed(1)}%) - see the Output console above for the live log.`
-                : `Last run: ${data.status}`;
-        }
         if (document.getElementById("btnMobileStop")) document.getElementById("btnMobileStop").disabled = !data.active;
         if (data.active) {
             if (document.getElementById("btnMobileStart")) document.getElementById("btnMobileStart").disabled = true;
