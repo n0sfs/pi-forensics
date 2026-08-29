@@ -197,28 +197,20 @@
   .why-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
   .why-grid .layer--against { opacity: .82; --accent: var(--text-faint); }
 
-  /* ---------- Feature grid ---------- */
-  .feat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
-  .feat-card { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--cyan); border-radius: var(--radius); padding: 24px 24px 25px; transition: border-color .15s ease; }
-  .feat-card:hover { border-color: var(--border-hi); border-left-color: var(--cyan); }
-  .feat-card .tag { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--cyan); margin-bottom: 11px; display: block; }
-  .feat-card h3 { font-family: var(--sans); font-size: 17.5px; font-weight: 700; margin-bottom: 9px; color: var(--text); }
-  .feat-card p { color: var(--text-dim); font-size: 14.5px; line-height: 1.62; }
-
-  /* ---------- Screens (gallery) ---------- */
-  .shot { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-  .shot img { border-bottom: 1px solid var(--border); }
-  .shot figcaption { padding: 15px 18px; font-size: 13.5px; color: var(--text-dim); line-height: 1.55; }
-  .shot figcaption b { color: var(--text); font-family: var(--mono); font-weight: 600; font-size: 11.5px; letter-spacing: 0.05em; display: block; margin-bottom: 4px; text-transform: uppercase; }
-  .shot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .shot.featured {
-    grid-column: 1 / -1;
-    border-color: var(--cyan-deep);
-    box-shadow: 0 0 0 1px rgba(45,212,238,0.2), 0 34px 70px -34px rgba(45,212,238,0.28);
+  /* ---------- Feature rows (2026-08-29: merged the old separate feature-grid
+     and screenshot-gallery sections into one - each capability paired
+     directly with the screen that shows it, instead of two disconnected
+     lists a reader had to mentally cross-reference themselves) ---------- */
+  .feature-rows { display: flex; flex-direction: column; gap: 18px; }
+  .feature-row {
+    display: grid; grid-template-columns: 1fr 1.15fr; gap: 36px; align-items: center;
+    background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--cyan);
+    border-radius: var(--radius); padding: 30px 32px;
   }
-  .shot.featured figcaption { padding: 20px 24px 22px; }
-  .shot.featured figcaption b { color: var(--cyan-hi); font-size: 12.5px; }
-  .shot.featured figcaption p { font-size: 14.5px; color: var(--text-dim); margin-top: 4px; max-width: 640px; }
+  .feature-row .tag { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--cyan); margin-bottom: 11px; display: block; }
+  .feature-row h3 { font-family: var(--sans); font-size: 19px; font-weight: 700; margin-bottom: 10px; color: var(--text); }
+  .feature-row p { color: var(--text-dim); font-size: 14.5px; line-height: 1.62; }
+  .feature-row .shot-frame { border-radius: 8px; overflow: hidden; border: 1px solid var(--border); line-height: 0; }
 
   /* ---------- Security / privilege boundary ---------- */
   .sec-strip { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--red); border-radius: 14px; padding: 38px 40px; }
@@ -278,7 +270,7 @@
 
   @media (max-width: 900px) {
     .nav-links { display: none; }
-    .why-grid, .shot-grid, .sec-strip-grid, .install-card { grid-template-columns: 1fr; }
+    .why-grid, .feature-row, .sec-strip-grid, .install-card { grid-template-columns: 1fr; }
   }
   @media (max-width: 640px) {
     .pad { padding: 56px 0; }
@@ -297,7 +289,6 @@
     <nav class="nav-links">
       <a href="#why">Why</a>
       <a href="#features">Features</a>
-      <a href="#screens">Screens</a>
       <a href="#security">Security</a>
       <a href="#install">Install</a>
     </nav>
@@ -376,98 +367,65 @@
     <div class="section-head">
       <span class="kicker"><span class="dot"></span>WHAT'S ON THE STATION</span>
       <h2>One case, every tool.</h2>
-      <p>Create a case once; acquisition, recovery, mobile, and reporting all auto-fill against it.</p>
+      <p>Create a case once; acquisition, recovery, mobile, and reporting all auto-fill against it. Every screen ships with inline help &mdash; nothing here requires memorizing dd flags.</p>
     </div>
-    <div class="feat-grid">
-      <div class="feat-card">
-        <span class="tag">01 &mdash; ACQUISITION</span>
-        <h3>Bit-for-bit imaging</h3>
-        <p>dc3dd, dcfldd, plain dd, E01, and AFF, plus ddrescue for failing drives with a Mapfile Inspector. BitLocker-, LUKS-, and VeraCrypt-encrypted sources unlock directly through one consolidated panel, a read-only Live Preview lets you look before you image, and raw&harr;E01 conversion runs after the fact. MD5/SHA-1/SHA-256 verification on every job, every USB device write-blocked by default.</p>
+    <div class="feature-rows">
+      <div class="feature-row">
+        <div>
+          <span class="tag">ACQUISITION</span>
+          <h3>Bit-for-bit imaging</h3>
+          <p>dc3dd, dcfldd, plain dd, E01, and AFF, plus ddrescue for failing drives with a Mapfile Inspector. BitLocker-, LUKS-, and VeraCrypt-encrypted sources unlock directly through one consolidated panel, a read-only Live Preview lets you look before you image, and raw&harr;E01 conversion runs after the fact. MD5/SHA-1/SHA-256 verification on every job, every USB device write-blocked by default.</p>
+        </div>
+        <div class="shot-frame"><img src="images/PIF2.JPG" alt="Forensic Acquisition screen with encrypted-volume and format controls"></div>
       </div>
-      <div class="feat-card">
-        <span class="tag">02 &mdash; RECOVERY</span>
-        <h3>File recovery suite</h3>
-        <p>PhotoRec, extundelete, foremost, scalpel, and read-only TestDisk partition analysis in one tool selector &mdash; one source/destination/case layout, one terminal, instead of a screen per tool.</p>
+      <div class="feature-row">
+        <div>
+          <span class="tag">RECOVERY</span>
+          <h3>File recovery suite</h3>
+          <p>PhotoRec, extundelete, foremost, scalpel, and read-only TestDisk partition analysis in one tool selector &mdash; one source/destination/case layout, one terminal, instead of a screen per tool.</p>
+        </div>
+        <div class="shot-frame"><img src="images/PIF4.JPG" alt="File Recovery screen with PhotoRec selected"></div>
       </div>
-      <div class="feat-card">
-        <span class="tag">03 &mdash; MOBILE</span>
-        <h3>iOS &amp; Android acquisition</h3>
-        <p>Full iOS backup via idevicebackup2 (with optional encrypted Keychain capture) and Android via adb pull/backup/bugreport. Reads real device detail &mdash; model, OS version, IMEI, MACs &mdash; before you start, and can trigger the iOS pairing handshake itself for a device that hasn't shown its trust prompt yet.</p>
+      <div class="feature-row">
+        <div>
+          <span class="tag">MOBILE</span>
+          <h3>iOS &amp; Android acquisition</h3>
+          <p>Full iOS backup via idevicebackup2 (with optional encrypted Keychain capture) and Android via adb pull/backup/bugreport. Reads real device detail &mdash; model, OS version, IMEI, MACs &mdash; before you start, and can trigger the iOS pairing handshake itself for a device that hasn't shown its trust prompt yet.</p>
+        </div>
+        <div class="shot-frame"><img src="images/PIF3.JPG" alt="Mobile Forensics screen with device detail panel"></div>
       </div>
-      <div class="feat-card">
-        <span class="tag">04 &mdash; FILE EXPLORER</span>
-        <h3>Browse inside an image</h3>
-        <p>An in-process Sleuth Kit engine (pytsk3) walks a real folder tree down to individual files &mdash; recursive search, a MACB timeline, hex dumps, EXIF/GPS metadata, an inline KML map, and a read-only SQLite table browser, all with no mount step. Runs Volatility3 or mquire against a captured memory image, and browses a BitLocker/LUKS/VeraCrypt-decrypted volume the same way.</p>
+      <div class="feature-row">
+        <div>
+          <span class="tag">FILE EXPLORER</span>
+          <h3>Browse inside an image</h3>
+          <p>An in-process Sleuth Kit engine (pytsk3) walks a real folder tree down to individual files &mdash; recursive search, a MACB timeline, hex dumps, EXIF/GPS metadata, an inline KML map, and a read-only SQLite table browser, all with no mount step. Runs Volatility3 or mquire against a captured memory image, and browses a BitLocker/LUKS/VeraCrypt-decrypted volume the same way.</p>
+        </div>
+        <div class="shot-frame"><img src="images/PIF5.JPG" alt="Forensic File Explorer browsing an acquired case folder with a grouped folder tree"></div>
       </div>
-      <div class="feat-card">
-        <span class="tag">05 &mdash; ANALYSIS</span>
-        <h3>Artifact parsing, one click</h3>
-        <p><b>Auto Analyze</b> detects what you've selected and runs a curated tool set automatically. Dedicated parsers recover Windows Registry hives, Event Logs, Prefetch, Recycle Bin, and LNK data; Linux shell history, cron, and auth logs; cryptocurrency wallet files; and mobile chat/app data &mdash; plus your own saved YARA rules and known-good/known-bad hash and URL lists, with one-click MalwareBazaar/URLhaus imports.</p>
+      <div class="feature-row">
+        <div>
+          <span class="tag">ANALYSIS</span>
+          <h3>Artifact parsing, one click</h3>
+          <p><b>Auto Analyze</b> detects what you've selected and runs a curated tool set automatically. Dedicated parsers recover Windows Registry hives, Event Logs, Prefetch, Recycle Bin, and LNK data; Linux shell history, cron, and auth logs; cryptocurrency wallet files; and mobile chat/app data &mdash; plus your own saved YARA rules and known-good/known-bad hash and URL lists, with one-click MalwareBazaar/URLhaus imports.</p>
+        </div>
+        <div class="shot-frame"><img src="images/PIF7.JPG" alt="File Explorer previewing a KML geolocation export next to the File Views analysis tree"></div>
       </div>
-      <div class="feat-card">
-        <span class="tag">06 &mdash; REPORTING</span>
-        <h3>DFIR-structured case files</h3>
-        <p>A case Overview dashboard, a timestamped Case Notes journal, a physical-evidence Custody Log, a Report Narrative, an Evidence Timeline merging filesystem and artifact data, per-job records, a station-wide audit trail, case-wide integrity re-verification, and a full-case export bundle &mdash; exported to PDF, HTML, JSON, or CSV as a Standard, DFIR, law-enforcement, or CASE/UCO report, or a template you build yourself.</p>
+      <div class="feature-row">
+        <div>
+          <span class="tag">REPORTING</span>
+          <h3>DFIR-structured case files</h3>
+          <p>A case Overview dashboard, a timestamped Case Notes journal, a physical-evidence Custody Log, a Report Narrative, an Evidence Timeline merging filesystem and artifact data, per-job records, a station-wide audit trail, case-wide integrity re-verification, and a full-case export bundle &mdash; exported to PDF, HTML, JSON, or CSV as a Standard, DFIR, law-enforcement, or CASE/UCO report, or a template you build yourself.</p>
+        </div>
+        <div class="shot-frame"><img src="images/PIF6.JPG" alt="Reporting screen with the case-wide Overview dashboard open"></div>
       </div>
-      <div class="feat-card">
-        <span class="tag">07 &mdash; STATION</span>
-        <h3>Runs itself</h3>
-        <p>TLS certificate generation with correct SANs, one-click tool installs, SMB/NFS/SFTP mounting with encrypted auto-reconnect on reboot, and network IP configuration with an automatic revert if you lock yourself out.</p>
+      <div class="feature-row">
+        <div>
+          <span class="tag">STATION</span>
+          <h3>Runs itself</h3>
+          <p>TLS certificate generation with correct SANs, one-click tool installs, SMB/NFS/SFTP mounting with encrypted auto-reconnect on reboot, and network IP configuration with an automatic revert if you lock yourself out.</p>
+        </div>
+        <div class="shot-frame"><img src="images/PIF10.JPG" alt="Settings Service Controls and Diagnostics panel"></div>
       </div>
-    </div>
-  </div>
-</section>
-
-<div class="divider"></div>
-
-<section class="pad" id="screens">
-  <div class="wrap">
-    <div class="section-head">
-      <span class="kicker"><span class="dot"></span>ON SCREEN</span>
-      <h2>Guided, not bare-metal.</h2>
-      <p>Every screen ships with inline help &mdash; nothing here requires memorizing dd flags.</p>
-    </div>
-    <div class="shot-grid">
-      <figure class="shot">
-        <img src="images/PIF2.JPG" alt="Forensic Acquisition screen with encrypted-volume and format controls">
-        <figcaption><b>Acquisition</b>Drive telemetry, a consolidated BitLocker/LUKS/VeraCrypt panel, format/hash controls, and live status in one compact card.</figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="images/PIF3.JPG" alt="Mobile Forensics screen with device detail panel">
-        <figcaption><b>Mobile Forensics</b>One mode selector, one device-detail panel, one console &mdash; iOS and Android acquisition without separate screens per platform.</figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="images/PIF4.JPG" alt="File Recovery screen with PhotoRec selected">
-        <figcaption><b>File Recovery</b>PhotoRec, extundelete, foremost, scalpel, and TestDisk sharing one source/destination layout and one live terminal.</figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="images/PIF5.JPG" alt="Forensic File Explorer browsing an acquired case folder with a grouped folder tree">
-        <figcaption><b>File Explorer</b>The tree groups an image's disk files and this app's own generated artifacts out of the way of real evidence &mdash; no mounting required to browse inside an image.</figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="images/PIF8.JPG" alt="File Explorer Hex tab showing an offset/hex/ASCII dump">
-        <figcaption><b>Hex View</b>A classic offset/hex/ASCII dump of the selected file, right in the Details panel.</figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="images/PIF9.JPG" alt="File Explorer Metadata tab showing filesystem and ExifTool details">
-        <figcaption><b>Metadata</b>Size, timestamps, permissions, and MIME type for any file, with ExifTool's embedded metadata layered below.</figcaption>
-      </figure>
-      <figure class="shot featured">
-        <img src="images/PIF7.JPG" alt="File Explorer previewing a KML geolocation export as a live map">
-        <figcaption><b>Geolocation Preview</b><p>A KML export rendered inline as a live map, right next to the File Views analysis tree &mdash; no separate GIS tool needed to see where evidence photos were taken.</p></figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="images/PIF6.JPG" alt="Reporting screen with the case-wide Overview dashboard open">
-        <figcaption><b>Reporting</b>A case-wide Overview dashboard, Verify All Evidence, and Case Bundle Export sit alongside Report Narrative, Case Notes, Custody Log, Evidence Timeline, and Audit Trail.</figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="images/PIF10.JPG" alt="Settings Service Controls and Diagnostics panel">
-        <figcaption><b>Service Controls</b>Restart, update, check tool versions, run a fixed diagnostics allowlist, reboot, or power off &mdash; no SSH required.</figcaption>
-      </figure>
-      <figure class="shot">
-        <img src="images/PIF11.JPG" alt="Settings User Accounts and User Groups panel">
-        <figcaption><b>User Groups</b>Real per-examiner accounts with role-based access control &mdash; Admin, an adjustable Analyst default, and custom groups built from any mix of permissions.</figcaption>
-      </figure>
     </div>
   </div>
 </section>
