@@ -21,6 +21,20 @@ file after updating to see what changed.
 
 ---
 
+## [1.1.3] - 2026-08-29
+
+A documentation release. No functional changes.
+
+### Documentation
+
+- Restyled the [project website](https://n0sfs.github.io/pi-forensics/) with a cleaner, more
+  legible visual system - IBM Plex Mono/Sans, a near-black ground, and a single restrained cyan
+  accent (red reserved for the Security section) - shared with the project's internal System
+  Architecture reference doc, so the two read as one family instead of two differently-themed sites.
+  Every existing section, screenshot, and piece of copy is unchanged; only the presentation.
+
+---
+
 ## [1.1.2] - 2026-08-29
 
 A documentation release. No functional changes.
