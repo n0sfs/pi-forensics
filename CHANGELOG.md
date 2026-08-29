@@ -21,6 +21,31 @@ file after updating to see what changed.
 
 ---
 
+## [1.1.1] - 2026-08-29
+
+A documentation release. No functional changes - upgrading isn't necessary for the running
+application, but is recommended if you rely on the in-app Help, the User Manual, or the project
+website to learn a feature.
+
+### Documentation
+
+- The [User Manual](../docs/user-manual.md) now covers everything added in 1.1.0: the consolidated
+  BitLocker/LUKS/VeraCrypt Encrypted Volume panel, Auto Analyze, every new artifact parser (Registry/
+  Event Log/Prefetch/Recycle Bin/LNK/Linux/crypto-wallet/mobile chat), Hash Sets/URL Lists/YARA
+  rulesets, the generic SQLite viewer, mquire Linux memory forensics, and Reporting's new Overview
+  dashboard, Custody Log, Evidence Timeline, Verify All Evidence, Case Bundle Export, and Cross-Case
+  Search.
+- The in-app Help tab (Guided Workflow, FAQ, Tool Reference) was updated to match - new FAQ entries,
+  an updated Tool Reference table (now 29 tools), and refreshed guided walkthroughs for encrypted
+  drives and report-writing that mention Auto Analyze.
+- The [Quick-Start Guide](../docs/quickstart.md) now points toward Auto Analyze as a next step after
+  a first acquisition.
+- [README.md](../README.md) and the [project website](https://n0sfs.github.io/pi-forensics/) were
+  updated with the same new capabilities, an updated tool count, and the corrected gunicorn thread
+  count from 1.1.0's own stability fix.
+
+---
+
 ## [1.1.0] - 2026-08-29
 
 A large feature release - new artifact-parsing capability across Windows, Linux, and mobile
