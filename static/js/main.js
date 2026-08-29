@@ -611,8 +611,7 @@ function populateFaq() {
     let idx = 0;
     FAQ_GROUPS.forEach(group => {
         const groupLabel = document.createElement('div');
-        groupLabel.className = 'text-info fw-bold small text-uppercase mt-3 mb-1';
-        groupLabel.style.letterSpacing = '0.5px';
+        groupLabel.className = 'faq-group-kicker help-mono';
         groupLabel.textContent = group.group;
         container.appendChild(groupLabel);
 
@@ -708,8 +707,7 @@ function populateToolReference() {
         const headerRow = document.createElement('tr');
         const headerCell = document.createElement('td');
         headerCell.colSpan = 2;
-        headerCell.className = 'text-info fw-bold small text-uppercase pt-3';
-        headerCell.style.letterSpacing = '0.5px';
+        headerCell.className = 'tool-ref-kicker help-mono pt-3';
         headerCell.style.borderTop = 'none';
         headerCell.textContent = group.group;
         headerRow.appendChild(headerCell);

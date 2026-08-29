@@ -279,6 +279,33 @@
             border-radius: 6px;
             padding: 16px 18px;
         }
+
+        /* Help & Reference (2026-08-29): a "kicker" label convention borrowed
+           from this project's own System Architecture reference doc - small
+           mono, uppercase, letter-spaced, cyan, with a square dot - used for
+           the section intro and for FAQ/Tool Reference group headers so Help
+           reads as a documentation surface rather than just another tool
+           screen. Reuses the app's own existing --accent-cyan/--border-color
+           (not new hex values) so it stays visually part of the same product
+           rather than a swapped-in theme. Deliberately a system monospace
+           stack, not a Google-Fonts face - this station may have no internet
+           access (see Leaflet's own local-vendoring precedent elsewhere in
+           this app), so nothing Help's own styling needs can depend on a
+           network fetch to render correctly. */
+        .help-mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace; }
+        .help-kicker {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
+            color: var(--accent-cyan); font-weight: 700; margin-bottom: 4px;
+        }
+        .help-kicker .dot { width: 6px; height: 6px; border-radius: 2px; background: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0,242,254,0.16); flex-shrink: 0; }
+        .faq-group-kicker, .tool-ref-kicker {
+            font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase;
+            color: var(--accent-cyan) !important; font-weight: 700 !important;
+            margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-color);
+        }
+        #faqAccordion > .faq-group-kicker:first-child { margin-top: 0; }
+        #toolReferenceBody tr:first-child .tool-ref-kicker { padding-top: 0 !important; }
         /* Reporting's case-status mini-chart (moved from Home 2026-08-21, condensed into the Case
            Report header row the same day, then given the bolder number + legend back - still on
            one line, this time horizontal instead of stacked - once the plain version read as

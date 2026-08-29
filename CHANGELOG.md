@@ -21,6 +21,23 @@ file after updating to see what changed.
 
 ---
 
+## [1.1.4] - 2026-08-29
+
+A documentation release. No functional changes.
+
+### Documentation
+
+- Restyled the in-app **Help & Reference** tab with the same "kicker" visual language as the
+  project website's own refreshed look - a small mono, uppercase, cyan-dot label above the nav,
+  and the same treatment on the FAQ group headers, Tool Reference table, and Report Field Mapping
+  table. Deliberately still zero external font/CDN dependency (a system monospace stack, not a
+  Google-Fonts face), since this page has to read correctly on a station with no internet access.
+- The rendered User Manual, Quick-Start Guide, and Release Notes pages (opened from Help) now use
+  the same kicker treatment and mono-set headings, so they read as one documentation system with
+  the Help tab around them instead of a plain-text page dropped into an iframe.
+
+---
+
 ## [1.1.3] - 2026-08-29
 
 A documentation release. No functional changes.
