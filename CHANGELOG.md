@@ -21,6 +21,24 @@ file after updating to see what changed.
 
 ---
 
+## [1.1.5] - 2026-08-29
+
+A documentation release. No functional changes.
+
+### Documentation
+
+- Merged the [project website](https://n0sfs.github.io/pi-forensics/)'s separate "What's on the
+  station" (feature list) and "On Screen" (screenshot gallery) sections into one - each capability
+  is now shown directly beside the screenshot that illustrates it, instead of two lists a reader
+  had to cross-reference themselves.
+- Dropped the "01 -", "02 -" ... numeric prefixes from the feature labels.
+- Curated the combined section down to 7 paired rows (one representative screenshot per
+  capability) rather than the previous 10-screenshot gallery - Hex View, Metadata, and User
+  Groups are no longer shown on the website specifically, though all 11 screenshots remain in
+  [README.md](../README.md)'s own full gallery.
+
+---
+
 ## [1.1.4] - 2026-08-29
 
 A documentation release. No functional changes.
