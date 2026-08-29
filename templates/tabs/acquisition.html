@@ -26,16 +26,19 @@
                                                 <span id="lblHealthBadge" class="badge bg-secondary">UNCHECKED</span>
                                             </div>
                                             <div class="row g-2 align-items-center mb-2">
-                                                <div class="col-md-8">
+                                                <div class="col-md-6">
                                                     <select id="driveSelect" class="form-select form-select-sm drive-select" onchange="checkSmartTelemetry()">
                                                         <option value="">-- Choose Target Source Drive --</option>
                                                     </select>
                                                 </div>
-                                                <div class="col-md-4">
-                                                    <button class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="refreshDrives()"><i class="bi bi-arrow-clockwise me-1"></i>Scan Drives</button>
+                                                <div class="col-md-3">
+                                                    <button class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="refreshDrives()"><i class="bi bi-arrow-clockwise me-1"></i>Scan</button>
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <button type="button" class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="startDevicePreview()" title="Preview this drive read-only before acquiring"><i class="bi bi-eye me-1"></i>Preview</button>
                                                 </div>
                                             </div>
-                                            <div class="p-2 bg-dark border border-secondary rounded-2 mb-3">
+                                            <div class="p-2 bg-dark border border-secondary rounded-2 mb-2">
                                                 <div class="row g-2">
                                                     <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Device Path</span><span id="lblDevicePath" class="telemetry-grid-val text-truncate d-block">--</span></div>
                                                     <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Media Type</span><span id="lblMediaType" class="telemetry-grid-val text-truncate d-block">--</span></div>
@@ -48,8 +51,6 @@
                                                     <div class="col-6 col-md-4"><span class="telemetry-grid-label d-block">Power-On Hours</span><span id="lblPowerHours" class="telemetry-grid-val d-block">--</span></div>
                                                 </div>
                                             </div>
-
-                                            <button type="button" class="btn btn-sm btn-outline-info w-100 fw-bold mb-3" onclick="startDevicePreview()"><i class="bi bi-eye me-1"></i>Preview This Drive (Read-Only)...</button>
 
                                             <!-- Consolidated "Encrypted Volume" block (2026-08-26,
                                                  gap-closing round; further condensed 2026-08-27 into
