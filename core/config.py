@@ -412,13 +412,24 @@ DOC_TITLES = {
 # Self-contained inline CSS (no external stylesheet/font/CDN dependency) so
 # these pages read correctly on a station with no internet access, matching
 # every other doc/report this app produces (the exported HTML report is the
-# same self-contained-on-purpose pattern). Palette/font-stack mirror the
-# main app's own :root variables (templates/index.html) so the doc reads as
-# part of the same product, not a jarring light-mode page bolted on.
+# same self-contained-on-purpose pattern). Palette mirrors the main app's
+# own :root variables (templates/index.html) so the doc reads as part of
+# the same product, not a jarring light-mode page bolted on.
+#
+# Typography/structure (2026-08-29) borrows the "kicker" convention from
+# this project's own System Architecture reference doc - a small mono,
+# uppercase, tracked label with a square dot, and mono-set headings - for a
+# more documentation-grade feel than the previous plain-sans styling.
+# Deliberately still zero external font/CDN dependency: --mono is a system
+# stack (ui-monospace/SF Mono/Cascadia Code/Consolas), not a Google-Fonts
+# face, for the same offline-kiosk reason the color palette was never
+# swapped to that other doc's slightly different cyan either - this page
+# has to render identically with or without a network path.
 _DOC_HTML_STYLE = """
 :root {
     --bg-dark: #090b10; --card-bg: #131722; --border-color: #2e364f;
     --accent-cyan: #00f2fe; --text-bright: #ffffff; --text-subtle: #cbd5e1;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
 }
 * { box-sizing: border-box; }
 body {
@@ -430,9 +441,13 @@ body {
     position: sticky; top: 0; z-index: 10;
     background: linear-gradient(90deg, #07090e 0%, #161b26 100%);
     border-bottom: 1px solid var(--border-color);
-    padding: 10px 24px; display: flex; align-items: center; gap: 10px;
+    padding: 10px 24px; display: flex; align-items: center; gap: 8px;
 }
-.doc-topbar .doc-topbar-title { color: var(--text-subtle); font-size: 0.85rem; font-weight: 700; }
+.doc-topbar .doc-topbar-dot { width: 6px; height: 6px; border-radius: 2px; background: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0,242,254,0.16); flex-shrink: 0; }
+.doc-topbar .doc-topbar-title {
+    color: var(--accent-cyan); font-family: var(--mono); font-size: 0.72rem;
+    font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+}
 
 /* Two-column layout (User Manual's table-of-contents / Release Notes'
    version list) - only present when render_doc_html() found real <h2>
@@ -447,8 +462,9 @@ body {
     padding: 24px 12px 40px;
 }
 .doc-sidenav-title {
-    text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.6px;
+    text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.1em;
     color: var(--text-subtle); font-weight: 700; padding: 0 10px 10px;
+    font-family: var(--mono);
 }
 .doc-sidenav a {
     display: block; padding: 7px 10px; border-radius: 5px;
@@ -490,6 +506,7 @@ article {
 article h1, article h2, article h3, article h4 {
     color: var(--accent-cyan); font-weight: 700; line-height: 1.3;
     margin-top: 2em; margin-bottom: 0.6em;
+    font-family: var(--mono); letter-spacing: -0.01em;
 }
 article h1 { font-size: 1.9rem; margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 0.4em; }
 article h2 { font-size: 1.4rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.3em; }
@@ -504,7 +521,7 @@ article li > ul, article li > ol { margin-top: 0.35em; }
 article code {
     background: var(--card-bg); border: 1px solid var(--border-color);
     border-radius: 4px; padding: 0.1em 0.4em; font-size: 0.88em;
-    font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+    font-family: var(--mono);
     color: #7dd3fc;
 }
 article pre {
@@ -667,6 +684,7 @@ def render_doc_html(doc_id):
 </head>
 <body>
 <div class="doc-topbar">
+<span class="doc-topbar-dot"></span>
 <span class="doc-topbar-title">{title}</span>
 </div>
 {layout_open}{sidenav_html}
