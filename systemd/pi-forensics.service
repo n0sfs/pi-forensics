@@ -44,7 +44,14 @@ Environment="FORENSIC_ROOT=/mnt"
 # still lets gunicorn handle concurrent requests (e.g. polling progress
 # while a job runs) within that single process, where the shared state
 # actually is shared.
-ExecStart=/opt/pi-forensics/venv/bin/python3 -m gunicorn --workers 1 --worker-class gthread --threads 4 --timeout 300 --bind 0.0.0.0:5000 app:app
+# --threads bumped 4 -> 8 (2026-08-28) - see install.py's own generator
+# for the full incident writeup: a single transiently-stalled request
+# (NFS write-back contention right after a large adb pull) consumed the
+# whole thread pool and made the entire app unresponsive to every other
+# request. 8 threads is a cheap, safe mitigation (threads share the same
+# process memory, so job_lock/current_job stay correctly shared) that
+# stops one stalled request from starving everything else.
+ExecStart=/opt/pi-forensics/venv/bin/python3 -m gunicorn --workers 1 --worker-class gthread --threads 8 --timeout 300 --bind 0.0.0.0:5000 app:app
 Restart=always
 RestartSec=3
 

@@ -893,7 +893,25 @@ Environment="FORENSIC_ROOT=/mnt"
 # still lets gunicorn handle concurrent requests (e.g. polling progress
 # while a job runs) within that single process, where the shared state
 # actually is shared.
-ExecStart={INSTALL_DIR}/venv/bin/python3 -m gunicorn --workers 1 --worker-class gthread --threads 4 --timeout 300 --bind {GUNICORN_BIND} app:app
+# --threads bumped 4 -> 8 (2026-08-28, first real Android device test): a
+# single Auto Analyze detect() call issued moments after an 8.7GB/1776-file
+# adb pull completed onto the same NFS-mounted evidence store transiently
+# stalled in the kernel NFS client (nfs_iocounter_wait, waiting for pending
+# writeback on the mount to drain - confirmed via /proc/<tid>/wchan, not an
+# app-logic bug: every individual filesystem call the route makes measured
+# under 20ms once the writeback cleared). With only 4 threads total, that
+# one stalled request consumed the whole pool and made the ENTIRE app
+# unresponsive to every other request (confirmed live: even /api/whoami
+# stopped responding) for as long as the stall lasted - a real severity
+# issue for an appliance meant to stay usable mid-examination, even though
+# the underlying NFS stall itself was a rare, transient timing collision.
+# 8 threads (~2x a typical Pi's core count, a standard ratio for an
+# I/O-bound threaded worker) doesn't fix a slow filesystem call, but keeps
+# one stalled request from starving every other concurrent request (the
+# browser's own telemetry polling alone can have 2-4 requests in flight at
+# idle) - a cheap, safe mitigation since threads share the same process
+# memory, so job_lock/current_job stay correctly shared exactly as before.
+ExecStart={INSTALL_DIR}/venv/bin/python3 -m gunicorn --workers 1 --worker-class gthread --threads 8 --timeout 300 --bind {GUNICORN_BIND} app:app
 Restart=always
 RestartSec=3
 
