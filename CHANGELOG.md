@@ -21,6 +21,131 @@ file after updating to see what changed.
 
 ---
 
+## [1.1.0] - 2026-08-29
+
+A large feature release - new artifact-parsing capability across Windows, Linux, and mobile
+evidence, several new analysis tools, a substantially expanded case-management/reporting toolkit,
+and one-click tool orchestration. Fully backward compatible - no removed features, no install
+process changes, and every new case-JSON field is additive (older stations and older cases keep
+working unchanged).
+
+### New: Windows artifact parsing
+
+- **Registry hive parsing** - recently-opened documents, typed URLs/paths, run history, USB device
+  history, and installed-programs list, plus Amcache application-inventory data.
+- **Windows Event Log (.evtx) parsing** - a curated set of security-relevant event types: logon
+  success/failure, process creation, account creation, service installation, and audit-log-cleared
+  (a classic anti-forensic indicator).
+- **Prefetch and Recycle Bin parsing** - program run history/counts, and metadata for deleted files
+  (original name, path, and deletion time) recovered from Recycle Bin index files.
+- **LNK (shortcut) file parsing** - target path, arguments, working directory, and embedded
+  timestamps from a single selected `.lnk` file.
+- All of the above work both against a real extracted folder and directly inside an already-acquired
+  disk image, with no extraction step required.
+
+### New: Linux artifact parsing
+
+- Shell history (`bash`/`zsh`/Python), `/etc/passwd` account listings, cron jobs, `auth.log`/`secure`
+  authentication logs, and systemd journal (`journald`) entries.
+- An experimental, clearly-labeled `wtmp`/`utmp` login-history parser, opt-in only (login-record
+  binary layout varies by system, so this includes a built-in sanity check that refuses to produce
+  results rather than guess wrong on an unfamiliar layout).
+
+### New: Mobile and cryptocurrency artifacts
+
+- **Mobile chat/app data** - SMS/iMessage, Contacts, and Call History parsed directly from an
+  unencrypted iOS backup already captured by this station.
+- **Cryptocurrency artifact detection** - common wallet-file names (Bitcoin Core, geth/Ethereum
+  keystores, Electrum, and others), plus new Bitcoin- and Ethereum-address pattern matching in the
+  Triage Scan tool.
+- iOS device pairing can now be triggered directly from Mobile Forensics - useful for a device
+  that's connected but hasn't shown the "Trust This Computer?" prompt yet.
+
+### New: Auto Analyze - one-click tool orchestration
+
+- Detects what kind of evidence you've selected (Windows disk image, Linux disk image, memory image,
+  or mobile backup) and runs a curated, sensible default set of analysis tools against it in one
+  background job, instead of running each tool by hand. Every detected profile can be confirmed or
+  overridden before anything runs, and extra (non-default) tools can be added in.
+- The Guided Workflow checklist (now living under Help & Reference) can hand off straight into Auto
+  Analyze for the case's own evidence, and a new opt-in checkbox on Acquisition can chain a
+  successful acquisition directly into an Auto Analyze run against the image it just produced.
+
+### New: analysis tools
+
+- **Generic SQLite artifact viewer** - browse the tables and rows of any `.db`/`.sqlite` file
+  directly in File Explorer, read-only, no separate tool needed.
+- **Hash Sets** - station-wide known-good/known-bad hash lists, checked automatically during a Hash
+  Manifest run or on demand against a single file, with an optional one-click import of recent
+  malware hashes from MalwareBazaar (a free personal key is required).
+- **URL Lists** - station-wide known-bad URL lists, checked automatically against every URL a
+  browser-artifact scan extracts, with an optional one-click import of the URLhaus recent-malicious-
+  URLs feed (no account needed).
+- **YARA rule scanning** - save your own YARA rulesets and run them against a single file, real
+  filesystem or inside an acquired image.
+- **Linux memory forensics** - analyze an x86_64 Linux memory image (captured elsewhere, e.g. via
+  LiME/AVML) with a curated set of `mquire` queries, alongside the existing Windows-focused
+  Volatility 3 support.
+
+### New: case management and reporting
+
+- **Case Dashboard** (Reporting's new Overview tab) - evidence item counts, tag counts (with Notable
+  items called out), analysis activity, case notes, and case age, all at a glance.
+- **Evidence Timeline** - every acquired image's filesystem timeline merged with parsed artifact
+  timestamps, with a stacked density chart by source (click a bar to filter the table), anti-
+  forensic-indicator highlighting, deleted-file badges, a per-evidence-item filter, and CSV export.
+- **Physical Evidence Custody Log** - a dedicated, append-only record of physical evidence handoffs
+  between people, distinct from the software Audit Trail and the investigative Case Notes journal.
+- **Verify All Evidence** - a case-wide integrity re-check that re-hashes every completed
+  acquisition's own output and compares it against the hash recorded at acquisition time.
+- **Case Bundle Export** - zip an entire case folder (optionally including the raw acquisition
+  images) for archival or handoff to another examiner.
+- **Cross-Case Search** - check whether a specific hash has shown up in any other case on this
+  station.
+- Case Manager gained a search box and a status filter (defaults to hiding Archived cases).
+
+### New: encrypted volumes
+
+- **VeraCrypt support** added alongside the existing BitLocker and LUKS support, all three now
+  reachable through one consolidated "Encrypted Volume" interface instead of separate per-type
+  controls.
+
+### Changed
+
+- Reporting's "Files" tab renamed "Files & Artifacts" to better reflect its scope (attached
+  exhibits, discovered case files, generated reports/logs, and parsed artifact records all in one
+  place).
+- "Hash Lists" renamed "Hash Sets" throughout, matching standard forensic terminology.
+- The Guided Workflow checklist moved from the Home tab into Help & Reference.
+- Settings' Case & Reporting and Service Controls & Diagnostics sections were condensed for less
+  scrolling.
+- The Forensic Acquisition tab's Format dropdown now includes Logical Acquisition directly, and the
+  Preview-drive button sits next to the drive-scan button instead of its own row.
+
+### Fixed
+
+- A background analysis job's result (Hash Manifest, Triage Scan, and similar) could silently fail
+  to record itself against the case if it ran outside a normal request - it's recorded correctly now.
+- Fixed the drive write-blocker's status check bypassing its own "another job is running" guard
+  during a Stop request.
+- Fixed a data-loss bug where renaming a custom case field could silently orphan that field's
+  already-saved value on existing cases.
+- Fixed several display bugs: Amcache/Prefetch/Recycle Bin records showing raw internal keys instead
+  of readable labels in File Views, an in-image Linux artifact showing a meaningless temporary
+  filename instead of its real one, and a low-contrast button in the Report Template Builder.
+- Fixed the File Explorer right-click menu not closing (and logging a harmless-but-noisy console
+  error) when dismissed with the Escape key.
+- Bumped gunicorn's thread count to improve responsiveness under load from a large acquisition or
+  analysis job running alongside normal browsing.
+
+### Security
+
+- Hardened KML (geolocation) file parsing against malicious XML entity attacks.
+- Closed a brief window where a newly-created secret/key file could exist with overly permissive
+  file permissions.
+
+---
+
 ## [1.0.1] - 2026-08-23
 
 A security-hardening and documentation release. No new features - upgrading is recommended for every
