@@ -48,7 +48,7 @@ running, see the [User Manual](docs/user-manual.md).
 ---
 
 <p align="center">
-  <img src="docs/images/PIF1.JPG" width="100%" alt="Pi Forensics Suite — Forensic Acquisition screen" />
+  <img src="docs/images/PIF1.JPG" width="100%" alt="Pi Forensics Suite — Home workspace picker" />
 </p>
 
 ---
@@ -171,9 +171,9 @@ flowchart TD
 ## Screenshots
 
 <p align="center">
-  <img src="docs/images/PIF2.JPG" width="100%" alt="File Recovery Tools" />
+  <img src="docs/images/PIF2.JPG" width="100%" alt="Forensic Acquisition" />
   <br>
-  <em>File Recovery — one unified tool selector (PhotoRec shown here, alongside extundelete, foremost, scalpel, TestDisk analysis, and the ddrescue Mapfile Inspector) in a left/right split: source/destination/case fields on the left, live status and terminal output on the right.</em>
+  <em>Forensic Acquisition — target drive telemetry, a consolidated Encrypted Volume panel (BitLocker/LUKS/VeraCrypt in one dropdown instead of three separate blocks), format/hash controls, and live status/terminal output, all in one compact card.</em>
 </p>
 
 <p align="center">
@@ -183,27 +183,15 @@ flowchart TD
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF4.JPG" width="100%" alt="Forensic File Explorer" />
+  <img src="docs/images/PIF4.JPG" width="100%" alt="File Recovery Tools" />
   <br>
-  <em>Forensic File Explorer browsing directly inside an acquired image via the inline Sleuth Kit Image Browser (pytsk3) — no mounting or extraction needed to list files, preview one, or pull it out to the case folder.</em>
+  <em>File Recovery — one unified tool selector (PhotoRec shown here, alongside extundelete, foremost, scalpel, TestDisk analysis, and the ddrescue Mapfile Inspector) sharing one source/destination/case layout and one live terminal instead of a screen per tool.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/PIF5.JPG" width="100%" alt="Reporting" />
+  <img src="docs/images/PIF5.JPG" width="100%" alt="Forensic File Explorer" />
   <br>
-  <em>Reporting — the left-nav case workspace (Report Narrative, Case Notes, Files, Jobs, Audit Trail, Search, Export, Raw JSON), shown here on Report Narrative with station-configured Case Details fields and the DFIR-style Executive Summary/Objectives/Findings/Limitations/Conclusion narrative.</em>
-</p>
-
-<p align="center">
-  <img src="docs/images/PIF6.JPG" width="100%" alt="Settings" />
-  <br>
-  <em>Settings — one of five left-nav categories, shown here on Case & Reporting: per-station report export defaults, report branding (header text and logo), and custom case fields that appear on every case's Case Information block.</em>
-</p>
-
-<p align="center">
-  <img src="docs/images/PIF7.JPG" width="100%" alt="File Explorer Geolocation Preview" />
-  <br>
-  <em>File Explorer — a KML geolocation export previewed inline as a live map (no separate GIS tool needed to see where evidence photos were taken), alongside the Listing table's Accessed/Changed/Created timestamp columns.</em>
+  <em>Forensic File Explorer — the folder tree groups an acquired image's disk images and this app's own case-generated artifacts (reports, hash logs, KML exports) out of the way of real evidence, and the Listing table now shows Modified/Accessed/Changed/Created for every file.</em>
 </p>
 
 <p align="center">
@@ -216,6 +204,18 @@ flowchart TD
   <img src="docs/images/PIF9.JPG" width="100%" alt="File Explorer Metadata" />
   <br>
   <em>File Explorer's Metadata tab — real filesystem facts (size, extension, MIME type, timestamps, permissions, owner/group) for any file or folder, with ExifTool's embedded metadata layered below for files.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF7.JPG" width="100%" alt="File Explorer Geolocation Preview" />
+  <br>
+  <em>File Explorer — a KML geolocation export previewed inline as a live map (no separate GIS tool needed to see where evidence photos were taken), with the File Views analysis tree (tags, keyword hits, parsed browser artifacts) alongside it.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF6.JPG" width="100%" alt="Reporting" />
+  <br>
+  <em>Reporting — the case-wide Overview dashboard (Evidence Items, Tagged Items, Analysis Activity, Case Notes, Exhibits, Case Age at a glance), with Verify All Evidence and Case Bundle Export alongside the full tab set: Report Narrative, Case Notes, Custody Log, Files & Artifacts, Geolocation, Jobs, Evidence Timeline, Audit Trail, Search, and Export.</em>
 </p>
 
 <p align="center">
