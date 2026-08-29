@@ -129,6 +129,11 @@ That's a real, verifiable, bit-for-bit forensic image, done.
 
 ## Where to go from here
 
+- **Analyze what you just imaged.** Before writing up findings, go to **File Explorer**, right-click
+  the acquired image, and click **Auto Analyze...** — it detects what kind of evidence you have and
+  runs a curated set of analysis tools (registry/log/artifact parsing, hashing, and more) against it
+  in one step, instead of running each tool by hand. See the [User Manual](user-manual.md) for the
+  full list of what it can detect and run.
 - **[User Manual](user-manual.md)** — every tab and tool, explained in full: file recovery, mobile
   device acquisition, browsing inside an acquired image, encrypted-drive support, tagging evidence,
   memory forensics, custom report templates, and station security/accounts.
