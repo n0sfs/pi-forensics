@@ -4149,6 +4149,21 @@ document.addEventListener('click', (ev) => {
     }
 });
 
+// The menu borrows Bootstrap's `dropdown-menu` class for styling only - it's a plain
+// position:fixed div, not a real Bootstrap Dropdown instance. Bootstrap's own global
+// keydown data-api handler still tries to treat any `.dropdown-menu`-classed element as
+// one of its managed instances on Escape and throws (no toggle element to look up), and
+// never closes the menu either. Handle Escape ourselves, in the capture phase, so our
+// hide-and-stopPropagation runs before Bootstrap's own document-level listener sees it.
+document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    const menu = document.getElementById('fileContextMenu');
+    if (menu && menu.style.display === 'block') {
+        hideFileContextMenu();
+        ev.stopPropagation();
+    }
+}, true);
+
 document.addEventListener('DOMContentLoaded', () => {
     const copyBtn = document.getElementById('contextMenuCopyBtn');
     const deleteBtn = document.getElementById('contextMenuDeleteBtn');
