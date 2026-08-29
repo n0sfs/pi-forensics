@@ -714,7 +714,7 @@ const REPORT_FIELD_MAPPING = [
     ["Conclusion", "Free text (Remappable)", "Report Narrative"],
     ["Indicators of Compromise", "Free text (Remappable)", "Report Narrative"],
     ["Recommendations / Next Steps", "Free text (Remappable)", "Report Narrative"],
-    ["Exhibits", "Attached files/URLs + captions + tags + analysis results", "Files tab (check/caption); File Explorer (tag/analyze)"],
+    ["Exhibits", "Attached files/URLs + captions + tags + analysis results", "Files &amp; Artifacts tab (check/caption); File Explorer (tag/analyze)"],
     ["Geolocation / GPS Evidence", "KML files attached to or found in the case folder", "Auto-discovered; generate via File Explorer's \"Extract Geolocation (KML)\""],
     ["Case Activity Log (Audit Trail)", "Chain-of-custody entries matching this case #", "Automatic"],
     ["Filesystem Timeline (MACB)", "MACB walk of the acquired image", "Automatic, needs the image still on disk"],
@@ -6534,7 +6534,7 @@ async function extractAndAttachExplorerImageSelected() {
         });
         const attachData = await attachRes.json();
         if (attachData.success) {
-            showToast(`Extracted and attached to ${activeCase.case_number} as a case exhibit (${attachData.file_count} file(s) now attached). Edit captions in Reporting > Files.`, 'success');
+            showToast(`Extracted and attached to ${activeCase.case_number} as a case exhibit (${attachData.file_count} file(s) now attached). Edit captions in Reporting > Files & Artifacts.`, 'success');
             if (currentReportPath) loadCaseForEditing();
         } else {
             showToast(`Extracted to ${extractData.path}, but attaching to the case failed: ${attachData.error}`, 'danger');
@@ -7790,7 +7790,7 @@ function renderCustomFieldItemPickerList() {
     const filtered = cfPickerItems.filter(item => item.label.toLowerCase().includes(query));
     listEl.innerHTML = '';
     if (filtered.length === 0) {
-        listEl.innerHTML = '<span class="text-subtle small p-2 d-block">No matching case items found - attach a file (Reporting > Files) or tag one (right-click in File Explorer) first.</span>';
+        listEl.innerHTML = '<span class="text-subtle small p-2 d-block">No matching case items found - attach a file (Reporting > Files &amp; Artifacts) or tag one (right-click in File Explorer) first.</span>';
         return;
     }
     filtered.forEach(item => {
@@ -8773,7 +8773,7 @@ function renderNewCaseNoteLinkedFilesChecklist() {
     if (!container) return;
     container.innerHTML = '';
     if (!currentAttachedFilesList.length) {
-        container.innerHTML = '<span class="text-subtle small italic">No exhibits attached yet - see the Files tab.</span>';
+        container.innerHTML = '<span class="text-subtle small italic">No exhibits attached yet - see the Files &amp; Artifacts tab.</span>';
         return;
     }
     currentAttachedFilesList.forEach((fp, i) => {
@@ -9338,7 +9338,7 @@ function runCaseSearch() {
     const urlMatches = (attach.reference_urls || []).filter(u => u.toLowerCase().includes(query));
     if (fileMatches.length > 0 || urlMatches.length > 0) {
         totalMatches += fileMatches.length + urlMatches.length;
-        appendCaseSearchGroup(container, 'Files', 'repFilesTab', [
+        appendCaseSearchGroup(container, 'Files & Artifacts', 'repFilesTab', [
             ...fileMatches.map(p => ({ label: p.split('/').pop(), snippet: null })),
             ...urlMatches.map(u => ({ label: u, snippet: null })),
         ]);
@@ -10035,7 +10035,7 @@ async function attachSelectedFileToCase() {
             if (data.already_attached) {
                 showToast(`This file is already attached to ${activeCase.case_number}.`, 'success');
             } else {
-                showToast(`Attached to ${activeCase.case_number} as a case exhibit (${data.file_count} file(s) now attached). Edit captions or reorder exhibits in Reporting > Files.`, 'success');
+                showToast(`Attached to ${activeCase.case_number} as a case exhibit (${data.file_count} file(s) now attached). Edit captions or reorder exhibits in Reporting > Files & Artifacts.`, 'success');
                 if (currentReportPath) loadCaseForEditing();
             }
         } else {

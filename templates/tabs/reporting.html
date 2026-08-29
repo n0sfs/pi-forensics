@@ -43,7 +43,7 @@
                                                 <button class="list-group-item list-group-item-action" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
                                                 <button class="list-group-item list-group-item-action" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
                                                 <button class="list-group-item list-group-item-action" id="repCustodyTab" data-bs-toggle="list" data-bs-target="#repCustodyPane" type="button" role="tab" onclick="renderCustodyLogList()"><i class="bi bi-people-fill"></i>Custody Log</button>
-                                                <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab" onclick="renderReportFilesGallery()"><i class="bi bi-paperclip"></i>Files</button>
+                                                <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab" onclick="renderReportFilesGallery()"><i class="bi bi-paperclip"></i>Files &amp; Artifacts</button>
                                                 <button class="list-group-item list-group-item-action" id="repGeoTab" data-bs-toggle="list" data-bs-target="#repGeoPane" type="button" role="tab" onclick="renderReportGeolocationList()"><i class="bi bi-geo-alt"></i>Geolocation</button>
                                                 <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
                                                 <button class="list-group-item list-group-item-action" id="repTimelineTab" data-bs-toggle="list" data-bs-target="#repTimelinePane" type="button" role="tab" onclick="loadCaseTimeline()"><i class="bi bi-clock-history"></i>Evidence Timeline</button>
@@ -180,7 +180,7 @@
                                                     <div class="mb-2">
                                                         <label class="telemetry-grid-label d-block mb-1">Link to Exhibit(s) (optional):</label>
                                                         <div id="newCaseNoteLinkedFiles" class="small" style="max-height: 100px; overflow-y: auto;">
-                                                            <span class="text-subtle small italic">No exhibits attached yet - see the Files tab.</span>
+                                                            <span class="text-subtle small italic">No exhibits attached yet - see the Files &amp; Artifacts tab.</span>
                                                         </div>
                                                     </div>
                                                     <button class="btn btn-sm btn-success fw-bold" onclick="addCaseNote()"><i class="bi bi-plus-lg me-1"></i>Add Note</button>
@@ -268,7 +268,7 @@
                                                 </div>
                                                 <div class="tab-pane fade" id="repFilesPane" role="tabpanel">
                                                     <div class="d-flex justify-content-between align-items-center mb-2">
-                                                        <h6 class="text-success fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Files &amp; Evidence</h6>
+                                                        <h6 class="text-success fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Files &amp; Artifacts</h6>
                                                         <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-folder2-open me-1"></i>Browse Elsewhere...</button>
                                                     </div>
                                                     <div class="small text-subtle mb-3">Organized by kind - check a file to attach it as a report exhibit; files already found in this case's folder are listed automatically. Right-click a file in File Explorer and choose "Attach to Case" to add it from there instead.</div>
@@ -530,7 +530,7 @@
             </div>
         </div>
     </div>
-    <!-- Shared KML viewer - opened from Reporting's Files gallery for any
+    <!-- Shared KML viewer - opened from Reporting's Files & Artifacts gallery for any
          .kml attachment/exhibit; File Explorer renders the same shared
          renderKmlViewer() inline in its own Preview pane instead of this
          modal, since it already has a dedicated details pane to use. -->
