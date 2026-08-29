@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.0.1-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.1-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -62,7 +62,12 @@ hashed-raw-then-convert pipeline — with MD5/SHA-1/SHA-256 verification built i
 in the same screen as a format option, not a separate tool, with pass-strategy selection
 (fast/trim/scrape/reverse) and a Mapfile Inspector for reviewing bad-sector results. A global
 `udev` rule forces every connected USB storage device read-only at insertion; a Settings toggle
-lets you deliberately unlock a destination drive when you need to.
+lets you deliberately unlock a destination drive when you need to. BitLocker, LUKS, and VeraCrypt
+volumes can all be unlocked and acquired decrypted through one consolidated Encrypted Volume panel.
+A **Preview This Drive (Read-Only)** button lets you browse a connected drive's filesystem before
+committing to a full acquisition, and **Logical / Custom-Content Acquisition** packages specific
+folders into a hash-verified evidence container instead of imaging a whole device. An optional
+checkbox chains a successful acquisition straight into Auto Analyze against the image it produced.
 
 ### File recovery
 One tool selector for PhotoRec (signature-based file carving, ~480 known types), `extundelete`
@@ -80,22 +85,36 @@ authorization — devices must already be unlocked and trusted by the examiner.
 
 ### File Explorer & analysis
 Browse local evidence and mounted network shares with inline preview (images, PDFs, and
-sandboxed-rendered HTML render directly; other files show a metadata/info panel). Double-click an
-acquired image to browse **inside its filesystem** via an in-process Sleuth Kit engine (`pytsk3`) —
-directory listing with real MACB timestamps, recursive filename search, a full timeline view, and
-in-memory preview/extract, with zero mount step. Right-click any file for ExifTool metadata,
-Binwalk, ClamAV, `strings`, `hashdeep`, or an MVT spyware/IOC scan.
+sandboxed-rendered HTML render directly; other files show a metadata/info panel, plus a read-only
+in-browser viewer for any `.db`/`.sqlite` file). Double-click an acquired image to browse **inside
+its filesystem** via an in-process Sleuth Kit engine (`pytsk3`) — directory listing with real MACB
+timestamps, recursive filename search, a full timeline view, and in-memory preview/extract, with
+zero mount step. Right-click any file for ExifTool metadata, Binwalk, ClamAV, `strings`, `hashdeep`,
+an MVT spyware/IOC scan, YARA rule scanning, and hash-set/known-bad-URL matching against your own
+saved lists (with one-click MalwareBazaar/URLhaus imports). Dedicated artifact parsers recover
+Windows Registry hives (incl. Amcache), Event Logs, Prefetch, Recycle Bin, and LNK shortcuts; Linux
+shell history, `/etc/passwd`, cron, and `auth.log`; cryptocurrency wallet files; and mobile chat/app
+data (SMS/iMessage, Contacts, Call History) straight out of an already-captured iOS backup — all
+without extracting anything first, real folder or unmounted image alike. **Auto Analyze** detects
+what kind of evidence you've selected and runs a curated default set of the above in one background
+job. Memory forensics covers Windows (Volatility 3) and x86_64 Linux (`mquire`) memory images.
 
 ### Reporting & case management
 Create a case once and every acquisition, recovery, and mobile job auto-fills Case#/Examiner/
 Destination against it — each case is a real folder with one consolidated JSON report file, not
-scattered per-job files. Reporting itself follows standard DFIR report structure: a timestamped,
-append-only Case Notes journal (with attachments and a local integrity hash per note, disclosed as
-tamper-evidence, not legal notarization), a separate polished Report Narrative
-(Executive Summary/Objectives/Findings/Limitations/Conclusion), a per-job Jobs tab, and a
-station-wide Audit Trail filtered to the case — plus a cross-source Search across all of them.
-Export to PDF or HTML with configurable sections, embedded image/text attachments, and optional
-station branding (logo + header text).
+scattered per-job files. A case-wide **Overview** dashboard, **Verify All Evidence** (re-hashes every
+acquisition's own output and compares it against the hash recorded at acquisition time), and
+**Case Bundle Export** (zip the whole case folder for archival/handoff) sit alongside a station-wide
+**Cross-Case Search** for checking whether a hash has shown up in another case. Reporting itself
+follows standard DFIR report structure: a timestamped, append-only Case Notes journal (with
+attachments and a local integrity hash per note, disclosed as tamper-evidence, not legal
+notarization), a separate append-only physical-evidence **Custody Log**, a polished Report Narrative
+(Executive Summary/Objectives/Findings/Limitations/Conclusion), a per-job Jobs tab, an **Evidence
+Timeline** merging every acquired image's filesystem timeline with parsed-artifact timestamps
+(charted by source, with anti-forensic-indicator flagging), and a station-wide Audit Trail filtered
+to the case — plus a cross-source Search across all of them. Export to PDF, HTML, JSON, or CSV, with
+a choice of a fully configurable layout or a fixed DFIR/law-enforcement/CASE-UCO-aligned structure,
+embedded image/text attachments, and optional station branding (logo + header text).
 
 ### Security & access
 Real per-examiner accounts (Werkzeug-hashed passwords) instead of one shared login, assigned to
@@ -140,7 +159,7 @@ flowchart TD
 |---|---|
 | **Client** | Server-rendered Jinja2 templates (`templates/`) + one vanilla-JS file (`static/js/main.js`) — no build step, no framework. Bootstrap 5, Bootstrap Icons, Chart.js, and Leaflet load from CDN (Leaflet is also vendored locally so maps still render on an offline kiosk). |
 | **Web & Auth** | `gunicorn` runs `app.py` (a thin ~85-line entry point) behind an optional nginx TLS reverse proxy. A signed session cookie handles real login; HTTP Basic Auth is kept only as an `/api/*` fallback for scripting; the physical kiosk touchscreen bypasses login entirely (scoped to genuinely-local requests). RBAC is 7 permission keys across built-in Admin/Analyst groups plus custom ones. |
-| **Application** | 10 Flask Blueprints (`routes/*.py`) — one per feature area: `acquisition`, `mobile`, `recovery`, `file_explorer`, `image_browser`, `case_index`, `reporting`, `case_management`, `settings`, `auth_routes`. |
+| **Application** | 11 Flask Blueprints (`routes/*.py`) — one per feature area: `acquisition`, `mobile`, `recovery`, `file_explorer`, `image_browser`, `case_index`, `reporting`, `case_management`, `settings`, `auth_routes`, `auto_analyze`. |
 | **Shared Core** | `core/*.py` — anything more than one Blueprint needs. Most notable: `jobs.py`, which holds the **one** shared background-job slot for the whole app (only one acquisition/recovery/analysis job ever runs station-wide, regardless of which tab started it), and `paths.py`, whose `safe_path()` is the single reused path-traversal boundary every filesystem-touching route goes through. |
 | **Privilege boundary** | The service account is unprivileged by design. Every tool that needs to read a raw device is launched via `sudo` with an **exact-match** grant (full absolute binary path, arguments pinned wherever feasible) — never a wildcard on the command itself. |
 | **External Tools** | Real, independently-trusted forensic tools, wired together rather than reimplemented — see [What it does](#what-it-does) above for the full list by category. |
@@ -233,7 +252,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.0.1 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.1.1 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
@@ -283,7 +302,8 @@ networks the examiner doesn't fully control. It's built with that threat model i
 | **Authentication** | Real session-based login (a signed cookie, set by `/login`) for browser access to the web UI, with an idle timeout - there is **no bypass** for private-subnet or proxied clients, even when nginx is in front of gunicorn. `/api/*` routes also accept plain HTTP Basic Auth as a fallback (for `curl`-style scripted access), never advertised to a browser. The one exception to all of this is the physical kiosk touchscreen itself; see below. Real per-examiner accounts (Werkzeug-hashed passwords) are assigned to built-in Admin/Analyst groups or custom permission groups you define; a station that hasn't created one yet falls back to the single `FORENSIC_USER`/`FORENSIC_PASS` environment-variable account for backward compatibility. |
 | **Local kiosk auth bypass (opt-out)** | By default (`FORENSIC_KIOSK_AUTH_BYPASS=1`), the physical kiosk skips the login prompt - physical access to the touchscreen already implies a high trust level (it also gets you the SD card, recovery mode, etc.). This is detected via genuine loopback origin (`request.remote_addr`, the real TCP peer - not a client-supplied header) with no `X-Real-IP` header, or with an `X-Real-IP` header only once that loopback origin is independently confirmed - a remote client proxied through nginx always has `remote_addr` be nginx's own loopback peer address and `X-Real-IP` set to their real address, so **this never weakens remote/LAN/WiFi access**, which stays fully authenticated; a remote client connecting *without* nginx in the path (e.g. TLS/reverse-proxy setup was skipped at install) can no longer spoof this bypass by forging the header, since `remote_addr` in that case is their own real, unspoofable address. Destructive actions (reboot, delete, etc.) still have confirmation dialogs regardless. Set `FORENSIC_KIOSK_AUTH_BYPASS=0` in the systemd unit to require login locally too. |
 | **Brute-force protection** | 5 failed logins from an effective client IP triggers a 5-minute lockout (in-memory; resets on service restart) - keyed the same way the kiosk-bypass check resolves the real client identity above, so remote clients proxied through nginx get independent lockout buckets rather than sharing one. |
-| **Service privileges** | `app.py` runs as the service account you chose during install (not root, and not a member of the `disk` group). It only reaches root for the specific, whitelisted commands in `/etc/sudoers.d/pi-forensics` (mount/umount/mkdir under `/mnt`, blockdev, smartctl, dc3dd/ewfacquire/ddrescue, cryptsetup/losetup for LUKS, `nmcli` for network configuration, pkill). Raw device reads for one-off browsing (Live Device Preview) use a temporary, reversible read-only ACL grant on a single whitelisted device path, revoked on exit or by an idle timeout - never a standing group membership. |
+| **Service privileges** | `app.py` runs as the service account you chose during install (not root, and not a member of the `disk` group). It only reaches root for the specific, whitelisted commands in `/etc/sudoers.d/pi-forensics` (mount/umount/mkdir under `/mnt`, blockdev, smartctl, dc3dd/ewfacquire/ddrescue, cryptsetup/losetup for LUKS and VeraCrypt, dislocker for BitLocker, `nmcli` for network
+configuration, pkill). Raw device reads for one-off browsing (Live Device Preview) use a temporary, reversible read-only ACL grant on a single whitelisted device path, revoked on exit or by an idle timeout - never a standing group membership. |
 | **File-system sandboxing** | The file explorer, report load/save, hash verification, PDF export, and imaging/recovery destinations are all restricted to one directory tree (`FORENSIC_ROOT`, default `/mnt`). Paths outside it are rejected, including via symlink or `../` traversal. |
 | **Device validation** | Acquisition/recovery source paths must match a whole-disk device pattern (`/dev/sdX`, `/dev/nvme*n*`, `/dev/mmcblk*`) - arbitrary files can't be pointed at the privileged `ddrescue`/`dc3dd` commands. |
 | **Evidence-drive-safe UI** | Filenames and file content pulled from mounted/browsed media are rendered as plain text or inside a fully sandboxed iframe (no scripts, no same-origin access), never trusted as active HTML - a maliciously named or crafted file on a suspect drive can't inject script into the examiner's session. |
@@ -341,12 +361,15 @@ sudo systemctl reload nginx          # apply config changes without dropping con
 sudo journalctl -u nginx -f          # nginx logs
 ```
 
-> **Note:** the generated systemd unit runs gunicorn with `--workers 1 --worker-class gthread --threads 4`.
-> Job progress (`current_job` in `app.py`) is tracked in process memory, not a shared store - running
-> multiple gunicorn *worker processes* would give each one its own independent copy of that state, so
-> a progress-poll request could land on a different worker than the one running the acquisition and
-> show stale/default data. Threads (within the single process) don't have this problem. If you ever
-> need more request concurrency, raise `--threads`, not `--workers`.
+> **Note:** the generated systemd unit runs gunicorn with `--workers 1 --worker-class gthread --threads 8`.
+> Job progress (`current_job` in `core/jobs.py`) is tracked in process memory, not a shared store -
+> running multiple gunicorn *worker processes* would give each one its own independent copy of that
+> state, so a progress-poll request could land on a different worker than the one running the
+> acquisition and show stale/default data. Threads (within the single process) don't have this
+> problem, and having several available matters in practice: a single request that transiently stalls
+> (e.g. on a slow network-mounted evidence share) shouldn't be able to starve every other concurrent
+> request - `--threads 8` was chosen after exactly that happened with the previous, lower value. If
+> you ever need more request concurrency, raise `--threads`, not `--workers`.
 
 ---
 

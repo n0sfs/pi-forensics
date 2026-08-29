@@ -331,12 +331,12 @@ const GUIDE_SCENARIOS = {
         tabId: "ddrescue-tab"
     },
     encrypted: {
-        title: "The drive (or image) is BitLocker or LUKS encrypted",
+        title: "The drive (or image) is BitLocker, LUKS, or VeraCrypt encrypted",
         steps: [
-            "Recovery key/passphrase in hand? On the Forensic Acquisition tab, select the drive as usual, then look for the \"BitLocker-Encrypted Source\" or \"LUKS-Encrypted Source\" section below it (LUKS is the Linux equivalent of BitLocker) - click Detect to confirm which one applies, enter the key/passphrase, and click Unlock.",
+            "Recovery key/passphrase/password in hand? On the Forensic Acquisition tab, select the drive as usual, then expand the \"Encrypted Volume\" section below it and pick the type (BitLocker, LUKS, or VeraCrypt) from the dropdown - the credential field's label changes to match. Click Detect for BitLocker/LUKS to confirm which one applies (VeraCrypt volumes have no fixed signature by design, so Detect always says it can't tell for those - a failed Unlock attempt tells you the real answer instead), enter the credential, and click Unlock.",
             "Once unlocked, the decrypted volume becomes the acquisition source automatically - proceed with Start Acquisition as normal. The volume re-locks itself the moment the job finishes, whether it succeeds or fails.",
-            "Already have an acquired image (.dd/.E01) that's encrypted, rather than a live drive? Right-click it in File Explorer and choose \"Unlock BitLocker & Browse...\" or \"Unlock LUKS & Browse...\" to browse the decrypted contents inline with the same Sleuth Kit tools used for any other image - no need to re-acquire.",
-            "The recovery key/passphrase you enter is recorded in the case report as plain-text documentation, not encrypted at rest - so whoever reviews the report later has what they need to decrypt the image again themselves.",
+            "Already have an acquired image (.dd/.E01) that's encrypted, rather than a live drive? Right-click it in File Explorer and choose \"Unlock Encrypted Volume & Browse...\" to browse the decrypted contents inline with the same Sleuth Kit tools used for any other image - no need to re-acquire.",
+            "The recovery key/passphrase/password you enter is recorded in the case report as plain-text documentation, not encrypted at rest - so whoever reviews the report later has what they need to decrypt the image again themselves.",
         ],
         tabId: "acquisition-tab"
     },
@@ -354,11 +354,12 @@ const GUIDE_SCENARIOS = {
     report: {
         title: "Documenting findings / writing a report",
         steps: [
-            "Make sure the case you're reporting on is the active case (top-left \"Case\" button), then open the Reporting tab - it loads that case automatically, no manual file browsing needed.",
+            "Before writing anything up, consider running \"Auto Analyze...\" (top of File Explorer's right-click menu) against your acquired evidence - it detects what kind of image or backup you have and runs a curated set of analysis tools (registry/log/artifact parsing, hashing, and more) automatically, giving you real findings to write about instead of a blank page.",
+            "Make sure the case you're reporting on is the active case (top-left \"Case\" button), then open the Reporting tab - it loads that case automatically, no manual file browsing needed. \"Overview\" (the default view) gives you a dashboard of everything recorded so far - evidence items, tags, analysis activity, case notes - plus \"Verify All Evidence\" (re-checks every acquisition's hash) and \"Export Case Bundle\" (zips the whole case for handoff).",
             "Use \"Case Notes\" as you work, not just at the end - it's a timestamped, append-only journal (each note gets an author and a local integrity hash; editing keeps the original text rather than overwriting it). This becomes the \"Forensic Analysis / Steps Taken\" section of the exported report.",
             "\"Report Narrative\" holds the polished closing write-up (executive summary, objectives, findings, limitations, conclusion) - a separate, deliberately distinct thing from the running Case Notes journal.",
-            "\"Jobs\" shows every acquisition/recovery/mobile job run against this case with full telemetry and hashes; \"Audit Trail\" is the station-wide activity log filtered to this case number.",
-            "When ready, go to Export - pick PDF or HTML and choose which sections/evidence items to include, then export. Attached photos and text files get embedded directly in the output, not just listed by path.",
+            "\"Jobs\" shows every acquisition/recovery/mobile job run against this case with full telemetry and hashes; \"Evidence Timeline\" merges every acquired image's filesystem timeline with parsed-artifact timestamps; \"Audit Trail\" is the station-wide activity log filtered to this case number; \"Custody Log\" records physical evidence handoffs between people, separate from all of the above.",
+            "When ready, go to Export - pick PDF, HTML, JSON, or CSV, choose a report template (Standard, or a fixed DFIR/Police/CASE-UCO structure), and which sections/evidence items to include, then export. Attached photos and text files get embedded directly in the output, not just listed by path.",
         ],
         tabId: "reports-tab"
     },
@@ -457,16 +458,16 @@ const FAQ_GROUPS = [
                 a: "Check the status text and console during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, if the job ran against an active case, open Reporting - its hashes and telemetry are already recorded under the Jobs tab. Otherwise, right-click the resulting image in File Explorer and use \"Verify Image Hash\"."
             },
             {
-                q: "The drive I need to image is BitLocker or LUKS encrypted - can this station handle that?",
-                a: "Yes. On the Forensic Acquisition tab, below drive selection, there's a \"BitLocker-Encrypted Source\" section (Windows) and a \"LUKS-Encrypted Source\" section (Linux's disk-encryption format) - click Detect to confirm which applies, enter the recovery key/passphrase, and Unlock. The decrypted volume becomes the acquisition source automatically, and locks itself again once the job completes. Already-acquired encrypted images can also be unlocked and browsed directly from File Explorer's right-click menu, without re-acquiring."
+                q: "The drive I need to image is BitLocker, LUKS, or VeraCrypt encrypted - can this station handle that?",
+                a: "Yes, all three. On the Forensic Acquisition tab, below drive selection, expand \"Encrypted Volume\" and pick the type from the dropdown - the credential field's label changes to match (Recovery Key, Passphrase, or Password). Click Detect to confirm which applies for BitLocker/LUKS (VeraCrypt volumes have no fixed signature by design, so Detect can't tell for those - try Unlock directly instead). Once unlocked, the decrypted volume becomes the acquisition source automatically, and locks itself again once the job completes. Already-acquired encrypted images can also be unlocked and browsed directly from File Explorer's right-click menu (\"Unlock Encrypted Volume & Browse...\"), without re-acquiring."
             },
             {
                 q: "Can I look inside a drive before committing to a full acquisition?",
-                a: "Yes - \"Preview This Drive (Read-Only)...\" on the Forensic Acquisition tab lets you browse a connected drive's real filesystem, read files, and run analysis tools against it read-only, before deciding whether (or how) to image it. It's clearly labeled as a live preview, not a substitute for a real acquisition - nothing is saved as evidence until you actually run Start Acquisition."
+                a: "Yes - \"Preview\" (next to Scan on the Forensic Acquisition tab) lets you browse a connected drive's real filesystem, read files, and run analysis tools against it read-only, before deciding whether (or how) to image it. It's clearly labeled as a live preview, not a substitute for a real acquisition - nothing is saved as evidence until you actually run Start Acquisition."
             },
             {
                 q: "I only need specific folders, not a full bit-for-bit image - is that possible?",
-                a: "Yes - Logical (Custom Content) Acquisition, also on the Forensic Acquisition tab, lets you pick one or more specific folders and package them into a single hash-verified container with a manifest, instead of imaging an entire drive. Useful when you only need a user's documents or a particular app's data, not the whole disk."
+                a: "Yes - Logical (Custom Content) Acquisition, also on the Forensic Acquisition tab (select it from the Format dropdown), lets you pick one or more specific folders and package them into a single hash-verified container with a manifest, instead of imaging an entire drive. Useful when you only need a user's documents or a particular app's data, not the whole disk."
             },
         ]
     },
@@ -491,7 +492,7 @@ const FAQ_GROUPS = [
             },
             {
                 q: "Can I analyze a memory (RAM) dump on this station?",
-                a: "Yes, for Windows memory images. Right-click a memory-image file (.raw/.mem/.vmem/.dmp/.lime) in File Explorer and choose \"Memory Forensics...\" to run Volatility3 plugins against it - process lists, network connections, loaded DLLs, and more. This station only analyzes an already-captured memory image; it has no way to capture memory from a live system itself. The first run needs internet access, to fetch matching OS symbol information."
+                a: "Yes - Windows and x86_64 Linux memory images. Right-click a memory-image file (.raw/.mem/.vmem/.dmp/.lime) in File Explorer and choose \"Memory Forensics...\", then pick the engine: Volatility3 for Windows (process lists, network connections, loaded DLLs, and more; the first run needs internet access, to fetch matching OS symbol information), or mquire for x86_64 Linux (reads symbol info the kernel embeds in the image itself, so no download is needed there). This station only analyzes an already-captured memory image; it has no way to capture memory from a live system itself. ARM Linux and macOS memory images aren't supported by either engine."
             },
             {
                 q: "Can I convert an image between raw (.dd) and E01 format after the fact?",
@@ -499,11 +500,23 @@ const FAQ_GROUPS = [
             },
             {
                 q: "Does this station recover browser history or bookmarks?",
-                a: "Yes - right-click a folder (or an acquired image) in File Explorer and choose \"Parse Browser Artifacts\" to extract history, bookmarks, downloads, and cookies from a Chrome/Chromium- or Firefox-family profile. Results show up under File Views' \"Parsed Artifacts\" category, alongside anything found by the Registry hive, Event Log (.evtx), and .lnk shortcut parsers (also reached from the right-click menu). Safari isn't supported - its data lives inside an iOS/macOS backup rather than a portable profile folder."
+                a: "Yes - right-click a folder (or an acquired image) in File Explorer and choose \"Parse Browser Artifacts\" to extract history, bookmarks, downloads, and cookies from a Chrome/Chromium- or Firefox-family profile. Results show up under File Views' \"Parsed Artifacts\" category, alongside anything found by the Registry hive, Event Log (.evtx), Prefetch, Recycle Bin, Linux artifact, mobile chat/app, and .lnk shortcut parsers (also reached from the right-click menu). Safari isn't supported - its data lives inside an iOS/macOS backup rather than a portable profile folder."
+            },
+            {
+                q: "What's \"Auto Analyze\" and how is it different from running tools by hand?",
+                a: "Auto Analyze (the top item on File Explorer's right-click menu) detects what kind of evidence you've selected - a Windows disk image, a Linux disk image, a memory image, or a mobile backup - and runs a curated, sensible default set of analysis tools against it in one background job, instead of you running each one individually. It always shows the detected profile for confirmation (or correction) before anything runs, and every tool it runs is still available individually if you'd rather pick and choose."
+            },
+            {
+                q: "Can I check a file against known-good/known-bad hash lists, or scan it with YARA rules?",
+                a: "Yes - Settings > Case & Reporting > Analysis & IOC Lists lets you save your own Hash Sets (known-good/known-bad, one-click import of a recent-malware feed from MalwareBazaar), URL Lists (known-bad URLs, one-click import from URLhaus), and YARA Rulesets. Then right-click any file in File Explorer and choose \"Check Against Hash Sets\" or \"Scan with YARA Rules\" - Hash Sets are also checked automatically whenever you run a Hash Manifest, and URL Lists are checked automatically against every URL a browser-artifact scan finds."
+            },
+            {
+                q: "Can I browse a SQLite database file directly, without a separate tool?",
+                a: "Yes - select any .db/.sqlite/.sqlite3 file in File Explorer and a \"Database\" tab appears next to Preview/Hex/Metadata, showing its tables and rows read-only. Works the same whether the file is a real one on disk or sitting inside an unmounted acquired image."
             },
             {
                 q: "What's File Views, and how is it different from tagging a file?",
-                a: "File Views (in File Explorer's folder tree) is a per-case index that automatically groups everything found so far - by file type, by keyword-scan hit, by tag, or by parsed browser artifact - so you don't have to remember where a specific result landed. Tagging is how you flag something yourself: right-click any file and choose Tag... to mark it Bookmark/Follow Up/Notable Item (or a custom tag you define in Settings), with an optional comment. Tagged files show up as their own File Views category and, once attached to the case, are called out in the exported report too."
+                a: "File Views (in File Explorer's folder tree) is a per-case index that automatically groups everything found so far - by file type, by keyword-scan hit, by tag, or by parsed artifact - so you don't have to remember where a specific result landed. Tagging is how you flag something yourself: right-click any file and choose Tag... to mark it Bookmark/Follow Up/Notable Item (or a custom tag you define in Settings), with an optional comment. Tagged files show up as their own File Views category and, once attached to the case, are called out in the exported report too."
             },
         ]
     },
@@ -525,6 +538,26 @@ const FAQ_GROUPS = [
             {
                 q: "How does this station track what was done and by whom?",
                 a: "Settings > Audit Log keeps a station-wide, append-only log of significant actions (acquisitions, deletes, copies, report edits, logins) with a timestamp, source IP, and - since real per-user accounts are supported rather than one shared login - which logged-in user did it. Reporting's own \"Audit Trail\" sub-tab shows that same log filtered down to just the active case."
+            },
+            {
+                q: "Custody Log vs. Case Notes vs. Audit Trail - what's the difference between the three?",
+                a: "All three live in Reporting but track genuinely different things. Custody Log is a dedicated, append-only record of physical evidence handoffs between people - who had it, who it went to, why, and how. Case Notes is your own running, timestamped investigative journal (\"what did I do/observe just now\"). Audit Trail is the software's own activity log - actions taken in this app - filtered to the active case. Only Case Notes and Custody Log are things you write yourself; Audit Trail is fully automatic."
+            },
+            {
+                q: "Can I verify that an already-acquired image hasn't been tampered with, without re-checking each one by hand?",
+                a: "Yes - Reporting's Overview tab (the default view once a case is active) has a \"Verify All Evidence\" button that re-hashes every completed acquisition's own output file for the case and compares it against the hash recorded at acquisition time, all in one background job - the case-wide equivalent of right-clicking one file and choosing \"Verify Image Hash\"."
+            },
+            {
+                q: "Can I export or back up an entire case, not just the report?",
+                a: "Yes - Reporting's Overview tab has an \"Export Case Bundle\" button that zips the whole case folder (everything it actually contains - notes, attachments, generated reports, recovered files, and optionally the raw acquisition images) for archival or handing off to another examiner. This is different from exporting a PDF/HTML report, which is just the written-up deliverable."
+            },
+            {
+                q: "Has this exact file/hash shown up in a different case on this station?",
+                a: "Settings > Case & Reporting > Cross-Case Search checks a specific hash against every other case on the station - useful for spotting the same file reappearing across unrelated cases. It's scoped to exact hash matches, not free-text search across cases."
+            },
+            {
+                q: "What's the Evidence Timeline tab?",
+                a: "Reporting's \"Evidence Timeline\" merges every acquired image's own filesystem (MACB - Modified/Accessed/Changed/Born) timeline with the timestamps from any parsed artifacts (Registry, Event Logs, browser history, and more), shown as a stacked chart by source (click a bar to filter the table below it) plus a filterable, exportable table. Anti-forensic indicators (like a cleared audit log) and deleted-file entries are flagged directly in it."
             },
         ]
     },
@@ -628,7 +661,7 @@ const TOOL_REFERENCE_GROUPS = [
             ["ddrescue", "Recovery-focused imaging for damaged/failing drives - select it as a Format on the Forensic Acquisition tab. Works around bad sectors instead of stopping."],
             ["smartctl", "Reads a drive's built-in health/diagnostic data (SMART) before committing to a long acquisition."],
             ["dislocker", "Unlocks a BitLocker-encrypted drive or image so it can be imaged or browsed as a normal decrypted volume."],
-            ["cryptsetup", "Unlocks a LUKS-encrypted drive or image (the standard Linux disk-encryption format) the same way dislocker handles BitLocker."],
+            ["cryptsetup", "Unlocks a LUKS-encrypted drive or image (the standard Linux disk-encryption format), and a VeraCrypt-encrypted one, the same way dislocker handles BitLocker."],
         ]
     },
     {
@@ -651,7 +684,12 @@ const TOOL_REFERENCE_GROUPS = [
             ["hashdeep", "Generates a fingerprint (hash) for every file in a folder at once, as a single manifest."],
             ["MVT (Mobile Verification Toolkit)", "Checks an already-acquired iOS or Android backup for spyware/compromise indicators. Right-click the backup folder and choose the scan for its platform."],
             ["Volatility3", "Analyzes an already-captured Windows memory (RAM) image - process lists, network connections, loaded modules, and more. Right-click a memory-image file and choose \"Memory Forensics...\"."],
+            ["mquire", "Analyzes an already-captured x86_64 Linux memory (RAM) image, reading symbol info the kernel embeds in the image itself - no separate download needed. Same \"Memory Forensics...\" action, pick the mquire engine."],
             ["Browser Artifact Parser", "Extracts history, bookmarks, downloads, and cookies from a Chrome/Chromium- or Firefox-family browser profile, on disk or inside an acquired image. Built in, no external tool needed."],
+            ["Registry / Event Log / Prefetch / Recycle Bin / LNK Parsers", "Built-in parsers for Windows Registry hives (incl. Amcache), .evtx Event Logs, Prefetch execution history, Recycle Bin metadata, and .lnk shortcuts - no external tool needed, work on a real folder or directly inside an acquired image."],
+            ["Linux Artifact Parser", "Built-in parser for shell history, /etc/passwd, cron jobs, and auth.log/secure authentication events on a Linux filesystem - no external tool needed."],
+            ["YARA", "Scans a file against your own saved YARA rulesets (Settings > Case & Reporting > Analysis & IOC Lists). Right-click a file and choose \"Scan with YARA Rules\"."],
+            ["Auto Analyze", "Not a single external tool - detects what kind of evidence you've selected (Windows/Linux disk image, memory image, mobile backup) and runs a curated set of the tools above automatically, as one background job. Top of the right-click menu."],
         ]
     },
     {
@@ -693,7 +731,7 @@ function populateToolReference() {
     });
 }
 
-// Mirrors routes/reporting.py's REPORT_SECTION_BLOCKS one-for-one (same 15
+// Mirrors routes/reporting.py's REPORT_SECTION_BLOCKS one-for-one (same 16
 // keys, same order) - kept as a second, hand-written copy rather than
 // fetched from the backend, since this is static reference prose (what a
 // section IS), not live template data the way the Report Template Builder's
