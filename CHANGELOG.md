@@ -21,6 +21,24 @@ file after updating to see what changed.
 
 ---
 
+## [1.1.2] - 2026-08-29
+
+A documentation release. No functional changes.
+
+### Documentation
+
+- Refreshed the screenshots in [README.md](../README.md) and the
+  [project website](https://n0sfs.github.io/pi-forensics/) against the current UI - the last set
+  predated the horizontal Settings navigation (2026-08-21) and several 1.1.0 features, so a few no
+  longer matched what a fresh install actually looks like.
+- Corrected captions/alt text to match: Home's workspace-tile picker, the compact Acquisition card
+  with the consolidated Encrypted Volume panel, File Explorer's grouped folder tree, Reporting's new
+  case-wide Overview dashboard, and Settings' current Service Controls/Security panes.
+- The project website's screenshot grid grew from 8 to 10 shots, adding a dedicated Acquisition card
+  and grouping all three File Explorer detail shots (Hex, Metadata, Geolocation) together.
+
+---
+
 ## [1.1.1] - 2026-08-29
 
 A documentation release. No functional changes - upgrading isn't necessary for the running
