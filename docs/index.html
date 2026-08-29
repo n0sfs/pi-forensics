@@ -320,7 +320,7 @@
 <div class="spec-strip">
   <div class="wrap spec-grid">
     <div class="spec-item"><b>10</b><span>Acquisition formats &mdash; dc3dd, dcfldd, dd, E01, AFF, ddrescue, plus iOS backup and Android pull/backup/bugreport</span></div>
-    <div class="spec-item"><b>21</b><span>Forensic tools integrated &mdash; from dc3dd to The Sleuth Kit to Volatility3, version-checked from Settings</span></div>
+    <div class="spec-item"><b>29</b><span>Forensic tools integrated &mdash; from dc3dd to The Sleuth Kit to Volatility3 and mquire, version-checked from Settings</span></div>
     <div class="spec-item"><b>3</b><span>Hash algorithms verified on every acquisition &mdash; MD5 / SHA-1 / SHA-256</span></div>
   </div>
 </div>
@@ -368,7 +368,7 @@
       <div class="feat-card">
         <span class="tag">01 &mdash; ACQUISITION</span>
         <h3>Bit-for-bit imaging</h3>
-        <p>dc3dd, dcfldd, plain dd, E01, and AFF, plus ddrescue for failing drives with a Mapfile Inspector. BitLocker/LUKS-encrypted sources unlock directly, a read-only Live Preview lets you look before you image, and raw&harr;E01 conversion runs after the fact. MD5/SHA-1/SHA-256 verification on every job, every USB device write-blocked by default.</p>
+        <p>dc3dd, dcfldd, plain dd, E01, and AFF, plus ddrescue for failing drives with a Mapfile Inspector. BitLocker-, LUKS-, and VeraCrypt-encrypted sources unlock directly through one consolidated panel, a read-only Live Preview lets you look before you image, and raw&harr;E01 conversion runs after the fact. MD5/SHA-1/SHA-256 verification on every job, every USB device write-blocked by default.</p>
       </div>
       <div class="feat-card">
         <span class="tag">02 &mdash; RECOVERY</span>
@@ -378,20 +378,25 @@
       <div class="feat-card">
         <span class="tag">03 &mdash; MOBILE</span>
         <h3>iOS &amp; Android acquisition</h3>
-        <p>Full iOS backup via idevicebackup2 (with optional encrypted Keychain capture) and Android via adb pull/backup/bugreport. Reads real device detail &mdash; model, OS version, IMEI, MACs &mdash; before you start.</p>
+        <p>Full iOS backup via idevicebackup2 (with optional encrypted Keychain capture) and Android via adb pull/backup/bugreport. Reads real device detail &mdash; model, OS version, IMEI, MACs &mdash; before you start, and can trigger the iOS pairing handshake itself for a device that hasn't shown its trust prompt yet.</p>
       </div>
       <div class="feat-card">
         <span class="tag">04 &mdash; FILE EXPLORER</span>
         <h3>Browse inside an image</h3>
-        <p>An in-process Sleuth Kit engine (pytsk3) walks a real folder tree down to individual files &mdash; recursive search, a MACB timeline, hex dumps, EXIF/GPS metadata, and an inline KML map, all with no mount step. Also runs Volatility3 against a captured memory image, and browses a BitLocker/LUKS-decrypted volume the same way.</p>
+        <p>An in-process Sleuth Kit engine (pytsk3) walks a real folder tree down to individual files &mdash; recursive search, a MACB timeline, hex dumps, EXIF/GPS metadata, an inline KML map, and a read-only SQLite table browser, all with no mount step. Runs Volatility3 or mquire against a captured memory image, and browses a BitLocker/LUKS/VeraCrypt-decrypted volume the same way.</p>
       </div>
       <div class="feat-card">
-        <span class="tag">05 &mdash; REPORTING</span>
+        <span class="tag">05 &mdash; ANALYSIS</span>
+        <h3>Artifact parsing, one click</h3>
+        <p><b>Auto Analyze</b> detects what you've selected and runs a curated tool set automatically. Dedicated parsers recover Windows Registry hives, Event Logs, Prefetch, Recycle Bin, and LNK data; Linux shell history, cron, and auth logs; cryptocurrency wallet files; and mobile chat/app data &mdash; plus your own saved YARA rules and known-good/known-bad hash and URL lists, with one-click MalwareBazaar/URLhaus imports.</p>
+      </div>
+      <div class="feat-card">
+        <span class="tag">06 &mdash; REPORTING</span>
         <h3>DFIR-structured case files</h3>
-        <p>A timestamped Case Notes journal, a separate Report Narrative, per-job records, and a station-wide audit trail &mdash; exported to PDF or HTML as a Standard, DFIR, or law-enforcement report, or a template you build yourself.</p>
+        <p>A case Overview dashboard, a timestamped Case Notes journal, a physical-evidence Custody Log, a Report Narrative, an Evidence Timeline merging filesystem and artifact data, per-job records, a station-wide audit trail, case-wide integrity re-verification, and a full-case export bundle &mdash; exported to PDF, HTML, JSON, or CSV as a Standard, DFIR, law-enforcement, or CASE/UCO report, or a template you build yourself.</p>
       </div>
       <div class="feat-card">
-        <span class="tag">06 &mdash; STATION</span>
+        <span class="tag">07 &mdash; STATION</span>
         <h3>Runs itself</h3>
         <p>TLS certificate generation with correct SANs, one-click tool installs, SMB/NFS/SFTP mounting with encrypted auto-reconnect on reboot, and network IP configuration with an automatic revert if you lock yourself out.</p>
       </div>

@@ -90,29 +90,32 @@ Fill in Case Number, Evidence ID, and Examiner (auto-filled if a case is active)
 folder for the output. Choose which hash algorithm(s) to compute — MD5, SHA-1, SHA-256, or more than
 one.
 
-### Encrypted source drives (BitLocker and LUKS)
+### Encrypted source drives (BitLocker, LUKS, and VeraCrypt)
 
-If the drive you're about to image is BitLocker-encrypted (Windows) or LUKS-encrypted (Linux), you
-can unlock it first so the acquisition captures the **decrypted** contents rather than an
-unreadable, encrypted blob:
+If the drive you're about to image is BitLocker-encrypted (Windows), LUKS-encrypted (Linux), or a
+VeraCrypt volume, you can unlock it first so the acquisition captures the **decrypted** contents
+rather than an unreadable, encrypted blob. All three types share one **Encrypted Volume** panel:
 
-1. Expand the **BitLocker-Encrypted Source** or **LUKS-Encrypted Source** section (whichever
-   matches the drive).
-2. Optionally click **Detect** for a best-effort check of whether the selected device/partition
-   actually looks encrypted with that scheme.
-3. Enter the recovery key (BitLocker) or passphrase (LUKS) and click **Unlock**.
+1. Expand **Encrypted Volume** and pick the type (BitLocker / LUKS / VeraCrypt) from the dropdown —
+   the credential field's label changes to match (Recovery Key, Passphrase, or Password).
+2. For BitLocker or LUKS, optionally click **Detect** for a best-effort check of whether the
+   selected device/partition actually looks encrypted with that scheme. VeraCrypt volumes have no
+   fixed signature by design (that's the point — a real container is meant to look like random
+   noise), so Detect always reports that it can't tell either way for VeraCrypt; a failed **Unlock**
+   attempt tells you the real answer instead.
+3. Enter the recovery key/passphrase/password and click **Unlock**.
 4. Once unlocked, start the acquisition normally — the decrypted volume is now available as the
-   source. There's also an optional field to record the recovery key/passphrase directly in the
-   case report, as documentation for whoever needs to decrypt the image again later (this is stored
-   as plain text in the report by design — encrypting it with a station-local key would make it
-   useless the moment the report leaves the station).
+   source. The same field also records the value directly in the case report as documentation for
+   whoever needs to decrypt the image again later (this is stored as plain text in the report by
+   design — encrypting it with a station-local key would make it useless the moment the report
+   leaves the station), independent of whether you actually check "Also unlock this volume now."
 5. Click **Lock** when you're done, or it locks automatically once the acquisition finishes.
 
 Two things worth knowing: `ddrescue` doesn't support an unlocked/decrypted source (it needs direct,
 low-level access to a real block device for its bad-sector recovery strategy — decrypt the raw
 partition first with a different tool if you need `ddrescue`-level recovery on an encrypted drive).
-And you'll need the actual recovery key or passphrase already — this doesn't attempt to bypass or
-crack encryption in any way.
+And you'll need the actual recovery key, passphrase, or password already — this doesn't attempt to
+bypass or crack encryption in any way.
 
 ### Previewing a drive before acquiring it
 
@@ -144,6 +147,11 @@ shown once a job starts. When it finishes, the status reads **Completed Successf
 computed hash(es) shown. If a case is active, this job's full telemetry and hashes are already
 recorded there — check the **Jobs** tab in Reporting.
 
+Check **Automatically run Auto Analyze when this finishes** before starting to chain a successful
+acquisition straight into [Auto Analyze](#running-a-curated-tool-set-automatically-auto-analyze)
+against the image it just produced — one confirmed choice up front instead of a second manual step
+once the job completes. Not available for `ddrescue` or AFF, which run their own separate workflows.
+
 ---
 
 ## 4. Mobile Forensics
@@ -154,7 +162,11 @@ unlocked and (for Android) have USB debugging approved by whoever's holding it.
 
 1. Choose **iOS** or **Android** from the mode selector.
 2. Connect the device via USB.
-   - **iPhone/iPad:** tap "Trust This Computer?" on the device's own screen when it appears.
+   - **iPhone/iPad:** tap "Trust This Computer?" on the device's own screen when it appears. If the
+     device doesn't show that prompt at all, select it in the dropdown (it still shows up, just
+     marked **NOT TRUSTED**) and click the **Pair Device** button that appears next to the warning —
+     this sends the pairing request that makes the prompt actually appear on the device, then tap
+     Trust and click Refresh.
    - **Android:** approve the USB-debugging authorization prompt on the device's own screen.
 3. Select the device from the dropdown. Real device detail appears automatically — for iOS: model,
    OS/build version, storage capacity, activation state, serial number, IMEI, WiFi/Bluetooth MAC
@@ -228,7 +240,7 @@ directly, no separate mount step, right there in the same tree. This works becau
 the filesystem structure in-process (via an embedded Sleuth Kit engine), including directory
 listings with real timestamps, recursive search, and deleted-but-still-listed entries.
 
-Selecting any file shows it in the **Details** pane on the right, with three views to switch
+Selecting any file shows it in the **Details** pane on the right, with up to four views to switch
 between:
 
 - **Preview** — renders the file directly when possible (images, PDFs, HTML rendered safely in a
@@ -237,22 +249,27 @@ between:
 - **Hex** — a raw byte-level view.
 - **Metadata** — filesystem details (size, timestamps, permissions) plus, for files ExifTool
   understands, embedded metadata like camera info or GPS coordinates.
+- **Database** — appears only for `.db`/`.sqlite`/`.sqlite3` files: browse the file's own tables and
+  rows directly, read-only, no separate SQLite tool needed. Works on this station's own per-case
+  index, a parsed browser-history database, or any other SQLite file you come across in evidence.
 
 ### Right-click actions
 
-Right-click (or press-and-hold on a touchscreen) any file or folder for a context menu, grouped into
-collapsible sections:
+Right-click (or press-and-hold on a touchscreen) any file or folder for a context menu. The very
+first item, **Auto Analyze...**, is described in its own section below — everything under it is
+grouped into collapsible sections so the menu stays manageable:
 
 **Image & Case**
 - **Browse as Image (Sleuth Kit)** — same as clicking the tree's expand arrow.
-- **Unlock BitLocker & Browse...** / **Unlock LUKS & Browse...** — for an already-acquired image of
-  an encrypted drive: enter the recovery key/passphrase (and, for a multi-partition image, the byte
-  offset of the encrypted partition), and browse the decrypted contents directly.
+- **Unlock Encrypted Volume & Browse...** — for an already-acquired image of a BitLocker-, LUKS-, or
+  VeraCrypt-encrypted drive: pick the type, enter the recovery key/passphrase/password (and, for a
+  multi-partition image, the byte offset of the encrypted partition), and browse the decrypted
+  contents directly.
 - **Verify Image Hash** — recompute a file's hash and compare it against an expected value.
 - **Convert Image Format...** — convert an acquired image between raw (`.dd`) and E01, with the
   result's hash independently verified against the source (not just trusted from the tool's own
   self-report).
-- **Attach to Case** — adds the file as a case exhibit, shown in Reporting's Files tab.
+- **Attach to Case** — adds the file as a case exhibit, shown in Reporting's Files & Artifacts tab.
 - **Tag...** — apply Bookmark, Follow Up, Notable Item, or a custom tag (with an optional comment) to
   a file — see [Tagging and File Views](#tagging-and-file-views) below.
 - **Recover Deleted Files...** — jumps to File Recovery with this image pre-filled as the source.
@@ -267,8 +284,10 @@ collapsible sections:
 - **Triage Scan (Whole Image)** — the same pattern matching as Quick Triage Scan, but filesystem-aware
   (results are tied to real file paths, not raw byte offsets) and run as a background job so it can
   handle a much larger scan.
-- **Parse Browser Artifacts (Whole Image)** — see [Browser artifact
-  parsing](#browser-artifact-parsing) below.
+- **Parse Browser Artifacts / Registry Hives / Event Logs / Prefetch Files / Recycle Bin / Linux
+  Artifacts / Mobile Chat-App Artifacts (Whole Image)**, and **Find Crypto Wallet Files (Whole
+  Image)** — the whole-image versions of the artifact parsers described in [Artifact
+  parsing](#artifact-parsing) below, so you don't need to extract anything first.
 - **Recover Deleted (Filesystem-Aware)** — recovers every deleted file the filesystem still has a
   record of, under its real original name and folder path.
 
@@ -279,18 +298,122 @@ collapsible sections:
 - **Extract Strings** — pulls readable text out of a binary file.
 - **Quick Triage Scan** — the fast, single-file version of the pattern scanner above.
 - **hashdeep** — generates a hash for every file in a folder at once.
+- **Check Against Hash Sets** — hashes the file and checks it against your saved known-good/
+  known-bad hash sets — see [Hash Sets, URL Lists, and YARA
+  rules](#hash-sets-url-lists-and-yara-rules) below.
+- **Scan with YARA Rules** — same section.
 - **Extract Geolocation (KML)** — same as the whole-image version, scoped to one real folder.
-- **Parse Browser Artifacts (Chrome/Firefox)** — scoped to one real folder.
-- **MVT iOS / MVT Android** — checks an already-acquired mobile backup for spyware/compromise
-  indicators (see below).
-- **Memory Forensics... (Volatility3)** — see [Memory forensics](#memory-forensics) below.
+
+**Artifact Parsers** (each one recursively finds and parses its artifact type anywhere under the
+selected folder — see [Artifact parsing](#artifact-parsing) below for what each recovers)
+- **Parse Browser Artifacts (Chrome/Firefox)**, **Parse Registry Hives**, **Parse Event Logs**,
+  **Parse Prefetch Files**, **Parse Recycle Bin**, **Parse Linux Artifacts**, **Find Crypto Wallet
+  Files**, **Parse Mobile Chat/App Artifacts**, **Parse LNK Shortcut** (this last one parses a
+  single selected `.lnk` file directly, rather than scanning a folder).
+
+**Mobile & Memory**
+- **MVT Scan (iOS Backup)** / **MVT Scan (Android Backup)** — checks an already-acquired mobile
+  backup for spyware/compromise indicators (see [MVT](#mvt-spywarecompromise-scanning) below).
+- **Memory Forensics...** — see [Memory forensics](#memory-forensics) below.
 
 **File Operations**
 - **Copy to...** / **Delete**
 
 A virtual entry inside an image you're currently browsing gets a shorter menu (Extract, Extract &
-Attach to Case, Tag, Binwalk, Extract Strings) — most other actions need a real path on disk, which
-a still-in-image entry doesn't have until it's extracted.
+Attach to Case, Tag, Binwalk, Extract Strings, Check Against Hash Sets, Scan with YARA Rules, and
+Parse LNK Shortcut when the entry is a `.lnk` file) — most other actions need a real path on disk,
+which a still-in-image entry doesn't have until it's extracted.
+
+### Running a curated tool set automatically (Auto Analyze)
+
+**Auto Analyze...**, at the very top of the right-click menu, detects what kind of evidence you've
+selected — a Windows disk image, a Linux disk image, a memory image, or a mobile backup — and runs a
+sensible, curated default set of the tools above against it in one background job, instead of
+running each one by hand:
+
+| Detected profile | Runs by default | Available as an extra |
+|---|---|---|
+| Windows disk image | Hash Manifest, Registry (incl. Amcache), Event Logs, Prefetch, Recycle Bin, Browser Artifacts | Recover Deleted (Filesystem-Aware) |
+| Linux disk image | Hash Manifest, Linux Artifacts | Recover Deleted (Filesystem-Aware) |
+| Memory image | A curated subset of Volatility 3/`mquire` plugins (info, process list, network connections, and more) | The remaining plugins |
+| Mobile backup (iOS/Android) | Hands off to the matching MVT scan, pre-selected | — |
+
+The detected profile is always shown for confirmation (or correction) before anything runs — nothing
+starts on a guess. Triage Scan and geolocation extraction are deliberately **not** part of the
+default set (they're slower and not always relevant); reach them individually from Whole-Image
+Analysis if you want them. A memory or mobile profile can't be interrupted mid-scan the same way a
+disk-image scan can — Stop takes effect at the next natural break, not instantly, since the
+underlying tool doesn't support cancelling a single already-running scan/plugin.
+
+The Guided Workflow checklist (Help & Reference) links straight into Auto Analyze for the case's own
+evidence once step 3 is reached, and Acquisition's own "Automatically run Auto Analyze when this
+finishes" checkbox can chain a successful acquisition directly into it.
+
+### Artifact parsing
+
+Beyond browser history, this station recovers several other well-known artifact types directly from
+a real folder or from inside an unmounted image — no extraction step required either way:
+
+- **Windows Registry hives** (`NTUSER.DAT`/`SYSTEM`/`SOFTWARE`/`AMCACHE.HVE`) — recently opened
+  documents, typed Explorer/Internet Explorer paths, Run-dialog history, USB device connection
+  history, the installed-programs list, and Amcache's own per-executable application inventory.
+- **Windows Event Logs** (`.evtx`) — a curated set of security-relevant event types: successful and
+  failed logons, process creation, account creation, service installation, and audit-log-cleared (a
+  classic anti-forensic indicator).
+- **Windows Prefetch** (`.pf`) — which executables ran, how many times, and when.
+- **Windows Recycle Bin** (`$I*` metadata files) — a deleted file's original name, path, size, and
+  deletion time.
+- **LNK shortcuts** (`.lnk`) — target path, arguments, working directory, icon location, and the
+  shortcut's own embedded timestamps. Parsed one file at a time, not scanned across a folder.
+- **Linux artifacts** — shell history (`.bash_history`/`.zsh_history`/`.python_history`),
+  `/etc/passwd` account listings, cron jobs, and `auth.log`/`secure` authentication events (SSH
+  login/logout, `sudo` usage). An experimental, opt-in-only `wtmp`/`utmp` login-history parser is
+  also available (offered specifically through the Auto Analyze picker for a Linux image, not the
+  default set) — login-record binary layout genuinely varies by system, so it includes a built-in
+  sanity check that refuses to produce results rather than guess wrong against an unfamiliar layout.
+- **Cryptocurrency wallet files** — detects common wallet filenames (Bitcoin Core's `wallet.dat`,
+  geth/Ethereum keystore files, Electrum wallets, and others). Detection only — wallet file formats
+  are typically encrypted or binary, so this doesn't attempt to open or decrypt them.
+- **Mobile chat/app data** — SMS/iMessage, Contacts, and Call History parsed directly out of an
+  already-captured, unencrypted iOS backup (an encrypted backup is detected and reported as such,
+  never silently skipped).
+- **Browser artifacts** (Chrome/Chromium and Firefox) — see the paragraph below.
+
+Right-click a folder (or a whole acquired image) and choose the matching **Parse...** action, or use
+**Auto Analyze** to run the Windows- or Linux-relevant ones automatically. Results show up in File
+Views' analysis-index categories and in Reporting's Files & Artifacts tab, all with readable labels
+— not raw internal keys.
+
+Browser artifact parsing specifically extracts real history, bookmarks, downloads, and cookie
+metadata from any Chrome/Chromium or Firefox browser profile found within a folder or image. Cookie
+*values* from Chrome specifically can't be recovered — modern Chrome encrypts them with an OS-level
+key not present in the evidence file alone; this is disclosed honestly rather than fabricated.
+Firefox's cookie values, by contrast, are stored as plain text and *are* recoverable. Safari uses a
+different format and isn't covered.
+
+### Hash Sets, URL Lists, and YARA rules
+
+Three station-wide reference lists, managed from Settings > Case & Reporting > Analysis & IOC Lists,
+and checked on demand from File Explorer:
+
+- **Hash Sets** — your own known-good/known-bad hash lists (one hash per line, all in the same
+  algorithm), checked automatically during a Hash Manifest run or on demand via **Check Against Hash
+  Sets** on a single file. An optional one-click **Import/Refresh MalwareBazaar Recent** pulls a
+  current recent-malware hash feed from [abuse.ch](https://abuse.ch)'s MalwareBazaar (needs a free
+  personal Auth-Key, entered once).
+- **URL Lists** — known-bad URL lists, checked automatically against every URL a browser-artifact
+  scan extracts (a match shows up as its own "Known-Bad URL Match" result). An optional one-click
+  **Import/Refresh URLhaus Recent** pulls the current URLhaus recent-malicious-URLs feed — no
+  account needed.
+- **YARA Rulesets** — save your own YARA rules (validated at save time, so a syntax error is caught
+  immediately rather than mid-scan) and run them against a single file via **Scan with YARA Rules**,
+  on a real file or inside an acquired image.
+
+### Generic SQLite viewer
+
+Selecting any `.db`/`.sqlite`/`.sqlite3` file shows a **Database** tab in the Details pane — browse
+its tables and rows directly, read-only, without needing a separate SQLite tool. Works the same way
+whether the file is a real one on disk or sitting inside an unmounted acquired image.
 
 ### Tagging and File Views
 
@@ -302,32 +425,31 @@ without leaving what you're doing.
 The folder tree's **File Views** section (a separate branch alongside your real folders) gives you a
 whole-case view built automatically from what's been tagged and scanned: files grouped by type
 (Images, Documents, Videos, etc.), everything tagged so far, every keyword/pattern hit recorded
-across any Triage Scan you've run, and every parsed browser artifact — all with live counts, and all
-without re-scanning anything each time you look. Manage your station's own custom tags from Settings
-> Case & Reporting > Manage Tags.
-
-### Browser artifact parsing
-
-Right-click a folder (or a whole acquired image) and choose **Parse Browser Artifacts** to extract
-real history, bookmarks, downloads, and cookie metadata from any Chrome/Chromium or Firefox browser
-profile found within — including from inside an unmounted image, no extraction step needed first.
-Results show up in File Views' "Web Artifacts" category and in Reporting's Files tab. (Cookie
-*values* from Chrome specifically can't be recovered — modern Chrome encrypts them with an
-OS-level key not present in the evidence file alone; this is disclosed honestly rather than
-fabricated. Firefox's cookie values, by contrast, are stored as plain text and *are* recoverable.)
+across any Triage Scan you've run, and every parsed artifact (browser, Registry, Event Log,
+Prefetch, Recycle Bin, LNK, Linux, mobile chat/app, and crypto-wallet-file results all land here,
+each under its own readable category) — all with live counts, and all without re-scanning anything
+each time you look. Manage your station's own custom tags from Settings > Case & Reporting > Manage
+Tags.
 
 ### Memory forensics
 
-If you have an already-captured Windows memory image (a `.raw`/`.mem`/`.vmem`/`.dmp`/`.lime` file —
-captured with a separate tool like WinPmem, since this station only ever analyzes an already-captured
-image, it never captures memory itself), right-click it and choose **Memory Forensics...
-(Volatility3)**. Pick from a curated set of analysis plugins — process list, process tree, command
-lines, network connections, loaded DLLs, file scan, malware-indicator scanning, services, open
-handles — and it runs as a background job. Results are saved as real files you can browse and
-preview like any other evidence, and this station's own tagging/File Views pick them up
-automatically. Windows memory images only, for now — Linux and macOS memory analysis need a symbol
-table built from the exact source kernel, which isn't something a station receiving just a raw
-memory dump typically has.
+If you have an already-captured memory image (a `.raw`/`.mem`/`.vmem`/`.dmp`/`.lime` file — captured
+with a separate tool like WinPmem, LiME, or AVML, since this station only ever *analyzes* an
+already-captured image, it never captures memory itself), right-click it and choose **Memory
+Forensics...**. An engine selector picks which analysis backend runs:
+
+- **Volatility 3**, for Windows memory images — process list, process tree, command lines, network
+  connections, loaded DLLs, file scan, malware-indicator scanning, services, open handles, and more,
+  from a curated set of plugins.
+- **`mquire`**, for x86_64 Linux memory images — kernel/OS version, process list, network
+  connections, loaded kernel modules, process memory mappings, kernel log (`dmesg`), and several
+  opt-in extras (open file handles, process capabilities, `ftrace` hooks, and more), reading BTF and
+  `kallsyms` symbol information the kernel itself embeds in the image — no separate symbol download
+  needed. ARM Linux targets aren't supported yet (only x86_64).
+
+Either way it runs as a background job, and results are saved as real files you can browse and
+preview like any other evidence — this station's own tagging/File Views pick them up automatically.
+macOS memory analysis isn't supported by either engine.
 
 ### MVT (spyware/compromise scanning)
 
@@ -346,26 +468,46 @@ The **Reporting** tab is where a case's data lives once collected — and where 
 only shows content once a case is active (create or select one via the Case button, same as
 everywhere else).
 
-- **Report Narrative** (the default view) — Case Status, any custom fields your station defines, and
-  the polished write-up sections: Executive Summary, Objectives, Relevant Findings, Limitations &
-  Statement of Uncertainty, Conclusion, Indicators of Compromise, Recommendations/Next Steps. This is
-  the closing narrative you write once, generally near the end.
+- **Overview** (the default view) — a dashboard for the case: evidence item count, tag counts
+  (Notable items called out), analysis activity, case notes, case age, plus two case-wide actions:
+  **Verify All Evidence** (re-hashes every completed acquisition's own output file and compares it
+  against the hash recorded at acquisition time — the case-wide equivalent of File Explorer's
+  single-file "Verify Image Hash," run as a background job) and **Export Case Bundle** (zips the
+  entire case folder — everything it actually contains, not just the exported report — for archival
+  or handoff to another examiner; optionally including the raw acquisition images, which can make it
+  very large).
+- **Report Narrative** — Case Status, any custom fields your station defines, and the polished
+  write-up sections: Executive Summary, Objectives, Relevant Findings, Limitations & Statement of
+  Uncertainty, Conclusion, Indicators of Compromise, Recommendations/Next Steps. This is the closing
+  narrative you write once, generally near the end.
 - **Case Notes** — a running, timestamped, **append-only** journal, genuinely distinct from Report
   Narrative above. Add a note as you work, not just at the end — each one gets an author and a local
   integrity hash automatically, and editing a note preserves the original text rather than
   overwriting it (an edit history, not a silent change). This becomes the report's "Forensic
   Analysis / Steps Taken" section.
-- **Files** — every exhibit attached to the case (with thumbnails, tags, and analysis-tool history
-  shown inline), plus other files discovered sitting in the case folder that haven't been explicitly
-  attached yet, files this app generated itself (reports, hash manifests, KML exports — grouped
-  separately from real evidence), any parsed browser artifacts, and a list of reference URLs.
+- **Custody Log** — a dedicated, **append-only** record of *physical* evidence handoffs between
+  people (from/to custodian, reason, method, notes) — genuinely distinct from both Case Notes above
+  (your own investigative notes) and Audit Trail below (a log of actions taken in the software).
+  There's no edit option by design; a correction is logged as a new entry.
+- **Files & Artifacts** — every exhibit attached to the case (with thumbnails, tags, and
+  analysis-tool history shown inline), plus other files discovered sitting in the case folder that
+  haven't been explicitly attached yet, files this app generated itself (reports, hash manifests,
+  KML exports — grouped separately from real evidence), every parsed artifact record, and a list of
+  reference URLs.
 - **Geolocation** — an inline map built from any KML files attached to or found in the case.
 - **Jobs** — every acquisition, recovery, and mobile job run against this case, with full telemetry
   and hashes for each.
+- **Evidence Timeline** — every acquired image's filesystem (MACB) timeline merged with parsed
+  artifact timestamps, shown as a stacked density chart by source (click a bar to filter the table
+  below it) plus a filterable, exportable table. Anti-forensic indicators (like a cleared audit log)
+  and deleted-file entries are flagged directly in the table.
 - **Audit Trail** — the station-wide activity log, filtered to just this case number.
-- **Search** — a live keyword search across the Report Narrative, Jobs, Case Notes, and Audit Trail
-  all at once.
+- **Search** — a live keyword search across the Report Narrative (including Case Details), Jobs,
+  Case Notes, Files & Artifacts, and Audit Trail all at once.
 - **Export** — produce the actual deliverable.
+
+Checking a specific hash against **every other case** on the station, not just this one, is a
+separate, station-wide tool — see [Cross-Case Search](#case-reporting) under Settings below.
 
 ### Exporting a report
 
@@ -429,8 +571,15 @@ missing; run a fixed set of read-only diagnostic commands; reboot or power off t
 
 Set a station-wide default report template and export settings; build custom report templates;
 configure report branding (a header/logo shown on every export); define custom case fields your
-station wants to track; manage the tags available for tagging evidence; and define custom
-keyword/regex lists that Triage Scan can use in addition to its five built-in categories.
+station wants to track; manage the tags available for tagging evidence; and, under **Analysis &
+IOC Lists**, define custom keyword/regex lists that Triage Scan can use in addition to its five
+built-in categories, plus the **Hash Sets**, **URL Lists**, and **YARA Rulesets** described in
+[Hash Sets, URL Lists, and YARA rules](#hash-sets-url-lists-and-yara-rules) above.
+
+**Cross-Case Search**, its own section here rather than inside any one case's Reporting tab (since
+it deliberately isn't scoped to one), checks whether a specific hash has shown up in *any* case on
+this station — useful for spotting the same file reappearing across unrelated cases. Scoped to exact
+hash matches for now, not free-text/keyword search across cases.
 
 ### Network
 
