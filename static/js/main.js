@@ -12616,8 +12616,40 @@ function onMobileIosSelect() {
     if (statusEl) {
         statusEl.innerText = (dev && !dev.trusted) ? 'Device connected but not trusted yet - tap "Trust This Computer?" on the device, then Refresh.' : '';
     }
+    const pairBtn = document.getElementById("btnPairIosDevice");
+    if (pairBtn) pairBtn.style.display = (dev && !dev.trusted) ? '' : 'none';
 
     refreshMobileStartButtonState();
+}
+
+// A device shows up in `idevice_id -l` (and so in the select above) the moment it's
+// plugged in over USB, before the examiner has tapped "Trust This Computer?" on it -
+// idevicepair's own pairing request is what actually makes that prompt appear on the
+// device in the first place. Without this, an untrusted device has no way to reach that
+// prompt at all short of unplugging/replugging and hoping the OS surfaces it on its own.
+async function pairIosDevice() {
+    const udid = document.getElementById("mobileIosSelect")?.value;
+    if (!udid) return;
+    const btn = document.getElementById("btnPairIosDevice");
+    if (btn) btn.disabled = true;
+    try {
+        const res = await fetch('/api/mobile/ios/pair', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ udid })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast(data.message || 'Pairing request sent - accept "Trust This Computer?" on the device.', 'success');
+        } else {
+            showToast(data.error || 'Pairing failed.', 'danger');
+        }
+    } catch (err) {
+        showToast('Pairing request failed: ' + err.message, 'danger');
+    } finally {
+        if (btn) btn.disabled = false;
+        refreshMobileDevices();
+    }
 }
 
 function onMobileAndroidSelect() {
