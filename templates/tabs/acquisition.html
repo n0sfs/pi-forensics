@@ -52,28 +52,34 @@
                                             <button type="button" class="btn btn-sm btn-outline-info w-100 fw-bold mb-3" onclick="startDevicePreview()"><i class="bi bi-eye me-1"></i>Preview This Drive (Read-Only)...</button>
 
                                             <!-- Consolidated "Encrypted Volume" block (2026-08-26,
-                                                 gap-closing round) - replaces what used to be 2
-                                                 separate near-identical blocks (BitLocker/LUKS) with
-                                                 one type-selector-driven block, VeraCrypt added as a
-                                                 3rd type - matches this project's own established
-                                                 precedent for not letting a 3rd near-duplicate block
-                                                 appear (see the dated "Recovery tools: one unified
-                                                 block, not one card per tool" entry in CLAUDE.md).
-                                                 encVolTypeSelect drives: the credential field's label/
-                                                 placeholder, the API route prefix (/api/${type}/...)
-                                                 every JS function below dispatches to, and the block's
-                                                 accent color. -->
+                                                 gap-closing round; further condensed 2026-08-27 into
+                                                 a single always-visible type+credential field, since
+                                                 that one field now serves BOTH purposes at once -
+                                                 optional case-report documentation AND, if "Also
+                                                 unlock..." is checked, the actual unlock credential -
+                                                 replacing what used to be this field here PLUS 3
+                                                 separate doc-only fields with their own paragraph help
+                                                 text further down the page. encVolTypeSelect drives:
+                                                 the credential field's placeholder, the API route
+                                                 prefix (/api/${type}/...) every JS function below
+                                                 dispatches to, and which of bitlocker_key/
+                                                 luks_passphrase/veracrypt_password gets sent on Start. -->
                                             <div class="p-2 bg-dark border border-info rounded-2 mb-3" id="encryptedVolumeBlock">
+                                                <div class="d-flex align-items-center justify-content-between gap-2 mb-1">
+                                                    <span class="small fw-bold text-info"><i class="bi bi-shield-lock-fill me-1"></i>Encryption</span>
+                                                    <select id="encVolTypeSelect" class="form-select form-select-sm" style="width:auto;" onchange="onEncVolTypeChange()">
+                                                        <option value="bitlocker">BitLocker</option>
+                                                        <option value="luks">LUKS</option>
+                                                        <option value="veracrypt">VeraCrypt</option>
+                                                    </select>
+                                                </div>
+                                                <input type="password" id="encVolCredential" class="form-control form-control-sm mb-1" placeholder="Recovery Key / Password (optional)">
+                                                <div id="encVolCredentialHelp" class="small text-subtle mb-2">Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); not used to decrypt anything unless "Also unlock this volume now" below is checked.</div>
                                                 <div class="form-check form-switch mb-1">
                                                     <input class="form-check-input" type="checkbox" id="encVolSourceToggle" onchange="toggleEncVolSection()">
-                                                    <label class="form-check-label small fw-bold text-info" for="encVolSourceToggle"><i class="bi bi-shield-lock-fill me-1"></i>This source drive is encrypted</label>
+                                                    <label class="form-check-label small fw-bold text-info" for="encVolSourceToggle">Also unlock this volume now (image the decrypted data)</label>
                                                 </div>
                                                 <div id="encVolSourceControls" style="display:none;">
-                                                    <select id="encVolTypeSelect" class="form-select form-select-sm mb-2" onchange="onEncVolTypeChange()">
-                                                        <option value="bitlocker">BitLocker (Windows)</option>
-                                                        <option value="luks">LUKS (Linux)</option>
-                                                        <option value="veracrypt">VeraCrypt (cross-platform)</option>
-                                                    </select>
                                                     <div class="row g-2 align-items-center mb-2">
                                                         <div class="col-md-8">
                                                             <select id="encVolPartitionSelect" class="form-select form-select-sm">
@@ -84,13 +90,12 @@
                                                             <button type="button" class="btn btn-sm btn-outline-info w-100 fw-bold" onclick="loadEncVolPartitions()"><i class="bi bi-arrow-clockwise me-1"></i>Scan</button>
                                                         </div>
                                                     </div>
-                                                    <input type="password" id="encVolCredential" class="form-control form-control-sm mb-2" placeholder="Recovery Key / Password">
                                                     <div class="mb-2">
                                                         <button type="button" class="btn btn-sm btn-outline-info fw-bold me-1" onclick="detectEncVol()"><i class="bi bi-search me-1"></i>Detect</button>
                                                         <button type="button" class="btn btn-sm btn-info text-dark fw-bold me-1" onclick="unlockEncVol()"><i class="bi bi-unlock-fill me-1"></i>Unlock</button>
                                                         <button type="button" class="btn btn-sm btn-outline-danger fw-bold" id="btnLockEncVol" onclick="lockEncVol()" style="display:none;"><i class="bi bi-lock-fill me-1"></i>Lock / Cleanup</button>
                                                     </div>
-                                                    <div id="encVolStatus" class="small text-subtle">Select the type and encrypted partition, enter the recovery key/password above, then click Unlock. Once unlocked, acquisition images the decrypted volume instead of the raw encrypted device.</div>
+                                                    <div id="encVolStatus" class="small text-subtle">Select the encrypted partition above, then click Detect or Unlock. Once unlocked, acquisition images the decrypted volume instead of the raw encrypted device.</div>
                                                 </div>
                                             </div>
 
@@ -108,12 +113,6 @@
                                                 <div class="col-md-4"><input type="text" id="examiner" class="form-control form-control-sm" placeholder="Examiner Name"></div>
                                             </div>
                                             <input type="text" id="notes" class="form-control form-control-sm" placeholder="Notes / Chain of Custody Remarks">
-                                            <input type="password" id="bitlockerKey" class="form-control form-control-sm mt-2" placeholder="BitLocker Recovery Key / Password (optional, if source is encrypted)">
-                                            <div class="small text-subtle mt-1" id="bitlockerKeyHelp">Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the key is not used to decrypt anything during acquisition. Enable "This source drive is encrypted" above (type: BitLocker) to unlock and acquire the decrypted volume instead.</div>
-                                            <input type="password" id="luksPassphrase" class="form-control form-control-sm mt-2" placeholder="LUKS Passphrase (optional, if source is encrypted)">
-                                            <div class="small text-subtle mt-1" id="luksPassphraseHelp">Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the passphrase is not used to decrypt anything during acquisition. Enable "This source drive is encrypted" above (type: LUKS) to unlock and acquire the decrypted volume instead.</div>
-                                            <input type="password" id="veracryptPassword" class="form-control form-control-sm mt-2" placeholder="VeraCrypt Password (optional, if source is encrypted)">
-                                            <div class="small text-subtle mt-1" id="veracryptPasswordHelp">Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); the password is not used to decrypt anything during acquisition. Enable "This source drive is encrypted" above (type: VeraCrypt) to unlock and acquire the decrypted volume instead.</div>
                                         </div>
 
                                         <div class="col-md-6">
@@ -128,6 +127,7 @@
                                                         <option value="e01">EWF (.E01)</option>
                                                         <option value="aff">AFF (.aff)</option>
                                                         <option value="ddrescue">Recovery / ddrescue (.dd)</option>
+                                                        <option value="logical">Logical / Selected Folders</option>
                                                     </select>
                                                 </div>
                                                 <div class="col-md-4">
@@ -188,6 +188,27 @@
                                                 </div>
                                             </div>
 
+                                            <!-- Logical Acquisition, folded into the Format dropdown
+                                                 (2026-08-27, was a separate card, then briefly its own
+                                                 collapsed accordion section, both superseded by this -
+                                                 mirrors the exact existing "recovery tool lives in the
+                                                 Format dropdown" precedent already established for
+                                                 ddrescue). Reuses the shared #hashRow checkboxes below
+                                                 for its own verification hashes rather than a 2nd,
+                                                 duplicate set - startLogicalAcquisition() reads
+                                                 hashMd5/hashSha1/hashSha256 directly. -->
+                                            <div id="logicalAcqOptionRow" class="mb-2" style="display:none;">
+                                                <div class="small text-subtle mb-2">Package specific folders from an already-mounted evidence source (a write-blocked drive, or a network share under Settings &gt; Network) into one hash-verified evidence container with a manifest - without imaging the whole device. Destination/Case &amp; Evidence Metadata fields above still apply.</div>
+                                                <button type="button" class="btn btn-sm btn-outline-info fw-bold mb-2" onclick="openFolderModal('logicalAcqFolder')"><i class="bi bi-folder-plus me-1"></i>Add Folder...</button>
+                                                <div id="logicalAcqFoldersList" class="mb-2">
+                                                    <span class="text-subtle small">No folders added yet.</span>
+                                                </div>
+                                                <div class="form-check mb-1">
+                                                    <input class="form-check-input" type="checkbox" id="logicalAcqMakeZip">
+                                                    <label class="form-check-label small text-light" for="logicalAcqMakeZip">Also create a .zip archive alongside the folder</label>
+                                                </div>
+                                            </div>
+
                                             <div id="hashRow" class="mb-2">
                                                 <span class="telemetry-grid-label d-inline me-2">Verification Hashes:</span>
                                                 <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="hashMd5" value="md5"><label class="form-check-label small text-light" for="hashMd5">MD5</label></div>
@@ -234,40 +255,6 @@
                                             <pre id="logOutput" class="log-window" style="height: clamp(140px, 30vh, 260px);">[System initialized and idle. Ready for disk acquisition job.]</pre>
                                         </div>
                                     </div>
-                                </div>
-                            </div>
-
-                            <div class="card mt-3">
-                                <div class="card-header d-flex align-items-center gap-2 py-2">
-                                    <i class="bi bi-folder-plus me-1"></i>Logical Acquisition (Selected Folders)
-                                </div>
-                                <div class="card-body py-2">
-                                    <div class="small text-subtle mb-2">Package specific folders from an already-mounted evidence source (a write-blocked drive, or a network share under Settings &gt; Network) into one hash-verified evidence container with a manifest - without imaging the whole device. Uses the same Case &amp; Evidence Metadata fields above.</div>
-                                    <button type="button" class="btn btn-sm btn-outline-info fw-bold mb-2" onclick="openFolderModal('logicalAcqFolder')"><i class="bi bi-folder-plus me-1"></i>Add Folder...</button>
-                                    <div id="logicalAcqFoldersList" class="mb-3">
-                                        <span class="text-subtle small">No folders added yet.</span>
-                                    </div>
-                                    <div class="row g-2 mb-3">
-                                        <div class="col-md-6">
-                                            <label class="telemetry-grid-label d-block mb-1">Verification Hashes</label>
-                                            <div class="d-flex gap-2">
-                                                <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="logicalAcqHashMd5" value="md5"><label class="form-check-label small text-light" for="logicalAcqHashMd5">MD5</label></div>
-                                                <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="logicalAcqHashSha1" value="sha1"><label class="form-check-label small text-light" for="logicalAcqHashSha1">SHA1</label></div>
-                                                <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="logicalAcqHashSha256" value="sha256" checked><label class="form-check-label small text-light" for="logicalAcqHashSha256">SHA256</label></div>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-6 d-flex align-items-end">
-                                            <div class="form-check">
-                                                <input class="form-check-input" type="checkbox" id="logicalAcqMakeZip">
-                                                <label class="form-check-label small text-light" for="logicalAcqMakeZip">Also create a .zip archive alongside the folder</label>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="d-flex gap-2 mb-2">
-                                        <button id="logicalAcqStartBtn" class="btn btn-info text-dark flex-fill fw-bold" onclick="startLogicalAcquisition()"><i class="bi bi-play-circle me-1"></i>Start Logical Acquisition</button>
-                                        <button id="logicalAcqStopBtn" class="btn btn-danger flex-fill fw-bold" onclick="stopAcquisition()" disabled><i class="bi bi-stop-circle me-1"></i>Stop</button>
-                                    </div>
-                                    <div id="logicalAcqStatus" class="small text-subtle"></div>
                                 </div>
                             </div>
                     </div>
