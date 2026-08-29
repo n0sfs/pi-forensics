@@ -21,6 +21,22 @@ file after updating to see what changed.
 
 ---
 
+## [1.1.6] - 2026-08-29
+
+A documentation release. No functional changes.
+
+### Fixed
+
+- [README.md](../README.md)'s Security section had one table row ("Service privileges") whose cell
+  content contained a raw line break, which breaks GitHub-Flavored Markdown table syntax - the row
+  rendered as a broken table with an orphaned, blank-second-column row underneath it instead of one
+  clean cell. Pre-existing (introduced 2026-08-29, before this same day's other doc work), not
+  something this release's own changes caused. Verified via a full-file scan (no other table row in
+  the file has this problem) and by rendering the fixed file through Python's own Markdown table
+  parser: all 3 tables (30 rows total) now render with zero malformed rows, versus 1 before the fix.
+
+---
+
 ## [1.1.5] - 2026-08-29
 
 A documentation release. No functional changes.
