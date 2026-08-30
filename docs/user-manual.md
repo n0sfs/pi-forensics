@@ -183,6 +183,21 @@ Once finished, an acquired backup is a normal folder/file you can browse in File
 other evidence — including running an MVT spyware scan against it (see [File
 Explorer](#6-file-explorer) below).
 
+### iOS crash reports and SIM/UICC cards
+
+Two more capabilities live in this tab, alongside the main acquisition flow above:
+
+- **Pull Crash Reports** (iOS mode) — once a connected, trusted iPhone/iPad is selected, this button
+  appears next to its device details. It copies the device's own crash-report logs (decoded into
+  readable `.crash` files) without removing the originals from the device — a quick, non-destructive
+  supplementary pull, separate from a full backup.
+- **SIM/UICC Card** — a third mode in the device selector. Click **Detect Readers** to list any
+  connected PC/SC-compatible card readers, select one, insert a card, and click **Read Card**. The
+  result (ICCID, ATR, and any application IDs the card exposes) is shown raw and saved as a `.log`
+  file in the case folder. This needs a real PC/SC card reader physically connected to the station —
+  the underlying reader service and its access permissions are configured automatically during
+  install, nothing extra to set up.
+
 ---
 
 ## 5. File Recovery

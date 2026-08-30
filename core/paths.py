@@ -151,7 +151,8 @@ _CASE_ROLE_REPORT_SUFFIXES = (
 )
 _CASE_ROLE_ANALYSIS_LOG_RE = re.compile(
     r'(_hash_manifest_\w+\.txt|_triage_scan_report\.txt|_vol3_\w+\.json|_device_timestamps\.json'
-    r'|_(aleapp|ileapp)_output|_sqlite_dissect_recovery|_apk_analysis\.json|_bugreport_parsed\.json)$')
+    r'|_(aleapp|ileapp)_output|_sqlite_dissect_recovery|_apk_analysis\.json|_bugreport_parsed\.json'
+    r'|_ios_crash_reports)$')
 _CASE_ROLE_BUNDLE_RE = re.compile(r'_case_bundle_\d{8}-\d{6}\.zip$')
 
 def classify_case_role(name):

@@ -103,6 +103,7 @@ def test_classify_extension(name, expected_category, expected_ext):
     ("msgstore.db.crypt14_sqlite_dissect_recovery", "analysis_log"),
     ("app-release_apk_analysis.json", "analysis_log"),
     ("bugreport-2026-08-30_bugreport_parsed.json", "analysis_log"),
+    ("00008030-001A2B3C4D5E6F7A_ios_crash_reports", "analysis_log"),
     ("geolocation_export.kml", "geolocation"),
     ("2026-CASE-01_case.json.pre_restore_backup", "backup"),
     ("2026-CASE-01_case.json.pre_consolidation_backup", "backup"),
