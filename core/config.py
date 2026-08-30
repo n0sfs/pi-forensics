@@ -75,6 +75,14 @@ ALEAPP_DIR = os.path.join(LEAPP_DIR, "ALEAPP")
 ALEAPP_VENV_PYTHON = os.path.join(LEAPP_DIR, "aleapp_venv", "bin", "python3")
 ILEAPP_DIR = os.path.join(LEAPP_DIR, "ILEAPP")
 ILEAPP_VENV_PYTHON = os.path.join(LEAPP_DIR, "ileapp_venv", "bin", "python3")
+# pysim (SIM/UICC card forensics) - its own isolated venv, mirroring the
+# ALEAPP/iLEAPP pattern above, not because of a confirmed hard dependency
+# conflict (none is known) but because pysim is a GitHub-only, actively-
+# developed project with its own large, uncontrolled transitive dependency
+# tree (confirmed live: ~35 packages including two git-sourced ones) -
+# installing that into the shared venv risks a future silent collision.
+PYSIM_DIR = os.path.join(INSTALL_DIR, "pysim")
+PYSIM_VENV_PYTHON = os.path.join(PYSIM_DIR, "pysim_venv", "bin", "python3")
 
 # Written by install.py's optional TLS setup (self-signed, via openssl) at
 # a fixed path also hardcoded in nginx/pi-forensics.conf's ssl_certificate/

@@ -13,6 +13,7 @@
                                                     <select id="mobileDeviceMode" class="form-select form-select-sm" onchange="updateMobileDeviceMode()">
                                                         <option value="ios" selected>iOS Device</option>
                                                         <option value="android">Android Device</option>
+                                                        <option value="sim">SIM/UICC Card</option>
                                                     </select>
                                                 </div>
                                                 <div class="col-md-4">
@@ -41,6 +42,11 @@
                                                         <div class="col-6"><span class="telemetry-grid-label d-block">WiFi MAC</span><span id="mobileIosWifiMac" class="telemetry-grid-val font-monospace text-truncate d-block">--</span></div>
                                                         <div class="col-12"><span class="telemetry-grid-label d-block">Bluetooth MAC</span><span id="mobileIosBtMac" class="telemetry-grid-val font-monospace d-block">--</span></div>
                                                     </div>
+                                                </div>
+
+                                                <div id="mobileIosCrashReportPanel" class="mb-2">
+                                                    <button type="button" class="btn btn-outline-info btn-sm" onclick="pullIosCrashReports()"><i class="bi bi-file-earmark-break me-1"></i>Pull Crash Reports</button>
+                                                    <div id="mobileIosCrashReportStatus" class="small text-subtle mt-1"></div>
                                                 </div>
 
                                                 <div class="form-check form-switch mb-2">
@@ -132,6 +138,27 @@
                                                         <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="mobilePhysicalHashSha256" value="sha256" checked><label class="form-check-label small text-light" for="mobilePhysicalHashSha256">SHA256</label></div>
                                                     </div>
                                                 </div>
+                                            </div>
+
+                                            <!-- SIM/UICC card forensics (pysim) - genuinely provisional,
+                                                 built and verified without matching reader hardware; see
+                                                 core/sim_utils.py's own docstring for exactly what was
+                                                 and wasn't confirmed live. A self-contained, non-job
+                                                 action (like the WhatsApp key-pull/crash-report panels
+                                                 above) - does not use the shared Start/Stop acquisition
+                                                 button, since reading a card is a quick synchronous
+                                                 action, not a background job. -->
+                                            <div id="mobileSimControls" style="display:none;">
+                                                <div class="d-flex gap-2 mb-2">
+                                                    <button type="button" class="btn btn-outline-info btn-sm" onclick="detectPcscReaders()"><i class="bi bi-search me-1"></i>Detect Readers</button>
+                                                </div>
+                                                <select id="mobileSimReaderSelect" class="form-select form-select-sm mb-2">
+                                                    <option value="">-- Detect readers first --</option>
+                                                </select>
+                                                <button type="button" class="btn btn-outline-success btn-sm mb-2" onclick="readSimCard()"><i class="bi bi-sim me-1"></i>Read Card</button>
+                                                <div id="mobileSimStatus" class="small text-subtle mb-2"></div>
+                                                <label class="form-label fw-bold text-light small mb-1">Card Read Output (raw):</label>
+                                                <pre id="mobileSimOutput" class="log-window" style="height: clamp(150px, 30vh, 300px);">[No card read yet.]</pre>
                                             </div>
 
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder-symlink me-1"></i>Case &amp; Evidence Metadata</div>

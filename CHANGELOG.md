@@ -21,6 +21,21 @@ file after updating to see what changed.
 
 ---
 
+## [1.8.0] - 2026-08-30
+
+### New
+
+- **Pull iOS crash reports.** Mobile Forensics gained a "Pull Crash Reports" button, shown once a
+  connected iOS device is selected - copies the device's own `CrashReporter` logs (decoded into
+  readable `.crash` files) without ever removing the originals from the device.
+
+- **SIM/UICC card forensics.** Mobile Forensics' device-mode selector gained a "SIM/UICC Card" option -
+  detects connected PC/SC card readers and reads a card's basic identity (ICCID, ATR, EID for eSIM,
+  and any application IDs present). Requires a PC/SC-compatible card reader connected to the station;
+  the underlying reader daemon and its access permissions are set up automatically during install.
+
+---
+
 ## [1.7.0] - 2026-08-30
 
 ### New

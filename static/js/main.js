@@ -686,6 +686,8 @@ const TOOL_REFERENCE_GROUPS = [
             ["wadecrypt (WhatsApp Decryption)", "Decrypts a WhatsApp local backup file (msgstore.db.crypt12/14/15) against the device's own key file, producing a browsable SQLite database. Pull the key from a rooted device via Mobile Forensics > select an Android device > \"Pull WhatsApp Key File\", then right-click the .crypt12/14/15 file and choose \"Decrypt WhatsApp Backup\"."],
             ["IPA Static Analysis (LIEF)", "Static analysis of an iOS .ipa file - Info.plist metadata, permission usage descriptions, the embedded mobile provisioning profile (team, entitlements, provisioned devices), and optional Mach-O binary analysis (architecture, FairPlay encryption status). Right-click an .ipa file and choose \"Analyze IPA\". Never runs or installs the app."],
             ["dumpstate-py (Bugreport Deep Parse)", "Deep-parses an adb bugreport .zip (already captured via Mobile Forensics' own Bug Report mode) into structured sections - mount points, process list, package install/delete log, loaded kernel modules, GPS coordinates, crash traces/tombstones, network sockets, battery stats, power events. Right-click the bugreport .zip and choose \"Deep-Parse Bugreport\"."],
+            ["idevicecrashreport", "Pulls a connected, trusted iOS device's own crash-report logs (decoded into readable .crash files). Never removes the originals from the device. Mobile Forensics > select an iOS device > \"Pull Crash Reports\"."],
+            ["pysim (SIM/UICC Card Forensics)", "Reads a SIM/UICC card inserted in a connected PC/SC card reader - ICCID, ATR, EID, and application IDs. Mobile Forensics > SIM/UICC Card > Detect Readers > select a reader > Read Card. Requires PC/SC reader hardware connected to this station."],
             ["MVT (Mobile Verification Toolkit)", "Checks an already-acquired iOS or Android backup for spyware/compromise indicators. Right-click the backup folder and choose the scan for its platform."],
             ["ALEAPP / iLEAPP", "Comprehensive, community-maintained mobile artifact parsers - hundreds of app-specific artifacts (WhatsApp, Signal, Chrome, WiFi history, and more) from an already-acquired Android pull or iOS backup. Right-click the extraction folder and choose \"Parse with ALEAPP/iLEAPP...\". Runs as a background job - large extractions can take several minutes."],
             ["Volatility3", "Analyzes an already-captured Windows memory (RAM) image - process lists, network connections, loaded modules, and more. Right-click a memory-image file and choose \"Memory Forensics...\"."],
@@ -13129,6 +13131,11 @@ function refreshMobileStartButtonState() {
         const udid = document.getElementById("mobileIosSelect")?.value;
         const dev = mobileIosDevices.find(d => d.udid === udid);
         startBtn.disabled = !dev || !dev.trusted;
+    } else if (mode === 'sim') {
+        // SIM/UICC reading has no acquisition job at all (its own "Read
+        // Card" button handles it) - the shared Start button is never
+        // meaningful in this mode.
+        startBtn.disabled = true;
     } else {
         const serial = document.getElementById("mobileAndroidSelect")?.value;
         const dev = mobileAndroidDevices.find(d => d.serial === serial);
@@ -13140,11 +13147,13 @@ function updateMobileDeviceMode() {
     const mode = document.getElementById("mobileDeviceMode")?.value || 'ios';
     const iosControls = document.getElementById("mobileIosControls");
     const androidControls = document.getElementById("mobileAndroidControls");
+    const simControls = document.getElementById("mobileSimControls");
     const startLabel = document.getElementById("btnMobileStartLabel");
 
     if (iosControls) iosControls.style.display = mode === 'ios' ? '' : 'none';
     if (androidControls) androidControls.style.display = mode === 'android' ? '' : 'none';
-    if (startLabel) startLabel.textContent = mode === 'ios' ? 'Start iOS Backup' : 'Start Android Acquisition';
+    if (simControls) simControls.style.display = mode === 'sim' ? '' : 'none';
+    if (startLabel) startLabel.textContent = mode === 'ios' ? 'Start iOS Backup' : mode === 'android' ? 'Start Android Acquisition' : 'N/A - Use Read Card Above';
 
     refreshMobileStartButtonState();
 }
@@ -13200,6 +13209,90 @@ async function pairIosDevice() {
     } finally {
         if (btn) btn.disabled = false;
         refreshMobileDevices();
+    }
+}
+
+async function pullIosCrashReports() {
+    const udid = document.getElementById("mobileIosSelect")?.value;
+    const statusEl = document.getElementById("mobileIosCrashReportStatus");
+    if (!udid) return showToast('Select a connected, trusted iOS device first.', 'warning');
+    const destinationDir = activeCase ? activeCase.case_folder : document.getElementById("mobileDest")?.value || '/mnt';
+    if (statusEl) statusEl.textContent = 'Pulling crash reports...';
+    try {
+        const res = await fetch('/api/mobile/ios/pull_crash_reports', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ udid, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (statusEl) statusEl.textContent = `Failed: ${data.error}`;
+            showToast(`Crash report pull failed: ${data.error}`, 'danger');
+            return;
+        }
+        if (statusEl) statusEl.textContent = `${data.files.length} file(s) saved to: ${data.output_dir}`;
+        showToast(`Pulled ${data.files.length} crash report file(s).`, 'success');
+        loadExplorer(explorerPath);
+    } catch (err) {
+        if (statusEl) statusEl.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function detectPcscReaders() {
+    const selectEl = document.getElementById("mobileSimReaderSelect");
+    const statusEl = document.getElementById("mobileSimStatus");
+    if (selectEl) selectEl.innerHTML = '<option value="">Detecting...</option>';
+    if (statusEl) statusEl.textContent = '';
+    try {
+        const res = await fetch('/api/mobile/sim/readers');
+        const data = await res.json();
+        if (!data.success) {
+            if (selectEl) selectEl.innerHTML = '<option value="">-- Detection failed, try again --</option>';
+            showToast(data.error || 'Failed to detect PC/SC readers.', 'danger');
+            return;
+        }
+        if (selectEl) selectEl.innerHTML = '';
+        if (!data.readers.length) {
+            if (selectEl) selectEl.innerHTML = '<option value="">-- No readers found --</option>';
+        } else {
+            data.readers.forEach((name, i) => {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.textContent = `[${i}] ${name}`;
+                if (selectEl) selectEl.appendChild(opt);
+            });
+        }
+    } catch (err) {
+        if (selectEl) selectEl.innerHTML = '<option value="">-- Detection failed, try again --</option>';
+    }
+}
+
+async function readSimCard() {
+    const readerIndex = document.getElementById("mobileSimReaderSelect")?.value;
+    const outputEl = document.getElementById("mobileSimOutput");
+    const statusEl = document.getElementById("mobileSimStatus");
+    if (readerIndex === '' || readerIndex === undefined) return showToast('Detect readers and select one first.', 'warning');
+    const destinationDir = activeCase ? activeCase.case_folder : document.getElementById("mobileDest")?.value || '/mnt';
+    if (statusEl) statusEl.textContent = 'Reading card...';
+    if (outputEl) outputEl.textContent = 'Running...';
+    try {
+        const res = await fetch('/api/mobile/sim/read', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reader_index: readerIndex, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (statusEl) statusEl.textContent = `Failed: ${data.error}`;
+            if (outputEl) outputEl.textContent = data.output || `[ERROR] ${data.error}`;
+            return;
+        }
+        if (statusEl) statusEl.textContent = `Saved to: ${data.output_path}`;
+        if (outputEl) outputEl.textContent = data.output;
+        showToast('Card read successfully.', 'success');
+        loadExplorer(explorerPath);
+    } catch (err) {
+        if (statusEl) statusEl.textContent = '[REQUEST FAILED]';
     }
 }
 

@@ -29,6 +29,8 @@ from core.jobs import (
 )
 from core.case_index_db import _auto_tag_case_artifact
 from core.whatsapp_utils import pull_whatsapp_key_file
+from core.idevicecrashreport_utils import pull_ios_crash_reports
+from core.sim_utils import list_pcsc_readers, read_sim_card
 from core.config import ALLOWED_HASH_ALGOS
 
 # 2026-08-30, physical/raw Android acquisition: dc3dd/dcfldd's progress-line
@@ -548,6 +550,71 @@ def pull_whatsapp_key(serial):
 
     log_chain_of_custody("whatsapp_key_pulled", {"serial": serial, "path": result["path"]})
     return jsonify(result)
+
+
+@mobile_bp.route('/api/mobile/ios/pull_crash_reports', methods=['POST'])
+@requires_auth
+@requires_permission('mobile')
+def pull_ios_crash_reports_route():
+    req = request.get_json() or {}
+    udid = req.get('udid', '')
+    if not _UDID_RE.match(udid or ''):
+        return jsonify({"success": False, "error": "Invalid or missing device UDID. Refresh the device list and select a connected, trusted iOS device."}), 400
+
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    output_dir = os.path.join(dest_dir, f"{udid}_ios_crash_reports")
+    result = pull_ios_crash_reports(udid, output_dir)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    _auto_tag_case_artifact(case_folder or dest_dir, output_dir)
+
+    log_chain_of_custody("ios_crash_reports_pulled", {"udid": udid, "output_dir": output_dir, "file_count": len(result["files"])})
+    return jsonify(result)
+
+
+@mobile_bp.route('/api/mobile/sim/readers', methods=['GET'])
+@requires_auth
+@requires_permission('mobile')
+def sim_readers():
+    result = list_pcsc_readers()
+    return jsonify(result)
+
+
+@mobile_bp.route('/api/mobile/sim/read', methods=['POST'])
+@requires_auth
+@requires_permission('mobile')
+def sim_read():
+    req = request.get_json() or {}
+    try:
+        reader_index = int(req.get('reader_index', 0))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid reader index."}), 400
+
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    result = read_sim_card(reader_index)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    output_path = os.path.join(dest_dir, f"sim_read_{timestamp}.log")
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(result["output"])
+        case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+        _auto_tag_case_artifact(case_folder or dest_dir, output_path)
+    except OSError as e:
+        return jsonify({"success": False, "error": f"Read successfully but could not write output: {e}"}), 500
+
+    log_chain_of_custody("sim_card_read", {"reader_index": reader_index, "output_path": output_path})
+    return jsonify({"success": True, "output": result["output"], "output_path": output_path})
 
 
 def execution_worker_android(mode, serial, output_path, report_file_path, report_data):
