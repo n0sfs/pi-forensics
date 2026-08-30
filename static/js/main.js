@@ -753,7 +753,7 @@ const REPORT_FIELD_MAPPING = [
     ["Exhibits", "Attached files/URLs + captions + tags + analysis results", "Files &amp; Artifacts tab (check/caption); File Explorer (tag/analyze)"],
     ["Geolocation / GPS Evidence", "KML files attached to or found in the case folder", "Auto-discovered; generate via File Explorer's \"Extract Geolocation (KML)\""],
     ["Case Activity Log (Audit Trail)", "Chain-of-custody entries matching this case #", "Automatic"],
-    ["Filesystem Timeline (MACB)", "MACB walk of the acquired image", "Automatic, needs the image still on disk"],
+    ["Filesystem Timeline (MACB)", "MACB walk of an acquired disk image, or real file timestamps from a mobile pull/backup or Logical Acquisition folder", "Automatic, needs the image or output folder still on disk"],
     ["Physical Evidence Custody Log", "From/To custodian handoff entries, append-only", "Custody Log tab"],
 ];
 
