@@ -21,6 +21,23 @@ file after updating to see what changed.
 
 ---
 
+## [1.4.1] - 2026-08-29
+
+### Fixed
+
+- Android pull acquisitions now pass `-a` ("preserve file timestamp and mode") to `adb pull`, so the
+  copied files' own on-disk modification time is correct too - not just the value the Evidence
+  Timeline shows. Confirmed as a real, documented flag on this project's own installed `adb`
+  (platform-tools 34.0.5) via its `help` output. The v1.4.0 on-device timestamp capture (a separate
+  `adb shell find` call after the pull, writing a sidecar manifest) is kept as-is alongside this -
+  it doesn't depend on `-a` support, which can vary by `adb` client/device combination, so it stays
+  the actual source of truth for the Evidence Timeline regardless of whether `-a` is honored on a
+  given station/device pairing. `-a`'s real effect has not yet been empirically re-verified against
+  a connected device (added while the phone was disconnected) - worth confirming directly the next
+  time one's available.
+
+---
+
 ## [1.4.0] - 2026-08-29
 
 ### New
