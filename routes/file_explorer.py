@@ -73,6 +73,11 @@ LINUX_ARTIFACT_DISCOVERERS = {
 }
 from core.evtx_utils import find_evtx_files, parse_evtx_file
 from core.lnk_utils import parse_lnk_file
+from core.sqlite_dissect_utils import run_sqlite_dissect
+from core.apk_utils import analyze_apk
+from core.whatsapp_utils import decrypt_whatsapp_backup
+from core.ipa_utils import analyze_ipa
+from core.bugreport_utils import parse_bugreport
 from core.jobs import job_lock, current_job, update_job, snapshot_job, _stream_subprocess
 
 file_explorer_bp = Blueprint('file_explorer', __name__)
@@ -1112,6 +1117,194 @@ def parse_lnk():
         "indexed": bool(case_folder and records),
         "error": None if records else "Could not parse this file as a valid .lnk shortcut.",
     })
+
+# --- SQLite Dissect: Recover Deleted Rows From a SQLite File ---
+@file_explorer_bp.route('/api/files/sqlite_dissect', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def run_sqlite_dissect_route():
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    output_dir = os.path.join(dest_dir, f"{base_name}_sqlite_dissect_recovery")
+    os.makedirs(output_dir, exist_ok=True)
+
+    result = run_sqlite_dissect(file_path, output_dir)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    identity = {"source_type": "real_fs", "path": file_path, "name": os.path.basename(file_path)}
+    _record_analysis_result(case_folder, identity, "SQLite Dissect", result["summary"], result["log"])
+    _auto_tag_case_artifact(case_folder or dest_dir, output_dir)
+
+    log_chain_of_custody("sqlite_dissect_recovery", {"path": file_path, "output_dir": output_dir, "summary": result["summary"]})
+    return jsonify({"success": True, "output_dir": output_dir, "summary": result["summary"], "log": result["log"], "files": result["files"]})
+
+# --- androguard: Android APK Static Analysis ---
+@file_explorer_bp.route('/api/files/apk_analyze', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def run_apk_analyze():
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    result = analyze_apk(file_path)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    package = result["package"]
+    signer_count = len(package.get("signing") or [])
+    summary = (f"{package.get('package_name') or '(unknown package)'} "
+               f"v{package.get('version_name') or '?'} - "
+               f"{len(package.get('permissions') or [])} permission(s), {signer_count} signer(s)")
+
+    # Optional written report - the returned JSON is the real value of this
+    # analysis, so a destination-resolution failure (no active case, e.g.)
+    # is non-fatal, matching run_strings()'s own optional-report-file
+    # pattern rather than run_sqlite_dissect_route()'s hard-required one.
+    output_path = None
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    if dest_dir:
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        output_path = os.path.join(dest_dir, f"{base_name}_apk_analysis.json")
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(package, f, indent=2)
+            _auto_tag_case_artifact(case_folder or dest_dir, output_path)
+        except OSError:
+            output_path = None
+
+    identity = {"source_type": "real_fs", "path": file_path, "name": os.path.basename(file_path)}
+    _record_analysis_result(case_folder, identity, "androguard APK Analysis", summary, json.dumps(package, indent=2))
+
+    log_chain_of_custody("apk_analyzed", {"path": file_path, "package_name": package.get("package_name"), "summary": summary})
+    return jsonify({"success": True, "package": package, "summary": summary, "output_path": output_path})
+
+# --- wadecrypt: Decrypt a WhatsApp Local Backup (crypt12/14/15) ---
+@file_explorer_bp.route('/api/files/whatsapp_decrypt', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def run_whatsapp_decrypt():
+    req = request.get_json() or {}
+    crypt_path = safe_path(req.get('path'))
+    if not crypt_path or not os.path.isfile(crypt_path):
+        return jsonify({"success": False, "error": "Encrypted backup file not found or outside the permitted evidence directory."}), 400
+
+    key_path = safe_path(req.get('key_path'))
+    if not key_path or not os.path.isfile(key_path):
+        return jsonify({"success": False, "error": "Key file not found or outside the permitted evidence directory."}), 400
+
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(crypt_path))
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    base_name = os.path.splitext(os.path.basename(crypt_path))[0]
+    output_path = os.path.join(dest_dir, f"{base_name}_decrypted.db")
+
+    result = decrypt_whatsapp_backup(crypt_path, key_path, output_path)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    # Deliberately NOT auto-tagged via _auto_tag_case_artifact() - a
+    # decrypted .db is real, examiner-facing evidence content (browsable
+    # via the existing Database tab), not app-generated housekeeping like
+    # a hash manifest or triage-scan report; tagging it as a "Case
+    # Artifact" would miscategorize it in File Views.
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    identity = {"source_type": "real_fs", "path": crypt_path, "name": os.path.basename(crypt_path)}
+    summary = f"Decrypted to {os.path.basename(output_path)}"
+    _record_analysis_result(case_folder, identity, "WhatsApp Backup Decryption (wadecrypt)", summary, result["log"])
+
+    log_chain_of_custody("whatsapp_backup_decrypted", {"path": crypt_path, "key_path": key_path, "output_path": output_path})
+    return jsonify({"success": True, "output_path": output_path, "log": result["log"]})
+
+# --- iOS .ipa Static Analysis (Info.plist / mobileprovision / optional LIEF Mach-O) ---
+@file_explorer_bp.route('/api/files/ipa_analyze', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def run_ipa_analyze():
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    run_macho = bool(req.get('run_macho', True))
+    result = analyze_ipa(file_path, run_macho=run_macho)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    plist = result["info_plist"]
+    summary = f"{plist.get('bundle_id') or '(unknown bundle)'} v{plist.get('version') or '?'}"
+    if result["macho"]:
+        archs = ", ".join(s["architecture"] for s in result["macho"]["slices"])
+        summary += f" - {archs}" if archs else ""
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    identity = {"source_type": "real_fs", "path": file_path, "name": os.path.basename(file_path)}
+    _record_analysis_result(case_folder, identity, "IPA Static Analysis (plist/mobileprovision/LIEF)",
+                             summary, json.dumps({k: v for k, v in result.items() if k != "success"}, indent=2, default=str))
+
+    log_chain_of_custody("ipa_analyzed", {"path": file_path, "bundle_id": plist.get("bundle_id"), "summary": summary})
+    return jsonify(result)
+
+# --- dumpstate-py: Deep-Parse an adb bugreport Archive ---
+@file_explorer_bp.route('/api/files/bugreport_parse', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def run_bugreport_parse():
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    result = parse_bugreport(file_path)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    output_path = os.path.join(dest_dir, f"{base_name}_bugreport_parsed.json")
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(result["sections"], f, indent=2)
+        _auto_tag_case_artifact(req.get('case_folder') or dest_dir, output_path)
+    except OSError as e:
+        return jsonify({"success": False, "error": f"Parsed successfully but could not write output: {e}"}), 500
+
+    section_count = len(result["sections"])
+    summary = f"{section_count} section(s) parsed"
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    identity = {"source_type": "real_fs", "path": file_path, "name": os.path.basename(file_path)}
+    _record_analysis_result(case_folder, identity, "Bugreport Deep Parse (dumpstate-py)", summary,
+                             json.dumps(result["sections"], indent=2)[:20000])
+
+    log_chain_of_custody("bugreport_parsed", {"path": file_path, "output_path": output_path, "summary": summary})
+    return jsonify({"success": True, "output_path": output_path, "sections": result["sections"], "summary": summary})
 
 # --- strings: Extract Printable Text From a Binary File ---
 @file_explorer_bp.route('/api/files/strings', methods=['POST'])

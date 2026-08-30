@@ -148,6 +148,11 @@
                             <button id="btnParseMobileArtifacts" class="dropdown-item" onclick="runSelectedMobileArtifactsParse()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Finds and parses an already-pulled, unencrypted iOS backup (idevicebackup2 --full output) under this folder - SMS/iMessage, Contacts, and Call History. An encrypted backup is detected and reported, not silently skipped."><i class="bi bi-chat-left-text me-2"></i>Parse Mobile Chat/App Artifacts</button>
                             <button id="btnLeappScan" class="dropdown-item" onclick="openLeappScanModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Runs ALEAPP or iLEAPP - comprehensive, community-maintained third-party mobile artifact parsers - against this extraction folder (an adb pull output for ALEAPP, an idevicebackup2 backup for iLEAPP). Covers far more app-specific artifacts (WhatsApp, Signal, Chrome, WiFi, app usage, and much more) than this app's own built-in parser above. A real multi-GB extraction can take many minutes - runs as a background job with Stop-button support."><i class="bi bi-stack me-2"></i>Parse with ALEAPP/iLEAPP...</button>
                             <button id="btnParseLnk" class="dropdown-item" onclick="runSelectedLnkParse()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Parses this .lnk shortcut file - target path, arguments, working directory, icon location, and the shortcut's own MAC timestamps."><i class="bi bi-link-45deg me-2"></i>Parse LNK Shortcut</button>
+                            <button id="btnSqliteDissect" class="dropdown-item" onclick="runSelectedSqliteDissect()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Recovers deleted rows still present in this SQLite file's freeblocks, unallocated space, and any surviving WAL/rollback-journal file (using SQLite Dissect). Recovery depends heavily on how the file was closed - a database acquired with its own WAL file still present alongside it is the most reliable case."><i class="bi bi-arrow-counterclockwise me-2"></i>Recover Deleted SQLite Records</button>
+                            <button id="btnApkAnalyze" class="dropdown-item" onclick="runSelectedApkAnalyze()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Static analysis of this Android .apk file (using androguard) - package/version metadata, permissions, activities/services/receivers/providers, every signing certificate, and a raw scan for embedded URLs. Does not run or install the app."><i class="bi bi-android2 me-2"></i>Analyze APK (androguard)</button>
+                            <button id="btnWhatsappDecrypt" class="dropdown-item" onclick="openWhatsappDecryptModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Decrypts this WhatsApp local backup file (msgstore.db.crypt12/14/15) against the device's own key file (using wadecrypt), producing a browsable SQLite database. Requires the device's key file - pull it from a rooted device via Mobile Forensics."><i class="bi bi-key-fill me-2"></i>Decrypt WhatsApp Backup</button>
+                            <button id="btnIpaAnalyze" class="dropdown-item" onclick="openIpaAnalyzeModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Static analysis of this iOS .ipa file - Info.plist metadata, permission usage descriptions, the embedded mobile provisioning profile (team, entitlements, provisioned devices), and optional Mach-O binary analysis (architecture, FairPlay encryption status via LIEF). Never runs or installs the app."><i class="bi bi-apple me-2"></i>Analyze IPA</button>
+                            <button id="btnBugreportParse" class="dropdown-item" onclick="runSelectedBugreportParse()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Deep-parses an adb bugreport .zip (using dumpstate-py) into structured sections - mount points, process list, package install/delete log, loaded kernel modules, GPS coordinates, crash traces/tombstones, network sockets, battery stats, power events. Any .zip file is accepted here - a non-bugreport zip is rejected cleanly with a clear error."><i class="bi bi-file-earmark-zip me-2"></i>Deep-Parse Bugreport</button>
                             </div>
                             <button type="button" class="ctx-menu-section-toggle" data-ctx-section="ctxSecMobileMemory" onclick="toggleCtxMenuSection('ctxSecMobileMemory')"><span>Mobile &amp; Memory</span><i class="bi bi-chevron-down"></i></button>
                             <div id="ctxSecMobileMemory" class="ctx-menu-section" style="display:none;">
@@ -212,6 +217,59 @@
                 </div>
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="whatsappDecryptModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-key-fill me-2"></i>Decrypt WhatsApp Backup: <span id="whatsappDecryptFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="mb-3">
+                        <label class="telemetry-grid-label d-block mb-1">WhatsApp Key File:</label>
+                        <div class="input-group input-group-sm">
+                            <input type="text" id="whatsappDecryptKeyPath" class="form-control font-monospace" placeholder="Path to the device's own key file">
+                            <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('whatsappKeyFile', 'whatsappDecryptKeyPath')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
+                        </div>
+                        <div class="small text-subtle mt-1">Pull this from a rooted device via Mobile Forensics &gt; select an Android device &gt; "Pull WhatsApp Key File", or browse to one already on this station.</div>
+                    </div>
+                    <button class="btn btn-sm btn-info text-dark fw-bold w-100 mb-3" onclick="runWhatsappDecrypt()">
+                        <i class="bi bi-unlock-fill me-1"></i>Decrypt
+                    </button>
+                    <div class="p-2 bg-black border border-secondary rounded-2">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="telemetry-grid-label">Status:</span>
+                            <span id="whatsappDecryptBadge" class="badge bg-secondary">AWAITING INPUT</span>
+                        </div>
+                        <pre id="whatsappDecryptOutput" class="log-window mb-0" style="height: 140px;">Select a key file and click Decrypt.</pre>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="ipaAnalyzeOptionsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-apple me-2"></i>Analyze IPA: <span id="ipaAnalyzeFileName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-2">Reads Info.plist (bundle ID, version, permission usage descriptions) and the embedded mobile provisioning profile (team, entitlements, provisioned devices) - no signature verification is attempted.</div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="ipaAnalyzeMachoToggle" checked>
+                        <label class="form-check-label small text-light" for="ipaAnalyzeMachoToggle">Include Mach-O binary analysis (architecture, FairPlay encryption status) - uses LIEF, may be unavailable on this station</label>
+                    </div>
+                    <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="runSelectedIpaAnalyze()"><i class="bi bi-play-fill me-1"></i>Analyze</button>
                 </div>
             </div>
         </div>

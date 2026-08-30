@@ -84,3 +84,64 @@ libscca-python>=20220717
 # a drop-in replacement for xml.etree.ElementTree (ParseError is literally
 # the same class, re-exported).
 defusedxml>=0.7.1
+# SQLite Dissect (mobile-forensics-tool gap-closing round, 2026-08-30) -
+# recovers deleted rows from a SQLite file's freeblocks/unallocated space/
+# any surviving WAL file. Confirmed live on the real Pi venv (arm64/Debian
+# trixie): pure-Python py3-none-any wheel, zero native deps, installs with
+# no compile step. Wrapped as a subprocess (core/sqlite_dissect_utils.py) -
+# see that module's own docstring for the real, live-confirmed CLI flags
+# (genuinely different from an earlier guess) and an honest disclosure
+# about how deletion-recovery reliability depends heavily on the specific
+# acquisition scenario, confirmed via real hand-built test cases this
+# session.
+sqlite-dissect==1.0.0
+# androguard (mobile-forensics-tool gap-closing round, feature 2) - static
+# analysis of Android .apk files (permissions, manifest components, signing
+# certificates, embedded-URL scan). Confirmed live on the real Pi venv
+# (arm64/Debian trixie): pure-Python wheel, installs cleanly (4.1.4).
+# Imported directly (core/apk_utils.py), not subprocess-wrapped - its
+# `androguard.core.apk.APK` class is a long-stable, widely-documented
+# public API, unlike sqlite-dissect's own unconfirmed Python surface above.
+# One real, load-bearing correction found via live testing against a real
+# signed APK before writing any code: a signing-certificate object is
+# `asn1crypto.x509.Certificate`, not `cryptography.x509.Certificate` - see
+# core/apk_utils.py's own module docstring for the exact attribute-access
+# difference this required.
+androguard>=4.1.0
+# wa-crypt-tools (mobile-forensics-tool gap-closing round, feature 3) -
+# decrypts a WhatsApp local backup (msgstore.db.crypt12/14/15) against the
+# device's own key file. Confirmed live on the real Pi venv (arm64/Debian
+# trixie): pure-Python wheel + a native pycryptodomex manylinux aarch64
+# wheel, no compile step. Wrapped as a subprocess
+# (core/whatsapp_utils.py) - see that module's own docstring for the
+# real, live-confirmed positional argument order (verified via a real
+# synthetic key+crypt14 round trip) and a genuine upstream bug found
+# along the way in this package's own `wacreatekey` tool (unrelated to
+# what this app actually calls, but worth knowing about).
+wa-crypt-tools>=0.1.0
+# lief (mobile-forensics-tool gap-closing round, feature 4) - optional
+# Mach-O binary analysis layer for iOS .ipa static analysis
+# (core/ipa_utils.py's plist/mobileprovision core is stdlib-only and
+# needs no dependency at all; this is only for the architecture/
+# FairPlay-encryption-status layer on top). Confirmed live on the real
+# Pi venv (arm64/Debian trixie): a real prebuilt manylinux_2_28_aarch64
+# wheel from PyPI directly (not piwheels), no compile step - resolves
+# this feature's own plan-stage uncertainty about aarch64 wheel
+# availability in the affirmative.
+lief>=1.0.0
+# dumpstate-py (mobile-forensics-tool gap-closing round, feature 5) -
+# deep-parses an already-captured adb bugreport zip (mount points,
+# process list, package install log, kernel modules, GPS, crash traces,
+# sockets, battery, power events) into structured sections. Not on PyPI
+# - installed via pip's own PEP 508 direct-reference syntax, pinned to a
+# specific commit (matching this project's own established ALEAPP/iLEAPP
+# discipline of never installing an unpinned `main`/HEAD from a small,
+# actively-developed external project). Confirmed live on the real Pi
+# venv (arm64/Debian trixie): pure-Python, only depends on `rich`
+# (already present), installs cleanly with no compile step - both via a
+# direct `pip install git+...@<sha>` and via this exact requirements.txt
+# line's own PEP 508 syntax. The real importable module name is
+# `dumpstate` (not `dumpstate_py` - the hyphenated pip/PyPI-style
+# package name doesn't match its own import name), confirmed via direct
+# introspection before writing core/bugreport_utils.py.
+dumpstate-py @ git+https://github.com/CERT-EDF/dumpstate-py.git@56b70934f70a19f50f96d337f96bf507ac9cc65c

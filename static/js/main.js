@@ -681,6 +681,11 @@ const TOOL_REFERENCE_GROUPS = [
             ["Binwalk", "Looks for other files or filesystems hidden inside a binary - useful for firmware/router images."],
             ["ClamAV", "Scans a file or folder against known malware signatures."],
             ["hashdeep", "Generates a fingerprint (hash) for every file in a folder at once, as a single manifest."],
+            ["SQLite Dissect", "Recovers deleted rows still present in a SQLite file's freeblocks, unallocated space, or a surviving WAL/rollback-journal file. Right-click a .db/.sqlite/.sqlite3 file and choose \"Recover Deleted SQLite Records\". Recovery reliability depends heavily on how the file was closed - a database with its own WAL file still present is the most reliable case."],
+            ["androguard (APK Analysis)", "Static analysis of an Android .apk file - package/version metadata, permissions, activities/services/receivers/providers, every signing certificate, and a raw scan for embedded URLs. Right-click an .apk file and choose \"Analyze APK (androguard)\". Never runs or installs the app."],
+            ["wadecrypt (WhatsApp Decryption)", "Decrypts a WhatsApp local backup file (msgstore.db.crypt12/14/15) against the device's own key file, producing a browsable SQLite database. Pull the key from a rooted device via Mobile Forensics > select an Android device > \"Pull WhatsApp Key File\", then right-click the .crypt12/14/15 file and choose \"Decrypt WhatsApp Backup\"."],
+            ["IPA Static Analysis (LIEF)", "Static analysis of an iOS .ipa file - Info.plist metadata, permission usage descriptions, the embedded mobile provisioning profile (team, entitlements, provisioned devices), and optional Mach-O binary analysis (architecture, FairPlay encryption status). Right-click an .ipa file and choose \"Analyze IPA\". Never runs or installs the app."],
+            ["dumpstate-py (Bugreport Deep Parse)", "Deep-parses an adb bugreport .zip (already captured via Mobile Forensics' own Bug Report mode) into structured sections - mount points, process list, package install/delete log, loaded kernel modules, GPS coordinates, crash traces/tombstones, network sockets, battery stats, power events. Right-click the bugreport .zip and choose \"Deep-Parse Bugreport\"."],
             ["MVT (Mobile Verification Toolkit)", "Checks an already-acquired iOS or Android backup for spyware/compromise indicators. Right-click the backup folder and choose the scan for its platform."],
             ["ALEAPP / iLEAPP", "Comprehensive, community-maintained mobile artifact parsers - hundreds of app-specific artifacts (WhatsApp, Signal, Chrome, WiFi history, and more) from an already-acquired Android pull or iOS backup. Right-click the extraction folder and choose \"Parse with ALEAPP/iLEAPP...\". Runs as a background job - large extractions can take several minutes."],
             ["Volatility3", "Analyzes an already-captured Windows memory (RAM) image - process lists, network connections, loaded modules, and more. Right-click a memory-image file and choose \"Memory Forensics...\"."],
@@ -4321,6 +4326,11 @@ function updateContextToolbar(item) {
     const btnMobileArtifacts = document.getElementById("btnParseMobileArtifacts");
     const btnLeappScan = document.getElementById("btnLeappScan");
     const btnParseLnk = document.getElementById("btnParseLnk");
+    const btnSqliteDissect = document.getElementById("btnSqliteDissect");
+    const btnApkAnalyze = document.getElementById("btnApkAnalyze");
+    const btnWhatsappDecrypt = document.getElementById("btnWhatsappDecrypt");
+    const btnIpaAnalyze = document.getElementById("btnIpaAnalyze");
+    const btnBugreportParse = document.getElementById("btnBugreportParse");
     const btnMvtIos = document.getElementById("btnRunMvtIos");
     const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
     const btnMemoryForensics = document.getElementById("btnMemoryForensics");
@@ -4346,6 +4356,11 @@ function updateContextToolbar(item) {
     if (btnMobileArtifacts) btnMobileArtifacts.disabled = !item.is_dir;  // scans a folder for an iOS backup (Manifest.db + Info.plist)
     if (btnLeappScan) btnLeappScan.disabled = !item.is_dir;  // runs ALEAPP/iLEAPP against an extraction folder
     if (btnParseLnk) btnParseLnk.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.lnk');  // single-file, unlike the whole-folder scanners above
+    if (btnSqliteDissect) btnSqliteDissect.disabled = item.is_dir || !isSqliteFile(item.name);
+    if (btnApkAnalyze) btnApkAnalyze.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.apk');
+    if (btnWhatsappDecrypt) btnWhatsappDecrypt.disabled = item.is_dir || !/\.(crypt12|crypt14|crypt15)$/i.test(item.name);
+    if (btnIpaAnalyze) btnIpaAnalyze.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.ipa');
+    if (btnBugreportParse) btnBugreportParse.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.zip');
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
     if (btnMemoryForensics) btnMemoryForensics.disabled = item.is_dir || !isMemoryImageFile(item.name);
@@ -5081,6 +5096,259 @@ async function runSelectedHashdeep() {
             showToast(`hashdeep failed: ${data.error}`, 'danger');
         }
     } catch (err) {}
+}
+
+async function runSelectedSqliteDissect() {
+    if (!activeSelectedFile) return;
+    showToolOutputModal(`SQLite Dissect: ${activeSelectedFile.split('/').pop()}`, 'bi-arrow-counterclockwise');
+    // Same evidence-must-never-be-modified reasoning as runSelectedHashdeep() above.
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+
+    try {
+        const res = await fetch('/api/files/sqlite_dissect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) {
+            if (container) container.textContent = `[ERROR] ${data.error}`;
+            return;
+        }
+        setToolOutputBadge(data.summary, 'bg-info');
+        if (container) container.textContent = `${data.log}\n\nOutput written to:\n${data.output_dir}`;
+        loadExplorer(explorerPath);
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runSelectedApkAnalyze() {
+    if (!activeSelectedFile) return;
+    showToolOutputModal(`APK Analysis: ${activeSelectedFile.split('/').pop()}`, 'bi-android2');
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+
+    try {
+        const res = await fetch('/api/files/apk_analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) {
+            if (container) container.textContent = `[ERROR] ${data.error}`;
+            return;
+        }
+        setToolOutputBadge(data.summary, 'bg-info');
+        const p = data.package;
+        const lines = [];
+        lines.push(`Package: ${p.package_name || '(unknown)'}`);
+        lines.push(`App Name: ${p.app_name || '(unknown)'}`);
+        lines.push(`Version: ${p.version_name || '?'} (code ${p.version_code ?? '?'})`);
+        lines.push(`SDK: min ${p.min_sdk ?? '?'} / target ${p.target_sdk ?? '?'}`);
+        lines.push('');
+        lines.push(`--- Signing (${(p.signing || []).length} signer(s)) ---`);
+        (p.signing || []).forEach((s, i) => {
+            lines.push(`[${i + 1}] Subject: ${s.subject}`);
+            lines.push(`    Issuer: ${s.issuer}`);
+            lines.push(`    Serial: ${s.serial_number}   SHA256: ${s.sha256}`);
+            lines.push(`    Valid: ${s.valid_from} -> ${s.valid_to}`);
+        });
+        lines.push('');
+        lines.push(`--- Permissions (${(p.permissions || []).length}) ---`);
+        lines.push(...(p.permissions || []));
+        lines.push('');
+        lines.push(`--- Activities (${(p.activities || []).length}) ---`);
+        lines.push(...(p.activities || []));
+        lines.push('');
+        lines.push(`--- Services (${(p.services || []).length}) ---`);
+        lines.push(...(p.services || []));
+        lines.push('');
+        lines.push(`--- Receivers (${(p.receivers || []).length}) ---`);
+        lines.push(...(p.receivers || []));
+        lines.push('');
+        lines.push(`--- Providers (${(p.providers || []).length}) ---`);
+        lines.push(...(p.providers || []));
+        lines.push('');
+        lines.push(`--- URLs found in the raw APK bytes (${(p.urls_found || []).length}) ---`);
+        lines.push(...(p.urls_found || []));
+        if (data.output_path) {
+            lines.push('');
+            lines.push(`Full JSON report written to:\n${data.output_path}`);
+        }
+        if (container) container.textContent = lines.join('\n');
+        if (data.output_path) loadExplorer(explorerPath);
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+let whatsappDecryptModalInstance = null;
+
+function openWhatsappDecryptModal() {
+    if (!activeSelectedFile) return;
+    document.getElementById("whatsappDecryptFileName").textContent = activeSelectedFile.split('/').pop();
+    const keyPathEl = document.getElementById("whatsappDecryptKeyPath");
+    if (keyPathEl) keyPathEl.value = '';
+    const output = document.getElementById("whatsappDecryptOutput");
+    if (output) output.textContent = 'Select a key file and click Decrypt.';
+    const badge = document.getElementById("whatsappDecryptBadge");
+    if (badge) { badge.className = 'badge bg-secondary'; badge.textContent = 'AWAITING INPUT'; }
+
+    if (!whatsappDecryptModalInstance) {
+        whatsappDecryptModalInstance = new bootstrap.Modal(document.getElementById('whatsappDecryptModal'));
+    }
+    whatsappDecryptModalInstance.show();
+}
+
+async function runWhatsappDecrypt() {
+    if (!activeSelectedFile) return;
+    const keyPathEl = document.getElementById("whatsappDecryptKeyPath");
+    const keyPath = keyPathEl ? keyPathEl.value.trim() : '';
+    const badge = document.getElementById("whatsappDecryptBadge");
+    const output = document.getElementById("whatsappDecryptOutput");
+    if (!keyPath) return showToast('Enter or browse to a key file first.', 'warning');
+
+    if (badge) { badge.className = 'badge bg-info text-dark'; badge.textContent = 'DECRYPTING...'; }
+    if (output) output.textContent = 'Running...';
+
+    // Same evidence-must-never-be-modified reasoning as runSelectedHashdeep()/runSelectedApkAnalyze() above.
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+
+    try {
+        const res = await fetch('/api/files/whatsapp_decrypt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, key_path: keyPath, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (badge) { badge.className = 'badge bg-danger'; badge.textContent = 'FAILED'; }
+            if (output) output.textContent = `[ERROR] ${data.error}`;
+            return;
+        }
+        if (badge) { badge.className = 'badge bg-success'; badge.textContent = 'DECRYPTED'; }
+        if (output) output.textContent = `${data.log}\n\nOutput written to:\n${data.output_path}`;
+        loadExplorer(explorerPath);
+    } catch (err) {
+        if (badge) { badge.className = 'badge bg-danger'; badge.textContent = 'FAILED'; }
+        if (output) output.textContent = '[REQUEST FAILED]';
+    }
+}
+
+let ipaAnalyzeOptionsModalInstance = null;
+
+function openIpaAnalyzeModal() {
+    if (!activeSelectedFile) return;
+    document.getElementById("ipaAnalyzeFileName").textContent = activeSelectedFile.split('/').pop();
+    const machoToggle = document.getElementById("ipaAnalyzeMachoToggle");
+    if (machoToggle) machoToggle.checked = true;
+
+    if (!ipaAnalyzeOptionsModalInstance) {
+        ipaAnalyzeOptionsModalInstance = new bootstrap.Modal(document.getElementById('ipaAnalyzeOptionsModal'));
+    }
+    ipaAnalyzeOptionsModalInstance.show();
+}
+
+async function runSelectedIpaAnalyze() {
+    if (!activeSelectedFile) return;
+    const runMacho = document.getElementById("ipaAnalyzeMachoToggle")?.checked !== false;
+    if (ipaAnalyzeOptionsModalInstance) ipaAnalyzeOptionsModalInstance.hide();
+
+    showToolOutputModal(`IPA Analysis: ${activeSelectedFile.split('/').pop()}`, 'bi-apple');
+    try {
+        const res = await fetch('/api/files/ipa_analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, run_macho: runMacho, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) {
+            if (container) container.textContent = `[ERROR] ${data.error}`;
+            return;
+        }
+
+        const p = data.info_plist;
+        const summary = `${p.bundle_id || '(unknown)'} v${p.version || '?'}`;
+        setToolOutputBadge(summary, 'bg-info');
+
+        const lines = [];
+        lines.push(`Bundle ID: ${p.bundle_id || '(unknown)'}`);
+        lines.push(`App Name: ${p.app_name || '(unknown)'}`);
+        lines.push(`Version: ${p.version || '?'} (build ${p.build || '?'})`);
+        lines.push(`Minimum OS: ${p.min_os_version || '(unknown)'}`);
+        lines.push(`Executable: ${p.executable_name || '(unknown)'}`);
+        lines.push('');
+        const usageKeys = Object.keys(p.usage_descriptions || {});
+        lines.push(`--- Permission Usage Descriptions (${usageKeys.length}) ---`);
+        usageKeys.forEach((k) => lines.push(`${k}: ${p.usage_descriptions[k]}`));
+
+        lines.push('');
+        if (data.mobileprovision) {
+            if (data.mobileprovision.error) {
+                lines.push(`--- Mobile Provisioning Profile: ${data.mobileprovision.error} ---`);
+            } else {
+                const mp = data.mobileprovision;
+                lines.push(`--- Mobile Provisioning Profile ---`);
+                lines.push(`App ID Name: ${mp.app_id_name || '(unknown)'}`);
+                lines.push(`Team: ${mp.team_name || '(unknown)'} (${(mp.team_identifiers || []).join(', ')})`);
+                lines.push(`Valid: ${mp.creation_date || '?'} -> ${mp.expiration_date || '?'}`);
+                lines.push(`Provisioned Devices (${(mp.provisioned_devices || []).length}):`);
+                lines.push(...(mp.provisioned_devices || []));
+                lines.push(`Entitlements (${Object.keys(mp.entitlements || {}).length}):`);
+                Object.entries(mp.entitlements || {}).forEach(([k, v]) => lines.push(`  ${k}: ${JSON.stringify(v)}`));
+            }
+        } else {
+            lines.push('--- No embedded mobile provisioning profile (not signed for a real device, e.g. a simulator build) ---');
+        }
+
+        lines.push('');
+        if (data.macho) {
+            lines.push(`--- Mach-O Binary Analysis (${data.macho.executable}) ---`);
+            data.macho.slices.forEach((s) => {
+                const encStatus = s.encrypted === null ? 'unknown' : (s.encrypted ? `ENCRYPTED (cryptid=${s.cryptid})` : `decrypted (cryptid=${s.cryptid})`);
+                lines.push(`${s.architecture} (${s.is_64bit ? '64-bit' : '32-bit'}) - ${encStatus}`);
+            });
+        } else if (data.macho_error) {
+            lines.push(`--- Mach-O Binary Analysis: ${data.macho_error} ---`);
+        }
+
+        if (container) container.textContent = lines.join('\n');
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runSelectedBugreportParse() {
+    if (!activeSelectedFile) return;
+    showToolOutputModal(`Bugreport Deep Parse: ${activeSelectedFile.split('/').pop()}`, 'bi-file-earmark-zip');
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+
+    try {
+        const res = await fetch('/api/files/bugreport_parse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) {
+            if (container) container.textContent = `[ERROR] ${data.error}`;
+            return;
+        }
+        setToolOutputBadge(data.summary, 'bg-info');
+        if (container) container.textContent = `${JSON.stringify(data.sections, null, 2)}\n\nOutput written to:\n${data.output_path}`;
+        loadExplorer(explorerPath);
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
 }
 
 async function runSelectedGeolocationExport() {
@@ -11428,6 +11696,9 @@ function openFolderModal(mode = 'folder', targetInputId = 'destPath') {
     } else if (modalPickerMode === 'logicalAcqFolder') {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-folder-plus me-2"></i>Add Folder to Logical Acquisition';
         if (selectBtn) { selectBtn.style.display = 'inline-block'; selectBtn.textContent = 'Add This Folder'; }
+    } else if (modalPickerMode === 'whatsappKeyFile') {
+        if (titleEl) titleEl.innerHTML = '<i class="bi bi-key-fill me-2"></i>Select WhatsApp Key File';
+        if (selectBtn) selectBtn.style.display = 'none';
     } else {
         if (titleEl) titleEl.innerHTML = '<i class="bi bi-folder2-open me-2"></i>Select Destination Directory';
         if (selectBtn) { selectBtn.style.display = 'inline-block'; selectBtn.textContent = 'Select This Directory'; }
@@ -11467,6 +11738,8 @@ async function loadFolderList(path) {
                 isSelectableFile = true;
             } else if (modalPickerMode === 'recoverySource' && !item.is_dir) {
                 isSelectableFile = true;
+            } else if (modalPickerMode === 'whatsappKeyFile' && !item.is_dir) {
+                isSelectableFile = true;
             }
 
             if (item.is_dir || isSelectableFile) {
@@ -11478,6 +11751,7 @@ async function loadFolderList(path) {
                     if (modalPickerMode === 'attachment') icon = '<i class="bi bi-paperclip text-info me-2 fs-5"></i>';
                     else if (modalPickerMode === 'mapfile') icon = '<i class="bi bi-map text-warning me-2 fs-5"></i>';
                     else if (modalPickerMode === 'recoverySource') icon = '<i class="bi bi-disc text-primary me-2 fs-5"></i>';
+                    else if (modalPickerMode === 'whatsappKeyFile') icon = '<i class="bi bi-key-fill text-success me-2 fs-5"></i>';
                 }
 
                 const outerSpan = document.createElement('span');
@@ -11510,6 +11784,10 @@ async function loadFolderList(path) {
                     } else if (modalPickerMode === 'recoverySource') {
                         const sourcePathEl = document.getElementById("recoverySourcePath");
                         if (sourcePathEl) sourcePathEl.value = item.path;
+                        if (folderModalInstance) folderModalInstance.hide();
+                    } else if (modalPickerMode === 'whatsappKeyFile') {
+                        const keyPathEl = document.getElementById("whatsappDecryptKeyPath");
+                        if (keyPathEl) keyPathEl.value = item.path;
                         if (folderModalInstance) folderModalInstance.hide();
                     }
                 };
@@ -12949,7 +13227,38 @@ function onMobileAndroidSelect() {
         renderAndroidPhysicalRootBanner();
     }
 
+    const whatsappPanel = document.getElementById("mobileWhatsappKeyPanel");
+    if (whatsappPanel) whatsappPanel.style.display = (dev && dev.root_available) ? '' : 'none';
+    const whatsappStatus = document.getElementById("mobileWhatsappKeyStatus");
+    if (whatsappStatus) whatsappStatus.textContent = '';
+
     refreshMobileStartButtonState();
+}
+
+async function pullWhatsappKey() {
+    const dev = _currentlySelectedAndroidDevice();
+    const statusEl = document.getElementById("mobileWhatsappKeyStatus");
+    if (!dev) return showToast('Select a connected Android device first.', 'warning');
+    const destinationDir = activeCase ? activeCase.case_folder : document.getElementById("mobileDest")?.value || '/mnt';
+    if (statusEl) statusEl.textContent = 'Pulling key file...';
+    try {
+        const res = await fetch(`/api/mobile/android/${encodeURIComponent(dev.serial)}/pull_whatsapp_key`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ destination_dir: destinationDir })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (statusEl) statusEl.textContent = `Failed: ${data.error}`;
+            showToast(`WhatsApp key pull failed: ${data.error}`, 'danger');
+            return;
+        }
+        if (statusEl) statusEl.textContent = `Key saved to: ${data.path}`;
+        showToast('WhatsApp key file pulled successfully.', 'success');
+        loadExplorer(explorerPath);
+    } catch (err) {
+        if (statusEl) statusEl.textContent = '[REQUEST FAILED]';
+    }
 }
 
 function toggleIosEncryptField() {
