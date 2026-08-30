@@ -73,6 +73,18 @@
                                                     </div>
                                                 </div>
 
+                                                <!-- WhatsApp key extraction (mobile-forensics-tool
+                                                     gap-closing round, feature 3) - only shown for a
+                                                     device with confirmed root access (root_available),
+                                                     independent of the Acquisition Mode select below.
+                                                     Pulls the device's own key file, needed later to
+                                                     decrypt an msgstore.db.crypt12/14/15 pulled via a
+                                                     normal (non-root) adb pull. -->
+                                                <div id="mobileWhatsappKeyPanel" class="mb-2" style="display:none;">
+                                                    <button type="button" class="btn btn-outline-success btn-sm" onclick="pullWhatsappKey()"><i class="bi bi-key-fill me-1"></i>Pull WhatsApp Key File</button>
+                                                    <div id="mobileWhatsappKeyStatus" class="small text-subtle mt-1"></div>
+                                                </div>
+
                                                 <label class="telemetry-grid-label d-block mb-1">Acquisition Mode</label>
                                                 <select id="mobileAndroidMode" class="form-select form-select-sm mb-1" onchange="updateAndroidModeHelp()">
                                                     <option value="pull" selected>Pull Accessible Storage (adb pull)</option>

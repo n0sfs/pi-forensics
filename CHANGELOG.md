@@ -21,6 +21,48 @@ file after updating to see what changed.
 
 ---
 
+## [1.7.0] - 2026-08-30
+
+### New
+
+Five more analysis tools, closing gaps found during a follow-up mobile-forensics-tool research pass.
+All five write their generated output through the same evidence-integrity guard shipped in 1.6.0 - a
+report can never land inside, or next to, the exact folder being analyzed.
+
+- **Recover deleted SQLite records.** File Explorer's right-click menu on any `.db`/`.sqlite`/
+  `.sqlite3` file gained "Recover Deleted SQLite Records" (using SQLite Dissect) - recovers rows still
+  present in a database's own freeblocks, unallocated space, or a surviving WAL/rollback-journal file.
+  Recovery reliability depends heavily on how the file was closed: a database acquired with its own
+  WAL file still present alongside it is the most reliable case, since SQLite's own page management
+  frequently compacts a deleted row's freed bytes away entirely on a normal close.
+
+- **Android APK static analysis.** Right-click an `.apk` file and choose "Analyze APK (androguard)" -
+  package/version metadata, every requested permission, every declared activity/service/receiver/
+  provider, the full signing-certificate chain (subject, issuer, serial, SHA-256 fingerprint, validity
+  dates), and a scan for URLs embedded in the raw file. Never runs or installs the app.
+
+- **WhatsApp local-backup decryption.** Two pieces: Mobile Forensics can now pull a rooted Android
+  device's own WhatsApp key file directly ("Pull WhatsApp Key File", shown once a connected device's
+  root access is confirmed); File Explorer's right-click menu on a `msgstore.db.crypt12/14/15` file
+  gained "Decrypt WhatsApp Backup" - decrypts it against that key file into a real, browsable SQLite
+  database (openable directly via File Explorer's existing Database preview tab, no separate viewer
+  needed).
+
+- **iOS IPA static analysis.** Right-click an `.ipa` file and choose "Analyze IPA" - `Info.plist`
+  metadata (bundle ID, version, every permission usage-description string), the embedded mobile
+  provisioning profile (team, entitlements, provisioned devices, validity dates - no signature
+  verification is attempted), and an optional Mach-O binary layer (architecture and FairPlay
+  encryption status per slice) that degrades gracefully to "unavailable" rather than failing the whole
+  analysis if it can't run.
+
+- **Deep-parse an `adb bugreport` archive.** File Explorer's right-click menu on a `.zip` file gained
+  "Deep-Parse Bugreport" - turns an already-captured bug report (Mobile Forensics' own Bug Report mode)
+  into structured sections instead of a raw, unsearched archive: mount points, the running process
+  list, package install/delete history, loaded kernel modules, GPS coordinates, crash traces and
+  tombstones, network socket/connection state, battery stats, and power events.
+
+---
+
 ## [1.6.0] - 2026-08-30
 
 ### New
