@@ -786,8 +786,91 @@ function updateAndroidModeHelp() {
         pull: "Copies files from the phone's visible storage (photos, downloads, documents). Reliable on any modern Android version, but only sees what's directly accessible - not inside individual apps' private data.",
         backup: "Asks the phone to package up app data. The phone will show an on-screen prompt the user has to approve - check the device screen. Often disabled or unreliable on Android 12 and newer.",
         bugreport: "Captures a system diagnostic snapshot (logs, running processes, device state) - not a copy of personal files, but useful supporting evidence about what the device was doing.",
+        physical: "Reads the device's raw block storage directly, the same way this app images a USB drive - but requires the device to ALREADY be rooted (this app never roots a device itself; rooting is an evidence-altering action). Only raw/dd output is supported (no E01). See the disclosure banner below for what's verified and what isn't.",
     };
     helpText.textContent = MODE_HELP[sel.value] || '';
+
+    const physicalPanel = document.getElementById("mobileAndroidPhysicalPanel");
+    if (physicalPanel) {
+        physicalPanel.style.display = sel.value === 'physical' ? '' : 'none';
+        if (sel.value === 'physical') renderAndroidPhysicalRootBanner();
+    }
+}
+
+// Physical/raw Android acquisition (2026-08-30) - see the approved plan
+// (iridescent-leaping-mist.md) for the full design. mobileAndroidDevices is
+// populated by refreshMobileDevices() already - reused here rather than a
+// second device fetch, since root_available/selinux_mode are already
+// returned on every device entry.
+function _currentlySelectedAndroidDevice() {
+    const sel = document.getElementById("mobileAndroidSelect");
+    if (!sel || !sel.value || typeof mobileAndroidDevices === 'undefined') return null;
+    return (mobileAndroidDevices || []).find((d) => d.serial === sel.value) || null;
+}
+
+function renderAndroidPhysicalRootBanner() {
+    const banner = document.getElementById("mobilePhysicalRootBanner");
+    if (!banner) return;
+    const dev = _currentlySelectedAndroidDevice();
+    if (!dev) {
+        banner.className = "small p-2 mb-2 rounded-2 border border-secondary text-subtle";
+        banner.textContent = "Select a device first.";
+        return;
+    }
+    if (!dev.root_available) {
+        banner.className = "small p-2 mb-2 rounded-2 border border-danger text-danger";
+        banner.textContent = "Not rooted (or root access could not be confirmed via su). Physical/raw acquisition "
+            + "requires the device to already be rooted. Rooting a device is itself an evidence-altering action - "
+            + "only proceed if rooting is a deliberate, documented, examiner-authorized step, and use Logical "
+            + "acquisition (Pull/Backup/Bugreport) otherwise.";
+        return;
+    }
+    banner.className = "small p-2 mb-2 rounded-2 border border-warning text-warning";
+    banner.textContent = `Root access confirmed via su. Whether this device/root method actually permits reading `
+        + `raw block devices is unknown until attempted - SELinux enforcing mode can block even root from `
+        + `/dev/block/* even when su itself succeeds. A permission-denied failure on the first read is a real, `
+        + `distinguishable outcome, not a bug. SELinux mode reported by the device: ${dev.selinux_mode || 'Unknown'}. `
+        + `If this is the first root access attempt, check the phone screen for a root-grant prompt.`;
+}
+
+async function detectAndroidPhysicalTargets() {
+    const dev = _currentlySelectedAndroidDevice();
+    const targetSelect = document.getElementById("mobilePhysicalTargetSelect");
+    const notesEl = document.getElementById("mobilePhysicalTargetNotes");
+    if (!dev || !targetSelect) {
+        showToast('Select a connected Android device first.', 'warning');
+        return;
+    }
+    targetSelect.innerHTML = '<option value="">Detecting...</option>';
+    if (notesEl) notesEl.style.display = 'none';
+    try {
+        const res = await fetch(`/api/mobile/android/${encodeURIComponent(dev.serial)}/physical_targets`);
+        const data = await res.json();
+        if (!data.success) {
+            showToast(data.error || 'Failed to detect targets.', 'danger');
+            targetSelect.innerHTML = '<option value="">-- Detection failed, try again --</option>';
+            return;
+        }
+        targetSelect.innerHTML = '';
+        if (!data.targets.length) {
+            targetSelect.innerHTML = '<option value="">-- No targets found - use the manual path below --</option>';
+        } else {
+            data.targets.forEach((t) => {
+                const opt = document.createElement('option');
+                opt.value = t.device_path;
+                const sizeLabel = t.size_bytes ? `${(t.size_bytes / (1024 ** 3)).toFixed(2)} GB` : 'size unknown';
+                opt.textContent = `${t.label} (${t.device_path}, ${sizeLabel})`;
+                targetSelect.appendChild(opt);
+            });
+        }
+        if (notesEl && data.notes && data.notes.length) {
+            notesEl.textContent = data.notes.join(' ');
+            notesEl.style.display = '';
+        }
+    } catch (err) {
+        showToast('Request failed while detecting targets.', 'danger');
+        targetSelect.innerHTML = '<option value="">-- Detection failed, try again --</option>';
+    }
 }
 
 function updateDdrescueStrategyHelp() {
@@ -12800,6 +12883,13 @@ function onMobileAndroidSelect() {
         statusEl.innerText = (dev && !dev.authorized) ? 'Device connected but not authorized yet - approve the USB debugging prompt on the device, then Refresh.' : '';
     }
 
+    // Switching devices while Physical mode is already selected should
+    // refresh the root/SELinux banner for the newly-selected device, not
+    // leave the previous device's status showing.
+    if (document.getElementById("mobileAndroidMode")?.value === 'physical') {
+        renderAndroidPhysicalRootBanner();
+    }
+
     refreshMobileStartButtonState();
 }
 
@@ -12860,11 +12950,38 @@ async function startAndroidAcquisition() {
         notes: `Android ${mode} via adb`
     };
 
+    const body = { serial, mode, destination: dest, metadata };
+
+    if (mode === 'physical') {
+        const manualChecked = document.getElementById("mobilePhysicalManualToggle")?.checked;
+        const target = manualChecked
+            ? (document.getElementById("mobilePhysicalManualTarget")?.value || '').trim()
+            : (document.getElementById("mobilePhysicalTargetSelect")?.value || '');
+        if (!target) {
+            return showToast("Select a target partition (Detect Targets first), or enter a manual device path.", 'warning');
+        }
+        const hashes = [...document.querySelectorAll('#mobileAndroidPhysicalPanel input[type=checkbox][id^=mobilePhysicalHash]:checked')]
+            .map((el) => el.value);
+        if (!hashes.length) {
+            return showToast("Select at least one verification hash algorithm.", 'warning');
+        }
+        if (!confirm("Physical/raw acquisition requires the device to already be rooted. Rooting a device is "
+            + "itself an evidence-altering action - only continue if that's already true, or rooting is a "
+            + "deliberate, documented, examiner-authorized step. Whether this specific device/root method "
+            + "actually permits reading raw block devices is unknown until attempted (SELinux enforcing mode "
+            + "can block even root). Continue?")) {
+            return;
+        }
+        body.target = target;
+        body.format = document.getElementById("mobilePhysicalFormat")?.value || 'dc3dd';
+        body.hashes = hashes;
+    }
+
     try {
         const res = await fetch('/api/mobile/start_android', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ serial, mode, destination: dest, metadata })
+            body: JSON.stringify(body)
         });
         const data = await res.json();
         if (!data.success) showToast(`Start Failed: ${data.error}`, 'danger');

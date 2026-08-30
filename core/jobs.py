@@ -120,6 +120,78 @@ def clear_active_proc():
     global active_proc
     active_proc = None
 
+# A second tracked-process slot, added 2026-08-30 for physical/raw Android
+# acquisition (routes/mobile.py's execution_worker_android_physical()) -
+# the first worker in this app that chains TWO real subprocesses together
+# (an `adb exec-out su -c dd` upstream source piped into a dc3dd/dcfldd
+# downstream sink), rather than running exactly one. active_proc above
+# keeps meaning "the dc3dd/dcfldd process" - what stop_imaging() and the
+# existing progress-parsing code already expect there; this slot holds the
+# upstream adb/su/dd process specifically. Same never-export-the-bare-name
+# accessor discipline as active_proc, for the identical reason documented
+# in this module's own docstring.
+upstream_proc = None
+
+def get_upstream_proc():
+    return upstream_proc
+
+def set_upstream_proc(proc):
+    global upstream_proc
+    upstream_proc = proc
+
+def clear_upstream_proc():
+    global upstream_proc
+    upstream_proc = None
+
+def _read_stream_loop(proc, on_line, on_poll=None, poll_interval=2.0):
+    """Non-blockingly streams `proc`'s stdout line-by-line (ANSI-stripped)
+    into on_line(clean_line) until it exits. Factored out of
+    _stream_subprocess() (2026-08-30, pure extraction - no behavior change)
+    so _stream_piped_subprocess() below can reuse the identical byte-
+    buffer/line-split/non-blocking-fd logic without a second, drifting
+    copy of it. Does NOT set/clear any active-proc slot and does NOT call
+    proc.wait() - each caller still owns that, exactly as before this was
+    factored out."""
+    fd = proc.stdout.fileno()
+    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+    byte_buffer = b""
+    last_poll = time.time()
+
+    while True:
+        time.sleep(0.1)
+        try:
+            raw_chunk = os.read(fd, 1024)
+            if raw_chunk:
+                byte_buffer += raw_chunk
+
+                while b'\r' in byte_buffer or b'\n' in byte_buffer:
+                    r_idx = byte_buffer.find(b'\r')
+                    n_idx = byte_buffer.find(b'\n')
+                    indices = [i for i in (r_idx, n_idx) if i != -1]
+                    cut_idx = min(indices)
+
+                    line_bytes = byte_buffer[:cut_idx]
+                    byte_buffer = byte_buffer[cut_idx + 1:]
+
+                    line_str = line_bytes.decode('utf-8', errors='ignore')
+                    clean_line = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line_str).replace('\r', '').strip()
+                    if clean_line:
+                        on_line(clean_line)
+
+            elif proc.poll() is not None:
+                break
+        except (OSError, IOError):
+            pass
+
+        if on_poll and (time.time() - last_poll) >= poll_interval:
+            try:
+                on_poll()
+            except Exception:
+                pass
+            last_poll = time.time()
+
 # --- Direct Real-time Asynchronous Execution Engine ---
 def _stream_subprocess(cmd, on_line, on_poll=None, poll_interval=2.0, cwd=None, stdin_yes=False):
     """
@@ -165,48 +237,72 @@ def _stream_subprocess(cmd, on_line, on_poll=None, poll_interval=2.0, cwd=None, 
         except Exception:
             pass
 
-    fd = active_proc.stdout.fileno()
-    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-
-    byte_buffer = b""
-    last_poll = time.time()
-
-    while True:
-        time.sleep(0.1)
-        try:
-            raw_chunk = os.read(fd, 1024)
-            if raw_chunk:
-                byte_buffer += raw_chunk
-
-                while b'\r' in byte_buffer or b'\n' in byte_buffer:
-                    r_idx = byte_buffer.find(b'\r')
-                    n_idx = byte_buffer.find(b'\n')
-                    indices = [i for i in (r_idx, n_idx) if i != -1]
-                    cut_idx = min(indices)
-
-                    line_bytes = byte_buffer[:cut_idx]
-                    byte_buffer = byte_buffer[cut_idx + 1:]
-
-                    line_str = line_bytes.decode('utf-8', errors='ignore')
-                    clean_line = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line_str).replace('\r', '').strip()
-                    if clean_line:
-                        on_line(clean_line)
-
-            elif active_proc.poll() is not None:
-                break
-        except (OSError, IOError):
-            pass
-
-        if on_poll and (time.time() - last_poll) >= poll_interval:
-            try:
-                on_poll()
-            except Exception:
-                pass
-            last_poll = time.time()
+    _read_stream_loop(active_proc, on_line, on_poll, poll_interval)
 
     active_proc.wait()
     return active_proc
+
+def _stream_piped_subprocess(upstream_cmd, downstream_cmd, on_line, on_poll=None, poll_interval=2.0):
+    """Runs TWO chained subprocesses - upstream_cmd's stdout piped directly
+    into downstream_cmd's stdin, e.g. `adb exec-out su -c "dd if=..."` (the
+    remote read) piped into `sudo dc3dd of=... hash=...` (the local write +
+    hash) for physical/raw Android acquisition (routes/mobile.py's
+    execution_worker_android_physical()) - this app's first acquisition
+    shape that genuinely needs two real subprocesses rather than one.
+    active_proc continues to mean "the downstream (dc3dd/dcfldd) process" -
+    unchanged from every other worker, so the existing progress-parsing/
+    Stop-button code needs zero changes there; upstream_proc (see the
+    accessors above) tracks the new upstream process specifically, and
+    stop_imaging() (routes/acquisition.py) must kill both.
+
+    upstream_proc's own stderr is captured SEPARATELY from the tracked
+    on_line log stream (never merged into it) and returned as its own
+    string - this is deliberately where `su: not found` / `Permission
+    denied` / an SELinux denial will show up, and it needs to stay
+    distinguishable from dc3dd's own log for the physical-Android
+    failure-path messaging, not silently absorbed into the same stream a
+    successful dc3dd run's progress lines also go through.
+
+    upstream_proc.stdout.close() immediately after starting downstream_proc
+    is not optional: without it, this process (the parent) still holds its
+    own duplicate reference to upstream's stdout read end, so if
+    downstream_proc exits early (e.g. Stop, or a write error), upstream_proc
+    never sees EOF/SIGPIPE and would otherwise hang running forever instead
+    of being torn down - the standard, well-documented Python subprocess
+    pipe-chaining gotcha.
+
+    Returns (downstream_proc, upstream_proc, upstream_stderr_text)."""
+    global active_proc, upstream_proc
+    upstream_proc = subprocess.Popen(
+        upstream_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        bufsize=0,
+        preexec_fn=os.setsid,
+    )
+    active_proc = subprocess.Popen(
+        downstream_cmd,
+        stdin=upstream_proc.stdout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
+        preexec_fn=os.setsid,
+    )
+    upstream_proc.stdout.close()
+
+    _read_stream_loop(active_proc, on_line, on_poll, poll_interval)
+    active_proc.wait()
+
+    upstream_stderr_text = ""
+    try:
+        upstream_proc.wait(timeout=5)
+        if upstream_proc.stderr:
+            upstream_stderr_text = (upstream_proc.stderr.read() or b"").decode("utf-8", errors="ignore").strip()
+    except Exception:
+        pass
+
+    return active_proc, upstream_proc, upstream_stderr_text
 
 # --- Consolidated Per-Case Reporting ---
 # A "case" started via /api/cases/create now gets exactly one JSON file
