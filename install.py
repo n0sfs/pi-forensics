@@ -178,6 +178,16 @@ apt_packages = [
                        # toolchain-with-docs). Left installed permanently rather than removed
                        # after the build, matching every other apt-installed tool's own
                        # permanent-install pattern in this list.
+    "pcscd", "pcsc-tools",  # PC/SC smart-card daemon + utilities, for SIM/UICC card
+                            # forensics (pysim, see the build step below) - confirmed present on
+                            # Debian trixie/arm64 (2.3.3-1 / 1.7.3-1) via apt-cache before adding.
+                            # pcscd.socket is enabled by default on install and starts the daemon
+                            # on-demand (socket activation) - no explicit systemctl enable needed here.
+    "libpcsclite-dev",  # headers (winscard.h) needed to compile pyscard, pysim's own PC/SC
+                        # binding - confirmed live that no prebuilt wheel exists for pyscard on
+                        # PyPI or piwheels for any platform (source-only distribution), and that
+                        # the build genuinely fails without this exact package (a real, reproduced
+                        # compile error: "fatal error: winscard.h: No such file or directory").
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
@@ -422,6 +432,92 @@ for tool in LEAPP_TOOLS:
               f"requirements.txt.")
     except subprocess.CalledProcessError as e:
         print(f"[!] {tool['name']} install failed ({e}) - {tool['requires']} will not be available.")
+
+# pysim (SIM/UICC card forensics) - its own isolated venv, mirroring the
+# ALEAPP/iLEAPP pattern above (see that block's own comment for why an
+# isolated venv, not a confirmed dependency conflict but a large,
+# uncontrolled transitive dependency tree - confirmed live: ~35 packages
+# including two git-sourced ones, plus a native pyscard C-extension that
+# needs libpcsclite-dev's headers, both installed above). Pinned to a
+# specific commit SHA (osmocom/pysim publishes no version tags), same
+# "pinned known-working version" discipline as mquire/ALEAPP/iLEAPP.
+PYSIM_REPO = "https://github.com/osmocom/pysim"
+PYSIM_COMMIT = "d13be84ccd0405883fa83e5365399fcc1d8a6866"
+pysim_dir = os.path.join(INSTALL_DIR, "pysim")
+pysim_venv_dir = os.path.join(pysim_dir, "pysim_venv")
+pysim_venv_python = os.path.join(pysim_venv_dir, "bin", "python3")
+if not os.path.exists(pysim_venv_python):
+    print("\n[*] Installing pysim (SIM/UICC card forensics)...")
+    pysim_src_dir = os.path.join(pysim_dir, "pysim_src")
+    try:
+        shutil.rmtree(pysim_src_dir, ignore_errors=True)
+        os.makedirs(pysim_src_dir, exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=pysim_src_dir, check=True, timeout=30)
+        subprocess.run(["git", "remote", "add", "origin", PYSIM_REPO],
+                        cwd=pysim_src_dir, check=True, timeout=30)
+        clone_res = subprocess.run(
+            ["git", "fetch", "--depth", "1", "origin", PYSIM_COMMIT],
+            cwd=pysim_src_dir, capture_output=True, text=True, timeout=120,
+        )
+        if clone_res.returncode != 0:
+            print(f"[!] Could not fetch pysim (no internet access right now?) - SIM/UICC card "
+                  f"forensics will not be available until this is retried. "
+                  f"Error: {clone_res.stderr.strip()[:300]}")
+            shutil.rmtree(pysim_src_dir, ignore_errors=True)
+        else:
+            subprocess.run(["git", "checkout", "-q", "FETCH_HEAD"], cwd=pysim_src_dir, check=True, timeout=30)
+            subprocess.run(["python3", "-m", "venv", pysim_venv_dir], check=True, timeout=120)
+            pysim_pip = os.path.join(pysim_venv_dir, "bin", "pip")
+            subprocess.run([pysim_pip, "install", "--upgrade", "pip"], check=True, timeout=120)
+            # `pip install -e .` (editable), not a requirements.txt - pysim's
+            # own pyproject.toml is the real dependency source; confirmed
+            # live this resolves and installs the full ~35-package tree
+            # (including compiling pyscard's native extension against the
+            # libpcsclite-dev headers installed above) with no manual
+            # requirements file needed.
+            req_res = subprocess.run(
+                [pysim_pip, "install", "-e", pysim_src_dir],
+                capture_output=True, text=True, timeout=1800,
+            )
+            if req_res.returncode != 0:
+                print(f"[!] pysim dependency install failed - SIM/UICC card forensics will not "
+                      f"be available. Error: {req_res.stderr.strip()[-500:]}")
+                shutil.rmtree(pysim_venv_dir, ignore_errors=True)
+            else:
+                print(f"[+] pysim installed to {pysim_src_dir}.")
+    except subprocess.TimeoutExpired:
+        print(f"[!] pysim install timed out - SIM/UICC card forensics will not be available. "
+              f"Retry manually later: git clone {PYSIM_REPO} into {pysim_src_dir}, checkout "
+              f"{PYSIM_COMMIT}, create a venv at {pysim_venv_dir}, and pip install -e it.")
+    except subprocess.CalledProcessError as e:
+        print(f"[!] pysim install failed ({e}) - SIM/UICC card forensics will not be available.")
+
+# pcscd's own default polkit policy (org.debian.pcsc-lite.access_pcsc /
+# access_card) only authorizes an "active" (real logged-in desktop)
+# session - allow_inactive: no, allow_any: no - so this app's own
+# systemd-run service account is rejected by design, confirmed live via
+# pcscd's own journal log ("NOT authorized for action: access_pcsc")
+# before writing this. A minimal, exact-match polkit rule grants exactly
+# those two actions to exactly this station's service account - not a
+# broad policy loosening, matching this project's own sudoers-grant
+# philosophy elsewhere (pin the exact grant, never widen more than needed).
+print("\n[*] Granting PC/SC access to the service account via polkit...")
+pcsc_polkit_rule = f'''polkit.addRule(function(action, subject) {{
+    if ((action.id == "org.debian.pcsc-lite.access_pcsc" ||
+         action.id == "org.debian.pcsc-lite.access_card") &&
+        subject.user == "{SERVICE_USER}") {{
+        return polkit.Result.YES;
+    }}
+}});
+'''
+try:
+    with open("/etc/polkit-1/rules.d/49-pi-forensics-pcsc.rules", "w") as f:
+        f.write(pcsc_polkit_rule)
+    subprocess.run(["systemctl", "restart", "polkit"], check=True, timeout=30)
+    print("[+] PC/SC polkit rule installed.")
+except Exception as e:
+    print(f"[!] Could not install the PC/SC polkit rule ({e}) - SIM/UICC card reads will fail "
+          f"with a 'NOT authorized' error until this is applied manually.")
 
 # 3. Directory Ownership Setup
 print(f"\n[*] Setting directory permissions on {INSTALL_DIR} for '{SERVICE_USER}'...")
