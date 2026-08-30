@@ -8837,6 +8837,20 @@ function renderCaseTimeline() {
             delBadge.textContent = 'Deleted';
             srcTd.appendChild(delBadge);
         }
+        // 2026-08-29: a mobile-pull-sourced 'M' event can now be a genuine,
+        // captured-from-the-device modification time (an Android pull run
+        // after this shipped) rather than the copy-time fallback every
+        // folder-based entry used before it - this badge is the only place
+        // an examiner looking at the interactive table (as opposed to an
+        // exported report, which already labels this per-row) can tell the
+        // two apart.
+        if (e.real_device_timestamp) {
+            const devBadge = document.createElement('span');
+            devBadge.className = 'badge bg-success ms-1';
+            devBadge.title = 'Captured directly from the device via adb shell right after the pull - not the file\'s copy-time.';
+            devBadge.textContent = 'Device Time';
+            srcTd.appendChild(devBadge);
+        }
 
         const actTd = document.createElement('td');
         const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
@@ -8863,7 +8877,7 @@ function exportCaseTimelineCsv() {
         const s = (val === null || val === undefined) ? '' : String(val);
         return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ['Timestamp', 'Source', 'Activity', 'Detail', 'Evidence ID', 'Deleted', 'Suspicious'];
+    const header = ['Timestamp', 'Source', 'Activity', 'Detail', 'Evidence ID', 'Deleted', 'Suspicious', 'Device Time'];
     const lines = [header];
     caseTimelineFilteredRows.forEach((e) => {
         const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
@@ -8873,6 +8887,7 @@ function exportCaseTimelineCsv() {
             CASE_TIMELINE_SOURCE_LABEL[e.source] || e.source,
             activityLabel || '', e.detail || '', e.evidence_id || '',
             e.deleted ? 'Yes' : 'No', e.suspicious ? 'Yes' : 'No',
+            e.real_device_timestamp ? 'Yes' : 'No',
         ]);
     });
     const csvText = lines.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';

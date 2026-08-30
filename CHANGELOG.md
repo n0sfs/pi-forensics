@@ -21,6 +21,46 @@ file after updating to see what changed.
 
 ---
 
+## [1.4.0] - 2026-08-29
+
+### New
+
+- **Android pull acquisitions now capture each file's genuine on-device modification time**, closing
+  the gap the v1.3.0 disclosure note only worked around. Immediately after a successful `adb pull`,
+  the acquisition worker makes one `adb shell find` call against the connected device to read every
+  pulled file's real modification timestamp directly from the phone, and writes it as a sidecar
+  manifest next to the pull's own output folder. The Evidence Timeline (and the exported PDF/HTML
+  report's Filesystem Timeline section) now use that real value in place of the copied file's own
+  copy-time modification date whenever it's available - a single genuine "Modified" entry per file,
+  not a fabricated Accessed/Changed/Created alongside it. A pull made before this shipped, or one
+  where the device disconnected right after the pull before the capture step could run, has no
+  manifest and falls back to the pre-existing copy-time behavior with its existing disclosure note,
+  unchanged. If only some files in a pull have a captured timestamp (e.g. a file was added to the
+  phone between the capture and the pull finishing), only those specific files fall back - the rest
+  still show real device times.
+
+  Confirmed empirically on a real connected Pixel 8a before building this: `/sdcard` on Android is
+  itself a symlink, so the on-device `find` needs `-H` to actually descend into it (without it, the
+  walk silently returns nothing); this device's `find` only supports capturing modification time
+  this way (not access/change time), which is also the one timestamp `adb pull` was actually
+  destroying and the one that matters most for a timeline. A full 1,819-file walk of a real device
+  completed in under 2 seconds.
+
+- The interactive Evidence Timeline table now shows a green **"Device Time"** badge on any row using
+  a genuine, captured-from-the-phone timestamp - previously this distinction only ever showed up in
+  an exported PDF/HTML report, never in the live table an examiner is actually looking at day to day.
+  Included in the CSV export as its own column too.
+
+  Verified against a real, brand-new ~15-minute, 8.77 GB `adb pull` against a real connected Pixel
+  8a, run through the actual application end to end: 1,823 real on-device timestamps captured, and
+  independently cross-checked three separate ways - a trashed photo's own filename (Android embeds
+  its original deletion timestamp directly in `.trashed-<epoch>-<epoch>.jpg`-style filenames)
+  matched the captured value to within 73ms; the Evidence Timeline's density chart showed a real,
+  varied spread of activity across several months instead of one spike on the pull's own run date;
+  and all 714 timeline rows for the new evidence item correctly carried the new "Device Time" badge.
+
+---
+
 ## [1.3.0] - 2026-08-29
 
 ### New
