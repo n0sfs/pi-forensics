@@ -21,6 +21,43 @@ file after updating to see what changed.
 
 ---
 
+## [1.6.0] - 2026-08-30
+
+### New
+
+- **ALEAPP/iLEAPP mobile artifact parsing.** File Explorer's right-click menu gained "Parse with
+  ALEAPP/iLEAPP...", a much deeper, comprehensive artifact-parsing pass over an already-acquired
+  Android `adb pull` extraction or iOS `idevicebackup2` backup, using the same open-source, community-
+  maintained parsers (ALEAPP/iLEAPP) many examiners already reach for outside this app - hundreds of
+  app-specific artifacts (WhatsApp, Signal, Telegram, Chrome, WiFi history, app usage, and far more),
+  well beyond this app's own small built-in mobile parser. Runs as a background job with full progress
+  tracking (parsed live from the tool's own per-module output) and Stop-button support, since a real
+  multi-GB extraction can take many minutes to run the full artifact catalog. The result is a real,
+  self-contained HTML report plus TSV data files, saved as a new folder next to the extraction and
+  automatically found by File Explorer/File Views.
+
+  Each tool runs in its own dedicated, isolated Python environment on the station, not this app's own
+  shared one - a real, hard dependency conflict was found and confirmed before deciding this (ALEAPP
+  pins an old `packaging` version, iLEAPP needs a much newer one; pip's own resolver refuses outright
+  to install both together). Neither tool needed a new always-on background process - both are plain
+  command-line scripts, invoked as a subprocess exactly like every other external tool this app already
+  shells out to.
+
+### Fixed
+
+- **Analysis output could land directly inside the evidence folder being analyzed**, silently adding
+  non-evidence content to it - a real, live bug affecting Geolocation Export and MVT scan (Hash
+  Directory Tree carried the same defect, not yet triggered against real data but present in the code).
+  All three now write their generated file(s) into the active case's folder instead (falling back to
+  the analyzed folder's own parent if no case is selected) - never into, or nested inside, the folder
+  or image actually being examined. Enforced at the server, not just assumed from the client: any
+  request whose destination resolves to the same path as the source, or somewhere underneath it, is
+  now rejected outright rather than silently honored. This also covers Auto Analyze's own hand-off into
+  MVT for a Mobile-profile scan, since it reaches the same route. A small number of already-affected
+  evidence folders from before this fix were found and corrected as part of shipping it.
+
+---
+
 ## [1.5.0] - 2026-08-30
 
 ### New

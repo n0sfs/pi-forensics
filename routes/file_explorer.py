@@ -28,7 +28,7 @@ from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role, format_epoch
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets, ALEAPP_DIR, ALEAPP_VENV_PYTHON, ILEAPP_DIR, ILEAPP_VENV_PYTHON
 import yara
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
@@ -73,9 +73,34 @@ LINUX_ARTIFACT_DISCOVERERS = {
 }
 from core.evtx_utils import find_evtx_files, parse_evtx_file
 from core.lnk_utils import parse_lnk_file
-from core.jobs import job_lock, current_job, update_job, snapshot_job
+from core.jobs import job_lock, current_job, update_job, snapshot_job, _stream_subprocess
 
 file_explorer_bp = Blueprint('file_explorer', __name__)
+
+def _resolve_analysis_output_dir(requested_dest, source_dir):
+    """Validates and returns the real output directory an analysis tool
+    (hashdeep, Geolocation Export, MVT scan, ...) should write its generated
+    file(s)/folder into - never source_dir itself, and never anything nested
+    inside it. This app's own culture is that acquired evidence, including a
+    folder's own contents, must never be modified by a later analysis step
+    (found live, 2026-08-30: real Geolocation KML and MVT scan output had
+    both been written directly inside a real acquired Android pull folder -
+    each tool independently defaulted its output path to the very folder it
+    was scanning). requested_dest is normally the active case's folder
+    (frontend already computes this the same way every other properly-
+    designed tool in this app does - Memory Forensics, Logical Acquisition,
+    ALEAPP/iLEAPP); if omitted, falls back to source_dir's own parent
+    directory, which is still never source_dir itself. Returns None (never
+    source_dir, and never a path under it) on any invalid/missing/nested-in-
+    source destination - the caller should treat that as a 400."""
+    dest = safe_path(requested_dest) if requested_dest else safe_path(os.path.dirname(source_dir.rstrip(os.sep)))
+    if not dest or not os.path.isdir(dest):
+        return None
+    real_dest = os.path.realpath(dest)
+    real_source = os.path.realpath(source_dir)
+    if real_dest == real_source or real_dest.startswith(real_source + os.sep):
+        return None
+    return dest
 
 # --- File Explorer Endpoints ---
 @file_explorer_bp.route('/api/files/browse', methods=['POST'])
@@ -557,7 +582,11 @@ def run_hashdeep():
     if algo not in ALLOWED_HASH_ALGOS:
         return jsonify({"success": False, "error": f"Unsupported algorithm '{algo}'. Use one of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
 
-    manifest_path = os.path.join(target_dir, f"_hashdeep_{algo}_manifest.txt")
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), target_dir)
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    manifest_path = os.path.join(dest_dir, f"{os.path.basename(target_dir.rstrip(os.sep))}_hashdeep_{algo}_manifest.txt")
     try:
         res = subprocess.run(
             ['hashdeep', '-r', '-c', algo, target_dir],
@@ -565,10 +594,10 @@ def run_hashdeep():
         )
         with open(manifest_path, 'w') as f:
             f.write(res.stdout)
-        _auto_tag_case_artifact(target_dir, manifest_path)
+        _auto_tag_case_artifact(dest_dir, manifest_path)
 
         file_count = sum(1 for line in res.stdout.splitlines() if line and not line.startswith('%') and not line.startswith('#'))
-        log_chain_of_custody("hashdeep_manifest", {"directory": target_dir, "algorithm": algo, "file_count": file_count})
+        log_chain_of_custody("hashdeep_manifest", {"directory": target_dir, "algorithm": algo, "file_count": file_count, "manifest_path": manifest_path})
         return jsonify({"success": True, "manifest_path": manifest_path, "file_count": file_count})
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": "hashdeep timed out (large directory - consider a subdirectory instead)."}), 500
@@ -589,6 +618,10 @@ def extract_geolocation_kml():
     target_dir = safe_path(req.get('path'))
     if not target_dir or not os.path.isdir(target_dir):
         return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), target_dir)
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
     # -n: signed decimal degrees for GPSLatitude/GPSLongitude (exiftool applies the
     # N/S/E/W hemisphere sign automatically) instead of a "39 deg 21' N" DMS string -
@@ -618,13 +651,13 @@ def extract_geolocation_kml():
         # Only written when at least one point is found - this action is expected
         # to be run on plenty of folders with no GPS-tagged photos at all, and a
         # dead empty file every time would just be clutter, not documentation.
-        kml_path = os.path.join(target_dir, "_geolocation_export.kml")
+        kml_path = os.path.join(dest_dir, f"{os.path.basename(target_dir.rstrip(os.sep))}_geolocation_export.kml")
         try:
             with open(kml_path, 'w', encoding='utf-8') as f:
                 f.write(kml_doc)
         except Exception as e:
             return jsonify({"success": False, "error": f"Failed to write KML file: {e}"}), 500
-        _auto_tag_case_artifact(target_dir, kml_path)
+        _auto_tag_case_artifact(dest_dir, kml_path)
 
     log_chain_of_custody("geolocation_kml_export", {
         "directory": target_dir, "files_scanned": len(entries), "points_found": len(points)
@@ -1224,7 +1257,7 @@ def quick_triage_scan():
 # extraction, which doesn't line up with this app's adb pull/bugreport
 # output; it will error clearly on those rather than silently finding
 # nothing, so it's still exposed rather than blocked outright.
-def _run_mvt_scan_body(target_dir, platform):
+def _run_mvt_scan_body(target_dir, dest_dir, platform):
     """The actual mvt-ios/mvt-android subprocess call, extracted verbatim
     out of run_mvt_scan() (Phase 3 of Linux Artifacts + Auto Analyze,
     2026-08-25) so Auto Analyze's mobile profile can call it directly as
@@ -1232,6 +1265,13 @@ def _run_mvt_scan_body(target_dir, platform):
     body()/_run_recover_deleted_body() in routes/image_browser.py (this
     function never touched current_job/job_lock either). Returns a plain
     dict; the route builds its jsonify() response from it.
+
+    dest_dir (2026-08-30 fix) is a real, separate directory the scan's own
+    _mvt_<platform>_scan output folder is written into - this used to
+    default to target_dir itself (the backup folder being scanned), a real
+    live bug: MVT scan output was landing directly inside a real acquired
+    Android pull folder, silently modifying evidence. Never target_dir
+    again - see _resolve_analysis_output_dir()'s own docstring.
 
     Disclosed, not silently fixed here: this subprocess.run(timeout=900)
     call is not killable mid-call via this app's Stop button (it never
@@ -1243,7 +1283,7 @@ def _run_mvt_scan_body(target_dir, platform):
         return {"success": False, "status_code": 400,
                 "error": f"{os.path.basename(mvt_bin)} is not installed. Check Advanced Settings > Tool Versions."}
 
-    output_dir = os.path.join(target_dir, f"_mvt_{platform}_scan")
+    output_dir = os.path.join(dest_dir, f"{os.path.basename(target_dir.rstrip(os.sep))}_mvt_{platform}_scan")
     os.makedirs(output_dir, exist_ok=True)
 
     try:
@@ -1273,7 +1313,11 @@ def run_mvt_scan():
     if platform not in ('ios', 'android'):
         return jsonify({"success": False, "error": "platform must be 'ios' or 'android'."}), 400
 
-    result = _run_mvt_scan_body(target_dir, platform)
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), target_dir)
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    result = _run_mvt_scan_body(target_dir, dest_dir, platform)
     if not result["success"]:
         status_code = result.pop("status_code", 500)
         return jsonify(result), status_code
@@ -1460,6 +1504,170 @@ def start_memory_forensics_scan():
 
     log_chain_of_custody("memory_forensics_scan_start", {"image_path": image_path, "plugins": plugin_keys, "destination": dest_dir})
     return jsonify({"success": True, "message": "Memory forensics scan started."})
+
+
+# ALEAPP/iLEAPP (Android/iOS Logs Events And Protobuf/Plist Parser, 2026-08-30)
+# - comprehensive, community-maintained, third-party mobile artifact parsers
+# run against an already-acquired logical extraction (adb pull output for
+# ALEAPP, an idevicebackup2 --full backup for iLEAPP), covering far more
+# app-specific artifacts (WhatsApp, Signal, Telegram, Chrome, WiFi history,
+# app usage, and much more) than this app's own small hand-curated iOS-only
+# parser in core/mobile_artifacts.py. Each tool lives in its own dedicated,
+# isolated venv - see core/config.py's ALEAPP_VENV_PYTHON/ILEAPP_VENV_PYTHON
+# docstring for the real, hard packaging-version conflict (confirmed live
+# via pip's own resolver refusal) that makes sharing this app's own venv
+# impossible for these two tools. Neither is pip-importable - both are
+# git-cloned CLI scripts (install.py's build step), invoked as a subprocess
+# exactly like every other external tool this app shells out to, never
+# imported into this app's own process.
+LEAPP_TOOLS = {
+    "aleapp": {
+        "label": "ALEAPP (Android)", "venv_python": ALEAPP_VENV_PYTHON,
+        "script_path": os.path.join(ALEAPP_DIR, "aleapp.py"), "input_type": "fs",
+    },
+    "ileapp": {
+        # 'itunes' (not 'fs') confirmed live via iLEAPP's own --help output -
+        # this app's idevicebackup2 --full output is exactly a raw iTunes-
+        # style backup with hashed paths/names (matching Manifest.db's own
+        # resolution scheme, the same one core/mobile_artifacts.py's iOS
+        # parser already relies on), not a plain-named-folder 'fs' extraction.
+        "label": "iLEAPP (iOS)", "venv_python": ILEAPP_VENV_PYTHON,
+        "script_path": os.path.join(ILEAPP_DIR, "ileapp.py"), "input_type": "itunes",
+    },
+}
+# Confirmed live: even a near-empty synthetic input takes multiple minutes to
+# run ALEAPP's full ~1000+-module artifact catalog (it always runs every
+# module against whatever's given, gracefully skipping anything not present
+# - there's no per-module selection flag). A real multi-GB extraction is
+# expected to take considerably longer (same order of magnitude as
+# MVT-Android's own real ~16-minute run against comparable real data on this
+# station) - generous cap, not a tight one.
+LEAPP_SCAN_TIMEOUT_SECONDS = 3600
+LEAPP_PROGRESS_RE = re.compile(r'^\[(\d+)/(\d+)\]')
+
+def execution_worker_leapp_scan(tool_key, input_path, dest_dir, source_ip=None, user=None):
+    """Streams a single ALEAPP or iLEAPP run to completion - one long-running
+    process (not many short ones like Volatility3's per-plugin subprocess.run
+    calls above), so this needs the shared job system's real Stop-button
+    support via _stream_subprocess, not a blocking call with a timeout."""
+    global current_job
+    info = LEAPP_TOOLS[tool_key]
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-150:]))
+
+    def on_line(line):
+        m = LEAPP_PROGRESS_RE.match(line)
+        if m:
+            done, total = int(m.group(1)), int(m.group(2))
+            update_job(transferred_bytes=done, total_bytes=total,
+                       progress_percent=round(done / total * 100, 1) if total else 0.0,
+                       status=f"Running artifact modules ({done}/{total})...")
+        append_log(line)
+
+    try:
+        update_job(format="leapp_scan", status="Initializing...", progress_percent=0.0,
+                  transferred_bytes=0, total_bytes=0)
+        append_log(f"[*] Starting {info['label']} scan of {input_path}...")
+
+        if not os.path.exists(info["venv_python"]) or not os.path.exists(info["script_path"]):
+            append_log(f"[-] {info['label']} is not installed on this station - "
+                       f"re-run install.py, or check Settings > Service Controls & "
+                       f"Diagnostics > Tool Versions.")
+            update_job(status="Failed")
+            return
+
+        base_name = os.path.splitext(os.path.basename(input_path.rstrip(os.sep)))[0] or "extraction"
+        tool_output_dir = os.path.join(dest_dir, f"{base_name}_{tool_key}_output")
+        os.makedirs(tool_output_dir, exist_ok=True)
+        before = set(os.listdir(tool_output_dir))
+
+        cmd = [info["venv_python"], info["script_path"], "-t", info["input_type"],
+               "-i", input_path, "-o", tool_output_dir]
+        proc = _stream_subprocess(cmd, on_line, poll_interval=3.0)
+
+        if snapshot_job()["status"] == "Stopped":
+            append_log("[!] Stopped by user.")
+            return
+
+        if proc.returncode != 0:
+            update_job(status="Failed")
+            append_log(f"[-] {info['label']} exited with code {proc.returncode}.")
+            return
+
+        after = set(os.listdir(tool_output_dir))
+        new_dirs = sorted(after - before)
+        result_dir = os.path.join(tool_output_dir, new_dirs[-1]) if new_dirs else tool_output_dir
+        _auto_tag_case_artifact(dest_dir, tool_output_dir)
+
+        html_files = []
+        for root_dir, _dirs, files in os.walk(result_dir):
+            for f in files:
+                if f.lower().endswith('.html'):
+                    html_files.append(os.path.join(root_dir, f))
+
+        identity = {"source_type": "real_fs", "path": input_path, "name": os.path.basename(input_path.rstrip(os.sep))}
+        summary = f"scan complete - {len(html_files)} HTML report file(s) -> {result_dir}"
+        _record_analysis_result(dest_dir, identity, info["label"], summary, "\n".join(log_history)[-20000:], run_by=user)
+        log_chain_of_custody("leapp_scan", {
+            "tool": tool_key, "input_path": input_path, "output_dir": result_dir,
+        }, source_ip=source_ip, user=user)
+
+        update_job(status="Completed Successfully", progress_percent=100.0)
+        append_log(f"[+] {info['label']} scan complete - output at {result_dir}")
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+@file_explorer_bp.route('/api/files/leapp/start_scan', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def start_leapp_scan():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    tool_key = req.get('tool')
+    input_path = safe_path(req.get('path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+
+    if tool_key not in LEAPP_TOOLS:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Select a mobile artifact parser (ALEAPP or iLEAPP)."}), 400
+    if not input_path or not os.path.isdir(input_path):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Extraction folder not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    info = LEAPP_TOOLS[tool_key]
+    update_job(
+        format="leapp_scan", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Initializing {info['label']} scan of {input_path}..."
+    )
+
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_leapp_scan,
+        args=(tool_key, input_path, dest_dir, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("leapp_scan_start", {"tool": tool_key, "input_path": input_path, "destination": dest_dir})
+    return jsonify({"success": True, "message": f"{info['label']} scan started."})
 
 
 # mquire (Linux memory forensics, 2026-08-25) - Volatility3 above is

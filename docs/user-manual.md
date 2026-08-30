@@ -384,6 +384,27 @@ Right-click a folder (or a whole acquired image) and choose the matching **Parse
 Views' analysis-index categories and in Reporting's Files & Artifacts tab, all with readable labels
 — not raw internal keys.
 
+### ALEAPP/iLEAPP: a much deeper mobile artifact pass
+
+The built-in mobile chat/app parser above is deliberately small. For a comprehensive pass over an
+already-acquired Android `adb pull` extraction or iOS `idevicebackup2` backup, right-click the
+extraction folder and choose **Parse with ALEAPP/iLEAPP...** — this runs the same open-source,
+community-maintained parsers (ALEAPP for Android, iLEAPP for iOS) many examiners already use outside
+this app, covering hundreds of app-specific artifacts: WhatsApp, Signal, Telegram, Chrome, WiFi
+connection history, app usage, and far more than the app's own hand-curated parser attempts.
+
+Pick the parser matching the extraction's platform, then click Start Scan. This runs as a background
+job (watch the progress bar below the File Explorer toolbar) — a real multi-GB extraction can take
+many minutes to run the parser's full artifact catalog, and it can be interrupted with Stop like any
+other background job. The result is a real, self-contained HTML report plus TSV data files, written
+to a new folder next to the extraction (never inside it — see the note below) and automatically
+findable in File Explorer once the scan completes.
+
+Each tool runs in its own separate, isolated Python environment on the station, invisibly — ALEAPP
+and iLEAPP have a genuine, incompatible dependency requirement between them, so this app never tries
+to run them side by side in the same environment. Nothing about this needs any attention from you;
+it's set up once, automatically, the first time the station is installed or updated.
+
 Browser artifact parsing specifically extracts real history, bookmarks, downloads, and cookie
 metadata from any Chrome/Chromium or Firefox browser profile found within a folder or image. Cookie
 *values* from Chrome specifically can't be recovered — modern Chrome encrypts them with an OS-level

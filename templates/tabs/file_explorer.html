@@ -146,6 +146,7 @@
                             <button id="btnParseLinuxArtifacts" class="dropdown-item" onclick="runSelectedLinuxArtifactsParse()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Recursively finds and parses Linux forensic artifacts anywhere under this folder - shell history (.bash_history/.zsh_history), /etc/passwd accounts, cron jobs, and auth.log (SSH login/sudo/session events). Login history (wtmp) is Experimental and not included by default - see the Auto Analyze picker for it."><i class="bi bi-terminal me-2"></i>Parse Linux Artifacts</button>
                             <button id="btnParseCryptoWallets" class="dropdown-item" onclick="runSelectedCryptoWalletParse()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Recursively finds cryptocurrency wallet files anywhere under this folder - wallet.dat (Bitcoin Core-derived), geth/Ethereum keystore files, and Electrum wallets. Detection only - does not decrypt/parse wallet contents."><i class="bi bi-currency-bitcoin me-2"></i>Find Crypto Wallet Files</button>
                             <button id="btnParseMobileArtifacts" class="dropdown-item" onclick="runSelectedMobileArtifactsParse()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Finds and parses an already-pulled, unencrypted iOS backup (idevicebackup2 --full output) under this folder - SMS/iMessage, Contacts, and Call History. An encrypted backup is detected and reported, not silently skipped."><i class="bi bi-chat-left-text me-2"></i>Parse Mobile Chat/App Artifacts</button>
+                            <button id="btnLeappScan" class="dropdown-item" onclick="openLeappScanModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Runs ALEAPP or iLEAPP - comprehensive, community-maintained third-party mobile artifact parsers - against this extraction folder (an adb pull output for ALEAPP, an idevicebackup2 backup for iLEAPP). Covers far more app-specific artifacts (WhatsApp, Signal, Chrome, WiFi, app usage, and much more) than this app's own built-in parser above. A real multi-GB extraction can take many minutes - runs as a background job with Stop-button support."><i class="bi bi-stack me-2"></i>Parse with ALEAPP/iLEAPP...</button>
                             <button id="btnParseLnk" class="dropdown-item" onclick="runSelectedLnkParse()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Parses this .lnk shortcut file - target path, arguments, working directory, icon location, and the shortcut's own MAC timestamps."><i class="bi bi-link-45deg me-2"></i>Parse LNK Shortcut</button>
                             </div>
                             <button type="button" class="ctx-menu-section-toggle" data-ctx-section="ctxSecMobileMemory" onclick="toggleCtxMenuSection('ctxSecMobileMemory')"><span>Mobile &amp; Memory</span><i class="bi bi-chevron-down"></i></button>
@@ -389,6 +390,30 @@
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-sm btn-info text-dark fw-bold" onclick="startMemoryForensicsScan()"><i class="bi bi-play-fill me-1"></i>Start Scan</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="leappScanModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-stack me-2"></i>ALEAPP/iLEAPP: <span id="leappFolderName" class="font-monospace">--</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <label class="telemetry-grid-label d-block mb-1">Parser:</label>
+                    <select class="form-select form-select-sm bg-dark text-light border-secondary mb-2" id="leappTool">
+                        <option value="aleapp">ALEAPP (Android - adb pull output)</option>
+                        <option value="ileapp">iLEAPP (iOS - idevicebackup2 backup)</option>
+                    </select>
+                    <div class="small text-subtle mb-3">Runs a comprehensive, community-maintained, third-party mobile artifact parser against this extraction folder - hundreds of app-specific artifacts (WhatsApp, Signal, Telegram, Chrome, WiFi history, app usage, and much more), well beyond this app's own small built-in parser. Runs as a background job (see the progress bar below the toolbar) - a real multi-GB extraction can take many minutes to run the parser's full artifact catalog. Produces a self-contained HTML report plus TSV data files in a new subfolder next to this extraction, browsable in File Explorer once complete.</div>
+                    <div id="leappScanStatus" class="small text-subtle">Select the correct parser for this extraction's platform, then click Start Scan.</div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-info text-dark fw-bold" onclick="startLeappScan()"><i class="bi bi-play-fill me-1"></i>Start Scan</button>
                 </div>
             </div>
         </div>
