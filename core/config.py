@@ -61,6 +61,21 @@ VOL3_PIP_BIN = os.path.join(MVT_BIN_DIR, "pip")
 # at all.
 MQUIRE_BIN = os.path.join(INSTALL_DIR, "bin", "mquire")
 
+# ALEAPP/iLEAPP (Android/iOS Logs Events And Protobuf/Plist Parser) each get
+# their own dedicated venv, not this app's shared one - a real, hard pip
+# dependency conflict was confirmed live before deciding this: ALEAPP pins
+# packaging==20.1 exactly, iLEAPP pins packaging==24.1 exactly, and pip's own
+# resolver refuses outright to install both into one environment ("these
+# package versions have conflicting dependencies"). Both tools are pure CLI
+# subprocesses anyway (git-cloned, never imported into this app's own
+# process - see install.py's build step), so per-tool isolation costs
+# nothing beyond one extra venv each.
+LEAPP_DIR = os.path.join(INSTALL_DIR, "leapp")
+ALEAPP_DIR = os.path.join(LEAPP_DIR, "ALEAPP")
+ALEAPP_VENV_PYTHON = os.path.join(LEAPP_DIR, "aleapp_venv", "bin", "python3")
+ILEAPP_DIR = os.path.join(LEAPP_DIR, "ILEAPP")
+ILEAPP_VENV_PYTHON = os.path.join(LEAPP_DIR, "ileapp_venv", "bin", "python3")
+
 # Written by install.py's optional TLS setup (self-signed, via openssl) at
 # a fixed path also hardcoded in nginx/pi-forensics.conf's ssl_certificate/
 # ssl_certificate_key directives - keep all three in sync if this ever
