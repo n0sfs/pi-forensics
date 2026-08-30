@@ -501,7 +501,13 @@ everywhere else).
   timestamps from a mobile pull/backup or Logical Acquisition folder — anything with no walkable
   disk image still gets a timeline from its own copied files) merged with parsed artifact
   timestamps, shown as a stacked density chart by source (click a bar to filter the table
-  below it) plus a filterable, exportable table. Anti-forensic indicators (like a cleared audit log)
+  below it) plus a filterable, exportable table, with **Year** and **Month** drop-downs to narrow
+  a case spanning years down to one period. For an Android pull specifically, the timeline uses
+  each file's genuine on-device modification time (captured from the phone directly via `adb
+  shell` right after the pull, since `adb pull` itself does not carry original timestamps across
+  the transfer) — a pull made before this shipped, or one where the device disconnected before
+  that capture step ran, falls back to copy-time entries with a clear note explaining why.
+  Anti-forensic indicators (like a cleared audit log)
   and deleted-file entries are flagged directly in the table.
 - **Audit Trail** — the station-wide activity log, filtered to just this case number.
 - **Search** — a live keyword search across the Report Narrative (including Case Details), Jobs,
