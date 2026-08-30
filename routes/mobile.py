@@ -24,10 +24,27 @@ from core.paths import safe_path, log_chain_of_custody
 from core.config import EVIDENCE_ROOT
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
-    _stream_subprocess, clear_active_proc,
-    build_report_target, write_initial_report, _write_report,
+    _stream_subprocess, _stream_piped_subprocess, clear_active_proc, clear_upstream_proc,
+    build_report_target, write_initial_report, _write_report, reclaim_ownership,
 )
 from core.case_index_db import _auto_tag_case_artifact
+from core.config import ALLOWED_HASH_ALGOS
+
+# 2026-08-30, physical/raw Android acquisition: dc3dd/dcfldd's progress-line
+# and post-completion hash-extraction parsers already live in
+# routes/acquisition.py, fully generic (dc3dd/dcfldd's own output format
+# doesn't change based on where the input bytes came from - confirmed live
+# this session by piping test data through both and getting correctly-
+# parsed, byte-correct results). Moving them into core/ would mean touching
+# already-shipped, already-tested code in routes/acquisition.py for zero
+# functional benefit; a narrow, one-directional, documented cross-Blueprint
+# import mirrors the exact precedent already established and explained in
+# routes/acquisition.py's own import block (its own import from
+# routes/image_browser.py, for the identical "deeply Blueprint-local,
+# disproportionately risky to move" reasoning). One-directional, not
+# circular: routes/acquisition.py has no import of routes/mobile.py
+# (confirmed via a full-repo grep before adding this).
+from routes.acquisition import parse_dc3dd_line, parse_dc3dd_hashes, read_hash_log_file
 
 mobile_bp = Blueprint('mobile', __name__)
 
@@ -38,6 +55,23 @@ mobile_bp = Blueprint('mobile', __name__)
 # jailbreaks, or exploits a device - nothing in this app does.
 _UDID_RE = re.compile(r'^[a-fA-F0-9\-]{20,64}$')
 _ANDROID_SERIAL_RE = re.compile(r'^[a-zA-Z0-9_\-\.:]{4,64}$')
+
+# Validates an on-device (Android) block-device path headed into a REMOTE
+# shell command via `adb shell`/`su -c '...'` - a genuinely different
+# threat model from core/paths.py's _DEVICE_RE/_PARTITION_RE, which
+# validate a Pi-HOST path for local os.path/safe_path() use and must not
+# be reused here. Anchored, length-capped, and restricted to characters
+# that can never break out of the single-quoted `su -c '...'` string this
+# gets interpolated into (routes/mobile.py's _build_physical_upstream_cmd
+# below) - same class of care already given to _ANDROID_SERIAL_RE/_UDID_RE
+# above.
+_ANDROID_BLOCK_PATH_RE = re.compile(r'^/dev/block/[A-Za-z0-9_/.\-]{1,128}$')
+
+# Physical/raw acquisition needs a genuinely seekable destination format -
+# confirmed live (2026-08-30) that ewfacquire cannot read from a piped/
+# non-seekable source at all ("Illegal seek"), while dc3dd and dcfldd both
+# correctly read from stdin. E01 is therefore never offered for this mode.
+ANDROID_PHYSICAL_ALLOWED_FORMATS = ('dc3dd', 'dcfldd')
 
 
 def list_ios_devices():
@@ -100,6 +134,50 @@ def list_ios_devices():
     return devices
 
 
+# Physical/raw Android acquisition (2026-08-30) needs root - detected
+# per-device here, best-effort, so the UI can disclose an honest state
+# rather than let an examiner discover mid-acquisition that a device
+# can't do this. Deliberately does NOT attempt an actual block-device
+# read at this stage (e.g. no speculative `dd if=/dev/block/... of=/dev/
+# null count=1`) - this app's own established culture is to avoid a read
+# against the evidence source before the examiner has committed to
+# starting a real job. `su -c id` and `getenforce` are the two cheapest,
+# least-invasive signals available short of that.
+#
+# Provisional, not yet live-verified against a real rooted device (see
+# the plan's own Section 9 checklist) - a first-time Magisk root grant
+# can pop an on-device confirmation dialog that this probe has no way to
+# detect or wait for; a short subprocess timeout is the only guard
+# against that hanging this whole device-list refresh.
+ANDROID_ROOT_PROBE_TIMEOUT = 8
+
+def _probe_android_root_status(serial):
+    """Best-effort su/SELinux probe for one authorized device. Never
+    raises - any failure just means "root not detected", the same
+    outcome a genuinely non-rooted device produces. Returns a dict merged
+    directly into the device entry: {"root_available": bool,
+    "selinux_mode": "Enforcing"|"Permissive"|"Disabled"|"Unknown"}."""
+    root_available = False
+    try:
+        res = subprocess.run(["adb", "-s", serial, "shell", "su", "-c", "id"],
+                              capture_output=True, text=True, timeout=ANDROID_ROOT_PROBE_TIMEOUT)
+        root_available = res.returncode == 0 and "uid=0" in res.stdout
+    except Exception:
+        pass
+
+    selinux_mode = "Unknown"
+    try:
+        res = subprocess.run(["adb", "-s", serial, "shell", "getenforce"],
+                              capture_output=True, text=True, timeout=ANDROID_ROOT_PROBE_TIMEOUT)
+        out = res.stdout.strip()
+        if res.returncode == 0 and out in ("Enforcing", "Permissive", "Disabled"):
+            selinux_mode = out
+    except Exception:
+        pass
+
+    return {"root_available": root_available, "selinux_mode": selinux_mode}
+
+
 def list_android_devices():
     devices = []
     try:
@@ -146,6 +224,7 @@ def list_android_devices():
                         device['build_id'] = props.get('ro.build.display.id', 'Unknown')
                 except Exception:
                     pass
+                device.update(_probe_android_root_status(serial))
             devices.append(device)
     except Exception as e:
         print(f"Error listing Android devices: {e}")
@@ -322,6 +401,133 @@ def _capture_android_device_mtimes(serial, output_path):
     return len(files)
 
 
+# --- Physical/raw Android acquisition: on-device target enumeration ---
+# PROVISIONAL - every parsing assumption below is from documented Android/
+# Linux convention (kernel /proc, sysfs, and the standard `ls -la` symlink-
+# listing format), NOT yet confirmed against this app's own real
+# environment (no rooted device was available while this was written -
+# see the approved plan's own Section 9 verification checklist). Kept
+# deliberately isolated in these small, individually-fixable functions
+# rather than woven into the acquisition worker itself, so a wrong
+# assumption here (e.g. a different symlink-target format on some OEM
+# skin) can be fixed without touching the already-proven pipe-orchestration
+# or report-schema code.
+ANDROID_TARGET_PROBE_TIMEOUT = 15
+
+def _parse_proc_partitions(text):
+    """Parses `cat /proc/partitions` output - 4 whitespace-separated
+    columns (major, minor, #blocks, name), a header line, and a blank
+    line. #blocks is in 1024-byte units (NOT the 512-byte sector
+    convention /sys/class/block/<name>/size uses below - these two units
+    must never be conflated). Returns [{"name", "size_bytes"}, ...],
+    skipping anything that doesn't look like exactly 4 numeric-then-name
+    fields (silently tolerant of header/blank lines rather than assuming
+    a fixed line count)."""
+    targets = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        major, minor, blocks, name = parts
+        if not (major.isdigit() and minor.isdigit() and blocks.isdigit()):
+            continue
+        targets.append({"name": name, "size_bytes": int(blocks) * 1024})
+    return targets
+
+
+def _parse_block_by_name_listing(text):
+    """Parses `su -c "ls -la /dev/block/by-name/"` output - one symlink
+    per meaningful partition label (userdata, metadata, system, boot,
+    super, etc.) pointing at the real device node. Handles both an
+    absolute (`-> /dev/block/sda27`) and a relative (`-> ../../sda27`)
+    symlink target, normalizing either to a bare device-node basename
+    (e.g. "sda27") for the /sys/class/block/<name>/size lookup below.
+    Returns {label: device_node_basename}."""
+    labels = {}
+    for line in text.splitlines():
+        m = re.search(r'\s(\S+)\s*->\s*(\S+)\s*$', line.strip())
+        if not m:
+            continue
+        label, target = m.group(1), m.group(2)
+        labels[label] = os.path.basename(target)
+    return labels
+
+
+def _enumerate_android_physical_targets(serial):
+    """Best-effort enumeration of physical-acquisition targets for a
+    rooted, connected Android device. Returns {"targets": [...], "notes":
+    [...]}} - never raises; any failed probe just yields fewer targets
+    plus an explanatory note, never a 500. "targets" entries:
+    {"label", "device_path", "size_bytes"}. userdata (if found) is
+    surfaced first - almost always the forensically interesting target on
+    a modern device (see the plan's Dynamic Partitions reasoning)."""
+    notes = []
+    partitions_by_basename = {}
+    try:
+        res = subprocess.run(["adb", "-s", serial, "shell", "cat", "/proc/partitions"],
+                              capture_output=True, text=True, timeout=ANDROID_TARGET_PROBE_TIMEOUT)
+        if res.returncode == 0:
+            for p in _parse_proc_partitions(res.stdout):
+                partitions_by_basename[p["name"]] = p["size_bytes"]
+        else:
+            notes.append("Could not read /proc/partitions on the device.")
+    except Exception as e:
+        notes.append(f"Could not read /proc/partitions on the device: {e}")
+
+    labels = {}
+    try:
+        res = subprocess.run(["adb", "-s", serial, "shell", "su", "-c", "ls -la /dev/block/by-name/"],
+                              capture_output=True, text=True, timeout=ANDROID_TARGET_PROBE_TIMEOUT)
+        if res.returncode == 0:
+            labels = _parse_block_by_name_listing(res.stdout)
+        else:
+            notes.append("/dev/block/by-name/ is not readable (needs root, or this device doesn't use it) - "
+                         "only raw block devices from /proc/partitions are listed below.")
+    except Exception as e:
+        notes.append(f"Could not read /dev/block/by-name/ on the device: {e}")
+
+    targets = []
+    for label, basename in labels.items():
+        size_bytes = partitions_by_basename.get(basename)
+        if size_bytes is None:
+            # Fall back to the sysfs sector-count reading (512-byte sectors,
+            # a different unit from /proc/partitions' 1024-byte blocks above -
+            # deliberately not conflated) when the label's basename wasn't
+            # already resolved via /proc/partitions.
+            try:
+                res = subprocess.run(["adb", "-s", serial, "shell", "cat", f"/sys/class/block/{basename}/size"],
+                                      capture_output=True, text=True, timeout=ANDROID_TARGET_PROBE_TIMEOUT)
+                if res.returncode == 0 and res.stdout.strip().isdigit():
+                    size_bytes = int(res.stdout.strip()) * 512
+            except Exception:
+                pass
+        targets.append({"label": label, "device_path": f"/dev/block/{basename}", "size_bytes": size_bytes})
+
+    # userdata first (almost always the forensically interesting target),
+    # then alphabetically for everything else.
+    targets.sort(key=lambda t: (t["label"] != "userdata", t["label"]))
+
+    if not targets and not labels:
+        # /dev/block/by-name/ wasn't usable at all - offer the raw
+        # /proc/partitions entries directly as a fallback, so an older/
+        # simpler device with no by-name symlinks still gets a usable list
+        # rather than an empty one.
+        for name, size_bytes in partitions_by_basename.items():
+            targets.append({"label": name, "device_path": f"/dev/block/{name}", "size_bytes": size_bytes})
+
+    return {"targets": targets, "notes": notes}
+
+
+@mobile_bp.route('/api/mobile/android/<serial>/physical_targets', methods=['GET'])
+@requires_auth
+@requires_permission('mobile')
+def android_physical_targets(serial):
+    if not _ANDROID_SERIAL_RE.match(serial or ''):
+        return jsonify({"success": False, "error": "Invalid device serial."}), 400
+    result = _enumerate_android_physical_targets(serial)
+    return jsonify({"success": True, "targets": result["targets"], "notes": result["notes"]})
+
+
 def execution_worker_android(mode, serial, output_path, report_file_path, report_data):
     """
     mode 'backup': adb backup (deprecated/unreliable on Android 12+, requires
@@ -443,6 +649,125 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
         clear_active_proc()
 
 
+def execution_worker_android_physical(serial, target, engine, hashes, total_bytes, out_file,
+                                       report_file_path, report_data):
+    """Physical/raw Android acquisition (2026-08-30) - the first worker in
+    this app that chains two real subprocesses: `adb exec-out su -c "dd
+    if=<target> bs=4M"` (the remote read, on the device) piped directly
+    into `sudo dc3dd`/`sudo dcfldd` (the local write + hash, on this
+    station) via core/jobs.py's _stream_piped_subprocess(). Requires the
+    device to already be rooted - see _probe_android_root_status() above
+    and the UI's own disclosure text for why this app never tries to root
+    a device itself.
+
+    Reuses routes/acquisition.py's dc3dd/dcfldd progress-line parser
+    (parse_dc3dd_line) and post-completion hash extraction (parse_dc3dd_
+    hashes/read_hash_log_file) completely unmodified - confirmed live this
+    session that dc3dd/dcfldd's own output format is unaffected by where
+    the input bytes came from (a real pipe test produced byte-identical
+    output with a correctly-parsed matching hash)."""
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    upstream_cmd = ["adb", "-s", serial, "exec-out", f"su -c 'dd if={target} bs=4M'"]
+    if engine == 'dc3dd':
+        dc3dd_log_file = out_file.replace('.dd', '_dc3dd.log')
+        downstream_cmd = ["sudo", "/usr/bin/dc3dd", f"of={out_file}", f"log={dc3dd_log_file}"] + [f"hash={h}" for h in hashes]
+    else:
+        downstream_cmd = ["sudo", "/usr/bin/dcfldd", f"of={out_file}"]
+        if hashes:
+            downstream_cmd.append(f"hash={','.join(hashes)}")
+            for h in hashes:
+                downstream_cmd.append(f"{h}log={out_file.replace('.dd', f'_{h}.log')}")
+
+    append_log(f"[*] Starting physical acquisition of {target} using [{engine.upper()}] via adb (rooted device required)...")
+    append_log(f"[*] Upstream (device) command: {' '.join(upstream_cmd)}")
+    append_log(f"[*] Downstream (station) command: {' '.join(downstream_cmd)}")
+
+    start_time = time.time()
+    update_job(format="android_physical", status="Acquiring (piped from device)...",
+               progress_percent=0.0, speed_mbps=0.0, transferred_bytes=0, total_bytes=total_bytes)
+
+    try:
+        def on_line(clean_line):
+            append_log(clean_line)
+            bytes_copied, speed = parse_dc3dd_line(clean_line)
+            updates = {}
+            if bytes_copied is not None:
+                updates["transferred_bytes"] = bytes_copied
+                if total_bytes > 0:
+                    updates["progress_percent"] = round((bytes_copied / total_bytes) * 100, 1)
+            if speed is not None:
+                updates["speed_mbps"] = speed
+            if updates:
+                update_job(**updates)
+
+        downstream_proc, upstream_proc, upstream_stderr = _stream_piped_subprocess(upstream_cmd, downstream_cmd, on_line)
+        time.sleep(1.0)
+
+        computed_hashes = {}
+        if engine == 'dc3dd':
+            computed_hashes = parse_dc3dd_hashes(out_file.replace('.dd', '_dc3dd.log'))
+        else:
+            for h in hashes:
+                val = read_hash_log_file(out_file.replace('.dd', f'_{h}.log'), h)
+                if val:
+                    computed_hashes[h] = val
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        report_data["computed_verification_hashes"] = computed_hashes
+
+        # Same dc3dd-can-exit-0-while-self-reporting-failure check
+        # execution_worker() (routes/acquisition.py) already relies on -
+        # the downstream tool here is the identical binary, so it carries
+        # the identical risk.
+        dc3dd_self_reported_failure = engine == 'dc3dd' and 'dc3dd failed at' in "\n".join(log_history)
+        # A non-zero upstream exit with real stderr text is the most likely
+        # shape an SELinux denial or a genuinely non-rooted/blocked target
+        # would take (confirmed live via a deliberately-failing fake
+        # upstream: exits fast, non-zero, downstream correctly ends up with
+        # a clean, honest zero-byte output rather than hanging) - surfaced
+        # as a specific, distinguishable failure reason rather than a bare
+        # "Failed" status.
+        upstream_failed = upstream_proc.returncode not in (0, None)
+
+        if downstream_proc.returncode in (0, 2) and not dc3dd_self_reported_failure and not upstream_failed:
+            update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
+            append_log("[+] Physical acquisition completed successfully.")
+            report_data["acquisition_status"] = "COMPLETED"
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            if upstream_failed:
+                append_log(f"[-] The on-device read failed (adb/su/dd exit code {upstream_proc.returncode}). "
+                           f"This usually means the device isn't actually rooted, root access was denied on-device, "
+                           f"or SELinux is blocking raw block-device access even as root - "
+                           f"{('device stderr: ' + upstream_stderr) if upstream_stderr else 'no further detail was returned by the device.'}")
+            elif dc3dd_self_reported_failure:
+                append_log("[-] dc3dd reported its own failure despite exiting with a code normally treated as success - treating this run as failed.")
+            else:
+                append_log(f"[-] {engine} exited with code {downstream_proc.returncode}")
+            report_data["acquisition_status"] = "FAILED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+
+    finally:
+        # dc3dd/dcfldd ran via sudo (reads the pipe, writes the output) -
+        # its output lands root-owned, same as every other sudo'd
+        # acquisition tool in this app.
+        reclaim_ownership(os.path.dirname(out_file))
+        update_job(active=False)
+        clear_active_proc()
+        clear_upstream_proc()
+
+
 # --- Mobile Forensics Endpoints ---
 @mobile_bp.route('/api/mobile/devices', methods=['GET'])
 @requires_auth
@@ -558,9 +883,9 @@ def start_android_acquisition():
         update_job(active=False)
         return jsonify({"error": "Invalid or missing device serial. Refresh the device list and select a connected, authorized Android device."}), 400
 
-    if mode not in ('backup', 'pull', 'bugreport'):
+    if mode not in ('backup', 'pull', 'bugreport', 'physical'):
         update_job(active=False)
-        return jsonify({"error": "mode must be 'backup', 'pull', or 'bugreport'."}), 400
+        return jsonify({"error": "mode must be 'backup', 'pull', 'bugreport', or 'physical'."}), 400
 
     if not dest_path:
         update_job(active=False)
@@ -569,6 +894,93 @@ def start_android_acquisition():
     case_num = metadata.get('case_number', 'UNASSIGNED')
     evidence_id = metadata.get('evidence_id', 'ITEM-01')
     base_name = f"{case_num}_{evidence_id}_android_{mode}"
+
+    if mode == 'physical':
+        target = (req.get('target') or '').strip()
+        engine = req.get('format', 'dc3dd')
+        hashes = [h for h in req.get('hashes', ['sha256']) if h in ALLOWED_HASH_ALGOS]
+
+        if not _ANDROID_BLOCK_PATH_RE.match(target):
+            update_job(active=False)
+            return jsonify({"error": "Invalid or missing target device path. Pick a target from the "
+                                      "enumerated list, or enter a valid /dev/block/... path manually."}), 400
+        if engine not in ANDROID_PHYSICAL_ALLOWED_FORMATS:
+            update_job(active=False)
+            return jsonify({"error": f"format must be one of {ANDROID_PHYSICAL_ALLOWED_FORMATS} for physical "
+                                      f"acquisition - E01/ewfacquire cannot read from a piped adb source."}), 400
+        if not hashes:
+            update_job(active=False)
+            return jsonify({"error": "Select at least one verification hash algorithm."}), 400
+
+        output_path = os.path.join(dest_path, f"{base_name}.dd")
+        try:
+            os.makedirs(dest_path, exist_ok=True)
+        except Exception as e:
+            update_job(active=False)
+            return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+        if os.path.exists(output_path):
+            update_job(active=False)
+            return jsonify({"error": f"{output_path} already exists - choose a different Evidence ID "
+                                      f"rather than overwrite an existing acquisition."}), 409
+
+        # Re-derive the target's size server-side right now, rather than
+        # trusting a client-supplied value from an earlier /physical_targets
+        # fetch that may be stale - one targeted sysfs lookup, not a full
+        # re-enumeration.
+        total_bytes = 0
+        try:
+            basename = os.path.basename(target)
+            res = subprocess.run(["adb", "-s", serial, "shell", "cat", f"/sys/class/block/{basename}/size"],
+                                  capture_output=True, text=True, timeout=ANDROID_TARGET_PROBE_TIMEOUT)
+            if res.returncode == 0 and res.stdout.strip().isdigit():
+                total_bytes = int(res.stdout.strip()) * 512
+        except Exception:
+            pass
+
+        root_status = _probe_android_root_status(serial)
+
+        update_job(
+            format="android_physical", progress_percent=0.0, speed_mbps=0.0,
+            transferred_bytes=0, total_bytes=total_bytes, status="Initializing...",
+            log=f"[*] Initializing physical acquisition of {target} on {serial} -> {output_path}..."
+        )
+
+        report_data = {
+            "tool": "android_physical",
+            "case_metadata": metadata,
+            "device_serial": serial,
+            "acquisition_parameters": {
+                "platform": "Android", "method": f"adb exec-out su -c dd (piped into {engine})",
+                "output_destination": output_path, "output_format": engine,
+                "target_device_path": target,
+                "target_label": "manual" if not target.startswith("/dev/block/by-name/") else os.path.basename(target),
+                "requested_hashes": hashes,
+                "root_method": "su (method/binary not further identified)" if root_status["root_available"] else "not detected",
+                "selinux_mode_at_detection": root_status["selinux_mode"],
+                "selinux_caveat": "SELinux enforcing mode can block root's raw block-device read even when su "
+                                  "succeeds; this is device- and root-method-specific and was not independently "
+                                  "verified for this specific target before the acquisition began.",
+                "dynamic_partitions_caveat": "Modern Android (10+) uses a virtual 'super' partition for system/"
+                                             "vendor/etc; this acquisition targeted a specific partition/block "
+                                             "device, not the whole physical disk, unless explicitly chosen.",
+            },
+            "attachments": {"files": [], "reference_urls": []},
+            "acquisition_status": "IN_PROGRESS",
+            "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        report_target = build_report_target(dest_path, dest_path, base_name)
+        write_initial_report(report_target, report_data)
+
+        thread = threading.Thread(
+            target=execution_worker_android_physical,
+            args=(serial, target, engine, hashes, total_bytes, output_path, report_target, report_data)
+        )
+        thread.daemon = True
+        thread.start()
+
+        log_chain_of_custody("android_acquisition_start", {"mode": mode, "serial": serial,
+                                                             "target": target, "destination": output_path})
+        return jsonify({"success": True, "message": "Physical Android acquisition started."})
 
     if mode == 'backup':
         output_path = os.path.join(dest_path, f"{base_name}.ab")

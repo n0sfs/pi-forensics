@@ -78,8 +78,48 @@
                                                     <option value="pull" selected>Pull Accessible Storage (adb pull)</option>
                                                     <option value="backup">Full Backup (adb backup)</option>
                                                     <option value="bugreport">Bug Report / System Logs (adb bugreport)</option>
+                                                    <option value="physical">Physical / Raw Acquisition (rooted device only)</option>
                                                 </select>
                                                 <div id="androidModeHelpText" class="small text-subtle mb-2">Copies files from the phone's visible storage (photos, downloads, documents). Reliable on any modern Android version, but only sees what's directly accessible - not inside individual apps' private data.</div>
+
+                                                <!-- Physical/raw mode (2026-08-30) - only shown when that mode is
+                                                     selected. Pipes a rooted device's raw block storage through
+                                                     `adb exec-out su -c dd` into this app's own dc3dd/dcfldd engine,
+                                                     the same hashing/write pipeline the main Forensic Acquisition
+                                                     tab already uses for a locally-attached drive. Requires the
+                                                     device to already be rooted - see the disclosure banner below. -->
+                                                <div id="mobileAndroidPhysicalPanel" style="display:none;">
+                                                    <div id="mobilePhysicalRootBanner" class="small p-2 mb-2 rounded-2 border"></div>
+
+                                                    <label class="telemetry-grid-label d-block mb-1">Target Partition / Block Device</label>
+                                                    <select id="mobilePhysicalTargetSelect" class="form-select form-select-sm mb-1">
+                                                        <option value="">-- Detect targets first --</option>
+                                                    </select>
+                                                    <button type="button" class="btn btn-outline-info btn-sm mb-2" onclick="detectAndroidPhysicalTargets()"><i class="bi bi-search me-1"></i>Detect Targets</button>
+                                                    <div id="mobilePhysicalTargetNotes" class="small text-warning mb-2" style="display:none;"></div>
+
+                                                    <div class="form-check mb-1">
+                                                        <input class="form-check-input" type="checkbox" id="mobilePhysicalManualToggle" onchange="document.getElementById('mobilePhysicalManualTargetRow').style.display = this.checked ? '' : 'none';">
+                                                        <label class="form-check-label small text-subtle" for="mobilePhysicalManualToggle">Advanced: specify a raw device path manually</label>
+                                                    </div>
+                                                    <div id="mobilePhysicalManualTargetRow" class="mb-2" style="display:none;">
+                                                        <input type="text" id="mobilePhysicalManualTarget" class="form-control form-control-sm font-monospace" placeholder="/dev/block/mmcblk0 (whole disk) or a specific partition path">
+                                                    </div>
+
+                                                    <label class="telemetry-grid-label d-block mb-1">Acquisition Engine</label>
+                                                    <select id="mobilePhysicalFormat" class="form-select form-select-sm mb-1">
+                                                        <option value="dc3dd" selected>dc3dd (raw, hashing built in)</option>
+                                                        <option value="dcfldd">dcfldd (raw, hashing built in)</option>
+                                                    </select>
+                                                    <div class="small text-subtle mb-2">E01/EWF is not available for physical Android acquisition - <code>ewfacquire</code> requires a seekable source and cannot read from a piped <code>adb</code> stream. Only raw/dd output is supported here.</div>
+
+                                                    <label class="telemetry-grid-label d-block mb-1">Verification Hashes</label>
+                                                    <div class="mb-2">
+                                                        <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="mobilePhysicalHashMd5" value="md5"><label class="form-check-label small text-light" for="mobilePhysicalHashMd5">MD5</label></div>
+                                                        <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="mobilePhysicalHashSha1" value="sha1"><label class="form-check-label small text-light" for="mobilePhysicalHashSha1">SHA1</label></div>
+                                                        <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="mobilePhysicalHashSha256" value="sha256" checked><label class="form-check-label small text-light" for="mobilePhysicalHashSha256">SHA256</label></div>
+                                                    </div>
+                                                </div>
                                             </div>
 
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder-symlink me-1"></i>Case &amp; Evidence Metadata</div>

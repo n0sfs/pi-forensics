@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.4.1-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.5.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -78,10 +78,14 @@ instead of a separate screen per tool.
 
 ### Mobile forensics
 iOS full backup via `idevicebackup2` (with optional encrypted backup to capture Keychain data) and
-Android via `adb pull`/`backup`/`bugreport`. Reads and displays real device detail before you start
-— model, OS version, build, storage, IMEI, WiFi/Bluetooth MAC, activation state for iOS; version,
-API level, manufacturer, build ID for Android. This does **not** bypass lockscreens or USB-debugging
-authorization — devices must already be unlocked and trusted by the examiner.
+Android via `adb pull`/`backup`/`bugreport`, plus a **physical/raw acquisition mode for already-rooted
+Android devices** — pipes the device's own raw block storage through `adb exec-out su -c dd` straight
+into this app's own `dc3dd`/`dcfldd` engine (E01 isn't possible over a piped source), the same
+hashing/write pipeline used for a locally-attached drive. Reads and displays real device detail before
+you start — model, OS version, build, storage, IMEI, WiFi/Bluetooth MAC, activation state for iOS;
+version, API level, manufacturer, build ID, and root/SELinux status for Android. This does **not**
+bypass lockscreens, USB-debugging authorization, or root a device itself — devices must already be
+unlocked/trusted (and, for physical acquisition, already rooted) by the examiner.
 
 ### File Explorer & analysis
 Browse local evidence and mounted network shares with inline preview (images, PDFs, and
@@ -255,7 +259,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.4.1 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.5.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
