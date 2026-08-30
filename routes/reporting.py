@@ -659,13 +659,29 @@ def _collect_case_timeline(events):
                          f"same output file; showing the most recent only.")
 
     for dest_path, info in folder_candidates.items():
+        event = info["event"]
+        evidence_id = event.get('case_metadata', {}).get('evidence_id', 'N/A')
         superseded = info["superseded_count"]
         if superseded:
-            evidence_id = info["event"].get('case_metadata', {}).get('evidence_id', 'N/A')
             plural = "es" if superseded != 1 else ""
             verb = "share" if superseded != 1 else "shares"
             notes.append(f"{evidence_id}: {superseded} earlier completed acquisition pass{plural} {verb} this "
                          f"same output folder; showing the most recent only.")
+        # 2026-08-29: empirically confirmed against real `adb pull` output on this
+        # station (every copied file's mtime landed on the pull's own run date, not
+        # the phone's real dates baked into e.g. Screenshot_20260724-102354.png's own
+        # filename) - adb pull does not carry the device's original file timestamps
+        # across the transfer at all, it stamps local copy time instead. This is a
+        # real, disclosed limitation of the underlying acquisition tool, not of this
+        # walk - flagged once per affected evidence item so an examiner never mistakes
+        # "today" for genuine device activity. Deliberately scoped to android_pull
+        # only: Logical Acquisition uses shutil.copy2() (confirmed preserves source
+        # mtime by design), and ios_backup's own timestamp behavior hasn't been
+        # verified either way, so nothing is claimed about it here.
+        if event.get('tool') == 'android_pull':
+            notes.append(f"{evidence_id}: timestamps reflect when each file was copied onto this station during "
+                         f"the adb pull, not the phone's original modified/accessed times - adb pull does not "
+                         f"preserve on-device timestamps.")
 
     total_filesystems = sum(len(fss) for fss in per_image_filesystems.values())
     total_sources = total_filesystems + len(folder_candidates)

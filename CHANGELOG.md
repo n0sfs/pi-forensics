@@ -21,6 +21,36 @@ file after updating to see what changed.
 
 ---
 
+## [1.3.0] - 2026-08-29
+
+### New
+
+- The **Evidence Timeline** (Reporting) now has **Year** and **Month** drill-down filters, sitting
+  next to the existing "All Evidence Items" filter. Year lists only the years that actually have
+  data for the case (a case can genuinely span years - filesystem timestamps from an acquired
+  image, artifact-parsed dates, etc.); Month unlocks once a specific year is picked and narrows
+  further within it. Both feed the same chart the "All Evidence Items" filter already did, so
+  picking a year renders daily/weekly bars for that year instead of the whole case's history
+  getting flattened into two or three unreadable clusters on a multi-year chart.
+
+### Fixed
+
+- The Evidence Timeline (and the exported PDF/HTML report's Filesystem Timeline section) now
+  explicitly discloses a real, confirmed limitation for any Android pull-mode acquisition:
+  `adb pull` does not preserve a phone's original file timestamps - it stamps the local copy time
+  on every file instead. Confirmed empirically against a real device pull, where every copied
+  file's timestamp landed on the pull's own run date despite several filenames carrying real,
+  materially earlier dates from the phone itself (e.g. `Screenshot_20260724-102354.png`). This is a
+  limitation of `adb pull` itself, not of pi-forensics' own timeline walk - the walk correctly
+  reads whatever timestamp the copied file actually has - but it went undisclosed, so an examiner
+  could mistake "today" for genuine on-device activity. A clear note now surfaces automatically
+  for any affected evidence item, both in the interactive Evidence Timeline and in exported
+  reports. Deliberately scoped to `adb pull` only - Logical Acquisition's own file copy preserves
+  the original source timestamp by design, and iOS backup's behavior in this regard hasn't been
+  verified either way, so nothing is claimed about either of those.
+
+---
+
 ## [1.2.0] - 2026-08-29
 
 ### New
