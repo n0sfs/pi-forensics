@@ -192,3 +192,22 @@ def classify_extension(name):
     reasonable, extensible starting set, not a claim of complete coverage."""
     ext = os.path.splitext(name)[1].lstrip('.').lower()
     return EXTENSION_CATEGORY_MAP.get(ext, 'other'), ext
+
+
+def format_epoch(ts):
+    """Formats a Unix timestamp as "%Y-%m-%d %H:%M:%S", or None for a falsy/
+    missing/unrepresentable one - never guesses. Moved here from routes/
+    file_explorer.py (2026-08-29) once routes/reporting.py's own folder-
+    based timeline collection needed the exact same formatting a second
+    routes/*.py module can't import from another; this is the shared home.
+
+    time.localtime(None) silently defaults to the CURRENT time rather than
+    raising - a falsy/missing timestamp must be rejected explicitly here,
+    not left to the caller to remember to guard against, or a genuinely-
+    unknown timestamp would render as "right now" instead of "Unknown"."""
+    if not ts:
+        return None
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+    except (OSError, OverflowError, ValueError):
+        return None

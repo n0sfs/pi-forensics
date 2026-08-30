@@ -27,7 +27,7 @@ import threading
 from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission
-from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role
+from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role, format_epoch
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets
 import yara
 from core.case_index_db import (
@@ -96,7 +96,7 @@ def browse_files():
                 is_dir = entry.is_dir()
                 # Full MACB timestamp set per entry (Modified/Accessed/Changed/Born), matching what
                 # the Sleuth Kit image-mode listing already exposes - "Created" stays honestly
-                # best-effort (see _format_epoch/_human_size above: st_ctime is inode-change time on
+                # best-effort (see format_epoch/_human_size above: st_ctime is inode-change time on
                 # the ext4/XFS filesystems this app targets, never mislabeled as a real creation
                 # time; a genuine st_birthtime is used only when the platform/filesystem actually
                 # provides one).
@@ -106,10 +106,10 @@ def browse_files():
                     "is_dir": is_dir,
                     "size_bytes": st.st_size if not is_dir else 0,
                     "size_str": _human_size(st.st_size) if not is_dir else "--",
-                    "modified": _format_epoch(st.st_mtime),
-                    "accessed": _format_epoch(st.st_atime),
-                    "changed": _format_epoch(st.st_ctime),
-                    "created": _format_epoch(getattr(st, 'st_birthtime', None)),
+                    "modified": format_epoch(st.st_mtime),
+                    "accessed": format_epoch(st.st_atime),
+                    "changed": format_epoch(st.st_ctime),
+                    "created": format_epoch(getattr(st, 'st_birthtime', None)),
                     # None for a directory or anything that isn't a
                     # recognized artifact kind this app itself generates -
                     # see classify_case_role()'s own docstring.
@@ -416,19 +416,6 @@ def _human_size(num_bytes):
         size /= 1024
 
 
-def _format_epoch(ts):
-    # time.localtime(None) silently defaults to the CURRENT time rather than raising - a falsy/
-    # missing timestamp must be rejected explicitly here, not left to the caller to remember to
-    # guard against, or a genuinely-unknown timestamp would render as "right now" instead of
-    # "Unknown".
-    if not ts:
-        return None
-    try:
-        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-    except (OSError, OverflowError, ValueError):
-        return None
-
-
 # Real filesystem facts (size, timestamps, permissions, owner) for whatever is currently selected
 # in File Explorer - works for both files and directories, unlike /api/files/exif above (ExifTool-
 # only, file-only, embedded metadata). Deliberately does NOT compute a hash here - that's a
@@ -480,9 +467,9 @@ def get_file_stat_info():
             "size_str": _human_size(st.st_size) if not is_dir else None,
             "extension": extension,
             "mime_type": mime_type,
-            "created": _format_epoch(created_epoch) if created_epoch else None,
-            "modified": _format_epoch(st.st_mtime),
-            "accessed": _format_epoch(st.st_atime),
+            "created": format_epoch(created_epoch) if created_epoch else None,
+            "modified": format_epoch(st.st_mtime),
+            "accessed": format_epoch(st.st_atime),
             "permissions": stat.filemode(st.st_mode),
             "permissions_octal": oct(stat.S_IMODE(st.st_mode))[2:].zfill(4),
             "owner": owner,
