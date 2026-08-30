@@ -365,7 +365,26 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
                 size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
                 update_job(transferred_bytes=size)
         else:
-            cmd = ["adb", "-s", serial, "pull", "/sdcard/.", output_path]
+            # -a ("preserve file timestamp and mode") is a real, documented
+            # flag on this station's own installed adb (confirmed live via
+            # `adb help` against the actual binary, platform-tools
+            # 34.0.5-debian, 2026-08-29) - request it so the copied files'
+            # OWN on-disk mtime is correct too, not just this app's Evidence
+            # Timeline. Deliberately NOT relied on as the sole mechanism:
+            # -a's actual behavior has not yet been empirically verified
+            # against a real connected device (added while the phone was
+            # disconnected - a genuine live test is still needed the next
+            # time one's plugged in), -a support varies by adb client/device
+            # combination (an older platform-tools build or an older Android
+            # device's adbd might silently ignore it), and this repo has its
+            # own established "verify against real hardware before trusting
+            # a tool's documented behavior" discipline. _capture_android_
+            # device_mtimes() below still runs unconditionally after every
+            # successful pull as the adb-version-independent, already-proven
+            # source of truth - if -a genuinely works, the two simply agree;
+            # if it doesn't (or only partially does), the manifest is what
+            # actually drives the Evidence Timeline regardless.
+            cmd = ["adb", "-s", serial, "pull", "-a", "/sdcard/.", output_path]
             append_log(f"[*] Command: {' '.join(cmd)}")
             update_job(status="Pulling Accessible Storage...")
 
