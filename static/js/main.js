@@ -8488,7 +8488,11 @@ const CASE_TIMELINE_SOURCES = ['macb', 'parsed_artifact'];
 // second copy of the same type->label mapping.
 const MACB_ACTIVITY_LABEL = { M: 'Modified', A: 'Accessed', C: 'Changed', B: 'Created (Born)' };
 let caseTimelineEvidenceFilter = '__all__'; // '__all__' | a real evidence_id string
+let caseTimelineYearFilter = '__all__';     // '__all__' | a year as a string, e.g. "2026"
+let caseTimelineMonthFilter = '__all__';    // '__all__' | "0"-"11" (Date.getMonth() indexing) - only meaningful once a specific year is picked
 let caseTimelineFilteredRows = [];          // the table's currently-visible rows, stashed for CSV export
+const CASE_TIMELINE_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
 
 async function loadCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
@@ -8496,6 +8500,8 @@ async function loadCaseTimeline() {
     body.innerHTML = '<tr><td colspan="4" class="text-subtle p-2">Building timeline...</td></tr>';
     caseTimelineBucketFilter = null;   // a fresh case load shouldn't carry over a stale drill-down from a previous case
     caseTimelineEvidenceFilter = '__all__';
+    caseTimelineYearFilter = '__all__';
+    caseTimelineMonthFilter = '__all__';
     try {
         const res = await fetch(`/api/cases/timeline?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
         const data = await res.json();
@@ -8505,6 +8511,7 @@ async function loadCaseTimeline() {
         }
         caseTimelineCache = data;
         populateCaseTimelineEvidenceFilter(data.events);
+        populateCaseTimelineYearFilter(data.events);
         renderCaseTimeline();
     } catch (err) {
         body.innerHTML = '<tr><td colspan="4" class="text-danger p-2">Request failed.</td></tr>';
@@ -8527,6 +8534,63 @@ function populateCaseTimelineEvidenceFilter(events) {
         sel.appendChild(opt);
     });
     sel.value = '__all__';
+}
+
+// Year/Month drill-down filters - "condense" a timeline spanning years down to
+// one calendar year (or one month within it) so the density chart's own
+// adaptive granularity (pickTimelineGranularity()) has a narrow enough span to
+// render something readable, instead of years of activity getting flattened
+// into a handful of monthly bars. Month is deliberately disabled until a real
+// year is picked - a hierarchical drill-down (year, then month within it),
+// not an independent "every March across every year" filter, which would be
+// a different, more surprising feature.
+function populateCaseTimelineYearFilter(events) {
+    const yearSel = document.getElementById('caseTimelineYearSelect');
+    if (!yearSel) return;
+    const years = [...new Set(events.map((e) => new Date(e.timestamp * 1000).getFullYear()))].sort((a, b) => b - a);
+    yearSel.innerHTML = '';
+    const allOpt = document.createElement('option');
+    allOpt.value = '__all__';
+    allOpt.textContent = 'All Years';
+    yearSel.appendChild(allOpt);
+    years.forEach((y) => {
+        const opt = document.createElement('option');
+        opt.value = String(y);
+        opt.textContent = String(y);
+        yearSel.appendChild(opt);
+    });
+    yearSel.value = '__all__';
+    populateCaseTimelineMonthFilter();
+}
+
+function populateCaseTimelineMonthFilter() {
+    const monthSel = document.getElementById('caseTimelineMonthSelect');
+    const yearSel = document.getElementById('caseTimelineYearSelect');
+    if (!monthSel) return;
+    monthSel.innerHTML = '';
+    const allOpt = document.createElement('option');
+    allOpt.value = '__all__';
+    allOpt.textContent = 'All Months';
+    monthSel.appendChild(allOpt);
+    CASE_TIMELINE_MONTH_NAMES.forEach((name, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = name;
+        monthSel.appendChild(opt);
+    });
+    monthSel.value = '__all__';
+    monthSel.disabled = !yearSel || yearSel.value === '__all__';
+}
+
+function onCaseTimelineYearChange() {
+    caseTimelineBucketFilter = null; // a bucket drilled into under the old year/month scope would just show 0 rows under the new one
+    populateCaseTimelineMonthFilter();
+    renderCaseTimeline();
+}
+
+function onCaseTimelineMonthChange() {
+    caseTimelineBucketFilter = null;
+    renderCaseTimeline();
 }
 
 // --- Evidence Timeline density chart - a stacked bar chart of event counts per
@@ -8697,12 +8761,28 @@ function renderCaseTimeline() {
     );
     const evidenceSel = document.getElementById('caseTimelineEvidenceSelect');
     caseTimelineEvidenceFilter = evidenceSel ? evidenceSel.value : '__all__';
+    const yearSel = document.getElementById('caseTimelineYearSelect');
+    caseTimelineYearFilter = yearSel ? yearSel.value : '__all__';
+    const monthSel = document.getElementById('caseTimelineMonthSelect');
+    caseTimelineMonthFilter = (monthSel && !monthSel.disabled) ? monthSel.value : '__all__';
 
     let rows = caseTimelineCache.events.filter((e) => enabledSources.has(e.source));
     if (caseTimelineEvidenceFilter !== '__all__') {
         rows = rows.filter((e) => e.evidence_id === caseTimelineEvidenceFilter);
     }
-    renderCaseTimelineChart(rows); // chart reflects source + evidence-item filters, never the bucket-click drill-down below (so every bucket stays clickable)
+    if (caseTimelineYearFilter !== '__all__') {
+        const y = Number(caseTimelineYearFilter);
+        rows = rows.filter((e) => new Date(e.timestamp * 1000).getFullYear() === y);
+        if (caseTimelineMonthFilter !== '__all__') {
+            const m = Number(caseTimelineMonthFilter);
+            rows = rows.filter((e) => new Date(e.timestamp * 1000).getMonth() === m);
+        }
+    }
+    // Feeding the year/month-narrowed rows into the chart is what actually "condenses"
+    // the view - pickTimelineGranularity() (in renderCaseTimelineChart()) picks its bucket
+    // size from whatever span it's handed, so a full year renders as weekly bars and a
+    // single month renders as daily ones, with zero changes needed to that logic itself.
+    renderCaseTimelineChart(rows); // chart reflects source + evidence-item + year/month filters, never the bucket-click drill-down below (so every bucket stays clickable)
 
     const filterIndicator = document.getElementById('caseTimelineFilterIndicator');
     if (caseTimelineBucketFilter) {

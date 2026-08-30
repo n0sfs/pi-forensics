@@ -145,3 +145,35 @@ def test_logical_acquisition_uses_output_container_path(evidence_root):
     assert result["events"]
     assert all(e["path"] == "/document.pdf" for e in result["events"])
     assert all("logical_acquisition" in e["filesystem"] for e in result["events"])
+
+
+def test_android_pull_discloses_that_adb_does_not_preserve_timestamps(evidence_root):
+    """adb pull stamps the local copy time onto every file rather than
+    carrying the phone's real mtime across - empirically confirmed against
+    real device output (2026-08-29). Every android_pull folder candidate
+    must carry an explicit disclosure note about this, so an examiner never
+    mistakes the copy date for genuine on-device activity."""
+    pulled_dir = os.path.join(evidence_root, "PIXEL8A-01_android_pull")
+    os.makedirs(pulled_dir)
+    _touch(os.path.join(pulled_dir, "photo.jpg"), 1700000000)
+
+    event = _make_event("PIXEL8A-01", "android_pull", output_destination=pulled_dir)
+    result = _collect_case_timeline([event])
+
+    assert any("PIXEL8A-01" in n and "adb pull does not preserve" in n for n in result["notes"])
+
+
+def test_logical_acquisition_gets_no_adb_disclosure_note(evidence_root):
+    """The adb-specific disclosure is scoped to android_pull only -
+    Logical Acquisition's own shutil.copy2() genuinely does preserve source
+    mtime, so it must never carry a note implying otherwise."""
+    logical_dir = os.path.join(evidence_root, "ITEM-01_logical")
+    os.makedirs(logical_dir)
+    _touch(os.path.join(logical_dir, "document.pdf"), 1700000000)
+
+    event = _make_event("ITEM-01", "logical_acquisition", status="COMPLETED",
+                         timestamp_start="2026-08-29 10:00:00")
+    event["acquisition_parameters"]["output_container_path"] = logical_dir
+    result = _collect_case_timeline([event])
+
+    assert not any("adb pull does not preserve" in n for n in result["notes"])

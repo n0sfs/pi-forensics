@@ -322,6 +322,12 @@
                                                         <select id="caseTimelineEvidenceSelect" class="form-select form-select-sm w-auto" onchange="renderCaseTimeline()">
                                                             <option value="__all__">All Evidence Items</option>
                                                         </select>
+                                                        <select id="caseTimelineYearSelect" class="form-select form-select-sm w-auto" onchange="onCaseTimelineYearChange()">
+                                                            <option value="__all__">All Years</option>
+                                                        </select>
+                                                        <select id="caseTimelineMonthSelect" class="form-select form-select-sm w-auto" onchange="onCaseTimelineMonthChange()" disabled>
+                                                            <option value="__all__">All Months</option>
+                                                        </select>
                                                         <button type="button" class="btn btn-xs btn-outline-info py-0 px-2 ms-auto" onclick="exportCaseTimelineCsv()"><i class="bi bi-download me-1"></i>Export CSV</button>
                                                     </div>
                                                     <div class="border border-secondary rounded-2 mb-2 p-2" style="height: 180px; background-color:#090b10;"><canvas id="caseTimelineChart"></canvas></div>
