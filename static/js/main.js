@@ -682,6 +682,7 @@ const TOOL_REFERENCE_GROUPS = [
             ["ClamAV", "Scans a file or folder against known malware signatures."],
             ["hashdeep", "Generates a fingerprint (hash) for every file in a folder at once, as a single manifest."],
             ["MVT (Mobile Verification Toolkit)", "Checks an already-acquired iOS or Android backup for spyware/compromise indicators. Right-click the backup folder and choose the scan for its platform."],
+            ["ALEAPP / iLEAPP", "Comprehensive, community-maintained mobile artifact parsers - hundreds of app-specific artifacts (WhatsApp, Signal, Chrome, WiFi history, and more) from an already-acquired Android pull or iOS backup. Right-click the extraction folder and choose \"Parse with ALEAPP/iLEAPP...\". Runs as a background job - large extractions can take several minutes."],
             ["Volatility3", "Analyzes an already-captured Windows memory (RAM) image - process lists, network connections, loaded modules, and more. Right-click a memory-image file and choose \"Memory Forensics...\"."],
             ["mquire", "Analyzes an already-captured x86_64 Linux memory (RAM) image, reading symbol info the kernel embeds in the image itself - no separate download needed. Same \"Memory Forensics...\" action, pick the mquire engine."],
             ["Browser Artifact Parser", "Extracts history, bookmarks, downloads, and cookies from a Chrome/Chromium- or Firefox-family browser profile, on disk or inside an acquired image. Built in, no external tool needed."],
@@ -4318,6 +4319,7 @@ function updateContextToolbar(item) {
     const btnLinuxArtifacts = document.getElementById("btnParseLinuxArtifacts");
     const btnCryptoWallets = document.getElementById("btnParseCryptoWallets");
     const btnMobileArtifacts = document.getElementById("btnParseMobileArtifacts");
+    const btnLeappScan = document.getElementById("btnLeappScan");
     const btnParseLnk = document.getElementById("btnParseLnk");
     const btnMvtIos = document.getElementById("btnRunMvtIos");
     const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
@@ -4342,6 +4344,7 @@ function updateContextToolbar(item) {
     if (btnLinuxArtifacts) btnLinuxArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Linux artifact files
     if (btnCryptoWallets) btnCryptoWallets.disabled = !item.is_dir;  // recursively walks a folder for wallet files
     if (btnMobileArtifacts) btnMobileArtifacts.disabled = !item.is_dir;  // scans a folder for an iOS backup (Manifest.db + Info.plist)
+    if (btnLeappScan) btnLeappScan.disabled = !item.is_dir;  // runs ALEAPP/iLEAPP against an extraction folder
     if (btnParseLnk) btnParseLnk.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.lnk');  // single-file, unlike the whole-folder scanners above
     if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
     if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
@@ -5056,12 +5059,19 @@ async function runSelectedQuickTriageScan() {
 
 async function runSelectedHashdeep() {
     if (!activeSelectedFile) return;
+    // Output is written to the active case's folder (or this folder's own
+    // parent if no case is active) - never into activeSelectedFile itself,
+    // which is the evidence folder being hashed. Matches every other
+    // properly-designed analysis tool in this app (Memory Forensics,
+    // Logical Acquisition, ALEAPP/iLEAPP) - see _resolve_analysis_output_
+    // dir() in routes/file_explorer.py for the backend-side enforcement.
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
 
     try {
         const res = await fetch('/api/files/hashdeep', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile, algorithm: 'sha256' })
+            body: JSON.stringify({ path: activeSelectedFile, algorithm: 'sha256', destination_dir: destinationDir })
         });
         const data = await res.json();
         if (data.success) {
@@ -5075,12 +5085,14 @@ async function runSelectedHashdeep() {
 
 async function runSelectedGeolocationExport() {
     if (!activeSelectedFile) return;
+    // Same evidence-must-never-be-modified reasoning as runSelectedHashdeep() above.
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
 
     try {
         const res = await fetch('/api/files/geolocation_kml', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile })
+            body: JSON.stringify({ path: activeSelectedFile, destination_dir: destinationDir })
         });
         const data = await res.json();
         if (data.success) {
@@ -5569,12 +5581,15 @@ async function runSelectedMvtScan(platform) {
     if (!activeSelectedFile) return;
     const label = platform === 'ios' ? 'MVT iOS Backup Scan' : 'MVT Android Backup Scan';
     showToolOutputModal(`${label}: ${activeSelectedFile.split('/').pop()}`, 'bi-phone');
+    // Same evidence-must-never-be-modified reasoning as runSelectedHashdeep() above -
+    // this is also Auto Analyze's own Mobile-profile hand-off, so this one fix covers both.
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
 
     try {
         const res = await fetch('/api/files/mvt_scan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile, platform })
+            body: JSON.stringify({ path: activeSelectedFile, platform, destination_dir: destinationDir })
         });
         const data = await res.json();
         const container = document.getElementById("toolOutputContainer");
@@ -5629,6 +5644,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     image_conversion: (status) => `Image conversion finished: ${status}\n\nSee the report event's "Hash Verified" field for whether the independently-computed source/output hashes matched.`,
     memory_forensics_scan: (status) => `Memory forensics scan finished: ${status}\n\nClick a *_vol3_<plugin>.json file next to the image in File Explorer to view its results.`,
     mquire_scan: (status) => `mquire memory forensics scan finished: ${status}\n\nClick a *_mquire_<table>.json file next to the image in File Explorer to view its results.`,
+    leapp_scan: (status) => `ALEAPP/iLEAPP mobile artifact scan finished: ${status}\n\nOpen the new *_aleapp_output or *_ileapp_output folder next to the extraction in File Explorer, then click the HTML report inside it.`,
     verify_all_evidence: (status) => `Case-wide evidence verification finished: ${status}\n\nSee the Overview tab in Reporting for the full result.`,
     case_bundle_export: (status) => `Case bundle export finished: ${status}\n\nCheck the case folder for the generated *_case_bundle_<timestamp>.zip file.`,
     auto_analyze_image: (status) => `Auto Analyze finished: ${status}\n\nSee the Audit Log (Settings > Security) for the full per-step results, or File Views > Parsed Artifacts for the individual tools' output.`,
@@ -5660,7 +5676,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     // File Explorer (in-image background jobs, reached via right-click/toolbar there)
     image_geolocation_kml: 'navBadgeExplorer', image_triage_scan: 'navBadgeExplorer',
     memory_forensics_scan: 'navBadgeExplorer', mquire_scan: 'navBadgeExplorer', image_conversion: 'navBadgeExplorer',
-    auto_analyze_image: 'navBadgeExplorer',
+    auto_analyze_image: 'navBadgeExplorer', leapp_scan: 'navBadgeExplorer',
 };
 const NAV_BADGE_TO_TAB_ID = {
     navBadgeAcquisition: 'acquisition-tab', navBadgeMobile: 'mobile-tab',
@@ -10724,6 +10740,49 @@ async function startMemoryForensicsScan() {
         }
         if (memoryForensicsModalInstance) memoryForensicsModalInstance.hide();
         showToast('Memory forensics scan started - watch the progress bar in File Explorer.', 'success');
+    } catch (err) {
+        if (status) status.textContent = 'Request failed - see console.';
+    }
+}
+
+// ALEAPP/iLEAPP - runs on a whole extraction folder (unlike Memory
+// Forensics above, which runs on a single selected file), same
+// #explorerJobProgress background-job pattern.
+let leappScanModalInstance = null;
+
+function openLeappScanModal() {
+    if (!activeSelectedFile) return;
+    document.getElementById("leappFolderName").textContent = activeSelectedFile.split('/').filter(Boolean).pop();
+    const status = document.getElementById("leappScanStatus");
+    if (status) status.textContent = 'Select the correct parser for this extraction\'s platform, then click Start Scan.';
+    if (!leappScanModalInstance) {
+        leappScanModalInstance = new bootstrap.Modal(document.getElementById('leappScanModal'));
+    }
+    leappScanModalInstance.show();
+}
+
+async function startLeappScan() {
+    if (!activeSelectedFile) return;
+    const tool = document.getElementById("leappTool").value;
+    const status = document.getElementById("leappScanStatus");
+    if (status) status.textContent = 'Starting scan job...';
+
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+
+    try {
+        const res = await fetch('/api/files/leapp/start_scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tool: tool, path: activeSelectedFile, destination_dir: destinationDir })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Failed to start: ${data.error}`;
+            showToast(`ALEAPP/iLEAPP scan failed to start: ${data.error}`, 'danger');
+            return;
+        }
+        if (leappScanModalInstance) leappScanModalInstance.hide();
+        showToast('ALEAPP/iLEAPP scan started - watch the progress bar in File Explorer.', 'success');
     } catch (err) {
         if (status) status.textContent = 'Request failed - see console.';
     }

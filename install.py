@@ -348,6 +348,81 @@ if not os.path.exists(mquire_bin_path):
     finally:
         shutil.rmtree(mquire_build_dir, ignore_errors=True)
 
+# 2d. Build ALEAPP/iLEAPP (Android/iOS Logs Events And Protobuf/Plist Parser -
+# comprehensive third-party mobile artifact parsing, run against an already-
+# acquired adb pull / idevicebackup2 extraction). Each gets its own isolated
+# venv, not the shared one above - a real, hard pip dependency conflict was
+# confirmed live before deciding this: ALEAPP pins packaging==20.1 exactly,
+# iLEAPP pins packaging==24.1 exactly, and pip's own resolver refuses outright
+# to install both into one shared environment. Both tools are pure CLI
+# subprocesses (never imported into this app's own process - see
+# core/leapp_utils.py), so per-tool isolation costs nothing extra. Pinned to
+# specific commit SHAs, not `main`/HEAD (same "pinned known-working version"
+# discipline as mquire above) - neither repo publishes version tags, so a
+# commit SHA is the equivalent here; `git fetch --depth 1 origin <sha>` +
+# `checkout FETCH_HEAD` is confirmed live to work against a real GitHub repo
+# for pinning to an exact commit without a full clone. Idempotent, same
+# pattern as mquire above.
+LEAPP_TOOLS = [
+    {
+        "name": "ALEAPP", "repo": "https://github.com/abrignoni/ALEAPP",
+        "commit": "1a8ffbcbc88986d2dcd054660d97fb4182dde72c",
+        "requires": "Android mobile artifact parsing",
+    },
+    {
+        "name": "ILEAPP", "repo": "https://github.com/abrignoni/iLEAPP",
+        "commit": "899709e099602c26712c82416e782a49e151889e",
+        "requires": "iOS mobile artifact parsing",
+    },
+]
+leapp_dir = os.path.join(INSTALL_DIR, "leapp")
+for tool in LEAPP_TOOLS:
+    tool_dir = os.path.join(leapp_dir, tool["name"])
+    tool_venv_dir = os.path.join(leapp_dir, f"{tool['name'].lower()}_venv")
+    tool_venv_python = os.path.join(tool_venv_dir, "bin", "python3")
+    if os.path.exists(tool_venv_python):
+        continue
+    print(f"\n[*] Installing {tool['name']} ({tool['requires']})...")
+    try:
+        os.makedirs(leapp_dir, exist_ok=True)
+        shutil.rmtree(tool_dir, ignore_errors=True)
+        os.makedirs(tool_dir, exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=tool_dir, check=True, timeout=30)
+        subprocess.run(["git", "remote", "add", "origin", tool["repo"]],
+                        cwd=tool_dir, check=True, timeout=30)
+        clone_res = subprocess.run(
+            ["git", "fetch", "--depth", "1", "origin", tool["commit"]],
+            cwd=tool_dir, capture_output=True, text=True, timeout=120,
+        )
+        if clone_res.returncode != 0:
+            print(f"[!] Could not fetch {tool['name']} (no internet access right now?) - "
+                  f"{tool['requires']} will not be available until this is retried. "
+                  f"Error: {clone_res.stderr.strip()[:300]}")
+            shutil.rmtree(tool_dir, ignore_errors=True)
+            continue
+        subprocess.run(["git", "checkout", "-q", "FETCH_HEAD"], cwd=tool_dir, check=True, timeout=30)
+
+        subprocess.run(["python3", "-m", "venv", tool_venv_dir], check=True, timeout=120)
+        tool_pip = os.path.join(tool_venv_dir, "bin", "pip")
+        subprocess.run([tool_pip, "install", "--upgrade", "pip"], check=True, timeout=120)
+        req_res = subprocess.run(
+            [tool_pip, "install", "-r", os.path.join(tool_dir, "requirements.txt")],
+            capture_output=True, text=True, timeout=1800,
+        )
+        if req_res.returncode != 0:
+            print(f"[!] {tool['name']} dependency install failed - {tool['requires']} will not "
+                  f"be available. Error: {req_res.stderr.strip()[-500:]}")
+            shutil.rmtree(tool_venv_dir, ignore_errors=True)
+        else:
+            print(f"[+] {tool['name']} installed to {tool_dir}.")
+    except subprocess.TimeoutExpired:
+        print(f"[!] {tool['name']} install timed out - {tool['requires']} will not be available. "
+              f"Retry manually later: git clone {tool['repo']} into {tool_dir}, checkout "
+              f"{tool['commit']}, create a venv at {tool_venv_dir}, and pip install its "
+              f"requirements.txt.")
+    except subprocess.CalledProcessError as e:
+        print(f"[!] {tool['name']} install failed ({e}) - {tool['requires']} will not be available.")
+
 # 3. Directory Ownership Setup
 print(f"\n[*] Setting directory permissions on {INSTALL_DIR} for '{SERVICE_USER}'...")
 subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", INSTALL_DIR], check=True)
