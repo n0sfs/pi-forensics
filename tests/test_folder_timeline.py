@@ -12,6 +12,7 @@ routes.reporting imports core.jobs (pwd/fcntl) at module level, so the whole
 module - not just this new logic - can't import on Windows."""
 import os
 import sys
+import json
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -41,6 +42,18 @@ def _touch(path, mtime_epoch):
     with open(path, "w") as f:
         f.write("x")
     os.utime(path, (mtime_epoch, mtime_epoch))
+
+
+def _write_device_manifest(dest_path, files):
+    """Writes the exact sidecar shape execution_worker_android()
+    (routes/mobile.py) writes after a real adb pull - same naming
+    convention _collect_case_timeline() looks for: "{dest_path}_
+    device_timestamps.json", a sibling of the pull's own output folder."""
+    manifest_path = f"{dest_path.rstrip(os.sep)}_device_timestamps.json"
+    with open(manifest_path, "w") as f:
+        json.dump({"source": "adb shell find -H /sdcard -type f -printf '%p|%T@'",
+                   "captured_at": "2026-08-29 10:00:00", "files": files}, f)
+    return manifest_path
 
 
 def test_folder_candidate_produces_real_macb_events(evidence_root):
@@ -177,3 +190,70 @@ def test_logical_acquisition_gets_no_adb_disclosure_note(evidence_root):
     result = _collect_case_timeline([event])
 
     assert not any("adb pull does not preserve" in n for n in result["notes"])
+
+
+def test_android_pull_with_device_manifest_uses_real_on_device_mtime(evidence_root):
+    """The core of the follow-up fix: when execution_worker_android()'s own
+    sidecar manifest exists for this pull, a file listed in it gets exactly
+    ONE genuine 'M' event using the manifest's real captured timestamp - not
+    the copy-time os.lstat() value, and not a fabricated A/C/B alongside it."""
+    pulled_dir = os.path.join(evidence_root, "PIXEL8A-01_android_pull")
+    os.makedirs(pulled_dir)
+    copy_time = 1900000000  # the moment the file was copied - what the OLD, wrong behavior would show
+    real_device_time = 1721818354  # a genuinely earlier, real on-device modification time
+    _touch(os.path.join(pulled_dir, "Screenshot_20260724-102354.png"), copy_time)
+    _write_device_manifest(pulled_dir, {"Screenshot_20260724-102354.png": real_device_time})
+
+    event = _make_event("PIXEL8A-01", "android_pull", output_destination=pulled_dir)
+    result = _collect_case_timeline([event])
+
+    matching = [e for e in result["events"] if e["path"] == "/Screenshot_20260724-102354.png"]
+    assert len(matching) == 1, "exactly one event for this file - no fabricated A/C/B alongside the real M"
+    assert matching[0]["activity"] == "M"
+    assert matching[0]["timestamp"] == real_device_time
+    assert matching[0]["timestamp"] != copy_time
+    assert "real device timestamp" in matching[0]["filesystem"]
+    # a genuine manifest hit means the "adb pull does not preserve" note is no longer true
+    assert not any("adb pull does not preserve" in n for n in result["notes"])
+
+
+def test_android_pull_manifest_falls_back_per_file_when_incomplete(evidence_root):
+    """A file NOT present in an otherwise-real manifest (e.g. added to the
+    phone after the timestamp capture ran, before the pull finished copying
+    it) falls back to copy-time for just that one file, and the folder gets
+    a distinct "N file(s) have no captured..." note - not the blanket
+    "adb pull does not preserve" note, since most of the folder DOES have
+    real device timestamps."""
+    pulled_dir = os.path.join(evidence_root, "PIXEL8A-01_android_pull")
+    os.makedirs(pulled_dir)
+    _touch(os.path.join(pulled_dir, "captured.jpg"), 1900000000)
+    _touch(os.path.join(pulled_dir, "not_in_manifest.jpg"), 1900000001)
+    _write_device_manifest(pulled_dir, {"captured.jpg": 1721818354})
+
+    event = _make_event("PIXEL8A-01", "android_pull", output_destination=pulled_dir)
+    result = _collect_case_timeline([event])
+
+    captured_events = [e for e in result["events"] if e["path"] == "/captured.jpg"]
+    fallback_events = [e for e in result["events"] if e["path"] == "/not_in_manifest.jpg"]
+    assert len(captured_events) == 1 and captured_events[0]["activity"] == "M"
+    assert len(fallback_events) >= 1  # copy-time M/A/C, same as the no-manifest-at-all path
+    assert any("no captured on-device timestamp" in n for n in result["notes"])
+    assert not any("adb pull does not preserve" in n for n in result["notes"])
+
+
+def test_android_pull_with_no_manifest_file_keeps_original_fallback_behavior(evidence_root):
+    """Regression guard: a pull with genuinely no manifest on disk at all
+    (the common case for every pull made before this feature shipped) must
+    behave byte-for-byte as it did before this whole follow-up - full
+    copy-time M/A/C and the original blanket disclosure note."""
+    pulled_dir = os.path.join(evidence_root, "PIXEL8A-01_android_pull")
+    os.makedirs(pulled_dir)
+    _touch(os.path.join(pulled_dir, "photo.jpg"), 1700000000)
+
+    event = _make_event("PIXEL8A-01", "android_pull", output_destination=pulled_dir)
+    result = _collect_case_timeline([event])
+
+    activities = {e["activity"] for e in result["events"] if e["path"] == "/photo.jpg"}
+    assert "M" in activities and "A" in activities and "C" in activities
+    assert all("real filesystem" in e["filesystem"] for e in result["events"] if e["path"] == "/photo.jpg")
+    assert any("adb pull does not preserve" in n for n in result["notes"])

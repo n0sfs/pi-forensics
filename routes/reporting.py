@@ -594,7 +594,21 @@ def _collect_case_timeline(events):
     portable creation-time field the way pytsk3's TSK metadata layer does;
     st_birthtime is used only on the rare platform/filesystem combination
     that actually provides one, matching routes/file_explorer.py's own
-    stat_info route's identical best-effort disclosure for the same field)."""
+    stat_info route's identical best-effort disclosure for the same field).
+
+    2026-08-29 (same day, follow-up): the above copy-time behavior was, for
+    android_pull specifically, discovered and disclosed to be a real
+    limitation of adb pull itself (it never carries the phone's real
+    on-device mtime across the transfer at all). execution_worker_android()
+    (routes/mobile.py) now captures each file's genuine on-device
+    modification time via a single `adb shell find` call right after a
+    successful pull and writes it as a sibling "{output_dir}_device_
+    timestamps.json" manifest - loaded here (once, cached in
+    device_timestamp_manifests below) and, wherever available, used in
+    place of the copy-time os.lstat() value for that file's 'M' event. A
+    pull made before this shipped (or one where the capture failed/timed
+    out) simply has no manifest and falls back to the pre-existing
+    copy-time-only behavior, unchanged, with its existing disclosure note."""
     candidates = {}  # resolved image_path -> {"event": event, "superseded_count": int}
     for event in events:
         if event.get('acquisition_status') != 'COMPLETED':
@@ -643,6 +657,30 @@ def _collect_case_timeline(events):
         else:
             existing["superseded_count"] += 1
 
+    # Device-timestamp manifests (android_pull only) - a sibling JSON file
+    # next to the pull's own output folder, written by
+    # execution_worker_android() right after a successful pull
+    # (routes/mobile.py) capturing each file's REAL on-device modification
+    # time via a single `adb shell find` call. Loaded once per candidate
+    # here and reused by both the notes pass and the walk pass below, so a
+    # pull made before this manifest existed - or one where the capture
+    # itself failed/timed out/the device disconnected right after the pull -
+    # falls back to the pre-existing copy-time-only behavior with zero
+    # special-casing: a missing/unreadable manifest is just None.
+    device_timestamp_manifests = {}
+    for dest_path, info in folder_candidates.items():
+        if info["event"].get('tool') != 'android_pull':
+            continue
+        manifest_path = f"{dest_path.rstrip(os.sep)}_device_timestamps.json"
+        try:
+            with open(manifest_path, 'r') as f:
+                manifest = json.load(f)
+            files = manifest.get('files')
+            if isinstance(files, dict) and files:
+                device_timestamp_manifests[dest_path] = files
+        except (OSError, ValueError):
+            pass
+
     notes = []
     per_image_filesystems = {}
     for image_path in candidates:
@@ -678,7 +716,13 @@ def _collect_case_timeline(events):
         # only: Logical Acquisition uses shutil.copy2() (confirmed preserves source
         # mtime by design), and ios_backup's own timestamp behavior hasn't been
         # verified either way, so nothing is claimed about it here.
-        if event.get('tool') == 'android_pull':
+        #
+        # 2026-08-29 (same day, follow-up): now suppressed whenever a real
+        # device-timestamp manifest exists for this folder - a pull made
+        # after execution_worker_android() started capturing real on-device
+        # mtimes genuinely doesn't have this limitation anymore, and the note
+        # would be actively wrong for it.
+        if event.get('tool') == 'android_pull' and dest_path not in device_timestamp_manifests:
             notes.append(f"{evidence_id}: timestamps reflect when each file was copied onto this station during "
                          f"the adb pull, not the phone's original modified/accessed times - adb pull does not "
                          f"preserve on-device timestamps.")
@@ -718,6 +762,9 @@ def _collect_case_timeline(events):
         event = info["event"]
         evidence_id = event.get('case_metadata', {}).get('evidence_id', 'N/A')
         source_label = f"{event.get('tool', 'acquisition')} (real filesystem)"
+        real_device_label = f"{event.get('tool', 'acquisition')} (real device timestamp)"
+        manifest_files = device_timestamp_manifests.get(dest_path)
+        manifest_fallback_count = 0
         count = 0
         files_walked = 0
         walk_capped = False
@@ -728,11 +775,30 @@ def _collect_case_timeline(events):
                     walk_capped = True
                     break
                 fpath = os.path.join(root, fname)
+                rel_path_no_slash = os.path.relpath(fpath, dest_path).replace(os.sep, "/")
+                rel_path = "/" + rel_path_no_slash
+
+                # A real captured on-device mtime beats copy time whenever one is
+                # available for this exact file - emit just the one genuine 'M'
+                # event and skip the (still copy-time, now redundant/misleading)
+                # os.lstat() fallback below entirely for it.
+                manifest_ts = manifest_files.get(rel_path_no_slash) if manifest_files else None
+                if manifest_ts:
+                    all_events.append({"timestamp": manifest_ts, "activity": "M", "path": rel_path,
+                                        "evidence_id": evidence_id, "filesystem": real_device_label,
+                                        "deleted": False})
+                    count += 1
+                    if count >= per_source_budget:
+                        truncated = True
+                        break
+                    continue
+
                 try:
                     st = os.lstat(fpath)  # lstat, not stat - a symlink's own metadata, never a followed target
                 except OSError:
                     continue
-                rel_path = "/" + os.path.relpath(fpath, dest_path).replace(os.sep, "/")
+                if manifest_files is not None:
+                    manifest_fallback_count += 1  # this folder HAS a manifest, this one file just isn't in it
                 ts_fields = [('st_mtime', 'M'), ('st_atime', 'A'), ('st_ctime', 'C')]
                 birth = getattr(st, 'st_birthtime', None)
                 if birth:
@@ -753,6 +819,10 @@ def _collect_case_timeline(events):
             notes.append(f"{evidence_id}: folder contains more than {FOLDER_TIMELINE_MAX_FILES_WALKED} files - "
                          f"only the first {FOLDER_TIMELINE_MAX_FILES_WALKED} were scanned for timeline entries.")
             truncated = True
+        if manifest_files is not None and manifest_fallback_count:
+            notes.append(f"{evidence_id}: {manifest_fallback_count} file(s) have no captured on-device "
+                         f"timestamp (added to the device after the timestamp capture ran, most likely) and "
+                         f"fall back to copy time for those specific entries.")
 
     all_events.sort(key=lambda e: e['timestamp'], reverse=True)
     if len(all_events) > TSK_MAX_TIMELINE_ENTRIES:
@@ -800,6 +870,13 @@ def case_timeline():
             "activity": row["activity"], "detail": row["path"],
             "evidence_id": row["evidence_id"], "deleted": row.get("deleted", False),
             "suspicious": False,
+            # 2026-08-29: row['filesystem'] (the exported PDF/HTML report's own
+            # per-row source label, e.g. "android_pull (real device timestamp)"
+            # vs "... (real filesystem)") was never carried into this JSON
+            # response at all before today - only whether it's a genuine
+            # on-device value matters to the interactive table, so that's
+            # reduced to a single bool here rather than exposing the raw label.
+            "real_device_timestamp": "real device timestamp" in row.get("filesystem", ""),
         })
 
     # Resolves a parsed_artifacts row's own image_path column back to the

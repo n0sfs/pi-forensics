@@ -12,6 +12,7 @@ entry for this refactor.
 """
 import os
 import re
+import json
 import time
 import subprocess
 import threading
@@ -26,6 +27,7 @@ from core.jobs import (
     _stream_subprocess, clear_active_proc,
     build_report_target, write_initial_report, _write_report,
 )
+from core.case_index_db import _auto_tag_case_artifact
 
 mobile_bp = Blueprint('mobile', __name__)
 
@@ -234,6 +236,92 @@ def execution_worker_ios_backup(udid, dest_dir, encrypt_password, report_file_pa
         clear_active_proc()
 
 
+# A full /sdcard walk (find -H, printf %T@ only) took 1.8s for 1819 real
+# files on a real Pixel 8a - generous headroom for a much larger phone.
+ANDROID_DEVICE_TIMESTAMPS_TIMEOUT = 120
+
+
+def _capture_android_device_mtimes(serial, output_path):
+    """Best-effort: captures each pulled file's REAL on-device modification
+    time via one `adb shell find` call, and writes it as a sibling JSON
+    manifest next to the pull's own output folder (routes/reporting.py's
+    _collect_case_timeline() loads it by this exact naming convention).
+    Never raises - a failure here just means the pre-existing,
+    already-disclosed copy-time-only Evidence Timeline behavior applies to
+    this pull, exactly as it did before this function existed. Returns the
+    number of files captured (0 on any failure/empty result).
+
+    Empirically confirmed necessary and correct against a real connected
+    Pixel 8a (2026-08-29), not assumed from documentation: `adb pull` does
+    not preserve original on-device timestamps at all - the copied files'
+    own mtime is always the moment they were copied onto this station,
+    confirmed by comparing several real Screenshot_YYYYMMDD-HHMMSS.png
+    filenames' embedded dates against their actual copied-file mtime, which
+    never matched (a screenshot named ...20260724-102354 had an mtime from
+    four days later, the day of the pull). `adb shell find` reads the real
+    on-device value directly, closing that gap for any pull made after this
+    shipped - a pull made before it has no manifest and keeps the
+    pre-existing fallback behavior unchanged.
+
+    -H (not -L, and not omitted) is required by this device's toybox find:
+    /sdcard is itself a symlink (-> /storage/self/primary on this Pixel 8a,
+    confirmed via readlink) and find does not descend through a symlink
+    given directly on its own command line unless told to follow it.
+    Without -H, `find /sdcard -type f` silently returns nothing at all -
+    confirmed live, this is not a theoretical edge case.
+
+    Only %T@ (modification time) is captured, not a full MACB set - this
+    device's toybox find (0.8.13-android) rejects -printf %A@/%C@ outright
+    ("bad -printf %A", confirmed live), and toybox stat's own %X/%Z
+    equivalents would need one subprocess round-trip per file, far too slow
+    for a real device's file count. Modified time is also the one
+    timestamp adb pull was actually destroying and the one an examiner
+    most cares about, so this is a real, valuable fix even though it's
+    narrower than a full MACB set - the interactive Evidence Timeline
+    still shows only a single genuine 'M' event per captured file rather
+    than a fabricated A/C/B alongside it."""
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, "shell", "find -H /sdcard -type f -printf '%p|%T@\\n'"],
+            capture_output=True, text=True, timeout=ANDROID_DEVICE_TIMESTAMPS_TIMEOUT,
+        )
+    except Exception:
+        return 0
+    if result.returncode != 0 or not result.stdout:
+        return 0
+
+    files = {}
+    for line in result.stdout.splitlines():
+        if '|' not in line:
+            continue
+        device_path, _, ts_str = line.rpartition('|')
+        if not device_path.startswith('/sdcard/'):
+            continue
+        try:
+            ts = float(ts_str)
+        except ValueError:
+            continue
+        rel_path = device_path[len('/sdcard/'):]
+        if rel_path:
+            files[rel_path] = ts
+    if not files:
+        return 0
+
+    manifest_path = f"{output_path.rstrip(os.sep)}_device_timestamps.json"
+    try:
+        with open(manifest_path, "w") as f:
+            json.dump({
+                "source": "adb shell find -H /sdcard -type f -printf '%p|%T@'",
+                "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "note": "Real on-device file modification times, captured immediately after the pull "
+                        "completed - adb pull itself does not carry these across the transfer.",
+                "files": files,
+            }, f)
+    except OSError:
+        return 0
+    return len(files)
+
+
 def execution_worker_android(mode, serial, output_path, report_file_path, report_data):
     """
     mode 'backup': adb backup (deprecated/unreliable on Android 12+, requires
@@ -302,6 +390,24 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
             append_log(f"[+] Android {mode} completed successfully. Size: {final_size} bytes")
             report_data["acquisition_status"] = "COMPLETED"
             report_data["output_size_bytes"] = final_size
+
+            # Best-effort enrichment, only for a genuinely successful pull -
+            # never blocks/delays reporting the pull itself as complete, and
+            # a failure here (device disconnected right after the pull,
+            # capture timed out, etc.) just means the Evidence Timeline's
+            # pre-existing copy-time fallback (with its own disclosure note)
+            # applies to this pull, same as it always has.
+            if mode == 'pull':
+                append_log("[*] Capturing original on-device file timestamps (adb shell find)...")
+                captured = _capture_android_device_mtimes(serial, output_path)
+                if captured:
+                    append_log(f"[+] Captured {captured} real on-device file timestamp(s) for the Evidence Timeline.")
+                    report_data["acquisition_parameters"]["device_timestamps_captured"] = captured
+                    manifest_path = f"{output_path.rstrip(os.sep)}_device_timestamps.json"
+                    _auto_tag_case_artifact(os.path.dirname(output_path), manifest_path)
+                else:
+                    append_log("[-] Could not capture on-device timestamps - Evidence Timeline entries for this "
+                               "acquisition will fall back to copy time (disclosed there automatically).")
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
             append_log(f"[-] adb {mode} exited with code {proc.returncode}")
