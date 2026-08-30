@@ -21,6 +21,39 @@ file after updating to see what changed.
 
 ---
 
+## [1.5.0] - 2026-08-30
+
+### New
+
+- **Physical/raw Android acquisition**, for an already-rooted device only. Mobile Forensics' Android
+  mode gained a fourth option, "Physical / Raw Acquisition (rooted device only)" - it pipes the
+  device's own raw block storage directly through `adb exec-out su -c dd` into this app's existing
+  `dc3dd`/`dcfldd` acquisition engine (the same hashing/write pipeline already used for a locally-
+  attached drive), instead of the app's previous logical-only acquisition methods. E01 isn't offered
+  for this mode - confirmed live that `ewfacquire` cannot read from a piped, non-seekable source at
+  all. The examiner picks a target partition from an on-device enumeration (`userdata` pre-selected
+  when found, since modern Android's Dynamic Partitions make it almost always the forensically
+  interesting target - a naive whole-disk image is available only via an explicit manual path), or
+  types a raw device path manually for an older/simpler device.
+
+  Root access and SELinux enforcement mode are detected and disclosed per-device before the examiner
+  can start a job - a clear red banner when root isn't detected, a clear yellow banner when root is
+  confirmed but block-device readability genuinely isn't knowable until attempted (SELinux enforcing
+  mode can block even root from raw block access). A failed on-device read produces a specific,
+  distinguishable error rather than a generic failure message.
+
+  Built and verified in two halves, since no rooted Android device was available to build against:
+  the actual two-process pipe mechanism (a new `_stream_piped_subprocess()` in `core/jobs.py`,
+  chaining the device-side read into the station-side dc3dd/dcfldd write) was fully proven with a
+  real dry-run test on the deployed station - byte-identical output with a matching hash, both
+  processes cleanly killable mid-transfer with zero orphans, and a deliberately-failing upstream
+  leaving the write side in a clean, honest state rather than hanging. The on-device root/SELinux
+  detection and target-enumeration commands are grounded in documented Android/Linux convention but
+  are explicitly disclosed as provisional pending a real end-to-end test against a rooted device -
+  see the approved plan's own verification checklist for exactly what still needs confirming.
+
+---
+
 ## [1.4.1] - 2026-08-29
 
 ### Fixed

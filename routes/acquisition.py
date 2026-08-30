@@ -38,6 +38,7 @@ from core.config import EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job,
     get_active_proc, clear_active_proc,
+    get_upstream_proc, clear_upstream_proc,
     _stream_subprocess, reclaim_ownership,
     build_report_target, write_initial_report, _write_report,
     _SERVICE_ACCOUNT_NAME,
@@ -2726,6 +2727,27 @@ def stop_imaging():
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception as e:
             print(f"Error killing process group: {e}")
+
+        # 2026-08-30, physical/raw Android acquisition: a second tracked
+        # process (the upstream `adb exec-out su -c dd` read, piped into
+        # the dc3dd/dcfldd process killed just above via active_proc) -
+        # see core/jobs.py's _stream_piped_subprocess(). adb never runs
+        # under sudo on this host (`su` happens ON the device, not here),
+        # so a plain, non-sudo killpg on a process this same service
+        # account spawned is already permitted - no new sudoers grant.
+        # Deliberately NOT added to the sudo-pkill-by-name list below:
+        # those tools all need sudo because THEY run via sudo, and a bare
+        # `pkill adb` would also kill an unrelated, concurrent adb call
+        # elsewhere in the app (e.g. a device-list refresh) - the
+        # tracked-PID killpg here is the correct, surgical mechanism.
+        try:
+            up = get_upstream_proc()
+            if up and up.poll() is None:
+                os.killpg(os.getpgid(up.pid), signal.SIGKILL)
+        except Exception as e:
+            print(f"Error killing upstream process group: {e}")
+        finally:
+            clear_upstream_proc()
 
         # These now run via sudo (root) to get raw device access, so killing
         # them also needs sudo - an unprivileged kill/pkill can't signal a
