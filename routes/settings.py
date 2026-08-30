@@ -1346,6 +1346,37 @@ TOOL_VERSION_COMMANDS = [
     # (see install.py's own MQUIRE_VERSION step) - no apt package exists for
     # it, and Trail of Bits publishes no binary releases either.
     {"tool": "mquire", "cmd": [MQUIRE_BIN, "--version"], "package": None},
+    # package=None (not apt): sqlite-dissect is a pip package (see
+    # requirements.txt), same MVT_BIN_DIR resolution as mvt-ios/mvt-android/
+    # volatility3 above - it's a pip console-script, not on PATH under
+    # gunicorn. Unlike volatility3/mvt, it DOES have a real, confirmed-
+    # working -v/--version flag (its own --help documents it directly), so
+    # no pip-show fallback is needed here.
+    {"tool": "sqlite_dissect", "cmd": [os.path.join(MVT_BIN_DIR, "sqlite_dissect"), "--version"], "package": None},
+    # package=None (not apt): androguard is a pip package (see
+    # requirements.txt), same MVT_BIN_DIR resolution as the others above.
+    # It has no confirmed --version CLI flag of its own, so this uses the
+    # same pip-show fallback volatility3 already established.
+    {"tool": "androguard", "cmd": [VOL3_PIP_BIN, "show", "androguard"], "package": None},
+    # package=None (not apt): wa-crypt-tools is a pip package (see
+    # requirements.txt), same MVT_BIN_DIR resolution as the others above.
+    # `wadecrypt --version` has no real effect (confirmed live - it does
+    # not print a version string, it errors trying to open its default
+    # "encrypted" positional argument's file), so this uses the same
+    # pip-show fallback volatility3/androguard already established.
+    {"tool": "wa-crypt-tools", "cmd": [VOL3_PIP_BIN, "show", "wa-crypt-tools"], "package": None},
+    # package=None (not apt): lief is a pip package (see requirements.txt),
+    # imported directly by core/ipa_utils.py rather than shelled out to -
+    # no CLI to check --version against at all, so this uses the same
+    # pip-show fallback the other pip-installed tools above already use.
+    {"tool": "lief", "cmd": [VOL3_PIP_BIN, "show", "lief"], "package": None},
+    # package=None (not apt): dumpstate-py is installed via
+    # `pip install git+https://...` pinned to a specific commit (see
+    # install.py) - never on PyPI, no --version flag confirmed, so this
+    # uses the same pip-show fallback the other pip-installed tools above
+    # already use (works identically for a git-sourced install - pip
+    # still records a real version string, e.g. "0.1.1.dev4+g56b70934f").
+    {"tool": "dumpstate-py", "cmd": [VOL3_PIP_BIN, "show", "dumpstate-py"], "package": None},
 ]
 # Every installable package this endpoint will ever run apt-get for - the
 # same allowlist install.py's sudoers file grants exact NOPASSWD entries

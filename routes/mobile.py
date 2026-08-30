@@ -28,6 +28,7 @@ from core.jobs import (
     build_report_target, write_initial_report, _write_report, reclaim_ownership,
 )
 from core.case_index_db import _auto_tag_case_artifact
+from core.whatsapp_utils import pull_whatsapp_key_file
 from core.config import ALLOWED_HASH_ALGOS
 
 # 2026-08-30, physical/raw Android acquisition: dc3dd/dcfldd's progress-line
@@ -526,6 +527,27 @@ def android_physical_targets(serial):
         return jsonify({"success": False, "error": "Invalid device serial."}), 400
     result = _enumerate_android_physical_targets(serial)
     return jsonify({"success": True, "targets": result["targets"], "notes": result["notes"]})
+
+
+@mobile_bp.route('/api/mobile/android/<serial>/pull_whatsapp_key', methods=['POST'])
+@requires_auth
+@requires_permission('mobile')
+def pull_whatsapp_key(serial):
+    if not _ANDROID_SERIAL_RE.match(serial or ''):
+        return jsonify({"success": False, "error": "Invalid device serial."}), 400
+
+    req = request.get_json() or {}
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    dest_path = os.path.join(dest_dir, f"{serial}_whatsapp_key")
+    result = pull_whatsapp_key_file(serial, dest_path)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    log_chain_of_custody("whatsapp_key_pulled", {"serial": serial, "path": result["path"]})
+    return jsonify(result)
 
 
 def execution_worker_android(mode, serial, output_path, report_file_path, report_data):

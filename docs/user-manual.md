@@ -412,6 +412,43 @@ key not present in the evidence file alone; this is disclosed honestly rather th
 Firefox's cookie values, by contrast, are stored as plain text and *are* recoverable. Safari uses a
 different format and isn't covered.
 
+### Mobile-app-specific tools
+
+Five more right-click File Explorer actions, each aimed at a specific mobile-app scenario:
+
+- **Recover Deleted SQLite Records** (any `.db`/`.sqlite`/`.sqlite3` file) — uses SQLite Dissect to
+  recover rows still present in a database's own freeblocks, unallocated space, or a surviving WAL/
+  rollback-journal sidecar file. Whether anything comes back depends heavily on how the file was
+  closed: SQLite's own page management frequently compacts a deleted row's freed bytes away entirely
+  the moment a database is cleanly closed, so a database acquired with its own `-wal` file still
+  present alongside it (an app caught mid-transaction) is by far the most reliable case.
+- **Analyze APK (androguard)** (`.apk` files) — package name, version, every requested Android
+  permission, every declared activity/service/receiver/provider, the full signing-certificate chain
+  (subject, issuer, serial number, SHA-256 fingerprint, validity window), and a raw scan of the file
+  for embedded URLs. This is static analysis only — the app is never run or installed.
+- **Analyze IPA** (`.ipa` files) — `Info.plist` metadata (bundle ID, display name, version/build,
+  minimum iOS version, and every permission "usage description" string shown to the user), the
+  embedded mobile provisioning profile (team name/ID, provisioned device list, entitlements, validity
+  dates — no signature verification is attempted), and an optional Mach-O binary layer showing each
+  architecture slice and its FairPlay encryption status. The Mach-O layer uses LIEF and degrades
+  gracefully — an `.ipa` with no readable binary, or a station where that layer isn't available, still
+  returns the full `Info.plist`/provisioning-profile result rather than failing outright.
+- **Decrypt WhatsApp Backup** (`.crypt12`/`.crypt14`/`.crypt15` files) — decrypts a WhatsApp local
+  backup against the device's own key file into a real, browsable SQLite database, openable directly
+  through File Explorer's existing Database preview tab. The key file itself comes from Mobile
+  Forensics: once a rooted Android device is selected, a **Pull WhatsApp Key File** button appears.
+- **Deep-Parse Bugreport** (`.zip` files) — turns an already-captured `adb bugreport` archive (Mobile
+  Forensics' own Bug Report acquisition mode) into structured, searchable sections instead of a raw
+  unopened archive: the device header (build, kernel, uptime), mount points, the running process list,
+  package install/delete history, loaded kernel modules, GPS coordinates, crash traces and tombstones,
+  network socket/connection state, battery stats, and power events. Any `.zip` file can be selected
+  here — a file that isn't actually a bug report is rejected with a clear message rather than
+  producing garbage output.
+
+Each of these writes its own result (a recovered-rows folder, a decrypted database, a JSON report)
+through the same evidence-integrity guard as every other analysis action in this app — never into, or
+next to, the exact file or folder being analyzed.
+
 ### Hash Sets, URL Lists, and YARA rules
 
 Three station-wide reference lists, managed from Settings > Case & Reporting > Analysis & IOC Lists,

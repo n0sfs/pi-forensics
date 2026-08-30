@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.6.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.7.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -85,7 +85,9 @@ hashing/write pipeline used for a locally-attached drive. Reads and displays rea
 you start — model, OS version, build, storage, IMEI, WiFi/Bluetooth MAC, activation state for iOS;
 version, API level, manufacturer, build ID, and root/SELinux status for Android. This does **not**
 bypass lockscreens, USB-debugging authorization, or root a device itself — devices must already be
-unlocked/trusted (and, for physical acquisition, already rooted) by the examiner.
+unlocked/trusted (and, for physical acquisition, already rooted) by the examiner. On a rooted Android
+device, Mobile Forensics can also pull the device's own WhatsApp key file directly, for use with File
+Explorer's WhatsApp backup decryption below.
 
 ### File Explorer & analysis
 Browse local evidence and mounted network shares with inline preview (images, PDFs, and
@@ -99,12 +101,18 @@ saved lists (with one-click MalwareBazaar/URLhaus imports). Dedicated artifact p
 Windows Registry hives (incl. Amcache), Event Logs, Prefetch, Recycle Bin, and LNK shortcuts; Linux
 shell history, `/etc/passwd`, cron, and `auth.log`; cryptocurrency wallet files; and mobile chat/app
 data (SMS/iMessage, Contacts, Call History) straight out of an already-captured iOS backup — all
-without extracting anything first, real folder or unmounted image alike. For a much deeper pass on an
-already-pulled Android or iOS extraction, right-click it and run **ALEAPP/iLEAPP** — the same
-open-source, community-maintained parsers many examiners already use, covering hundreds of
-app-specific artifacts (WhatsApp, Signal, Chrome, WiFi history, and far more), each in its own
-isolated environment on the station so the two tools' conflicting dependencies never collide. **Auto
-Analyze** detects
+without extracting anything first, real folder or unmounted image alike. Mobile-app-specific tools
+round this out: recover deleted rows from any SQLite database (`SQLite Dissect`), static-analyze an
+Android `.apk` (`androguard` — permissions, components, signing certificates, embedded URLs) or an
+iOS `.ipa` (`Info.plist`, the embedded provisioning profile, optional Mach-O architecture/encryption
+status via LIEF), decrypt a WhatsApp local backup against a pulled key file into a browsable SQLite
+database, and deep-parse an already-captured `adb bugreport` archive into structured sections
+(processes, packages, mounts, kernel modules, GPS, crash traces, sockets, battery/power events). For
+a much deeper pass on an already-pulled Android or iOS extraction, right-click it and run
+**ALEAPP/iLEAPP** — the same open-source, community-maintained parsers many examiners already use,
+covering hundreds of app-specific artifacts (WhatsApp, Signal, Chrome, WiFi history, and far more),
+each in its own isolated environment on the station so the two tools' conflicting dependencies never
+collide. **Auto Analyze** detects
 what kind of evidence you've selected and runs a curated default set of the above in one background
 job. Memory forensics covers Windows (Volatility 3) and x86_64 Linux (`mquire`) memory images.
 
@@ -264,7 +272,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.6.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.7.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
