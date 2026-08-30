@@ -497,8 +497,10 @@ everywhere else).
 - **Geolocation** — an inline map built from any KML files attached to or found in the case.
 - **Jobs** — every acquisition, recovery, and mobile job run against this case, with full telemetry
   and hashes for each.
-- **Evidence Timeline** — every acquired image's filesystem (MACB) timeline merged with parsed
-  artifact timestamps, shown as a stacked density chart by source (click a bar to filter the table
+- **Evidence Timeline** — every acquired image's filesystem (MACB) timeline (plus real file
+  timestamps from a mobile pull/backup or Logical Acquisition folder — anything with no walkable
+  disk image still gets a timeline from its own copied files) merged with parsed artifact
+  timestamps, shown as a stacked density chart by source (click a bar to filter the table
   below it) plus a filterable, exportable table. Anti-forensic indicators (like a cleared audit log)
   and deleted-file entries are flagged directly in the table.
 - **Audit Trail** — the station-wide activity log, filtered to just this case number.

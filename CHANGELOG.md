@@ -21,6 +21,34 @@ file after updating to see what changed.
 
 ---
 
+## [1.2.0] - 2026-08-29
+
+### New
+
+- The **Evidence Timeline** (Reporting) and the exported PDF/HTML report's **Filesystem Timeline
+  (MACB)** section now cover mobile pull/backup acquisitions and Logical Acquisition, not just
+  disk images. These don't produce a walkable raw/E01/AFF image at all - `adb pull`,
+  `idevicebackup2`, and Logical Acquisition all copy real files onto this station's own filesystem
+  one at a time - so there was previously no timeline option for them whatsoever. The files
+  themselves still carry real Modified/Accessed/Changed timestamps once copied, so this walks the
+  acquisition's own output folder directly and merges the result into the same timeline a disk
+  image's Sleuth Kit walk already produces, with the same dedup/budget-splitting safeguards a
+  disk-image timeline already has (a re-run acquisition landing in the same output folder is
+  deduplicated to the latest pass; one very large pulled folder can't crowd out every other
+  evidence item's own timeline contribution in the same case).
+
+### Fixed
+
+- The exported PDF and HTML report's Filesystem Timeline (MACB) section was rendering raw Unix
+  epoch numbers (e.g. `1428959741`) instead of a real date/time for every entry - a pre-existing
+  defect (present since this feature first shipped) that had gone unnoticed because the in-app,
+  browser-rendered Evidence Timeline view formats these correctly client-side; only the two
+  server-rendered export paths had the bug. Found and fixed alongside the mobile-pull/Logical
+  Acquisition timeline work above, since the new folder-based entries would otherwise have hit the
+  identical bug.
+
+---
+
 ## [1.1.6] - 2026-08-29
 
 A documentation release. No functional changes.

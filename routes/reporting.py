@@ -60,7 +60,7 @@ from flask import Blueprint, jsonify, request, g, send_file, Response
 from core.auth import requires_auth, requires_permission, get_current_user_permissions
 from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path,
-    classify_extension, classify_case_role, sanitize_case_slug,
+    classify_extension, classify_case_role, sanitize_case_slug, format_epoch,
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, ALLOWED_HASH_ALGOS,
@@ -534,23 +534,31 @@ def export_chain_of_custody_csv():
 # and FEATURE_MODULES further below.
 TIMELINE_MIN_PER_FS_BUDGET = 200
 
+# Bounds the os.walk() itself for a folder-based acquisition (mobile pull/
+# backup, Logical Acquisition - see the folder-candidates pass below) - a
+# pathologically large pulled directory shouldn't make the walk itself slow
+# regardless of how the resulting events get budgeted afterward.
+FOLDER_TIMELINE_MAX_FILES_WALKED = 20000
+
 # _tsk_resolve_filesystems now lives in core/tsk_utils.py (imported at the
 # top of this file) - see the Step 0 core/ extraction.
 
 def _collect_case_timeline(events):
-    """Builds a combined MACB timeline across every acquired disk image in a
-    case's events, for the 'timeline' report block below. Returns
+    """Builds a combined MACB timeline across every acquired disk image AND
+    every folder-based acquisition (mobile pull/backup, Logical Acquisition)
+    in a case's events, for the 'timeline' report block below. Returns
     {"events": [...], "notes": [...], "truncated": bool}.
 
-    Three correctness fixes folded in here that a naive version of this
-    would not have had:
+    Correctness fixes folded in here that a naive version of this would not
+    have had:
 
     1. Status + existence gating: only a COMPLETED event's output_image_path
        is considered, and only after routing it through safe_path() (matching
        this file's existing pattern for every other image-path input) and
        confirming the file still exists - a FAILED/IN_PROGRESS event's path
        can point at a partial image that might still open "successfully" and
-       walk garbage without pytsk3 raising anything.
+       walk garbage without pytsk3 raising anything. The same gating applies
+       to folder-based candidates below.
     2. Dedup by resolved path, not by event: ddrescue's base_name has no
        per-run component, and its own multi-pass design (stage1_fast/
        stage2_trim/stage3_intensive/reverse, each a separate POST against the
@@ -559,14 +567,34 @@ def _collect_case_timeline(events):
        the event with the latest timestamp_start per unique resolved path is
        kept; how many earlier events were superseded is recorded so the
        report can disclose it rather than silently drop or (worse) triple-
-       walk the same bytes.
-    3. Per-(image, filesystem) budget, not one shared global cap:
-       image_timeline() above truncates in walk order, before sorting by
-       time - so a single real filesystem can consume the entire
+       walk the same bytes. Folder-based events get the identical treatment
+       - a re-run mobile pull against an unchanged Case#/Evidence ID lands
+       in the exact same destination folder, the same class of collision.
+    3. Per-source budget, not one shared global cap: image_timeline() above
+       truncates in walk order, before sorting by time - so a single real
+       filesystem (or one huge pulled folder) can consume the entire
        TSK_MAX_TIMELINE_ENTRIES cap by itself. Splitting the budget across
-       every qualifying (image, filesystem) pair means one large acquired
-       image can't silently reduce every other evidence item in the case to
-       zero timeline entries."""
+       every qualifying source - each (image, filesystem) pair AND each
+       folder-based candidate, pooled together - means one large evidence
+       item can't silently reduce every other item in the case to zero
+       timeline entries.
+
+    2026-08-29: folder-based acquisitions never produce a walkable disk
+    image at all (adb pull/idevicebackup2/Logical Acquisition copy real
+    files onto a real filesystem one at a time, there's no block-level
+    image to open with pytsk3/Sleuth Kit) - previously this meant they had
+    NO timeline contribution whatsoever, confirmed as a real, reported gap
+    (an examiner asking "is there any way to generate a timeline from an
+    Android pull? it doesn't show as an option"). The files themselves
+    still carry real Modified/Accessed/Changed timestamps once copied onto
+    this station's own filesystem, so a plain os.walk()+os.stat() pass over
+    the acquisition's own output folder gives genuine MACB-style data - just
+    gathered without a Sleuth Kit filesystem in between, and honestly
+    labeled as such (no crtime/Born equivalent - POSIX os.stat() has no
+    portable creation-time field the way pytsk3's TSK metadata layer does;
+    st_birthtime is used only on the rare platform/filesystem combination
+    that actually provides one, matching routes/file_explorer.py's own
+    stat_info route's identical best-effort disclosure for the same field)."""
     candidates = {}  # resolved image_path -> {"event": event, "superseded_count": int}
     for event in events:
         if event.get('acquisition_status') != 'COMPLETED':
@@ -580,6 +608,35 @@ def _collect_case_timeline(events):
         existing = candidates.get(image_path)
         if existing is None:
             candidates[image_path] = {"event": event, "superseded_count": 0}
+        elif event.get('timestamp_start', '') > existing["event"].get('timestamp_start', ''):
+            existing["event"] = event
+            existing["superseded_count"] += 1
+        else:
+            existing["superseded_count"] += 1
+
+    # Folder-based candidates: any COMPLETED event with a real, walkable
+    # destination directory but no output_image_path (already claimed by
+    # the image-based pass above). android_pull/ios_backup use
+    # output_destination; Logical Acquisition uses output_container_path.
+    # android_backup/bugreport also set output_destination, but it points
+    # at a single .ab/.zip FILE, not a directory - os.path.isdir() below
+    # naturally excludes those rather than needing a per-tool allowlist.
+    folder_candidates = {}  # resolved dir path -> {"event": event, "superseded_count": int}
+    for event in events:
+        if event.get('acquisition_status') != 'COMPLETED':
+            continue
+        params = event.get('acquisition_parameters', {})
+        if params.get('output_image_path'):
+            continue  # already an image candidate above
+        raw_dest = params.get('output_destination') or params.get('output_container_path')
+        if not raw_dest:
+            continue
+        dest_path = safe_path(raw_dest)
+        if not dest_path or not os.path.isdir(dest_path):
+            continue
+        existing = folder_candidates.get(dest_path)
+        if existing is None:
+            folder_candidates[dest_path] = {"event": event, "superseded_count": 0}
         elif event.get('timestamp_start', '') > existing["event"].get('timestamp_start', ''):
             existing["event"] = event
             existing["superseded_count"] += 1
@@ -601,10 +658,20 @@ def _collect_case_timeline(events):
             notes.append(f"{evidence_id}: {superseded} earlier completed acquisition pass{plural} {verb} this "
                          f"same output file; showing the most recent only.")
 
+    for dest_path, info in folder_candidates.items():
+        superseded = info["superseded_count"]
+        if superseded:
+            evidence_id = info["event"].get('case_metadata', {}).get('evidence_id', 'N/A')
+            plural = "es" if superseded != 1 else ""
+            verb = "share" if superseded != 1 else "shares"
+            notes.append(f"{evidence_id}: {superseded} earlier completed acquisition pass{plural} {verb} this "
+                         f"same output folder; showing the most recent only.")
+
     total_filesystems = sum(len(fss) for fss in per_image_filesystems.values())
-    if total_filesystems == 0:
+    total_sources = total_filesystems + len(folder_candidates)
+    if total_sources == 0:
         return {"events": [], "notes": notes, "truncated": False}
-    per_fs_budget = max(TSK_MAX_TIMELINE_ENTRIES // total_filesystems, TIMELINE_MIN_PER_FS_BUDGET)
+    per_source_budget = max(TSK_MAX_TIMELINE_ENTRIES // total_sources, TIMELINE_MIN_PER_FS_BUDGET)
 
     all_events = []
     truncated = False
@@ -627,9 +694,49 @@ def _collect_case_timeline(events):
                                             "evidence_id": evidence_id, "filesystem": fs_info['label'],
                                             "deleted": bool(entry.get('deleted'))})
                         count += 1
-                if count >= per_fs_budget:
+                if count >= per_source_budget:
                     truncated = True
                     break
+
+    for dest_path, info in folder_candidates.items():
+        event = info["event"]
+        evidence_id = event.get('case_metadata', {}).get('evidence_id', 'N/A')
+        source_label = f"{event.get('tool', 'acquisition')} (real filesystem)"
+        count = 0
+        files_walked = 0
+        walk_capped = False
+        for root, _dirs, files in os.walk(dest_path):
+            for fname in files:
+                files_walked += 1
+                if files_walked > FOLDER_TIMELINE_MAX_FILES_WALKED:
+                    walk_capped = True
+                    break
+                fpath = os.path.join(root, fname)
+                try:
+                    st = os.lstat(fpath)  # lstat, not stat - a symlink's own metadata, never a followed target
+                except OSError:
+                    continue
+                rel_path = "/" + os.path.relpath(fpath, dest_path).replace(os.sep, "/")
+                ts_fields = [('st_mtime', 'M'), ('st_atime', 'A'), ('st_ctime', 'C')]
+                birth = getattr(st, 'st_birthtime', None)
+                if birth:
+                    ts_fields.append(('st_birthtime', 'B'))
+                for ts_attr, label in ts_fields:
+                    ts = getattr(st, ts_attr, None)
+                    if ts:
+                        all_events.append({"timestamp": ts, "activity": label, "path": rel_path,
+                                            "evidence_id": evidence_id, "filesystem": source_label,
+                                            "deleted": False})
+                        count += 1
+                if count >= per_source_budget:
+                    truncated = True
+                    break
+            if walk_capped or count >= per_source_budget:
+                break
+        if walk_capped:
+            notes.append(f"{evidence_id}: folder contains more than {FOLDER_TIMELINE_MAX_FILES_WALKED} files - "
+                         f"only the first {FOLDER_TIMELINE_MAX_FILES_WALKED} were scanned for timeline entries.")
+            truncated = True
 
     all_events.sort(key=lambda e: e['timestamp'], reverse=True)
     if len(all_events) > TSK_MAX_TIMELINE_ENTRIES:
@@ -2054,7 +2161,7 @@ def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)"):
                 y = 750
                 y = _draw_header_row(y)
             row = [
-                str(entry.get('timestamp', 'N/A'))[:19],
+                format_epoch(entry.get('timestamp')) or 'N/A',
                 str(entry.get('activity', '')),
                 str(entry.get('evidence_id', 'N/A'))[:14],
                 str(entry.get('path', ''))[:58],
@@ -3176,7 +3283,7 @@ def _html_timeline_block(events, title="Filesystem Timeline (MACB)", anchor_id=N
         parts.append('<table><tr><th>Timestamp</th><th>Activity</th><th>Evidence ID</th><th>Path</th></tr>')
         for entry in timeline_events:
             parts.append(
-                f'<tr><td>{esc(str(entry.get("timestamp", "N/A")))}</td>'
+                f'<tr><td>{esc(format_epoch(entry.get("timestamp")) or "N/A")}</td>'
                 f'<td>{esc(str(entry.get("activity", "")))}</td>'
                 f'<td>{esc(str(entry.get("evidence_id", "N/A")))}</td>'
                 f'<td class="mono">{esc(str(entry.get("path", "")))}</td></tr>'
