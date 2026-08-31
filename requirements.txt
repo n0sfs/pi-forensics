@@ -158,3 +158,9 @@ analyzeMFT>=3.1.1
 # Debian-trixie venv: source-only (no prebuilt wheel), but compiles cleanly
 # with no external system dependency needed beyond what's already present.
 libpff-python>=20231205
+
+# py-tlsh (2026-08-30, tool-survey follow-up) - fuzzy hashing
+# (core/fuzzy_hash_utils.py). Confirmed live on the Pi's real ARM64/
+# Debian-trixie venv: source-only (a small C extension), compiles cleanly
+# with no external system dependency needed.
+py-tlsh>=5.0.0
