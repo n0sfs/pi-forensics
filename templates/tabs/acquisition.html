@@ -258,4 +258,73 @@
                                     </div>
                                 </div>
                             </div>
+
+                            <!-- Live Collection USB (Build + Import) - deliberately its own,
+                                 clearly-separated, collapsed-by-default card. This doesn't fit
+                                 the "acquire FROM a selected source drive" mental model every
+                                 other control on this tab shares (BitLocker/LUKS/VeraCrypt
+                                 unlock, dc3dd/dcfldd/E01/AFF/ddrescue/Logical Acquisition all
+                                 image or copy FROM a source); this feature instead PREPARES a
+                                 blank target USB, then later IMPORTS results from it - the
+                                 opposite direction, and this app's first-ever deliberate write
+                                 to a device it doesn't already treat as evidence. -->
+                            <div class="card mt-3">
+                                <div class="card-header py-2">
+                                    <button class="btn btn-link text-decoration-none text-light fw-bold p-0 d-flex align-items-center gap-2 w-100"
+                                            type="button" data-bs-toggle="collapse" data-bs-target="#liveCollectionCard">
+                                        <i class="bi bi-usb-drive"></i> Live Collection USB
+                                        <small class="text-subtle fw-normal ms-auto">Build a live-triage USB, or import results from one - click to expand</small>
+                                    </button>
+                                </div>
+                                <div id="liveCollectionCard" class="collapse">
+                                    <div class="card-body py-3">
+                                        <div class="small text-subtle mb-3">
+                                            Prepares a blank USB drive with live-forensics collector tooling (UAC for
+                                            Linux/macOS, a hand-written PowerShell script for Windows) so it can be run
+                                            on a separate, <em>live, running</em> target machine to gather volatile
+                                            artifacts (processes, network connections, logged-on users) - not evidence
+                                            acquisition, and nothing here ever touches a network. Bring the same drive
+                                            back afterward to import its results into a case.
+                                        </div>
+                                        <div class="row g-3">
+                                            <div class="col-md-6">
+                                                <div class="telemetry-grid-label mb-1"><i class="bi bi-usb-symbol me-1"></i>Build Live Collection USB</div>
+                                                <div class="small text-subtle mb-2">This <strong>erases the selected drive entirely</strong> and formats it exFAT. Never point this at a drive that already holds evidence or data you need.</div>
+                                                <select id="liveCollectionBuildDriveSelect" class="form-select form-select-sm mb-2" onchange="onLiveCollectionBuildDriveSelect()">
+                                                    <option value="">-- Select USB Drive --</option>
+                                                </select>
+                                                <div id="liveCollectionBuildDriveInfo" class="small text-warning mb-2"></div>
+                                                <div id="liveCollectionBuildConfirmHint" class="small text-subtle mb-1">Select a drive above first.</div>
+                                                <input type="text" id="liveCollectionBuildConfirmText" class="form-control form-control-sm mb-2"
+                                                       placeholder="Type WIPE /dev/sdX to confirm" oninput="checkLiveCollectionBuildConfirmText()" autocomplete="off">
+                                                <button id="btnLiveCollectionBuild" class="btn btn-danger btn-sm w-100 fw-bold" onclick="startBuildCollectionUsb()" disabled>
+                                                    <i class="bi bi-exclamation-triangle-fill me-1"></i>Erase &amp; Build Live Collection USB
+                                                </button>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="telemetry-grid-label mb-1"><i class="bi bi-download me-1"></i>Import Collection Results</div>
+                                                <div class="small text-subtle mb-2">Read-only against the USB - safe to run any time.</div>
+                                                <select id="liveCollectionImportDriveSelect" class="form-select form-select-sm mb-2">
+                                                    <option value="">-- Select USB Drive --</option>
+                                                </select>
+                                                <button class="btn btn-outline-info btn-sm w-100 mb-2" onclick="scanLiveCollectionResults()"><i class="bi bi-search me-1"></i>Scan for Collection Results</button>
+                                                <div id="liveCollectionRunsList" class="mb-2" style="max-height: 160px; overflow-y: auto;">
+                                                    <div class="text-subtle small">Scan a drive to see its result runs here.</div>
+                                                </div>
+                                                <input type="text" id="liveCollectionEvidenceId" class="form-control form-control-sm mb-2" placeholder="Evidence ID (e.g. LIVECOLLECT-01)">
+                                                <button id="btnLiveCollectionImport" class="btn btn-primary btn-sm w-100 fw-bold" onclick="startImportLiveCollection()">
+                                                    <i class="bi bi-file-earmark-arrow-down me-1"></i>Import Selected Results
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div id="liveCollectionProgress" style="display:none;" class="mt-3">
+                                            <hr class="border-secondary my-2">
+                                            <div id="liveCollectionStatus" class="fw-bold text-info small mb-1">Status: IDLE</div>
+                                            <div class="progress bg-secondary" style="height: 8px;">
+                                                <div id="liveCollectionBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" role="progressbar" style="width: 0%"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                     </div>

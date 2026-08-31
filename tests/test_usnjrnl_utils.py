@@ -2,9 +2,22 @@
 USN_RECORD_V2 parser round-trips correctly against a hand-built synthetic
 byte blob, matching this app's own established discipline (already applied
 to the Recycle Bin $I parser) of proving a hand-rolled binary-format parser
-against real/synthetic bytes, not just documentation."""
+against real/synthetic bytes, not just documentation.
+
+Skip guard needed despite this module's own parsing logic being pure
+stdlib - core/usnjrnl_utils.py imports the shared filetime_to_unix() epoch
+helper from core/registry_utils.py, which hard-imports the `Registry`
+package at module level. See test_recyclebin_utils.py's own docstring for
+the fuller story (a real, previously-undetected gap found 2026-08-31 while
+working on an unrelated feature: without this guard, a dev machine missing
+python-registry got a hard COLLECTION ERROR that aborted the entire pytest
+run, not just this file)."""
 import os
 import struct
+
+import pytest
+
+Registry = pytest.importorskip("Registry.Registry", reason="python-registry not installed (needed transitively via core.registry_utils.filetime_to_unix)")
 
 import core.usnjrnl_utils as usnjrnl_utils
 

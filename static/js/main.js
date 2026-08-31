@@ -6243,6 +6243,8 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     case_bundle_export: (status) => `Case bundle export finished: ${status}\n\nCheck the case folder for the generated *_case_bundle_<timestamp>.zip file.`,
     auto_analyze_image: (status) => `Auto Analyze finished: ${status}\n\nSee the Audit Log (Settings > Security) for the full per-step results, or File Views > Parsed Artifacts for the individual tools' output.`,
     vss_materialize: (status) => `Shadow copy materialization finished: ${status}\n\nCheck the case folder for the generated *_shadowcopyN.dd file - browse it via File Explorer's normal "Browse as Image" action, same as any other acquired image.`,
+    live_collection_build: (status) => `Live Collection USB build finished: ${status}\n\nThe drive is ready - plug it into a live target machine and follow the README on the drive.`,
+    live_collection_import: (status) => `Live collection import finished: ${status}\n\nCheck the case folder for the new live_collection_import_<timestamp> folder and its hash manifest.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
 
@@ -6262,6 +6264,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     dd: 'navBadgeAcquisition', raw: 'navBadgeAcquisition', dcfldd: 'navBadgeAcquisition',
     plain_dd: 'navBadgeAcquisition', e01: 'navBadgeAcquisition', aff: 'navBadgeAcquisition',
     ddrescue: 'navBadgeAcquisition', logical_acquisition: 'navBadgeAcquisition',
+    live_collection_build: 'navBadgeAcquisition', live_collection_import: 'navBadgeAcquisition',
     // Mobile Forensics
     ios_backup: 'navBadgeMobile', android_pull: 'navBadgeMobile',
     android_backup: 'navBadgeMobile', android_bugreport: 'navBadgeMobile',
@@ -12449,7 +12452,180 @@ async function refreshDrives() {
             });
         });
         checkSmartTelemetry();
+        populateLiveCollectionDriveSelects();
     } catch (err) {}
+}
+
+// --- Live Collection USB (Build + Import) ---
+// Deliberately excludes this station's own boot media from both drive
+// pickers (not just Build's) - a collection USB is never legitimately
+// the Pi's own SD card, and Build in particular is destructive, so this
+// reduces the chance of ever seeing the wrong device in the list at all,
+// on top of the strengthened type-to-confirm gate below.
+function populateLiveCollectionDriveSelects() {
+    const candidates = (currentDrivesList || []).filter(
+        (d) => !GUIDED_WORKFLOW_NON_CANDIDATE_DRIVE_PREFIXES.some((prefix) => (d.name || '').startsWith(prefix))
+    );
+    ['liveCollectionBuildDriveSelect', 'liveCollectionImportDriveSelect'].forEach((id) => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        const prevValue = sel.value;
+        sel.innerHTML = '<option value="">-- Select USB Drive --</option>';
+        candidates.forEach((dev) => {
+            const opt = document.createElement('option');
+            opt.value = dev.device;
+            opt.innerText = `${dev.device} - [${(dev.transport || 'usb').toUpperCase()}] ${dev.model} (${dev.size})`;
+            opt.dataset.model = dev.model;
+            opt.dataset.serial = dev.serial;
+            opt.dataset.size = dev.size;
+            sel.appendChild(opt);
+        });
+        if (candidates.some((d) => d.device === prevValue)) sel.value = prevValue;
+    });
+}
+
+function onLiveCollectionBuildDriveSelect() {
+    const sel = document.getElementById('liveCollectionBuildDriveSelect');
+    const opt = sel && sel.selectedOptions[0];
+    const infoEl = document.getElementById('liveCollectionBuildDriveInfo');
+    const confirmInput = document.getElementById('liveCollectionBuildConfirmText');
+    const confirmBtn = document.getElementById('btnLiveCollectionBuild');
+    if (confirmInput) confirmInput.value = '';
+    if (confirmBtn) confirmBtn.disabled = true;
+    if (!opt || !opt.value) {
+        if (infoEl) infoEl.innerHTML = '';
+        return;
+    }
+    if (infoEl) {
+        infoEl.innerHTML = `<strong>Model:</strong> ${escapeHtmlForPopup(opt.dataset.model || 'Unknown')} &nbsp; ` +
+            `<strong>Serial:</strong> ${escapeHtmlForPopup(opt.dataset.serial || 'Unknown')} &nbsp; ` +
+            `<strong>Size:</strong> ${escapeHtmlForPopup(opt.dataset.size || 'Unknown')}`;
+    }
+    const hint = document.getElementById('liveCollectionBuildConfirmHint');
+    if (hint) hint.innerText = `Type WIPE ${opt.value} below to enable Build.`;
+}
+
+// A materially stronger confirm gate than anything else in this app (see
+// core/live_collection_utils.py's own docstring for why) - the examiner
+// must type the exact device path before this is even clickable, not
+// just click through a native confirm() dialog.
+function checkLiveCollectionBuildConfirmText() {
+    const sel = document.getElementById('liveCollectionBuildDriveSelect');
+    const input = document.getElementById('liveCollectionBuildConfirmText');
+    const btn = document.getElementById('btnLiveCollectionBuild');
+    if (!sel || !input || !btn) return;
+    const expected = `WIPE ${sel.value}`;
+    btn.disabled = !sel.value || input.value !== expected;
+}
+
+async function startBuildCollectionUsb() {
+    const sel = document.getElementById('liveCollectionBuildDriveSelect');
+    const opt = sel && sel.selectedOptions[0];
+    if (!opt || !opt.value) return showToast('Select a target USB drive first.', 'warning');
+    const statusEl = document.getElementById('liveCollectionStatus');
+    if (statusEl) statusEl.innerText = 'Status: Starting...';
+    try {
+        const res = await fetch('/api/live_collection/start_build', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                device: opt.value,
+                device_info: { model: opt.dataset.model, serial: opt.dataset.serial, size: opt.dataset.size },
+            }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(data.error || 'Failed to start the Live Collection USB build.', 'danger');
+            return;
+        }
+        showToast('Building Live Collection USB - see the status panel below for progress.', 'info');
+    } catch (err) {
+        showToast('Request failed: ' + err.message, 'danger');
+    }
+}
+
+let liveCollectionDiscoveredRuns = [];
+
+async function scanLiveCollectionResults() {
+    const sel = document.getElementById('liveCollectionImportDriveSelect');
+    if (!sel || !sel.value) return showToast('Select the USB drive to scan first.', 'warning');
+    const listEl = document.getElementById('liveCollectionRunsList');
+    if (listEl) listEl.innerHTML = '<div class="text-subtle small">Scanning...</div>';
+    try {
+        const res = await fetch('/api/live_collection/scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device: sel.value }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (listEl) listEl.innerHTML = '';
+            showToast(data.error || 'Scan failed.', 'danger');
+            return;
+        }
+        liveCollectionDiscoveredRuns = data.runs || [];
+        renderLiveCollectionRunsChecklist();
+    } catch (err) {
+        showToast('Scan request failed: ' + err.message, 'danger');
+    }
+}
+
+function renderLiveCollectionRunsChecklist() {
+    const listEl = document.getElementById('liveCollectionRunsList');
+    if (!listEl) return;
+    if (!liveCollectionDiscoveredRuns.length) {
+        listEl.innerHTML = '<div class="text-subtle small">No result runs found on this drive yet - use the collector scripts on a target machine first.</div>';
+        return;
+    }
+    listEl.innerHTML = '';
+    liveCollectionDiscoveredRuns.forEach((run, i) => {
+        const row = document.createElement('div');
+        row.className = 'form-check';
+        const sizeKb = ((run.total_bytes || 0) / 1024).toFixed(1);
+        row.innerHTML = `<input class="form-check-input live-collection-run-check" type="checkbox" value="${escapeHtmlForPopup(run.relative_path)}" id="liveCollectionRun${i}" checked>` +
+            `<label class="form-check-label small" for="liveCollectionRun${i}">` +
+            `<strong>${escapeHtmlForPopup(run.platform === 'unix' ? 'Unix/Linux/macOS' : 'Windows')}</strong> - ` +
+            `${escapeHtmlForPopup(run.hostname || run.run_name)} ` +
+            `(${run.file_count} file(s), ${sizeKb} KB)${run.timestamp ? ' - ' + escapeHtmlForPopup(run.timestamp) : ''}` +
+            `</label>`;
+        listEl.appendChild(row);
+    });
+}
+
+async function startImportLiveCollection() {
+    const sel = document.getElementById('liveCollectionImportDriveSelect');
+    if (!sel || !sel.value) return showToast('Select the USB drive to import from first.', 'warning');
+    const selected = Array.from(document.querySelectorAll('.live-collection-run-check:checked')).map((c) => c.value);
+    if (!selected.length) return showToast('Select at least one result run to import.', 'warning');
+    const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById('destPath')?.value || '/mnt');
+    const metadata = {
+        case_number: activeCase ? activeCase.case_number : (document.getElementById('caseNum')?.value || 'UNASSIGNED'),
+        examiner: activeCase ? activeCase.examiner : (document.getElementById('examinerName')?.value || ''),
+        evidence_id: document.getElementById('liveCollectionEvidenceId')?.value || 'LIVECOLLECT-01',
+    };
+    const statusEl = document.getElementById('liveCollectionStatus');
+    if (statusEl) statusEl.innerText = 'Status: Starting...';
+    try {
+        const res = await fetch('/api/live_collection/start_import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                device: sel.value,
+                selected_relative_paths: selected,
+                destination: destinationDir,
+                hashes: ['sha256'],
+                metadata,
+            }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(data.error || 'Failed to start the import.', 'danger');
+            return;
+        }
+        showToast('Importing collection results - see the status panel below for progress.', 'info');
+    } catch (err) {
+        showToast('Request failed: ' + err.message, 'danger');
+    }
 }
 
 async function checkSmartTelemetry() {
@@ -15123,6 +15299,38 @@ async function fetchProgress() {
         } else if (bundleProgress) {
             bundleProgress.style.display = 'none';
         }
+
+        // Live Collection USB (Build + Import) - same one-shared-job mirror
+        // pattern as Verify All Evidence / Case Bundle Export above.
+        const liveCollectionProgress = document.getElementById("liveCollectionProgress");
+        const liveCollectionBuildBtn = document.getElementById("btnLiveCollectionBuild");
+        const liveCollectionImportBtn = document.getElementById("btnLiveCollectionImport");
+        // Build's button has its own type-to-confirm gate (checkLiveCollectionBuildConfirmText())
+        // deciding whether it should be enabled while idle - this poll must never blindly force
+        // disabled=false itself, or it silently re-enables the button every ~2s regardless of
+        // whether the examiner has actually typed the confirmation text (a real bug caught during
+        // live testing, not just a theoretical risk). While a job IS active, force-disable
+        // unconditionally (never allow starting a second job); while idle, defer back to the gate.
+        if (liveCollectionBuildBtn) {
+            if (data.active) {
+                liveCollectionBuildBtn.disabled = true;
+            } else {
+                checkLiveCollectionBuildConfirmText();
+            }
+        }
+        if (liveCollectionImportBtn) liveCollectionImportBtn.disabled = data.active;
+        if ((data.format === "live_collection_build" || data.format === "live_collection_import") && data.active) {
+            if (liveCollectionProgress) liveCollectionProgress.style.display = 'block';
+            if (document.getElementById("liveCollectionStatus")) document.getElementById("liveCollectionStatus").innerText = `Status: ${data.status}`;
+            if (document.getElementById("liveCollectionBar")) document.getElementById("liveCollectionBar").style.width = `${data.progress_percent}%`;
+        } else if (liveCollectionProgress) {
+            liveCollectionProgress.style.display = 'none';
+        }
+        // On the exact active->inactive transition for the import format, re-load the
+        // case's Files & Artifacts view isn't auto-refreshed here (unlike Verify All
+        // Evidence's dashboard reload) - the examiner explicitly reviews the import
+        // result via the job log/completion toast, matching Logical Acquisition's own
+        // "no auto-navigation on completion" convention.
 
         // The progress row above hides the instant the job goes inactive,
         // which could hide a "Completed Successfully"/"Failed"/"Stopped"

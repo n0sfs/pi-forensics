@@ -21,6 +21,37 @@ file after updating to see what changed.
 
 ---
 
+## [1.11.0] - 2026-08-31
+
+### New
+
+- **USB-deployable live-forensics collector.** A new "Live Collection USB" section on the Forensic
+  Acquisition tab prepares a USB drive to gather *volatile* evidence (running processes, network
+  connections, logged-on users, and more) from a separate, running machine you don't want to power
+  off - the opposite problem from this app's own dead-box disk imaging.
+
+  - **Build Live Collection USB** wipes and formats a confirmed-blank USB drive (exFAT, for reliable
+    read/write on Windows, macOS, and Linux) and copies onto it a real, open-source Linux/macOS/BSD
+    collector (UAC) plus a small, fully readable PowerShell script for Windows - both run directly
+    from the drive with nothing to install on the target machine. This is the first time this app
+    ever writes to a USB drive it doesn't treat as evidence, so it's gated behind the strongest
+    confirmation in the app: you have to type the exact device path to enable the button, not just
+    click through a pop-up.
+  - Plug the drive into the machine you want to examine, run the included script (a README on the
+    drive walks through it), and everything it collects is written back onto the same drive. Nothing
+    it does ever touches a network.
+  - **Import Collection Results** reads the drive back (read-only - no write access needed for this
+    part) once you bring it back to the station, shows you what it found, and copies whatever you
+    select into your case with a full hash-verified manifest.
+
+### Fixed
+
+- A background status check could silently re-enable the "Build Live Collection USB" button a couple
+  of seconds after you'd correctly left it disabled by not finishing the confirmation text - found and
+  fixed during this feature's own testing, before release.
+
+---
+
 ## [1.10.0] - 2026-08-30
 
 ### Changed
