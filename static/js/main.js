@@ -6166,6 +6166,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     verify_all_evidence: (status) => `Case-wide evidence verification finished: ${status}\n\nSee the Overview tab in Reporting for the full result.`,
     case_bundle_export: (status) => `Case bundle export finished: ${status}\n\nCheck the case folder for the generated *_case_bundle_<timestamp>.zip file.`,
     auto_analyze_image: (status) => `Auto Analyze finished: ${status}\n\nSee the Audit Log (Settings > Security) for the full per-step results, or File Views > Parsed Artifacts for the individual tools' output.`,
+    vss_materialize: (status) => `Shadow copy materialization finished: ${status}\n\nCheck the case folder for the generated *_shadowcopyN.dd file - browse it via File Explorer's normal "Browse as Image" action, same as any other acquired image.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
 
@@ -7357,6 +7358,78 @@ async function runImageBrowserArtifactsParse() {
 // Recovery/Mobile jobs use) rather than tying up the request. Progress is
 // shown via #explorerJobProgress, updated by the same fetchProgress() poll
 // that already drives every other tab's progress display.
+// --- Volume Shadow Copies (VSS) - list, then materialize one as a real
+// browsable image. Listing is fast/synchronous (metadata only); materializing
+// a shadow copy is a potentially-large write, so it runs through the same
+// shared background-job system every other long-running image tool uses -
+// once started, #explorerJobProgress (driven by the existing fetchProgress()
+// poll) is the feedback, matching startImageTriageScan()'s own pattern.
+let lastShadowCopyListing = null;
+
+async function listImageShadowCopies() {
+    if (!explorerImagePath) return;
+    showToolOutputModal('Volume Shadow Copies', 'bi-camera2');
+    const container = document.getElementById("toolOutputContainer");
+    try {
+        const res = await fetch('/api/image/list_shadow_copies', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, offset: explorerImageOffset })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (container) container.textContent = `[ERROR] ${data.error}\n\n(This is expected if the volume isn't NTFS, or doesn't have Volume Shadow Copies.)`;
+            return;
+        }
+        lastShadowCopyListing = data.stores;
+        if (!data.stores.length) {
+            setToolOutputBadge('No shadow copies found', 'bg-secondary');
+            if (container) container.textContent = 'No Volume Shadow Copies were found in this NTFS volume.';
+            return;
+        }
+        setToolOutputBadge(`${data.stores.length} shadow cop${data.stores.length === 1 ? 'y' : 'ies'} found`, 'bg-info');
+        if (container) {
+            container.textContent = '';
+            data.stores.forEach(s => {
+                const row = document.createElement('div');
+                row.className = 'mb-2 pb-2 border-bottom border-secondary';
+                const info = document.createElement('div');
+                info.textContent = `#${s.index} - created ${s.creation_time || 'unknown'} - ${(s.size / (1024 ** 3)).toFixed(2)} GB`;
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-sm btn-outline-info mt-1';
+                btn.textContent = 'Materialize as Browsable Image...';
+                btn.onclick = () => materializeShadowCopy(s.index);
+                row.appendChild(info);
+                row.appendChild(btn);
+                container.appendChild(row);
+            });
+        }
+    } catch (err) {
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function materializeShadowCopy(storeIndex) {
+    if (!explorerImagePath) return;
+    if (!confirm(`Copy the full contents of shadow copy #${storeIndex} out to a new image file? This can be as large as the original volume and may take a while - it runs as a background job you can stop from the progress bar.`)) return;
+    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    try {
+        const res = await fetch('/api/image/start_materialize_shadow_copy', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: explorerImagePath, offset: explorerImageOffset,
+                store_index: storeIndex, destination_dir: destinationDir,
+            })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Could not start materialization: ${data.error}`, 'danger'); return; }
+        const modalEl = document.getElementById('toolOutputModal');
+        if (modalEl) { const inst = bootstrap.Modal.getInstance(modalEl); if (inst) inst.hide(); }
+        showToast('Shadow copy materialization started - see the progress bar.', 'info');
+    } catch (err) {
+        showToast('Request failed.', 'danger');
+    }
+}
+
 async function startImageTriageScan() {
     if (!explorerImagePath) return;
     const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
@@ -14941,6 +15014,7 @@ async function fetchProgress() {
         }
         if (document.getElementById("explorerImageTriageBtn")) document.getElementById("explorerImageTriageBtn").disabled = data.active;
         if (document.getElementById("explorerImageGeoBtn")) document.getElementById("explorerImageGeoBtn").disabled = data.active;
+        if (document.getElementById("explorerImageVssBtn")) document.getElementById("explorerImageVssBtn").disabled = data.active;
 
         // Case-wide "Verify All Evidence" (A4) - same one-shared-job mirror pattern as the
         // Mobile/Explorer blocks above, scoped to its own format so it never shows stale

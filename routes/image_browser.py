@@ -71,6 +71,7 @@ from core.mft_utils import analyze_mft_file
 from core.usnjrnl_utils import parse_usnjrnl_stream
 from core.email_utils import parse_email_file
 from core.fuzzy_hash_utils import compute_tlsh_hash
+from core.vshadow_utils import list_shadow_copies, materialize_shadow_copy
 from core.linux_artifacts import LINUX_ARTIFACT_IMAGE_MATCHERS, LINUX_ARTIFACT_DEFAULT_TYPES
 
 LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES = 100  # combined across whichever types are requested per run
@@ -2361,6 +2362,109 @@ def start_image_triage_scan():
 
     log_chain_of_custody("image_triage_scan_start", {"image_path": image_path, "destination": dest_dir})
     return jsonify({"success": True, "message": "Filesystem-aware triage scan started."})
+
+# --- Volume Shadow Copies (core/vshadow_utils.py) ---
+# list_shadow_copies() is a fast, synchronous metadata-only enumeration
+# (no data copied); materializing one out to a real browsable image file
+# is a potentially-large write, so it goes through the same shared
+# job_lock/background-thread/Stop-button pattern every other long-running
+# in-image tool in this file already uses.
+
+@image_browser_bp.route('/api/image/list_shadow_copies', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def list_shadow_copies_route():
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(req.get('offset', 0))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset."}), 400
+
+    result = list_shadow_copies(image_path, offset)
+    if result["success"]:
+        log_chain_of_custody("vss_shadow_copies_listed", {"image_path": image_path, "offset": offset, "count": len(result["stores"])})
+    return jsonify(result)
+
+def execution_worker_materialize_shadow_copy(image_path, offset, store_index, output_path, source_ip=None, user=None):
+    try:
+        def _progress(written, total):
+            pct = (written / total * 100.0) if total else 0.0
+            update_job(progress_percent=pct, transferred_bytes=written, total_bytes=total,
+                       status=f"Copying shadow copy... {written:,} / {total:,} bytes")
+
+        def _should_stop():
+            return snapshot_job()["status"] == "Stopped"
+
+        result = materialize_shadow_copy(image_path, offset, store_index, output_path,
+                                          progress_callback=_progress, should_stop=_should_stop)
+        if result["success"]:
+            update_job(status="Completed Successfully", progress_percent=100.0,
+                       log=f"[+] Shadow copy materialized to {output_path} ({result['bytes_written']:,} bytes). Browse it via File Explorer's normal 'Browse as Image' action.")
+            log_chain_of_custody("vss_shadow_copy_materialized", {
+                "image_path": image_path, "store_index": store_index, "output_path": output_path,
+                "bytes_written": result["bytes_written"],
+            }, source_ip=source_ip, user=user)
+        else:
+            status = "Stopped" if "stopped" in (result["error"] or "").lower() else "Failed"
+            update_job(status=status, log=f"[-] Shadow copy materialization {status.lower()}: {result['error']}")
+    finally:
+        update_job(active=False)
+
+@image_browser_bp.route('/api/image/start_materialize_shadow_copy', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def start_materialize_shadow_copy():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    try:
+        offset = int(req.get('offset', 0))
+        store_index = int(req.get('store_index'))
+    except (TypeError, ValueError):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Invalid offset or store_index."}), 400
+
+    if not image_path:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    image_base = os.path.splitext(os.path.basename(image_path))[0]
+    output_path = os.path.join(dest_dir, f"{image_base}_shadowcopy{store_index}.dd")
+    if os.path.exists(output_path):
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"{os.path.basename(output_path)} already exists at the destination - evidence must never be silently overwritten."}), 409
+
+    update_job(
+        format="vss_materialize", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Materializing shadow copy {store_index} of {image_path}..."
+    )
+
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_materialize_shadow_copy,
+        args=(image_path, offset, store_index, output_path, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("vss_shadow_copy_materialize_start", {"image_path": image_path, "store_index": store_index, "output_path": output_path})
+    return jsonify({"success": True, "message": "Shadow copy materialization started.", "output_path": output_path})
+
 # --- Binwalk / Strings, run directly against a single selected in-image file ---
 # Unlike the whole-image geolocation/hash-manifest routes above, these operate on
 # one already-selected file (matching how they already work in the real-filesystem
