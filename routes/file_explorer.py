@@ -45,6 +45,7 @@ from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
 from core.mft_utils import find_mft_files, analyze_mft_file
 from core.usnjrnl_utils import find_usnjrnl_files, parse_usnjrnl_file
 from core.email_utils import find_email_files, parse_email_file
+from core.fuzzy_hash_utils import compute_tlsh_hash, compare_tlsh_hashes
 from core.linux_artifacts import (
     find_linux_shell_history_files, parse_linux_shell_history_file,
     find_linux_passwd_files, parse_linux_passwd_file,
@@ -363,6 +364,35 @@ def check_hash_lists():
 
     log_chain_of_custody("hash_list_check", {"path": file_path, "lists_checked": len(hash_sets), "matches": len(matches)})
     return jsonify({"success": True, "file_name": os.path.basename(file_path), "computed_hashes": computed, "matches": matches})
+
+@file_explorer_bp.route('/api/files/fuzzy_hash', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def fuzzy_hash():
+    """Computes a single selected file's TLSH fuzzy-hash digest
+    (core/fuzzy_hash_utils.py) - closes a real gap in the exact-match-only
+    Hash Sets check above: a one-byte-modified copy of a known file is
+    invisible to that, but similar/near-duplicate to a fuzzy hash."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    result = compute_tlsh_hash(file_path)
+    if result["success"]:
+        log_chain_of_custody("fuzzy_hash_computed", {"path": file_path, "hash": result["hash"]})
+    return jsonify({**result, "file_name": os.path.basename(file_path)})
+
+@file_explorer_bp.route('/api/files/fuzzy_hash_compare', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def fuzzy_hash_compare_route():
+    """Compares two already-computed TLSH digests for similarity - no
+    file/path involved, this is pure hash-string comparison (an examiner
+    pasting in a hash from elsewhere, e.g. a threat-intel report)."""
+    req = request.get_json() or {}
+    result = compare_tlsh_hashes(req.get('hash_a', ''), req.get('hash_b', ''))
+    return jsonify(result)
 
 @file_explorer_bp.route('/api/files/yara_scan', methods=['POST'])
 @requires_auth

@@ -4260,6 +4260,8 @@ function showExplorerImageContextMenu(ev, entry) {
     if (tagBtn) tagBtn.disabled = entry.is_dir || !activeCase;
     const binwalkBtn = document.getElementById('ctxMenuImageBinwalk');
     if (binwalkBtn) binwalkBtn.disabled = entry.is_dir;
+    const fuzzyHashBtn = document.getElementById('ctxMenuImageFuzzyHash');
+    if (fuzzyHashBtn) fuzzyHashBtn.disabled = entry.is_dir;
     const stringsBtn = document.getElementById('ctxMenuImageStrings');
     if (stringsBtn) stringsBtn.disabled = entry.is_dir;
     const lnkBtn = document.getElementById('ctxMenuImageLnk');
@@ -4334,6 +4336,7 @@ function updateContextToolbar(item) {
     const btnQuickTriage = document.getElementById("btnQuickTriageScan");
     const btnHashdeep = document.getElementById("btnRunHashdeep");
     const btnCheckHashLists = document.getElementById("btnCheckHashLists");
+    const btnFuzzyHash = document.getElementById("btnFuzzyHash");
     const btnRunYaraScan = document.getElementById("btnRunYaraScan");
     const btnGeolocation = document.getElementById("btnExtractGeolocation");
     const btnBrowserArtifacts = document.getElementById("btnParseBrowserArtifacts");
@@ -4367,6 +4370,7 @@ function updateContextToolbar(item) {
     if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
     if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
     if (btnCheckHashLists) btnCheckHashLists.disabled = item.is_dir;  // single-file, like Verify Image Hash
+    if (btnFuzzyHash) btnFuzzyHash.disabled = item.is_dir;  // single-file, like Check Against Hash Sets
     if (btnRunYaraScan) btnRunYaraScan.disabled = item.is_dir;  // single-file, like Check Against Hash Sets
     if (btnGeolocation) btnGeolocation.disabled = !item.is_dir;  // scans a whole folder of photos at once
     if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium + Firefox profile files
@@ -5614,6 +5618,72 @@ async function runImagePrefetchParse() {
     } catch (err) {
         showToast('Prefetch scan failed: request error.', 'danger');
     }
+}
+
+// --- Fuzzy hashing (TLSH) - closes a real gap in the exact-match-only
+// Hash Sets check: a one-byte-modified copy of a known file is invisible
+// to that, but similar/near-duplicate to a fuzzy hash. Deliberately a
+// standalone compute-and-compare action, not integrated into the Hash
+// Sets management UI/storage format - see core/fuzzy_hash_utils.py's own
+// docstring for the scoping rationale. Uses a plain prompt() for the
+// optional comparison input rather than a dedicated modal, given this is
+// a small, secondary step (paste a hash from elsewhere, e.g. a threat-
+// intel report) - a real, disclosed UX simplification, not an oversight.
+async function _showFuzzyHashResult(title, icon, endpoint, body) {
+    showToolOutputModal(title, icon);
+    const container = document.getElementById("toolOutputContainer");
+    try {
+        const res = await fetch(endpoint, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!data.success) { if (container) container.textContent = `[ERROR] ${data.error}`; return; }
+        if (!data.hash) {
+            setToolOutputBadge('No digest', 'bg-secondary');
+            if (container) container.textContent = data.note || 'TLSH could not compute a digest for this file.';
+            return;
+        }
+        setToolOutputBadge('TLSH computed', 'bg-info');
+        if (container) container.textContent = `TLSH digest:\n${data.hash}\n\nTo compare against a known hash, click "Compare Against Another Hash..." below.`;
+        const compareBtn = document.createElement('button');
+        compareBtn.className = 'btn btn-sm btn-outline-info mt-2';
+        compareBtn.textContent = 'Compare Against Another Hash...';
+        compareBtn.onclick = async () => {
+            const other = prompt('Paste a TLSH hash to compare against:');
+            if (!other) return;
+            try {
+                const cmpRes = await fetch('/api/files/fuzzy_hash_compare', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hash_a: data.hash, hash_b: other.trim() })
+                });
+                const cmp = await cmpRes.json();
+                if (!cmp.success) { showToast(cmp.error || 'Comparison failed.', 'danger'); return; }
+                const verdict = cmp.similar ? 'SIMILAR' : 'not similar';
+                showToast(`Distance: ${cmp.distance} - ${verdict} (lower distance = more similar; threshold ~100).`, cmp.similar ? 'warning' : 'info');
+            } catch (err) {
+                showToast('Comparison failed: request error.', 'danger');
+            }
+        };
+        if (container) container.appendChild(document.createElement('br'));
+        if (container) container.appendChild(compareBtn);
+    } catch (err) {
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runSelectedFuzzyHash() {
+    if (!activeSelectedFile) return;
+    await _showFuzzyHashResult(`Fuzzy Hash (TLSH): ${activeSelectedFile.split('/').pop()}`, 'bi-fingerprint',
+        '/api/files/fuzzy_hash', { path: activeSelectedFile });
+}
+
+async function runImageFuzzyHash() {
+    if (!explorerImageSelected || explorerImageSelected.is_dir) return;
+    await _showFuzzyHashResult(`Fuzzy Hash (TLSH): ${explorerImageSelected.name}`, 'bi-fingerprint',
+        '/api/image/fuzzy_hash', {
+            image_path: explorerImagePath, offset: explorerImageOffset,
+            inode: explorerImageSelected.inode, name: explorerImageSelected.name,
+        });
 }
 
 async function runSelectedEmailParse() {
