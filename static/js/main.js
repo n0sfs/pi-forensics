@@ -1822,6 +1822,10 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     mobile_sms_message: 'Mobile: SMS/iMessage',
     mobile_contact: 'Mobile: Contacts',
     mobile_call_log: 'Mobile: Call History',
+    // NTFS $MFT / $UsnJrnl parsing (2026-08-30, tool-survey follow-up) -
+    // kept in sync with routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS.
+    mft_file_record: 'NTFS: $MFT File Record',
+    usnjrnl_change_record: 'NTFS: $UsnJrnl Change Record',
 };
 
 function buildFileViewsHierarchy(summary) {
@@ -4260,6 +4264,17 @@ function showExplorerImageContextMenu(ev, entry) {
         const isLnk = !entry.is_dir && (entry.name || '').toLowerCase().endsWith('.lnk');
         lnkBtn.style.display = isLnk ? '' : 'none';
     }
+    const mftBtn = document.getElementById('ctxMenuImageMft');
+    if (mftBtn) {
+        const isMft = !entry.is_dir && (entry.name || '').toUpperCase() === '$MFT';
+        mftBtn.style.display = isMft ? '' : 'none';
+    }
+    const usnjrnlBtn = document.getElementById('ctxMenuImageUsnjrnl');
+    if (usnjrnlBtn) {
+        const upperName = (entry.name || '').toUpperCase();
+        const isUsnjrnl = !entry.is_dir && (upperName === '$J' || upperName.includes('USNJRNL'));
+        usnjrnlBtn.style.display = isUsnjrnl ? '' : 'none';
+    }
     resetCtxMenuSections('ctxMenuImageActions');
     positionContextMenu(ev);
 }
@@ -4328,6 +4343,8 @@ function updateContextToolbar(item) {
     const btnMobileArtifacts = document.getElementById("btnParseMobileArtifacts");
     const btnLeappScan = document.getElementById("btnLeappScan");
     const btnParseLnk = document.getElementById("btnParseLnk");
+    const btnAnalyzeMft = document.getElementById("btnAnalyzeMft");
+    const btnParseUsnjrnl = document.getElementById("btnParseUsnjrnl");
     const btnSqliteDissect = document.getElementById("btnSqliteDissect");
     const btnApkAnalyze = document.getElementById("btnApkAnalyze");
     const btnWhatsappDecrypt = document.getElementById("btnWhatsappDecrypt");
@@ -4358,6 +4375,8 @@ function updateContextToolbar(item) {
     if (btnMobileArtifacts) btnMobileArtifacts.disabled = !item.is_dir;  // scans a folder for an iOS backup (Manifest.db + Info.plist)
     if (btnLeappScan) btnLeappScan.disabled = !item.is_dir;  // runs ALEAPP/iLEAPP against an extraction folder
     if (btnParseLnk) btnParseLnk.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.lnk');  // single-file, unlike the whole-folder scanners above
+    if (btnAnalyzeMft) btnAnalyzeMft.disabled = item.is_dir || item.name.toUpperCase() !== '$MFT';  // single-file, exact-filename match
+    if (btnParseUsnjrnl) btnParseUsnjrnl.disabled = item.is_dir || !(item.name.toUpperCase() === '$J' || item.name.toUpperCase().includes('USNJRNL'));  // single-file, already-extracted stream
     if (btnSqliteDissect) btnSqliteDissect.disabled = item.is_dir || !isSqliteFile(item.name);
     if (btnApkAnalyze) btnApkAnalyze.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.apk');
     if (btnWhatsappDecrypt) btnWhatsappDecrypt.disabled = item.is_dir || !/\.(crypt12|crypt14|crypt15)$/i.test(item.name);
@@ -5844,6 +5863,107 @@ async function runImageLnkParse() {
         if (data.indexed) initFileViewsTree(true);
     } catch (err) {
         showToast('LNK parse failed: request error.', 'danger');
+    }
+}
+
+// --- $MFT / $UsnJrnl: NTFS Master File Table and change-journal parsing ---
+// analyzeMFT (core/mft_utils.py) and a hand-rolled USN_RECORD_V2 parser
+// (core/usnjrnl_utils.py) - both write a real output file (like SQLite
+// Dissect/hashdeep above), so both need a destinationDir, unlike LNK's
+// pure inline-record result.
+async function runSelectedMftAnalyze() {
+    if (!activeSelectedFile) return;
+    showToolOutputModal(`Analyze $MFT: ${activeSelectedFile.split('/').pop()}`, 'bi-clock-history');
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+    try {
+        const res = await fetch('/api/files/analyze_mft', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) { if (container) container.textContent = `[ERROR] ${data.error}`; return; }
+        setToolOutputBadge(data.summary, data.timestomp_count > 0 ? 'bg-warning text-dark' : 'bg-info');
+        if (container) container.textContent = `${data.summary}\n\nOutput written to:\n${data.output_path}${data.indexed ? '\n\nSee File Views > Parsed Artifacts and the Evidence Timeline for individually browsable records.' : '\n\nSelect an active case to also index individual records into File Views/the Evidence Timeline.'}`;
+        if (data.indexed) initFileViewsTree(true);
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runImageMftAnalyze() {
+    if (!explorerImageSelected || explorerImageSelected.is_dir) return;
+    showToolOutputModal(`Analyze $MFT: ${explorerImageSelected.name}`, 'bi-clock-history');
+    const destinationDir = activeCase ? activeCase.case_folder : null;
+    try {
+        const res = await fetch('/api/image/analyze_mft', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: explorerImagePath, offset: explorerImageOffset,
+                inode: explorerImageSelected.inode, name: explorerImageSelected.name,
+                path: explorerImageSelected.path || null, destination_dir: destinationDir,
+                case_folder: activeCase ? activeCase.case_folder : null,
+            })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) { if (container) container.textContent = `[ERROR] ${data.error}`; return; }
+        setToolOutputBadge(data.summary, data.timestomp_count > 0 ? 'bg-warning text-dark' : 'bg-info');
+        if (container) container.textContent = `${data.summary}\n\nOutput written to:\n${data.output_path}`;
+        if (data.indexed) initFileViewsTree(true);
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runSelectedUsnjrnlParse() {
+    if (!activeSelectedFile) return;
+    showToolOutputModal(`Parse $UsnJrnl: ${activeSelectedFile.split('/').pop()}`, 'bi-journal-arrow-up');
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+    try {
+        const res = await fetch('/api/files/parse_usnjrnl', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) { if (container) container.textContent = `[ERROR] ${data.error}`; return; }
+        const summary = `${data.record_count} change-journal record(s) parsed`;
+        setToolOutputBadge(summary, 'bg-info');
+        if (container) container.textContent = `${summary}\n\nOutput written to:\n${data.output_path}${data.indexed ? '\n\nSee File Views > Parsed Artifacts and the Evidence Timeline for individually browsable records.' : '\n\nSelect an active case to also index individual records into File Views/the Evidence Timeline.'}`;
+        if (data.indexed) initFileViewsTree(true);
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runImageUsnjrnlParse() {
+    if (!explorerImageSelected || explorerImageSelected.is_dir) return;
+    showToolOutputModal(`Parse $UsnJrnl: ${explorerImageSelected.name}`, 'bi-journal-arrow-up');
+    const destinationDir = activeCase ? activeCase.case_folder : null;
+    try {
+        const res = await fetch('/api/image/parse_usnjrnl', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: explorerImagePath, offset: explorerImageOffset,
+                inode: explorerImageSelected.inode, name: explorerImageSelected.name,
+                path: explorerImageSelected.path || null, destination_dir: destinationDir,
+                case_folder: activeCase ? activeCase.case_folder : null,
+            })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (!data.success) { if (container) container.textContent = `[ERROR] ${data.error}`; return; }
+        const summary = `${data.record_count} change-journal record(s) parsed`;
+        setToolOutputBadge(summary, 'bg-info');
+        if (container) container.textContent = `${summary}\n\nOutput written to:\n${data.output_path}`;
+        if (data.indexed) initFileViewsTree(true);
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
     }
 }
 

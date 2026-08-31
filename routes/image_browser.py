@@ -67,6 +67,8 @@ from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_back
 from core.evtx_utils import EVTX_EXTENSION, EVTX_SCAN_MAX_CANDIDATES, parse_evtx_file
 from core.prefetch_utils import PREFETCH_EXTENSION, PREFETCH_SCAN_MAX_CANDIDATES, parse_prefetch_file
 from core.recyclebin_utils import RECYCLEBIN_SCAN_MAX_CANDIDATES, parse_recyclebin_file
+from core.mft_utils import analyze_mft_file
+from core.usnjrnl_utils import parse_usnjrnl_stream
 from core.linux_artifacts import LINUX_ARTIFACT_IMAGE_MATCHERS, LINUX_ARTIFACT_DEFAULT_TYPES
 
 LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES = 100  # combined across whichever types are requested per run
@@ -1594,6 +1596,150 @@ def image_parse_recyclebin():
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
+
+@image_browser_bp.route('/api/image/analyze_mft', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_analyze_mft():
+    """In-image counterpart to analyze_mft() (routes/file_explorer.py) - one
+    selected in-image '$MFT' file, same specific-inode extract-to-temp-then-
+    parse pattern image_parse_lnk() already uses for a single selected
+    file, rather than a whole-image scan (the examiner has already found
+    and right-clicked the exact $MFT entry via normal Browse-as-Image)."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    destination_dir = safe_path(req.get('destination_dir')) or case_folder
+    if not destination_dir or not os.path.isdir(destination_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    compute_hashes = bool(req.get('compute_hashes'))
+
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num)
+        result = analyze_mft_file(tmp_path, compute_hashes=compute_hashes)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read file: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+    if not result["success"]:
+        return jsonify(result), 500
+
+    image_base = os.path.splitext(os.path.basename(image_path))[0]
+    output_path = os.path.join(destination_dir, f"{image_base}_mft_analysis.json")
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(result["records"], f, indent=2, default=str)
+    except OSError as e:
+        return jsonify({"success": False, "error": f"Analyzed successfully but could not write output: {e}"}), 500
+
+    identity = {"source_type": "image", "image_path": image_path, "fs_offset": offset, "inode": str(inode), "path": req.get('path')}
+    if case_folder:
+        _record_parsed_artifacts(case_folder, identity, result["records"])
+        _auto_tag_case_artifact(case_folder, output_path)
+    else:
+        _auto_tag_case_artifact(destination_dir, output_path)
+
+    summary = f"{result['total_records']} MFT record(s) parsed"
+    if result["timestomp_count"]:
+        summary += f" - {result['timestomp_count']} record(s) with suspected timestomping"
+    log_chain_of_custody("mft_file_analyzed_image", {
+        "image_path": image_path, "inode": str(inode), "output_path": output_path,
+        "total_records": result["total_records"], "timestomp_count": result["timestomp_count"],
+    })
+    return jsonify({
+        "success": True, "output_path": output_path, "total_records": result["total_records"],
+        "timestomp_count": result["timestomp_count"], "summary": summary, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_usnjrnl', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_usnjrnl():
+    """In-image counterpart to parse_usnjrnl() (routes/file_explorer.py) -
+    one selected in-image '$Extend/$UsnJrnl:$J' entry, same specific-inode
+    extract-to-temp-then-parse pattern image_parse_lnk() already uses.
+
+    Known, disclosed limitation: whether TSK/pytsk3's own directory walk
+    actually surfaces '$UsnJrnl:$J' as a separate, directly-selectable
+    'streamfile:streamname' entry the examiner can browse to and right-click
+    (the documented convention its own `fls` CLI has always used for named/
+    alternate data streams) has not been verified against a real NTFS image
+    with an active change journal, since none exists in this project's own
+    test fixtures as of this writing (see core/usnjrnl_utils.py's own
+    docstring). The underlying byte-parser (core/usnjrnl_utils.py) is
+    independently, fully verified against a hand-built synthetic
+    USN_RECORD_V2 stream; only whether this stream is reachable/selectable
+    at all via normal in-image browsing is unverified pending real data."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    destination_dir = safe_path(req.get('destination_dir')) or case_folder
+    if not destination_dir or not os.path.isdir(destination_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num)
+        with open(tmp_path, 'rb') as f:
+            data = f.read()
+        records = parse_usnjrnl_stream(data)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read file: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    image_base = os.path.splitext(os.path.basename(image_path))[0]
+    output_path = os.path.join(destination_dir, f"{image_base}_usnjrnl_parsed.json")
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(records, f, indent=2, default=str)
+    except OSError as e:
+        return jsonify({"success": False, "error": f"Parsed successfully but could not write output: {e}"}), 500
+
+    identity = {"source_type": "image", "image_path": image_path, "fs_offset": offset, "inode": str(inode), "path": req.get('path')}
+    if case_folder:
+        _record_parsed_artifacts(case_folder, identity, records)
+        _auto_tag_case_artifact(case_folder, output_path)
+    else:
+        _auto_tag_case_artifact(destination_dir, output_path)
+
+    log_chain_of_custody("usnjrnl_file_parsed_image", {"image_path": image_path, "inode": str(inode), "output_path": output_path, "record_count": len(records)})
+    return jsonify({"success": True, "output_path": output_path, "record_count": len(records), "indexed": bool(case_folder)})
 
 @image_browser_bp.route('/api/image/parse_linux_artifacts', methods=['POST'])
 @requires_auth
