@@ -5,11 +5,23 @@ needs no third-party library to read OR to construct - both this test file
 and the module under test build/parse the same small, stable, well-
 documented binary layout directly.
 
-No skip guard needed (no optional pip dependency, unlike test_registry_
-utils.py/test_evtx_utils.py/test_yara_rulesets.py) - this module is pure
-stdlib.
+Skip guard IS needed as of the "More timeline artifact types" pass
+(2026-08-25), even though this module's own $I-parsing logic is still pure
+stdlib - core/recyclebin_utils.py now imports the shared filetime_to_unix()
+epoch helper from core/registry_utils.py (built once, reused by Prefetch/
+Amcache/Recycle Bin rather than a third near-copy), which itself hard-
+imports the `Registry` package at module level. A real, previously-
+undetected gap found while working on an unrelated feature (Live
+Collection USB, 2026-08-31): without this guard, a dev machine missing
+python-registry got a hard COLLECTION ERROR here that aborted the ENTIRE
+pytest run (not just this file) rather than a graceful skip, matching
+test_registry_utils.py's own already-correct pattern.
 """
 import struct
+
+import pytest
+
+Registry = pytest.importorskip("Registry.Registry", reason="python-registry not installed (needed transitively via core.registry_utils.filetime_to_unix)")
 
 import core.recyclebin_utils as rb
 

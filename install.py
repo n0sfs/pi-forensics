@@ -188,6 +188,15 @@ apt_packages = [
                         # PyPI or piwheels for any platform (source-only distribution), and that
                         # the build genuinely fails without this exact package (a real, reproduced
                         # compile error: "fatal error: winscard.h: No such file or directory").
+    "exfatprogs",  # mkfs.exfat/fsck.exfat/exfatlabel - the Live Collection USB feature's
+                   # target filesystem (native read-write on modern Windows/macOS/Linux,
+                   # unlike FAT32's 4GB file cap or NTFS's no-native-macOS-write limitation -
+                   # see core/live_collection_utils.py's own docstring for the full reasoning).
+                   # Confirmed present on Debian trixie/arm64 (1.2.9-1+deb13u1) via apt-cache
+                   # before adding here, per this project's own "verify package existence
+                   # first" rule. Deliberately exfatprogs, not the older exfat-fuse/exfat-utils
+                   # pairing - exfatprogs is the actively-maintained, kernel-driver-compatible
+                   # successor Debian trixie actually ships.
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
@@ -519,6 +528,58 @@ except Exception as e:
     print(f"[!] Could not install the PC/SC polkit rule ({e}) - SIM/UICC card reads will fail "
           f"with a 'NOT authorized' error until this is applied manually.")
 
+# 2e. Vendor UAC (Unix-like Artifacts Collector, github.com/tclahr/uac,
+# Apache License 2.0) for the Live Collection USB feature - the Unix/
+# Linux/macOS side of a blank USB drive this app prepares so an examiner
+# can run a live/volatile-artifact triage on a separate, running target
+# machine. Pure POSIX shell, no install/deps of its own, no build step at
+# all (simpler than every other vendored-tool precedent in this file) -
+# just a real tagged GitHub release cloned into place and chmod +x'd.
+# Pinned to the latest real stable release tag at the time this was
+# written (v3.3.0, confirmed via `git ls-remote --tags`, not `main`/HEAD -
+# same "pinned known-working version" discipline as mquire/ALEAPP/iLEAPP/
+# pysim above). Confirmed live (via UAC's own real, primary-source CLI -
+# lib/usage.sh and lib/parse_command_line_arguments.sh at this exact tag,
+# not secondhand documentation) that `-f/--output-format none` produces a
+# plain output directory instead of its default compressed .tar.gz (so
+# this app's own launcher wrapper, live_collection_assets/run_collector.sh,
+# never has to extract a tar archive - avoiding path-traversal-via-a-
+# crafted-tar-entry as an attack surface entirely) and that `-u/
+# --run-as-non-root` degrades gracefully rather than hard-failing when
+# root isn't available. The `ir_triage` profile (uac/profiles/
+# ir_triage.yaml) is confirmed to exist at this pinned tag.
+UAC_REPO = "https://github.com/tclahr/uac"
+UAC_TAG = "v3.3.0"
+uac_dir = os.path.join(INSTALL_DIR, "live_collection", "uac")
+uac_script_path = os.path.join(uac_dir, "uac")
+if not os.path.exists(uac_script_path):
+    print(f"\n[*] Vendoring UAC {UAC_TAG} (Live Collection USB - Unix/Linux/macOS collector)...")
+    try:
+        shutil.rmtree(uac_dir, ignore_errors=True)
+        os.makedirs(uac_dir, exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=uac_dir, check=True, timeout=30)
+        subprocess.run(["git", "remote", "add", "origin", UAC_REPO], cwd=uac_dir, check=True, timeout=30)
+        clone_res = subprocess.run(
+            ["git", "fetch", "--depth", "1", "origin", UAC_TAG],
+            cwd=uac_dir, capture_output=True, text=True, timeout=120,
+        )
+        if clone_res.returncode != 0:
+            print(f"[!] Could not fetch UAC (no internet access right now?) - the Live Collection "
+                  f"USB feature's Unix/Linux/macOS collector will not be available until this is "
+                  f"retried. Error: {clone_res.stderr.strip()[:300]}")
+            shutil.rmtree(uac_dir, ignore_errors=True)
+        else:
+            subprocess.run(["git", "checkout", "-q", "FETCH_HEAD"], cwd=uac_dir, check=True, timeout=30)
+            os.chmod(uac_script_path, 0o755)
+            print(f"[+] UAC {UAC_TAG} installed to {uac_dir}.")
+    except subprocess.TimeoutExpired:
+        print(f"[!] UAC vendoring timed out - the Live Collection USB feature's Unix/Linux/macOS "
+              f"collector will not be available. Retry manually later: git clone {UAC_REPO} into "
+              f"{uac_dir}, checkout {UAC_TAG}, chmod +x uac.")
+    except subprocess.CalledProcessError as e:
+        print(f"[!] UAC vendoring failed ({e}) - the Live Collection USB feature's Unix/Linux/macOS "
+              f"collector will not be available.")
+
 # 3. Directory Ownership Setup
 print(f"\n[*] Setting directory permissions on {INSTALL_DIR} for '{SERVICE_USER}'...")
 subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", INSTALL_DIR], check=True)
@@ -624,6 +685,26 @@ install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in IN
 # rely on. Verified live the same mandatory way: the real generated
 # command line matches this pattern, and a deliberately malformed variant
 # is rejected.
+# Live Collection USB (2026-08-31) - this app's first-ever deliberate
+# write to a raw block device it doesn't already treat as evidence (every
+# other operation forces one read-only via the udev rule below). wipefs/
+# sfdisk/mkfs.exfat have no benign subset the way cryptsetup does - the
+# WHOLE command is destructive by design - so instead of an unqualified
+# grant like blockdev/mount above, each is pinned tighter than even the
+# LUKS/VeraCrypt anchored-wildcard pattern: `/dev/sd[a-z]` is a bracket
+# character CLASS (a real, standard sudoers/fnmatch feature), not a bare
+# `*` wildcard - it can only ever match exactly one additional lowercase
+# letter, nothing else, so there's no way for it to swallow extra
+# arguments the way an unanchored trailing `*` could. mkfs.exfat's
+# partition argument needs no wildcard at all beyond that same single
+# letter, since this app only ever creates exactly one partition, always
+# numbered 1. The device path reaching any of these three is validated
+# server-side via is_valid_block_device() (core/paths.py) before it ever
+# reaches a sudo call, exactly like every other device-accepting route
+# already does. Verified live the same mandatory way as every other
+# sudoers change in this file: simulated before trusting, validated with
+# `visudo -c -f` on a temp copy before installing, re-validated with a
+# full `visudo -c` sweep after.
 sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/sbin/blockdev, /sbin/blockdev, \\
 /usr/sbin/smartctl, \\
@@ -638,6 +719,7 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/sbin/cryptsetup open --type tcrypt --veracrypt --veracrypt-pim * -r -q * pif_veracrypt_* -d -, \\
 /usr/sbin/cryptsetup close pif_veracrypt_*, \\
 /sbin/losetup -o * --show -f *, /sbin/losetup -d /dev/loop*, /sbin/losetup -a, \\
+/sbin/wipefs -a /dev/sd[a-z], /sbin/sfdisk /dev/sd[a-z], /sbin/mkfs.exfat -n PIF_COLLECT /dev/sd[a-z]1, \\
 /bin/chown -R {SERVICE_USER} *, \\
 /bin/chgrp -R {SERVICE_USER} *, \\
 /sbin/reboot, /sbin/poweroff, \\

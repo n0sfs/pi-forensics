@@ -152,6 +152,36 @@ acquisition straight into [Auto Analyze](#running-a-curated-tool-set-automatical
 against the image it just produced — one confirmed choice up front instead of a second manual step
 once the job completes. Not available for `ddrescue` or AFF, which run their own separate workflows.
 
+### Live Collection USB
+
+Everything else in this app captures a *dead* drive — this is for a *live, running* machine you
+need volatile information from (running processes, network connections, logged-on users) without
+powering it off. It's the one place in this app that deliberately writes to a USB drive it doesn't
+treat as evidence, so it's built with an unusually strong safeguard.
+
+**Build Live Collection USB:**
+
+1. Insert a blank (or reusable) USB drive — anything already on it will be **erased**.
+2. Select it from the drive dropdown. Its model, serial number, and size appear so you can confirm
+   it's the right one.
+3. Type `WIPE /dev/sdX` (with the real device path shown) into the confirmation box — the Build
+   button stays disabled until this matches exactly. This is deliberately more friction than any
+   other action in this app.
+4. Click **Erase & Build Live Collection USB**. The drive is wiped, formatted (exFAT, for reliable
+   read/write across Windows, macOS, and Linux), and loaded with a real open-source collector (UAC)
+   for Linux/macOS/BSD targets and a small, fully readable PowerShell script for Windows targets —
+   both run directly from the drive with nothing to install.
+
+Take the finished drive to the machine you need to examine, plug it in, and follow the README on
+the drive (open a terminal and run `./run_collector.sh` on Linux/macOS, or double-click
+`launch_collector.cmd` on Windows). Everything collected is written back onto the same drive.
+Nothing here ever touches a network.
+
+**Import Collection Results:** plug the drive back into the station (it's read-only again by
+default — no separate unlock needed for this half), select it, and click **Scan for Collection
+Results**. Check off whichever result run(s) you want, fill in an Evidence ID, and click **Import
+Selected Results** — files are copied into the active case with a full per-file hash manifest.
+
 ---
 
 ## 4. Mobile Forensics

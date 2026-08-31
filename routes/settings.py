@@ -1346,6 +1346,25 @@ TOOL_VERSION_COMMANDS = [
     # (see install.py's own MQUIRE_VERSION step) - no apt package exists for
     # it, and Trail of Bits publishes no binary releases either.
     {"tool": "mquire", "cmd": [MQUIRE_BIN, "--version"], "package": None},
+    # package=None (not apt): UAC is vendored from a pinned GitHub release
+    # tag (see install.py's own UAC_TAG step), no apt package exists for it.
+    # Confirmed live it has a real --version flag (unlike several of this
+    # app's other vendored shell-script tools) - but a real, live-caught
+    # gotcha found while wiring this up: UAC's own script uses `pwd` (the
+    # CALLER's current working directory), not its own script location, to
+    # find its artifacts/bin/config/lib/profiles subdirectories - invoking
+    # it via a bare absolute path from an arbitrary cwd fails with "Required
+    # files not found," even though the binary itself runs fine. This
+    # doesn't affect the real Live Collection USB feature at all (its own
+    # on-USB launcher, live_collection_assets/run_collector.sh, already
+    # `cd`s into UAC's own directory before invoking it), only this Tool
+    # Versions check - wrapped in `sh -c 'cd ... && ...'` here rather than
+    # adding a per-entry cwd= field to the shared, generic TOOL_VERSION_
+    # COMMANDS/get_tool_versions() mechanism every other tool already uses
+    # with no such need.
+    {"tool": "UAC (Live Collection USB)",
+     "cmd": ["sh", "-c", f"cd {os.path.join(INSTALL_DIR, 'live_collection', 'uac')} && ./uac --version"],
+     "package": None},
     # package=None (not apt): sqlite-dissect is a pip package (see
     # requirements.txt), same MVT_BIN_DIR resolution as mvt-ios/mvt-android/
     # volatility3 above - it's a pip console-script, not on PATH under
