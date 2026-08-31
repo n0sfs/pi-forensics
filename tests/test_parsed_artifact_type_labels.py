@@ -38,6 +38,7 @@ _URL_IOC_ARTIFACT_TYPES = {"browser_url_ioc_match"}
 _CRYPTO_ARTIFACT_TYPES = {"crypto_wallet_file"}
 _MOBILE_ARTIFACT_TYPES = {"mobile_sms_message", "mobile_contact", "mobile_call_log"}
 _NTFS_JOURNAL_ARTIFACT_TYPES = {"mft_file_record", "usnjrnl_change_record"}
+_REGISTRY_ARTIFACT_TYPES = _REGISTRY_ARTIFACT_TYPES | {"registry_shellbag", "registry_shimcache"}
 
 
 def test_parsed_artifact_type_labels_covers_every_known_producer():
