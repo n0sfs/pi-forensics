@@ -14,6 +14,13 @@ ENV/
 # which IS committed - the library code itself, not the tile imagery)
 static/vendor/osm_tiles/
 
+# Same class of thing as the OSM tile cache above - third-party tools install.py vendors onto
+# the target device by cloning/downloading them at install time (ALEAPP/iLEAPP, UAC, pysim's
+# source), never something this repo ships or builds from source.
+/leapp/
+/live_collection/
+/pysim/
+
 # Evidence & Data Files (DO NOT PUSH EVIDENCE TO GITHUB)
 *.dd
 *.raw
