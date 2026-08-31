@@ -1828,6 +1828,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     usnjrnl_change_record: 'NTFS: $UsnJrnl Change Record',
     registry_shellbag: 'Registry: ShellBags (Folder Access)',
     registry_shimcache: 'Registry: Shimcache (Program Execution)',
+    email_message: 'Email Message',
 };
 
 function buildFileViewsHierarchy(summary) {
@@ -4342,6 +4343,7 @@ function updateContextToolbar(item) {
     const btnRecycleBin = document.getElementById("btnParseRecycleBin");
     const btnLinuxArtifacts = document.getElementById("btnParseLinuxArtifacts");
     const btnCryptoWallets = document.getElementById("btnParseCryptoWallets");
+    const btnEmailArtifacts = document.getElementById("btnParseEmailArtifacts");
     const btnMobileArtifacts = document.getElementById("btnParseMobileArtifacts");
     const btnLeappScan = document.getElementById("btnLeappScan");
     const btnParseLnk = document.getElementById("btnParseLnk");
@@ -4374,6 +4376,7 @@ function updateContextToolbar(item) {
     if (btnRecycleBin) btnRecycleBin.disabled = !item.is_dir;          // recursively walks a folder for $Recycle.Bin/$I* files
     if (btnLinuxArtifacts) btnLinuxArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Linux artifact files
     if (btnCryptoWallets) btnCryptoWallets.disabled = !item.is_dir;  // recursively walks a folder for wallet files
+    if (btnEmailArtifacts) btnEmailArtifacts.disabled = !item.is_dir;  // recursively walks a folder for .eml/.mbox/.pst/.ost files
     if (btnMobileArtifacts) btnMobileArtifacts.disabled = !item.is_dir;  // scans a folder for an iOS backup (Manifest.db + Info.plist)
     if (btnLeappScan) btnLeappScan.disabled = !item.is_dir;  // runs ALEAPP/iLEAPP against an extraction folder
     if (btnParseLnk) btnParseLnk.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.lnk');  // single-file, unlike the whole-folder scanners above
@@ -4407,7 +4410,7 @@ function updateContextToolbar(item) {
     ['btnEnterSearchImage', 'btnEnterTimelineImage', 'btnEnterGeoImage', 'btnEnterHashImage',
      'btnEnterTriageImage', 'btnEnterBrowserArtifactsImage', 'btnEnterRegistryImage', 'btnEnterEvtxImage',
      'btnEnterPrefetchImage', 'btnEnterRecycleBinImage', 'btnEnterLinuxArtifactsImage',
-     'btnEnterRecoverImage'].forEach(id => {
+     'btnEnterEmailImage', 'btnEnterRecoverImage'].forEach(id => {
         const btn = document.getElementById(id);
         if (btn) btn.disabled = wholeImageDisabled;
     });
@@ -4440,6 +4443,7 @@ async function contextMenuBrowseImageAnd(action) {
         recyclebin: runImageRecycleBinParse,
         linuxartifacts: runImageLinuxArtifactsParse,
         cryptowallets: runImageCryptoWalletParse,
+        email: runImageEmailParse,
         mobileartifacts: runImageMobileArtifactsParse,
         recover: runImageRecoverDeleted,
     };
@@ -5609,6 +5613,58 @@ async function runImagePrefetchParse() {
         }
     } catch (err) {
         showToast('Prefetch scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedEmailParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_email', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Email scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No email files (.eml/.mbox/.pst/.ost) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} email container(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} email container(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Email scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageEmailParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_email', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Email scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No email files (.eml/.mbox/.pst/.ost) found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} email container(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} email container(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Email scan failed: request error.', 'danger');
     }
 }
 

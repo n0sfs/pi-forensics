@@ -152,3 +152,9 @@ dumpstate-py @ git+https://github.com/CERT-EDF/dumpstate-py.git@56b70934f70a19f5
 # real ARM64/Debian-trixie venv - zero compile step, only depends on
 # openpyxl (already present via wa-crypt-tools/other tools in this file).
 analyzeMFT>=3.1.1
+
+# libpff-python (2026-08-30, tool-survey follow-up) - Outlook PST/OST email
+# parsing (core/email_utils.py). Confirmed live on the Pi's real ARM64/
+# Debian-trixie venv: source-only (no prebuilt wheel), but compiles cleanly
+# with no external system dependency needed beyond what's already present.
+libpff-python>=20231205
