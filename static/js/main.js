@@ -14148,6 +14148,7 @@ const SIDEBAR_TAB_PERMISSIONS = {
 // 403 if clicked.
 const HOME_CARD_PERMISSIONS = {
     homeCardAcquisition: 'acquisition',
+    homeCardLiveCollection: 'acquisition',
     homeCardMobile: 'mobile',
     homeCardRecovery: 'recovery',
     homeCardExplorer: 'file_explorer',
