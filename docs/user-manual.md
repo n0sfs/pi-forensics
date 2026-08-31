@@ -270,7 +270,13 @@ between:
 
 ### Right-click actions
 
-Right-click (or press-and-hold on a touchscreen) any file or folder for a context menu. The very
+Right-click (or press-and-hold on a touchscreen) any file or folder for a context menu. The menu is
+context-aware — only actions that could actually apply to the selected file, folder, or image are
+shown, and a whole section (Whole-Image Analysis, Artifact Parsers, Mobile & Memory) disappears
+entirely if none of its tools apply to the current selection, so a plain document's menu stays short.
+A single-file analysis tool (Binwalk, ClamAV, Strings, Hash Sets, YARA, Fuzzy Hash, SQLite Dissect,
+APK/IPA/Bugreport analysis, LNK parsing) that has already been run against the exact selected file
+shows a small green checkmark — hover it for the prior result and when it ran. The very
 first item, **Auto Analyze...**, is described in its own section below — everything under it is
 grouped into collapsible sections so the menu stays manageable:
 
