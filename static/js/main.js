@@ -340,6 +340,17 @@ const GUIDE_SCENARIOS = {
         ],
         tabId: "acquisition-tab"
     },
+    live_collection: {
+        title: "I need volatile data from a running machine, not a dead disk",
+        steps: [
+            "Go to the Live Collection USB tab. This is separate from Forensic Acquisition on purpose - it's the one place this station deliberately writes to a USB drive rather than treating it as read-only evidence.",
+            "Pick a blank/spare USB drive (never one holding evidence) from the dropdown, type the exact confirmation text shown (e.g. \"WIPE /dev/sdb\"), then click \"Erase & Build Live Collection USB\". This wipes the drive and puts a collector script on it for both Linux/macOS (UAC) and Windows (a bundled PowerShell script).",
+            "Take that USB to the separate, still-running target machine. On Linux/macOS/BSD, run run_collector.sh as root (falls back to a limited, honestly-logged non-root run if root isn't available). On Windows, double-click launch_collector.cmd.",
+            "Bring the USB back to this station, go back to the Live Collection USB tab, select the drive, and click \"Scan for Collection Results\" to see what runs are on it.",
+            "Enter a Case Number/Evidence ID and click \"Import Selected Results\" - every file is copied into the active case, individually hashed, and recorded as a real case-report event, read-only against the USB the whole time.",
+        ],
+        tabId: "live-collection-tab"
+    },
     phone: {
         title: "It's a phone, not a drive",
         steps: [
@@ -468,6 +479,27 @@ const FAQ_GROUPS = [
             {
                 q: "I only need specific folders, not a full bit-for-bit image - is that possible?",
                 a: "Yes - Logical (Custom Content) Acquisition, also on the Forensic Acquisition tab (select it from the Format dropdown), lets you pick one or more specific folders and package them into a single hash-verified container with a manifest, instead of imaging an entire drive. Useful when you only need a user's documents or a particular app's data, not the whole disk."
+            },
+        ]
+    },
+    {
+        group: "Live Collection USB",
+        items: [
+            {
+                q: "How is this different from a normal acquisition?",
+                a: "Everywhere else in this app, a connected USB drive is treated as sacrosanct, read-only evidence - a udev rule forces it into hardware write-protect the instant it's plugged in, and the app itself re-enforces that on every poll. Live Collection USB is the one deliberate exception: \"Build\" wipes a confirmed-blank, non-evidence USB drive and puts collector scripts on it; you then plug that drive into a separate, still-running target machine (not evidence acquisition - the target machine is never touched by this station at all) to gather volatile data before it's lost, then bring the same drive back and \"Import\" copies the results into a case, read-only from that point on."
+            },
+            {
+                q: "What does it actually collect, and what shows up in File Explorer afterward?",
+                a: "On Linux/macOS/BSD it runs UAC (github.com/tclahr/uac) with the ir_triage profile - a real live-response collection: running processes with hashes, open files/sockets, live network state, mounted storage, package lists, shell/SSH history, and a live-filesystem timeline. On Windows it runs a bundled PowerShell script - process list with command lines, TCP/UDP connections with owning PIDs, logged-on sessions, ARP/DNS cache, services, scheduled tasks, autoruns, and installed hotfixes. Importing copies every file into the active case (individually hashed, with a manifest, and a real case-report event), where it groups alongside this app's other analysis-output folders in File Explorer - browse, preview, tag, or run YARA/hash-set checks against it like any other file. It isn't automatically parsed into a structured category the way a Registry hive or Event Log is, since these are free-form collector output, not a fixed Windows artifact format."
+            },
+            {
+                q: "What can this get that imaging the same machine's disk later couldn't?",
+                a: "Anything that only exists while the machine is running: active network connections and who they're talking to, which processes actually have a given file or socket open right now, logged-on sessions, ARP/DNS caches, loaded kernel modules/drivers, and the contents of an already-unlocked encrypted volume. All of that is gone the instant the machine is powered off - a disk image, however complete, cannot reconstruct it. This is a lightweight snapshot, not a substitute for a full acquisition or a memory (RAM) capture - see Memory Forensics if you need the latter."
+            },
+            {
+                q: "What stops me from accidentally wiping the wrong drive?",
+                a: "The Build button stays disabled until you type the exact confirmation text shown for the selected drive (e.g. \"WIPE /dev/sdb\") - deliberately more friction than this app's usual confirm dialogs, since this is the one feature that writes to a drive rather than just reading from it. Always double-check the drive's model/size shown before typing the confirmation."
             },
         ]
     },
@@ -661,6 +693,13 @@ const TOOL_REFERENCE_GROUPS = [
             ["smartctl", "Reads a drive's built-in health/diagnostic data (SMART) before committing to a long acquisition."],
             ["dislocker", "Unlocks a BitLocker-encrypted drive or image so it can be imaged or browsed as a normal decrypted volume."],
             ["cryptsetup", "Unlocks a LUKS-encrypted drive or image (the standard Linux disk-encryption format), and a VeraCrypt-encrypted one, the same way dislocker handles BitLocker."],
+        ]
+    },
+    {
+        group: "Live Collection USB",
+        tools: [
+            ["UAC (Unix-like Artifacts Collector)", "Real, open-source live-response collector (github.com/tclahr/uac) for Linux/macOS/BSD/Solaris targets - process list/tree with hashes, open files/sockets, live network state, mounted storage, package lists, shell/SSH history, and a live-filesystem timeline (ir_triage profile). Bundled onto every Live Collection USB build; runs on the separate target machine, not on this station."],
+            ["Live Collector (Windows)", "A hand-written PowerShell script bundled onto every Live Collection USB build - process list with command lines, TCP/UDP connections with owning PIDs, logged-on sessions, ARP/DNS cache, services, scheduled tasks, autoruns, and installed hotfixes. Double-click the launcher on the target Windows machine to run it."],
         ]
     },
     {

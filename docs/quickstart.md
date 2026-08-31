@@ -135,8 +135,9 @@ That's a real, verifiable, bit-for-bit forensic image, done.
   in one step, instead of running each tool by hand. See the [User Manual](user-manual.md) for the
   full list of what it can detect and run.
 - **[User Manual](user-manual.md)** — every tab and tool, explained in full: file recovery, mobile
-  device acquisition, browsing inside an acquired image, encrypted-drive support, tagging evidence,
-  memory forensics, custom report templates, and station security/accounts.
+  device acquisition, live volatile-data collection from a running machine, browsing inside an
+  acquired image, encrypted-drive support, tagging evidence, memory forensics, custom report
+  templates, and station security/accounts.
 - **The in-app Help button** (bottom of the sidebar) has guided walkthroughs for common real-world
   scenarios — a damaged/clicking drive, recovering deleted files, acquiring a phone, and writing up
   findings — plus a searchable FAQ and tool reference, without leaving the app.
