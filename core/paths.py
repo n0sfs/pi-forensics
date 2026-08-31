@@ -152,17 +152,21 @@ _CASE_ROLE_REPORT_SUFFIXES = (
 _CASE_ROLE_ANALYSIS_LOG_RE = re.compile(
     r'(_hash_manifest_\w+\.txt|_triage_scan_report\.txt|_vol3_\w+\.json|_device_timestamps\.json'
     r'|_(aleapp|ileapp)_output|_sqlite_dissect_recovery|_apk_analysis\.json|_bugreport_parsed\.json'
-    r'|_ios_crash_reports|_mft_analysis\.json|_usnjrnl_parsed\.json)$')
+    r'|_ios_crash_reports|_mft_analysis\.json|_usnjrnl_parsed\.json'
+    r'|^live_collection_import_\d{8}_\d{6})$')
 _CASE_ROLE_BUNDLE_RE = re.compile(r'_case_bundle_\d{8}-\d{6}\.zip$')
 
 def classify_case_role(name):
-    """Best-effort classification of a filename as one of this app's own
-    generated case-artifact kinds - 'report' (the case JSON/PDF/HTML export
+    """Best-effort classification of a filename (or, for the folder-shaped
+    kinds below, a directory name) as one of this app's own generated
+    case-artifact kinds - 'report' (the case JSON/PDF/HTML export
     and their .sha256 sidecars, the per-case SQLite index, a legacy per-job
     report), 'analysis_log' (a hash-manifest report, a triage-scan report,
     a Volatility3 memory-forensics plugin result, an android_pull's
-    captured-on-device-timestamps manifest, or an ALEAPP/iLEAPP mobile-artifact-parser output
-    folder), 'geolocation' (a
+    captured-on-device-timestamps manifest, an ALEAPP/iLEAPP mobile-artifact-parser output
+    folder, or a Live Collection USB import folder - the same "derived/
+    analysis output living in its own folder" shape ALEAPP/iLEAPP already
+    established), 'geolocation' (a
     .kml), 'backup' (a pre-consolidation/pre-restore snapshot), 'case_bundle'
     (a Case Bundle Export zip - matched by its own timestamped naming
     pattern, NOT the plain .zip extension, which classify_extension()

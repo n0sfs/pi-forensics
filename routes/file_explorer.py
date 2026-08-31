@@ -146,7 +146,16 @@ def browse_files():
                     "created": format_epoch(getattr(st, 'st_birthtime', None)),
                     # None for a directory or anything that isn't a
                     # recognized artifact kind this app itself generates -
-                    # see classify_case_role()'s own docstring.
+                    # see classify_case_role()'s own docstring. A folder-
+                    # shaped artifact kind (an ALEAPP/iLEAPP output folder,
+                    # a Live Collection import folder) still gets tagged
+                    # into the per-case index directly by its own write
+                    # site (_auto_tag_case_artifact(), core/case_index_
+                    # db.py) - the tree's own visual "Case Artifacts"
+                    # grouping is deliberately files-only by design (real
+                    # folders stay flat/immediately-navigable, no extra
+                    # collapse click), so classifying a directory here
+                    # would be inert for that purpose anyway.
                     "case_role": None if is_dir else classify_case_role(entry.name),
                 })
             except Exception:
