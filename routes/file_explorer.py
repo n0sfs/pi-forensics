@@ -44,6 +44,7 @@ from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
 from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
 from core.mft_utils import find_mft_files, analyze_mft_file
 from core.usnjrnl_utils import find_usnjrnl_files, parse_usnjrnl_file
+from core.email_utils import find_email_files, parse_email_file
 from core.linux_artifacts import (
     find_linux_shell_history_files, parse_linux_shell_history_file,
     find_linux_passwd_files, parse_linux_passwd_file,
@@ -1109,6 +1110,44 @@ def parse_mobile_artifacts():
     return jsonify({
         "success": True, "candidates_found": len(manifest_dirs), "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder), "any_encrypted": any_encrypted,
+    })
+
+@file_explorer_bp.route('/api/files/parse_email', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_email():
+    """Whole-directory scan for email containers (.eml/.mbox/.pst/.ost) -
+    same shape as parse_prefetch()/parse_recyclebin() above
+    (core/email_utils.py)."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_email_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        records = parse_email_file(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("email_files_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 
 SQLITE_QUERY_MAX_ROWS = 500  # a page's worth - real pagination via limit/offset, not a hard cap on total table size

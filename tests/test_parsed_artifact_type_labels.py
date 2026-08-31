@@ -39,6 +39,7 @@ _CRYPTO_ARTIFACT_TYPES = {"crypto_wallet_file"}
 _MOBILE_ARTIFACT_TYPES = {"mobile_sms_message", "mobile_contact", "mobile_call_log"}
 _NTFS_JOURNAL_ARTIFACT_TYPES = {"mft_file_record", "usnjrnl_change_record"}
 _REGISTRY_ARTIFACT_TYPES = _REGISTRY_ARTIFACT_TYPES | {"registry_shellbag", "registry_shimcache"}
+_EMAIL_ARTIFACT_TYPES = {"email_message"}
 
 
 def test_parsed_artifact_type_labels_covers_every_known_producer():
@@ -46,7 +47,7 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
     expected = (_BROWSER_ARTIFACT_TYPES | _REGISTRY_ARTIFACT_TYPES | evtx_types | _LNK_ARTIFACT_TYPES
                 | _PREFETCH_ARTIFACT_TYPES | _RECYCLEBIN_ARTIFACT_TYPES | _LINUX_ARTIFACT_TYPES
                 | _URL_IOC_ARTIFACT_TYPES | _CRYPTO_ARTIFACT_TYPES | _MOBILE_ARTIFACT_TYPES
-                | _NTFS_JOURNAL_ARTIFACT_TYPES)
+                | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES)
     actual = set(case_index.PARSED_ARTIFACT_TYPE_LABELS.keys())
     missing = expected - actual
     assert not missing, f"artifact_type(s) producible by a parser but missing from PARSED_ARTIFACT_TYPE_LABELS (row-fetch route would silently return no rows for these): {missing}"
