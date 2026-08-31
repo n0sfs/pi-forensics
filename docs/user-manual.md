@@ -79,7 +79,7 @@ never one accidental click away.
 | **Plain dd** | No built-in hashing (compute one separately if needed), but supports genuine direct-I/O reads that bypass the OS cache. |
 | **E01 (ewfacquire)** | Produces an EnCase-compatible `.E01` image, with optional compression and splitting into segments. Pick this if your later analysis tooling expects E01. |
 | **AFF** | A less common format today, supported via a hash-then-convert pipeline if your workflow needs it. |
-| **ddrescue (Recovery)** | For a drive that's damaged, clicking, or not detected reliably — see [File Recovery](#5-file-recovery) below for the full workflow. |
+| **ddrescue (Recovery)** | For a drive that's damaged, clicking, or not detected reliably — see [File Recovery](#6-file-recovery) below for the full workflow. |
 
 Hover the Format dropdown at any time for a live one-line explanation of whichever option is
 selected.
@@ -152,12 +152,16 @@ acquisition straight into [Auto Analyze](#running-a-curated-tool-set-automatical
 against the image it just produced — one confirmed choice up front instead of a second manual step
 once the job completes. Not available for `ddrescue` or AFF, which run their own separate workflows.
 
-### Live Collection USB
+---
+
+## 4. Live Collection USB
 
 Everything else in this app captures a *dead* drive — this is for a *live, running* machine you
-need volatile information from (running processes, network connections, logged-on users) without
-powering it off. It's the one place in this app that deliberately writes to a USB drive it doesn't
-treat as evidence, so it's built with an unusually strong safeguard.
+need volatile information from without powering it off. It's the one place in this app that
+deliberately writes to a USB drive it doesn't treat as evidence, so it's built with an unusually
+strong safeguard, and it lives in its own tab (not under Forensic Acquisition) since it's a
+genuinely different, two-session workflow: build the drive here, walk it to a separate machine,
+bring it back — possibly days later — to import.
 
 **Build Live Collection USB:**
 
@@ -177,14 +181,31 @@ the drive (open a terminal and run `./run_collector.sh` on Linux/macOS, or doubl
 `launch_collector.cmd` on Windows). Everything collected is written back onto the same drive.
 Nothing here ever touches a network.
 
+**What actually gets collected.** On Linux/macOS/BSD, UAC's `ir_triage` profile captures a real
+live-response snapshot: running processes (with hashes and open files/sockets), live network
+connections, mounted storage, package lists, shell/SSH history, and a live-filesystem timeline. On
+Windows, the bundled PowerShell script gathers running processes with command lines, TCP/UDP
+connections with their owning process, logged-on sessions, ARP and DNS caches, services, scheduled
+tasks, startup/autorun entries, and installed hotfixes (driver enumeration is attempted too, and
+honestly logged as skipped if the script wasn't run elevated). This is the entire point of the
+feature: every one of those is volatile state that's **gone the instant the machine is powered
+off** — imaging the same machine's disk five minutes later cannot recover any of it. It's a
+lightweight snapshot, not a substitute for a full acquisition or a memory (RAM) capture — see
+[Memory forensics](#memory-forensics) if you need the latter.
+
 **Import Collection Results:** plug the drive back into the station (it's read-only again by
 default — no separate unlock needed for this half), select it, and click **Scan for Collection
 Results**. Check off whichever result run(s) you want, fill in an Evidence ID, and click **Import
-Selected Results** — files are copied into the active case with a full per-file hash manifest.
+Selected Results** — every file is copied into the active case, individually hashed with a
+manifest, and recorded as a real case-report event. In File Explorer, the imported folder groups
+alongside this app's other generated-analysis-output folders rather than sitting unclassified among
+real evidence; it isn't automatically parsed into a structured category (Registry, Event Log, and
+so on all look for very specific real-Windows-artifact filenames, not free-form collector output),
+but every file in it can still be browsed, previewed, hashed, tagged, or scanned like any other.
 
 ---
 
-## 4. Mobile Forensics
+## 5. Mobile Forensics
 
 The **Mobile Forensics** tab acquires data from a connected iPhone or Android device over USB. It
 does **not** bypass a lockscreen or USB-debugging authorization — the device must already be
@@ -211,7 +232,7 @@ unlocked and (for Android) have USB debugging approved by whoever's holding it.
 
 Once finished, an acquired backup is a normal folder/file you can browse in File Explorer like any
 other evidence — including running an MVT spyware scan against it (see [File
-Explorer](#6-file-explorer) below).
+Explorer](#7-file-explorer) below).
 
 ### iOS crash reports and SIM/UICC cards
 
@@ -230,7 +251,7 @@ Two more capabilities live in this tab, alongside the main acquisition flow abov
 
 ---
 
-## 5. File Recovery
+## 6. File Recovery
 
 The **File Recovery** tab holds every deleted-file-recovery and damaged-drive tool behind one shared
 control panel — pick a tool from the selector on the left, everything below adjusts to match it.
@@ -263,7 +284,7 @@ This is the one workflow that spans two tabs:
 
 If you specifically need recovered files to keep their real filenames and folder locations (not
 PhotoRec's generic `f0001234.jpg`-style output), go to **File Explorer** instead and use
-**filesystem-aware deleted file recovery** — see [File Explorer](#6-file-explorer) below. It reads
+**filesystem-aware deleted file recovery** — see [File Explorer](#7-file-explorer) below. It reads
 the filesystem's own directory structure directly, so a recovered file comes back as itself, at its
 real path — a real advantage over signature-based carving, though its success rate genuinely depends
 on the filesystem type (NTFS and FAT recover well; ext-family filesystems recover poorly, since the
@@ -271,7 +292,7 @@ Linux kernel typically clears a deleted file's data-block pointers on deletion).
 
 ---
 
-## 6. File Explorer
+## 7. File Explorer
 
 **File Explorer** is where you browse evidence, look inside acquired images, and run analysis tools
 against individual files or whole images. It's a two-column layout: a folder tree on the left, and a
@@ -599,7 +620,7 @@ from elsewhere.
 
 ---
 
-## 7. Reporting
+## 8. Reporting
 
 The **Reporting** tab is where a case's data lives once collected — and where you write it up. It
 only shows content once a case is active (create or select one via the Case button, same as
@@ -677,7 +698,7 @@ file — so you can prove later that the report itself hasn't been altered since
 
 ---
 
-## 8. Settings
+## 9. Settings
 
 **Settings** is split into five categories.
 
@@ -734,7 +755,7 @@ DHCP — with an automatic safety rollback if a change would otherwise lock you 
 
 ---
 
-## 9. Getting help
+## 10. Getting help
 
 - The **Help** button at the bottom of the sidebar opens guided walkthroughs for common real-world
   situations, a searchable FAQ, and a full tool reference — all without leaving the app.
