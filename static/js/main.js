@@ -4192,6 +4192,12 @@ function toggleCtxMenuSection(sectionId) {
     const expanded = section.style.display !== 'none';
     section.style.display = expanded ? 'none' : '';
     if (toggle) toggle.classList.toggle('expanded', !expanded);
+    // Expanding a section can make the menu materially taller than it was
+    // when its position was first clamped on open - re-clamp in place (not
+    // via positionContextMenu(), which would reset left/top back to the
+    // original click point) so a menu opened near the bottom of the window
+    // doesn't grow past the viewport with no way to reach the new items.
+    clampContextMenuToViewport();
 }
 
 function resetCtxMenuSections(rootId) {
@@ -4199,6 +4205,35 @@ function resetCtxMenuSections(rootId) {
     if (!root) return;
     root.querySelectorAll('.ctx-menu-section').forEach(section => { section.style.display = 'none'; });
     root.querySelectorAll('.ctx-menu-section-toggle').forEach(toggle => { toggle.classList.remove('expanded'); });
+}
+
+// Re-measures the context menu's real rendered box and nudges left/top (in
+// place, without touching the other axis or resetting to a click point) so
+// the whole box stays reachable inside the current viewport. Called both
+// right after the menu is first shown (positionContextMenu()) and again
+// whenever a collapsible section's expand/collapse changes its height
+// (toggleCtxMenuSection()) - the menu has grown a lot of items over time
+// (image/case actions, whole-image shortcuts, analyze tools, file
+// operations) and expanding one of its sections can push it well past the
+// viewport bottom even when the collapsed menu fit fine at open time. The
+// CSS max-height/overflow-y on #fileContextMenu is the backstop for the
+// case where even a fully top-aligned menu is still taller than the whole
+// viewport (the 480px kiosk touchscreen especially).
+function clampContextMenuToViewport() {
+    const menu = document.getElementById('fileContextMenu');
+    if (!menu || menu.style.display === 'none') return;
+    const margin = 8;
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth - margin) {
+        menu.style.left = `${Math.max(margin, window.innerWidth - rect.width - margin)}px`;
+    } else if (rect.left < margin) {
+        menu.style.left = `${margin}px`;
+    }
+    if (rect.bottom > window.innerHeight - margin) {
+        menu.style.top = `${Math.max(margin, window.innerHeight - rect.height - margin)}px`;
+    } else if (rect.top < margin) {
+        menu.style.top = `${margin}px`;
+    }
 }
 
 function positionContextMenu(ev) {
@@ -4209,25 +4244,7 @@ function positionContextMenu(ev) {
     menu.style.left = `${x}px`;
     menu.style.top = `${y}px`;
     menu.style.display = 'block';
-
-    // The menu has grown a lot of items over time (image/case actions,
-    // whole-image shortcuts, analyze tools, file operations) and can now be
-    // taller than a short viewport (the 480px kiosk touchscreen especially)
-    // or wider/taller than whatever's left of a normal window below/right
-    // of the click point. Clamp its position after it's actually rendered
-    // (so real dimensions are known) so it opens fully reachable instead of
-    // partially or entirely off-screen with no way to scroll to the rest -
-    // the CSS max-height/overflow-y on #fileContextMenu is the backstop for
-    // the case where even a fully top-aligned menu is still taller than the
-    // whole viewport.
-    const margin = 8;
-    const rect = menu.getBoundingClientRect();
-    if (rect.right > window.innerWidth) {
-        menu.style.left = `${Math.max(margin, window.innerWidth - rect.width - margin)}px`;
-    }
-    if (rect.bottom > window.innerHeight) {
-        menu.style.top = `${Math.max(margin, window.innerHeight - rect.height - margin)}px`;
-    }
+    clampContextMenuToViewport();
 }
 
 function showFileContextMenu(ev, item) {
