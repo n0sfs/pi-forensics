@@ -46,6 +46,12 @@ from core.jobs import (
 )
 from core.decrypted_sources import register_decrypted_source, unregister_decrypted_source
 from core.tsk_utils import classify_image_profile
+from core.live_collection_utils import (
+    PIF_COLLECT_LABEL, UAC_DEFAULT_PROFILE,
+    check_existing_collection_volume, wipe_and_format_device,
+    mount_collection_partition, unmount_collection_partition,
+    discover_collection_runs, unmount_all_partitions,
+)
 # Guided Workflow automation Tier 2 (2026-08-27) - the one deliberate,
 # documented exception to this project's own established "every routes/*.py
 # Blueprint only ever imports from core/, never from another routes/*.py
@@ -68,6 +74,112 @@ from routes.image_browser import (
 )
 
 acquisition_bp = Blueprint('acquisition', __name__)
+
+
+# --- Live Collection USB: the app's first-ever deliberate write to a raw
+# block device it doesn't already treat as evidence (every other USB
+# device is forced read-only the instant it's plugged in - a udev rule,
+# plus list_drives() below re-forcing --setro on every device it
+# enumerates). This dict/lock is what lets exactly one device, for
+# exactly the duration of the "Build Live Collection USB" job, be
+# temporarily exempted from that auto-relock.
+#
+# A naive "check a dict, then call blockdev" on both sides still races: a
+# list_drives() call already past its dict-check could land its --setro
+# call *after* the build job has already flipped to --setrw, corrupting
+# an in-progress write. The fix is that BOTH sides do their entire
+# decision-plus-syscall under this ONE lock - list_drives()'s per-device
+# step becomes "with device_write_lock: if device in
+# active_write_unlocked_devices: skip; else: blockdev --setro"; the build
+# job's unlock step becomes "with device_write_lock:
+# active_write_unlocked_devices[device] = {...}; blockdev --setrw".
+# Whichever side gets the lock first fully finishes before the other side
+# even reads the registry, closing the window a plain dict-check leaves
+# open. Mirrors the exact shape of Live Device Preview's
+# device_previews_lock/active_device_previews (routes/image_browser.py) -
+# a different lock, deliberately, not job_lock (which update_job()'s own
+# frequent progress writes would contend for no reason).
+device_write_lock = threading.Lock()
+active_write_unlocked_devices = {}  # device_path -> {unlocked_at}
+
+
+def _relock_device_for_list_drives(device_path):
+    """Called by list_drives() for each enumerated USB disk - the race-
+    safe replacement for its old unconditional `blockdev --setro`. Skips
+    the relock entirely (under the same lock a build job's own unlock
+    step uses) if this exact device is currently, legitimately unlocked
+    by this app's own Live Collection USB build job."""
+    with device_write_lock:
+        if device_path in active_write_unlocked_devices:
+            return
+        try:
+            subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path], capture_output=True)
+        except Exception:
+            pass
+
+
+def _unlock_device_for_write(device_path):
+    """Called by the Live Collection USB build job before it touches
+    wipefs/sfdisk/mkfs - registers the exemption and flips the device
+    writable, both under device_write_lock, so a concurrent
+    list_drives() call can never land its own --setro in between."""
+    with device_write_lock:
+        active_write_unlocked_devices[device_path] = {"unlocked_at": time.time()}
+        subprocess.run(["sudo", "/usr/sbin/blockdev", "--setrw", device_path], capture_output=True)
+
+
+def _relock_device_after_write(device_path):
+    """Always-safe teardown - re-locks the device and clears the
+    exemption. Called from the build job's own `finally:` block on every
+    exit path (success/Stop/exception), so the app's default-safe posture
+    is restored regardless of how the job ended."""
+    with device_write_lock:
+        active_write_unlocked_devices.pop(device_path, None)
+        subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path], capture_output=True)
+
+
+def _live_collection_startup_reconciliation():
+    """One-shot check at process start. Unlike every other 'leaked state'
+    reconciliation precedent in this app (LUKS's loop-device check, Live
+    Device Preview's orphan-ACL check - both deliberately log-only, never
+    auto-act, since a legitimate unrelated cause could theoretically
+    exist for either), this one auto-remediates: at a fresh process
+    start, active_write_unlocked_devices is always empty, so any
+    /dev/sd[a-z] that isn't currently read-only is something that, by
+    this app's own design, should never legitimately happen - relocking
+    it is always safe (never destroys data) and closes a real forensic-
+    integrity gap (an unexpectedly-writable USB left in the chassis after
+    a crash) rather than just disclosing it. Still logs a chain-of-
+    custody entry recording that it happened, so there's a record even
+    though it self-healed. The systemd unit's Restart=always/RestartSec=3
+    means this runs within seconds of any crash."""
+    try:
+        candidates = sorted(set(glob.glob('/dev/sd[a-z]')))
+    except Exception:
+        return
+    for device_path in candidates:
+        if not is_valid_block_device(device_path):
+            continue
+        try:
+            chk = subprocess.run(["sudo", "/usr/sbin/blockdev", "--getro", device_path],
+                                  capture_output=True, text=True, timeout=10)
+        except Exception:
+            continue
+        if chk.returncode != 0:
+            continue
+        if chk.stdout.strip() == '1':
+            continue  # already read-only, nothing to reconcile
+        subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path], capture_output=True)
+        log_chain_of_custody(
+            "live_collection_device_auto_relocked_at_startup",
+            {"device": device_path,
+             "note": "Found writable at process startup, not explained by this process's own state "
+                     "(active_write_unlocked_devices is always empty at a fresh start) - likely left "
+                     "unlocked by a prior crash mid-build. Automatically re-locked."},
+            source_ip=None, user="system-startup",
+        )
+
+threading.Thread(target=_live_collection_startup_reconciliation, daemon=True).start()
 
 
 # Thin alias - the actual "whole disk or partition" check now lives in
@@ -1781,6 +1893,396 @@ def start_logical_acquisition():
     log_chain_of_custody("logical_acquisition_started", {"selected_folders": selected_folders, "destination": output_root})
     return jsonify({"success": True})
 
+
+# --- Live Collection USB (Phase A: build) ---
+# Prepares a confirmed-blank USB drive with live-forensics collector
+# tooling (UAC for Unix-like targets, a hand-written PowerShell script
+# for Windows) so an examiner can plug it into a separate, live target
+# machine to gather volatile artifacts, then bring it back to import the
+# results into a case (Phase B, below). See core/live_collection_utils.py
+# for the wipe/partition/format/mount mechanics and the device_write_lock
+# block above this file's BitLocker section for the race-avoidance
+# mechanism that exempts the target device from list_drives()'s normal
+# auto-relock for exactly this job's duration.
+LIVE_COLLECTION_BUILD_MOUNTPOINT = os.path.join(INSTALL_DIR, ".live_collection_mounts", "build")
+LIVE_COLLECTION_SCAN_MOUNTPOINT = os.path.join(INSTALL_DIR, ".live_collection_mounts", "scan")
+LIVE_COLLECTION_IMPORT_MOUNTPOINT = os.path.join(INSTALL_DIR, ".live_collection_mounts", "import")
+LIVE_COLLECTION_ASSETS_DIR = os.path.join(INSTALL_DIR, "live_collection_assets")
+LIVE_COLLECTION_UAC_DIR = os.path.join(INSTALL_DIR, "live_collection", "uac")
+
+
+def execution_worker_build_collection_usb(device, device_info):
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    try:
+        update_job(format='live_collection_build', status="Checking device...",
+                   progress_percent=0.0, speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
+
+        fast_path = check_existing_collection_volume(device)
+        partition = f"{device}1"
+
+        _unlock_device_for_write(device)
+        try:
+            append_log(f"[*] Unmounting any existing partitions on {device}...")
+            unmount_all_partitions(device)
+
+            if fast_path["already_prepared"]:
+                append_log(f"[*] {fast_path['reason']} Skipping wipe/format - reusing the existing volume.")
+                update_job(status="Reusing already-prepared collection volume...", progress_percent=20.0)
+            else:
+                append_log(f"[*] Not already a prepared collection volume ({fast_path['reason']}) - performing a full wipe and format.")
+                update_job(status="Wiping and formatting drive...", progress_percent=10.0)
+                if snapshot_job()["status"] == "Stopped":
+                    append_log("[-] Stopped by examiner before any destructive step ran - device was never wiped.")
+                    return
+                fmt_result = wipe_and_format_device(device, append_log)
+                if not fmt_result["success"]:
+                    update_job(status="Failed")
+                    append_log(f"[-] {fmt_result['error']}")
+                    return
+                update_job(progress_percent=40.0)
+
+            if snapshot_job()["status"] == "Stopped":
+                append_log("[-] Stopped by examiner.")
+                return
+
+            update_job(status="Mounting and copying collector tooling...", progress_percent=50.0)
+            uid, gid = os.getuid(), os.getgid()
+            mount_result = mount_collection_partition(partition, LIVE_COLLECTION_BUILD_MOUNTPOINT, uid, gid, read_only=False)
+            if not mount_result["success"]:
+                update_job(status="Failed")
+                append_log(f"[-] Could not mount {partition}: {mount_result['error']}")
+                return
+
+            try:
+                mnt = LIVE_COLLECTION_BUILD_MOUNTPOINT
+                os.makedirs(os.path.join(mnt, "uac", "output"), exist_ok=True)
+                os.makedirs(os.path.join(mnt, "windows", "results"), exist_ok=True)
+
+                if os.path.isdir(LIVE_COLLECTION_UAC_DIR):
+                    uac_dest = os.path.join(mnt, "uac")
+                    for name in os.listdir(LIVE_COLLECTION_UAC_DIR):
+                        src = os.path.join(LIVE_COLLECTION_UAC_DIR, name)
+                        dst = os.path.join(uac_dest, name)
+                        if os.path.isdir(src):
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(src, dst)
+                    append_log("[*] Copied UAC (Unix/Linux/macOS collector).")
+                else:
+                    append_log("[!] UAC was not found on this station (install.py's vendoring step "
+                               "may not have run, or ran without internet access) - only the Windows "
+                               "collector will be on this drive.")
+
+                for asset_name, dest_rel in (
+                    ("run_collector.sh", os.path.join("uac", "run_collector.sh")),
+                    ("windows_collector.ps1", os.path.join("windows", "windows_collector.ps1")),
+                    ("launch_collector.cmd", os.path.join("windows", "launch_collector.cmd")),
+                    ("README.txt", "README.txt"),
+                ):
+                    src = os.path.join(LIVE_COLLECTION_ASSETS_DIR, asset_name)
+                    if os.path.isfile(src):
+                        dst = os.path.join(mnt, dest_rel)
+                        shutil.copy2(src, dst)
+                        if asset_name.endswith((".sh",)):
+                            os.chmod(dst, 0o755)
+                append_log("[*] Copied Windows collector, launcher, and README.")
+
+                update_job(status="Finalizing (unmounting)...", progress_percent=90.0)
+            finally:
+                unmount_collection_partition(LIVE_COLLECTION_BUILD_MOUNTPOINT)
+
+            update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
+            append_log("[+] Live Collection USB build completed successfully.")
+            log_chain_of_custody("live_collection_usb_built", {
+                "device": device, "model": device_info.get("model"),
+                "serial": device_info.get("serial"), "size": device_info.get("size"),
+                "reused_existing_volume": fast_path["already_prepared"],
+            })
+        finally:
+            _relock_device_after_write(device)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+
+@acquisition_bp.route('/api/live_collection/start_build', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def start_build_collection_usb():
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    device = (req.get('device') or '').strip()
+    device_info = req.get('device_info') or {}
+
+    if not is_valid_block_device(device):
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"'{device}' is not a recognized whole-disk device."}), 400
+
+    thread = threading.Thread(target=execution_worker_build_collection_usb, args=(device, device_info))
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("live_collection_usb_build_started", {"device": device, "device_info": device_info})
+    return jsonify({"success": True})
+
+
+# --- Live Collection USB (Phase B: import results) ---
+@acquisition_bp.route('/api/live_collection/scan', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def scan_live_collection_results():
+    """Synchronous, read-only - mounts the device's partition read-only,
+    discovers real result run folders, unmounts, and returns the list for
+    the examiner to review before choosing what to import. No job-slot
+    claim needed (quick, read-only, doesn't touch current_job) - the same
+    pattern this app's BitLocker/LUKS/VeraCrypt "detect" routes already
+    use for a quick look before the real (job-driven) action."""
+    req = request.get_json() or {}
+    device = (req.get('device') or '').strip()
+    if not is_valid_block_device(device):
+        return jsonify({"success": False, "error": f"'{device}' is not a recognized whole-disk device."}), 400
+
+    partition = f"{device}1"
+    if not os.path.exists(partition):
+        return jsonify({"success": False, "error": f"No partition found on {device}. Has a Live Collection USB been built and used on this drive?"}), 400
+
+    uid, gid = os.getuid(), os.getgid()
+    mount_result = mount_collection_partition(partition, LIVE_COLLECTION_SCAN_MOUNTPOINT, uid, gid, read_only=True)
+    if not mount_result["success"]:
+        return jsonify({"success": False, "error": f"Could not mount {partition}: {mount_result['error']}"}), 500
+
+    try:
+        runs = discover_collection_runs(LIVE_COLLECTION_SCAN_MOUNTPOINT)
+    finally:
+        unmount_collection_partition(LIVE_COLLECTION_SCAN_MOUNTPOINT)
+
+    return jsonify({"success": True, "runs": runs})
+
+
+def execution_worker_import_live_collection(device, selected_relative_paths, case_folder, requested_hashes, report_file_path, report_data):
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    manifest_entries = []
+    files_copied = 0
+    files_errored = 0
+    partition = f"{device}1"
+
+    try:
+        update_job(format='live_collection_import', status="Mounting collection USB (read-only)...",
+                   progress_percent=0.0, speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
+        uid, gid = os.getuid(), os.getgid()
+        mount_result = mount_collection_partition(partition, LIVE_COLLECTION_IMPORT_MOUNTPOINT, uid, gid, read_only=True)
+        if not mount_result["success"]:
+            update_job(status="Failed")
+            append_log(f"[-] Could not mount {partition}: {mount_result['error']}")
+            report_data["acquisition_status"] = "FAILED"
+            _write_report(report_file_path, report_data, append_log)
+            return
+
+        try:
+            append_log("[*] Re-discovering result runs on the mounted drive (server-authoritative, not trusting client-supplied metadata)...")
+            all_runs = discover_collection_runs(LIVE_COLLECTION_IMPORT_MOUNTPOINT)
+            runs_to_import = [r for r in all_runs if r["relative_path"] in selected_relative_paths]
+            if not runs_to_import:
+                update_job(status="Failed")
+                append_log("[-] None of the selected result run(s) were found on this drive anymore.")
+                report_data["acquisition_status"] = "FAILED"
+                _write_report(report_file_path, report_data, append_log)
+                return
+
+            output_root = os.path.join(case_folder, f"live_collection_import_{time.strftime('%Y%m%d_%H%M%S')}")
+            # Never write back onto the USB itself, or into any path nested
+            # under its own mountpoint - the case folder is always a real,
+            # safe_path()-validated path elsewhere on this station, but this
+            # is cheap, direct insurance against that ever regressing.
+            real_dest = os.path.realpath(output_root)
+            real_source = os.path.realpath(LIVE_COLLECTION_IMPORT_MOUNTPOINT)
+            if real_dest == real_source or real_dest.startswith(real_source + os.sep):
+                update_job(status="Failed")
+                append_log("[-] Refusing to write the import destination onto the source USB itself.")
+                report_data["acquisition_status"] = "FAILED"
+                _write_report(report_file_path, report_data, append_log)
+                return
+            os.makedirs(output_root, exist_ok=True)
+
+            all_files = []
+            for run in runs_to_import:
+                run_src = os.path.join(LIVE_COLLECTION_IMPORT_MOUNTPOINT, run["relative_path"])
+                run_label = f"{run['platform']}_{run['run_name']}"
+                for root, _dirs, files in os.walk(run_src):
+                    for name in files:
+                        abs_path = os.path.join(root, name)
+                        rel_path = os.path.join(run_label, os.path.relpath(abs_path, run_src))
+                        all_files.append((abs_path, rel_path))
+
+            total_files = len(all_files)
+            append_log(f"[*] Importing {total_files} file(s) from {len(runs_to_import)} result run(s)...")
+            update_job(status="Copying files...", total_bytes=sum(os.path.getsize(p) for p, _ in all_files if os.path.exists(p)))
+
+            transferred_bytes = 0
+            for i, (abs_path, rel_path) in enumerate(all_files):
+                if snapshot_job()["status"] == "Stopped":
+                    append_log("[-] Stopped by examiner.")
+                    break
+                dest_path = os.path.join(output_root, rel_path)
+                try:
+                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    shutil.copy2(abs_path, dest_path)
+                    file_hashes = compute_file_hashes(dest_path, requested_hashes)
+                    size = os.path.getsize(dest_path)
+                    manifest_entries.append({
+                        "original_relative_path": rel_path,
+                        "size_bytes": size,
+                        "hashes": file_hashes,
+                    })
+                    files_copied += 1
+                    transferred_bytes += size
+                except Exception as e:
+                    files_errored += 1
+                    append_log(f"[-] Failed to copy {rel_path}: {e}")
+                    continue
+                if i % 25 == 0 or i == total_files - 1:
+                    pct = round(((i + 1) / total_files) * 100, 1) if total_files else 100.0
+                    update_job(progress_percent=pct, transferred_bytes=transferred_bytes)
+
+            manifest_json_path = os.path.join(output_root, "manifest.json")
+            manifest_txt_path = os.path.join(output_root, "manifest.txt")
+            manifest_data = {
+                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "source_device": device,
+                "imported_runs": [r["relative_path"] for r in runs_to_import],
+                "files_copied": files_copied,
+                "files_errored": files_errored,
+                "total_bytes": transferred_bytes,
+                "entries": manifest_entries,
+            }
+            with open(manifest_json_path, 'w') as f:
+                json.dump(manifest_data, f, indent=2)
+            with open(manifest_txt_path, 'w') as f:
+                f.write(f"Live Collection Import Manifest - generated {manifest_data['generated_at']}\n")
+                f.write(f"Imported run(s): {', '.join(manifest_data['imported_runs'])}\n")
+                f.write(f"Files copied: {files_copied} ({transferred_bytes} bytes)\n")
+                if files_errored:
+                    f.write(f"Files that failed to copy: {files_errored} (see the job log)\n")
+                f.write("\n")
+                for entry in manifest_entries:
+                    hash_str = ", ".join(f"{a}={h}" for a, h in entry["hashes"].items())
+                    f.write(f"{entry['original_relative_path']}\t{entry['size_bytes']} bytes\t{hash_str}\n")
+            append_log(f"[*] Wrote manifest.json and manifest.txt ({files_copied} file(s) recorded).")
+
+            container_hashes = compute_file_hashes(manifest_json_path, requested_hashes)
+            report_data["acquisition_parameters"]["output_container_path"] = output_root
+            report_data["acquisition_parameters"]["manifest_path"] = manifest_json_path
+            report_data["acquisition_parameters"]["source_device"] = device
+            report_data["acquisition_parameters"]["imported_runs"] = manifest_data["imported_runs"]
+            report_data["acquisition_parameters"]["file_count"] = files_copied
+            report_data["acquisition_parameters"]["total_bytes"] = transferred_bytes
+            report_data["computed_verification_hashes"] = container_hashes
+            report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+
+            if snapshot_job()["status"] == "Stopped":
+                report_data["acquisition_status"] = "STOPPED"
+                append_log(f"[+] Stopped - {files_copied} file(s) were imported and included in the manifest before stopping.")
+            elif files_errored and not files_copied:
+                update_job(status="Failed")
+                report_data["acquisition_status"] = "FAILED"
+                append_log("[-] Every file failed to import - nothing was captured.")
+            else:
+                update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
+                report_data["acquisition_status"] = "COMPLETED"
+                append_log(f"[+] Live collection import completed successfully. {files_copied} file(s) captured, {files_errored} error(s).")
+
+            _write_report(report_file_path, report_data, append_log)
+        finally:
+            unmount_collection_partition(LIVE_COLLECTION_IMPORT_MOUNTPOINT)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+
+@acquisition_bp.route('/api/live_collection/start_import', methods=['POST'])
+@requires_auth
+@requires_permission('acquisition')
+def start_import_live_collection():
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    device = (req.get('device') or '').strip()
+    selected_relative_paths = req.get('selected_relative_paths') or []
+    dest_path = safe_path((req.get('destination') or EVIDENCE_ROOT).strip())
+    hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
+    metadata = req.get('metadata', {})
+
+    if not is_valid_block_device(device):
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"'{device}' is not a recognized whole-disk device."}), 400
+    if not selected_relative_paths:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Select at least one result run to import first."}), 400
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Destination path is outside the permitted evidence directory."}), 400
+    invalid_hashes = set(hashes) - ALLOWED_HASH_ALGOS
+    if invalid_hashes:
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"Unsupported hash algorithm(s): {sorted(invalid_hashes)}. Use any of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
+
+    case_num = metadata.get('case_number') or 'UNASSIGNED'
+    evidence_id = metadata.get('evidence_id') or 'LIVECOLLECT-01'
+    base_name = f"{case_num}_{evidence_id}"
+
+    report_data = {
+        "tool": "live_collection_import",
+        "case_metadata": metadata,
+        "acquisition_parameters": {
+            "source_device": device,
+            "requested_hashes": hashes,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "computed_verification_hashes": {}
+    }
+
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
+
+    thread = threading.Thread(
+        target=execution_worker_import_live_collection,
+        args=(device, selected_relative_paths, dest_path, hashes, report_target, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("live_collection_import_started", {"device": device, "selected_relative_paths": selected_relative_paths, "destination": dest_path})
+    return jsonify({"success": True})
+
+
 @acquisition_bp.route('/api/drives', methods=['GET'])
 @requires_auth
 def list_drives():
@@ -1797,12 +2299,13 @@ def list_drives():
                     bytes_size = int(dev.get('size', 0))
                     gb_size = round(bytes_size / (1024**3), 1)
                     dev_path = f"/dev/{dev['name']}"
-                    
-                    # Force read-only lock upon discovery
-                    try:
-                        subprocess.run(['sudo', '/usr/sbin/blockdev', '--setro', dev_path], capture_output=True)
-                    except Exception:
-                        pass
+
+                    # Force read-only lock upon discovery - race-safe
+                    # against a concurrent Live Collection USB build job
+                    # via _relock_device_for_list_drives() (skips this
+                    # exact device, under device_write_lock, while it's
+                    # legitimately unlocked for that job's own write).
+                    _relock_device_for_list_drives(dev_path)
 
                     drives.append({
                         "name": dev['name'],

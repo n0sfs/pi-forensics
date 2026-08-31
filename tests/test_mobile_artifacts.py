@@ -13,8 +13,11 @@ layout assumption itself (fileID -> <fileID[0:2]>/<fileID>) still needs a
 real backup to fully confirm, per that module's own disclosed verification
 checkpoint.
 
-Pure stdlib (sqlite3, plistlib) - no optional pip dependency, no skip guard
-needed.
+Pure stdlib (sqlite3, plistlib) - no optional pip dependency for this
+module's own tests, except one (test_cocoa_epoch_is_genuinely_different_
+math_from_webkit_firefox_filetime, below) which cross-checks against
+core.registry_utils.filetime_to_unix() and carries its own local, per-test
+importorskip rather than gating this whole file.
 """
 import os
 import sqlite3
@@ -114,6 +117,15 @@ def _build_callhistory_db():
 # --- cocoa_time_to_unix() epoch math ---
 
 def test_cocoa_epoch_is_genuinely_different_math_from_webkit_firefox_filetime():
+    # Only this one test needs core.registry_utils (for filetime_to_unix) -
+    # a per-test importorskip, not a module-level one, since that module
+    # hard-imports the `Registry` package (an optional pip dependency) and
+    # every other test in this file works fine without it. A real,
+    # previously-undetected gap found 2026-08-31 while working on an
+    # unrelated feature: without this guard, a dev machine missing
+    # python-registry got a hard failure here instead of a clean skip.
+    import pytest as _pytest
+    _pytest.importorskip("Registry.Registry", reason="python-registry not installed")
     from core.browser_artifacts import webkit_time_to_unix, firefox_time_to_unix
     from core.registry_utils import filetime_to_unix
     # Same raw numeric value fed through all 4 conversions must not agree -
