@@ -106,6 +106,11 @@ def test_classify_extension(name, expected_category, expected_ext):
     ("00008030-001A2B3C4D5E6F7A_ios_crash_reports", "analysis_log"),
     ("2026-CASE-01_USBDrive-1_mft_analysis.json", "analysis_log"),
     ("2026-CASE-01_USBDrive-1_usnjrnl_parsed.json", "analysis_log"),
+    ("live_collection_import_20260831_142530", "analysis_log"),
+    # Anchored to the exact timestamp shape - a similarly-named real evidence
+    # folder an examiner happens to create must never be misclassified.
+    ("live_collection_import_notes", None),
+    ("my_live_collection_import_20260831_142530", None),
     ("geolocation_export.kml", "geolocation"),
     ("2026-CASE-01_case.json.pre_restore_backup", "backup"),
     ("2026-CASE-01_case.json.pre_consolidation_backup", "backup"),

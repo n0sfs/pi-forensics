@@ -52,6 +52,7 @@ from core.live_collection_utils import (
     mount_collection_partition, unmount_collection_partition,
     discover_collection_runs, unmount_all_partitions,
 )
+from core.case_index_db import _auto_tag_case_artifact
 # Guided Workflow automation Tier 2 (2026-08-27) - the one deliberate,
 # documented exception to this project's own established "every routes/*.py
 # Blueprint only ever imports from core/, never from another routes/*.py
@@ -2188,6 +2189,14 @@ def execution_worker_import_live_collection(device, selected_relative_paths, cas
                     hash_str = ", ".join(f"{a}={h}" for a, h in entry["hashes"].items())
                     f.write(f"{entry['original_relative_path']}\t{entry['size_bytes']} bytes\t{hash_str}\n")
             append_log(f"[*] Wrote manifest.json and manifest.txt ({files_copied} file(s) recorded).")
+            # Tags the whole import folder (not just manifest.json) into the
+            # per-case index as an 'analysis_log'-role artifact - matches
+            # classify_case_role()'s live_collection_import_<timestamp>
+            # directory pattern (core/paths.py), so it groups alongside this
+            # app's other derived-analysis-output folders (ALEAPP/iLEAPP)
+            # rather than sitting unclassified. Best-effort, matching every
+            # other _auto_tag_case_artifact() call site in this app.
+            _auto_tag_case_artifact(case_folder, output_root)
 
             container_hashes = compute_file_hashes(manifest_json_path, requested_hashes)
             report_data["acquisition_parameters"]["output_container_path"] = output_root
