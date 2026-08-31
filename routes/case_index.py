@@ -203,6 +203,11 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     # (hand-rolled USN_RECORD_V2 parser).
     "mft_file_record": "NTFS: $MFT File Record",
     "usnjrnl_change_record": "NTFS: $UsnJrnl Change Record",
+    # ShellBags / Shimcache (2026-08-30, tool-survey follow-up) - both ride
+    # the existing Registry hive dispatch (core/registry_utils.py), no new
+    # routes needed.
+    "registry_shellbag": "Registry: ShellBags (Folder Access)",
+    "registry_shimcache": "Registry: Shimcache (Program Execution)",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])

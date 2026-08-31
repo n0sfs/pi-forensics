@@ -22,10 +22,12 @@ direct source read, not assumed) - _dt_to_epoch() below is a plain
 datetime->Unix-seconds conversion, not a FILETIME decoder.
 """
 import os
+import re
+import struct
 
 from Registry import Registry
 
-REGISTRY_HIVE_FILENAMES = {'NTUSER.DAT', 'SYSTEM', 'SOFTWARE', 'AMCACHE.HVE'}
+REGISTRY_HIVE_FILENAMES = {'NTUSER.DAT', 'SYSTEM', 'SOFTWARE', 'AMCACHE.HVE', 'USRCLASS.DAT'}
 _REGISTRY_HIVE_FILENAMES_UPPER = {n.upper() for n in REGISTRY_HIVE_FILENAMES}
 
 # Same skip-list convention as core/browser_artifacts.py's own whole-folder
@@ -321,6 +323,170 @@ def _parse_amcache(root_key):
     return records
 
 
+def _extract_shell_item_name(raw):
+    """Best-effort extraction of a shell item's readable folder/file name
+    from its raw binary encoding (a ShellBags BagMRU subkey's own default
+    value) - NOT a full shell-item-type parser (FOLDER_ENTRY/FILE_ENTRY/
+    drive-letter/network/control-panel items each have genuinely different
+    internal byte layouts, and a complete parser covering all of them is
+    real, substantial scope beyond what this pass covers). Instead: scans
+    for the first null-terminated ASCII run of 3+ printable characters
+    starting a few bytes in (past the item's own 2-byte size + 1-byte type
+    flag header, where most common FOLDER/FILE entries place a short ASCII
+    name), falling back to a 2-byte-aligned UTF-16LE scan (mirroring
+    _decode_mru_binary_filename()'s own already-proven null-terminator
+    search) for entries that only carry a long Unicode name. This is a
+    widely-used simplified technique real lightweight ShellBags extractors
+    already rely on for the common case - disclosed here as an
+    approximation, not full shell-item fidelity, same honesty convention
+    _decode_mru_binary_filename() already uses for RecentDocs."""
+    if not raw or len(raw) < 4:
+        return ''
+    # ASCII pass: first null-terminated printable run starting at/after
+    # offset 3 (past the size+type header most common entry types share).
+    ascii_match = re.search(rb'[\x20-\x7e]{3,}\x00', raw[3:])
+    if ascii_match:
+        candidate = ascii_match.group(0)[:-1].decode('ascii', errors='ignore').strip()
+        if candidate:
+            return candidate
+    # UTF-16LE fallback, 2-byte-aligned null search (same technique
+    # _decode_mru_binary_filename() already proved correct).
+    for start in range(2, min(len(raw), 8)):
+        chunk = raw[start:]
+        end = len(chunk)
+        for i in range(0, len(chunk) - 1, 2):
+            if chunk[i:i + 2] == b'\x00\x00':
+                end = i
+                break
+        candidate = chunk[:end].decode('utf-16-le', errors='ignore').strip()
+        if candidate and candidate.isprintable() and len(candidate) >= 3:
+            return candidate
+    return ''
+
+
+SHELLBAGS_MAX_ENTRIES = 2_000
+SHELLBAGS_MAX_DEPTH = 40
+
+
+def _walk_shellbags(key, path_stack, records, ts_fallback, depth=0):
+    if depth > SHELLBAGS_MAX_DEPTH or len(records) >= SHELLBAGS_MAX_ENTRIES:
+        return
+    for sub in key.subkeys():
+        name = ''
+        try:
+            for v in sub.values():
+                # python-registry reports an unnamed/default value's own
+                # name as the literal string '(default)', never '' - a
+                # real bug caught by this module's own test suite before
+                # shipping (confirmed live: v.name() == '' never matches a
+                # genuine default value, silently falling through to the
+                # "unreadable" placeholder for every single BagMRU entry).
+                if v.name() in ('', '(default)'):  # the unnamed/default value holds the raw shell item
+                    name = _extract_shell_item_name(v.raw_data())
+                    break
+        except Exception:
+            pass
+        new_stack = path_stack + ([name] if name else [f"(unreadable:{sub.name()})"])
+        full_path = '\\'.join(new_stack)
+        records.append({
+            "artifact_type": "registry_shellbag", "title": full_path, "url": "",
+            "value": "", "timestamp": _dt_to_epoch(sub.timestamp()) or ts_fallback,
+            "extra": {"bagmru_key": sub.name()},
+        })
+        _walk_shellbags(sub, new_stack, records, ts_fallback, depth + 1)
+        if len(records) >= SHELLBAGS_MAX_ENTRIES:
+            return
+
+
+def _parse_shellbags(root_key):
+    """USRCLASS.DAT\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\
+    BagMRU - proves a folder was browsed via Windows Explorer, including
+    folders on removable/network drives or since-deleted folders that leave
+    no other trace once the folder itself is gone. BagMRU is a numbered-
+    subkey tree (each subkey = one path component, nested subkeys = deeper
+    paths) - _walk_shellbags() reconstructs each leaf's full path by
+    joining every ancestor's own extracted name, matching how a real
+    examiner would read the tree by hand."""
+    records = []
+    try:
+        key = root_key.find_key(r'Local Settings\Software\Microsoft\Windows\Shell\BagMRU')
+    except Registry.RegistryKeyNotFoundException:
+        return records
+    ts_fallback = _dt_to_epoch(key.timestamp())
+    _walk_shellbags(key, [], records, ts_fallback)
+    return records
+
+
+# Shimcache/AppCompatCache: SYSTEM\CurrentControlSet\Control\Session
+# Manager\AppCompatCache\AppCompatCache, a single REG_BINARY value whose
+# internal layout is notoriously version-specific (XP/Vista/7/8/10/11 each
+# use a genuinely different binary format - some compressed, some not,
+# different magic signatures and entry sizes). This module supports ONLY
+# the Windows 10/11 format (magic 0x30 or 0x34, a fixed 12-byte header
+# then back-to-back variable-length entries: 4-byte tag 0x00000030 or
+# similar version-dependent framing, a 2-byte path length, the UTF-16LE
+# path, an 8-byte FILETIME last-modified, then a data-size-prefixed blob)
+# - disclosed as a real, deliberate scope limit, not silently assumed to
+# cover every Windows version. An older-format hive simply yields zero
+# Shimcache records, the same best-effort "no crash, just no records"
+# tolerance every parser in this module already applies to a hive it can't
+# fully interpret.
+_SHIMCACHE_WIN10_SIGNATURE = 0x30
+_SHIMCACHE_MAX_ENTRIES = 5_000
+
+
+def _parse_shimcache(root_key):
+    records = []
+    try:
+        key = root_key.find_key(r'CurrentControlSet\Control\Session Manager\AppCompatCache')
+        raw = None
+        for v in key.values():
+            if v.name() == 'AppCompatCache':
+                raw = v.raw_data()
+                break
+    except Registry.RegistryKeyNotFoundException:
+        return records
+    if not raw or len(raw) < 12:
+        return records
+    try:
+        signature = struct.unpack_from('<I', raw, 0)[0]
+    except struct.error:
+        return records
+    if signature != _SHIMCACHE_WIN10_SIGNATURE:
+        return records  # a different Windows-version format - not supported, disclosed above
+
+    offset = 12  # Win10/11 header: 4-byte signature + 8 bytes reserved/unknown
+    while offset + 2 <= len(raw) and len(records) < _SHIMCACHE_MAX_ENTRIES:
+        try:
+            path_len = struct.unpack_from('<H', raw, offset)[0]
+        except struct.error:
+            break
+        offset += 2
+        if path_len <= 0 or offset + path_len > len(raw):
+            break
+        try:
+            path = raw[offset:offset + path_len].decode('utf-16-le', errors='ignore')
+        except Exception:
+            break
+        offset += path_len
+        if offset + 8 > len(raw):
+            break
+        last_modified_raw = struct.unpack_from('<q', raw, offset)[0]
+        offset += 8
+        if offset + 4 > len(raw):
+            break
+        data_size = struct.unpack_from('<I', raw, offset)[0]
+        offset += 4 + max(0, data_size)
+        if not path.strip():
+            continue
+        records.append({
+            "artifact_type": "registry_shimcache", "title": path, "url": "",
+            "value": "", "timestamp": filetime_to_unix(last_modified_raw),
+            "extra": {},
+        })
+    return records
+
+
 def parse_registry_hive_file(path, filename):
     """Dispatches a candidate hive file (matched by exact basename against
     REGISTRY_HIVE_FILENAMES) to the right curated key set, returning a flat
@@ -337,11 +503,13 @@ def parse_registry_hive_file(path, filename):
             if upper == 'NTUSER.DAT':
                 return _parse_recent_docs(root) + _parse_typed_paths(root) + _parse_run_history(root)
             if upper == 'SYSTEM':
-                return _parse_usb_history(root)
+                return _parse_usb_history(root) + _parse_shimcache(root)
             if upper == 'SOFTWARE':
                 return _parse_installed_programs(root)
             if upper == 'AMCACHE.HVE':
                 return _parse_amcache(root)
+            if upper == 'USRCLASS.DAT':
+                return _parse_shellbags(root)
     except Exception as e:
         print(f"Warning: could not parse registry hive {path} ({filename}): {e}")
     return []

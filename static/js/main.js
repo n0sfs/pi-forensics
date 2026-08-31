@@ -1826,6 +1826,8 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     // kept in sync with routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS.
     mft_file_record: 'NTFS: $MFT File Record',
     usnjrnl_change_record: 'NTFS: $UsnJrnl Change Record',
+    registry_shellbag: 'Registry: ShellBags (Folder Access)',
+    registry_shimcache: 'Registry: Shimcache (Program Execution)',
 };
 
 function buildFileViewsHierarchy(summary) {

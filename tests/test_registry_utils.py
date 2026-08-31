@@ -14,6 +14,7 @@ Skipped (not failed) if python-registry isn't installed - unlike this
 project's usual core.jobs (POSIX pwd/fcntl) skip reason, this one is a
 genuinely optional pip dependency (Part C), not a platform limitation.
 """
+import os
 import struct
 import datetime
 
@@ -383,3 +384,240 @@ def test_parse_amcache_dispatches_only_for_amcache_filename(tmp_path):
     hive_path = tmp_path / "NTUSER.DAT"
     _build_amcache_hive(hive_path)
     assert ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT') == []
+
+
+def _build_shellbags_usrclass_hive(path):
+    """USRCLASS.DAT Local Settings/Software/Microsoft/Windows/Shell/BagMRU
+    /0/1 - two nested levels deep, each subkey's own unnamed/default value
+    holding a synthetic shell-item blob whose readable name sits right
+    after a 3-byte size+type header (the exact common-case layout
+    _extract_shell_item_name() targets), so the resulting full path should
+    read Documents/SecretFolder."""
+    h = _HiveBuilder()
+
+    def make_binary_vk(name, raw):
+        off = h.alloc(raw)
+        name_b = name.encode('ascii')
+        vk = b'vk' + struct.pack('<H', len(name_b)) + struct.pack('<I', len(raw))
+        vk += struct.pack('<I', off) + struct.pack('<I', 3)  # REG_BINARY
+        vk += struct.pack('<H', 1) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(vk))
+
+    def make_values_list(vk_offsets):
+        return h.alloc(b''.join(struct.pack('<I', o) for o in vk_offsets))
+
+    def make_nk(name, subkey_list_off, subkey_count, values_list_off, values_count, is_root=False):
+        flags = 0x0020 | (0x0004 if is_root else 0)
+        name_b = name.encode('ascii')
+        nk = b'nk' + struct.pack('<H', flags) + struct.pack('<Q', _FT_NOW)
+        nk += struct.pack('<I', 0) + struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', subkey_count if subkey_count else 0xFFFFFFFF) + struct.pack('<I', 0)
+        nk += struct.pack('<I', subkey_list_off if subkey_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', values_count if values_count else 0xFFFFFFFF)
+        nk += struct.pack('<I', values_list_off if values_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF) + struct.pack('<I', 0xFFFFFFFF)
+        nk += b'\x00' * (0x48 - 0x34)
+        nk += struct.pack('<H', len(name_b)) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(nk))
+
+    def make_lf(nk_offsets):
+        body = b'lf' + struct.pack('<H', len(nk_offsets))
+        for off in nk_offsets:
+            body += struct.pack('<I', off) + b'\x00\x00\x00\x00'
+        return h.alloc(body)
+
+    def shell_item(name_ascii):
+        payload = name_ascii.encode('ascii') + b'\x00'
+        return struct.pack('<HB', len(payload) + 3, 0x31) + payload
+
+    vl_leaf = make_values_list([make_binary_vk('', shell_item('SecretFolder'))])
+    nk_leaf = make_nk('1', None, 0, vl_leaf, 1)
+    lf_leaf_parent = make_lf([nk_leaf])
+    vl_mid = make_values_list([make_binary_vk('', shell_item('Documents'))])
+    nk_mid = make_nk('0', lf_leaf_parent, 1, vl_mid, 1)
+    lf_bagmru = make_lf([nk_mid])
+    nk_bagmru = make_nk('BagMRU', lf_bagmru, 1, None, 0)
+    lf_shell = make_lf([nk_bagmru])
+    nk_shell = make_nk('Shell', lf_shell, 1, None, 0)
+    lf_windows = make_lf([nk_shell])
+    nk_windows = make_nk('Windows', lf_windows, 1, None, 0)
+    lf_ms = make_lf([nk_windows])
+    nk_ms = make_nk('Microsoft', lf_ms, 1, None, 0)
+    lf_sw = make_lf([nk_ms])
+    nk_sw = make_nk('Software', lf_sw, 1, None, 0)
+    lf_ls = make_lf([nk_sw])
+    nk_ls = make_nk('Local Settings', lf_ls, 1, None, 0)
+    lf_root = make_lf([nk_ls])
+    root_off = make_nk('ROOT', lf_root, 1, None, 0, is_root=True)
+
+    h.set_parent(nk_ls, root_off)
+    h.set_parent(nk_sw, nk_ls)
+    h.set_parent(nk_ms, nk_sw)
+    h.set_parent(nk_windows, nk_ms)
+    h.set_parent(nk_shell, nk_windows)
+    h.set_parent(nk_bagmru, nk_shell)
+    h.set_parent(nk_mid, nk_bagmru)
+    h.set_parent(nk_leaf, nk_mid)
+
+    hbin_data = bytes(h.buf)
+    hbin_total = 0x20 + len(hbin_data)
+    hbin_size = ((hbin_total + 0xFFF) // 0x1000) * 0x1000
+    hbin = b'hbin' + struct.pack('<I', 0) + struct.pack('<I', hbin_size)
+    hbin += b'\x00' * (0x20 - 0xC) + hbin_data + b'\x00' * (hbin_size - hbin_total)
+
+    regf = struct.pack('<I', 0x66676572) + struct.pack('<I', 1) + struct.pack('<I', 1)
+    regf += struct.pack('<Q', _FT_NOW) + struct.pack('<I', 1) + struct.pack('<I', 5)
+    regf += struct.pack('<I', 0) + struct.pack('<I', 1) + struct.pack('<I', root_off)
+    regf += struct.pack('<I', hbin_size) + struct.pack('<I', 1)
+    regf += _utf16('UsrClass.dat').ljust(64, b'\x00')
+    regf += b'\x00' * (0x1000 - len(regf))
+    regf = regf[:0x1000]
+
+    with open(path, 'wb') as f:
+        f.write(regf)
+        f.write(hbin)
+
+
+def test_parse_shellbags_reconstructs_nested_path(tmp_path):
+    hive_path = tmp_path / "UsrClass.dat"
+    _build_shellbags_usrclass_hive(hive_path)
+    records = ru.parse_registry_hive_file(str(hive_path), 'USRCLASS.DAT')
+    assert len(records) == 2
+    titles = {r["title"] for r in records}
+    assert "Documents" in titles
+    assert "Documents\\SecretFolder" in titles
+    assert all(r["artifact_type"] == "registry_shellbag" for r in records)
+
+
+def test_extract_shell_item_name_handles_garbage_without_raising():
+    assert ru._extract_shell_item_name(b'') == ''
+    assert ru._extract_shell_item_name(b'\x00\x00\x00') == ''
+    assert ru._extract_shell_item_name(b'\xff\xff\xff\xff\xff\xff\xff\xff') == ''
+
+
+def _build_win10_shimcache_binary(entries):
+    """entries: list of (path_str, filetime_int). Real Win10/11
+    AppCompatCache layout: 4-byte signature (0x30) + 8 reserved bytes,
+    then back-to-back entries of [2-byte path length][UTF-16LE path]
+    [8-byte FILETIME][4-byte data size][data bytes]."""
+    body = struct.pack('<I', 0x30) + b'\x00' * 8
+    for path_str, ft in entries:
+        path_bytes = path_str.encode('utf-16-le')
+        body += struct.pack('<H', len(path_bytes)) + path_bytes
+        body += struct.pack('<q', ft) + struct.pack('<I', 0)
+    return body
+
+
+def _build_shimcache_system_hive(path, shimcache_entries):
+    h = _HiveBuilder()
+
+    def make_binary_vk(name, raw):
+        off = h.alloc(raw)
+        name_b = name.encode('ascii')
+        vk = b'vk' + struct.pack('<H', len(name_b)) + struct.pack('<I', len(raw))
+        vk += struct.pack('<I', off) + struct.pack('<I', 3)
+        vk += struct.pack('<H', 1) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(vk))
+
+    def make_values_list(vk_offsets):
+        return h.alloc(b''.join(struct.pack('<I', o) for o in vk_offsets))
+
+    def make_nk(name, subkey_list_off, subkey_count, values_list_off, values_count, is_root=False):
+        flags = 0x0020 | (0x0004 if is_root else 0)
+        name_b = name.encode('ascii')
+        nk = b'nk' + struct.pack('<H', flags) + struct.pack('<Q', _FT_NOW)
+        nk += struct.pack('<I', 0) + struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', subkey_count if subkey_count else 0xFFFFFFFF) + struct.pack('<I', 0)
+        nk += struct.pack('<I', subkey_list_off if subkey_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', values_count if values_count else 0xFFFFFFFF)
+        nk += struct.pack('<I', values_list_off if values_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF) + struct.pack('<I', 0xFFFFFFFF)
+        nk += b'\x00' * (0x48 - 0x34)
+        nk += struct.pack('<H', len(name_b)) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(nk))
+
+    def make_lf(nk_offsets):
+        body = b'lf' + struct.pack('<H', len(nk_offsets))
+        for off in nk_offsets:
+            body += struct.pack('<I', off) + b'\x00\x00\x00\x00'
+        return h.alloc(body)
+
+    binary_blob = _build_win10_shimcache_binary(shimcache_entries)
+    vl_cache = make_values_list([make_binary_vk('AppCompatCache', binary_blob)])
+    nk_cache = make_nk('AppCompatCache', None, 0, vl_cache, 1)
+    lf_cache = make_lf([nk_cache])
+    nk_sm = make_nk('Session Manager', lf_cache, 1, None, 0)
+    lf_sm = make_lf([nk_sm])
+    nk_control = make_nk('Control', lf_sm, 1, None, 0)
+    lf_control = make_lf([nk_control])
+    nk_ccs = make_nk('CurrentControlSet', lf_control, 1, None, 0)
+    lf_root = make_lf([nk_ccs])
+    root_off = make_nk('ROOT', lf_root, 1, None, 0, is_root=True)
+
+    h.set_parent(nk_ccs, root_off)
+    h.set_parent(nk_control, nk_ccs)
+    h.set_parent(nk_sm, nk_control)
+    h.set_parent(nk_cache, nk_sm)
+
+    hbin_data = bytes(h.buf)
+    hbin_total = 0x20 + len(hbin_data)
+    hbin_size = ((hbin_total + 0xFFF) // 0x1000) * 0x1000
+    hbin = b'hbin' + struct.pack('<I', 0) + struct.pack('<I', hbin_size)
+    hbin += b'\x00' * (0x20 - 0xC) + hbin_data + b'\x00' * (hbin_size - hbin_total)
+
+    regf = struct.pack('<I', 0x66676572) + struct.pack('<I', 1) + struct.pack('<I', 1)
+    regf += struct.pack('<Q', _FT_NOW) + struct.pack('<I', 1) + struct.pack('<I', 5)
+    regf += struct.pack('<I', 0) + struct.pack('<I', 1) + struct.pack('<I', root_off)
+    regf += struct.pack('<I', hbin_size) + struct.pack('<I', 1)
+    regf += _utf16('SYSTEM').ljust(64, b'\x00')
+    regf += b'\x00' * (0x1000 - len(regf))
+    regf = regf[:0x1000]
+
+    with open(path, 'wb') as f:
+        f.write(regf)
+        f.write(hbin)
+
+
+def test_parse_shimcache_extracts_win10_format_entries(tmp_path):
+    hive_path = tmp_path / "SYSTEM"
+    entries = [
+        ('C:\\Windows\\System32\\evil_tool.exe', _FT_NOW),
+        ('C:\\Users\\suspect\\Downloads\\payload.exe', _FT_NOW - 10_000_000),
+    ]
+    _build_shimcache_system_hive(hive_path, entries)
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    shimcache_records = [r for r in records if r["artifact_type"] == "registry_shimcache"]
+    assert len(shimcache_records) == 2
+    paths = {r["title"] for r in shimcache_records}
+    assert 'C:\\Windows\\System32\\evil_tool.exe' in paths
+    assert 'C:\\Users\\suspect\\Downloads\\payload.exe' in paths
+    for r in shimcache_records:
+        assert r["timestamp"] is not None
+
+
+def test_parse_shimcache_returns_empty_for_unsupported_signature(tmp_path):
+    # A non-Win10/11 signature (an older Windows format this module
+    # deliberately doesn't support) must yield zero records, not a crash -
+    # confirmed by directly overwriting the signature bytes of an
+    # otherwise-real, correctly-built hive's AppCompatCache blob.
+    hive_path = tmp_path / "SYSTEM"
+    _build_shimcache_system_hive(hive_path, [('C:\\real.exe', _FT_NOW)])
+    with open(hive_path, 'rb') as f:
+        data = bytearray(f.read())
+    marker = struct.pack('<I', 0x30) + b'\x00' * 8 + struct.pack('<H', len('C:\\real.exe'.encode('utf-16-le')))
+    idx = bytes(data).find(marker)
+    assert idx != -1, "fixture's own signature bytes not found - test setup is broken"
+    data[idx:idx + 4] = struct.pack('<I', 0xDEADBEEF)
+    with open(hive_path, 'wb') as f:
+        f.write(data)
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    assert [r for r in records if r["artifact_type"] == "registry_shimcache"] == []
+
+
+def test_find_registry_hive_files_recognizes_usrclass(tmp_path):
+    (tmp_path / "UsrClass.dat").write_bytes(b'not a real hive')
+    found, truncated = ru.find_registry_hive_files(str(tmp_path))
+    assert len(found) == 1
+    assert os.path.basename(found[0]) == "UsrClass.dat"
