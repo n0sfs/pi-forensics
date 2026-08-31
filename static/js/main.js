@@ -4246,40 +4246,41 @@ function showFileContextMenu(ev, item) {
     positionContextMenu(ev);
 }
 
+// Same declarative, hide-based pattern as CTX_MENU_REAL_FS_ITEMS above,
+// for the smaller (one-section) in-image right-click menu. A file/folder
+// distinction is really all that varies here (there's no "must be a
+// specific extracted stream" case the way $MFT/$UsnJrnl have for real-fs,
+// since those two are gated purely by name like everything else below).
+const CTX_MENU_IMAGE_ITEMS = [
+    { id: 'ctxMenuImageExtract', visible: entry => !entry.is_dir },
+    { id: 'ctxMenuImageAttach', visible: entry => !entry.is_dir, disabledWhen: () => !activeCase },
+    { id: 'ctxMenuImageTag', visible: entry => !entry.is_dir, disabledWhen: () => !activeCase },
+    { id: 'ctxMenuImageBinwalk', visible: entry => !entry.is_dir },
+    { id: 'ctxMenuImageStrings', visible: entry => !entry.is_dir },
+    { id: 'ctxMenuImageCheckHashLists', visible: entry => !entry.is_dir },
+    { id: 'ctxMenuImageYaraScan', visible: entry => !entry.is_dir },
+    { id: 'ctxMenuImageFuzzyHash', visible: entry => !entry.is_dir },
+    { id: 'ctxMenuImageLnk', visible: entry => !entry.is_dir && (entry.name || '').toLowerCase().endsWith('.lnk') },
+    { id: 'ctxMenuImageMft', visible: entry => !entry.is_dir && (entry.name || '').toUpperCase() === '$MFT' },
+    { id: 'ctxMenuImageUsnjrnl', visible: entry => {
+        const upperName = (entry.name || '').toUpperCase();
+        return !entry.is_dir && (upperName === '$J' || upperName.includes('USNJRNL'));
+    } },
+];
+
 function showExplorerImageContextMenu(ev, entry) {
     explorerImageSelected = entry;
     const realActions = document.getElementById('ctxMenuRealActions');
     const imageActions = document.getElementById('ctxMenuImageActions');
     if (realActions) realActions.style.display = 'none';
     if (imageActions) imageActions.style.display = '';
-    const extractBtn = document.getElementById('ctxMenuImageExtract');
-    if (extractBtn) extractBtn.disabled = entry.is_dir;
-    const attachBtn = document.getElementById('ctxMenuImageAttach');
-    if (attachBtn) attachBtn.disabled = entry.is_dir || !activeCase;
-    const tagBtn = document.getElementById('ctxMenuImageTag');
-    if (tagBtn) tagBtn.disabled = entry.is_dir || !activeCase;
-    const binwalkBtn = document.getElementById('ctxMenuImageBinwalk');
-    if (binwalkBtn) binwalkBtn.disabled = entry.is_dir;
-    const fuzzyHashBtn = document.getElementById('ctxMenuImageFuzzyHash');
-    if (fuzzyHashBtn) fuzzyHashBtn.disabled = entry.is_dir;
-    const stringsBtn = document.getElementById('ctxMenuImageStrings');
-    if (stringsBtn) stringsBtn.disabled = entry.is_dir;
-    const lnkBtn = document.getElementById('ctxMenuImageLnk');
-    if (lnkBtn) {
-        const isLnk = !entry.is_dir && (entry.name || '').toLowerCase().endsWith('.lnk');
-        lnkBtn.style.display = isLnk ? '' : 'none';
-    }
-    const mftBtn = document.getElementById('ctxMenuImageMft');
-    if (mftBtn) {
-        const isMft = !entry.is_dir && (entry.name || '').toUpperCase() === '$MFT';
-        mftBtn.style.display = isMft ? '' : 'none';
-    }
-    const usnjrnlBtn = document.getElementById('ctxMenuImageUsnjrnl');
-    if (usnjrnlBtn) {
-        const upperName = (entry.name || '').toUpperCase();
-        const isUsnjrnl = !entry.is_dir && (upperName === '$J' || upperName.includes('USNJRNL'));
-        usnjrnlBtn.style.display = isUsnjrnl ? '' : 'none';
-    }
+    CTX_MENU_IMAGE_ITEMS.forEach(item => {
+        const btn = document.getElementById(item.id);
+        if (!btn) return;
+        const applies = item.visible(entry);
+        btn.style.display = applies ? '' : 'none';
+        btn.disabled = applies && item.disabledWhen ? item.disabledWhen() : false;
+    });
     resetCtxMenuSections('ctxMenuImageActions');
     positionContextMenu(ev);
 }
@@ -4320,104 +4321,162 @@ document.addEventListener('DOMContentLoaded', () => {
     if (extractBtn) extractBtn.onclick = () => { hideFileContextMenu(); extractExplorerImageSelected(); };
 });
 
-function updateContextToolbar(item) {
-    const btnDelete = document.getElementById("btnDeleteFile");
-    const btnCopy = document.getElementById("btnCopyFile");
-    const btnBrowseImage = document.getElementById("btnBrowseImage");
-    const btnUnlockEncVolImage = document.getElementById("btnUnlockEncVolImage");
-    const btnVerifyHash = document.getElementById("btnVerifyHash");
-    const btnConvertImageFormat = document.getElementById("btnConvertImageFormat");
-    const btnAttachToCase = document.getElementById("btnAttachToCase");
-    const btnTagFile = document.getElementById("btnTagFile");
-    const btnRecoverFromImage = document.getElementById("btnRecoverFromImage");
-    const btnBinwalk = document.getElementById("btnRunBinwalk");
-    const btnClamscan = document.getElementById("btnRunClamscan");
-    const btnStrings = document.getElementById("btnRunStrings");
-    const btnQuickTriage = document.getElementById("btnQuickTriageScan");
-    const btnHashdeep = document.getElementById("btnRunHashdeep");
-    const btnCheckHashLists = document.getElementById("btnCheckHashLists");
-    const btnFuzzyHash = document.getElementById("btnFuzzyHash");
-    const btnRunYaraScan = document.getElementById("btnRunYaraScan");
-    const btnGeolocation = document.getElementById("btnExtractGeolocation");
-    const btnBrowserArtifacts = document.getElementById("btnParseBrowserArtifacts");
-    const btnRegistryHives = document.getElementById("btnParseRegistryHives");
-    const btnEvtxLogs = document.getElementById("btnParseEvtxLogs");
-    const btnPrefetch = document.getElementById("btnParsePrefetch");
-    const btnRecycleBin = document.getElementById("btnParseRecycleBin");
-    const btnLinuxArtifacts = document.getElementById("btnParseLinuxArtifacts");
-    const btnCryptoWallets = document.getElementById("btnParseCryptoWallets");
-    const btnEmailArtifacts = document.getElementById("btnParseEmailArtifacts");
-    const btnMobileArtifacts = document.getElementById("btnParseMobileArtifacts");
-    const btnLeappScan = document.getElementById("btnLeappScan");
-    const btnParseLnk = document.getElementById("btnParseLnk");
-    const btnAnalyzeMft = document.getElementById("btnAnalyzeMft");
-    const btnParseUsnjrnl = document.getElementById("btnParseUsnjrnl");
-    const btnSqliteDissect = document.getElementById("btnSqliteDissect");
-    const btnApkAnalyze = document.getElementById("btnApkAnalyze");
-    const btnWhatsappDecrypt = document.getElementById("btnWhatsappDecrypt");
-    const btnIpaAnalyze = document.getElementById("btnIpaAnalyze");
-    const btnBugreportParse = document.getElementById("btnBugreportParse");
-    const btnMvtIos = document.getElementById("btnRunMvtIos");
-    const btnMvtAndroid = document.getElementById("btnRunMvtAndroid");
-    const btnMemoryForensics = document.getElementById("btnMemoryForensics");
-    const btnAutoAnalyze = document.getElementById("btnAutoAnalyze");
-
-    if (btnDelete) btnDelete.disabled = false;
-    if (btnCopy) btnCopy.disabled = false;
-    if (btnBinwalk) btnBinwalk.disabled = item.is_dir;
-    if (btnStrings) btnStrings.disabled = item.is_dir;
-    if (btnQuickTriage) btnQuickTriage.disabled = item.is_dir;
-    if (btnClamscan) btnClamscan.disabled = false;        // works on either a file or a directory (-r)
-    if (btnHashdeep) btnHashdeep.disabled = !item.is_dir;  // recursive manifest - needs a directory
-    if (btnCheckHashLists) btnCheckHashLists.disabled = item.is_dir;  // single-file, like Verify Image Hash
-    if (btnFuzzyHash) btnFuzzyHash.disabled = item.is_dir;  // single-file, like Check Against Hash Sets
-    if (btnRunYaraScan) btnRunYaraScan.disabled = item.is_dir;  // single-file, like Check Against Hash Sets
-    if (btnGeolocation) btnGeolocation.disabled = !item.is_dir;  // scans a whole folder of photos at once
-    if (btnBrowserArtifacts) btnBrowserArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Chrome/Chromium + Firefox profile files
-    if (btnRegistryHives) btnRegistryHives.disabled = !item.is_dir;    // recursively walks a folder for NTUSER.DAT/SYSTEM/SOFTWARE
-    if (btnEvtxLogs) btnEvtxLogs.disabled = !item.is_dir;              // recursively walks a folder for .evtx files
-    if (btnPrefetch) btnPrefetch.disabled = !item.is_dir;              // recursively walks a folder for .pf files
-    if (btnRecycleBin) btnRecycleBin.disabled = !item.is_dir;          // recursively walks a folder for $Recycle.Bin/$I* files
-    if (btnLinuxArtifacts) btnLinuxArtifacts.disabled = !item.is_dir;  // recursively walks a folder for Linux artifact files
-    if (btnCryptoWallets) btnCryptoWallets.disabled = !item.is_dir;  // recursively walks a folder for wallet files
-    if (btnEmailArtifacts) btnEmailArtifacts.disabled = !item.is_dir;  // recursively walks a folder for .eml/.mbox/.pst/.ost files
-    if (btnMobileArtifacts) btnMobileArtifacts.disabled = !item.is_dir;  // scans a folder for an iOS backup (Manifest.db + Info.plist)
-    if (btnLeappScan) btnLeappScan.disabled = !item.is_dir;  // runs ALEAPP/iLEAPP against an extraction folder
-    if (btnParseLnk) btnParseLnk.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.lnk');  // single-file, unlike the whole-folder scanners above
-    if (btnAnalyzeMft) btnAnalyzeMft.disabled = item.is_dir || item.name.toUpperCase() !== '$MFT';  // single-file, exact-filename match
-    if (btnParseUsnjrnl) btnParseUsnjrnl.disabled = item.is_dir || !(item.name.toUpperCase() === '$J' || item.name.toUpperCase().includes('USNJRNL'));  // single-file, already-extracted stream
-    if (btnSqliteDissect) btnSqliteDissect.disabled = item.is_dir || !isSqliteFile(item.name);
-    if (btnApkAnalyze) btnApkAnalyze.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.apk');
-    if (btnWhatsappDecrypt) btnWhatsappDecrypt.disabled = item.is_dir || !/\.(crypt12|crypt14|crypt15)$/i.test(item.name);
-    if (btnIpaAnalyze) btnIpaAnalyze.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.ipa');
-    if (btnBugreportParse) btnBugreportParse.disabled = item.is_dir || !item.name.toLowerCase().endsWith('.zip');
-    if (btnMvtIos) btnMvtIos.disabled = !item.is_dir;      // mvt check-backup needs a backup directory
-    if (btnMvtAndroid) btnMvtAndroid.disabled = !item.is_dir;
-    if (btnMemoryForensics) btnMemoryForensics.disabled = item.is_dir || !isMemoryImageFile(item.name);
-    // Any folder (a potential mobile backup - detection gracefully falls
-    // back to "pick manually" if it doesn't recognize the shape) or any
-    // recognized disk/memory image file - never enabled for an unrelated
-    // plain file, since Auto Analyze has nothing to detect/run against one.
-    if (btnAutoAnalyze) btnAutoAnalyze.disabled = !(item.is_dir || isImageFile(item.name) || isMemoryImageFile(item.name));
-    if (btnBrowseImage) btnBrowseImage.disabled = item.is_dir || !isImageFile(item.name);
-    if (btnUnlockEncVolImage) btnUnlockEncVolImage.disabled = item.is_dir || !isImageFile(item.name);
-    if (btnVerifyHash) btnVerifyHash.disabled = item.is_dir;
-    if (btnConvertImageFormat) btnConvertImageFormat.disabled = item.is_dir || !isImageFile(item.name);
-    if (btnAttachToCase) btnAttachToCase.disabled = item.is_dir || !activeCase;
-    if (btnTagFile) btnTagFile.disabled = item.is_dir || !activeCase;
-    if (btnRecoverFromImage) btnRecoverFromImage.disabled = item.is_dir || !isImageFile(item.name);
-
+// Declarative real-fs context-menu item table - {id, section, visible(item)}.
+// Replaces what used to be ~35 individual "disabled = <condition>" lines:
+// an item genuinely irrelevant to the selected file/folder's TYPE is now
+// HIDDEN (not just greyed out), and a whole section auto-hides once none
+// of its own items remain visible - directly closing the "only show tools
+// that actually apply" + "compact this" ask. A second, narrower class -
+// items that DO apply to this file type but are blocked by transient app
+// state (no active case) - stays visible-but-disabled instead, since
+// hiding those would read as "wrong tool" when it's really "right tool,
+// missing a prerequisite."
+const CTX_MENU_REAL_FS_ITEMS = [
+    // File Operations - always relevant to any selection.
+    { id: 'btnCopyFile', section: 'ctxSecFileOps', visible: () => true },
+    { id: 'btnDeleteFile', section: 'ctxSecFileOps', visible: () => true },
+    // Image & Case
+    { id: 'btnBrowseImage', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnUnlockEncVolImage', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnVerifyHash', section: 'ctxSecImageCase', visible: item => !item.is_dir },
+    { id: 'btnConvertImageFormat', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnAttachToCase', section: 'ctxSecImageCase', visible: item => !item.is_dir, disabledWhen: () => !activeCase },
+    { id: 'btnTagFile', section: 'ctxSecImageCase', visible: item => !item.is_dir, disabledWhen: () => !activeCase },
+    { id: 'btnRecoverFromImage', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
+    // Analyze
+    { id: 'btnRunBinwalk', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
+    { id: 'btnRunClamscan', section: 'ctxSecAnalyze', visible: () => true },  // works on either a file or a directory (-r)
+    { id: 'btnRunStrings', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
+    { id: 'btnQuickTriageScan', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
+    { id: 'btnRunHashdeep', section: 'ctxSecAnalyze', visible: item => item.is_dir },  // recursive manifest - needs a directory
+    { id: 'btnCheckHashLists', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
+    { id: 'btnFuzzyHash', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
+    { id: 'btnRunYaraScan', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
+    { id: 'btnExtractGeolocation', section: 'ctxSecAnalyze', visible: item => item.is_dir },  // scans a whole folder of photos at once
+    // Artifact Parsers - the whole-folder scanners only ever apply to a directory...
+    { id: 'btnParseBrowserArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseRegistryHives', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseEvtxLogs', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParsePrefetch', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseRecycleBin', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseCryptoWallets', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseEmailArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseMobileArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnLeappScan', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    // ...while these are single-file, exact-name/extension-matched.
+    { id: 'btnParseLnk', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.lnk'), analysisTool: 'LNK Shortcut' },
+    { id: 'btnAnalyzeMft', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toUpperCase() === '$MFT' },
+    { id: 'btnParseUsnjrnl', section: 'ctxSecArtifacts', visible: item => !item.is_dir && (item.name.toUpperCase() === '$J' || item.name.toUpperCase().includes('USNJRNL')) },
+    { id: 'btnSqliteDissect', section: 'ctxSecArtifacts', visible: item => !item.is_dir && isSqliteFile(item.name), analysisTool: 'SQLite Dissect' },
+    { id: 'btnApkAnalyze', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.apk'), analysisTool: 'androguard APK Analysis' },
+    { id: 'btnWhatsappDecrypt', section: 'ctxSecArtifacts', visible: item => !item.is_dir && /\.(crypt12|crypt14|crypt15)$/i.test(item.name) },
+    { id: 'btnIpaAnalyze', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.ipa'), analysisTool: 'IPA Static Analysis (plist/mobileprovision/LIEF)' },
+    { id: 'btnBugreportParse', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.zip'), analysisTool: 'Bugreport Deep Parse (dumpstate-py)' },
+    // Mobile & Memory
+    { id: 'btnRunMvtIos', section: 'ctxSecMobileMemory', visible: item => item.is_dir },
+    { id: 'btnRunMvtAndroid', section: 'ctxSecMobileMemory', visible: item => item.is_dir },
+    { id: 'btnMemoryForensics', section: 'ctxSecMobileMemory', visible: item => !item.is_dir && isMemoryImageFile(item.name) },
     // Whole-Image Analysis shortcuts - same gate as Browse as Image, since
-    // each of these just enters full image mode first (see
-    // contextMenuBrowseImageAnd()) before running its own tool.
-    const wholeImageDisabled = item.is_dir || !isImageFile(item.name);
-    ['btnEnterSearchImage', 'btnEnterTimelineImage', 'btnEnterGeoImage', 'btnEnterHashImage',
-     'btnEnterTriageImage', 'btnEnterBrowserArtifactsImage', 'btnEnterRegistryImage', 'btnEnterEvtxImage',
-     'btnEnterPrefetchImage', 'btnEnterRecycleBinImage', 'btnEnterLinuxArtifactsImage',
-     'btnEnterEmailImage', 'btnEnterRecoverImage'].forEach(id => {
-        const btn = document.getElementById(id);
-        if (btn) btn.disabled = wholeImageDisabled;
+    // each just enters full image mode first (see contextMenuBrowseImageAnd())
+    // before running its own tool.
+    { id: 'btnEnterSearchImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterTimelineImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterGeoImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterHashImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterTriageImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterBrowserArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterRegistryImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterEvtxImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterPrefetchImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterRecycleBinImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterLinuxArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterCryptoWalletsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterEmailImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterMobileArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterRecoverImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    // Standalone, no dedicated section (rendered above every section - see
+    // the template) - a folder, a recognized disk image, or a recognized
+    // memory image (Auto Analyze's own detect step figures out which).
+    { id: 'btnAutoAnalyze', section: null, visible: item => item.is_dir || isImageFile(item.name) || isMemoryImageFile(item.name) },
+];
+
+function updateContextToolbar(item) {
+    CTX_MENU_REAL_FS_ITEMS.forEach(entry => {
+        const btn = document.getElementById(entry.id);
+        if (!btn) return;
+        const applies = entry.visible(item);
+        btn.style.display = applies ? '' : 'none';
+        btn.disabled = applies && entry.disabledWhen ? entry.disabledWhen() : false;
     });
+    autoHideEmptyCtxMenuSections('ctxMenuRealActions');
+    if (!item.is_dir) refreshCtxMenuAlreadyRunBadges(item.path);
+}
+
+// Hides a section's own toggle header when every item inside it is
+// display:none (either genuinely inapplicable to this file type, or - for
+// the small number of whole-directory-only tools - always absent from a
+// single-file menu) - the other half of "only show what applies."
+function autoHideEmptyCtxMenuSections(rootId) {
+    const root = document.getElementById(rootId);
+    if (!root) return;
+    root.querySelectorAll('.ctx-menu-section').forEach(section => {
+        const toggle = document.querySelector(`.ctx-menu-section-toggle[data-ctx-section="${section.id}"]`);
+        if (!toggle) return;
+        const hasVisibleItem = Array.from(section.querySelectorAll('.dropdown-item')).some(b => b.style.display !== 'none');
+        toggle.style.display = hasVisibleItem ? '' : 'none';
+    });
+}
+
+// "Already run" indicator - queries this app's own existing per-case
+// analysis history (the same data Reporting's exhibit gallery already
+// shows a summary line from) for the exact selected file, and stamps a
+// small checkmark onto any single-file analysis tool whose free-text
+// `tool` name (recorded by _record_analysis_result() at scan time)
+// matches. Deliberately scoped to single-file tools with a real,
+// already-existing analysis_results row (Binwalk/ClamAV/Strings/Hash
+// Sets/YARA/Fuzzy Hash/SQLite Dissect/APK/IPA/Bugreport) - the whole-
+// folder artifact scanners (Registry/EVTX/Prefetch/etc.) persist via a
+// different table (parsed_artifacts, keyed by extracted record identity,
+// not "was this folder ever scanned") and aren't covered here.
+const CTX_MENU_ANALYSIS_TOOL_NAMES = {
+    btnRunBinwalk: 'Binwalk', btnRunClamscan: 'ClamAV', btnRunStrings: 'Strings',
+    btnCheckHashLists: 'Hash Set Check', btnFuzzyHash: 'TLSH', btnRunYaraScan: 'YARA',
+    btnSqliteDissect: 'SQLite Dissect', btnApkAnalyze: 'androguard APK Analysis',
+    btnIpaAnalyze: 'IPA Static Analysis', btnBugreportParse: 'Bugreport Deep Parse',
+    btnParseLnk: 'LNK Shortcut',
+};
+let ctxMenuAlreadyRunToken = 0;
+
+async function refreshCtxMenuAlreadyRunBadges(path) {
+    document.querySelectorAll('#ctxMenuRealActions .ctx-already-run-badge').forEach(b => b.remove());
+    if (!path) return;
+    const token = ++ctxMenuAlreadyRunToken;
+    try {
+        const res = await fetch('/api/case_index/analysis_for_paths', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase ? activeCase.case_folder : null, paths: [path] })
+        });
+        const data = await res.json();
+        if (token !== ctxMenuAlreadyRunToken || !data.success) return;  // a newer selection has since superseded this fetch
+        const runs = (data.results && data.results[path]) || [];
+        if (!runs.length) return;
+        Object.entries(CTX_MENU_ANALYSIS_TOOL_NAMES).forEach(([btnId, toolNameSubstring]) => {
+            const btn = document.getElementById(btnId);
+            if (!btn || btn.style.display === 'none') return;
+            const matched = runs.find(r => r.tool && r.tool.includes(toolNameSubstring));
+            if (!matched) return;
+            const badge = document.createElement('i');
+            badge.className = 'bi bi-check-circle-fill text-success ms-2 ctx-already-run-badge';
+            badge.setAttribute('data-bs-toggle', 'tooltip');
+            badge.setAttribute('data-bs-placement', 'right');
+            badge.title = `Already run: ${matched.summary || matched.tool} (${matched.run_at || ''})`;
+            btn.appendChild(badge);
+        });
+    } catch (err) {
+        // Best-effort UI enrichment only - a failed lookup just means no
+        // badges show this time, never an error surfaced to the examiner.
+    }
 }
 
 // Right-click "Whole-Image Analysis" shortcuts: enters full Sleuth Kit image
