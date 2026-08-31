@@ -563,6 +563,11 @@
                         <span class="nav-icon-wrap"><i class="bi bi-hdd-stack"></i><span class="nav-badge" id="navBadgeAcquisition" style="display:none;"></span></span><span class="tab-label">Forensic Acquisition</span>
                     </button>
                 </li>
+                <li class="nav-item" role="presentation" id="navItemLiveCollection">
+                    <button class="nav-link" id="live-collection-tab" data-bs-toggle="tab" data-bs-target="#live-collection-app" type="button" role="tab" title="Live Collection USB">
+                        <span class="nav-icon-wrap"><i class="bi bi-usb-drive"></i><span class="nav-badge" id="navBadgeLiveCollection" style="display:none;"></span></span><span class="tab-label">Live Collection USB</span>
+                    </button>
+                </li>
                 <li class="nav-item" role="presentation" id="navItemMobile">
                     <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()" title="Mobile Forensics">
                         <span class="nav-icon-wrap"><i class="bi bi-phone"></i><span class="nav-badge" id="navBadgeMobile" style="display:none;"></span></span><span class="tab-label">Mobile Forensics</span>
@@ -622,6 +627,7 @@
                 <div class="tab-content" id="forensicTabContent">
 {% include 'tabs/home.html' %}
 {% include 'tabs/acquisition.html' %}
+{% include 'tabs/live_collection.html' %}
 {% include 'tabs/recovery.html' %}
 {% include 'tabs/file_explorer.html' %}
 {% include 'tabs/mobile.html' %}
