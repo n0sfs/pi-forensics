@@ -136,10 +136,10 @@ def test_changelog_nav_script_uses_getelementbyid_not_a_selector_on_the_hash():
     assert "querySelector(hash" not in script and "querySelector(location.hash" not in script
 
 
-def test_user_manual_sidenav_lists_all_nine_top_level_sections_not_collapsible():
+def test_user_manual_sidenav_lists_all_ten_top_level_sections_not_collapsible():
     page = config.render_doc_html("user-manual")
     links = _sidenav_links(page)
-    assert len(links) == 9
+    assert len(links) == 10
     # No <details> wrapping in the article body itself (the shared <style>
     # block mentions the .doc-entry class name regardless of doc, since
     # it's one CSS stylesheet reused across all three pages - that's
