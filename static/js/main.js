@@ -289,7 +289,7 @@ async function loadReportingStats() {
 // tabs (not sub-navs like Reporting's/Settings'/Help's own list-group-as-tabs, which reuse the same
 // Bootstrap Tab component and would otherwise also fire this listener).
 const LAST_TAB_STORAGE_KEY = 'pi_forensics_last_tab';
-const TOP_LEVEL_TAB_IDS = ['home-tab', 'acquisition-tab', 'mobile-tab', 'ddrescue-tab', 'explorer-tab', 'reports-tab', 'settings-tab', 'help-tab'];
+const TOP_LEVEL_TAB_IDS = ['home-tab', 'acquisition-tab', 'live-collection-tab', 'mobile-tab', 'ddrescue-tab', 'explorer-tab', 'reports-tab', 'settings-tab', 'help-tab'];
 document.addEventListener('shown.bs.tab', (ev) => {
     if (TOP_LEVEL_TAB_IDS.includes(ev.target?.id)) {
         localStorage.setItem(LAST_TAB_STORAGE_KEY, ev.target.id);
@@ -6264,7 +6264,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     dd: 'navBadgeAcquisition', raw: 'navBadgeAcquisition', dcfldd: 'navBadgeAcquisition',
     plain_dd: 'navBadgeAcquisition', e01: 'navBadgeAcquisition', aff: 'navBadgeAcquisition',
     ddrescue: 'navBadgeAcquisition', logical_acquisition: 'navBadgeAcquisition',
-    live_collection_build: 'navBadgeAcquisition', live_collection_import: 'navBadgeAcquisition',
+    live_collection_build: 'navBadgeLiveCollection', live_collection_import: 'navBadgeLiveCollection',
     // Mobile Forensics
     ios_backup: 'navBadgeMobile', android_pull: 'navBadgeMobile',
     android_backup: 'navBadgeMobile', android_bugreport: 'navBadgeMobile',
@@ -6277,7 +6277,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     auto_analyze_image: 'navBadgeExplorer', leapp_scan: 'navBadgeExplorer',
 };
 const NAV_BADGE_TO_TAB_ID = {
-    navBadgeAcquisition: 'acquisition-tab', navBadgeMobile: 'mobile-tab',
+    navBadgeAcquisition: 'acquisition-tab', navBadgeLiveCollection: 'live-collection-tab', navBadgeMobile: 'mobile-tab',
     navBadgeRecovery: 'ddrescue-tab', navBadgeExplorer: 'explorer-tab',
 };
 let lastGlobalJobActive = false; // mirrors lastImageJobActiveByFormat's own pattern, just one shared flag since there's only ever one job station-wide
@@ -14096,6 +14096,7 @@ let currentUserPermissions = {};
 // on every page load just to fetch a key->tab mapping for 5 fixed items).
 const SIDEBAR_TAB_PERMISSIONS = {
     navItemAcquisition: 'acquisition',
+    navItemLiveCollection: 'acquisition',
     navItemMobile: 'mobile',
     navItemRecovery: 'recovery',
     navItemExplorer: 'file_explorer',
