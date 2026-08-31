@@ -1,9 +1,11 @@
-                    <!-- APP 0: HOME - a launcher/reference grid, one tile per real sidebar tab.
-                         Purely a directory page: no live data fetched here, no state of its own.
-                         Each tile's visibility is gated by the same permission keys the sidebar
-                         itself uses (see HOME_CARD_PERMISSIONS / applySidebarPermissionGating() in
-                         main.js), so an account without a given tab's permission never sees a tile
-                         that would just 403 if clicked. -->
+                    <!-- APP 0: HOME - a launcher/reference grid for the operational sidebar tabs
+                         (Settings deliberately has no tile here - the sidebar already reaches it in
+                         one click, and it's not something an examiner picks as a "workspace" the way
+                         the others are - 2026-08-31). Purely a directory page: no live data fetched
+                         here, no state of its own. Each tile's visibility is gated by the same
+                         permission keys the sidebar itself uses (see HOME_CARD_PERMISSIONS /
+                         applySidebarPermissionGating() in main.js), so an account without a given
+                         tab's permission never sees a tile that would just 403 if clicked. -->
                     <div class="tab-pane fade show active" id="home-app" role="tabpanel">
                         <div class="card">
                             <div class="card-header d-flex align-items-center gap-2 py-2">
@@ -113,23 +115,6 @@
                                                     <span class="home-tile-chip">PDF / HTML Export</span>
                                                     <span class="home-tile-chip">Geolocation</span>
                                                     <span class="home-tile-chip">Audit Trail</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="col-md-6 col-lg-4" id="homeCardSettings">
-                                        <div class="card home-tile h-100" tabindex="0" role="button" onclick="switchToTab('settings-tab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchToTab('settings-tab');}">
-                                            <div class="card-body">
-                                                <div class="d-flex align-items-center gap-3 mb-2">
-                                                    <div class="home-tile-icon"><i class="bi bi-gear-wide-connected"></i></div>
-                                                    <div class="fw-bold fs-6">Settings</div>
-                                                </div>
-                                                <div class="text-subtle small mb-2">Station configuration - user accounts, the HTTPS certificate, network setup, and service diagnostics.</div>
-                                                <div class="d-flex flex-wrap gap-1">
-                                                    <span class="home-tile-chip">User Accounts</span>
-                                                    <span class="home-tile-chip">TLS Certificate</span>
-                                                    <span class="home-tile-chip">Network</span>
-                                                    <span class="home-tile-chip">Diagnostics</span>
                                                 </div>
                                             </div>
                                         </div>
