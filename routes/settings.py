@@ -1377,6 +1377,14 @@ TOOL_VERSION_COMMANDS = [
     # already use (works identically for a git-sourced install - pip
     # still records a real version string, e.g. "0.1.1.dev4+g56b70934f").
     {"tool": "dumpstate-py", "cmd": [VOL3_PIP_BIN, "show", "dumpstate-py"], "package": None},
+    # 2026-08-30 tool-survey follow-up (5 more pip-only tools, same
+    # pip-show fallback pattern established above - none has a --version
+    # flag confirmed, and none is apt-installable).
+    {"tool": "analyzeMFT", "cmd": [VOL3_PIP_BIN, "show", "analyzeMFT"], "package": None},
+    {"tool": "python-registry", "cmd": [VOL3_PIP_BIN, "show", "python-registry"], "package": None},
+    {"tool": "libpff-python", "cmd": [VOL3_PIP_BIN, "show", "libpff-python"], "package": None},
+    {"tool": "py-tlsh", "cmd": [VOL3_PIP_BIN, "show", "py-tlsh"], "package": None},
+    {"tool": "libvshadow-python", "cmd": [VOL3_PIP_BIN, "show", "libvshadow-python"], "package": None},
 ]
 # Every installable package this endpoint will ever run apt-get for - the
 # same allowlist install.py's sudoers file grants exact NOPASSWD entries

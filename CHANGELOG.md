@@ -21,6 +21,38 @@ file after updating to see what changed.
 
 ---
 
+## [1.9.0] - 2026-08-30
+
+### New
+
+- **NTFS $MFT analysis with timestomping detection.** File Explorer gained "Analyze $MFT" - parses a
+  Master File Table's file records (creation/modified/access/change timestamps from both attributes
+  Windows keeps per file) and flags records where those two disagree in a way consistent with
+  timestomping (a suspected-not-certain indicator - a well-known DFIR heuristic, not a guarantee).
+
+- **NTFS $UsnJrnl change-journal parsing.** File Explorer gained "Parse $UsnJrnl Change Journal" - a
+  chronological log of every file create/rename/delete/write on an NTFS volume, including files that
+  were created and deleted entirely between two snapshots and leave no other trace anywhere else.
+
+- **ShellBags and Shimcache/AppCompatCache.** "Parse Registry Hives" now also covers USRCLASS.DAT's
+  ShellBags (proves a folder was browsed via Windows Explorer, including removable/network/deleted
+  folders) and SYSTEM's Shimcache (program-execution evidence; Windows 10/11 format only).
+
+- **Email parsing.** File Explorer gained "Parse Email Files" - .eml (single message), .mbox (Unix
+  mailbox), and .pst/.ost (Outlook) files are parsed into subject/sender/recipients/date/body
+  preview/attachment-count records, searchable and timeline-integrated like every other artifact type.
+
+- **Fuzzy hashing (TLSH).** A new "Compute Fuzzy Hash (TLSH)" action computes a similarity-based
+  digest for a file and lets you compare it against another - catches a lightly-modified or
+  recompiled variant of a known file that an exact hash-set match would completely miss.
+
+- **Volume Shadow Copy (VSS) support.** File Explorer's image toolbar gained a "List Shadow Copies"
+  action for NTFS volumes - each shadow copy found can be materialized as a separate, fully browsable
+  image file, letting you inspect a volume's past point-in-time state with every existing tool
+  (search, timeline, hash manifest, and more) that already works on an ordinary acquired image.
+
+---
+
 ## [1.8.0] - 2026-08-30
 
 ### New
