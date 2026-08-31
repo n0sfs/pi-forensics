@@ -42,6 +42,8 @@ from core.crypto_artifacts import find_crypto_wallet_files, parse_crypto_wallet_
 from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_backup_manifest
 from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
 from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
+from core.mft_utils import find_mft_files, analyze_mft_file
+from core.usnjrnl_utils import find_usnjrnl_files, parse_usnjrnl_file
 from core.linux_artifacts import (
     find_linux_shell_history_files, parse_linux_shell_history_file,
     find_linux_passwd_files, parse_linux_passwd_file,
@@ -912,6 +914,104 @@ def parse_recyclebin():
     return jsonify({
         "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/analyze_mft', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def analyze_mft():
+    """Parses a single already-extracted $MFT file via analyzeMFT
+    (core/mft_utils.py) - a single-file action, not a whole-directory scan
+    like every other artifact parser above, since a $MFT file is identified
+    and selected directly (its own context-menu button, gated on filename)
+    rather than discovered by walking a folder. Real work can take real
+    time on a large MFT (analyzeMFT's own internal timeout is 900s), so
+    this stays a plain synchronous route matching every other single-file
+    analysis action here (Binwalk/Strings/hashdeep) rather than the
+    background-job system - a single $MFT is bounded (one file per NTFS
+    volume, typically tens to low hundreds of MB), unlike a whole-image
+    walk."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    result = analyze_mft_file(file_path, compute_hashes=bool(req.get('compute_hashes')))
+    if not result["success"]:
+        return jsonify(result), 500
+
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    output_path = os.path.join(dest_dir, f"{base_name}_mft_analysis.json")
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(result["records"], f, indent=2, default=str)
+    except OSError as e:
+        return jsonify({"success": False, "error": f"Analyzed successfully but could not write output: {e}"}), 500
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    if case_folder:
+        _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": file_path}, result["records"])
+        _auto_tag_case_artifact(case_folder, output_path)
+    else:
+        _auto_tag_case_artifact(dest_dir, output_path)
+
+    summary = f"{result['total_records']} MFT record(s) parsed"
+    if result["timestomp_count"]:
+        summary += f" - {result['timestomp_count']} record(s) with suspected timestomping"
+
+    log_chain_of_custody("mft_file_analyzed", {
+        "path": file_path, "output_path": output_path,
+        "total_records": result["total_records"], "timestomp_count": result["timestomp_count"],
+    })
+    return jsonify({
+        "success": True, "output_path": output_path, "total_records": result["total_records"],
+        "timestomp_count": result["timestomp_count"], "summary": summary, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_usnjrnl', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_usnjrnl():
+    """Parses a single already-extracted $UsnJrnl:$J stream
+    (core/usnjrnl_utils.py's hand-rolled USN_RECORD_V2 parser) - a
+    single-file action, same shape as analyze_mft() above."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    records = parse_usnjrnl_file(file_path)
+
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    output_path = os.path.join(dest_dir, f"{base_name}_usnjrnl_parsed.json")
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(records, f, indent=2, default=str)
+    except OSError as e:
+        return jsonify({"success": False, "error": f"Parsed successfully but could not write output: {e}"}), 500
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    if case_folder:
+        _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": file_path}, records)
+        _auto_tag_case_artifact(case_folder, output_path)
+    else:
+        _auto_tag_case_artifact(dest_dir, output_path)
+
+    log_chain_of_custody("usnjrnl_file_parsed", {"path": file_path, "output_path": output_path, "record_count": len(records)})
+    return jsonify({
+        "success": True, "output_path": output_path, "record_count": len(records), "indexed": bool(case_folder),
     })
 
 @file_explorer_bp.route('/api/files/parse_linux_artifacts', methods=['POST'])

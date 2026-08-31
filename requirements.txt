@@ -145,3 +145,10 @@ lief>=1.0.0
 # package name doesn't match its own import name), confirmed via direct
 # introspection before writing core/bugreport_utils.py.
 dumpstate-py @ git+https://github.com/CERT-EDF/dumpstate-py.git@56b70934f70a19f50f96d337f96bf507ac9cc65c
+
+# analyzeMFT (2026-08-30, tool-survey follow-up) - NTFS $MFT parsing with
+# timestomping detection (core/mft_utils.py wraps its `analyzemft` console
+# script). Confirmed live installable as a pure-Python wheel on the Pi's
+# real ARM64/Debian-trixie venv - zero compile step, only depends on
+# openpyxl (already present via wa-crypt-tools/other tools in this file).
+analyzeMFT>=3.1.1

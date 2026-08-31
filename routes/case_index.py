@@ -198,6 +198,11 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "mobile_sms_message": "Mobile: SMS/iMessage",
     "mobile_contact": "Mobile: Contacts",
     "mobile_call_log": "Mobile: Call History",
+    # NTFS $MFT / $UsnJrnl parsing (2026-08-30, tool-survey follow-up) -
+    # core/mft_utils.py (wraps analyzeMFT) and core/usnjrnl_utils.py
+    # (hand-rolled USN_RECORD_V2 parser).
+    "mft_file_record": "NTFS: $MFT File Record",
+    "usnjrnl_change_record": "NTFS: $UsnJrnl Change Record",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])
