@@ -68,13 +68,20 @@ A **Preview This Drive (Read-Only)** button lets you browse a connected drive's 
 committing to a full acquisition, and **Logical / Custom-Content Acquisition** packages specific
 folders into a hash-verified evidence container instead of imaging a whole device. An optional
 checkbox chains a successful acquisition straight into Auto Analyze against the image it produced.
-A **Live Collection USB** builder prepares a separate, confirmed-blank USB drive (exFAT, gated
-behind a type-the-device-path confirmation - the one place this app deliberately writes to a drive
-it doesn't treat as evidence) with a real open-source collector (UAC) for Linux/macOS/BSD and a
-hand-written PowerShell script for Windows, so you can gather volatile artifacts - running
-processes, network connections, logged-on users - from a separate, still-running machine without
-powering it off, then import the results (read-only against the drive) into a case with a hash
-manifest.
+
+### Live Collection USB
+The station's one deliberate exception to write-blocking everything - a builder prepares a
+separate, confirmed-blank USB drive (exFAT, gated behind typing the exact device path to confirm)
+with a real open-source collector (UAC) for Linux/macOS/BSD and a hand-written PowerShell script
+for Windows. Run it on a separate, still-running target machine to capture volatile state - running
+processes with command lines, network connections and their owning process, logged-on sessions,
+ARP/DNS caches, loaded kernel modules/drivers, and more - that a disk image alone can never
+recover, since all of it is gone the instant that machine is powered off. On Unix-like targets UAC's
+`ir_triage` profile also gathers live network state, mounted storage, package lists, shell/SSH
+history, and a live-filesystem timeline; on Windows the bundled script also covers services,
+scheduled tasks, autoruns, and installed hotfixes. Bring the drive back and import the results into
+the active case - read-only against the USB throughout, every file individually hashed with a
+manifest, and a real case-report event recorded.
 
 ### File recovery
 One tool selector for PhotoRec (signature-based file carving, ~480 known types), `extundelete`
@@ -215,6 +222,12 @@ flowchart TD
   <img src="docs/images/PIF3.JPG" width="100%" alt="Mobile Forensics" />
   <br>
   <em>Mobile Forensics — a single iOS/Android mode selector driving one device-detail panel (model, OS version, build, storage, IMEI, WiFi/Bluetooth MAC, activation state) and one Start/Stop + console, instead of separate per-platform cards.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/PIF12.JPG" width="100%" alt="Live Collection USB" />
+  <br>
+  <em>Live Collection USB — its own tab: build a USB with UAC (Linux/macOS/BSD) and a bundled PowerShell script (Windows) to capture volatile state from a separate, still-running machine, then import the results back into a case, read-only against the drive throughout.</em>
 </p>
 
 <p align="center">
