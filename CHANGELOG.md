@@ -21,6 +21,21 @@ file after updating to see what changed.
 
 ---
 
+## [1.10.0] - 2026-08-30
+
+### Changed
+
+- **File Explorer's right-click menu is now compact and context-aware.** Only tools that could
+  actually apply to the selected file, folder, or image are shown - a plain document now shows a
+  handful of relevant items instead of the full list with most of them greyed out, and a whole
+  section (Whole-Image Analysis, Artifact Parsers, Mobile & Memory) disappears entirely when none of
+  its tools apply. Single-file analysis tools that have already been run against the exact selected
+  file (Binwalk, ClamAV, Strings, Hash Sets, YARA, Fuzzy Hash, SQLite Dissect, APK/IPA/Bugreport
+  analysis, LNK parsing) now show a small checkmark with the prior result summary and timestamp, so
+  you can tell at a glance whether you've already analyzed a file before running it again.
+
+---
+
 ## [1.9.0] - 2026-08-30
 
 ### New

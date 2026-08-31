@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.9.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.10.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -97,7 +97,9 @@ sandboxed-rendered HTML render directly; other files show a metadata/info panel,
 in-browser viewer for any `.db`/`.sqlite` file). Double-click an acquired image to browse **inside
 its filesystem** via an in-process Sleuth Kit engine (`pytsk3`) — directory listing with real MACB
 timestamps, recursive filename search, a full timeline view, and in-memory preview/extract, with
-zero mount step. Right-click any file for ExifTool metadata, Binwalk, ClamAV, `strings`, `hashdeep`,
+zero mount step. The right-click menu is context-aware — only tools that could actually apply to the
+selected file, folder, or image are shown, and a tool already run against the exact selected file
+shows a checkmark with the prior result. Right-click any file for ExifTool metadata, Binwalk, ClamAV, `strings`, `hashdeep`,
 an MVT spyware/IOC scan, YARA rule scanning, and hash-set/known-bad-URL matching against your own
 saved lists (with one-click MalwareBazaar/URLhaus imports). Dedicated artifact parsers recover
 Windows Registry hives (incl. Amcache, ShellBags, and Shimcache/AppCompatCache), Event Logs, Prefetch,
@@ -278,7 +280,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.9.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.10.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
