@@ -208,6 +208,9 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     # routes needed.
     "registry_shellbag": "Registry: ShellBags (Folder Access)",
     "registry_shimcache": "Registry: Shimcache (Program Execution)",
+    # Email parsing (2026-08-30, tool-survey follow-up) - .eml/.mbox via the
+    # standard library, .pst/.ost via libpff-python (core/email_utils.py).
+    "email_message": "Email Message",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])

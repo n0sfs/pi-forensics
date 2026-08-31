@@ -69,6 +69,7 @@ from core.prefetch_utils import PREFETCH_EXTENSION, PREFETCH_SCAN_MAX_CANDIDATES
 from core.recyclebin_utils import RECYCLEBIN_SCAN_MAX_CANDIDATES, parse_recyclebin_file
 from core.mft_utils import analyze_mft_file
 from core.usnjrnl_utils import parse_usnjrnl_stream
+from core.email_utils import parse_email_file
 from core.linux_artifacts import LINUX_ARTIFACT_IMAGE_MATCHERS, LINUX_ARTIFACT_DEFAULT_TYPES
 
 LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES = 100  # combined across whichever types are requested per run
@@ -1740,6 +1741,67 @@ def image_parse_usnjrnl():
 
     log_chain_of_custody("usnjrnl_file_parsed_image", {"image_path": image_path, "inode": str(inode), "output_path": output_path, "record_count": len(records)})
     return jsonify({"success": True, "output_path": output_path, "record_count": len(records), "indexed": bool(case_folder)})
+
+@image_browser_bp.route('/api/image/parse_email', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_email():
+    """In-image counterpart to parse_email() (routes/file_explorer.py) -
+    same whole-image extract-to-temp-then-parse pattern image_parse_
+    prefetch()/image_parse_recyclebin() already use. The extracted temp
+    file is given the SAME extension as the real in-image entry (via
+    _tsk_extract_to_temp's suffix param) since parse_email_file() dispatches
+    purely by filename extension."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    email_exts = ('.eml', '.mbox', '.pst', '.ost')
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, lambda name, path: name.lower().endswith(email_exts), 200)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            suffix = os.path.splitext(entry['name'])[1] or ''
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']), suffix=suffix)
+            records = parse_email_file(tmp_path)
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("email_files_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
 
 @image_browser_bp.route('/api/image/parse_linux_artifacts', methods=['POST'])
 @requires_auth
