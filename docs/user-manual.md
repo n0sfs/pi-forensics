@@ -369,9 +369,20 @@ finishes" checkbox can chain a successful acquisition directly into it.
 Beyond browser history, this station recovers several other well-known artifact types directly from
 a real folder or from inside an unmounted image — no extraction step required either way:
 
-- **Windows Registry hives** (`NTUSER.DAT`/`SYSTEM`/`SOFTWARE`/`AMCACHE.HVE`) — recently opened
-  documents, typed Explorer/Internet Explorer paths, Run-dialog history, USB device connection
-  history, the installed-programs list, and Amcache's own per-executable application inventory.
+- **Windows Registry hives** (`NTUSER.DAT`/`SYSTEM`/`SOFTWARE`/`AMCACHE.HVE`/`USRCLASS.DAT`) —
+  recently opened documents, typed Explorer/Internet Explorer paths, Run-dialog history, USB device
+  connection history, the installed-programs list, Amcache's own per-executable application
+  inventory, ShellBags (proves a folder was browsed via Explorer — including removable/network/
+  since-deleted folders that leave no other trace), and Shimcache/AppCompatCache (program-execution
+  evidence; Windows 10/11 binary format only — an older Windows version's cache simply yields no
+  records rather than being misread).
+- **NTFS `$MFT`** — every file record's own creation/modified/access/change timestamps from both
+  `$STANDARD_INFORMATION` and `$FILE_NAME` attributes, with records flagged as suspected timestomping
+  when those two disagree in a way consistent with backdating (a well-known DFIR heuristic — flagged,
+  never asserted as certain).
+- **NTFS `$UsnJrnl` change journal** — a chronological log of every file create/rename/delete/write on
+  the volume, including files created and deleted entirely between two `$MFT` snapshots, which leave
+  no trace anywhere else on the volume.
 - **Windows Event Logs** (`.evtx`) — a curated set of security-relevant event types: successful and
   failed logons, process creation, account creation, service installation, and audit-log-cleared (a
   classic anti-forensic indicator).
@@ -380,6 +391,8 @@ a real folder or from inside an unmounted image — no extraction step required 
   deletion time.
 - **LNK shortcuts** (`.lnk`) — target path, arguments, working directory, icon location, and the
   shortcut's own embedded timestamps. Parsed one file at a time, not scanned across a folder.
+- **Email files** (`.eml`/`.mbox`/`.pst`/`.ost`) — subject, sender/recipients, date, a body preview,
+  and attachment count per message. Standalone `.msg` files aren't covered yet.
 - **Linux artifacts** — shell history (`.bash_history`/`.zsh_history`/`.python_history`),
   `/etc/passwd` account listings, cron jobs, and `auth.log`/`secure` authentication events (SSH
   login/logout, `sudo` usage). An experimental, opt-in-only `wtmp`/`utmp` login-history parser is
@@ -398,6 +411,21 @@ Right-click a folder (or a whole acquired image) and choose the matching **Parse
 **Auto Analyze** to run the Windows- or Linux-relevant ones automatically. Results show up in File
 Views' analysis-index categories and in Reporting's Files & Artifacts tab, all with readable labels
 — not raw internal keys.
+
+### Fuzzy hashing and Volume Shadow Copies
+
+**Fuzzy hashing (TLSH)**, reached via right-click → **Compute Fuzzy Hash (TLSH)**, closes a real gap
+in exact hash-set matching: a single byte changed in a known-bad file (a recompiled malware variant,
+a lightly-edited document) is invisible to MD5/SHA1/SHA256, but similar/near-duplicate to a fuzzy
+hash. Compute a file's digest, then compare it against another pasted-in hash for a similarity
+distance — the lower the distance, the more similar the two files.
+
+**Volume Shadow Copies (VSS)**, reached via the whole-image toolbar's **List Shadow Copies** button
+while browsing an NTFS-formatted acquired image, enumerates any Windows shadow-copy snapshots present
+inside that volume. Each one can be materialized as its own separate, fully browsable image file — an
+examiner can then inspect a volume's past point-in-time state with every existing File Explorer tool
+(search, timeline, hash manifest, artifact parsers, and more) that already works on an ordinary
+acquired image, since a materialized shadow copy is just an ordinary raw image once copied out.
 
 ### ALEAPP/iLEAPP: a much deeper mobile artifact pass
 
