@@ -70,6 +70,7 @@ from core.recyclebin_utils import RECYCLEBIN_SCAN_MAX_CANDIDATES, parse_recycleb
 from core.mft_utils import analyze_mft_file
 from core.usnjrnl_utils import parse_usnjrnl_stream
 from core.email_utils import parse_email_file
+from core.fuzzy_hash_utils import compute_tlsh_hash
 from core.linux_artifacts import LINUX_ARTIFACT_IMAGE_MATCHERS, LINUX_ARTIFACT_DEFAULT_TYPES
 
 LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES = 100  # combined across whichever types are requested per run
@@ -1016,6 +1017,44 @@ def image_check_hash_lists():
     log_chain_of_custody("hash_list_check_image", {"image_path": image_path, "inode": str(inode),
                                                      "lists_checked": len(hash_sets), "matches": len(matches)})
     return jsonify({"success": True, "computed_hashes": computed, "matches": matches})
+
+@image_browser_bp.route('/api/image/fuzzy_hash', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_fuzzy_hash():
+    """In-image counterpart to routes/file_explorer.py's fuzzy_hash() -
+    TLSH needs the whole file's bytes at once (unlike hashlib, which can
+    stream chunk-by-chunk), so this extracts to a short-lived temp file
+    first, same as Binwalk/Strings/EXIF already do for this exact reason."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num)
+        result = compute_tlsh_hash(tmp_path)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read file: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    if result["success"]:
+        log_chain_of_custody("fuzzy_hash_computed_image", {"image_path": image_path, "inode": str(inode), "hash": result["hash"]})
+    return jsonify({**result, "file_name": req.get('name', '')})
 
 # --- Browser Artifacts (in-image): real per-app parsing (Chrome/Chromium
 # family + Firefox), directly against an acquired image's filesystem ---
