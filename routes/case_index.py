@@ -175,6 +175,8 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "registry_amcache": "Registry: Amcache Application Inventory",
     "prefetch_execution": "Prefetch: Program Execution",
     "recyclebin_deleted_file": "Recycle Bin: Deleted Files",
+    "jumplist_automatic_entry": "Jump List: Automatic Destinations",
+    "jumplist_custom_shortcut": "Jump List: Custom Destinations",
     # Linux Artifact Parsing (2026-08-25) - this app's first Linux-specific
     # artifact parsers (core/linux_artifacts.py). wtmp is deliberately
     # labeled "Experimental" - see that module's own docstring for why
