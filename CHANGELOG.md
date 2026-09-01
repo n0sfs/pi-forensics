@@ -21,6 +21,20 @@ file after updating to see what changed.
 
 ---
 
+## [1.16.0] - 2026-09-01
+
+### New
+
+- **Windows Jump Lists are now parsed** - "recently/frequently accessed files per application," a
+  different angle from Prefetch's own "did this program ever run" evidence. Both real Jump List file
+  types are covered: AutomaticDestinations (`.automaticDestinations-ms`, with pin status/last-access
+  time/hostname where available) and CustomDestinations (`.customDestinations-ms`, pinned/custom
+  items). Right-click a folder (or an acquired image) and choose "Parse Jump Lists" the same way
+  Registry hives/Event Logs/Prefetch already work - real folder or unmounted image, no extraction
+  needed, results land in the same searchable Parsed Artifacts index and Evidence Timeline.
+
+---
+
 ## [1.15.0] - 2026-09-01
 
 ### New
