@@ -21,6 +21,24 @@ file after updating to see what changed.
 
 ---
 
+## [1.24.0] - 2026-09-01
+
+### New
+
+- **PowerShell command history can now be parsed and read directly** - every command typed at a
+  PowerShell prompt, including multi-line pasted commands (correctly reassembled into one readable
+  entry). Note: this file never records a timestamp at all - that's a real limitation of the format
+  itself, not something missing from this feature.
+- **Windows Firewall connection logs can now be parsed and read directly**, when an administrator has
+  turned that logging on (it's off by default, so this file is commonly not present at all - that's
+  expected, not a problem). Shows every logged allowed/blocked connection with source/destination
+  address and port. Both reached the same way as every other new artifact this session - right-click a
+  folder, or run against a whole acquired image - and both shown as optional extra steps in Auto
+  Analyze. Neither has been tested against a real Windows-produced sample file yet - flagged in each
+  tool's own tooltip as not yet verified.
+
+---
+
 ## [1.23.0] - 2026-09-01
 
 ### New
