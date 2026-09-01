@@ -21,6 +21,36 @@ file after updating to see what changed.
 
 ---
 
+## [1.19.0] - 2026-09-01
+
+### New
+
+- **Two more Windows Registry artifacts are now parsed automatically** alongside every existing one
+  ("Parse Registry Hives" - no new action needed): **BAM/DAM** (Background/Desktop Activity
+  Moderator), a last-activity execution timestamp per program that's distinct from Prefetch/Amcache/
+  UserAssist (updated both when a process starts and when it ends, with no run-count history); and
+  **RDP connection history**, which remote hosts this user connected to via the built-in Remote
+  Desktop client, with the last-used username. For both: presence is strong evidence, but absence
+  proves nothing - several legitimate ways to bypass either (mstsc's "/public" mode, the newer Store
+  Remote Desktop app, BAM/DAM's own 7-day retention window) mean an empty result should never be read
+  as "this didn't happen."
+
+### Fixed
+
+- **A real, previously-live timestamp bug**: several existing Registry artifacts (recently opened
+  documents, typed Explorer/browser paths, Run-dialog history, USB device history, installed
+  programs, Amcache, and ShellBags) could report a timestamp shifted by several hours from the true
+  time on any station not configured to the UTC timezone - including this project's own real
+  deployed test station. Every one of these now reports the correct time regardless of the station's
+  local timezone setting.
+- **Auto Analyze's own step checklist could never actually offer two already-shipped steps.** The
+  modal's list of available analysis steps had silently fallen out of sync with what the app could
+  actually run, meaning "Parse Jump Lists" and "Android SMS/Contacts/Call Log" could never be
+  selected there even though every other way of running them already worked. Fixed, and restructured
+  so this specific class of drift can't recur.
+
+---
+
 ## [1.18.0] - 2026-09-01
 
 ### New
