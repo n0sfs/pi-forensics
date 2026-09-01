@@ -1865,6 +1865,20 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     android_sms_message: 'Android: SMS/MMS (Rooted Physical Image Only)',
     android_contact: 'Android: Contacts (Rooted Physical Image Only)',
     android_call_log: 'Android: Call Log (Rooted Physical Image Only)',
+    leapp_device_info: 'ALEAPP/iLEAPP: Device Info',
+    leapp_wifi_network: 'ALEAPP/iLEAPP: WiFi Networks',
+    leapp_installed_app: 'ALEAPP/iLEAPP: Installed Apps',
+    leapp_account: 'ALEAPP/iLEAPP: Accounts',
+    leapp_sms_message: 'ALEAPP/iLEAPP: SMS Messages',
+    leapp_call_log: 'ALEAPP/iLEAPP: Call Logs',
+    leapp_contact: 'ALEAPP/iLEAPP: Contacts',
+    leapp_browser_history: 'ALEAPP/iLEAPP: Browser History',
+    leapp_browser_bookmark: 'ALEAPP/iLEAPP: Browser Bookmarks',
+    leapp_browser_autofill: 'ALEAPP/iLEAPP: Browser Autofill',
+    leapp_whatsapp_message: 'ALEAPP/iLEAPP: WhatsApp Messages',
+    leapp_whatsapp_contact: 'ALEAPP/iLEAPP: WhatsApp Contacts',
+    leapp_app_usage: 'ALEAPP/iLEAPP: App Usage Stats',
+    leapp_module_finding: 'ALEAPP/iLEAPP: Other Module Finding',
     // NTFS $MFT / $UsnJrnl parsing (2026-08-30, tool-survey follow-up) -
     // kept in sync with routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS.
     mft_file_record: 'NTFS: $MFT File Record',
@@ -4437,6 +4451,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnParseEmailArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseMobileArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnLeappScan', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnExportLeappGeolocation', section: 'ctxSecArtifacts', visible: item => item.is_dir, disabledWhen: () => !activeCase },
     // ...while these are single-file, exact-name/extension-matched.
     { id: 'btnParseLnk', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.lnk'), analysisTool: 'LNK Shortcut' },
     { id: 'btnAnalyzeMft', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toUpperCase() === '$MFT' },
@@ -5537,6 +5552,28 @@ async function runSelectedGeolocationExport() {
             }
         } else {
             showToast(`Geolocation export failed: ${data.error}`, 'danger');
+        }
+    } catch (err) {}
+}
+
+async function runLeappGeolocationExport() {
+    if (!activeCase) { showToast('Select an active case first.', 'warning'); return; }
+    try {
+        const res = await fetch('/api/files/export_leapp_geolocation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder })
+        });
+        const data = await res.json();
+        if (data.success) {
+            if (data.points_found === 0) {
+                showToast(`Scanned ${data.records_scanned} ALEAPP/iLEAPP record(s) - none had plausible GPS coordinates. No KML file was needed.`, 'success');
+            } else {
+                showToast(`Found location data in ${data.points_found} of ${data.records_scanned} record(s).\nKML file written to:\n${data.kml_path}\nSee it rendered in Reporting > Geolocation.`, 'info');
+                loadExplorer(explorerPath);
+            }
+        } else {
+            showToast(`ALEAPP/iLEAPP location export failed: ${data.error}`, 'danger');
         }
     } catch (err) {}
 }

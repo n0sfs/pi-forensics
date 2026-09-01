@@ -32,12 +32,15 @@ from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDR
 import yara
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
-    case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
-    _record_parsed_artifacts,
+    case_index_db_path, _case_index_connect, _case_index_open_readonly, _record_analysis_result,
+    _auto_tag_case_artifact, _record_parsed_artifacts,
 )
-from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
+from core.geo_utils import (
+    GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _geo_points_from_leapp_records, _build_geo_kml,
+)
 from core.browser_artifacts import find_browser_artifact_files, parse_browser_profile_file, _open_sqlite_readonly
 from core.registry_utils import find_registry_hive_files, parse_registry_hive_file
+from core.leapp_tsv_utils import parse_leapp_tsv_exports, LEAPP_TSV_ALL_ARTIFACT_TYPES
 from core.crypto_artifacts import find_crypto_wallet_files, parse_crypto_wallet_file
 from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_backup_manifest
 from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
@@ -710,6 +713,71 @@ def extract_geolocation_kml():
         "directory": target_dir, "files_scanned": len(entries), "points_found": len(points)
     })
     return jsonify({"success": True, "kml_path": kml_path, "files_scanned": len(entries), "points_found": len(points)})
+
+@file_explorer_bp.route('/api/files/export_leapp_geolocation', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def export_leapp_geolocation():
+    """Location-history map visualization (Android forensics expansion,
+    Phase C) - unlike extract_geolocation_kml() above, this doesn't scan a
+    directory at all: it reads whatever leapp_* records Phase A's ALEAPP/
+    iLEAPP TSV parsing has ALREADY persisted into the case's own analysis
+    index (a prior "Parse with ALEAPP/iLEAPP..." run), adapts any that
+    carry plausible coordinates via core/geo_utils.py's
+    _geo_points_from_leapp_records(), and writes a KML file through the
+    exact same _build_geo_kml() every other geolocation source in this app
+    already uses - Reporting's Geolocation tab and PDF/HTML map embedding
+    need zero changes to pick this up."""
+    req = request.get_json() or {}
+    case_folder = safe_path(req.get('case_folder'))
+    conn = _case_index_open_readonly(case_folder)
+    if not conn:
+        return jsonify({"success": False, "error": "No active, indexed case - run an ALEAPP/iLEAPP scan against this case first."}), 400
+
+    # Deliberately NOT _resolve_analysis_output_dir() (which rejects a
+    # destination equal to its "source" - correct for a real folder being
+    # scanned as evidence, but this route never scans case_folder's own
+    # contents, only reads from the already-existing SQLite index). The
+    # case folder itself is the normal, expected destination here, same
+    # as most other analysis-output routes in this app already default to.
+    dest_dir = safe_path(req.get('destination_dir') or case_folder)
+    if not dest_dir or not os.path.isdir(dest_dir):
+        conn.close()
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    try:
+        placeholders = ",".join("?" for _ in LEAPP_TSV_ALL_ARTIFACT_TYPES)
+        cur = conn.execute(
+            f"SELECT artifact_type, title, url, value, timestamp, extra_json FROM parsed_artifacts "
+            f"WHERE artifact_type IN ({placeholders})", tuple(LEAPP_TSV_ALL_ARTIFACT_TYPES))
+        records = []
+        for artifact_type, title, url, value, timestamp, extra_json in cur:
+            try:
+                extra = json.loads(extra_json) if extra_json else {}
+            except json.JSONDecodeError:
+                extra = {}
+            records.append({"artifact_type": artifact_type, "title": title, "url": url,
+                             "value": value, "timestamp": timestamp, "extra": extra})
+    finally:
+        conn.close()
+
+    points = _geo_points_from_leapp_records(records)
+    kml_doc = _build_geo_kml(points, f"{os.path.basename(case_folder)} - ALEAPP/iLEAPP Location History")
+
+    kml_path = None
+    if kml_doc:
+        kml_path = os.path.join(dest_dir, f"{os.path.basename(case_folder)}_leapp_location_history.kml")
+        try:
+            with open(kml_path, 'w', encoding='utf-8') as f:
+                f.write(kml_doc)
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Failed to write KML file: {e}"}), 500
+        _auto_tag_case_artifact(dest_dir, kml_path)
+
+    log_chain_of_custody("leapp_geolocation_kml_export", {
+        "case_folder": case_folder, "records_scanned": len(records), "points_found": len(points)
+    })
+    return jsonify({"success": True, "kml_path": kml_path, "records_scanned": len(records), "points_found": len(points)})
 
 # --- Browser Artifacts: real per-app parsing (Chrome/Chromium family + Firefox) ---
 # core/browser_artifacts.py holds the actual parsing (History/Downloads/
@@ -1983,8 +2051,32 @@ def execution_worker_leapp_scan(tool_key, input_path, dest_dir, source_ip=None, 
         identity = {"source_type": "real_fs", "path": input_path, "name": os.path.basename(input_path.rstrip(os.sep))}
         summary = f"scan complete - {len(html_files)} HTML report file(s) -> {result_dir}"
         _record_analysis_result(dest_dir, identity, info["label"], summary, "\n".join(log_history)[-20000:], run_by=user)
+
+        # ALEAPP/iLEAPP already write a per-module TSV for every module
+        # that finds real data (see core/leapp_tsv_utils.py's own docstring
+        # for why - a real, confirmed finding, not an assumption) - parse
+        # that already-produced output into this app's standard Parsed
+        # Artifacts pipeline, in this same worker right after the tool
+        # itself finishes, mirroring Live Collection USB's own "run tool,
+        # then parse its own output in the same background job" shape.
+        tsv_export_dir = os.path.join(result_dir, "_TSV Exports")
+        leapp_records, tsv_files_found, tsv_truncated = parse_leapp_tsv_exports(tsv_export_dir, tool_key)
+        if leapp_records:
+            _record_parsed_artifacts(dest_dir, identity, leapp_records)
+            append_log(f"[+] Parsed {tsv_files_found} module TSV export(s) into {len(leapp_records)} "
+                       f"record(s){' (capped)' if tsv_truncated else ''} - see File Views > Parsed Artifacts.")
+        elif tsv_files_found:
+            append_log(f"[*] Found {tsv_files_found} module TSV export(s) but none contained parseable rows.")
+        else:
+            # Confirmed live (2026-09-01): ALEAPP genuinely never creates
+            # _TSV Exports/ at all when zero modules found any data - not
+            # a bug in this app's own check, but worth a real log line so
+            # an examiner sees this step ran rather than silent nothing.
+            append_log("[*] No ALEAPP/iLEAPP module TSV exports found (none of the scanned modules found data).")
+
         log_chain_of_custody("leapp_scan", {
             "tool": tool_key, "input_path": input_path, "output_dir": result_dir,
+            "tsv_files_found": tsv_files_found, "parsed_artifact_count": len(leapp_records),
         }, source_ip=source_ip, user=user)
 
         update_job(status="Completed Successfully", progress_percent=100.0)
