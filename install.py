@@ -166,18 +166,17 @@ apt_packages = [
                        # (2:2.7.5-2, deps: libblkid1/libc6/libcryptsetup12/libpopt0/libuuid1
                        # only) via apt-cache before adding here. losetup/dmsetup (also used by
                        # the LUKS unlock flow) are already provided by util-linux above.
-    "cargo", "rustc",  # build-time only, needed to compile mquire (Linux memory forensics,
-                       # see the mquire build step below) from source - Trail of Bits publishes
-                       # no binary releases at all (confirmed against the GitHub API before
-                       # deciding this), so this is genuinely required, not a convenience.
-                       # Deliberately the Debian-packaged toolchain (1.85.0+dfsg3-1 on trixie/
-                       # arm64, confirmed present via apt-cache first) rather than rustup - a
-                       # reproducible, pinned-by-the-distro version instead of pulling whatever
-                       # "latest stable" rustup's installer script resolves to at install time,
-                       # and a much smaller footprint (~31MB installed vs. rustup's ~600MB full
-                       # toolchain-with-docs). Left installed permanently rather than removed
-                       # after the build, matching every other apt-installed tool's own
-                       # permanent-install pattern in this list.
+    "cargo", "rustc",  # Trail of Bits publishes no binary releases of mquire (Linux memory
+                       # forensics) at all (confirmed against the GitHub API), so SOME real Rust
+                       # toolchain is genuinely required, not a convenience. **This pinned Debian
+                       # package (1.85.0+dfsg3-1 on trixie/arm64) was originally chosen instead of
+                       # rustup specifically for reproducibility - that choice has since been
+                       # reversed for the actual mquire build itself** (see the real, live-
+                       # confirmed reasoning in the mquire build step below - Debian's own rustc is
+                       # confirmed too old for mquire's current dependency tree, and rustup is now
+                       # used there instead). Left here anyway, harmlessly - a real, if unused by
+                       # mquire specifically, fallback Rust toolchain costs little to keep
+                       # installed, on the chance a future dependency change stops needing rustup.
     "pcscd", "pcsc-tools",  # PC/SC smart-card daemon + utilities, for SIM/UICC card
                             # forensics (pysim, see the build step below) - confirmed present on
                             # Debian trixie/arm64 (2.3.3-1 / 1.7.3-1) via apt-cache before adding.
@@ -333,53 +332,119 @@ for mvt_bin in (mvt_ios_bin, mvt_android_bin):
 # CPU time. Idempotent - skipped entirely if the binary already exists, the
 # same "if not os.path.exists(...)" pattern the venv setup above already
 # uses, so re-running install.py doesn't rebuild this every time.
+#
+# **Uses a rustup-managed toolchain, not the apt-packaged cargo/rustc above,
+# for this specific build - a real, live-confirmed correction to this
+# section's own original design.** This step originally used the Debian-
+# packaged toolchain deliberately, for reproducibility (see the "cargo",
+# "rustc" apt_packages entry above, whose own comment still explains that
+# original reasoning). In practice that failed on a real, live station:
+# mquire's own dependency tree (rusqlite -> libsqlite3-sys) now uses the
+# `cfg_select!` macro, which Debian trixie's rustc (1.85.0) doesn't have -
+# confirmed via a real failed build, not assumed, and confirmed NOT a
+# disk-space issue either (real free space held steady throughout both the
+# failed and the eventually-successful attempt). Since Debian's own Rust
+# package version is frozen for the life of the stable release while
+# mquire's upstream dependencies will only keep moving forward, relying on
+# the distro package here is no longer viable - rustup is the correct,
+# resilient choice specifically for this one build step. cargo/rustc stay
+# in apt_packages above regardless, harmlessly - kept rather than removed,
+# on the chance some future dependency change stops needing rustup at all.
+# A real C toolchain (needed by libsqlite3-sys's own build.rs, which links
+# against SQLite) was confirmed present and sufficient on the real trixie/
+# arm64 station this was built and verified against, live end-to-end - not
+# independently traced to which specific apt_package first pulls it in.
+#
+# Installed and run entirely AS the unprivileged service account (via
+# `runuser -u SERVICE_USER`), never as root - a cargo build executes
+# arbitrary third-party build-script code (e.g. libsqlite3-sys's own
+# build.rs, which probes for a C compiler/vcpkg/pkg-config on the system),
+# and running that as root would be a real, avoidable privilege-escalation
+# surface on a device that images evidence - the same least-privilege
+# reasoning behind this project's exact-match-sudoers/unprivileged-service-
+# account design everywhere else. rustup's own official installer is
+# naturally idempotent (confirmed live - re-running it against an already-
+# installed toolchain just reports "unchanged", no re-download), so this is
+# always safe to run, including on a station that already has it from an
+# earlier install.py run or a manual fix. The temp build directory is
+# explicitly handed to SERVICE_USER before the runuser'd git/cargo commands
+# try to write into it - tempfile.mkdtemp() itself always creates it
+# owner-only (0700) as whichever user install.py is running as (root), so
+# without this the service account couldn't write into its own build dir.
 MQUIRE_VERSION = "1.4.1"
 mquire_bin_dir = os.path.join(INSTALL_DIR, "bin")
 mquire_bin_path = os.path.join(mquire_bin_dir, "mquire")
 if not os.path.exists(mquire_bin_path):
-    print(f"\n[*] Building mquire {MQUIRE_VERSION} from source (Linux memory forensics)...")
-    mquire_build_dir = tempfile.mkdtemp(prefix="mquire_build_")
+    print(f"\n[*] Installing a rustup-managed Rust toolchain for '{SERVICE_USER}' "
+          f"(the Debian-packaged rustc is confirmed too old for mquire's current "
+          f"dependencies - see the comment above this step)...")
+    rustup_ok = False
     try:
-        clone_res = subprocess.run(
-            ["git", "clone", "--depth", "1", "--branch", MQUIRE_VERSION,
-             "https://github.com/trailofbits/mquire", mquire_build_dir],
-            capture_output=True, text=True, timeout=120,
+        rustup_res = subprocess.run(
+            ["runuser", "-u", SERVICE_USER, "--", "sh", "-c",
+             "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | "
+             "sh -s -- -y --default-toolchain stable --profile minimal"],
+            capture_output=True, text=True, timeout=600,
         )
-        if clone_res.returncode != 0:
-            print(f"[!] Could not clone mquire (no internet access right now?) - Linux memory "
+        if rustup_res.returncode != 0:
+            print(f"[!] Could not install rustup (no internet access right now?) - Linux memory "
                   f"forensics will not be available until this is retried. "
-                  f"Error: {clone_res.stderr.strip()[:300]}")
+                  f"Error: {rustup_res.stderr.strip()[-300:]}")
         else:
-            # -j 2 (not cargo's own default of one job per core) deliberately caps
-            # peak memory on this board's own class of hardware - confirmed live on
-            # a real low-RAM Pi that an uncapped build risks starving the machine
-            # (though the already-running pi-forensics service itself stayed
-            # responsive throughout in that test) while an install-time build has
-            # no live service running yet anyway, so this is a conservative choice
-            # rather than one proven strictly necessary at install time specifically.
-            build_res = subprocess.run(
-                ["cargo", "build", "--release", "-j", "2"],
-                cwd=mquire_build_dir, capture_output=True, text=True, timeout=1800,
-            )
-            if build_res.returncode != 0:
-                print(f"[!] mquire build failed - Linux memory forensics will not be available. "
-                      f"Error: {build_res.stderr.strip()[-500:]}")
-            else:
-                built_binary = os.path.join(mquire_build_dir, "target", "release", "mquire")
-                if os.path.exists(built_binary):
-                    os.makedirs(mquire_bin_dir, exist_ok=True)
-                    shutil.copy2(built_binary, mquire_bin_path)
-                    os.chmod(mquire_bin_path, 0o755)
-                    print(f"[+] mquire {MQUIRE_VERSION} built and installed to {mquire_bin_path}.")
-                else:
-                    print("[!] mquire build reported success but the binary wasn't found where expected - "
-                          "Linux memory forensics will not be available.")
+            rustup_ok = True
     except subprocess.TimeoutExpired:
-        print("[!] mquire build timed out - Linux memory forensics will not be available. "
-              "Retry manually later: git clone the repo, run `cargo build --release`, and copy "
-              f"target/release/mquire to {mquire_bin_path}.")
-    finally:
-        shutil.rmtree(mquire_build_dir, ignore_errors=True)
+        print("[!] rustup install timed out - Linux memory forensics will not be available. "
+              "Retry manually later.")
+
+    if rustup_ok:
+        print(f"\n[*] Building mquire {MQUIRE_VERSION} from source (Linux memory forensics)...")
+        mquire_build_dir = tempfile.mkdtemp(prefix="mquire_build_")
+        service_pw = pwd.getpwnam(SERVICE_USER)
+        os.chown(mquire_build_dir, service_pw.pw_uid, service_pw.pw_gid)
+        try:
+            clone_res = subprocess.run(
+                ["runuser", "-u", SERVICE_USER, "--",
+                 "git", "clone", "--depth", "1", "--branch", MQUIRE_VERSION,
+                 "https://github.com/trailofbits/mquire", mquire_build_dir],
+                capture_output=True, text=True, timeout=120,
+            )
+            if clone_res.returncode != 0:
+                print(f"[!] Could not clone mquire (no internet access right now?) - Linux memory "
+                      f"forensics will not be available until this is retried. "
+                      f"Error: {clone_res.stderr.strip()[:300]}")
+            else:
+                # -j 2 (not cargo's own default of one job per core) deliberately caps
+                # peak memory on this board's own class of hardware - confirmed live on
+                # a real low-RAM Pi that an uncapped build risks starving the machine
+                # (though the already-running pi-forensics service itself stayed
+                # responsive throughout in that test) while an install-time build has
+                # no live service running yet anyway, so this is a conservative choice
+                # rather than one proven strictly necessary at install time specifically.
+                cargo_bin = os.path.join(USER_HOME, ".cargo", "bin", "cargo")
+                build_res = subprocess.run(
+                    ["runuser", "-u", SERVICE_USER, "--", cargo_bin, "build", "--release", "-j", "2"],
+                    cwd=mquire_build_dir, capture_output=True, text=True, timeout=1800,
+                )
+                if build_res.returncode != 0:
+                    print(f"[!] mquire build failed - Linux memory forensics will not be available. "
+                          f"Error: {build_res.stderr.strip()[-500:]}")
+                else:
+                    built_binary = os.path.join(mquire_build_dir, "target", "release", "mquire")
+                    if os.path.exists(built_binary):
+                        os.makedirs(mquire_bin_dir, exist_ok=True)
+                        shutil.copy2(built_binary, mquire_bin_path)
+                        os.chmod(mquire_bin_path, 0o755)
+                        print(f"[+] mquire {MQUIRE_VERSION} built and installed to {mquire_bin_path}.")
+                    else:
+                        print("[!] mquire build reported success but the binary wasn't found where expected - "
+                              "Linux memory forensics will not be available.")
+        except subprocess.TimeoutExpired:
+            print("[!] mquire build timed out - Linux memory forensics will not be available. "
+                  f"Retry manually later: as '{SERVICE_USER}', git clone the repo, run "
+                  "`~/.cargo/bin/cargo build --release`, and copy target/release/mquire to "
+                  f"{mquire_bin_path}.")
+        finally:
+            shutil.rmtree(mquire_build_dir, ignore_errors=True)
 
 # 2d. Build ALEAPP/iLEAPP (Android/iOS Logs Events And Protobuf/Plist Parser -
 # comprehensive third-party mobile artifact parsing, run against an already-
