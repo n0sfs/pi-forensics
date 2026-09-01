@@ -102,6 +102,24 @@ def _clear_auth_lockout_state():
     auth.auth_fail_tracker.clear()
 
 
+@pytest.fixture(autouse=True)
+def _clear_case_artifact_backfill_throttle():
+    """core.case_index_db._artifact_backfill_last_run (added 2026-09-01, a
+    real live-measured performance fix - see that module's own docstring)
+    is a plain module-level dict, keyed by case_folder absolute path - real,
+    deliberate global state on the live station, but it would otherwise leak
+    between any two test functions that happen to reuse the exact same
+    case_folder path (most tests use a fresh tmp_path-derived path so this
+    is rarely hit in practice, but it's the same real leak risk
+    _clear_auth_lockout_state already exists to close for its own dicts, so
+    it gets the same autouse treatment rather than relying on every test
+    remembering it exists)."""
+    import core.case_index_db as case_index_db
+    case_index_db._artifact_backfill_last_run.clear()
+    yield
+    case_index_db._artifact_backfill_last_run.clear()
+
+
 class RemoteTestClient:
     """Wraps a Flask test client so every request looks like it came from a
     real remote/LAN address (203.0.113.5, a reserved TEST-NET-3 address
