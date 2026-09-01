@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.12.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.13.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -144,7 +144,13 @@ a much deeper pass on an already-pulled Android or iOS extraction, right-click i
 **ALEAPP/iLEAPP** — the same open-source, community-maintained parsers many examiners already use,
 covering hundreds of app-specific artifacts (WhatsApp, Signal, Chrome, WiFi history, and far more),
 each in its own isolated environment on the station so the two tools' conflicting dependencies never
-collide. **Auto Analyze** detects
+collide — their output is automatically parsed into the same searchable File Views index every other
+artifact type already uses, not left as a standalone HTML report, and any location data they find can
+be exported as a map. A rooted `Physical` acquisition's raw image can also be right-clicked to pull
+SMS/MMS, contacts, and call log straight out of the phone's own on-device databases, into the same
+index. An already-downloaded Google Takeout archive (obtained yourself through Google's own official
+export tool — this app never touches a live account) can be imported the same way, pulling in Search/
+YouTube History, Location History, Maps places, and photo metadata. **Auto Analyze** detects
 what kind of evidence you've selected and runs a curated default set of the above in one background
 job. Memory forensics covers Windows (Volatility 3) and x86_64 Linux (`mquire`) memory images.
 
@@ -310,7 +316,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.12.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.13.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
