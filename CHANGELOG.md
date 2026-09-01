@@ -21,6 +21,27 @@ file after updating to see what changed.
 
 ---
 
+## [1.17.0] - 2026-09-01
+
+### New
+
+- **UserAssist is now parsed from Registry hives** - evidence a program was actually clicked/launched
+  through the Windows Explorer shell (not just command-line-invoked), with a run count and how long
+  it stayed in focus. A different signal from Prefetch/Amcache (already covered): a high run count
+  with near-zero focus time is a real "launched then immediately closed or crashed" pattern neither of
+  those artifacts can show on their own. No new action needed - it's picked up automatically the same
+  place Registry hives already are ("Parse Registry Hives").
+
+### Fixed
+
+- **File Views could take 6+ minutes to load on a case with a lot of accumulated data.** A background
+  self-healing sweep was re-walking the entire case folder on every single load instead of on a
+  reasonable interval - fixed with the same throttling approach already used elsewhere in the app for
+  an identical class of problem. A routine File Views visit should now always be fast, regardless of
+  how large the case folder has grown.
+
+---
+
 ## [1.16.0] - 2026-09-01
 
 ### New
