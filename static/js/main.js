@@ -1921,6 +1921,9 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     powershell_console_history: 'PowerShell Console History',
     firewall_connection_log: 'Windows Firewall Connection Log',
     macos_launchd_item: 'macOS: LaunchAgent/LaunchDaemon (Persistence)',
+    winsearch_indexed_item: 'Windows Search Index (Windows.edb)',
+    webcache_entry: 'Legacy IE/Edge WebCache History (WebCacheV01/V24.dat)',
+    bits_job: 'BITS Job Queue (qmgr.db)',
     email_message: 'Email Message',
     // Live Collection USB, Phase 2 (2026-09-01) - kept in sync with
     // routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS. This exact side
@@ -4489,6 +4492,9 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnParsePowerShellHistory', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseFirewallLog', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseMacosLaunchd', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseWinsearch', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseWebcache', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseBits', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseRecycleBin', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseCryptoWallets', section: 'ctxSecArtifacts', visible: item => item.is_dir },
@@ -4531,6 +4537,9 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnEnterPowerShellHistoryImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterFirewallLogImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterMacosLaunchdImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterWinsearchImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterWebcacheImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterBitsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterRecycleBinImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterLinuxArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterAndroidArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
@@ -4661,6 +4670,9 @@ async function contextMenuBrowseImageAnd(action) {
         email: runImageEmailParse,
         mobileartifacts: runImageMobileArtifactsParse,
         recover: runImageRecoverDeleted,
+        winsearch: runImageWinsearchParse,
+        webcache: runImageWebcacheParse,
+        bits: runImageBitsParse,
     };
     if (actions[action]) actions[action]();
 }
@@ -6163,6 +6175,162 @@ async function runImageSrumParse() {
         }
     } catch (err) {
         showToast('SRUM scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedWinsearchParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_winsearch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Windows Search Index scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Windows Search Index database (Windows.edb) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Windows Search Index database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Windows Search Index database(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Windows Search Index scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageWinsearchParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_winsearch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Windows Search Index scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Windows Search Index database (Windows.edb) found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Windows Search Index database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Windows Search Index database(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Windows Search Index scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedWebcacheParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_webcache', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`WebCache scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No legacy IE/Edge WebCache database (WebCacheV01/V24.dat) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} WebCache database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} WebCache database(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('WebCache scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageWebcacheParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_webcache', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`WebCache scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No legacy IE/Edge WebCache database (WebCacheV01/V24.dat) found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} WebCache database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} WebCache database(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('WebCache scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedBitsParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_bits', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`BITS queue scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No BITS job queue database (qmgr.db) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} BITS queue database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} BITS queue database(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('BITS queue scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageBitsParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_bits', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`BITS queue scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No BITS job queue database (qmgr.db) found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} BITS queue database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} BITS queue database(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('BITS queue scan failed: request error.', 'danger');
     }
 }
 
