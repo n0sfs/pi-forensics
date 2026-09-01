@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.15.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.16.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -127,7 +127,8 @@ shows a checkmark with the prior result. Right-click any file for ExifTool metad
 an MVT spyware/IOC scan, YARA rule scanning, and hash-set/known-bad-URL matching against your own
 saved lists (with one-click MalwareBazaar/URLhaus imports). Dedicated artifact parsers recover
 Windows Registry hives (incl. Amcache, ShellBags, and Shimcache/AppCompatCache), Event Logs, Prefetch,
-Recycle Bin, and LNK shortcuts; NTFS `$MFT` (with timestomping detection) and `$UsnJrnl` change-journal
+Recycle Bin, LNK shortcuts, and Jump Lists (Automatic/Custom Destinations); NTFS `$MFT` (with
+timestomping detection) and `$UsnJrnl` change-journal
 records; Linux shell history, `/etc/passwd`, cron, and `auth.log`; cryptocurrency wallet files; email
 files (`.eml`/`.mbox`/`.pst`/`.ost`); and mobile chat/app data (SMS/iMessage, Contacts, Call History)
 straight out of an already-captured iOS backup — all without extracting anything first, real folder or
@@ -322,7 +323,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.15.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.16.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
