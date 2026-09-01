@@ -95,6 +95,8 @@ _MACOS_LAUNCHD_ARTIFACT_TYPES = {"macos_launchd_item"}
 _WINSEARCH_ARTIFACT_TYPES = {"winsearch_indexed_item"}
 _WEBCACHE_ARTIFACT_TYPES = {"webcache_entry"}
 _BITS_ARTIFACT_TYPES = {"bits_job"}
+# RDP Bitmap Cache, 2026-09-01 - core/rdp_bitmap_cache_utils.py.
+_RDP_BITMAP_CACHE_ARTIFACT_TYPES = {"rdp_bitmap_cache_tile"}
 
 
 def test_parsed_artifact_type_labels_covers_every_known_producer():
@@ -108,7 +110,7 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
                 | _APPLE_EXPORT_ARTIFACT_TYPES | _WINDOWS_ACTIVITY_ARTIFACT_TYPES | _SRUM_ARTIFACT_TYPES
                 | _POWERSHELL_HISTORY_ARTIFACT_TYPES | _FIREWALL_LOG_ARTIFACT_TYPES
                 | _MACOS_LAUNCHD_ARTIFACT_TYPES | _WINSEARCH_ARTIFACT_TYPES | _WEBCACHE_ARTIFACT_TYPES
-                | _BITS_ARTIFACT_TYPES)
+                | _BITS_ARTIFACT_TYPES | _RDP_BITMAP_CACHE_ARTIFACT_TYPES)
     actual = set(case_index.PARSED_ARTIFACT_TYPE_LABELS.keys())
     missing = expected - actual
     assert not missing, f"artifact_type(s) producible by a parser but missing from PARSED_ARTIFACT_TYPE_LABELS (row-fetch route would silently return no rows for these): {missing}"

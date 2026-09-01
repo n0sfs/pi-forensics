@@ -297,6 +297,7 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "winsearch_indexed_item": "Windows Search Index (Windows.edb)",
     "webcache_entry": "Legacy IE/Edge WebCache History (WebCacheV01/V24.dat)",
     "bits_job": "BITS Job Queue (qmgr.db)",
+    "rdp_bitmap_cache_tile": "RDP Bitmap Cache Tile (metadata only)",
     # Email parsing (2026-08-30, tool-survey follow-up) - .eml/.mbox via the
     # standard library, .pst/.ost via libpff-python (core/email_utils.py).
     "email_message": "Email Message",
