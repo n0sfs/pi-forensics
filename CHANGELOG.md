@@ -21,6 +21,38 @@ file after updating to see what changed.
 
 ---
 
+## [1.13.0] - 2026-09-01
+
+### New
+
+- **Android acquisitions now get parsed straight into File Explorer's searchable index, instead of
+  just sitting as raw files.** Running ALEAPP or iLEAPP (already a right-click action) now
+  automatically pulls its own structured output into the same searchable Parsed Artifacts category
+  Registry hives, Event Logs, and browser artifacts already use - WiFi networks, installed apps,
+  accounts, SMS, call logs, contacts, browser history, WhatsApp data, and more, wherever the scan
+  actually finds them. Note that a plain, non-rooted "Pull Accessible Storage" acquisition can only
+  ever reach a phone's shared storage (`/sdcard`) - most of what ALEAPP looks for lives in app-
+  private storage that needs root, so how much shows up here depends heavily on what kind of
+  acquisition you ran.
+- **A dedicated Android SMS/Contacts/Call Log parser for rooted physical acquisitions.** If you've
+  captured a full raw image from a rooted device (the "Physical" acquisition mode), a new right-click
+  action reads the phone's actual SMS, contacts, and call log databases straight out of the image and
+  drops them into the same searchable Parsed Artifacts index.
+- **Location history from ALEAPP/iLEAPP scans can now be exported as a map.** A new "Export
+  ALEAPP/iLEAPP Location History (KML)" action scans whatever's already been parsed for anything with
+  plausible GPS coordinates and builds a map you can view right in File Explorer or in Reporting's
+  Geolocation tab, the same as a photo's EXIF GPS data already does.
+- **Import an already-downloaded Google Takeout archive.** If you (or the account holder) have
+  already exported data through Google's own official Takeout tool, a new "Import Google Takeout
+  Archive" action reads it - either an already-extracted folder or the downloaded `.zip` file(s) -
+  and pulls Search History, YouTube History, Location History, Maps saved places, and photo metadata
+  into the same searchable index and map view as everything else. This only ever reads a file you
+  already obtained yourself; it never logs into a Google account or touches the network. Search and
+  YouTube History use a reliable format; Location History, Maps, and Photos are labeled "Best-Effort"
+  since Google's own export format for these has changed recently and isn't fully documented.
+
+---
+
 ## [1.12.0] - 2026-09-01
 
 ### New
