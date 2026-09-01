@@ -1879,6 +1879,11 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     leapp_whatsapp_contact: 'ALEAPP/iLEAPP: WhatsApp Contacts',
     leapp_app_usage: 'ALEAPP/iLEAPP: App Usage Stats',
     leapp_module_finding: 'ALEAPP/iLEAPP: Other Module Finding',
+    takeout_search_history: 'Google Takeout: Search History',
+    takeout_youtube_history: 'Google Takeout: YouTube History',
+    takeout_location_history: 'Google Takeout: Location History (Best-Effort)',
+    takeout_maps_place: 'Google Takeout: Maps Places (Best-Effort)',
+    takeout_photo_metadata: 'Google Takeout: Photo Metadata (Best-Effort)',
     // NTFS $MFT / $UsnJrnl parsing (2026-08-30, tool-survey follow-up) -
     // kept in sync with routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS.
     mft_file_record: 'NTFS: $MFT File Record',
@@ -4452,6 +4457,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnParseMobileArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnLeappScan', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnExportLeappGeolocation', section: 'ctxSecArtifacts', visible: item => item.is_dir, disabledWhen: () => !activeCase },
+    { id: 'btnImportTakeout', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     // ...while these are single-file, exact-name/extension-matched.
     { id: 'btnParseLnk', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.lnk'), analysisTool: 'LNK Shortcut' },
     { id: 'btnAnalyzeMft', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toUpperCase() === '$MFT' },
@@ -5556,6 +5562,26 @@ async function runSelectedGeolocationExport() {
     } catch (err) {}
 }
 
+async function runTakeoutImport() {
+    if (!activeSelectedFile) return;
+    if (!confirm("Import this folder as a Google Takeout export?\n\nThis only reads an archive you already downloaded through Google's own official export tool - it never accesses a live Google account.\n\nSearch/YouTube History use a stable format; Location History, Maps Places, and Photo metadata are best-effort (Google's own export formats for these vary).")) return;
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile;
+    try {
+        const res = await fetch('/api/files/import_takeout_archive', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null, destination_dir: destinationDir })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Google Takeout import started - a completion notice will appear when it finishes.', 'info');
+        } else {
+            showToast(`Takeout import failed to start: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast('Takeout import failed: request error.', 'danger');
+    }
+}
+
 async function runLeappGeolocationExport() {
     if (!activeCase) { showToast('Select an active case first.', 'warning'); return; }
     try {
@@ -6366,6 +6392,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     vss_materialize: (status) => `Shadow copy materialization finished: ${status}\n\nCheck the case folder for the generated *_shadowcopyN.dd file - browse it via File Explorer's normal "Browse as Image" action, same as any other acquired image.`,
     live_collection_build: (status) => `Live Collection USB build finished: ${status}\n\nThe drive is ready - plug it into a live target machine and follow the README on the drive.`,
     live_collection_import: (status) => `Live collection import finished: ${status}\n\nCheck the case folder for the new live_collection_import_<timestamp> folder and its hash manifest.`,
+    takeout_import: (status) => `Google Takeout import finished: ${status}\n\nSee File Views > Parsed Artifacts for Search/YouTube History and other imported data, and Reporting > Geolocation for any location data found.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
 
@@ -6395,7 +6422,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     // File Explorer (in-image background jobs, reached via right-click/toolbar there)
     image_geolocation_kml: 'navBadgeExplorer', image_triage_scan: 'navBadgeExplorer',
     memory_forensics_scan: 'navBadgeExplorer', mquire_scan: 'navBadgeExplorer', image_conversion: 'navBadgeExplorer',
-    auto_analyze_image: 'navBadgeExplorer', leapp_scan: 'navBadgeExplorer',
+    auto_analyze_image: 'navBadgeExplorer', leapp_scan: 'navBadgeExplorer', takeout_import: 'navBadgeExplorer',
 };
 const NAV_BADGE_TO_TAB_ID = {
     navBadgeAcquisition: 'acquisition-tab', navBadgeLiveCollection: 'live-collection-tab', navBadgeMobile: 'mobile-tab',
