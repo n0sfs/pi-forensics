@@ -99,6 +99,60 @@ def test_parsed_artifact_type_with_no_deleted_concept_defaults_to_false(client, 
     assert parsed_rows[0]["deleted"] is False
 
 
+def test_communications_web_and_social_media_categories_assigned_correctly(client, evidence_root):
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "mmssms.db")}, [
+        {"artifact_type": "leapp_sms_message", "title": "text 1", "url": "", "value": "hi",
+         "timestamp": 1786784100.0, "extra": {}},
+    ])
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "History")}, [
+        {"artifact_type": "chrome_history", "title": "example.com", "url": "https://example.com", "value": "",
+         "timestamp": 1786784200.0, "extra": {}},
+    ])
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "msgstore.db")}, [
+        {"artifact_type": "leapp_whatsapp_message", "title": "hey", "url": "", "value": "hey",
+         "timestamp": 1786784300.0, "extra": {}},
+    ])
+    # Deliberately-uncategorized type - must fall back to the safe generic
+    # bucket, never be dropped from the timeline or crash the route.
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "SYSTEM")}, [
+        {"artifact_type": "registry_amcache", "title": "notepad.exe", "url": "", "value": "notepad.exe",
+         "timestamp": 1786784400.0, "extra": {}},
+    ])
+
+    res = client.get(f"/api/cases/timeline?case_folder={case_folder}")
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["categories"] == ["Communications", "Web Activity", "Social Media", "Device & System", "Filesystem"]
+    by_activity = {r["activity"]: r["category"] for r in data["events"] if r["source"] == "parsed_artifact"}
+    assert by_activity["leapp_sms_message"] == "Communications"
+    assert by_activity["chrome_history"] == "Web Activity"
+    assert by_activity["leapp_whatsapp_message"] == "Social Media"
+    assert by_activity["registry_amcache"] == "Device & System"
+
+
+def test_apple_export_types_get_the_same_category_as_their_native_counterpart(client, evidence_root):
+    # Real bug found live (2026-09-01) verifying this feature against real
+    # accumulated case data on the deployed station: apple_safari_bookmark/
+    # apple_contact were missing from the category dict entirely and fell
+    # back to the generic "Device & System" bucket, even though their
+    # native-parser counterparts (safari_bookmarks, mobile_contact) are
+    # correctly categorized Web Activity/Communications.
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "Bookmarks.plist")}, [
+        {"artifact_type": "apple_safari_bookmark", "title": "example.com", "url": "https://example.com", "value": "",
+         "timestamp": 1786784100.0, "extra": {}},
+    ])
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "Contacts.vcf")}, [
+        {"artifact_type": "apple_contact", "title": "Jane Doe", "url": "", "value": "Jane Doe",
+         "timestamp": 1786784200.0, "extra": {}},
+    ])
+    res = client.get(f"/api/cases/timeline?case_folder={case_folder}")
+    by_activity = {r["activity"]: r["category"] for r in res.get_json()["events"] if r["source"] == "parsed_artifact"}
+    assert by_activity["apple_safari_bookmark"] == "Web Activity"
+    assert by_activity["apple_contact"] == "Communications"
+
+
 def test_missing_case_folder_returns_a_clean_error(client, evidence_root):
     res = client.get(f"/api/cases/timeline?case_folder={os.path.join(evidence_root, 'not_a_real_case')}")
     assert res.status_code == 400

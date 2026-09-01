@@ -839,6 +839,53 @@ CASE_TIMELINE_MAX_TOTAL_ENTRIES = 6000  # a bit above TSK_MAX_TIMELINE_ENTRIES (
 # tampering, unlike an audit log being cleared).
 CASE_TIMELINE_SUSPICIOUS_ARTIFACT_TYPES = {'evtx_audit_log_cleared'}
 
+# Evidence Timeline category filter (2026-09-01) - lets an examiner narrow a
+# phone's timeline down to just Communications/Web Activity/Social Media
+# instead of scanning every raw activity string by eye. A single shared
+# server-side dict, not a second frontend copy - static/js/main.js just
+# renders whatever "category" string each row already carries in the JSON
+# response, avoiding the exact "two label dicts that must stay in sync" bug
+# class this project has already been bitten by twice (see
+# PARSED_ARTIFACT_TYPE_LABELS's own comment). Deliberately NOT exhaustive
+# over every artifact_type in this app (Windows Registry/NTFS/BITS/etc. -
+# desktop/server forensics, not what a phone timeline needs) - anything not
+# explicitly listed here falls back to "Device & System", a safe generic
+# catch-all, never silently dropped from the timeline.
+CASE_TIMELINE_DEFAULT_CATEGORY = "Device & System"
+CASE_TIMELINE_CATEGORIES = ["Communications", "Web Activity", "Social Media", CASE_TIMELINE_DEFAULT_CATEGORY, "Filesystem"]
+CASE_TIMELINE_ACTIVITY_CATEGORY = {
+    # Communications - native SMS/MMS/calls + email, distinct from an app's
+    # own in-app messaging (which reads as "Social Media" below).
+    "mobile_sms_message": "Communications", "mobile_call_log": "Communications", "mobile_contact": "Communications",
+    "android_sms_message": "Communications", "android_call_log": "Communications", "android_contact": "Communications",
+    "leapp_sms_message": "Communications", "leapp_mms_message": "Communications", "leapp_call_log": "Communications",
+    "leapp_contact": "Communications", "email_message": "Communications", "apple_contact": "Communications",
+    # Web Activity
+    "chrome_history": "Web Activity", "chrome_downloads": "Web Activity",
+    "chrome_bookmarks": "Web Activity", "chrome_cookies": "Web Activity",
+    "firefox_history": "Web Activity", "firefox_downloads": "Web Activity",
+    "firefox_bookmarks": "Web Activity", "firefox_cookies": "Web Activity",
+    "safari_history": "Web Activity", "safari_downloads": "Web Activity",
+    "safari_bookmarks": "Web Activity", "safari_cookies": "Web Activity",
+    "leapp_browser_history": "Web Activity", "leapp_browser_web_visit": "Web Activity",
+    "leapp_browser_bookmark": "Web Activity", "leapp_browser_autofill": "Web Activity",
+    "browser_url_ioc_match": "Web Activity", "apple_safari_bookmark": "Web Activity",
+    "takeout_search_history": "Web Activity", "takeout_youtube_history": "Web Activity",
+    # Social Media / Messaging Apps
+    "leapp_whatsapp_message": "Social Media", "leapp_whatsapp_call_log": "Social Media",
+    "leapp_whatsapp_contact": "Social Media", "leapp_instagram_message": "Social Media",
+    "leapp_snapchat_message": "Social Media", "leapp_facebook_messenger_message": "Social Media",
+    "leapp_telegram_message": "Social Media", "leapp_signal_message": "Social Media",
+    "leapp_tiktok_message": "Social Media", "leapp_reddit_message": "Social Media",
+}
+
+
+def _timeline_row_category(source, activity):
+    if source == "macb":
+        return "Filesystem"
+    return CASE_TIMELINE_ACTIVITY_CATEGORY.get(activity, CASE_TIMELINE_DEFAULT_CATEGORY)
+
+
 @reporting_bp.route('/api/cases/timeline', methods=['GET'])
 @requires_auth
 @requires_permission('reporting')
@@ -869,7 +916,7 @@ def case_timeline():
             "timestamp": row["timestamp"], "source": "macb",
             "activity": row["activity"], "detail": row["path"],
             "evidence_id": row["evidence_id"], "deleted": row.get("deleted", False),
-            "suspicious": False,
+            "suspicious": False, "category": "Filesystem",
             # 2026-08-29: row['filesystem'] (the exported PDF/HTML report's own
             # per-row source label, e.g. "android_pull (real device timestamp)"
             # vs "... (real filesystem)") was never carried into this JSON
@@ -925,6 +972,7 @@ def case_timeline():
                     "evidence_id": image_path_to_evidence_id.get(image_path) if image_path else None,
                     "deleted": is_deleted,
                     "suspicious": artifact_type in CASE_TIMELINE_SUSPICIOUS_ARTIFACT_TYPES,
+                    "category": _timeline_row_category("parsed_artifact", artifact_type),
                 })
         finally:
             conn.close()
@@ -934,6 +982,11 @@ def case_timeline():
     return jsonify({
         "success": True, "events": combined[:CASE_TIMELINE_MAX_TOTAL_ENTRIES],
         "notes": macb["notes"], "truncated": truncated,
+        # The real, authoritative category list, not a second frontend-side
+        # copy - static/js/main.js builds its filter checkboxes from this,
+        # matching the "single source of truth" pattern already used for
+        # Auto Analyze's own /api/image/auto_analyze/steps route.
+        "categories": CASE_TIMELINE_CATEGORIES,
     })
 
 

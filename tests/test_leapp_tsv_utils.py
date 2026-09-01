@@ -134,6 +134,122 @@ def test_garbage_non_tsv_content_is_tolerated_not_fatal(tmp_path):
     assert records == []  # tolerated, not raised
 
 
+# --- Timestamp parsing (2026-09-01) - real column names/formatting confirmed
+# directly against this app's own pinned ALEAPP commit's real module source,
+# not guessed - see the module's own docstring for the full grounding. ---
+
+def test_sms_messages_timestamp_parsed_from_real_date_column(tmp_path):
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    # Exact real column order confirmed from smsmms.py's get_sms_mms()
+    _write_tsv(str(tsv_dir / "SMS Messages.tsv"),
+               ["Date", "Date Sent", "Type", "Address", "Body", "MSG ID"],
+               [["2026-08-30 14:23:11+00:00", "2026-08-30 14:23:10+00:00",
+                 "Received", "555-0100", "hi", "1"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert len(records) == 1
+    assert records[0]["artifact_type"] == "leapp_sms_message"
+    assert records[0]["timestamp"] == 1788099791.0
+
+
+def test_call_logs_tries_both_real_column_name_variants(tmp_path):
+    # This app's pinned ALEAPP commit has TWO independently-authored "Call
+    # Logs" modules using different column names for the same concept -
+    # confirmed both real, both fold into leapp_call_log via
+    # _normalize_module_name(). Both must resolve their own timestamp.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "Call logs .tsv"),  # real trailing-space registered name
+               ["Call Date", "Phone Account Address", "Partner", "Type"],
+               [["2026-08-30 09:00:00+00:00", "", "555-0100", "Incoming"]])
+    _write_tsv(str(tsv_dir / "Call Logs.tsv"),  # the second, differently-named real module
+               ["from_id", "to_id", "start_date", "end_date", "direction"],
+               [["a", "b", "2026-08-30 10:00:00+00:00", "2026-08-30 10:01:00+00:00", "1"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert len(records) == 2
+    assert all(r["artifact_type"] == "leapp_call_log" for r in records)
+    assert {r["timestamp"] for r in records} == {1788080400.0, 1788084000.0}
+
+
+def test_whatsapp_messages_and_one_to_one_share_the_same_timestamp_column(tmp_path):
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    for name in ("WhatsApp - Messages.tsv", "WhatsApp - One To One Messages.tsv"):
+        _write_tsv(str(tsv_dir / name),
+                   ["Message Timestamp", "Received Timestamp", "Direction", "Message"],
+                   [["2026-08-30 12:00:00+00:00", "2026-08-30 12:00:01+00:00", "Sent", "hey"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert len(records) == 2
+    assert all(r["artifact_type"] == "leapp_whatsapp_message" for r in records)
+    assert all(r["timestamp"] == 1788091200.0 for r in records)
+
+
+def test_browser_history_folds_chrome_and_firefox_column_name_variants(tmp_path):
+    # Chrome's real column is "Last Visit Time"; Firefox's is "Last Visit
+    # Date" - both real, both fold into the same leapp_browser_history
+    # artifact_type, and LEAPP_TIMESTAMP_COLUMNS must try both names.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "Web History.tsv"),
+               ["Last Visit Time", "URL", "Title", "Browser Name"],
+               [["2026-08-30 08:00:00+00:00", "https://example.com", "Example", "Chrome"]])
+    _write_tsv(str(tsv_dir / "Firefox - Web History.tsv"),
+               ["Last Visit Date", "URL", "Title"],
+               [["2026-08-30 08:30:00+00:00", "https://example.org", "Example Org"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert len(records) == 2
+    assert all(r["artifact_type"] == "leapp_browser_history" for r in records)
+    assert {r["timestamp"] for r in records} == {1788076800.0, 1788078600.0}
+
+
+def test_social_media_message_module_timestamp_parsed(tmp_path):
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "Instagram - Direct Messages.tsv"),
+               ["Timestamp", "Media Taken At", "Direction", "Sender"],
+               [["2026-08-30 06:00:00+00:00", "", "Received", "alice"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert len(records) == 1
+    assert records[0]["artifact_type"] == "leapp_instagram_message"
+    assert records[0]["timestamp"] == 1788069600.0
+
+
+def test_missing_timestamp_column_stays_none_not_a_wrong_guess(tmp_path):
+    # A real SMS Messages TSV whose header row happens to lack "Date"
+    # entirely (a hypothetical older/renamed ALEAPP version) - must never
+    # fabricate a timestamp from some other column.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "SMS Messages.tsv"), ["Address", "Body"],
+               [["555-0100", "hi"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert records[0]["timestamp"] is None
+
+
+def test_unparseable_timestamp_value_stays_none_not_a_crash(tmp_path):
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "SMS Messages.tsv"), ["Date", "Body"],
+               [["not a real timestamp", "hi"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert records[0]["timestamp"] is None
+
+
+def test_empty_timestamp_cell_stays_none(tmp_path):
+    # ALEAPP's own _ms_to_utc()-style helpers return '' for a falsy raw
+    # value, which csv.writer then writes as a genuinely empty cell.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "SMS Messages.tsv"), ["Date", "Body"], [["", "draft, never sent"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert records[0]["timestamp"] is None
+
+
+def test_uncurated_module_never_gets_a_timestamp():
+    # leapp_module_finding is deliberately absent from LEAPP_TIMESTAMP_COLUMNS
+    assert "leapp_module_finding" not in leapp.LEAPP_TIMESTAMP_COLUMNS
+
+
 def test_all_artifact_types_constant_matches_actual_curated_values():
     # Guards against the module's own two sources of truth (the curated
     # dict's values, and the exported "every type this module can
