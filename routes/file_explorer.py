@@ -48,6 +48,7 @@ from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_back
 from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
 from core.jumplist_utils import find_jumplist_files, parse_jumplist_file
 from core.thumbcache_utils import find_thumbcache_files, extract_thumbcache_entries, parse_thumbcache_container_header
+from core.stickynotes_utils import find_sticky_notes_files, parse_sticky_notes_directory
 from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
 from core.mft_utils import find_mft_files, analyze_mft_file
 from core.usnjrnl_utils import find_usnjrnl_files, parse_usnjrnl_file
@@ -1308,6 +1309,48 @@ def parse_thumbcache():
         "thumbnails_extracted": thumbnails_extracted, "counts": counts,
         "unsupported_versions": unsupported_versions, "truncated": truncated,
         "destination_dir": dest_dir, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_sticky_notes', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_sticky_notes():
+    """Whole-directory scan for Windows Sticky Notes (plum.sqlite) - real
+    user-generated note content, a genuinely different artifact family
+    from every sibling parse_X() route (execution/access metadata).
+    Metadata-only (no real output file written), same shape as
+    parse_registry()/parse_jumplists() above - core/stickynotes_utils.py's
+    own parse_sticky_notes_directory() handles gathering the main file
+    together with its -wal/-shm sidecars internally."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_sticky_notes_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        records = parse_sticky_notes_directory(os.path.dirname(path))
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("sticky_notes_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 
 @file_explorer_bp.route('/api/files/parse_recyclebin', methods=['POST'])

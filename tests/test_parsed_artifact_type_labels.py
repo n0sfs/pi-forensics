@@ -49,6 +49,8 @@ _REGISTRY_ARTIFACT_TYPES = _REGISTRY_ARTIFACT_TYPES | {
     "registry_bam_dam", "registry_rdp_server", "registry_rdp_mru",
     "office_mru_file", "office_mru_place", "registry_wordwheelquery",
 }
+# Windows Sticky Notes, 2026-09-01 - core/stickynotes_utils.py.
+_STICKY_NOTES_ARTIFACT_TYPES = {"sticky_note"}
 _EMAIL_ARTIFACT_TYPES = {"email_message"}
 # Live Collection USB, Phase 2 (2026-09-01) - core/live_collection_results_utils.py.
 _LIVE_COLLECTION_ARTIFACT_TYPES = {
@@ -83,7 +85,7 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
     evtx_types = {v[0] for v in evtx_utils.EVENT_ID_ALLOWLIST.values()}
     expected = (_BROWSER_ARTIFACT_TYPES | _REGISTRY_ARTIFACT_TYPES | evtx_types | _LNK_ARTIFACT_TYPES
                 | _PREFETCH_ARTIFACT_TYPES | _RECYCLEBIN_ARTIFACT_TYPES | _JUMPLIST_ARTIFACT_TYPES
-                | _THUMBCACHE_ARTIFACT_TYPES | _LINUX_ARTIFACT_TYPES
+                | _THUMBCACHE_ARTIFACT_TYPES | _STICKY_NOTES_ARTIFACT_TYPES | _LINUX_ARTIFACT_TYPES
                 | _URL_IOC_ARTIFACT_TYPES | _CRYPTO_ARTIFACT_TYPES | _MOBILE_ARTIFACT_TYPES
                 | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES
                 | _ANDROID_ARTIFACT_TYPES | _LEAPP_TSV_ARTIFACT_TYPES | _TAKEOUT_ARTIFACT_TYPES
