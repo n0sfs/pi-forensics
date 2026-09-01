@@ -21,6 +21,23 @@ file after updating to see what changed.
 
 ---
 
+## [1.22.0] - 2026-09-01
+
+### New
+
+- **Two more Windows artifacts can now be parsed and read directly**: the built-in **Notification
+  history** (everything sent to the Action Center - which app, when, and often the actual text of
+  the notification) and **Windows Timeline / Activity History** (which apps were used, which
+  documents were opened, and which websites were visited, each with a timestamp). Both are reached
+  the same way as Sticky Notes - right-click a folder, or run it against a whole acquired image - and
+  both correctly recover the most recent entries even when they've only been saved to a temporary
+  companion file, not yet folded into the main database. Note: Microsoft trimmed how much the
+  Timeline feature records starting in a January 2024 Windows 11 update, so a Windows 11 image made
+  after that update will show much less activity history than a Windows 10 image - that's expected,
+  not a parsing failure.
+
+---
+
 ## [1.21.1] - 2026-09-01
 
 ### Fixed
