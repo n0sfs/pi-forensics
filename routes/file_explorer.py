@@ -41,6 +41,7 @@ from core.geo_utils import (
 from core.browser_artifacts import find_browser_artifact_files, parse_browser_profile_file, _open_sqlite_readonly
 from core.registry_utils import find_registry_hive_files, parse_registry_hive_file
 from core.leapp_tsv_utils import parse_leapp_tsv_exports, LEAPP_TSV_ALL_ARTIFACT_TYPES
+from core.takeout_utils import prepare_takeout_root, import_takeout_archive
 from core.crypto_artifacts import find_crypto_wallet_files, parse_crypto_wallet_file
 from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_backup_manifest
 from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
@@ -778,6 +779,117 @@ def export_leapp_geolocation():
         "case_folder": case_folder, "records_scanned": len(records), "points_found": len(points)
     })
     return jsonify({"success": True, "kml_path": kml_path, "records_scanned": len(records), "points_found": len(points)})
+
+# --- Google Takeout archive import (Android forensics expansion, Phase D) ---
+# SCOPE BOUNDARY: imports an archive the examiner already obtained through
+# Google's own official self-service export tool - never live account
+# access, OAuth, or credential handling of any kind. See core/takeout_
+# utils.py's own module docstring for the full disclosure. A real async
+# job (not a blocking request) since a real Photos export can be large -
+# mirrors Live Collection USB's own "prepare, then parse, in one worker"
+# shape (execution_worker_import_live_collection, routes/acquisition.py).
+def execution_worker_import_takeout(paths, case_folder, dest_dir, source_ip=None, user=None):
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-150:]))
+
+    try:
+        update_job(format="takeout_import", status="Preparing archive...", progress_percent=10.0)
+        append_log(f"[*] Preparing Takeout input from {len(paths)} source path(s)...")
+        work_dir = os.path.join(dest_dir, "takeout_import_work")
+        takeout_root, extracted, skipped = prepare_takeout_root(paths, work_dir)
+        if extracted or skipped:
+            append_log(f"[*] Extracted {extracted} file(s) from archive part(s){f', skipped {skipped} unsafe entrie(s)' if skipped else ''}.")
+
+        update_job(status="Parsing Takeout data...", progress_percent=50.0)
+        result = import_takeout_archive(takeout_root)
+        append_log(f"[*] Products found: {', '.join(result['products_found']) or '(none recognized)'}")
+        for w in result["warnings"]:
+            append_log(f"[*] {w}")
+
+        case_folder_valid = case_folder if case_folder and case_consolidated_path(case_folder) else None
+        if case_folder_valid and result["records"]:
+            identity = {"source_type": "real_fs", "path": takeout_root, "name": "Google Takeout Import"}
+            _record_parsed_artifacts(case_folder_valid, identity, result["records"])
+            append_log(f"[+] Recorded {len(result['records'])} record(s) - see File Views > Parsed Artifacts.")
+
+        kml_path = None
+        kml_doc = _build_geo_kml(result["location_points"], "Google Takeout - Location Data")
+        if kml_doc:
+            kml_path = os.path.join(dest_dir, "takeout_location_history.kml")
+            with open(kml_path, 'w', encoding='utf-8') as f:
+                f.write(kml_doc)
+            _auto_tag_case_artifact(dest_dir, kml_path)
+            append_log(f"[+] {len(result['location_points'])} location point(s) exported to {kml_path}")
+
+        log_chain_of_custody("takeout_import", {
+            "input_paths": paths, "products_found": result["products_found"],
+            "record_count": len(result["records"]), "location_points": len(result["location_points"]),
+        }, source_ip=source_ip, user=user)
+
+        update_job(status="Completed Successfully", progress_percent=100.0)
+        append_log("[+] Google Takeout import complete.")
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+@file_explorer_bp.route('/api/files/import_takeout_archive', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def start_takeout_import():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    selected_path = safe_path(req.get('path'))
+    if not selected_path or not os.path.isdir(selected_path):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Select the folder containing your Takeout export (either the already-extracted Takeout/ tree, or a folder with the downloaded .zip part(s) in it)."}), 400
+
+    # Auto-detect the two real shapes an examiner might select, so the
+    # frontend only ever needs one plain folder-picker action, not a
+    # separate "is it a folder or zip files" choice: a folder directly
+    # containing real .zip parts (Google's own multi-part naming) is
+    # treated as those zips; anything else is treated as an already-
+    # extracted Takeout tree, used directly.
+    try:
+        zip_names = sorted(f for f in os.listdir(selected_path) if f.lower().endswith('.zip'))
+    except OSError:
+        zip_names = []
+    if zip_names:
+        paths = [os.path.join(selected_path, z) for z in zip_names]
+    else:
+        paths = [selected_path]
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    dest_dir = safe_path(req.get('destination_dir') or case_folder)
+    if not dest_dir or not os.path.isdir(dest_dir):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    update_job(format="takeout_import", status="Initializing...", progress_percent=0.0,
+               log="[*] Initializing Google Takeout import...")
+
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_import_takeout,
+        args=(paths, case_folder, dest_dir, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("takeout_import_start", {"paths": paths, "destination": dest_dir})
+    return jsonify({"success": True, "message": "Google Takeout import started."})
 
 # --- Browser Artifacts: real per-app parsing (Chrome/Chromium family + Firefox) ---
 # core/browser_artifacts.py holds the actual parsing (History/Downloads/

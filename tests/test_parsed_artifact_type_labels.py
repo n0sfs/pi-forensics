@@ -57,6 +57,11 @@ _ANDROID_ARTIFACT_TYPES = {"android_sms_message", "android_contact", "android_ca
 # would just be a second place to forget an update.
 import core.leapp_tsv_utils as leapp_tsv_utils
 _LEAPP_TSV_ARTIFACT_TYPES = leapp_tsv_utils.LEAPP_TSV_ALL_ARTIFACT_TYPES
+# Android forensics expansion, Phase D - core/takeout_utils.py.
+_TAKEOUT_ARTIFACT_TYPES = {
+    "takeout_search_history", "takeout_youtube_history", "takeout_location_history",
+    "takeout_maps_place", "takeout_photo_metadata",
+}
 
 
 def test_parsed_artifact_type_labels_covers_every_known_producer():
@@ -65,7 +70,7 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
                 | _PREFETCH_ARTIFACT_TYPES | _RECYCLEBIN_ARTIFACT_TYPES | _LINUX_ARTIFACT_TYPES
                 | _URL_IOC_ARTIFACT_TYPES | _CRYPTO_ARTIFACT_TYPES | _MOBILE_ARTIFACT_TYPES
                 | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES
-                | _ANDROID_ARTIFACT_TYPES | _LEAPP_TSV_ARTIFACT_TYPES)
+                | _ANDROID_ARTIFACT_TYPES | _LEAPP_TSV_ARTIFACT_TYPES | _TAKEOUT_ARTIFACT_TYPES)
     actual = set(case_index.PARSED_ARTIFACT_TYPE_LABELS.keys())
     missing = expected - actual
     assert not missing, f"artifact_type(s) producible by a parser but missing from PARSED_ARTIFACT_TYPE_LABELS (row-fetch route would silently return no rows for these): {missing}"

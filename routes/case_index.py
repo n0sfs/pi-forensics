@@ -227,6 +227,16 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "leapp_whatsapp_contact": "ALEAPP/iLEAPP: WhatsApp Contacts",
     "leapp_app_usage": "ALEAPP/iLEAPP: App Usage Stats",
     "leapp_module_finding": "ALEAPP/iLEAPP: Other Module Finding",
+    # Google Takeout import (core/takeout_utils.py) - an already-obtained
+    # archive from Google's own official export tool, never live account
+    # access. Search/YouTube History use a stable, Google-documented
+    # schema; the rest are explicitly labeled "(Best-Effort)" per that
+    # module's own disclosed real-world format uncertainty.
+    "takeout_search_history": "Google Takeout: Search History",
+    "takeout_youtube_history": "Google Takeout: YouTube History",
+    "takeout_location_history": "Google Takeout: Location History (Best-Effort)",
+    "takeout_maps_place": "Google Takeout: Maps Places (Best-Effort)",
+    "takeout_photo_metadata": "Google Takeout: Photo Metadata (Best-Effort)",
     # NTFS $MFT / $UsnJrnl parsing (2026-08-30, tool-survey follow-up) -
     # core/mft_utils.py (wraps analyzeMFT) and core/usnjrnl_utils.py
     # (hand-rolled USN_RECORD_V2 parser).
