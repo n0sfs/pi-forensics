@@ -42,6 +42,7 @@ from core.browser_artifacts import find_browser_artifact_files, parse_browser_pr
 from core.registry_utils import find_registry_hive_files, parse_registry_hive_file
 from core.leapp_tsv_utils import parse_leapp_tsv_exports, LEAPP_TSV_ALL_ARTIFACT_TYPES
 from core.takeout_utils import prepare_takeout_root, import_takeout_archive
+from core.apple_export_utils import import_apple_export
 from core.crypto_artifacts import find_crypto_wallet_files, parse_crypto_wallet_file
 from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_backup_manifest
 from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
@@ -890,6 +891,115 @@ def start_takeout_import():
 
     log_chain_of_custody("takeout_import_start", {"paths": paths, "destination": dest_dir})
     return jsonify({"success": True, "message": "Google Takeout import started."})
+
+# --- Apple "Data & Privacy" export import ---
+# SCOPE BOUNDARY, identical to Google Takeout's above: imports an archive
+# the examiner already obtained through Apple's own official self-service
+# export tool at privacy.apple.com - never live account access of any
+# kind. Apple delivers this as an ENCRYPTED zip + a separately-emailed
+# password (a real, confirmed difference from Google Takeout's plain
+# zips) - this app deliberately never handles that password; the
+# examiner must extract it themselves first (same "you hold the key, we
+# just read what it unlocks" boundary already established for BitLocker/
+# LUKS/VeraCrypt), so only an already-extracted folder is accepted here.
+def execution_worker_import_apple_export(export_root, case_folder, dest_dir, source_ip=None, user=None):
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-150:]))
+
+    try:
+        update_job(format="apple_export_import", status="Parsing Apple export data...", progress_percent=30.0)
+        append_log(f"[*] Scanning {export_root} for Apple export categories...")
+        result = import_apple_export(export_root)
+        append_log(f"[*] Categories found: {', '.join(result['products_found']) or '(none recognized)'}")
+        for w in result["warnings"]:
+            append_log(f"[*] {w}")
+
+        case_folder_valid = case_folder if case_folder and case_consolidated_path(case_folder) else None
+        if case_folder_valid and result["records"]:
+            identity = {"source_type": "real_fs", "path": export_root, "name": "Apple Data & Privacy Export"}
+            _record_parsed_artifacts(case_folder_valid, identity, result["records"])
+            append_log(f"[+] Recorded {len(result['records'])} record(s) - see File Views > Parsed Artifacts.")
+
+        kml_path = None
+        points_found = 0
+        if result["photos_dir"]:
+            update_job(status="Extracting Photos GPS data...", progress_percent=70.0)
+            append_log(f"[*] Running EXIF geolocation extraction against {result['photos_dir']}...")
+            cmd = ['exiftool', '-j', '-n', '-r']
+            for ext in GEO_IMAGE_EXTENSIONS:
+                cmd += ['-ext', ext]
+            cmd += ['-GPSLatitude', '-GPSLongitude', '-GPSAltitude', '-DateTimeOriginal', '-FileName', '-Directory', result["photos_dir"]]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                entries = json.loads(proc.stdout) if proc.stdout.strip() else []
+            except (subprocess.TimeoutExpired, json.JSONDecodeError):
+                entries = []
+            points = _geo_points_from_exiftool_entries(entries)
+            points_found = len(points)
+            kml_doc = _build_geo_kml(points, "Apple Export - Photos Location Data")
+            if kml_doc:
+                kml_path = os.path.join(dest_dir, "apple_photos_location_history.kml")
+                with open(kml_path, 'w', encoding='utf-8') as f:
+                    f.write(kml_doc)
+                _auto_tag_case_artifact(dest_dir, kml_path)
+                append_log(f"[+] {points_found} GPS-tagged photo(s) exported to {kml_path}")
+            else:
+                append_log("[*] No GPS-tagged photos found in the Photos export.")
+
+        log_chain_of_custody("apple_export_import", {
+            "export_root": export_root, "products_found": result["products_found"],
+            "record_count": len(result["records"]), "photo_gps_points": points_found,
+        }, source_ip=source_ip, user=user)
+
+        update_job(status="Completed Successfully", progress_percent=100.0)
+        append_log("[+] Apple Data & Privacy export import complete.")
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        update_job(active=False)
+
+@file_explorer_bp.route('/api/files/import_apple_export', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def start_apple_export_import():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    export_root = safe_path(req.get('path'))
+    if not export_root or not os.path.isdir(export_root):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Select the already-extracted folder from your Apple Data & Privacy export (Apple delivers this as an encrypted zip - extract it yourself first using the password Apple emailed separately)."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    dest_dir = safe_path(req.get('destination_dir') or case_folder)
+    if not dest_dir or not os.path.isdir(dest_dir):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    update_job(format="apple_export_import", status="Initializing...", progress_percent=0.0,
+               log="[*] Initializing Apple Data & Privacy export import...")
+
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_import_apple_export,
+        args=(export_root, case_folder, dest_dir, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("apple_export_import_start", {"path": export_root, "destination": dest_dir})
+    return jsonify({"success": True, "message": "Apple Data & Privacy export import started."})
 
 # --- Browser Artifacts: real per-app parsing (Chrome/Chromium family + Firefox) ---
 # core/browser_artifacts.py holds the actual parsing (History/Downloads/
