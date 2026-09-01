@@ -206,6 +206,27 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "android_sms_message": "Android: SMS/MMS (Rooted Physical Image Only)",
     "android_contact": "Android: Contacts (Rooted Physical Image Only)",
     "android_call_log": "Android: Call Log (Rooted Physical Image Only)",
+    # ALEAPP/iLEAPP TSV-export parsing (core/leapp_tsv_utils.py) - real,
+    # confirmed module names promoted to their own type, plus one shared
+    # fallback bucket ("Module Finding") for any other module that finds
+    # real data this app's own curated list didn't anticipate. Findings
+    # here vary heavily by acquisition mode - see that module's own
+    # docstring for the real, grounded reason a non-rooted `pull`
+    # extraction commonly yields few or no hits.
+    "leapp_device_info": "ALEAPP/iLEAPP: Device Info",
+    "leapp_wifi_network": "ALEAPP/iLEAPP: WiFi Networks",
+    "leapp_installed_app": "ALEAPP/iLEAPP: Installed Apps",
+    "leapp_account": "ALEAPP/iLEAPP: Accounts",
+    "leapp_sms_message": "ALEAPP/iLEAPP: SMS Messages",
+    "leapp_call_log": "ALEAPP/iLEAPP: Call Logs",
+    "leapp_contact": "ALEAPP/iLEAPP: Contacts",
+    "leapp_browser_history": "ALEAPP/iLEAPP: Browser History",
+    "leapp_browser_bookmark": "ALEAPP/iLEAPP: Browser Bookmarks",
+    "leapp_browser_autofill": "ALEAPP/iLEAPP: Browser Autofill",
+    "leapp_whatsapp_message": "ALEAPP/iLEAPP: WhatsApp Messages",
+    "leapp_whatsapp_contact": "ALEAPP/iLEAPP: WhatsApp Contacts",
+    "leapp_app_usage": "ALEAPP/iLEAPP: App Usage Stats",
+    "leapp_module_finding": "ALEAPP/iLEAPP: Other Module Finding",
     # NTFS $MFT / $UsnJrnl parsing (2026-08-30, tool-survey follow-up) -
     # core/mft_utils.py (wraps analyzeMFT) and core/usnjrnl_utils.py
     # (hand-rolled USN_RECORD_V2 parser).
