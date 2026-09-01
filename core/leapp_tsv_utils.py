@@ -52,47 +52,129 @@ of a strict allowlist gate:
      drop real findings this module's author never anticipated. One
      shared fallback bucket gets both properties at once.
 
-No timestamp parsing is attempted for TSV rows in either tier - ALEAPP's
-own real per-module column headers/timestamp formatting conventions have
-never been directly observed against a run that actually found data (the
-one real run available produced zero hits across every module it reached
-before this app's own NFS-related stall - see this feature's own dated
-CLAUDE.md entry). Fabricating a timestamp parser against an unconfirmed
-format would risk silently wrong timestamps reaching the Evidence
-Timeline - worse than no timestamp at all. `timestamp` is always None
-here; this can be revisited once a real TSV sample with real column
-headers is available to design against, matching this app's own
-established "verify before parsing" discipline.
+TIMESTAMP PARSING (added later, once real hit data still never
+materialized but real SOURCE CODE did). No real ALEAPP run against a real
+device ever produced a non-empty TSV to design against (see the dated
+CLAUDE.md entry above) - but ALEAPP/iLEAPP are both fully vendored on this
+station at a PINNED commit, so instead of guessing, every curated
+module's actual real `scripts/artifacts/*.py` source was read directly
+off the deployed station (not assumed from "sibling modules probably look
+alike") to find its exact `data_headers`/timestamp-column-name/timestamp-
+formatting convention, module by module, before any of this was written.
+Confirmed independently across 8+ separately-authored modules
+(smsmms.py, calllog.py, calllogs.py, WhatsApp.py, chrome.py,
+firefox.py, instagram.py, telegramAndroid.py, signalAndroid.py,
+tikTok.py, reddit.py, snapchat.py, FacebookMessenger.py): every one of
+them builds its timestamp value as a tz-aware
+`datetime.datetime(..., tzinfo=datetime.timezone.utc)` object, which
+`ilapfuncs.py`'s own `tsv()` writer then stringifies via Python's default
+`csv.writer` behavior (calling `str()` on a non-string cell) - producing
+the fixed, unambiguous shape `"YYYY-MM-DD HH:MM:SS[.ffffff]+00:00"` in
+every TSV file this app will ever read. `datetime.fromisoformat()`
+(confirmed against this app's own real Python 3.13 runtime, both the dev
+machine and the production venv) parses that shape directly, no format
+string needed. A module's ACTUAL timestamp COLUMN NAME varies a lot
+module to module ("Date", "Call Date", "start_date", "Message Timestamp",
+"Last Visit Time"/"Last Visit Date", "Timestamp", ...) - confirmed by
+reading each one's real `data_headers` tuple directly, never assumed from
+a naming convention - so `LEAPP_TIMESTAMP_COLUMNS` below is a real,
+per-artifact_type list of the exact confirmed candidate column name(s) to
+look for (more than one, for an artifact_type fed by more than one real
+module using a different column name for the same concept - e.g. the two
+real "Call Logs" modules). An artifact_type not in that dict, or a real
+row whose value doesn't parse, gets `timestamp: None` exactly as before -
+never a guessed/fabricated value. `leapp_module_finding` (the generic
+fallback bucket for anything not individually curated) is deliberately
+NOT in `LEAPP_TIMESTAMP_COLUMNS` at all - its column shape is unknown by
+definition, so it always stays timestamp-less and never reaches the
+Evidence Timeline, only File Views' searchable Parsed Artifacts list.
 """
 import csv
+import datetime
 import os
 import re
 
 LEAPP_TSV_MAX_FILES = 300  # a real run's _TSV Exports/ folder, capped
 LEAPP_TSV_MAX_ROWS_PER_FILE = 5_000
 
-# Confirmed real module/report names, observed directly in this app's own
-# real ALEAPP run logs against its pinned commit (not guessed) - promoted
-# to their own dedicated, filterable artifact_type. Matched case-
-# insensitively against the TSV filename's own stem (ALEAPP names each
-# TSV after the human-readable report name it registers, not the raw
-# Python function name).
+# Confirmed real module/report names - either observed directly in this
+# app's own real ALEAPP run logs, or (for every entry added later, see the
+# module docstring above) read directly from the module's own real
+# `__artifacts_v2__["name"]` registration at this app's pinned commit, not
+# guessed. Promoted to their own dedicated, filterable artifact_type.
+# Matched case-insensitively/non-alnum-collapsed against the TSV
+# filename's own stem via _normalize_module_name() (ALEAPP names each TSV
+# after the human-readable report name it registers, not the raw Python
+# function name - e.g. "Call logs " with a trailing space is a REAL,
+# confirmed registered name, normalized the same as "Call Logs").
 CURATED_LEAPP_MODULES = {
-    "device info": "leapp_device_info",
-    "wifi": "leapp_wifi_network",
-    "installed applications": "leapp_installed_app",
-    "installed apps": "leapp_installed_app",
-    "accounts": "leapp_account",
-    "sms messages": "leapp_sms_message",
-    "sms & mms": "leapp_sms_message",
-    "call logs": "leapp_call_log",
-    "contacts": "leapp_contact",
-    "browser history": "leapp_browser_history",
-    "browser bookmarks": "leapp_browser_bookmark",
-    "chrome autofill": "leapp_browser_autofill",
-    "whatsapp - messages": "leapp_whatsapp_message",
-    "whatsapp - contacts": "leapp_whatsapp_contact",
+    # --- Device & System (kept from the original guessed set; "build"/
+    # "wifi config store"/"accounts ce"/"accounts de"/the 3
+    # installedapps* keys below are the real confirmed names found later -
+    # the original guesses are harmless dead weight, kept in case a future
+    # ALEAPP version reintroduces a module using that exact name) ---
+    "device info": "leapp_device_info", "build": "leapp_device_info",
+    "wifi": "leapp_wifi_network", "wifi config store": "leapp_wifi_network",
+    "installed applications": "leapp_installed_app", "installed apps": "leapp_installed_app",
+    "installedappsgass": "leapp_installed_app", "installedappslibrary": "leapp_installed_app",
+    "installedappsvending": "leapp_installed_app",
+    "accounts": "leapp_account", "accounts ce": "leapp_account", "accounts de": "leapp_account",
     "usage stats": "leapp_app_usage",
+    "contacts": "leapp_contact",
+
+    # --- Communications (native SMS/MMS/calls) ---
+    "sms messages": "leapp_sms_message", "sms & mms": "leapp_sms_message",
+    "mms messages": "leapp_mms_message",
+    "call logs": "leapp_call_log",  # normalizes both real registered names: "Call logs " and "Call Logs"
+
+    # --- Web Activity ---
+    "browser history": "leapp_browser_history",  # kept from the original guessed set
+    "web history": "leapp_browser_history", "firefox web history": "leapp_browser_history",
+    "web visits": "leapp_browser_web_visit", "firefox web visits": "leapp_browser_web_visit",
+    "browser bookmarks": "leapp_browser_bookmark", "firefox bookmarks": "leapp_browser_bookmark",
+    "chrome autofill": "leapp_browser_autofill", "chrome autofill entries": "leapp_browser_autofill",
+
+    # --- Social Media / Messaging Apps ---
+    "whatsapp - messages": "leapp_whatsapp_message",  # kept from the original guessed set
+    "whatsapp messages": "leapp_whatsapp_message",
+    "whatsapp one to one messages": "leapp_whatsapp_message",
+    "whatsapp group messages": "leapp_whatsapp_message",
+    "whatsapp - contacts": "leapp_whatsapp_contact",  # kept from the original guessed set
+    "whatsapp contacts": "leapp_whatsapp_contact",
+    "whatsapp call logs": "leapp_whatsapp_call_log",
+    "instagram direct messages": "leapp_instagram_message",
+    "snapchat messages": "leapp_snapchat_message",
+    "facebook messenger chats msys database": "leapp_facebook_messenger_message",
+    "facebook messenger chats threads db2": "leapp_facebook_messenger_message",
+    "telegram messages": "leapp_telegram_message",
+    "signal messages": "leapp_signal_message",
+    "tiktok messages": "leapp_tiktok_message",
+    "reddit chat messages": "leapp_reddit_message",
+}
+
+# Real, per-artifact_type candidate timestamp column name(s), read directly
+# from each real module's own `data_headers` return value at this app's
+# pinned ALEAPP commit (see the module docstring above for the full
+# grounding). Tried in order against a TSV's real header row (case-
+# insensitive exact match) - the first one present wins, since more than
+# one real module can feed the same artifact_type under a different
+# column name (e.g. the two independently-authored "Call Logs" modules).
+# An artifact_type not listed here always gets timestamp: None.
+LEAPP_TIMESTAMP_COLUMNS = {
+    "leapp_sms_message": ("Date",),
+    "leapp_mms_message": ("Date",),
+    "leapp_call_log": ("Call Date", "start_date"),
+    "leapp_browser_history": ("Last Visit Time", "Last Visit Date"),
+    "leapp_browser_web_visit": ("Visit Timestamp", "Visit Date"),
+    "leapp_whatsapp_message": ("Message Timestamp",),
+    "leapp_whatsapp_call_log": ("Call Start Timestamp",),
+    "leapp_instagram_message": ("Timestamp",),
+    "leapp_snapchat_message": ("Creation Timestamp",),
+    "leapp_facebook_messenger_message": ("Message Timestamp", "Timestamp"),
+    "leapp_telegram_message": ("Timestamp",),
+    "leapp_signal_message": ("Date Sent", "Date Received"),
+    "leapp_tiktok_message": ("Timestamp",),
+    "leapp_reddit_message": ("Timestamp",),
 }
 
 # Every artifact_type this module can ever produce, for the label-dict
@@ -129,6 +211,39 @@ def find_leapp_tsv_files(tsv_export_dir):
     return [os.path.join(tsv_export_dir, n) for n in names], truncated
 
 
+def _find_timestamp_column_index(headers, artifact_type):
+    """Returns the index of the first header (case-insensitive exact
+    match) matching one of artifact_type's real confirmed candidate
+    timestamp column names, or None if there's no confirmed candidate for
+    this artifact_type or none of them are actually present in this
+    file's real header row (an older/newer ALEAPP version could rename a
+    column - a miss here just means timestamp: None, never a wrong
+    guess)."""
+    candidates = LEAPP_TIMESTAMP_COLUMNS.get(artifact_type)
+    if not candidates:
+        return None
+    lowered = [h.strip().lower() for h in headers]
+    for cand in candidates:
+        cand_lower = cand.strip().lower()
+        if cand_lower in lowered:
+            return lowered.index(cand_lower)
+    return None
+
+
+def _parse_leapp_datetime_str(value):
+    """Parses ALEAPP/iLEAPP's own real timestamp string shape - see the
+    module docstring's TIMESTAMP PARSING section for exactly how this
+    format was confirmed (real source, not guessed). Returns a Unix epoch
+    float, or None for an empty/absent/unparseable value - never a
+    fabricated timestamp."""
+    if not value or not value.strip():
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.strip()).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
 def _parse_one_tsv(path, tool_key):
     stem = os.path.splitext(os.path.basename(path))[0]
     module_key = _normalize_module_name(stem)
@@ -142,6 +257,7 @@ def _parse_one_tsv(path, tool_key):
                 headers = next(reader)
             except StopIteration:
                 return records  # empty file (header-only or truly empty)
+            ts_col_idx = _find_timestamp_column_index(headers, artifact_type)
             for i, row in enumerate(reader):
                 if i >= LEAPP_TSV_MAX_ROWS_PER_FILE:
                     break
@@ -154,11 +270,13 @@ def _parse_one_tsv(path, tool_key):
                 pairs = list(zip(headers, row))
                 value_text = " | ".join(f"{h}: {v}" for h, v in pairs if v and v.strip())
                 title = row[0].strip() if row and row[0].strip() else stem
+                timestamp = (_parse_leapp_datetime_str(row[ts_col_idx])
+                             if ts_col_idx is not None and ts_col_idx < len(row) else None)
                 records.append({
                     "artifact_type": artifact_type,
                     "title": title if artifact_type != "leapp_module_finding" else f"[{stem}] {title}",
                     "url": "", "value": value_text or "(no non-empty columns)",
-                    "timestamp": None,
+                    "timestamp": timestamp,
                     "extra": {"leapp_tool": tool_key, "leapp_module": stem, "row": dict(pairs)},
                 })
     except (OSError, csv.Error, UnicodeDecodeError):

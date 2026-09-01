@@ -228,13 +228,33 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "leapp_installed_app": "ALEAPP/iLEAPP: Installed Apps",
     "leapp_account": "ALEAPP/iLEAPP: Accounts",
     "leapp_sms_message": "ALEAPP/iLEAPP: SMS Messages",
+    # Timeline-timestamp parsing added 2026-09-01, per real module-source
+    # archaeology against this app's own pinned ALEAPP commit (see core/
+    # leapp_tsv_utils.py's own docstring for the full grounding) - several
+    # new curated types added alongside it (MMS, WhatsApp Calls, Web
+    # Visits, and the message-level modules for Instagram/Snapchat/
+    # Facebook Messenger/Telegram/Signal/TikTok/Reddit) so the Evidence
+    # Timeline's new category filter (Communications/Web Activity/Social
+    # Media - routes/reporting.py's TIMELINE_ACTIVITY_CATEGORY) has real
+    # timestamped data to show for a phone, not just a searchable-but-
+    # timeline-invisible entry the way every LEAPP-sourced type was before.
+    "leapp_mms_message": "ALEAPP/iLEAPP: MMS Messages",
     "leapp_call_log": "ALEAPP/iLEAPP: Call Logs",
     "leapp_contact": "ALEAPP/iLEAPP: Contacts",
     "leapp_browser_history": "ALEAPP/iLEAPP: Browser History",
+    "leapp_browser_web_visit": "ALEAPP/iLEAPP: Browser Web Visits",
     "leapp_browser_bookmark": "ALEAPP/iLEAPP: Browser Bookmarks",
     "leapp_browser_autofill": "ALEAPP/iLEAPP: Browser Autofill",
     "leapp_whatsapp_message": "ALEAPP/iLEAPP: WhatsApp Messages",
+    "leapp_whatsapp_call_log": "ALEAPP/iLEAPP: WhatsApp Calls",
     "leapp_whatsapp_contact": "ALEAPP/iLEAPP: WhatsApp Contacts",
+    "leapp_instagram_message": "ALEAPP/iLEAPP: Instagram Direct Messages",
+    "leapp_snapchat_message": "ALEAPP/iLEAPP: Snapchat Messages",
+    "leapp_facebook_messenger_message": "ALEAPP/iLEAPP: Facebook Messenger Chats",
+    "leapp_telegram_message": "ALEAPP/iLEAPP: Telegram Messages",
+    "leapp_signal_message": "ALEAPP/iLEAPP: Signal Messages",
+    "leapp_tiktok_message": "ALEAPP/iLEAPP: TikTok Messages",
+    "leapp_reddit_message": "ALEAPP/iLEAPP: Reddit Chat Messages",
     "leapp_app_usage": "ALEAPP/iLEAPP: App Usage Stats",
     "leapp_module_finding": "ALEAPP/iLEAPP: Other Module Finding",
     # Google Takeout import (core/takeout_utils.py) - an already-obtained
