@@ -50,6 +50,7 @@ from core.jumplist_utils import find_jumplist_files, parse_jumplist_file
 from core.thumbcache_utils import find_thumbcache_files, extract_thumbcache_entries, parse_thumbcache_container_header
 from core.stickynotes_utils import find_sticky_notes_files, parse_sticky_notes_directory
 from core.windows_activity_utils import find_windows_activity_files, parse_windows_activity_file
+from core.srum_utils import find_srum_files, parse_srum_file
 from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
 from core.mft_utils import find_mft_files, analyze_mft_file
 from core.usnjrnl_utils import find_usnjrnl_files, parse_usnjrnl_file
@@ -1245,6 +1246,44 @@ def parse_windows_activity():
             _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
 
     log_chain_of_custody("windows_activity_files_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_srum', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_srum():
+    """Whole-directory scan for SRUM (SRUDB.dat) - same shape as
+    parse_prefetch()/parse_windows_activity() above, just a different
+    candidate-file matcher/dispatcher pair (core/srum_utils.py)."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_srum_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        records = parse_srum_file(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("srum_files_parsed", {
         "directory": target_dir, "candidates_found": len(candidate_paths),
         "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
     })
