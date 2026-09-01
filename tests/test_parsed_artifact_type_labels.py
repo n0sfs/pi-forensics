@@ -79,6 +79,10 @@ _APPLE_EXPORT_ARTIFACT_TYPES = {
     "apple_contact", "apple_calendar_event", "apple_reminder",
     "apple_safari_bookmark", "apple_photo_metadata",
 }
+# wpndatabase.db / ActivitiesCache.db, 2026-09-01 - core/windows_activity_utils.py.
+_WINDOWS_ACTIVITY_ARTIFACT_TYPES = {"windows_notification", "windows_timeline_activity"}
+# SRUM (SRUDB.dat), 2026-09-01 - core/srum_utils.py.
+_SRUM_ARTIFACT_TYPES = {"srum_app_usage", "srum_network_usage"}
 
 
 def test_parsed_artifact_type_labels_covers_every_known_producer():
@@ -89,7 +93,7 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
                 | _URL_IOC_ARTIFACT_TYPES | _CRYPTO_ARTIFACT_TYPES | _MOBILE_ARTIFACT_TYPES
                 | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES
                 | _ANDROID_ARTIFACT_TYPES | _LEAPP_TSV_ARTIFACT_TYPES | _TAKEOUT_ARTIFACT_TYPES
-                | _APPLE_EXPORT_ARTIFACT_TYPES)
+                | _APPLE_EXPORT_ARTIFACT_TYPES | _WINDOWS_ACTIVITY_ARTIFACT_TYPES | _SRUM_ARTIFACT_TYPES)
     actual = set(case_index.PARSED_ARTIFACT_TYPE_LABELS.keys())
     missing = expected - actual
     assert not missing, f"artifact_type(s) producible by a parser but missing from PARSED_ARTIFACT_TYPE_LABELS (row-fetch route would silently return no rows for these): {missing}"

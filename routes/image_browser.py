@@ -74,6 +74,10 @@ from core.stickynotes_utils import (
     STICKY_NOTES_FILENAME, STICKY_NOTES_SCAN_MAX_CANDIDATES,
     parse_sticky_notes_directory, sticky_notes_canonical_filename,
 )
+from core.windows_activity_utils import (
+    WINDOWS_ACTIVITY_SCAN_MAX_CANDIDATES,
+    parse_windows_activity_file, windows_activity_canonical_filename, windows_activity_base_name,
+)
 from core.jumplist_utils import (
     JUMPLIST_AUTOMATIC_EXTENSION, JUMPLIST_CUSTOM_EXTENSION, JUMPLIST_SCAN_MAX_CANDIDATES, parse_jumplist_file,
 )
@@ -1873,6 +1877,88 @@ def image_parse_sticky_notes():
             }, records)
 
     log_chain_of_custody("sticky_notes_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "families_parsed": families_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": families_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_windows_activity', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_windows_activity():
+    """In-image counterpart to parse_windows_activity()
+    (routes/file_explorer.py) - same grouping-by-in-image-parent-directory
+    extraction shape image_parse_sticky_notes() above already established
+    (both wpndatabase.db and ActivitiesCache.db can have their own -wal/
+    -shm sidecars that must sit together, correctly named, in one real
+    directory for SQLite to checkpoint them correctly on open), generalized
+    to cover TWO independent artifact families in one pass via
+    windows_activity_base_name() rather than assuming every group found is
+    the same family."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    def _is_windows_activity_candidate(name, path):
+        return windows_activity_canonical_filename(name) is not None
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, _is_windows_activity_candidate, WINDOWS_ACTIVITY_SCAN_MAX_CANDIDATES * 3)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    groups = {}
+    for fs, fsinfo, entry, path in candidates:
+        canonical = windows_activity_canonical_filename(entry['name'])
+        base_name = windows_activity_base_name(canonical)
+        if not base_name:
+            continue
+        parent_dir = path.rsplit('/', 1)[0] if '/' in path else ''
+        groups.setdefault((fsinfo['offset'], parent_dir, base_name), []).append((fs, fsinfo, entry, path))
+
+    counts = {}
+    families_parsed = 0
+    for (_fs_offset, _parent_dir, base_name), members in groups.items():
+        main_member = next((m for m in members if windows_activity_canonical_filename(m[2]['name']) == base_name), None)
+        if main_member is None:
+            continue
+        tmp_dir = tempfile.mkdtemp(prefix='pif_winactivity_img_')
+        try:
+            for fs_m, fsinfo_m, entry_m, path_m in members:
+                canonical_name = windows_activity_canonical_filename(entry_m['name'])
+                if not canonical_name:
+                    continue
+                out_path = os.path.join(tmp_dir, canonical_name)
+                try:
+                    tsk_file = fs_m.open_meta(inode=_tsk_parse_inode(entry_m['inode']))
+                    with open(out_path, 'wb') as out_f:
+                        _tsk_stream_file(tsk_file, out_f.write)
+                except Exception:
+                    continue
+            records = parse_windows_activity_file(os.path.join(tmp_dir, base_name), base_name)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        if not records:
+            continue
+        families_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": main_member[1]['offset'],
+                "inode": main_member[2]['inode'], "path": main_member[3],
+            }, records)
+
+    log_chain_of_custody("windows_activity_files_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
         "families_parsed": families_parsed, "counts": counts, "truncated": truncated,
     })
