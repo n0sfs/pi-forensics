@@ -48,6 +48,73 @@ def test_parse_shell_history_with_histtimeformat_markers(tmp_path):
     assert records[1]["timestamp"] == 1700000100.0
 
 
+def test_parse_zsh_extended_history_simple_entries(tmp_path):
+    p = tmp_path / ".zsh_history"
+    p.write_text(": 1700000000:0;ls -la\n: 1700000100:2;rm -rf /important\n")
+    records = la.parse_linux_shell_history_file(str(p))
+    assert len(records) == 2
+    assert records[0]["title"] == "ls -la"
+    assert records[0]["timestamp"] == 1700000000.0
+    assert records[0]["extra"]["is_multiline"] is False
+    assert records[1]["title"] == "rm -rf /important"
+    assert records[1]["timestamp"] == 1700000100.0
+
+
+def test_parse_zsh_extended_history_reassembles_a_real_multiline_command(tmp_path):
+    # Exact real on-disk byte sequence zsh's EXTENDED_HISTORY writer
+    # produces for a genuine 3-line command (a literal trailing backslash
+    # immediately before each embedded newline, confirmed via a real
+    # zsh-project mailing-list bug thread) - hand-traced before trusting
+    # this as a fixture, matching this project's own established
+    # discipline (already caught a real mistake once this session doing
+    # exactly this for core/srum_utils.py's own test fixture).
+    raw = ": 1700000200:0;for i in 1 2 3; do\\\n  echo $i\\\ndone\n"
+    p = tmp_path / ".zsh_history"
+    p.write_text(raw)
+    records = la.parse_linux_shell_history_file(str(p))
+    assert len(records) == 1
+    assert records[0]["value"] == "for i in 1 2 3; do\n  echo $i\ndone"
+    assert records[0]["timestamp"] == 1700000200.0
+    assert records[0]["extra"]["is_multiline"] is True
+
+
+def test_parse_zsh_extended_history_truncated_continuation_still_surfaced(tmp_path):
+    # A file that ends mid-continuation (a corrupted/truncated write) must
+    # still surface the partial command, never silently drop it.
+    raw = ": 1700000300:0;echo first\\\n  echo second"
+    p = tmp_path / ".zsh_history"
+    p.write_text(raw)
+    records = la.parse_linux_shell_history_file(str(p))
+    assert len(records) == 1
+    assert records[0]["value"] == "echo first\n  echo second"
+
+
+def test_parse_zsh_history_stock_plain_format_still_works_unaffected(tmp_path):
+    # zsh's EXTENDED_HISTORY is confirmed NOT macOS's real default (2026-
+    # 09-01 research) - a stock, unmodified .zsh_history is plain text,
+    # and this real regression check confirms that common case is still
+    # handled correctly, completely unaffected by the new detection logic.
+    p = tmp_path / ".zsh_history"
+    p.write_text("git status\ngit commit -am 'wip'\n")
+    records = la.parse_linux_shell_history_file(str(p))
+    assert [r["title"] for r in records] == ["git status", "git commit -am 'wip'"]
+    assert all(r["timestamp"] is None for r in records)
+
+
+def test_parse_zsh_extended_history_mixed_with_plain_lines_in_the_same_file(tmp_path):
+    # Per-line detection (not a whole-file mode decision) - a file that's
+    # accumulated content across a shell-config change over time must
+    # still parse each entry correctly.
+    p = tmp_path / ".zsh_history"
+    p.write_text("plain old command\n: 1700000400:0;newer timestamped command\n")
+    records = la.parse_linux_shell_history_file(str(p))
+    assert len(records) == 2
+    assert records[0]["title"] == "plain old command"
+    assert records[0]["timestamp"] is None
+    assert records[1]["title"] == "newer timestamped command"
+    assert records[1]["timestamp"] == 1700000400.0
+
+
 # --- /etc/passwd ---
 
 def test_find_passwd_requires_etc_parent_directory(tmp_path):

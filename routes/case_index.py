@@ -287,6 +287,7 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "srum_network_usage": "SRUM: Network Data Usage",
     "powershell_console_history": "PowerShell Console History",
     "firewall_connection_log": "Windows Firewall Connection Log",
+    "macos_launchd_item": "macOS: LaunchAgent/LaunchDaemon (Persistence)",
     # Email parsing (2026-08-30, tool-survey follow-up) - .eml/.mbox via the
     # standard library, .pst/.ost via libpff-python (core/email_utils.py).
     "email_message": "Email Message",

@@ -84,6 +84,9 @@ from core.powershell_history_utils import (
     POWERSHELL_HISTORY_SCAN_MAX_CANDIDATES, parse_powershell_history_file,
 )
 from core.firewall_log_utils import FIREWALL_LOG_FILENAMES, FIREWALL_LOG_SCAN_MAX_CANDIDATES, parse_firewall_log_file
+from core.macos_launchd_utils import (
+    LAUNCHD_PLIST_EXTENSION, LAUNCHD_PARENT_DIR_NAMES, LAUNCHD_SCAN_MAX_CANDIDATES, parse_launchd_plist_file,
+)
 from core.jumplist_utils import (
     JUMPLIST_AUTOMATIC_EXTENSION, JUMPLIST_CUSTOM_EXTENSION, JUMPLIST_SCAN_MAX_CANDIDATES, parse_jumplist_file,
 )
@@ -2143,6 +2146,74 @@ def image_parse_firewall_log():
             }, records)
 
     log_chain_of_custody("firewall_log_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_macos_launchd', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_macos_launchd():
+    """In-image counterpart to parse_macos_launchd() (routes/file_explorer.py).
+    Only ever finds anything against an HFS+-formatted image - this app's
+    pytsk3 pipeline cannot currently open an APFS container at all (a real,
+    disclosed gap, see core/macos_launchd_utils.py's own docstring), which
+    covers virtually every Mac sold since ~2017-2018. Included anyway since
+    it's free once the underlying image IS browsable (an older Intel Mac,
+    a Time Machine/backup volume) and correctly, gracefully finds zero
+    candidates rather than erroring against an image whose filesystem this
+    app can't read at all."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    def _is_launchd_candidate(name, path):
+        if not name.lower().endswith(LAUNCHD_PLIST_EXTENSION):
+            return False
+        parts = path.split('/')
+        return len(parts) >= 2 and parts[-2].lower() in LAUNCHD_PARENT_DIR_NAMES
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, _is_launchd_candidate, LAUNCHD_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']), suffix='.plist')
+            records = parse_launchd_plist_file(tmp_path, entry['name'])
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("macos_launchd_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
         "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
     })

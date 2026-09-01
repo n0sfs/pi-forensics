@@ -1920,6 +1920,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     srum_network_usage: 'SRUM: Network Data Usage',
     powershell_console_history: 'PowerShell Console History',
     firewall_connection_log: 'Windows Firewall Connection Log',
+    macos_launchd_item: 'macOS: LaunchAgent/LaunchDaemon (Persistence)',
     email_message: 'Email Message',
     // Live Collection USB, Phase 2 (2026-09-01) - kept in sync with
     // routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS. This exact side
@@ -4487,6 +4488,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnParseSrum', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParsePowerShellHistory', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseFirewallLog', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseMacosLaunchd', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseRecycleBin', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseCryptoWallets', section: 'ctxSecArtifacts', visible: item => item.is_dir },
@@ -4528,6 +4530,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnEnterSrumImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterPowerShellHistoryImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterFirewallLogImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterMacosLaunchdImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterRecycleBinImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterLinuxArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterAndroidArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
@@ -4650,6 +4653,7 @@ async function contextMenuBrowseImageAnd(action) {
         srum: runImageSrumParse,
         powershellhistory: runImagePowerShellHistoryParse,
         firewalllog: runImageFirewallLogParse,
+        macoslaunchd: runImageMacosLaunchdParse,
         recyclebin: runImageRecycleBinParse,
         linuxartifacts: runImageLinuxArtifactsParse,
         androidartifacts: runImageAndroidArtifactsParse,
@@ -6263,6 +6267,58 @@ async function runImageFirewallLogParse() {
         }
     } catch (err) {
         showToast('Firewall log scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedMacosLaunchdParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_macos_launchd', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`macOS LaunchAgents/Daemons scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No macOS LaunchAgents/LaunchDaemons plists found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} launchd item(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} launchd item(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('macOS LaunchAgents/Daemons scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageMacosLaunchdParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_macos_launchd', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`macOS LaunchAgents/Daemons scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No macOS LaunchAgents/LaunchDaemons plists found in this image (also expected if this is an APFS-formatted image - not yet browsable by this app).', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} launchd item(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} launchd item(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('macOS LaunchAgents/Daemons scan failed: request error.', 'danger');
     }
 }
 
