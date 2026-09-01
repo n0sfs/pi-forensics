@@ -21,6 +21,24 @@ file after updating to see what changed.
 
 ---
 
+## [1.14.0] - 2026-09-01
+
+### New
+
+- **Import an already-extracted Apple "Data & Privacy" export** (from privacy.apple.com), the same
+  way Google Takeout archives were added last release. Apple emails you a password and delivers the
+  export as an encrypted zip - this app never handles that password, so you extract the archive
+  yourself first, then point it at the resulting folder. Contacts and Calendars/Reminders parse
+  reliably (vCard and iCalendar are genuine open, published standards, not something Apple could
+  quietly change the shape of); Safari Bookmarks and Photos metadata are labeled Best-Effort. Any
+  GPS-tagged photo it finds exports as a map the same way a photo's own EXIF data already does -
+  Apple's export has no location-history category at all (Find My/Significant Locations never leaves
+  the device, encrypted end-to-end even from Apple itself), so there's nothing else to look for
+  there. Like Google Takeout, this only ever reads a file you already obtained yourself; it never
+  logs into an Apple account or touches the network.
+
+---
+
 ## [1.13.0] - 2026-09-01
 
 ### New
