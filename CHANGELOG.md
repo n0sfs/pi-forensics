@@ -21,6 +21,20 @@ file after updating to see what changed.
 
 ---
 
+## [1.23.0] - 2026-09-01
+
+### New
+
+- **SRUM can now be parsed and read directly** - widely considered one of the single most valuable
+  pieces of evidence a modern Windows system keeps: which applications actually used the network
+  (how much data sent/received) and how much CPU time they consumed, tracked over a rolling window -
+  even for applications that have since been uninstalled. Reached the same way as every other new
+  artifact this session (right-click a folder, or run it against a whole acquired image), and shown
+  as an optional extra step in Auto Analyze. Not yet tested against a real Windows-produced sample
+  file - flagged in the tool's own tooltip as not yet verified.
+
+---
+
 ## [1.22.0] - 2026-09-01
 
 ### New
