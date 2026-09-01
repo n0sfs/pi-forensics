@@ -21,6 +21,11 @@ static/vendor/osm_tiles/
 /live_collection/
 /pysim/
 
+# Same class again - install.py builds mquire from source at install time
+# and drops the resulting binary here (INSTALL_DIR/bin/mquire); the binary
+# itself is never something this repo ships or builds from source either.
+/bin/
+
 # Evidence & Data Files (DO NOT PUSH EVIDENCE TO GITHUB)
 *.dd
 *.raw
