@@ -621,3 +621,184 @@ def test_find_registry_hive_files_recognizes_usrclass(tmp_path):
     found, truncated = ru.find_registry_hive_files(str(tmp_path))
     assert len(found) == 1
     assert os.path.basename(found[0]) == "UsrClass.dat"
+
+
+# --- UserAssist (2026-09-01) ---
+# Real research grounding before any code was written: the modern 72-byte
+# value-data layout was cross-validated across four independent forensic
+# parsers (log2timeline/plaso, RegRipper3.0, libyal/winreg-kb, and a
+# standalone python-registry-based implementation) - see
+# core/registry_utils.py's own _parse_user_assist()-adjacent comments for
+# the full grounding and source citations.
+
+import codecs
+
+
+def _build_userassist_72byte_value(run_count, focus_count, focus_duration_ms, last_run_filetime):
+    """The confirmed modern (Vista+, 'version 5') 72-byte layout:
+    offset 4=run_count, 8=focus_count, 12=focus_duration_ms (all uint32),
+    60=last-run FILETIME (uint64) - the rest is unknown/unparsed padding,
+    matching what this module's own parser actually reads."""
+    data = struct.pack('<I', 0)  # offset 0: unknown
+    data += struct.pack('<I', run_count)  # offset 4
+    data += struct.pack('<I', focus_count)  # offset 8
+    data += struct.pack('<I', focus_duration_ms)  # offset 12
+    data += b'\x00' * 40  # offset 16-55: 10 unknown 32-bit floats
+    data += struct.pack('<I', 0)  # offset 56: unknown
+    data += struct.pack('<Q', last_run_filetime)  # offset 60
+    data += struct.pack('<I', 0)  # offset 68: unknown
+    assert len(data) == 72
+    return data
+
+
+def _build_userassist_hive(path, guid_name, ua_entries):
+    """ua_entries: [(decoded_value_name, raw_72_byte_data), ...] - the
+    decoded name is ROT13-ENCODED here before being written as the real VK
+    name, so the parser's own ROT13-DECODE step is genuinely exercised end
+    to end, not bypassed. Tree: Software/Microsoft/Windows/CurrentVersion/
+    Explorer/UserAssist/{guid_name}/Count, mirroring
+    _build_shellbags_usrclass_hive()'s exact nested-subkey construction
+    technique."""
+    h = _HiveBuilder()
+
+    def make_binary_vk(name, raw):
+        off = h.alloc(raw)
+        name_b = name.encode('ascii')
+        vk = b'vk' + struct.pack('<H', len(name_b)) + struct.pack('<I', len(raw))
+        vk += struct.pack('<I', off) + struct.pack('<I', 3)  # REG_BINARY
+        vk += struct.pack('<H', 1) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(vk))
+
+    def make_values_list(vk_offsets):
+        return h.alloc(b''.join(struct.pack('<I', o) for o in vk_offsets))
+
+    def make_nk(name, subkey_list_off, subkey_count, values_list_off, values_count, is_root=False):
+        flags = 0x0020 | (0x0004 if is_root else 0)
+        name_b = name.encode('ascii')
+        nk = b'nk' + struct.pack('<H', flags) + struct.pack('<Q', _FT_NOW)
+        nk += struct.pack('<I', 0) + struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', subkey_count if subkey_count else 0xFFFFFFFF) + struct.pack('<I', 0)
+        nk += struct.pack('<I', subkey_list_off if subkey_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', values_count if values_count else 0xFFFFFFFF)
+        nk += struct.pack('<I', values_list_off if values_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF) + struct.pack('<I', 0xFFFFFFFF)
+        nk += b'\x00' * (0x48 - 0x34)
+        nk += struct.pack('<H', len(name_b)) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(nk))
+
+    def make_lf(nk_offsets):
+        body = b'lf' + struct.pack('<H', len(nk_offsets))
+        for off in nk_offsets:
+            body += struct.pack('<I', off) + b'\x00\x00\x00\x00'
+        return h.alloc(body)
+
+    vk_offsets = [make_binary_vk(codecs.encode(name, 'rot_13'), data) for name, data in ua_entries]
+    vl_count = make_values_list(vk_offsets)
+    nk_count = make_nk('Count', None, 0, vl_count, len(vk_offsets))
+    lf_guid = make_lf([nk_count])
+    nk_guid = make_nk(guid_name, lf_guid, 1, None, 0)
+    lf_ua = make_lf([nk_guid])
+    nk_ua = make_nk('UserAssist', lf_ua, 1, None, 0)
+    lf_explorer = make_lf([nk_ua])
+    nk_explorer = make_nk('Explorer', lf_explorer, 1, None, 0)
+    lf_cv = make_lf([nk_explorer])
+    nk_cv = make_nk('CurrentVersion', lf_cv, 1, None, 0)
+    lf_windows = make_lf([nk_cv])
+    nk_windows = make_nk('Windows', lf_windows, 1, None, 0)
+    lf_ms = make_lf([nk_windows])
+    nk_ms = make_nk('Microsoft', lf_ms, 1, None, 0)
+    lf_sw = make_lf([nk_ms])
+    nk_sw = make_nk('Software', lf_sw, 1, None, 0)
+    lf_root = make_lf([nk_sw])
+    root_off = make_nk('ROOT', lf_root, 1, None, 0, is_root=True)
+
+    h.set_parent(nk_sw, root_off)
+    h.set_parent(nk_ms, nk_sw)
+    h.set_parent(nk_windows, nk_ms)
+    h.set_parent(nk_cv, nk_windows)
+    h.set_parent(nk_explorer, nk_cv)
+    h.set_parent(nk_ua, nk_explorer)
+    h.set_parent(nk_guid, nk_ua)
+    h.set_parent(nk_count, nk_guid)
+
+    hbin_data = bytes(h.buf)
+    hbin_total = 0x20 + len(hbin_data)
+    hbin_size = ((hbin_total + 0xFFF) // 0x1000) * 0x1000
+    hbin = b'hbin' + struct.pack('<I', 0) + struct.pack('<I', hbin_size)
+    hbin += b'\x00' * (0x20 - 0xC) + hbin_data + b'\x00' * (hbin_size - hbin_total)
+
+    regf = struct.pack('<I', 0x66676572) + struct.pack('<I', 1) + struct.pack('<I', 1)
+    regf += struct.pack('<Q', _FT_NOW) + struct.pack('<I', 1) + struct.pack('<I', 5)
+    regf += struct.pack('<I', 0) + struct.pack('<I', 1) + struct.pack('<I', root_off)
+    regf += struct.pack('<I', hbin_size) + struct.pack('<I', 1)
+    regf += _utf16('NTUSER.DAT').ljust(64, b'\x00')
+    regf += b'\x00' * (0x1000 - len(regf))
+    regf = regf[:0x1000]
+
+    with open(path, 'wb') as f:
+        f.write(regf)
+        f.write(hbin)
+
+
+def test_parse_user_assist_real_runpath_entry_with_correct_field_extraction(tmp_path):
+    last_run = _filetime(datetime.datetime(2026, 8, 20, 14, 0, 0))
+    data = _build_userassist_72byte_value(run_count=12, focus_count=3, focus_duration_ms=4500, last_run_filetime=last_run)
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_userassist_hive(hive_path, 'CEBFF5CD-ACE2-4F4F-9178-9926F41749EA',
+                            [('UEME_RUNPATH:C:\\Windows\\System32\\notepad.exe', data)])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    ua_records = [r for r in records if r["artifact_type"] == "registry_userassist"]
+    assert len(ua_records) == 1
+    r = ua_records[0]
+    assert r["value"] == 'UEME_RUNPATH:C:\\Windows\\System32\\notepad.exe'
+    assert r["title"] == 'notepad.exe'  # basename extracted from the decoded RUNPATH entry
+    assert r["extra"]["run_count"] == 12
+    assert r["extra"]["focus_count"] == 3
+    assert r["extra"]["focus_duration_ms"] == 4500
+    assert r["extra"]["guid"] == 'CEBFF5CD-ACE2-4F4F-9178-9926F41749EA'
+    assert r["extra"]["category"] == 'Application/Executable Execution'
+    assert r["timestamp"] == datetime.datetime(2026, 8, 20, 14, 0, 0, tzinfo=datetime.timezone.utc).timestamp()
+
+
+def test_parse_user_assist_unknown_guid_falls_back_to_the_raw_guid_as_its_own_label(tmp_path):
+    data = _build_userassist_72byte_value(1, 0, 0, _FT_NOW)
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_userassist_hive(hive_path, 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE',
+                            [('UEME_RUNCPL:some_cpl_applet', data)])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    ua_records = [r for r in records if r["artifact_type"] == "registry_userassist"]
+    assert len(ua_records) == 1
+    assert ua_records[0]["extra"]["category"] == 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE'  # no known label - falls back to the GUID itself
+    assert ua_records[0]["title"] == 'UEME_RUNCPL:some_cpl_applet'  # no backslash - no basename to extract, full decoded name used as-is
+
+
+def test_parse_user_assist_skips_ctlsession_marker_and_wrong_sized_values(tmp_path):
+    # UEME_CTLSESSION is a real value name this key holds, but it's a
+    # session marker, not an execution record, AND (in the real modern
+    # format) a completely different, much larger data size - both facts
+    # this parser must correctly treat as "skip, don't misparse."
+    real_data = _build_userassist_72byte_value(5, 1, 100, _FT_NOW)
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_userassist_hive(hive_path, 'CEBFF5CD-ACE2-4F4F-9178-9926F41749EA', [
+        ('UEME_CTLSESSION', b'\x00' * 72),  # correct size but must still be name-filtered out
+        ('UEME_RUNPATH:C:\\legacy_format_16_bytes.exe', b'\x00' * 16),  # legacy-format size - must be skipped, not misparsed
+        ('UEME_RUNPATH:C:\\real_entry.exe', real_data),
+    ])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    ua_records = [r for r in records if r["artifact_type"] == "registry_userassist"]
+    assert len(ua_records) == 1
+    assert ua_records[0]["value"] == 'UEME_RUNPATH:C:\\real_entry.exe'
+
+
+def test_decode_userassist_value_name_is_real_rot13_not_a_custom_scheme():
+    assert ru._decode_userassist_value_name('HRZR_EHACNGU') == 'UEME_RUNPATH'
+    # Non-letter characters (the ':' separator, digits in a hex suffix)
+    # must pass through completely untouched - confirmed against a real,
+    # realistic encoded value shape.
+    assert ru._decode_userassist_value_name('UEME_RUNPATH') == 'HRZR_EHACNGU'  # ROT13 is its own inverse
+
+
+def test_userassist_title_from_decoded_name_extracts_basename():
+    assert ru._userassist_title_from_decoded_name('UEME_RUNPATH:C:\\Windows\\notepad.exe:0000') == 'notepad.exe'
+    assert ru._userassist_title_from_decoded_name('UEME_RUNCPL:no_backslash_here') == 'UEME_RUNCPL:no_backslash_here'

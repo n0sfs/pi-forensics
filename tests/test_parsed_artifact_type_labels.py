@@ -42,7 +42,7 @@ _URL_IOC_ARTIFACT_TYPES = {"browser_url_ioc_match"}
 _CRYPTO_ARTIFACT_TYPES = {"crypto_wallet_file"}
 _MOBILE_ARTIFACT_TYPES = {"mobile_sms_message", "mobile_contact", "mobile_call_log"}
 _NTFS_JOURNAL_ARTIFACT_TYPES = {"mft_file_record", "usnjrnl_change_record"}
-_REGISTRY_ARTIFACT_TYPES = _REGISTRY_ARTIFACT_TYPES | {"registry_shellbag", "registry_shimcache"}
+_REGISTRY_ARTIFACT_TYPES = _REGISTRY_ARTIFACT_TYPES | {"registry_shellbag", "registry_shimcache", "registry_userassist"}
 _EMAIL_ARTIFACT_TYPES = {"email_message"}
 # Live Collection USB, Phase 2 (2026-09-01) - core/live_collection_results_utils.py.
 _LIVE_COLLECTION_ARTIFACT_TYPES = {

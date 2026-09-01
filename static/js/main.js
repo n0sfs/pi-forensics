@@ -1903,6 +1903,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     usnjrnl_change_record: 'NTFS: $UsnJrnl Change Record',
     registry_shellbag: 'Registry: ShellBags (Folder Access)',
     registry_shimcache: 'Registry: Shimcache (Program Execution)',
+    registry_userassist: 'Registry: UserAssist (Program Launch History)',
     email_message: 'Email Message',
     // Live Collection USB, Phase 2 (2026-09-01) - kept in sync with
     // routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS. This exact side

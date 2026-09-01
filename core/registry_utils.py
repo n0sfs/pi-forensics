@@ -23,6 +23,7 @@ datetime->Unix-seconds conversion, not a FILETIME decoder.
 """
 import os
 import re
+import codecs
 import struct
 
 from Registry import Registry
@@ -487,6 +488,128 @@ def _parse_shimcache(root_key):
     return records
 
 
+# UserAssist: NTUSER.DAT\Software\Microsoft\Windows\CurrentVersion\Explorer\
+# UserAssist\{GUID}\Count - evidence a user actually CLICKED/LAUNCHED
+# something via the Explorer shell (a real, distinct signal from Prefetch/
+# Amcache, both already covered elsewhere in this module - neither of those
+# captures GUI-launched-vs-command-line-launched, and UserAssist's own
+# focus-duration field can reveal "launched then immediately closed/crashed"
+# patterns Prefetch/Amcache alone can't).
+#
+# Grounded via real, sourced research before writing any code, cross-
+# validated across FOUR independent sources: log2timeline/plaso's real
+# production parser, RegRipper3.0's canonical, currently-maintained Perl
+# plugin, libyal/winreg-kb's formal reverse-engineered format reference,
+# and a third, standalone Python implementation already built on
+# python-registry (the exact same library this module already uses) - all
+# four agree byte-for-byte on the modern (Vista+, "version 5") 72-byte
+# value-data layout used here. There are more than a dozen real GUID
+# subkeys observed in the wild (plaso itself hardcodes 12), several still
+# undocumented even by winreg-kb's own reference - rather than hardcode a
+# GUID allowlist that would silently miss a future/undocumented one, this
+# walks every subkey under UserAssist generically (matching this module's
+# own established "robust generic walk over a brittle hardcoded list"
+# convention already used for RecentDocs' per-extension subkeys) and only
+# uses the two well-known GUIDs to attach a human-readable label, never to
+# gate which subkeys get parsed.
+#
+# Deliberately does NOT support the legacy 16-byte (Win2000/XP/2003/Vista,
+# "version 3") format - matches this module's/this app's own established
+# "target a reasonably modern, common schema" precedent (Safari's
+# History.plist, Jump Lists' AutomaticDestinations-only scope). The two
+# formats are told apart by data LENGTH (16 vs. 72 bytes), not by reading
+# the key's own optional 'Version' REG_DWORD value first - confirmed as
+# the more defensive choice by two of the four sources (a real hive can
+# lack that value; length-based dispatch never depends on it existing).
+_USERASSIST_ENTRY_SIZE = 72
+_USERASSIST_GUID_LABELS = {
+    'CEBFF5CD-ACE2-4F4F-9178-9926F41749EA': 'Application/Executable Execution',
+    'F4E57C4B-2036-45F0-A9AB-443BCFE33D9F': 'Shortcut File Execution',
+}
+
+
+def _decode_userassist_value_name(raw_name):
+    """ROT13-decodes a UserAssist value's own name - applied unconditionally
+    to the full string (Python's stdlib 'rot_13' codec already only
+    permutes a-z/A-Z and passes every other character through untouched,
+    matching winreg-kb's own documented scope for this exact encoding - no
+    custom decoder logic needed). A correctly-decoded name always starts
+    with the literal 'UEME_' prefix - used here only as a sanity signal in
+    the docstring/comments, never as a gate (a name that doesn't start with
+    it after decoding is still returned as-is, best-effort)."""
+    try:
+        return codecs.decode(raw_name, 'rot_13')
+    except Exception:
+        return raw_name
+
+
+def _userassist_title_from_decoded_name(decoded_name):
+    """Best-effort: a modern UserAssist RUNPATH entry's decoded name looks
+    like 'UEME_RUNPATH:C:\\Windows\\System32\\notepad.exe:<hex suffix>' -
+    this pulls out just the executable's own basename for a readable title,
+    degrading gracefully to the full decoded name for anything that doesn't
+    match this shape (a UEME_RUNCPL/UEME_RUNPIDL/etc. entry, or a path this
+    heuristic doesn't recognize) rather than guessing further."""
+    if '\\' not in decoded_name:
+        return decoded_name
+    tail = decoded_name.rsplit('\\', 1)[-1]
+    return tail.split(':', 1)[0] if ':' in tail else tail
+
+
+def _parse_user_assist(root_key):
+    records = []
+    try:
+        base = root_key.find_key(r'Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist')
+    except Registry.RegistryKeyNotFoundException:
+        return records
+    try:
+        guid_keys = list(base.subkeys())
+    except Registry.RegistryKeyNotFoundException:
+        return records
+    for guid_key in guid_keys:
+        guid_name = guid_key.name().strip('{}').upper()
+        guid_label = _USERASSIST_GUID_LABELS.get(guid_name, guid_name)
+        try:
+            count_key = guid_key.find_key('Count')
+        except Registry.RegistryKeyNotFoundException:
+            continue
+        for v in count_key.values():
+            decoded_name = _decode_userassist_value_name(v.name())
+            if decoded_name == 'UEME_CTLSESSION':
+                continue  # a session marker, not a real execution record - and a different, much larger data size anyway
+            try:
+                raw = v.raw_data()
+            except Exception:
+                continue
+            # The real safety net this format actually needs (matching
+            # plaso's own approach) - any value whose data isn't exactly
+            # the modern 72-byte structure is skipped rather than
+            # misparsed, which also naturally catches the legacy 16-byte
+            # format and any other undocumented value this key might hold.
+            if not raw or len(raw) != _USERASSIST_ENTRY_SIZE:
+                continue
+            try:
+                run_count = struct.unpack_from('<I', raw, 4)[0]
+                focus_count = struct.unpack_from('<I', raw, 8)[0]
+                focus_duration_ms = struct.unpack_from('<I', raw, 12)[0]
+                last_run_raw = struct.unpack_from('<Q', raw, 60)[0]
+            except struct.error:
+                continue
+            records.append({
+                "artifact_type": "registry_userassist",
+                "title": _userassist_title_from_decoded_name(decoded_name),
+                "url": "",
+                "value": decoded_name,
+                "timestamp": filetime_to_unix(last_run_raw),
+                "extra": {
+                    "guid": guid_name, "category": guid_label,
+                    "run_count": run_count, "focus_count": focus_count,
+                    "focus_duration_ms": focus_duration_ms,
+                },
+            })
+    return records
+
+
 def parse_registry_hive_file(path, filename):
     """Dispatches a candidate hive file (matched by exact basename against
     REGISTRY_HIVE_FILENAMES) to the right curated key set, returning a flat
@@ -501,7 +624,8 @@ def parse_registry_hive_file(path, filename):
             root = reg.root()
             upper = filename.upper()
             if upper == 'NTUSER.DAT':
-                return _parse_recent_docs(root) + _parse_typed_paths(root) + _parse_run_history(root)
+                return (_parse_recent_docs(root) + _parse_typed_paths(root) + _parse_run_history(root)
+                        + _parse_user_assist(root))
             if upper == 'SYSTEM':
                 return _parse_usb_history(root) + _parse_shimcache(root)
             if upper == 'SOFTWARE':

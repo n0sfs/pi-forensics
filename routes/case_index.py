@@ -260,6 +260,7 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     # routes needed.
     "registry_shellbag": "Registry: ShellBags (Folder Access)",
     "registry_shimcache": "Registry: Shimcache (Program Execution)",
+    "registry_userassist": "Registry: UserAssist (Program Launch History)",
     # Email parsing (2026-08-30, tool-survey follow-up) - .eml/.mbox via the
     # standard library, .pst/.ost via libpff-python (core/email_utils.py).
     "email_message": "Email Message",
