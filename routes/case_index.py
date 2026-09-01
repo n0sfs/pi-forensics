@@ -285,6 +285,8 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "windows_timeline_activity": "Windows Timeline (Activity History)",
     "srum_app_usage": "SRUM: Application Resource Usage",
     "srum_network_usage": "SRUM: Network Data Usage",
+    "powershell_console_history": "PowerShell Console History",
+    "firewall_connection_log": "Windows Firewall Connection Log",
     # Email parsing (2026-08-30, tool-survey follow-up) - .eml/.mbox via the
     # standard library, .pst/.ost via libpff-python (core/email_utils.py).
     "email_message": "Email Message",
