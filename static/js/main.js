@@ -1862,6 +1862,9 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     mobile_sms_message: 'Mobile: SMS/iMessage',
     mobile_contact: 'Mobile: Contacts',
     mobile_call_log: 'Mobile: Call History',
+    android_sms_message: 'Android: SMS/MMS (Rooted Physical Image Only)',
+    android_contact: 'Android: Contacts (Rooted Physical Image Only)',
+    android_call_log: 'Android: Call Log (Rooted Physical Image Only)',
     // NTFS $MFT / $UsnJrnl parsing (2026-08-30, tool-survey follow-up) -
     // kept in sync with routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS.
     mft_file_record: 'NTFS: $MFT File Record',
@@ -4461,6 +4464,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnEnterPrefetchImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterRecycleBinImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterLinuxArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterAndroidArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterCryptoWalletsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterEmailImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterMobileArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
@@ -4575,6 +4579,7 @@ async function contextMenuBrowseImageAnd(action) {
         prefetch: runImagePrefetchParse,
         recyclebin: runImageRecycleBinParse,
         linuxartifacts: runImageLinuxArtifactsParse,
+        androidartifacts: runImageAndroidArtifactsParse,
         cryptowallets: runImageCryptoWalletParse,
         email: runImageEmailParse,
         mobileartifacts: runImageMobileArtifactsParse,
@@ -5968,6 +5973,32 @@ async function runImageLinuxArtifactsParse() {
         }
     } catch (err) {
         showToast('Linux artifact scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageAndroidArtifactsParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_android_artifacts', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Android artifact scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Android SMS/Contacts/Call Log databases found in this image - normal for a non-rooted pull/backup, or an image that is not an Android userdata partition.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} database file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} database file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Android artifact scan failed: request error.', 'danger');
     }
 }
 
