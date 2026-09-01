@@ -66,6 +66,10 @@ from core.crypto_artifacts import (
 from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_backup_manifest
 from core.evtx_utils import EVTX_EXTENSION, EVTX_SCAN_MAX_CANDIDATES, parse_evtx_file
 from core.prefetch_utils import PREFETCH_EXTENSION, PREFETCH_SCAN_MAX_CANDIDATES, parse_prefetch_file
+from core.thumbcache_utils import (
+    THUMBCACHE_FILENAME_RE, THUMBCACHE_IDX_FILENAME, THUMBCACHE_SCAN_MAX_CANDIDATES,
+    extract_thumbcache_entries, parse_thumbcache_container_header,
+)
 from core.jumplist_utils import (
     JUMPLIST_AUTOMATIC_EXTENSION, JUMPLIST_CUSTOM_EXTENSION, JUMPLIST_SCAN_MAX_CANDIDATES, parse_jumplist_file,
 )
@@ -1700,6 +1704,95 @@ def image_parse_jumplists():
         "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
+
+def _run_thumbcache_extract_body(image_path, dest_dir, case_folder):
+    """The real walk-extract-write work for the in-image Thumbcache route,
+    factored out the same way _run_hash_manifest_body()/
+    _run_recover_deleted_body() already are - both so Auto Analyze could
+    call it directly in a future pass (not wired in yet; extraction writes
+    a real, potentially large number of image files per db, matching
+    recover_deleted's own "opt-in, not a default step" treatment for the
+    identical cost/risk reason) and so the route below stays pure
+    request-parsing. Unlike every metadata-only in-image parser, this one
+    can't reuse _image_scan_candidate_files' + extract-to-temp-then-delete
+    pattern verbatim - the whole point here is a PERSISTENT output, so
+    each candidate's temp extraction is only the intermediate step before
+    core.thumbcache_utils writes the real files into dest_dir itself."""
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, lambda name, path: bool(THUMBCACHE_FILENAME_RE.match(name)) and name.lower() != THUMBCACHE_IDX_FILENAME,
+        THUMBCACHE_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return {"success": False, "error": "No recognized filesystem found in this image."}
+
+    counts = {}
+    files_parsed = 0
+    thumbnails_extracted = 0
+    unsupported_versions = []
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+            header_info = parse_thumbcache_container_header(tmp_path)
+            if header_info and not header_info["supported"]:
+                unsupported_versions.append({"file": entry['name'], "version_label": header_info["version_label"]})
+                continue
+            records = extract_thumbcache_entries(tmp_path, entry['name'], dest_dir)
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        thumbnails_extracted += len(records)
+        counts["thumbcache_thumbnail"] = counts.get("thumbcache_thumbnail", 0) + len(records)
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+        _auto_tag_case_artifact(dest_dir, os.path.join(dest_dir, f"{os.path.splitext(entry['name'])[0]}_thumbcache_extracted"))
+
+    return {
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "thumbnails_extracted": thumbnails_extracted, "counts": counts,
+        "unsupported_versions": unsupported_versions, "truncated": truncated,
+    }
+
+@image_browser_bp.route('/api/image/parse_thumbcache', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_thumbcache():
+    """In-image counterpart to parse_thumbcache() (routes/file_explorer.py) -
+    needs an explicit destination_dir the same way image_hash_manifest()
+    does, since (unlike every other in-image parser here) this one writes
+    real, persistent extracted thumbnail files, not just metadata rows."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    result = _run_thumbcache_extract_body(image_path, dest_dir, case_folder)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    log_chain_of_custody("thumbcache_parsed_image", {
+        "image_path": image_path, "destination_dir": dest_dir, "candidates_found": result["candidates_found"],
+        "files_parsed": result["files_parsed"], "thumbnails_extracted": result["thumbnails_extracted"],
+        "unsupported_versions": result["unsupported_versions"], "truncated": result["truncated"],
+    })
+    return jsonify(dict(result, destination_dir=dest_dir, indexed=bool(case_folder)))
 
 @image_browser_bp.route('/api/image/parse_recyclebin', methods=['POST'])
 @requires_auth

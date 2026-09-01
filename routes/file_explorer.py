@@ -47,6 +47,7 @@ from core.crypto_artifacts import find_crypto_wallet_files, parse_crypto_wallet_
 from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_backup_manifest
 from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
 from core.jumplist_utils import find_jumplist_files, parse_jumplist_file
+from core.thumbcache_utils import find_thumbcache_files, extract_thumbcache_entries, parse_thumbcache_container_header
 from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
 from core.mft_utils import find_mft_files, analyze_mft_file
 from core.usnjrnl_utils import find_usnjrnl_files, parse_usnjrnl_file
@@ -1247,6 +1248,66 @@ def parse_jumplists():
     return jsonify({
         "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_thumbcache', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_thumbcache():
+    """Whole-directory scan for Windows Thumbcache containers
+    (thumbcache_*.db) - a genuinely different shape from every sibling
+    parse_X() route above: this one also WRITES real, directly-viewable
+    extracted thumbnail image files (core/thumbcache_utils.py's own
+    module docstring explains why), so it needs a real output destination
+    the same way hashdeep/geolocation-export already do, not just an
+    optional case_folder to index metadata into."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), target_dir)
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_thumbcache_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    thumbnails_extracted = 0
+    unsupported_versions = []
+    for path in candidate_paths:
+        filename = os.path.basename(path)
+        header_info = parse_thumbcache_container_header(path)
+        if header_info and not header_info["supported"]:
+            unsupported_versions.append({"file": filename, "version_label": header_info["version_label"]})
+            continue
+        try:
+            records = extract_thumbcache_entries(path, filename, dest_dir)
+        except Exception:
+            records = []
+        if not records:
+            continue
+        files_parsed += 1
+        thumbnails_extracted += len(records)
+        counts[records[0]["artifact_type"]] = counts.get(records[0]["artifact_type"], 0) + len(records)
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+        _auto_tag_case_artifact(dest_dir, os.path.join(dest_dir, f"{os.path.splitext(filename)[0]}_thumbcache_extracted"))
+
+    log_chain_of_custody("thumbcache_parsed", {
+        "directory": target_dir, "destination_dir": dest_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "thumbnails_extracted": thumbnails_extracted,
+        "unsupported_versions": unsupported_versions, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "thumbnails_extracted": thumbnails_extracted, "counts": counts,
+        "unsupported_versions": unsupported_versions, "truncated": truncated,
+        "destination_dir": dest_dir, "indexed": bool(case_folder),
     })
 
 @file_explorer_bp.route('/api/files/parse_recyclebin', methods=['POST'])
