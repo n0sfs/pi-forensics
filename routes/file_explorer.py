@@ -54,6 +54,9 @@ from core.srum_utils import find_srum_files, parse_srum_file
 from core.powershell_history_utils import find_powershell_history_files, parse_powershell_history_file
 from core.firewall_log_utils import find_firewall_log_files, parse_firewall_log_file
 from core.macos_launchd_utils import find_launchd_plist_files, parse_launchd_plist_file
+from core.winsearch_utils import find_winsearch_files, parse_winsearch_file
+from core.webcache_utils import find_webcache_files, parse_webcache_file
+from core.bits_utils import find_bits_files, parse_bits_file
 from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
 from core.mft_utils import find_mft_files, analyze_mft_file
 from core.usnjrnl_utils import find_usnjrnl_files, parse_usnjrnl_file
@@ -1407,6 +1410,121 @@ def parse_macos_launchd():
             _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
 
     log_chain_of_custody("macos_launchd_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_winsearch', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_winsearch():
+    """Whole-directory scan for the Windows Search Index (Windows.edb,
+    Vista-10) - same shape as parse_srum() above, just a different
+    candidate-file matcher/dispatcher pair (core/winsearch_utils.py)."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_winsearch_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        records = parse_winsearch_file(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("winsearch_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_webcache', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_webcache():
+    """Whole-directory scan for legacy IE10/11 and pre-Chromium EdgeHTML
+    Edge history/cookies (WebCacheV01.dat/WebCacheV24.dat) - same shape as
+    parse_srum() above, just a different candidate-file matcher/dispatcher
+    pair (core/webcache_utils.py)."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_webcache_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        records = parse_webcache_file(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("webcache_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@file_explorer_bp.route('/api/files/parse_bits', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_bits():
+    """Whole-directory scan for the Windows 10+ BITS queue database
+    (qmgr.db) - same shape as parse_srum() above, just a different
+    candidate-file matcher/dispatcher pair (core/bits_utils.py)."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_bits_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        records = parse_bits_file(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("bits_parsed", {
         "directory": target_dir, "candidates_found": len(candidate_paths),
         "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
     })
