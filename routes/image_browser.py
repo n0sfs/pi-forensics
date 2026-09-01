@@ -2927,7 +2927,7 @@ AUTO_ANALYZE_STEP_LABELS = {
     "evtx": "Event Logs",
     "prefetch": "Prefetch Files",
     "recyclebin": "Recycle Bin",
-    "browser_artifacts": "Browser Artifacts (Chrome/Firefox)",
+    "browser_artifacts": "Browser Artifacts (Chrome/Firefox/Safari)",
     "linux_artifacts": "Linux Artifacts (shell history/passwd/cron/auth log)",
     "recover_deleted": "Recover Deleted Files (Filesystem-Aware)",
     "android_artifacts": "Android SMS/Contacts/Call Log (rooted physical images only)",

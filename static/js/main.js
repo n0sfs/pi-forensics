@@ -736,7 +736,7 @@ const TOOL_REFERENCE_GROUPS = [
             ["Apple Data & Privacy Export Import", "Imports an already-extracted Apple \"Data & Privacy\" export (privacy.apple.com) - Contacts and Calendars/Reminders parse reliably (vCard/iCalendar are genuine open standards), Safari Bookmarks and Photos metadata are best-effort, and any GPS-tagged photo exports as a map. Apple's export has no location-history category at all. Apple's export is a password-protected zip, so extract it yourself first with the password Apple emails you, then right-click the extracted folder and choose \"Import Apple Data & Privacy Export\". Only ever reads a file you already obtained yourself; never touches a live account."],
             ["Volatility3", "Analyzes an already-captured Windows memory (RAM) image - process lists, network connections, loaded modules, and more. Right-click a memory-image file and choose \"Memory Forensics...\"."],
             ["mquire", "Analyzes an already-captured x86_64 Linux memory (RAM) image, reading symbol info the kernel embeds in the image itself - no separate download needed. Same \"Memory Forensics...\" action, pick the mquire engine."],
-            ["Browser Artifact Parser", "Extracts history, bookmarks, downloads, and cookies from a Chrome/Chromium- or Firefox-family browser profile, on disk or inside an acquired image. Built in, no external tool needed."],
+            ["Browser Artifact Parser", "Extracts history, bookmarks, downloads, and cookies from a Chrome/Chromium-family, Firefox, or Safari browser profile, on disk or inside an acquired image. Built in, no external tool needed."],
             ["Registry / Event Log / Prefetch / Recycle Bin / LNK Parsers", "Built-in parsers for Windows Registry hives (incl. Amcache), .evtx Event Logs, Prefetch execution history, Recycle Bin metadata, and .lnk shortcuts - no external tool needed, work on a real folder or directly inside an acquired image."],
             ["Linux Artifact Parser", "Built-in parser for shell history, /etc/passwd, cron jobs, and auth.log/secure authentication events on a Linux filesystem - no external tool needed."],
             ["YARA", "Scans a file against your own saved YARA rulesets (Settings > Case & Reporting > Analysis & IOC Lists). Right-click a file and choose \"Scan with YARA Rules\"."],
@@ -1832,6 +1832,8 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     chrome_bookmarks: 'Chrome/Chromium Bookmarks', chrome_cookies: 'Chrome/Chromium Cookies',
     firefox_history: 'Firefox History', firefox_downloads: 'Firefox Downloads',
     firefox_bookmarks: 'Firefox Bookmarks', firefox_cookies: 'Firefox Cookies',
+    safari_history: 'Safari History', safari_downloads: 'Safari Downloads',
+    safari_bookmarks: 'Safari Bookmarks', safari_cookies: 'Safari Cookies',
     registry_recent_docs: 'Registry: Recent Documents', registry_typed_urls: 'Registry: Typed URLs/Paths',
     registry_run_history: 'Registry: Run History', registry_usb_history: 'Registry: USB Device History',
     registry_installed_programs: 'Registry: Installed Programs',
@@ -5643,6 +5645,8 @@ const BROWSER_ARTIFACT_TYPE_LABELS = {
     chrome_bookmarks: 'bookmarks', chrome_cookies: 'cookies',
     firefox_history: 'Firefox history entries', firefox_downloads: 'Firefox downloads',
     firefox_bookmarks: 'Firefox bookmarks', firefox_cookies: 'Firefox cookies',
+    safari_history: 'Safari history entries', safari_downloads: 'Safari downloads',
+    safari_bookmarks: 'Safari bookmarks', safari_cookies: 'Safari cookies',
 };
 
 function summarizeBrowserArtifactCounts(counts) {

@@ -152,6 +152,8 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "chrome_bookmarks": "Chrome/Chromium Bookmarks", "chrome_cookies": "Chrome/Chromium Cookies",
     "firefox_history": "Firefox History", "firefox_downloads": "Firefox Downloads",
     "firefox_bookmarks": "Firefox Bookmarks", "firefox_cookies": "Firefox Cookies",
+    "safari_history": "Safari History", "safari_downloads": "Safari Downloads",
+    "safari_bookmarks": "Safari Bookmarks", "safari_cookies": "Safari Cookies",
     # Part C (2026-08-25) - Registry/Event Log/LNK parsing. A real bug was
     # caught live while verifying this: this allowlist is what actually
     # gates case_index_parsed_artifacts() below - forgetting an entry here
