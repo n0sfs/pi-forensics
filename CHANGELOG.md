@@ -21,6 +21,19 @@ file after updating to see what changed.
 
 ---
 
+## [1.15.0] - 2026-09-01
+
+### New
+
+- **Browser artifact parsing now covers Safari, not just Chrome/Chromium and Firefox.** History,
+  Bookmarks, Downloads, and Cookies from a Safari profile (real folder or inside an acquired image)
+  parse into the same searchable index and Evidence Timeline as every other browser artifact -
+  right-click the profile folder and choose "Parse Browser Artifacts (Chrome/Firefox/Safari)"
+  exactly as before, no new action needed. Cookie values are shown in plain text (Safari doesn't
+  encrypt them the way Chrome does).
+
+---
+
 ## [1.14.0] - 2026-09-01
 
 ### New
