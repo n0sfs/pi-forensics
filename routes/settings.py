@@ -1406,6 +1406,10 @@ TOOL_VERSION_COMMANDS = [
     {"tool": "libvshadow-python", "cmd": [VOL3_PIP_BIN, "show", "libvshadow-python"], "package": None},
     # SRUM (SRUDB.dat) parsing, 2026-09-01 - core/srum_utils.py.
     {"tool": "libesedb-python", "cmd": [VOL3_PIP_BIN, "show", "libesedb-python"], "package": None},
+    # OCR / video keyframe extraction, 2026-09-01 - both real apt-installed
+    # CLI tools invoked directly via subprocess (no pip wrapper needed).
+    {"tool": "tesseract", "cmd": ["tesseract", "--version"], "package": "tesseract-ocr"},
+    {"tool": "ffmpeg", "cmd": ["ffmpeg", "-version"], "package": "ffmpeg"},
 ]
 # Every installable package this endpoint will ever run apt-get for - the
 # same allowlist install.py's sudoers file grants exact NOPASSWD entries

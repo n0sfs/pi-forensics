@@ -82,6 +82,12 @@ from core.srum_utils import SRUM_FILENAME, SRUM_SCAN_MAX_CANDIDATES, parse_srum_
 from core.winsearch_utils import WINSEARCH_FILENAME, WINSEARCH_SCAN_MAX_CANDIDATES, parse_winsearch_file
 from core.webcache_utils import WEBCACHE_FILENAMES, WEBCACHE_SCAN_MAX_CANDIDATES, parse_webcache_file
 from core.bits_utils import BITS_FILENAME, BITS_SCAN_MAX_CANDIDATES, parse_bits_file
+from core.rdp_bitmap_cache_utils import (
+    RDP_BITMAP_CACHE_SCAN_MAX_CANDIDATES, parse_rdp_bitmap_cache_file,
+    RDP_BITMAP_CACHE_FILENAME_RE, RDP_BITMAP_CACHE_PARENT_DIR_HINT,
+)
+from core.ocr_utils import run_ocr_on_image
+from core.video_keyframe_utils import generate_video_contact_sheet
 from core.powershell_history_utils import (
     POWERSHELL_HISTORY_PARENT_DIR_NAME, POWERSHELL_HISTORY_FILENAME_SUFFIX,
     POWERSHELL_HISTORY_SCAN_MAX_CANDIDATES, parse_powershell_history_file,
@@ -2207,6 +2213,65 @@ def image_parse_bits():
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 
+def _is_rdp_bitmap_cache_candidate(name, path):
+    return bool(RDP_BITMAP_CACHE_FILENAME_RE.match(name)) and RDP_BITMAP_CACHE_PARENT_DIR_HINT in path.lower()
+
+@image_browser_bp.route('/api/image/parse_rdp_bitmap_cache', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_rdp_bitmap_cache():
+    """In-image counterpart to parse_rdp_bitmap_cache() (routes/
+    file_explorer.py) - same single-file extract-to-temp-then-parse shape
+    image_parse_srum() already established."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, _is_rdp_bitmap_cache_candidate, RDP_BITMAP_CACHE_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+            records = parse_rdp_bitmap_cache_file(tmp_path, entry['name'])
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("rdp_bitmap_cache_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
 @image_browser_bp.route('/api/image/parse_powershell_history', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -3397,6 +3462,105 @@ def image_strings():
     log_chain_of_custody("strings_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
     return jsonify({"success": True, "file_name": name_hint, "output": output or "[no printable strings found]"})
 
+@image_browser_bp.route('/api/image/ocr', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_ocr():
+    """In-image counterpart to run_ocr() (routes/file_explorer.py) - same
+    extract-to-temp-then-run shape image_strings() above already
+    established."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    name_hint = req.get('name', '') or 'selected_file'
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
+
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix=os.path.splitext(name_hint)[1])
+        text, error = run_ocr_on_image(tmp_path)
+    except Exception as e:
+        text, error = None, f"Could not extract file: {e}"
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    if error:
+        return jsonify({"success": False, "error": error}), 500
+
+    summary = f"{len(text)} character(s) recognized" if text else "no recognizable text found"
+    _record_analysis_result(case_folder, {"source_type": "image", "image_path": image_path, "fs_offset": offset,
+                                           "inode": str(inode), "path": req.get('path'), "name": name_hint},
+                             "OCR", summary, text)
+    log_chain_of_custody("ocr_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
+    return jsonify({"success": True, "file_name": name_hint, "output": text or "[no recognizable text found]"})
+
+@image_browser_bp.route('/api/image/video_contact_sheet', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_video_contact_sheet():
+    """In-image counterpart to run_video_contact_sheet() (routes/
+    file_explorer.py) - needs an explicit destination_dir the same way
+    image_parse_thumbcache()/image_hash_manifest() already do, since this
+    also writes a real, persistent output file, not just metadata."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    name_hint = req.get('name', '') or 'selected_file'
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
+
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix=os.path.splitext(name_hint)[1])
+        base = re.sub(r'[^A-Za-z0-9_.-]', '_', os.path.splitext(name_hint)[0])
+        out_path = os.path.join(dest_dir, f"{base}_contact_sheet.jpg")
+        frame_count, error = generate_video_contact_sheet(tmp_path, out_path)
+    except Exception as e:
+        frame_count, error = None, f"Could not extract file: {e}"
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    if error:
+        return jsonify({"success": False, "error": error}), 500
+
+    summary = f"{frame_count}-frame contact sheet generated"
+    _record_analysis_result(case_folder, {"source_type": "image", "image_path": image_path, "fs_offset": offset,
+                                           "inode": str(inode), "path": req.get('path'), "name": name_hint},
+                             "Video Contact Sheet", summary, out_path)
+    log_chain_of_custody("video_contact_sheet_generated_image", {"image_path": image_path, "inode": str(inode),
+                                                                   "name": name_hint, "output_path": out_path})
+    return jsonify({"success": True, "file_name": name_hint, "frame_count": frame_count, "output_path": out_path})
+
 @image_browser_bp.route('/api/image/exif', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -3699,6 +3863,7 @@ AUTO_ANALYZE_STEP_LABELS = {
     "winsearch": "Windows Search Index (Windows.edb)",
     "webcache": "Legacy IE/Edge WebCache (WebCacheV01/V24.dat)",
     "bits": "BITS Job Queue (qmgr.db)",
+    "rdp_bitmap_cache": "RDP Bitmap Cache (metadata only, off by default)",
 }
 AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts", "jumplists"]
 AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts"]
@@ -3719,7 +3884,7 @@ AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts"]
 # most real images regardless - opt-in reflects that reality too, not
 # just the untested-format caveat.
 AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted", "android_artifacts", "srum", "powershell_history", "firewall_log",
-                             "winsearch", "webcache", "bits"]
+                             "winsearch", "webcache", "bits", "rdp_bitmap_cache"]
 AUTO_ANALYZE_ALL_VALID_STEPS = set(AUTO_ANALYZE_STEP_LABELS.keys())
 
 
@@ -3829,6 +3994,13 @@ def _auto_analyze_step_bits(image_path, case_folder, source_ip=None, user=None):
     return _auto_analyze_run_generic_artifact_scan(
         image_path, case_folder, lambda name, path: name.lower() == BITS_FILENAME.lower(),
         parse_bits_file, BITS_SCAN_MAX_CANDIDATES, "bits_parsed_image",
+        source_ip=source_ip, user=user)
+
+
+def _auto_analyze_step_rdp_bitmap_cache(image_path, case_folder, source_ip=None, user=None):
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, _is_rdp_bitmap_cache_candidate,
+        parse_rdp_bitmap_cache_file, RDP_BITMAP_CACHE_SCAN_MAX_CANDIDATES, "rdp_bitmap_cache_parsed_image",
         source_ip=source_ip, user=user)
 
 
@@ -3978,6 +4150,10 @@ _AUTO_ANALYZE_STEP_FUNCTIONS = {
     "srum": _auto_analyze_step_srum,
     "powershell_history": _auto_analyze_step_powershell_history,
     "firewall_log": _auto_analyze_step_firewall_log,
+    "winsearch": _auto_analyze_step_winsearch,
+    "webcache": _auto_analyze_step_webcache,
+    "bits": _auto_analyze_step_bits,
+    "rdp_bitmap_cache": _auto_analyze_step_rdp_bitmap_cache,
 }
 
 
