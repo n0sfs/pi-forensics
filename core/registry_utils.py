@@ -14,17 +14,22 @@ station's real venv) and confirmed to parse correctly via Registry(),
 root(), subkey()/subkeys()/find_key(), values(), and timestamp() before
 this module was written around that confirmed contract.
 
-No filetime_to_unix()-style helper is needed here, unlike
-core/browser_artifacts.py's WebKit/Firefox epoch conversions -
-RegistryKey.timestamp() and RegistryValue's own datetime handling already
-return native, tz-aware Python datetime objects internally (confirmed via
-direct source read, not assumed) - _dt_to_epoch() below is a plain
-datetime->Unix-seconds conversion, not a FILETIME decoder.
+RegistryKey.timestamp() returns a native Python datetime, not a raw
+FILETIME int - _dt_to_epoch() below is a datetime->Unix-seconds
+conversion, not a FILETIME decoder. **Correction (2026-09-01): this
+docstring previously, wrongly, claimed that datetime came back already
+tz-aware - confirmed directly (not assumed) that it's actually NAIVE,
+with a wall-clock value that's already correct UTC. _dt_to_epoch() itself
+now explicitly stamps UTC before converting (see its own docstring for
+the real, previously-live production bug this caused on any non-UTC
+station) - the original wrong claim is corrected here so it can't mislead
+a future addition to this module the same way.**
 """
 import os
 import re
 import codecs
 import struct
+import datetime
 
 from Registry import Registry
 
@@ -63,9 +68,29 @@ def find_registry_hive_files(root_dir):
 
 
 def _dt_to_epoch(dt):
+    """A REAL, previously-live bug found and fixed here (2026-09-01), not
+    a hypothetical: RegistryKey.timestamp() (python-registry) returns a
+    NAIVE datetime whose wall-clock VALUE is already correctly UTC
+    (confirmed directly: dt.tzinfo is None, but the value matches the
+    real UTC instant the underlying FILETIME encodes) - this module's own
+    header comment previously, wrongly, claimed these come back tz-aware
+    already. Calling plain dt.timestamp() on a naive datetime makes Python
+    treat it as LOCAL time and subtract the local UTC offset, silently
+    producing a WRONG epoch on any station not itself configured to UTC -
+    confirmed live on the deployed Pi, which runs America/New_York (a
+    real, non-UTC production timezone): every RecentDocs/TypedPaths/
+    RunMRU/USB-history/InstalledPrograms/Amcache/ShellBags timestamp
+    derived through this one shared helper had been silently off by the
+    local UTC offset (4-5 hours) this whole time. The exact same class of
+    bug already found and fixed once this session for plistlib's naive-
+    but-UTC datetimes (core/browser_artifacts.py's Safari support) -
+    fixed the identical way: explicitly stamp UTC before converting,
+    never trust a naive datetime's own default interpretation."""
     if dt is None:
         return None
     try:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
         return dt.timestamp()
     except (OverflowError, OSError, ValueError):
         return None
@@ -610,6 +635,207 @@ def _parse_user_assist(root_key):
     return records
 
 
+# BAM/DAM (Background/Desktop Activity Moderator): SYSTEM\CurrentControlSet\
+# Services\{bam,dam}\State\UserSettings\{SID} - a genuinely different
+# execution-evidence signal from Prefetch/Amcache/Shimcache/UserAssist
+# (all already covered above): it records the last time a process was
+# actually running, refreshed at both process start and process end,
+# with no run-count/history the way Prefetch has - a single last-activity
+# timestamp per executable, per user.
+#
+# Grounded via real, sourced research before writing any code, cross-
+# validated across FOUR independent sources: RegRipper3.0's canonical,
+# currently-maintained Perl plugin (bam_tln.pl), plaso/log2timeline's real
+# production parser, libyal/winreg-kb's formal reverse-engineered format
+# reference, and a real byte-level manual technical analysis (dfir.ru) -
+# all four agree the FILETIME occupies exactly the first 8 bytes (offset
+# 0-7, little-endian) of each value's REG_BINARY data. The remainder of
+# the ~24-byte blob is genuinely under-documented even in the best source
+# (winreg-kb itself marks several trailing fields "Unknown," and the two
+# sources that attempt to interpret them disagree on which byte range) -
+# deliberately only bytes 0-7 are read here, matching this module's own
+# "don't surface speculation as fact" discipline (Shimcache/UserAssist's
+# own reserved/unknown fields are treated the same way).
+#
+# Two real path generations exist and both are checked (a real path-
+# evolution gotcha independently confirmed via plaso's own production
+# filter list, which registers both): the current `bam\State\
+# UserSettings\{SID}` and an older `bam\UserSettings\{SID}` (no `State`
+# component) - only the first one actually present is used per service,
+# matching _parse_usb_history()'s own established "first ControlSet/path
+# that has it, don't duplicate" convention. DAM is structurally identical
+# to BAM (same key shape, same value layout) but tied to Modern Standby
+# power management - commonly populated on laptops/tablets and commonly
+# EMPTY on desktops/VMs/servers (confirmed independently by two sources);
+# an empty DAM result is expected and not a parsing failure, the same
+# best-effort honesty already applied to MVT-Android's own disclosed
+# device-dependent coverage elsewhere in this app.
+_BAM_DAM_SKIP_VALUE_NAMES = {'SequenceNumber', 'Version'}
+_BAM_DAM_SERVICE_LABELS = {
+    'bam': 'Background Activity Moderator',
+    'dam': 'Desktop Activity Moderator',
+}
+
+
+def _bam_dam_title_from_device_path(device_path):
+    """Best-effort: a BAM/DAM value's own name is a full NT device path
+    (e.g. '\\Device\\HarddiskVolume3\\Windows\\System32\\notepad.exe') -
+    this pulls out just the executable's own basename for a readable
+    title, degrading gracefully to the full path for anything that
+    doesn't contain a backslash. The device path itself (never resolvable
+    to a real drive letter from a registry hive alone) is kept as-is in
+    'value', not guessed at further."""
+    if '\\' not in device_path:
+        return device_path
+    return device_path.rsplit('\\', 1)[-1]
+
+
+def _parse_bam_dam(root_key):
+    records = []
+    for service in ('bam', 'dam'):
+        service_key = None
+        path_generation = None
+        for candidate_path, generation in (
+            (f'CurrentControlSet\\Services\\{service}\\State\\UserSettings', 'state'),
+            (f'CurrentControlSet\\Services\\{service}\\UserSettings', 'legacy'),
+        ):
+            try:
+                service_key = root_key.find_key(candidate_path)
+                path_generation = generation
+                break
+            except Registry.RegistryKeyNotFoundException:
+                continue
+        if service_key is None:
+            continue
+        try:
+            sid_keys = list(service_key.subkeys())
+        except Registry.RegistryKeyNotFoundException:
+            continue
+        for sid_key in sid_keys:
+            sid = sid_key.name()
+            for v in sid_key.values():
+                value_name = v.name()
+                if value_name in _BAM_DAM_SKIP_VALUE_NAMES:
+                    continue
+                try:
+                    raw = v.raw_data()
+                except Exception:
+                    continue
+                if not raw or len(raw) < 8:
+                    continue
+                try:
+                    last_run_raw = struct.unpack_from('<Q', raw, 0)[0]
+                except struct.error:
+                    continue
+                records.append({
+                    "artifact_type": "registry_bam_dam",
+                    "title": _bam_dam_title_from_device_path(value_name),
+                    "url": "",
+                    "value": value_name,
+                    "timestamp": filetime_to_unix(last_run_raw),
+                    "extra": {
+                        "service": service, "service_label": _BAM_DAM_SERVICE_LABELS[service],
+                        "sid": sid, "path_generation": path_generation,
+                    },
+                })
+    return records
+
+
+# RDP (Remote Desktop) client connection history: NTUSER.DAT\Software\
+# Microsoft\Terminal Server Client\Servers\{address} and \...\Default -
+# which remote hosts this user connected TO via the built-in Remote
+# Desktop Connection client (mstsc.exe) - a real lateral-movement/remote-
+# access indicator, and a genuinely different signal from every other
+# artifact in this module (none of the others show outbound remote
+# access at all).
+#
+# Grounded via real, sourced research before writing any code, cross-
+# validated across multiple independent real sources: RegRipper's
+# canonical, currently-maintained Perl plugins (rdphint.pl/tsclient.pl),
+# plaso/log2timeline's real production parser (both its Servers and
+# Default\MRU plugins, fetched live from its main branch), libyal/
+# winreg-kb's formal reverse-engineered format reference, and Velociraptor's
+# published artifact reference - all agree on both key paths and on
+# UsernameHint being a plain REG_SZ.
+#
+# Two structurally different sub-artifacts, kept as two distinct
+# artifact_types (matching this module's own established "split when the
+# shape genuinely differs" precedent, e.g. Jump Lists' automatic vs.
+# custom destinations): 'registry_rdp_server' (one subkey per remote
+# host under Servers - durable, never evicted, each with its own
+# per-subkey LastWriteTime) and 'registry_rdp_mru' (Default's MRU0/MRU1/
+# ... - a short, position-ordered recency list sharing ONE LastWriteTime
+# for the whole list, not a genuine per-entry timestamp).
+#
+# Honest, disclosed limitation (confirmed via research, not assumed):
+# presence of an entry is strong evidence (per two independent sources,
+# Servers is only populated once the connection actually reached the
+# remote host's screen - i.e. authentication succeeded), but ABSENCE
+# proves nothing - mstsc's own "/public" mode deliberately suppresses
+# this entirely, and the newer Microsoft Store "Remote Desktop" app
+# (distinct from classic mstsc.exe) never writes here at all when used to
+# connect. Never claim "no RDP connections were made" from an empty
+# result - only "no evidence via the classic client's default mode."
+_RDP_MRU_VALUE_NAME_RE = re.compile(r'^MRU(\d+)$', re.IGNORECASE)
+
+
+def _parse_rdp_connections(root_key):
+    records = []
+    try:
+        servers_key = root_key.find_key(r'Software\Microsoft\Terminal Server Client\Servers')
+    except Registry.RegistryKeyNotFoundException:
+        servers_key = None
+    if servers_key is not None:
+        try:
+            server_subkeys = list(servers_key.subkeys())
+        except Registry.RegistryKeyNotFoundException:
+            server_subkeys = []
+        for sub in server_subkeys:
+            address = sub.name()
+            username_hint = ''
+            try:
+                username_hint = sub.value('UsernameHint').value()
+            except (Registry.RegistryValueNotFoundException, Exception):
+                pass
+            cert_hash_present = False
+            try:
+                sub.value('CertHash')
+                cert_hash_present = True
+            except (Registry.RegistryValueNotFoundException, Exception):
+                pass
+            records.append({
+                "artifact_type": "registry_rdp_server", "title": address,
+                "url": "", "value": str(username_hint) if username_hint else '',
+                "timestamp": _dt_to_epoch(sub.timestamp()),
+                "extra": {"address": address, "username_hint": str(username_hint) if username_hint else '',
+                          "cert_hash_present": cert_hash_present},
+            })
+
+    try:
+        default_key = root_key.find_key(r'Software\Microsoft\Terminal Server Client\Default')
+    except Registry.RegistryKeyNotFoundException:
+        return records
+    default_ts = _dt_to_epoch(default_key.timestamp())
+    for v in default_key.values():
+        name = v.name()
+        if name in ('', '(default)'):  # the key's own nameless value - not an MRU entry
+            continue
+        m = _RDP_MRU_VALUE_NAME_RE.match(name)
+        if not m:
+            continue
+        try:
+            val = v.value()
+        except Exception:
+            continue
+        if not isinstance(val, str) or not val:
+            continue
+        records.append({
+            "artifact_type": "registry_rdp_mru", "title": val, "url": "", "value": val,
+            "timestamp": default_ts, "extra": {"mru_index": int(m.group(1))},
+        })
+    return records
+
+
 def parse_registry_hive_file(path, filename):
     """Dispatches a candidate hive file (matched by exact basename against
     REGISTRY_HIVE_FILENAMES) to the right curated key set, returning a flat
@@ -625,9 +851,9 @@ def parse_registry_hive_file(path, filename):
             upper = filename.upper()
             if upper == 'NTUSER.DAT':
                 return (_parse_recent_docs(root) + _parse_typed_paths(root) + _parse_run_history(root)
-                        + _parse_user_assist(root))
+                        + _parse_user_assist(root) + _parse_rdp_connections(root))
             if upper == 'SYSTEM':
-                return _parse_usb_history(root) + _parse_shimcache(root)
+                return _parse_usb_history(root) + _parse_shimcache(root) + _parse_bam_dam(root)
             if upper == 'SOFTWARE':
                 return _parse_installed_programs(root)
             if upper == 'AMCACHE.HVE':
