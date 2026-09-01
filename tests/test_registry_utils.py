@@ -373,7 +373,15 @@ def test_parse_amcache_extracts_application_inventory_entry(tmp_path):
     assert r["value"] == '0000abcdef1234567890abcdef1234567890abcd'
     assert r["extra"]["publisher"] == 'Google LLC'
     assert r["extra"]["version"] == '120.0.6099.129'
-    assert r["timestamp"] is not None
+    # A real, previously-live bug this exact assertion would have caught:
+    # _dt_to_epoch() used to trust RegistryKey.timestamp()'s naive-but-UTC-
+    # valued datetime as if it were already tz-aware, silently shifting
+    # every non-FILETIME-based registry timestamp by the local machine's
+    # own UTC offset (confirmed live on the real, non-UTC deployed Pi -
+    # see _dt_to_epoch()'s own docstring). This module's own prior tests
+    # only ever asserted "timestamp is not None" here, never a real value -
+    # exactly the coverage gap that let it go undetected.
+    assert r["timestamp"] == datetime.datetime(2026, 8, 20, 12, 0, 0, tzinfo=datetime.timezone.utc).timestamp()
 
 
 def test_parse_amcache_dispatches_only_for_amcache_filename(tmp_path):
@@ -791,6 +799,211 @@ def test_parse_user_assist_skips_ctlsession_marker_and_wrong_sized_values(tmp_pa
     assert ua_records[0]["value"] == 'UEME_RUNPATH:C:\\real_entry.exe'
 
 
+# --- BAM/DAM (2026-09-01) ---
+
+def _build_bam_dam_value(last_run_filetime, trailing_bytes=16):
+    """The confirmed layout: an 8-byte little-endian FILETIME at offset 0.
+    The remaining bytes are genuinely under-documented even in the best
+    real source and are deliberately never interpreted by the parser -
+    filled with real, non-zero-but-unparsed bytes here specifically to
+    prove the parser doesn't accidentally depend on them being zero."""
+    return struct.pack('<Q', last_run_filetime) + (b'\xAB' * trailing_bytes)
+
+
+def _build_bam_dam_system_hive(path, services):
+    """services: {service_name: {'generation': 'state'|'legacy',
+    'sids': {sid_name: [(value_name, raw_bytes), ...]}}}. Tree per service:
+    CurrentControlSet/Services/{service}/[State/]UserSettings/{sid}/
+    [values] - mirrors _build_userassist_hive()'s exact nested-subkey/
+    multi-value-per-key construction technique, generalized one level
+    deeper for the SID subkeys and widened to build more than one service
+    (bam and/or dam) under one shared CurrentControlSet/Services parent."""
+    h = _HiveBuilder()
+
+    def make_binary_vk(name, raw):
+        off = h.alloc(raw)
+        name_b = name.encode('utf-8')
+        vk = b'vk' + struct.pack('<H', len(name_b)) + struct.pack('<I', len(raw))
+        vk += struct.pack('<I', off) + struct.pack('<I', 3)  # REG_BINARY
+        vk += struct.pack('<H', 1) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(vk))
+
+    def make_values_list(vk_offsets):
+        return h.alloc(b''.join(struct.pack('<I', o) for o in vk_offsets))
+
+    def make_nk(name, subkey_list_off, subkey_count, values_list_off, values_count, is_root=False):
+        flags = 0x0020 | (0x0004 if is_root else 0)
+        name_b = name.encode('utf-8')
+        nk = b'nk' + struct.pack('<H', flags) + struct.pack('<Q', _FT_NOW)
+        nk += struct.pack('<I', 0) + struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', subkey_count if subkey_count else 0xFFFFFFFF) + struct.pack('<I', 0)
+        nk += struct.pack('<I', subkey_list_off if subkey_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', values_count if values_count else 0xFFFFFFFF)
+        nk += struct.pack('<I', values_list_off if values_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF) + struct.pack('<I', 0xFFFFFFFF)
+        nk += b'\x00' * (0x48 - 0x34)
+        nk += struct.pack('<H', len(name_b)) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(nk))
+
+    def make_lf(nk_offsets):
+        body = b'lf' + struct.pack('<H', len(nk_offsets))
+        for off in nk_offsets:
+            body += struct.pack('<I', off) + b'\x00\x00\x00\x00'
+        return h.alloc(body)
+
+    service_nk_offsets = []
+    for service_name, spec in services.items():
+        sid_nk_offsets = []
+        for sid_name, values in spec['sids'].items():
+            vk_offsets = [make_binary_vk(name, raw) for name, raw in values]
+            vl_sid = make_values_list(vk_offsets)
+            nk_sid = make_nk(sid_name, None, 0, vl_sid, len(vk_offsets))
+            sid_nk_offsets.append(nk_sid)
+        lf_sids = make_lf(sid_nk_offsets)
+        nk_usersettings = make_nk('UserSettings', lf_sids, 1, None, 0)
+        for nk_sid in sid_nk_offsets:
+            h.set_parent(nk_sid, nk_usersettings)
+
+        if spec['generation'] == 'state':
+            lf_state_children = make_lf([nk_usersettings])
+            nk_state = make_nk('State', lf_state_children, 1, None, 0)
+            h.set_parent(nk_usersettings, nk_state)
+            lf_service_children = make_lf([nk_state])
+            nk_service = make_nk(service_name, lf_service_children, 1, None, 0)
+            h.set_parent(nk_state, nk_service)
+        else:  # legacy - UserSettings sits directly under the service key, no State level
+            lf_service_children = make_lf([nk_usersettings])
+            nk_service = make_nk(service_name, lf_service_children, 1, None, 0)
+            h.set_parent(nk_usersettings, nk_service)
+
+        service_nk_offsets.append(nk_service)
+
+    lf_services_children = make_lf(service_nk_offsets)
+    nk_services = make_nk('Services', lf_services_children, 1, None, 0)
+    for nk_service in service_nk_offsets:
+        h.set_parent(nk_service, nk_services)
+    lf_ccs_children = make_lf([nk_services])
+    nk_ccs = make_nk('CurrentControlSet', lf_ccs_children, 1, None, 0)
+    h.set_parent(nk_services, nk_ccs)
+    lf_root = make_lf([nk_ccs])
+    root_off = make_nk('ROOT', lf_root, 1, None, 0, is_root=True)
+    h.set_parent(nk_ccs, root_off)
+
+    hbin_data = bytes(h.buf)
+    hbin_total = 0x20 + len(hbin_data)
+    hbin_size = ((hbin_total + 0xFFF) // 0x1000) * 0x1000
+    hbin = b'hbin' + struct.pack('<I', 0) + struct.pack('<I', hbin_size)
+    hbin += b'\x00' * (0x20 - 0xC) + hbin_data + b'\x00' * (hbin_size - hbin_total)
+
+    regf = struct.pack('<I', 0x66676572) + struct.pack('<I', 1) + struct.pack('<I', 1)
+    regf += struct.pack('<Q', _FT_NOW) + struct.pack('<I', 1) + struct.pack('<I', 5)
+    regf += struct.pack('<I', 0) + struct.pack('<I', 1) + struct.pack('<I', root_off)
+    regf += struct.pack('<I', hbin_size) + struct.pack('<I', 1)
+    regf += _utf16('SYSTEM').ljust(64, b'\x00')
+    regf += b'\x00' * (0x1000 - len(regf))
+    regf = regf[:0x1000]
+
+    with open(path, 'wb') as f:
+        f.write(regf)
+        f.write(hbin)
+
+
+def test_parse_bam_dam_real_entry_with_correct_filetime_and_title(tmp_path):
+    last_run = _filetime(datetime.datetime(2026, 8, 30, 9, 15, 0))
+    data = _build_bam_dam_value(last_run)
+    hive_path = tmp_path / "SYSTEM"
+    _build_bam_dam_system_hive(hive_path, {
+        'bam': {'generation': 'state', 'sids': {
+            'S-1-5-21-1111111111-2222222222-3333333333-1001': [
+                (r'\Device\HarddiskVolume3\Windows\System32\notepad.exe', data),
+            ],
+        }},
+    })
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    bam_records = [r for r in records if r["artifact_type"] == "registry_bam_dam"]
+    assert len(bam_records) == 1
+    r = bam_records[0]
+    assert r["title"] == 'notepad.exe'  # basename extracted from the NT device path
+    assert r["value"] == r'\Device\HarddiskVolume3\Windows\System32\notepad.exe'  # full device path kept as-is, never resolved to a drive letter
+    assert r["extra"]["service"] == 'bam'
+    assert r["extra"]["service_label"] == 'Background Activity Moderator'
+    assert r["extra"]["sid"] == 'S-1-5-21-1111111111-2222222222-3333333333-1001'
+    assert r["extra"]["path_generation"] == 'state'
+    assert r["timestamp"] == datetime.datetime(2026, 8, 30, 9, 15, 0, tzinfo=datetime.timezone.utc).timestamp()
+
+
+def test_parse_bam_dam_skips_sequencenumber_and_version_metadata_values(tmp_path):
+    real_data = _build_bam_dam_value(_FT_NOW)
+    hive_path = tmp_path / "SYSTEM"
+    _build_bam_dam_system_hive(hive_path, {
+        'bam': {'generation': 'state', 'sids': {
+            'S-1-5-21-1-2-3-1001': [
+                ('SequenceNumber', struct.pack('<I', 42)),  # metadata, not an executable - must be skipped
+                ('Version', struct.pack('<I', 1)),  # metadata, not an executable - must be skipped
+                (r'\Device\HarddiskVolume3\real.exe', real_data),
+            ],
+        }},
+    })
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    bam_records = [r for r in records if r["artifact_type"] == "registry_bam_dam"]
+    assert len(bam_records) == 1
+    assert bam_records[0]["value"] == r'\Device\HarddiskVolume3\real.exe'
+
+
+def test_parse_bam_dam_covers_both_services_and_the_local_system_sid(tmp_path):
+    # S-1-5-18 (LocalSystem) is a real, valid SID that legitimately appears
+    # here (system-context processes get tracked too) - must not be
+    # mistaken for a non-SID/garbage subkey and skipped.
+    data1 = _build_bam_dam_value(_FT_NOW)
+    data2 = _build_bam_dam_value(_FT_NOW - 10_000_000)
+    hive_path = tmp_path / "SYSTEM"
+    _build_bam_dam_system_hive(hive_path, {
+        'bam': {'generation': 'state', 'sids': {
+            'S-1-5-18': [(r'\Device\HarddiskVolume3\Windows\System32\svchost.exe', data1)],
+        }},
+        'dam': {'generation': 'state', 'sids': {
+            'S-1-5-21-1-2-3-1001': [(r'\Device\HarddiskVolume3\Windows\System32\dwm.exe', data2)],
+        }},
+    })
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    bam_dam_records = [r for r in records if r["artifact_type"] == "registry_bam_dam"]
+    assert len(bam_dam_records) == 2
+    by_service = {r["extra"]["service"]: r for r in bam_dam_records}
+    assert by_service['bam']["extra"]["sid"] == 'S-1-5-18'
+    assert by_service['bam']["title"] == 'svchost.exe'
+    assert by_service['dam']["extra"]["service_label"] == 'Desktop Activity Moderator'
+    assert by_service['dam']["title"] == 'dwm.exe'
+
+
+def test_parse_bam_dam_falls_back_to_the_legacy_no_state_path_generation(tmp_path):
+    # A real path-evolution gotcha confirmed via plaso's own production
+    # filter list, which registers both path shapes - the legacy
+    # 'bam\\UserSettings\\{sid}' (no 'State' component) must still be found.
+    data = _build_bam_dam_value(_FT_NOW)
+    hive_path = tmp_path / "SYSTEM"
+    _build_bam_dam_system_hive(hive_path, {
+        'bam': {'generation': 'legacy', 'sids': {
+            'S-1-5-21-1-2-3-1001': [(r'\Device\HarddiskVolume3\legacy_layout.exe', data)],
+        }},
+    })
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    bam_records = [r for r in records if r["artifact_type"] == "registry_bam_dam"]
+    assert len(bam_records) == 1
+    assert bam_records[0]["extra"]["path_generation"] == 'legacy'
+    assert bam_records[0]["value"] == r'\Device\HarddiskVolume3\legacy_layout.exe'
+
+
+def test_parse_bam_dam_missing_service_key_yields_no_records_not_a_crash(tmp_path):
+    # A hive with neither bam nor dam present at all (e.g. a stripped-down
+    # or non-Windows-10+ SYSTEM hive) must degrade to zero records, the
+    # same best-effort tolerance every parser in this module already has.
+    hive_path = tmp_path / "SYSTEM"
+    _build_shimcache_system_hive(hive_path, [('C:\\unrelated.exe', _FT_NOW)])
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    assert [r for r in records if r["artifact_type"] == "registry_bam_dam"] == []
+
+
 def test_decode_userassist_value_name_is_real_rot13_not_a_custom_scheme():
     assert ru._decode_userassist_value_name('HRZR_EHACNGU') == 'UEME_RUNPATH'
     # Non-letter characters (the ':' separator, digits in a hex suffix)
@@ -799,6 +1012,208 @@ def test_decode_userassist_value_name_is_real_rot13_not_a_custom_scheme():
     assert ru._decode_userassist_value_name('UEME_RUNPATH') == 'HRZR_EHACNGU'  # ROT13 is its own inverse
 
 
+def test_dt_to_epoch_treats_a_naive_datetime_as_utc_not_local_machine_time():
+    """Direct regression test for the real bug found live 2026-09-01:
+    RegistryKey.timestamp() returns a NAIVE datetime whose wall-clock
+    value is already correct UTC - _dt_to_epoch() must explicitly stamp
+    UTC before converting, never rely on Python's own naive-datetime
+    default (which assumes local time). This must hold regardless of
+    whatever timezone the machine actually running this test is set to."""
+    naive_utc_noon = datetime.datetime(2026, 8, 20, 12, 0, 0)
+    assert naive_utc_noon.tzinfo is None  # sanity: this really is naive, matching python-registry's real return shape
+    expected = datetime.datetime(2026, 8, 20, 12, 0, 0, tzinfo=datetime.timezone.utc).timestamp()
+    assert ru._dt_to_epoch(naive_utc_noon) == expected
+    # An already-aware datetime must be respected as-is, never re-stamped.
+    already_aware = datetime.datetime(2026, 8, 20, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    assert ru._dt_to_epoch(already_aware) == expected
+    assert ru._dt_to_epoch(None) is None
+
+
 def test_userassist_title_from_decoded_name_extracts_basename():
     assert ru._userassist_title_from_decoded_name('UEME_RUNPATH:C:\\Windows\\notepad.exe:0000') == 'notepad.exe'
     assert ru._userassist_title_from_decoded_name('UEME_RUNCPL:no_backslash_here') == 'UEME_RUNCPL:no_backslash_here'
+
+
+# --- RDP connection history (2026-09-01) ---
+
+def _build_rdp_ntuser_hive(path, servers=None, mru_values=None, include_default_nameless_value=False):
+    """Tree: Software/Microsoft/Terminal Server Client/{Servers/{address},
+    Default} - mirrors _build_userassist_hive()'s exact nested-subkey
+    construction technique. servers: [(address, username_hint_or_None,
+    has_cert_hash), ...]. mru_values: [(value_name, data_str), ...]."""
+    servers = servers or []
+    mru_values = mru_values or []
+    h = _HiveBuilder()
+
+    def make_vk(name, data_str, reg_type=1):
+        data_bytes = _utf16(data_str)
+        data_off = h.alloc(data_bytes)
+        name_b = name.encode('utf-8')
+        vk = b'vk' + struct.pack('<H', len(name_b)) + struct.pack('<I', len(data_bytes))
+        vk += struct.pack('<I', data_off) + struct.pack('<I', reg_type)
+        vk += struct.pack('<H', 1) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(vk))
+
+    def make_binary_vk(name, raw):
+        off = h.alloc(raw)
+        name_b = name.encode('utf-8')
+        vk = b'vk' + struct.pack('<H', len(name_b)) + struct.pack('<I', len(raw))
+        vk += struct.pack('<I', off) + struct.pack('<I', 3)  # REG_BINARY
+        vk += struct.pack('<H', 1) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(vk))
+
+    def make_nameless_vk(data_str, reg_type=1):
+        # python-registry reports the unnamed/default value's name as the
+        # literal string '(default)' (a real, previously-found gotcha in
+        # this module's own ShellBags parsing) - a zero-length name field
+        # here is what produces that behavior.
+        data_bytes = _utf16(data_str)
+        data_off = h.alloc(data_bytes)
+        vk = b'vk' + struct.pack('<H', 0) + struct.pack('<I', len(data_bytes))
+        vk += struct.pack('<I', data_off) + struct.pack('<I', reg_type)
+        vk += struct.pack('<H', 0) + struct.pack('<H', 0)
+        return h.alloc(bytes(vk))
+
+    def make_values_list(vk_offsets):
+        return h.alloc(b''.join(struct.pack('<I', o) for o in vk_offsets))
+
+    def make_nk(name, subkey_list_off, subkey_count, values_list_off, values_count, is_root=False):
+        flags = 0x0020 | (0x0004 if is_root else 0)
+        name_b = name.encode('utf-8')
+        nk = b'nk' + struct.pack('<H', flags) + struct.pack('<Q', _FT_NOW)
+        nk += struct.pack('<I', 0) + struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', subkey_count if subkey_count else 0xFFFFFFFF) + struct.pack('<I', 0)
+        nk += struct.pack('<I', subkey_list_off if subkey_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', values_count if values_count else 0xFFFFFFFF)
+        nk += struct.pack('<I', values_list_off if values_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF) + struct.pack('<I', 0xFFFFFFFF)
+        nk += b'\x00' * (0x48 - 0x34)
+        nk += struct.pack('<H', len(name_b)) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(nk))
+
+    def make_lf(nk_offsets):
+        body = b'lf' + struct.pack('<H', len(nk_offsets))
+        for off in nk_offsets:
+            body += struct.pack('<I', off) + b'\x00\x00\x00\x00'
+        return h.alloc(body)
+
+    server_nk_offsets = []
+    for address, username_hint, has_cert_hash in servers:
+        vk_offsets = []
+        if username_hint is not None:
+            vk_offsets.append(make_vk('UsernameHint', username_hint))
+        if has_cert_hash:
+            vk_offsets.append(make_binary_vk('CertHash', b'\xAA' * 20))
+        vl = make_values_list(vk_offsets) if vk_offsets else None
+        nk_server = make_nk(address, None, 0, vl, len(vk_offsets))
+        server_nk_offsets.append(nk_server)
+    lf_servers_children = make_lf(server_nk_offsets)
+    nk_servers = make_nk('Servers', lf_servers_children, 1 if server_nk_offsets else 0, None, 0)
+    for nk_server in server_nk_offsets:
+        h.set_parent(nk_server, nk_servers)
+
+    default_vk_offsets = []
+    if include_default_nameless_value:
+        default_vk_offsets.append(make_nameless_vk('should-be-skipped'))
+    for name, data_str in mru_values:
+        default_vk_offsets.append(make_vk(name, data_str))
+    vl_default = make_values_list(default_vk_offsets) if default_vk_offsets else None
+    nk_default = make_nk('Default', None, 0, vl_default, len(default_vk_offsets))
+
+    lf_tsc_children = make_lf([nk_servers, nk_default])
+    nk_tsc = make_nk('Terminal Server Client', lf_tsc_children, 2, None, 0)
+    h.set_parent(nk_servers, nk_tsc)
+    h.set_parent(nk_default, nk_tsc)
+    lf_ms = make_lf([nk_tsc])
+    nk_ms = make_nk('Microsoft', lf_ms, 1, None, 0)
+    h.set_parent(nk_tsc, nk_ms)
+    lf_sw = make_lf([nk_ms])
+    nk_sw = make_nk('Software', lf_sw, 1, None, 0)
+    h.set_parent(nk_ms, nk_sw)
+    lf_root = make_lf([nk_sw])
+    root_off = make_nk('ROOT', lf_root, 1, None, 0, is_root=True)
+    h.set_parent(nk_sw, root_off)
+
+    hbin_data = bytes(h.buf)
+    hbin_total = 0x20 + len(hbin_data)
+    hbin_size = ((hbin_total + 0xFFF) // 0x1000) * 0x1000
+    hbin = b'hbin' + struct.pack('<I', 0) + struct.pack('<I', hbin_size)
+    hbin += b'\x00' * (0x20 - 0xC) + hbin_data + b'\x00' * (hbin_size - hbin_total)
+
+    regf = struct.pack('<I', 0x66676572) + struct.pack('<I', 1) + struct.pack('<I', 1)
+    regf += struct.pack('<Q', _FT_NOW) + struct.pack('<I', 1) + struct.pack('<I', 5)
+    regf += struct.pack('<I', 0) + struct.pack('<I', 1) + struct.pack('<I', root_off)
+    regf += struct.pack('<I', hbin_size) + struct.pack('<I', 1)
+    regf += _utf16('NTUSER.DAT').ljust(64, b'\x00')
+    regf += b'\x00' * (0x1000 - len(regf))
+    regf = regf[:0x1000]
+
+    with open(path, 'wb') as f:
+        f.write(regf)
+        f.write(hbin)
+
+
+def test_parse_rdp_connections_real_server_entry_with_username_hint(tmp_path):
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_rdp_ntuser_hive(hive_path, servers=[
+        ('fileserver.corp.local', 'CORP\\jsmith', True),
+    ])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    server_records = [r for r in records if r["artifact_type"] == "registry_rdp_server"]
+    assert len(server_records) == 1
+    r = server_records[0]
+    assert r["title"] == 'fileserver.corp.local'
+    assert r["value"] == 'CORP\\jsmith'
+    assert r["extra"]["address"] == 'fileserver.corp.local'
+    assert r["extra"]["username_hint"] == 'CORP\\jsmith'
+    assert r["extra"]["cert_hash_present"] is True
+    assert r["timestamp"] == datetime.datetime(2026, 8, 20, 12, 0, 0, tzinfo=datetime.timezone.utc).timestamp()
+
+
+def test_parse_rdp_connections_server_with_no_username_hint_or_cert_hash(tmp_path):
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_rdp_ntuser_hive(hive_path, servers=[('192.168.1.50', None, False)])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    server_records = [r for r in records if r["artifact_type"] == "registry_rdp_server"]
+    assert len(server_records) == 1
+    assert server_records[0]["title"] == '192.168.1.50'
+    assert server_records[0]["value"] == ''
+    assert server_records[0]["extra"]["cert_hash_present"] is False
+
+
+def test_parse_rdp_connections_default_mru_entries_skip_the_nameless_value(tmp_path):
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_rdp_ntuser_hive(hive_path, mru_values=[
+        ('MRU0', '192.168.1.50'),
+        ('MRU1', 'fileserver.corp.local'),
+    ], include_default_nameless_value=True)
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    mru_records = [r for r in records if r["artifact_type"] == "registry_rdp_mru"]
+    assert len(mru_records) == 2  # the nameless '(default)' value must never be treated as an MRU entry
+    by_index = {r["extra"]["mru_index"]: r for r in mru_records}
+    assert by_index[0]["title"] == '192.168.1.50'
+    assert by_index[0]["value"] == '192.168.1.50'
+    assert by_index[1]["title"] == 'fileserver.corp.local'
+    # Default\MRU has no per-entry timestamp - both entries share the one
+    # Default key's own LastWriteTime, confirmed identical here.
+    assert by_index[0]["timestamp"] == by_index[1]["timestamp"]
+
+
+def test_parse_rdp_connections_both_servers_and_mru_coexist(tmp_path):
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_rdp_ntuser_hive(hive_path,
+        servers=[('10.0.0.5', 'admin', False)],
+        mru_values=[('MRU0', '10.0.0.5')])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    server_records = [r for r in records if r["artifact_type"] == "registry_rdp_server"]
+    mru_records = [r for r in records if r["artifact_type"] == "registry_rdp_mru"]
+    assert len(server_records) == 1
+    assert len(mru_records) == 1
+
+
+def test_parse_rdp_connections_missing_terminal_server_client_key_yields_no_records(tmp_path):
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_test_hive(hive_path)  # a real hive with unrelated content, no Terminal Server Client key at all
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    assert [r for r in records if r["artifact_type"] in ("registry_rdp_server", "registry_rdp_mru")] == []

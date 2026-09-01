@@ -1906,6 +1906,9 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     registry_shellbag: 'Registry: ShellBags (Folder Access)',
     registry_shimcache: 'Registry: Shimcache (Program Execution)',
     registry_userassist: 'Registry: UserAssist (Program Launch History)',
+    registry_bam_dam: 'Registry: BAM/DAM (Program Execution)',
+    registry_rdp_server: 'Registry: RDP Connection History (Server)',
+    registry_rdp_mru: 'Registry: RDP Connection History (Recent)',
     email_message: 'Email Message',
     // Live Collection USB, Phase 2 (2026-09-01) - kept in sync with
     // routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS. This exact side
@@ -11323,19 +11326,24 @@ let autoAnalyzeModalInstance = null;
 // silently clobber or depend on whatever File Explorer's own selection
 // state happens to be at the moment Start is clicked.
 let autoAnalyzeTargetPath = null;
-const AUTO_ANALYZE_STEP_LABELS = {
-    hash_manifest: "Hash Manifest (SHA256)",
-    registry: "Registry Hives (incl. Amcache)",
-    evtx: "Event Logs",
-    prefetch: "Prefetch Files",
-    recyclebin: "Recycle Bin",
-    browser_artifacts: "Browser Artifacts (Chrome/Firefox)",
-    linux_artifacts: "Linux Artifacts (shell history/passwd/cron/auth log)",
-    recover_deleted: "Recover Deleted Files (Filesystem-Aware)",
-};
-const AUTO_ANALYZE_WINDOWS_DEFAULTS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts"];
-const AUTO_ANALYZE_LINUX_DEFAULTS = ["hash_manifest", "linux_artifacts"];
-const AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted"];
+// Fetched once from the real backend registry (/api/image/auto_analyze/steps,
+// routes/image_browser.py) rather than a hardcoded JS mirror - a stale
+// hardcoded copy here (found live, 2026-09-01) had silently drifted out
+// of sync with the real step set, missing 'jumplists' from the Windows
+// defaults and 'android_artifacts' from the extra/opt-in list entirely,
+// meaning the modal could never actually offer either step even though
+// the backend's own orchestrator already supported both. See the
+// backend route's own docstring for the full story.
+let autoAnalyzeStepsRegistry = null;
+async function fetchAutoAnalyzeStepsRegistry() {
+    if (autoAnalyzeStepsRegistry) return autoAnalyzeStepsRegistry;
+    try {
+        const res = await fetch('/api/image/auto_analyze/steps');
+        const data = await res.json();
+        if (data.success) autoAnalyzeStepsRegistry = data;
+    } catch (err) { /* onAutoAnalyzeProfileChange() below tolerates a still-null registry */ }
+    return autoAnalyzeStepsRegistry;
+}
 const AUTO_ANALYZE_MEMORY_DEFAULT_PLUGINS = ["info", "pslist", "pstree", "cmdline", "netscan", "malfind"];
 
 function _resetAutoAnalyzeModal() {
@@ -11366,6 +11374,13 @@ async function openAutoAnalyzeModal(explicitPath) {
         autoAnalyzeModalInstance = new bootstrap.Modal(document.getElementById('autoAnalyzeModal'));
     }
     autoAnalyzeModalInstance.show();
+
+    // Must resolve before onAutoAnalyzeProfileChange() (below, and the
+    // select's own onchange handler) ever reads autoAnalyzeStepsRegistry -
+    // the modal is only interactive once shown above, so awaiting this
+    // here guarantees the registry is populated before a user could
+    // possibly trigger the onchange handler themselves.
+    await fetchAutoAnalyzeStepsRegistry();
 
     try {
         const res = await fetch('/api/auto_analyze/detect', {
@@ -11425,10 +11440,22 @@ function onAutoAnalyzeProfileChange() {
     document.getElementById('autoAnalyzeStartBtn').disabled = !profile;
 
     if (profile === 'windows' || profile === 'linux') {
-        const defaults = profile === 'windows' ? AUTO_ANALYZE_WINDOWS_DEFAULTS : AUTO_ANALYZE_LINUX_DEFAULTS;
-        const allSteps = [...defaults, ...AUTO_ANALYZE_EXTRA_STEPS];
         const list = document.getElementById('autoAnalyzeStepsList');
         list.innerHTML = '';
+        if (!autoAnalyzeStepsRegistry) {
+            // Registry fetch hasn't resolved (or failed) yet - shouldn't
+            // normally happen since openAutoAnalyzeModal() awaits it
+            // before this can run, but degrade visibly rather than
+            // silently rendering an empty, seemingly-broken checklist.
+            const warn = document.createElement('div');
+            warn.className = 'text-warning small';
+            warn.textContent = 'Could not load the available analysis steps - try reopening this dialog.';
+            list.appendChild(warn);
+            document.getElementById('autoAnalyzeImageStepsGroup').style.display = '';
+            return;
+        }
+        const defaults = profile === 'windows' ? autoAnalyzeStepsRegistry.windows_default_steps : autoAnalyzeStepsRegistry.linux_default_steps;
+        const allSteps = [...defaults, ...autoAnalyzeStepsRegistry.extra_steps];
         allSteps.forEach(key => {
             const row = document.createElement('div');
             row.className = 'form-check';
@@ -11441,7 +11468,7 @@ function onAutoAnalyzeProfileChange() {
             const label = document.createElement('label');
             label.className = 'form-check-label small';
             label.htmlFor = cb.id;
-            label.textContent = AUTO_ANALYZE_STEP_LABELS[key] || key;
+            label.textContent = autoAnalyzeStepsRegistry.step_labels[key] || key;
             row.appendChild(cb);
             row.appendChild(label);
             list.appendChild(row);

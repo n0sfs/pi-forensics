@@ -3409,6 +3409,35 @@ def execution_worker_auto_analyze_image(image_path, case_folder, steps, source_i
         end_suppress_active_false()
         update_job(active=False)
 
+@image_browser_bp.route('/api/image/auto_analyze/steps', methods=['GET'])
+@requires_auth
+@requires_permission('file_explorer')
+def auto_analyze_steps():
+    """The single source of truth for the Auto Analyze modal's own step
+    checklist - the frontend used to hardcode a parallel copy of
+    AUTO_ANALYZE_STEP_LABELS/AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS/
+    AUTO_ANALYZE_LINUX_DEFAULT_STEPS/AUTO_ANALYZE_EXTRA_STEPS in
+    static/js/main.js, which silently fell out of sync with the real
+    values below (found live, 2026-09-01: missing 'jumplists' from the
+    Windows defaults entirely - shipped the same day this staleness was
+    found - and missing 'android_artifacts' from the extra/opt-in list
+    since that feature shipped, meaning the modal could never actually
+    select either step even though the backend's own orchestrator already
+    supported both). Fixed by having the frontend fetch this route once
+    instead of maintaining a second, driftable copy - the exact class of
+    bug this app's PARSED_ARTIFACT_TYPE_LABELS/FILE_VIEWS_WEB_ARTIFACT_
+    LABELS pair only avoids via a dedicated regression test; no equivalent
+    test could meaningfully cover a Python dict vs. a JS object without a
+    live JS-execution harness, so eliminating the duplication outright is
+    the more durable fix here."""
+    return jsonify({
+        "success": True,
+        "step_labels": AUTO_ANALYZE_STEP_LABELS,
+        "windows_default_steps": AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS,
+        "linux_default_steps": AUTO_ANALYZE_LINUX_DEFAULT_STEPS,
+        "extra_steps": AUTO_ANALYZE_EXTRA_STEPS,
+    })
+
 @image_browser_bp.route('/api/image/auto_analyze/start', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
