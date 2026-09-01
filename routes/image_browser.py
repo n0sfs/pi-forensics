@@ -73,6 +73,9 @@ from core.email_utils import parse_email_file
 from core.fuzzy_hash_utils import compute_tlsh_hash
 from core.vshadow_utils import list_shadow_copies, materialize_shadow_copy
 from core.linux_artifacts import LINUX_ARTIFACT_IMAGE_MATCHERS, LINUX_ARTIFACT_DEFAULT_TYPES
+from core.android_artifacts import (
+    ANDROID_ARTIFACT_DB_FILENAMES, ANDROID_SCAN_MAX_CANDIDATES, parse_android_artifact_file,
+)
 
 LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES = 100  # combined across whichever types are requested per run
 from core.lnk_utils import parse_lnk_file
@@ -1231,6 +1234,66 @@ def image_parse_registry():
             }, records)
 
     log_chain_of_custody("registry_hives_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_android_artifacts', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_android_artifacts():
+    """In-image only, by design - see core/android_artifacts.py's own
+    module docstring for why (mmssms.db/contacts2.db live under
+    /data/data/, unreachable by this app's non-rooted `pull` acquisition
+    mode; only reachable inside a rooted `physical` acquisition's raw
+    image). Same extract-to-temp-then-parse pattern image_parse_registry()
+    above already established."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    lower_names = {n.lower() for n in ANDROID_ARTIFACT_DB_FILENAMES}
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, lambda name, path: name.lower() in lower_names, ANDROID_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+            records = parse_android_artifact_file(tmp_path, entry['name'])
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("android_artifacts_parsed_image", {
         "image_path": image_path, "candidates_found": len(candidates),
         "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
     })
@@ -2867,10 +2930,18 @@ AUTO_ANALYZE_STEP_LABELS = {
     "browser_artifacts": "Browser Artifacts (Chrome/Firefox)",
     "linux_artifacts": "Linux Artifacts (shell history/passwd/cron/auth log)",
     "recover_deleted": "Recover Deleted Files (Filesystem-Aware)",
+    "android_artifacts": "Android SMS/Contacts/Call Log (rooted physical images only)",
 }
 AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts"]
 AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts"]
-AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted"]  # opt-in, either profile
+# Opt-in, either profile - recover_deleted for cost/risk reasons (a bulk
+# write action, not just read-only parsing); android_artifacts because it's
+# never auto-detectable (an Android userdata partition is plain ext4,
+# indistinguishable from a real Linux image until actually probed) AND
+# still carries a disclosed, real gap (never tested against a rooted-
+# device physical acquisition - see core/android_artifacts.py's own
+# docstring) - opt-in until that gap closes, not a hard technical limit.
+AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted", "android_artifacts"]
 AUTO_ANALYZE_ALL_VALID_STEPS = set(AUTO_ANALYZE_STEP_LABELS.keys())
 
 
@@ -3037,6 +3108,14 @@ def _auto_analyze_step_hash_manifest(image_path, case_folder, source_ip=None, us
     return result
 
 
+def _auto_analyze_step_android_artifacts(image_path, case_folder, source_ip=None, user=None):
+    lower_names = {n.lower() for n in ANDROID_ARTIFACT_DB_FILENAMES}
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, lambda name, path: name.lower() in lower_names,
+        parse_android_artifact_file, ANDROID_SCAN_MAX_CANDIDATES, "android_artifacts_parsed_image",
+        source_ip=source_ip, user=user)
+
+
 def _auto_analyze_step_recover_deleted(image_path, case_folder, source_ip=None, user=None):
     result = _run_recover_deleted_body(image_path, case_folder)
     if result["success"]:
@@ -3058,6 +3137,7 @@ _AUTO_ANALYZE_STEP_FUNCTIONS = {
     "browser_artifacts": _auto_analyze_step_browser_artifacts,
     "linux_artifacts": _auto_analyze_step_linux_artifacts,
     "recover_deleted": _auto_analyze_step_recover_deleted,
+    "android_artifacts": _auto_analyze_step_android_artifacts,
 }
 
 

@@ -198,6 +198,14 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "mobile_sms_message": "Mobile: SMS/iMessage",
     "mobile_contact": "Mobile: Contacts",
     "mobile_call_log": "Mobile: Call History",
+    # Android SMS/Contacts/Call Log, in-image only (core/android_
+    # artifacts.py) - a rooted `physical` acquisition's raw image only,
+    # never a non-rooted `pull`'s /sdcard folder (see that module's own
+    # docstring for the grounded reasoning). Not yet tested against real
+    # rooted-device hardware - disclosed gap, see the same docstring.
+    "android_sms_message": "Android: SMS/MMS (Rooted Physical Image Only)",
+    "android_contact": "Android: Contacts (Rooted Physical Image Only)",
+    "android_call_log": "Android: Call Log (Rooted Physical Image Only)",
     # NTFS $MFT / $UsnJrnl parsing (2026-08-30, tool-survey follow-up) -
     # core/mft_utils.py (wraps analyzeMFT) and core/usnjrnl_utils.py
     # (hand-rolled USN_RECORD_V2 parser).
