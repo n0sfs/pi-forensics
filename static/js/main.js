@@ -1918,6 +1918,8 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     windows_timeline_activity: 'Windows Timeline (Activity History)',
     srum_app_usage: 'SRUM: Application Resource Usage',
     srum_network_usage: 'SRUM: Network Data Usage',
+    powershell_console_history: 'PowerShell Console History',
+    firewall_connection_log: 'Windows Firewall Connection Log',
     email_message: 'Email Message',
     // Live Collection USB, Phase 2 (2026-09-01) - kept in sync with
     // routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS. This exact side
@@ -4483,6 +4485,8 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnParseStickyNotes', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseWindowsActivity', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseSrum', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParsePowerShellHistory', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseFirewallLog', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseRecycleBin', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseCryptoWallets', section: 'ctxSecArtifacts', visible: item => item.is_dir },
@@ -4522,6 +4526,8 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnEnterStickyNotesImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterWindowsActivityImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterSrumImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterPowerShellHistoryImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterFirewallLogImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterRecycleBinImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterLinuxArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterAndroidArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
@@ -4642,6 +4648,8 @@ async function contextMenuBrowseImageAnd(action) {
         stickynotes: runImageStickyNotesParse,
         windowsactivity: runImageWindowsActivityParse,
         srum: runImageSrumParse,
+        powershellhistory: runImagePowerShellHistoryParse,
+        firewalllog: runImageFirewallLogParse,
         recyclebin: runImageRecycleBinParse,
         linuxartifacts: runImageLinuxArtifactsParse,
         androidartifacts: runImageAndroidArtifactsParse,
@@ -6151,6 +6159,110 @@ async function runImageSrumParse() {
         }
     } catch (err) {
         showToast('SRUM scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedPowerShellHistoryParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_powershell_history', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`PowerShell history scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No PowerShell console history (*_history.txt under a PSReadLine folder) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} PowerShell history file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} PowerShell history file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('PowerShell history scan failed: request error.', 'danger');
+    }
+}
+
+async function runImagePowerShellHistoryParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_powershell_history', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`PowerShell history scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No PowerShell console history found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} PowerShell history file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} PowerShell history file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('PowerShell history scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedFirewallLogParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_firewall_log', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Firewall log scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Windows Firewall log (pfirewall.log) found under this folder - logging is off by default, so this is common.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} firewall log(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} firewall log(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Firewall log scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageFirewallLogParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_firewall_log', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Firewall log scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Windows Firewall log found in this image - logging is off by default, so this is common.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} firewall log(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} firewall log(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Firewall log scan failed: request error.', 'danger');
     }
 }
 
