@@ -1909,6 +1909,9 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     registry_bam_dam: 'Registry: BAM/DAM (Program Execution)',
     registry_rdp_server: 'Registry: RDP Connection History (Server)',
     registry_rdp_mru: 'Registry: RDP Connection History (Recent)',
+    office_mru_file: 'Registry: Office Recent Files',
+    office_mru_place: 'Registry: Office Recent Folders',
+    registry_wordwheelquery: 'Registry: Explorer Search History',
     email_message: 'Email Message',
     // Live Collection USB, Phase 2 (2026-09-01) - kept in sync with
     // routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS. This exact side
