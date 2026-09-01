@@ -273,6 +273,7 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "office_mru_file": "Registry: Office Recent Files",
     "office_mru_place": "Registry: Office Recent Folders",
     "registry_wordwheelquery": "Registry: Explorer Search History",
+    "sticky_note": "Windows Sticky Notes",
     # Email parsing (2026-08-30, tool-survey follow-up) - .eml/.mbox via the
     # standard library, .pst/.ost via libpff-python (core/email_utils.py).
     "email_message": "Email Message",

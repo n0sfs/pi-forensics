@@ -739,6 +739,7 @@ const TOOL_REFERENCE_GROUPS = [
             ["Browser Artifact Parser", "Extracts history, bookmarks, downloads, and cookies from a Chrome/Chromium-family, Firefox, or Safari browser profile, on disk or inside an acquired image. Built in, no external tool needed."],
             ["Registry / Event Log / Prefetch / Recycle Bin / LNK / Jump List Parsers", "Built-in parsers for Windows Registry hives (incl. Amcache), .evtx Event Logs, Prefetch execution history, Recycle Bin metadata, .lnk shortcuts, and Jump Lists (recently/frequently accessed files per application, from .automaticDestinations-ms and .customDestinations-ms files) - no external tool needed, work on a real folder or directly inside an acquired image."],
             ["Thumbcache Parser", "Built-in parser for Windows Thumbcache files (thumbcache_*.db, Windows 8-10/11 format) - extracts every embedded thumbnail as a real, viewable image, which can persist after the original photo/document has been deleted. The internal identifier is usually a one-way hash, not the original filename (shown as such when a plausible real filename can be recovered instead). No external tool needed, works on a real folder or directly inside an acquired image."],
+            ["Sticky Notes Parser", "Built-in parser for the Windows Sticky Notes app's own database (plum.sqlite) - reads the actual text of every note, including deleted ones (a soft-delete tombstone, not real removal), and correctly recovers recent notes/edits that only exist in an adjacent -wal sidecar file, not yet saved into the main database. No external tool needed, works on a real folder or directly inside an acquired image."],
             ["Linux Artifact Parser", "Built-in parser for shell history, /etc/passwd, cron jobs, and auth.log/secure authentication events on a Linux filesystem - no external tool needed."],
             ["YARA", "Scans a file against your own saved YARA rulesets (Settings > Case & Reporting > Analysis & IOC Lists). Right-click a file and choose \"Scan with YARA Rules\"."],
             ["Auto Analyze", "Not a single external tool - detects what kind of evidence you've selected (Windows/Linux disk image, memory image, mobile backup) and runs a curated set of the tools above automatically, as one background job. Top of the right-click menu."],
@@ -1912,6 +1913,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     office_mru_file: 'Registry: Office Recent Files',
     office_mru_place: 'Registry: Office Recent Folders',
     registry_wordwheelquery: 'Registry: Explorer Search History',
+    sticky_note: 'Windows Sticky Notes',
     email_message: 'Email Message',
     // Live Collection USB, Phase 2 (2026-09-01) - kept in sync with
     // routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS. This exact side
@@ -4474,6 +4476,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnParsePrefetch', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseJumplists', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseThumbcache', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseStickyNotes', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseRecycleBin', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseCryptoWallets', section: 'ctxSecArtifacts', visible: item => item.is_dir },
@@ -4510,6 +4513,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnEnterPrefetchImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterJumplistsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterThumbcacheImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterStickyNotesImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterRecycleBinImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterLinuxArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterAndroidArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
@@ -4627,6 +4631,7 @@ async function contextMenuBrowseImageAnd(action) {
         prefetch: runImagePrefetchParse,
         jumplists: runImageJumplistsParse,
         thumbcache: runImageThumbcacheParse,
+        stickynotes: runImageStickyNotesParse,
         recyclebin: runImageRecycleBinParse,
         linuxartifacts: runImageLinuxArtifactsParse,
         androidartifacts: runImageAndroidArtifactsParse,
@@ -5980,6 +5985,58 @@ async function runImageThumbcacheParse() {
         }
     } catch (err) {
         showToast('Thumbcache scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedStickyNotesParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_sticky_notes', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Sticky Notes scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Sticky Notes database (plum.sqlite) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Sticky Notes database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Sticky Notes database(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Sticky Notes scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageStickyNotesParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_sticky_notes', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Sticky Notes scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Sticky Notes database (plum.sqlite) found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Sticky Notes database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Sticky Notes database(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Sticky Notes scan failed: request error.', 'danger');
     }
 }
 
