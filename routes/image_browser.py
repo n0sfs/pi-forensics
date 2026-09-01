@@ -70,6 +70,10 @@ from core.thumbcache_utils import (
     THUMBCACHE_FILENAME_RE, THUMBCACHE_IDX_FILENAME, THUMBCACHE_SCAN_MAX_CANDIDATES,
     extract_thumbcache_entries, parse_thumbcache_container_header,
 )
+from core.stickynotes_utils import (
+    STICKY_NOTES_FILENAME, STICKY_NOTES_SCAN_MAX_CANDIDATES,
+    parse_sticky_notes_directory, sticky_notes_canonical_filename,
+)
 from core.jumplist_utils import (
     JUMPLIST_AUTOMATIC_EXTENSION, JUMPLIST_CUSTOM_EXTENSION, JUMPLIST_SCAN_MAX_CANDIDATES, parse_jumplist_file,
 )
@@ -1793,6 +1797,89 @@ def image_parse_thumbcache():
         "unsupported_versions": result["unsupported_versions"], "truncated": result["truncated"],
     })
     return jsonify(dict(result, destination_dir=dest_dir, indexed=bool(case_folder)))
+
+@image_browser_bp.route('/api/image/parse_sticky_notes', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_sticky_notes():
+    """In-image counterpart to parse_sticky_notes() (routes/file_explorer.py) -
+    a genuinely different extraction shape from every metadata-only in-
+    image parser above: SQLite's own WAL mechanism requires the main
+    plum.sqlite file and its -wal/-shm sidecars to sit together, correctly
+    named, in one directory to be checkpointed correctly on open - so this
+    can't reuse _image_scan_candidate_files' own single-file extract-to-
+    a-random-temp-name pattern. Instead, one matcher catches all three
+    possible filenames in a single walk, results are grouped by their
+    common in-image parent directory (each group is one real plum.sqlite
+    'family' - main file plus whichever sidecars happen to exist alongside
+    it), and each group's members are extracted together into one shared
+    temp directory, canonically renamed (sticky_notes_canonical_filename())
+    so the real on-disk casing can never matter, before
+    parse_sticky_notes_directory() is called against that directory."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    def _is_sticky_notes_candidate(name, path):
+        return sticky_notes_canonical_filename(name) is not None
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, _is_sticky_notes_candidate, STICKY_NOTES_SCAN_MAX_CANDIDATES * 3)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    groups = {}
+    for fs, fsinfo, entry, path in candidates:
+        parent_dir = path.rsplit('/', 1)[0] if '/' in path else ''
+        groups.setdefault((fsinfo['offset'], parent_dir), []).append((fs, fsinfo, entry, path))
+
+    counts = {}
+    families_parsed = 0
+    for (_fs_offset, _parent_dir), members in groups.items():
+        main_member = next((m for m in members if sticky_notes_canonical_filename(m[2]['name']) == STICKY_NOTES_FILENAME), None)
+        if main_member is None:
+            continue
+        tmp_dir = tempfile.mkdtemp(prefix='pif_stickynotes_img_')
+        try:
+            for fs_m, fsinfo_m, entry_m, path_m in members:
+                canonical_name = sticky_notes_canonical_filename(entry_m['name'])
+                if not canonical_name:
+                    continue
+                out_path = os.path.join(tmp_dir, canonical_name)
+                try:
+                    tsk_file = fs_m.open_meta(inode=_tsk_parse_inode(entry_m['inode']))
+                    with open(out_path, 'wb') as out_f:
+                        _tsk_stream_file(tsk_file, out_f.write)
+                except Exception:
+                    continue
+            records = parse_sticky_notes_directory(tmp_dir)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        if not records:
+            continue
+        families_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": main_member[1]['offset'],
+                "inode": main_member[2]['inode'], "path": main_member[3],
+            }, records)
+
+    log_chain_of_custody("sticky_notes_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "families_parsed": families_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": families_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
 
 @image_browser_bp.route('/api/image/parse_recyclebin', methods=['POST'])
 @requires_auth
