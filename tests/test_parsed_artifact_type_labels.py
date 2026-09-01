@@ -87,6 +87,8 @@ _SRUM_ARTIFACT_TYPES = {"srum_app_usage", "srum_network_usage"}
 # core/powershell_history_utils.py / core/firewall_log_utils.py.
 _POWERSHELL_HISTORY_ARTIFACT_TYPES = {"powershell_console_history"}
 _FIREWALL_LOG_ARTIFACT_TYPES = {"firewall_connection_log"}
+# macOS LaunchAgents/LaunchDaemons, 2026-09-01 - core/macos_launchd_utils.py.
+_MACOS_LAUNCHD_ARTIFACT_TYPES = {"macos_launchd_item"}
 
 
 def test_parsed_artifact_type_labels_covers_every_known_producer():
@@ -98,7 +100,8 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
                 | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES
                 | _ANDROID_ARTIFACT_TYPES | _LEAPP_TSV_ARTIFACT_TYPES | _TAKEOUT_ARTIFACT_TYPES
                 | _APPLE_EXPORT_ARTIFACT_TYPES | _WINDOWS_ACTIVITY_ARTIFACT_TYPES | _SRUM_ARTIFACT_TYPES
-                | _POWERSHELL_HISTORY_ARTIFACT_TYPES | _FIREWALL_LOG_ARTIFACT_TYPES)
+                | _POWERSHELL_HISTORY_ARTIFACT_TYPES | _FIREWALL_LOG_ARTIFACT_TYPES
+                | _MACOS_LAUNCHD_ARTIFACT_TYPES)
     actual = set(case_index.PARSED_ARTIFACT_TYPE_LABELS.keys())
     missing = expected - actual
     assert not missing, f"artifact_type(s) producible by a parser but missing from PARSED_ARTIFACT_TYPE_LABELS (row-fetch route would silently return no rows for these): {missing}"

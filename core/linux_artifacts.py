@@ -86,6 +86,30 @@ def _mtime_epoch(path):
 
 _HISTTIMEFORMAT_MARKER_RE = re.compile(r'^#(\d{9,10})$')
 
+# zsh's EXTENDED_HISTORY option (`setopt EXTENDED_HISTORY`) - NOT macOS's
+# real default (confirmed via research, 2026-09-01: stock macOS's own
+# /etc/zshrc doesn't set it; it needs explicit opt-in, e.g. an MDM-deployed
+# .zshrc or a security-conscious user's own config) but a real, well-
+# documented format worth auto-detecting rather than assuming either way -
+# a stock Mac's plain .zsh_history is already handled correctly by the
+# fallback path below. On-disk shape: ": <start_epoch>:<elapsed_seconds>;
+# <command>", cross-validated against dfir.ch's own writeup and zsh's real
+# community documentation. A command containing a literal embedded newline
+# is preserved via a real, confirmed continuation scheme distinct from
+# both bash's HISTTIMEFORMAT marker above and PowerShell's own backtick
+# scheme (core/powershell_history_utils.py) - every physical line except
+# the command's last ends with a literal trailing backslash immediately
+# before the newline (confirmed via a real zsh-project mailing-list bug
+# thread describing this exact behavior).
+# A known, inherent, accepted ambiguity in this detection (same category
+# as PowerShell's own backtick-continuation edge case, core/powershell_
+# history_utils.py's own docstring): a real command that itself literally
+# starts with a shape matching this pattern (bash/zsh's own ":" no-op
+# builtin, e.g. a genuinely typed ": 123:45;echo hi") would be
+# misclassified as an EXTENDED_HISTORY entry - an extremely rare real
+# command shape, not something this module attempts to fully disambiguate.
+_ZSH_EXTENDED_HISTORY_RE = re.compile(r'^:\s*(\d+):(\d+);(.*)$')
+
 
 def is_shell_history_candidate(name, path=None):
     return name in LINUX_SHELL_HISTORY_FILENAMES
@@ -97,10 +121,18 @@ def find_linux_shell_history_files(root_dir):
 
 
 def parse_linux_shell_history_file(path, filename=None):
-    """.bash_history/.zsh_history/.python_history - one command per line.
-    No reliable timestamp unless HISTTIMEFORMAT was set (bash then prefixes
-    each command with a '#<epoch>' marker line) - handled, but never
-    guessed when absent.
+    """.bash_history/.zsh_history/.python_history - one command per line
+    by default. Two possible sources of a real per-command timestamp are
+    auto-detected line-by-line (never assumed for the whole file, so a
+    file that's had mixed-format content appended across shell-config
+    changes over time still parses each entry correctly): bash's
+    HISTTIMEFORMAT convention (a standalone '#<epoch>' marker line
+    immediately before the command it timestamps) and zsh's
+    EXTENDED_HISTORY format (see this module's own comment above the
+    regex for the real, confirmed on-disk shape and its own distinct
+    multi-line continuation scheme). Neither is ever guessed when absent -
+    a genuinely untimestamped file (the common real-world case for both
+    shells) still parses correctly, just with timestamp: None per entry.
 
     filename defaults to path's own basename (correct for a real-fs call,
     where path already IS the real file) - the in-image route passes the
@@ -113,10 +145,41 @@ def parse_linux_shell_history_file(path, filename=None):
     try:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
             pending_ts = None
+            zsh_continuation = None  # {"epoch": float, "parts": [str, ...]} or None
             for i, line in enumerate(f):
                 if i >= LINUX_SHELL_HISTORY_MAX_LINES_PER_FILE:
                     break
                 line = line.rstrip('\n')
+
+                if zsh_continuation is not None:
+                    if line.endswith('\\'):
+                        zsh_continuation["parts"].append(line[:-1])
+                        continue
+                    zsh_continuation["parts"].append(line)
+                    cmd = '\n'.join(zsh_continuation["parts"])
+                    records.append({
+                        "artifact_type": "linux_shell_history", "title": cmd, "url": "",
+                        "value": cmd, "timestamp": zsh_continuation["epoch"],
+                        "extra": {"shell_history_file": display_name, "is_multiline": True},
+                    })
+                    zsh_continuation = None
+                    continue
+
+                zsh_m = _ZSH_EXTENDED_HISTORY_RE.match(line)
+                if zsh_m:
+                    epoch = float(zsh_m.group(1))
+                    first_part = zsh_m.group(3)
+                    if first_part.endswith('\\'):
+                        zsh_continuation = {"epoch": epoch, "parts": [first_part[:-1]]}
+                        continue
+                    if first_part.strip():
+                        records.append({
+                            "artifact_type": "linux_shell_history", "title": first_part, "url": "",
+                            "value": first_part, "timestamp": epoch,
+                            "extra": {"shell_history_file": display_name, "is_multiline": False},
+                        })
+                    continue
+
                 m = _HISTTIMEFORMAT_MARKER_RE.match(line.strip())
                 if m:
                     pending_ts = float(m.group(1))
@@ -130,6 +193,19 @@ def parse_linux_shell_history_file(path, filename=None):
                     "extra": {"shell_history_file": display_name},
                 })
                 pending_ts = None
+
+            # A file that ends mid-continuation (a truncated/corrupted
+            # write) - still surface the partial command rather than
+            # silently dropping it, matching this app's own established
+            # tolerance for a truncated write elsewhere (e.g. core/
+            # powershell_history_utils.py's _join_continuation_lines()).
+            if zsh_continuation is not None and any(p.strip() for p in zsh_continuation["parts"]):
+                cmd = '\n'.join(zsh_continuation["parts"])
+                records.append({
+                    "artifact_type": "linux_shell_history", "title": cmd, "url": "",
+                    "value": cmd, "timestamp": zsh_continuation["epoch"],
+                    "extra": {"shell_history_file": display_name, "is_multiline": True},
+                })
     except Exception as e:
         print(f"Warning: could not parse shell history {path}: {e}")
         return []
