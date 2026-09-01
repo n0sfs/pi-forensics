@@ -79,6 +79,9 @@ from core.windows_activity_utils import (
     parse_windows_activity_file, windows_activity_canonical_filename, windows_activity_base_name,
 )
 from core.srum_utils import SRUM_FILENAME, SRUM_SCAN_MAX_CANDIDATES, parse_srum_file
+from core.winsearch_utils import WINSEARCH_FILENAME, WINSEARCH_SCAN_MAX_CANDIDATES, parse_winsearch_file
+from core.webcache_utils import WEBCACHE_FILENAMES, WEBCACHE_SCAN_MAX_CANDIDATES, parse_webcache_file
+from core.bits_utils import BITS_FILENAME, BITS_SCAN_MAX_CANDIDATES, parse_bits_file
 from core.powershell_history_utils import (
     POWERSHELL_HISTORY_PARENT_DIR_NAME, POWERSHELL_HISTORY_FILENAME_SUFFIX,
     POWERSHELL_HISTORY_SCAN_MAX_CANDIDATES, parse_powershell_history_file,
@@ -2034,6 +2037,176 @@ def image_parse_srum():
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 
+@image_browser_bp.route('/api/image/parse_winsearch', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_winsearch():
+    """In-image counterpart to parse_winsearch() (routes/file_explorer.py)
+    - same single-file extract-to-temp-then-parse shape image_parse_srum()
+    already established."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, lambda name, path: name.lower() == WINSEARCH_FILENAME.lower(), WINSEARCH_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']), suffix='.edb')
+            records = parse_winsearch_file(tmp_path)
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("winsearch_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_webcache', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_webcache():
+    """In-image counterpart to parse_webcache() (routes/file_explorer.py)
+    - same single-file extract-to-temp-then-parse shape image_parse_srum()
+    already established. WEBCACHE_FILENAMES has two real variants
+    (WebCacheV01.dat/WebCacheV24.dat) - matched via membership, not a
+    single exact-name comparison."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, lambda name, path: name.lower() in WEBCACHE_FILENAMES, WEBCACHE_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']), suffix='.dat')
+            records = parse_webcache_file(tmp_path)
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("webcache_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
+@image_browser_bp.route('/api/image/parse_bits', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_bits():
+    """In-image counterpart to parse_bits() (routes/file_explorer.py) -
+    same single-file extract-to-temp-then-parse shape image_parse_srum()
+    already established."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, lambda name, path: name.lower() == BITS_FILENAME.lower(), BITS_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']), suffix='.db')
+            records = parse_bits_file(tmp_path)
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("bits_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
 @image_browser_bp.route('/api/image/parse_powershell_history', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -3523,6 +3696,9 @@ AUTO_ANALYZE_STEP_LABELS = {
     "srum": "SRUM (Application/Network Usage History)",
     "powershell_history": "PowerShell Console History (PSReadLine)",
     "firewall_log": "Windows Firewall Log (pfirewall.log, off by default)",
+    "winsearch": "Windows Search Index (Windows.edb)",
+    "webcache": "Legacy IE/Edge WebCache (WebCacheV01/V24.dat)",
+    "bits": "BITS Job Queue (qmgr.db)",
 }
 AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts", "jumplists"]
 AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts"]
@@ -3542,7 +3718,8 @@ AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts"]
 # firewall_log_utils.py's own docstring), so it would find nothing on
 # most real images regardless - opt-in reflects that reality too, not
 # just the untested-format caveat.
-AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted", "android_artifacts", "srum", "powershell_history", "firewall_log"]
+AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted", "android_artifacts", "srum", "powershell_history", "firewall_log",
+                             "winsearch", "webcache", "bits"]
 AUTO_ANALYZE_ALL_VALID_STEPS = set(AUTO_ANALYZE_STEP_LABELS.keys())
 
 
@@ -3631,6 +3808,27 @@ def _auto_analyze_step_srum(image_path, case_folder, source_ip=None, user=None):
     return _auto_analyze_run_generic_artifact_scan(
         image_path, case_folder, lambda name, path: name.lower() == SRUM_FILENAME.lower(),
         parse_srum_file, SRUM_SCAN_MAX_CANDIDATES, "srum_files_parsed_image",
+        source_ip=source_ip, user=user)
+
+
+def _auto_analyze_step_winsearch(image_path, case_folder, source_ip=None, user=None):
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, lambda name, path: name.lower() == WINSEARCH_FILENAME.lower(),
+        parse_winsearch_file, WINSEARCH_SCAN_MAX_CANDIDATES, "winsearch_parsed_image",
+        source_ip=source_ip, user=user)
+
+
+def _auto_analyze_step_webcache(image_path, case_folder, source_ip=None, user=None):
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, lambda name, path: name.lower() in WEBCACHE_FILENAMES,
+        parse_webcache_file, WEBCACHE_SCAN_MAX_CANDIDATES, "webcache_parsed_image",
+        source_ip=source_ip, user=user)
+
+
+def _auto_analyze_step_bits(image_path, case_folder, source_ip=None, user=None):
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, lambda name, path: name.lower() == BITS_FILENAME.lower(),
+        parse_bits_file, BITS_SCAN_MAX_CANDIDATES, "bits_parsed_image",
         source_ip=source_ip, user=user)
 
 

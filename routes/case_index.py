@@ -288,6 +288,15 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "powershell_console_history": "PowerShell Console History",
     "firewall_connection_log": "Windows Firewall Connection Log",
     "macos_launchd_item": "macOS: LaunchAgent/LaunchDaemon (Persistence)",
+    # Windows Search/WebCache/BITS (2026-09-01, tool-survey reconsidered +
+    # newly-identified items) - all three are ESE-format (pyesedb-backed)
+    # single-well-known-filename parsers, riding real-fs+in-image routes
+    # like every other artifact-parser module. REMEMBER: also add to
+    # FILE_VIEWS_WEB_ARTIFACT_LABELS (static/js/main.js) and
+    # tests/test_parsed_artifact_type_labels.py.
+    "winsearch_indexed_item": "Windows Search Index (Windows.edb)",
+    "webcache_entry": "Legacy IE/Edge WebCache History (WebCacheV01/V24.dat)",
+    "bits_job": "BITS Job Queue (qmgr.db)",
     # Email parsing (2026-08-30, tool-survey follow-up) - .eml/.mbox via the
     # standard library, .pst/.ost via libpff-python (core/email_utils.py).
     "email_message": "Email Message",
