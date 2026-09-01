@@ -21,6 +21,16 @@ file after updating to see what changed.
 
 ---
 
+## [1.21.1] - 2026-09-01
+
+### Fixed
+
+- **A deleted Sticky Note (or any future artifact type with a similar concept) could show as "not
+  deleted" in the Evidence Timeline.** The timeline never actually checked that flag for anything
+  parsed out of an acquired image - fixed so it now does.
+
+---
+
 ## [1.21.0] - 2026-09-01
 
 ### New
