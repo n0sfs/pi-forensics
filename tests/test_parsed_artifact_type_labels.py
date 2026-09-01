@@ -48,6 +48,9 @@ _LIVE_COLLECTION_ARTIFACT_TYPES = {
     "live_collection_mapped_drive", "live_collection_clipboard",
     "live_collection_hash_list_match",
 }
+# Android forensics expansion, Phase B - core/android_artifacts.py. In-image
+# only (rooted `physical` acquisitions), never a real-fs `pull` output.
+_ANDROID_ARTIFACT_TYPES = {"android_sms_message", "android_contact", "android_call_log"}
 
 
 def test_parsed_artifact_type_labels_covers_every_known_producer():
@@ -55,7 +58,8 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
     expected = (_BROWSER_ARTIFACT_TYPES | _REGISTRY_ARTIFACT_TYPES | evtx_types | _LNK_ARTIFACT_TYPES
                 | _PREFETCH_ARTIFACT_TYPES | _RECYCLEBIN_ARTIFACT_TYPES | _LINUX_ARTIFACT_TYPES
                 | _URL_IOC_ARTIFACT_TYPES | _CRYPTO_ARTIFACT_TYPES | _MOBILE_ARTIFACT_TYPES
-                | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES)
+                | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES
+                | _ANDROID_ARTIFACT_TYPES)
     actual = set(case_index.PARSED_ARTIFACT_TYPE_LABELS.keys())
     missing = expected - actual
     assert not missing, f"artifact_type(s) producible by a parser but missing from PARSED_ARTIFACT_TYPE_LABELS (row-fetch route would silently return no rows for these): {missing}"
