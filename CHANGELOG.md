@@ -21,6 +21,22 @@ file after updating to see what changed.
 
 ---
 
+## [1.18.0] - 2026-09-01
+
+### New
+
+- **Windows Thumbcache thumbnails can now be extracted and viewed.** A new "Extract Thumbcache
+  Thumbnails" action (right-click a folder, or run it against a whole acquired image) finds every
+  `thumbcache_*.db` file (Windows 8 through 10/11) and pulls out each embedded thumbnail as a real,
+  directly-viewable image file - these can persist in the cache long after the original photo or
+  document has been deleted from the drive. The internal identifier is usually a one-way hash rather
+  than the original filename, but for deleted files and files on removable/network drives it's
+  sometimes the real filename or path instead - shown as such whenever that's the case, never guessed
+  at. Older Windows Vista/7-format cache files use a different, unsupported layout and are skipped
+  with a clear note rather than silently misread.
+
+---
+
 ## [1.17.0] - 2026-09-01
 
 ### New
