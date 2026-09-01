@@ -274,6 +274,17 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "office_mru_place": "Registry: Office Recent Folders",
     "registry_wordwheelquery": "Registry: Explorer Search History",
     "sticky_note": "Windows Sticky Notes",
+    # SRUM/wpndatabase.db/ActivitiesCache.db (2026-09-01) - a third round of
+    # Windows artifact coverage. windows_notification/windows_timeline_
+    # activity share one core module (core/windows_activity_utils.py) and
+    # ride real-fs+in-image routes; srum_app_usage/srum_network_usage ride
+    # a separate ESE-format module (core/srum_utils.py). REMEMBER: also add
+    # to FILE_VIEWS_WEB_ARTIFACT_LABELS (static/js/main.js) and
+    # tests/test_parsed_artifact_type_labels.py.
+    "windows_notification": "Windows Notification History (Action Center)",
+    "windows_timeline_activity": "Windows Timeline (Activity History)",
+    "srum_app_usage": "SRUM: Application Resource Usage",
+    "srum_network_usage": "SRUM: Network Data Usage",
     # Email parsing (2026-08-30, tool-survey follow-up) - .eml/.mbox via the
     # standard library, .pst/.ost via libpff-python (core/email_utils.py).
     "email_message": "Email Message",
