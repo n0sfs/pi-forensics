@@ -348,8 +348,8 @@ Right-click (or press-and-hold on a touchscreen) any file or folder for a contex
 context-aware — only actions that could actually apply to the selected file, folder, or image are
 shown, and a whole section (Whole-Image Analysis, Artifact Parsers, Mobile & Memory) disappears
 entirely if none of its tools apply to the current selection, so a plain document's menu stays short.
-A single-file analysis tool (Binwalk, ClamAV, Strings, Hash Sets, YARA, Fuzzy Hash, SQLite Dissect,
-APK/IPA/Bugreport analysis, LNK parsing) that has already been run against the exact selected file
+A single-file analysis tool (Binwalk, ClamAV, Strings, OCR, Hash Sets, YARA, Fuzzy Hash, SQLite
+Dissect, APK/IPA/Bugreport analysis, LNK parsing) that has already been run against the exact selected file
 shows a small green checkmark — hover it for the prior result and when it ran. The very
 first item, **Auto Analyze...**, is described in its own section below — everything under it is
 grouped into collapsible sections so the menu stays manageable:
@@ -392,6 +392,11 @@ grouped into collapsible sections so the menu stays manageable:
 - **ClamAV** — scans against known malware signatures.
 - **Extract Strings** — pulls readable text out of a binary file.
 - **Quick Triage Scan** — the fast, single-file version of the pattern scanner above.
+- **Extract Text (OCR)** — reads readable text out of a screenshot, scanned document, or photograph
+  (English only in this version) — text no other tool here can see, since it exists only as rendered
+  pixels, not raw file bytes.
+- **Generate Video Contact Sheet** — builds a single image showing a 4x3 grid of evenly-spaced frames
+  from a video, so you can see what's in it without opening a media player.
 - **hashdeep** — generates a hash for every file in a folder at once.
 - **Check Against Hash Sets** — hashes the file and checks it against your saved known-good/
   known-bad hash sets — see [Hash Sets, URL Lists, and YARA
@@ -505,6 +510,22 @@ a real folder or from inside an unmounted image — no extraction step required 
 - **Windows Firewall connection log** (`pfirewall.log`) — every logged allowed/blocked connection,
   when an administrator has turned that logging on. It's off by default, so this file is commonly
   not present at all — that's expected, not a problem.
+- **Windows Search Index** (`Windows.edb`, Vista through 10) — every file the operating system has
+  indexed, with its resolved path, name, size, author, and a preview of the actual text content
+  Windows itself extracted from inside it. Windows 11 moved this to a different (SQLite-based) format,
+  not yet covered.
+- **Legacy Internet Explorer 10/11 and pre-Chromium Edge history/cookies**
+  (`WebCacheV01.dat`/`WebCacheV24.dat`) — a fourth browser family alongside the Chrome/Firefox/Safari
+  support described above. Modern Chromium-based Edge is already covered by the Chrome-family parser
+  instead.
+- **BITS job queue** (`qmgr.db`, Windows 10+) — BITS is a legitimate background-download service that
+  is also a well-known technique attackers use for stealthy downloads. Recovers each job's name, the
+  exact command it ran when the job finished, and who owns it. Doesn't recover individual downloaded-
+  file details (source URL, destination path) in this version — a deliberate scope decision rather
+  than a guessed, possibly-wrong result.
+- **RDP Bitmap Cache** (`Cache####.bin`/`bcache##.bmc`) — evidence that a Remote Desktop client
+  session took place on this machine. This version reports per-tile metadata (a real deduplication
+  key, tile dimensions) but doesn't reconstruct the actual on-screen images.
 
 **Linux**
 

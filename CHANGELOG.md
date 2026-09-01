@@ -21,6 +21,38 @@ file after updating to see what changed.
 
 ---
 
+## [1.26.0] - 2026-09-01
+
+### New
+
+- **Windows Search Index parsing** (Windows.edb, Vista through 10) - the operating system's own
+  search index of files it has scanned, including indexed files' resolved paths, names, and a preview
+  of the actual text content Windows extracted from inside each one. A prior internal note in this
+  project had declined this artifact as too unreliable to correlate correctly - re-examined with fresh
+  research and found that assessment was wrong, so it's built now.
+- **Legacy Internet Explorer 10/11 and pre-Chromium Microsoft Edge browsing history/cookies**
+  (WebCacheV01.dat/WebCacheV24.dat) - a fourth real browser family added to the existing Chrome/
+  Firefox/Safari support, useful on any older Windows image (modern Chromium-based Edge is already
+  covered by the existing Chrome-family parser).
+- **BITS job queue parsing** (qmgr.db, Windows 10+) - BITS is a legitimate Windows background-download
+  service that's also a real, well-known technique attackers use for stealthy downloads. Recovers each
+  job's name, the exact command it ran on completion, and who owns it. Deliberately does not attempt to
+  recover individual downloaded-file details in this version - a real, disclosed scope decision rather
+  than a guessed, possibly-wrong result.
+- **RDP Bitmap Cache detection** (Cache####.bin / bcache##.bmc) - evidence that a Remote Desktop client
+  session took place on this machine, with per-tile metadata (a real deduplication key, tile
+  dimensions) even though this version doesn't reconstruct the actual on-screen images.
+- **OCR text extraction** - pulls readable text out of screenshots, scanned documents, or photographed
+  notes/signage right-clicked in File Explorer - evidence no other tool here can see, since it exists
+  only as pixels, not raw file bytes. English text only in this version.
+- **Video contact sheets** - generates a single image showing a grid of evenly-spaced frames from a
+  video file, so you can see what's in it at a glance without opening a media player.
+
+All six new tools are reachable the same way as every other artifact parser in this app - right-click
+a folder or file, or run against a whole acquired disk image.
+
+---
+
 ## [1.25.0] - 2026-09-01
 
 ### New
