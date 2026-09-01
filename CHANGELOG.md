@@ -21,6 +21,21 @@ file after updating to see what changed.
 
 ---
 
+## [1.20.0] - 2026-09-01
+
+### New
+
+- **Two more Windows Registry artifacts, parsed automatically** ("Parse Registry Hives" - no new
+  action needed): **Office recent files/folders**, tracked separately per application (Word, Excel,
+  PowerPoint, Access, Publisher) - a more specific signal than the existing shell-wide recent-
+  documents list, including both signed-in and local-account Office profiles. **Explorer search-box
+  history**, what a user has typed into the Windows Explorer search box - fully populated on Windows
+  7 through pre-23H2 Windows 11, but Microsoft changed how Explorer search works starting Windows 11
+  23H2, so this key stops being written entirely on newer builds - a blank result there is expected
+  and disclosed, not a parsing failure.
+
+---
+
 ## [1.19.0] - 2026-09-01
 
 ### New
