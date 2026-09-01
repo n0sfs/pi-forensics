@@ -7,6 +7,16 @@ finds non-empty data already writes its own <module>.tsv file into
 every ALEAPP/iLEAPP run this app already performs. This module reads that
 already-produced, previously-unread machine-readable output.
 
+Confirmed for BOTH tools by directly reading their real installed source
+at each one's own pinned commit on the deployed station (not inferred
+from "they're sibling projects"): `artifact_processor()` and `tsv()` in
+ALEAPP's `scripts/ilapfuncs.py` and iLEAPP's own `scripts/ilapfuncs.py`
+are byte-identical in the relevant parts - same decorator, same default
+`output_types`, same literal `'_TSV Exports'` folder name, same `tsv()`
+function signature. This app's own iOS acquisitions never had a real
+backup on this station to run iLEAPP against live, so this direct source
+comparison is what actually closes that gap, not a live iLEAPP run.
+
 A REAL, GROUNDED FINDING SHAPES THIS MODULE'S DESIGN, not a guess: a live
 run against this app's own real, non-rooted `adb pull` extraction (a real
 8.7GB Pixel 8a /sdcard dump) showed the overwhelming majority of ALEAPP's
