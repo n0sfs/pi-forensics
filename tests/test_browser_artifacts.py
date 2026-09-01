@@ -1,12 +1,15 @@
-"""core/browser_artifacts.py - Chrome/Chromium-family and Firefox real
-per-app artifact parsing (History, Downloads, Bookmarks, Cookies). No POSIX
-dependency - runs on every platform. Builds real SQLite files/JSON matching
-each browser's actual on-disk schema rather than mocking the parser, so a
-schema-shape mistake would actually fail these tests.
+"""core/browser_artifacts.py - Chrome/Chromium-family, Firefox, and Safari
+real per-app artifact parsing (History, Downloads, Bookmarks, Cookies). No
+POSIX dependency - runs on every platform. Builds real SQLite files/JSON/
+plists/binarycookies matching each browser's actual on-disk schema rather
+than mocking the parser, so a schema-shape mistake would actually fail
+these tests.
 """
 import json
 import os
+import plistlib
 import sqlite3
+import struct
 
 import pytest
 
@@ -550,3 +553,450 @@ def test_parse_browser_profile_file_appends_ioc_matches_without_url_list_sets_be
     assert len(result_with) == 2
     assert result_with[0]["artifact_type"] == "chrome_bookmarks"
     assert result_with[1]["artifact_type"] == "browser_url_ioc_match"
+
+
+# --- Safari (2026-09-01) ---
+# Real research grounding before any code was written: schema/key names
+# confirmed against real forensic-tool source (ydkhatri/mac_apt's own
+# safari.py plugin, a Velociraptor artifact definition) and the
+# .binarycookies byte layout triangulated across four independent sources
+# incl. a 2024 peer-reviewed paper - see core/browser_artifacts.py's own
+# module docstring and the Safari section's inline comments for citations.
+
+def test_find_browser_artifact_files_matches_safari_filenames_too(tmp_path):
+    profile = tmp_path / "Users" / "suspect" / "Library" / "Safari"
+    profile.mkdir(parents=True)
+    (profile / "History.db").write_text("x")
+    (profile / "Bookmarks.plist").write_text("x")
+    (profile / "Downloads.plist").write_text("x")
+    (profile / "Cookies.binarycookies").write_text("x")
+    (profile / "LastSession.plist").write_text("x")  # not a recognized artifact filename - must not match
+    found, truncated = ba.find_browser_artifact_files(str(tmp_path))
+    names = {os.path.basename(p) for p in found}
+    assert names == {"History.db", "Bookmarks.plist", "Downloads.plist", "Cookies.binarycookies"}
+    assert truncated is False
+
+
+def test_find_browser_artifact_files_matches_all_three_families_in_one_walk(tmp_path):
+    (tmp_path / "chrome_profile").mkdir()
+    (tmp_path / "chrome_profile" / "History").write_text("x")
+    (tmp_path / "firefox_profile").mkdir()
+    (tmp_path / "firefox_profile" / "places.sqlite").write_text("x")
+    (tmp_path / "safari_profile").mkdir()
+    (tmp_path / "safari_profile" / "History.db").write_text("x")
+    found, truncated = ba.find_browser_artifact_files(str(tmp_path))
+    names = {os.path.basename(p) for p in found}
+    assert names == {"History", "places.sqlite", "History.db"}
+
+
+# --- Safari's Mac-epoch (Core Data / Cocoa) timestamp conversion ---
+
+def test_safari_epoch_zero_point_round_trips_to_unix_epoch():
+    # 1970-01-01 00:00:00 UTC expressed as seconds-since-2001-01-01 is
+    # exactly -978307200 (negative, since 1970 is BEFORE the 2001 epoch).
+    assert ba.safari_time_to_unix(-978307200) == 0
+
+
+def test_safari_epoch_a_real_worked_example():
+    # 2024-01-01 00:00:00 UTC is 1704067200 in real Unix epoch seconds.
+    # In Safari's own Mac-epoch convention that's 1704067200 - 978307200 =
+    # 725760000 seconds since 2001-01-01.
+    assert ba.safari_time_to_unix(725760000) == 1704067200
+
+
+def test_safari_time_supports_fractional_seconds():
+    # History.db's visit_time is a SQLite REAL with real sub-second
+    # precision - confirmed via a real worked example in the research
+    # (732093296.5, a genuine .5-second value) - must not be truncated.
+    result = ba.safari_time_to_unix(500.5)
+    assert result == pytest.approx(978307700.5)
+
+
+def test_safari_time_zero_or_empty_means_no_timestamp():
+    assert ba.safari_time_to_unix(0) is None
+    assert ba.safari_time_to_unix(None) is None
+    assert ba.safari_time_to_unix("") is None
+
+
+def test_safari_time_accepts_a_numeric_string():
+    assert ba.safari_time_to_unix("725760000") == 1704067200
+
+
+def test_safari_time_unparseable_value_returns_none():
+    assert ba.safari_time_to_unix("not a number") is None
+
+
+def test_safari_and_webkit_and_firefox_epochs_are_genuinely_different_conversions():
+    # Same raw numeric input, three genuinely different real-world answers -
+    # proves this isn't a copy-paste of an existing epoch helper, matching
+    # this codebase's own established "prove it's different, not
+    # copy-pasted" discipline for every epoch conversion added so far.
+    raw = 1_000_000_000
+    webkit_result = ba.webkit_time_to_unix(raw)
+    firefox_result = ba.firefox_time_to_unix(raw)
+    safari_result = ba.safari_time_to_unix(raw)
+    assert len({webkit_result, firefox_result, safari_result}) == 3
+
+
+# --- Safari History.db ---
+
+def _build_safari_history_db(path, item_rows, visit_rows):
+    """item_rows: [(id, url, visit_count), ...]
+    visit_rows: [(id, history_item_fk, visit_time, title), ...]"""
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE history_items (id INTEGER PRIMARY KEY, url TEXT, visit_count INTEGER)")
+    conn.executemany("INSERT INTO history_items VALUES (?,?,?)", item_rows)
+    conn.execute("CREATE TABLE history_visits (id INTEGER PRIMARY KEY, history_item INTEGER, visit_time REAL, title TEXT)")
+    conn.executemany("INSERT INTO history_visits (id, history_item, visit_time, title) VALUES (?,?,?,?)", visit_rows)
+    conn.commit()
+    conn.close()
+
+
+def test_parse_safari_history_returns_real_joined_rows(tmp_path):
+    db_path = tmp_path / "History.db"
+    _build_safari_history_db(str(db_path),
+        [(1, "https://mail.example.com/inbox", 5)],
+        [(1, 1, 725760000.0, "Example Mail - Inbox")])  # 2024-01-01 UTC in Mac-epoch seconds
+    result = ba.parse_safari_history_db(str(db_path))
+    assert len(result) == 1
+    row = result[0]
+    assert row["artifact_type"] == "safari_history"
+    assert row["url"] == "https://mail.example.com/inbox"
+    assert row["title"] == "Example Mail - Inbox"
+    assert row["value"] == "5 visit(s)"
+    assert row["timestamp"] == 1704067200
+
+
+def test_parse_safari_history_on_a_file_with_no_recognizable_tables_returns_empty(tmp_path):
+    db_path = tmp_path / "History.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE unrelated_table (x INTEGER)")
+    conn.commit()
+    conn.close()
+    assert ba.parse_safari_history_db(str(db_path)) == []
+
+
+# --- Safari Bookmarks.plist ---
+
+def test_parse_safari_bookmarks_real_leaf_and_folder_nesting(tmp_path):
+    plist_path = tmp_path / "Bookmarks.plist"
+    data = {
+        "WebBookmarkType": "WebBookmarkTypeList",
+        "Title": "",
+        "Children": [
+            {
+                "WebBookmarkType": "WebBookmarkTypeList",
+                "Title": "Bookmarks Bar",
+                "Children": [
+                    {
+                        "WebBookmarkType": "WebBookmarkTypeLeaf",
+                        "URLString": "https://example.com/work",
+                        "URIDictionary": {"title": "Work Portal"},
+                    },
+                    {
+                        "WebBookmarkType": "WebBookmarkTypeList",
+                        "Title": "Nested Folder",
+                        "Children": [
+                            {
+                                "WebBookmarkType": "WebBookmarkTypeLeaf",
+                                "URLString": "https://example.com/deep",
+                                "URIDictionary": {"title": "Deep Link"},
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+    with open(plist_path, "wb") as f:
+        plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+    result = ba.parse_safari_bookmarks_plist(str(plist_path))
+    assert len(result) == 2
+    top = next(r for r in result if r["url"] == "https://example.com/work")
+    assert top["title"] == "Work Portal"
+    assert top["artifact_type"] == "safari_bookmarks"
+    assert top["value"] == "Bookmarks Bar"
+    nested = next(r for r in result if r["url"] == "https://example.com/deep")
+    assert nested["title"] == "Deep Link"
+    assert nested["value"] == "Bookmarks Bar/Nested Folder"
+
+
+def test_parse_safari_bookmarks_handles_both_xml_and_binary_plist_format(tmp_path):
+    data = {
+        "WebBookmarkType": "WebBookmarkTypeList",
+        "Children": [{
+            "WebBookmarkType": "WebBookmarkTypeLeaf",
+            "URLString": "https://example.com/x",
+            "URIDictionary": {"title": "X"},
+        }],
+    }
+    xml_path = tmp_path / "xml.plist"
+    with open(xml_path, "wb") as f:
+        plistlib.dump(data, f, fmt=plistlib.FMT_XML)
+    bin_path = tmp_path / "bin.plist"
+    with open(bin_path, "wb") as f:
+        plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+    xml_result = ba.parse_safari_bookmarks_plist(str(xml_path))
+    bin_result = ba.parse_safari_bookmarks_plist(str(bin_path))
+    assert len(xml_result) == len(bin_result) == 1
+    assert xml_result[0]["url"] == bin_result[0]["url"] == "https://example.com/x"
+
+
+def test_parse_safari_bookmarks_a_reading_list_proxy_walks_into_its_own_children(tmp_path):
+    # WebBookmarkTypeProxy (e.g. the Reading List container) has no URL of
+    # its own but its Children are real bookmarks - must not be silently
+    # dropped, and the proxy itself must never be recorded as a bookmark.
+    plist_path = tmp_path / "Bookmarks.plist"
+    data = {
+        "WebBookmarkType": "WebBookmarkTypeList",
+        "Children": [{
+            "WebBookmarkType": "WebBookmarkTypeProxy",
+            "Title": "com.apple.ReadingList",
+            "Children": [{
+                "WebBookmarkType": "WebBookmarkTypeLeaf",
+                "URLString": "https://example.com/read-later",
+                "URIDictionary": {"title": "Read Later Article"},
+            }],
+        }],
+    }
+    with open(plist_path, "wb") as f:
+        plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+    result = ba.parse_safari_bookmarks_plist(str(plist_path))
+    assert len(result) == 1
+    assert result[0]["url"] == "https://example.com/read-later"
+    assert all(r["url"] != "" or r["title"] != "com.apple.ReadingList" for r in result)
+
+
+def test_parse_safari_bookmarks_on_a_non_plist_file_returns_empty_not_error(tmp_path):
+    bad_path = tmp_path / "Bookmarks.plist"
+    bad_path.write_text("not a real plist file")
+    assert ba.parse_safari_bookmarks_plist(str(bad_path)) == []
+
+
+# --- Safari Downloads.plist ---
+
+def test_parse_safari_downloads_real_row_with_native_plist_dates(tmp_path):
+    import datetime
+    plist_path = tmp_path / "Downloads.plist"
+    # plistlib can only WRITE a timezone-NAIVE datetime for a plist <date>
+    # (raises TypeError on an aware one - confirmed directly, a real
+    # constraint of the library, not a test-authoring choice) - and
+    # crucially, this is also exactly what plistlib.load() hands back for
+    # a REAL plist's <date> field too, even though the value is always UTC
+    # by the plist/NSDate spec. This naive-but-really-UTC round trip is
+    # precisely the gotcha _plist_date_to_unix() exists to correct - see
+    # its own docstring for the real, confirmed 5-hour silent-error case
+    # this test's own values are built to catch if that fix regresses.
+    added = datetime.datetime(2024, 1, 1, 0, 0, 0)
+    finished = datetime.datetime(2024, 1, 1, 0, 0, 30)
+    data = {
+        "DownloadHistory": [{
+            "DownloadEntryURL": "https://example.com/evidence.zip",
+            "DownloadEntryPath": r"C:\Users\suspect\Downloads\evidence.zip",
+            "DownloadEntryDateAddedKey": added,
+            "DownloadEntryDateFinishedKey": finished,
+            "DownloadEntryProgressBytesSoFar": 2048,
+            "DownloadEntryProgressTotalToLoad": 2048,
+            "DownloadEntryRemoveWhenDoneKey": False,
+        }],
+    }
+    with open(plist_path, "wb") as f:
+        plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+    result = ba.parse_safari_downloads_plist(str(plist_path))
+    assert len(result) == 1
+    row = result[0]
+    assert row["artifact_type"] == "safari_downloads"
+    assert row["title"] == "evidence.zip"  # cross-platform basename extraction, same helper Chrome/Firefox already use
+    assert row["url"] == "https://example.com/evidence.zip"
+    # Compare against the value explicitly stamped UTC, NOT bare
+    # added.timestamp() (which would itself hit the same naive-datetime-
+    # means-local-time bug this fixture exists to catch, making the
+    # assertion pass by matching the bug instead of the correct answer).
+    assert row["timestamp"] == added.replace(tzinfo=datetime.timezone.utc).timestamp()
+    assert row["timestamp"] == 1704067200  # 2024-01-01 00:00:00 UTC, the real known-correct value
+    assert row["extra"]["finished"] == finished.replace(tzinfo=datetime.timezone.utc).timestamp()
+    assert row["extra"]["bytes_so_far"] == 2048
+    assert row["extra"]["private_browsing"] is False
+
+
+def test_parse_safari_downloads_private_browsing_flag_is_surfaced(tmp_path):
+    plist_path = tmp_path / "Downloads.plist"
+    data = {"DownloadHistory": [{
+        "DownloadEntryURL": "https://example.com/secret.pdf",
+        "DownloadEntryPath": "/Users/suspect/Downloads/secret.pdf",
+        "DownloadEntryRemoveWhenDoneKey": True,
+    }]}
+    with open(plist_path, "wb") as f:
+        plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+    result = ba.parse_safari_downloads_plist(str(plist_path))
+    assert result[0]["extra"]["private_browsing"] is True
+
+
+def test_parse_safari_downloads_on_a_file_with_no_download_history_key_returns_empty(tmp_path):
+    plist_path = tmp_path / "Downloads.plist"
+    with open(plist_path, "wb") as f:
+        plistlib.dump({"SomeOtherKey": []}, f, fmt=plistlib.FMT_BINARY)
+    assert ba.parse_safari_downloads_plist(str(plist_path)) == []
+
+
+# --- Safari Cookies.binarycookies (hand-built real byte layout, not mocked -
+# a schema-shape mistake here would actually fail these tests, matching
+# this test module's own stated design principle) ---
+
+def _build_binarycookies_record_bytes(domain, name, cookie_path, value, flags, expiry, creation):
+    domain_b = domain.encode('utf-8') + b'\x00'
+    name_b = name.encode('utf-8') + b'\x00'
+    path_b = cookie_path.encode('utf-8') + b'\x00'
+    value_b = value.encode('utf-8') + b'\x00'
+    header_len = 56  # size+version+flags+unknown(16) + 4 offsets(16) + 8 zero + expiry+creation(16)
+    domain_off = header_len
+    name_off = domain_off + len(domain_b)
+    path_off = name_off + len(name_b)
+    value_off = path_off + len(path_b)
+    total_size = value_off + len(value_b)
+    rec = struct.pack('<IIII', total_size, 0, flags, 0)
+    rec += struct.pack('<IIII', domain_off, name_off, path_off, value_off)
+    rec += b'\x00' * 8
+    rec += struct.pack('<dd', expiry, creation)
+    rec += domain_b + name_b + path_b + value_b
+    assert len(rec) == total_size
+    return rec
+
+
+def _build_binarycookies_file(path, cookie_specs):
+    """cookie_specs: [(domain, name, path, value, flags, expiry, creation), ...] -
+    all packed into a single page, matching this format's real confirmed
+    layout: b'cook' magic, big-endian page-count/page-size-table header,
+    then a little-endian page (marker/count/offset-table/records/footer)."""
+    records = [_build_binarycookies_record_bytes(*spec) for spec in cookie_specs]
+    offset_table_start = 8
+    offsets, pos = [], offset_table_start + len(records) * 4
+    for rec in records:
+        offsets.append(pos)
+        pos += len(rec)
+    page = b'\x00\x00\x01\x00'
+    page += struct.pack('<I', len(records))
+    for off in offsets:
+        page += struct.pack('<I', off)
+    for rec in records:
+        page += rec
+    page += b'\x00\x00\x00\x00'
+    file_bytes = b'cook' + struct.pack('>I', 1) + struct.pack('>I', len(page)) + page
+    with open(path, 'wb') as f:
+        f.write(file_bytes)
+
+
+def test_parse_safari_cookies_real_hand_built_binary_file(tmp_path):
+    cookies_path = tmp_path / "Cookies.binarycookies"
+    # flags=5 means Secure+HttpOnly (1|4), a real bit-flag combination
+    # confirmed across every source consulted.
+    _build_binarycookies_file(str(cookies_path), [
+        ("example.com", "session_id", "/", "abc123def456", 5, 725760000.0, 725670000.0),
+    ])
+    result = ba.parse_safari_cookies_binarycookies(str(cookies_path))
+    assert len(result) == 1
+    row = result[0]
+    assert row["artifact_type"] == "safari_cookies"
+    assert row["url"] == "example.com"
+    assert row["title"] == "session_id"
+    assert row["value"] == "abc123def456"
+    assert row["extra"]["path"] == "/"
+    assert row["extra"]["secure"] is True
+    assert row["extra"]["httponly"] is True
+    assert row["timestamp"] == 1704067200 - 90000  # 725670000 in Mac-epoch -> Unix
+
+
+def test_parse_safari_cookies_plaintext_value_never_encrypted_unlike_chrome(tmp_path):
+    # Unlike Chrome's own '[encrypted]' placeholder for a value it can't
+    # recover, Safari's format has no encryption layer at all - the real
+    # value must be directly readable.
+    cookies_path = tmp_path / "Cookies.binarycookies"
+    _build_binarycookies_file(str(cookies_path), [
+        ("bank.example", "auth_token", "/account", "genuinely-sensitive-plaintext-value", 0, 0.0, 725760000.0),
+    ])
+    result = ba.parse_safari_cookies_binarycookies(str(cookies_path))
+    assert result[0]["value"] == "genuinely-sensitive-plaintext-value"
+    assert result[0]["value"] != "[encrypted]"
+
+
+def test_parse_safari_cookies_zero_expiry_means_session_cookie_no_fixed_expiry(tmp_path):
+    cookies_path = tmp_path / "Cookies.binarycookies"
+    _build_binarycookies_file(str(cookies_path), [
+        ("example.com", "sess", "/", "v", 0, 0.0, 725760000.0),
+    ])
+    result = ba.parse_safari_cookies_binarycookies(str(cookies_path))
+    assert result[0]["extra"]["expires"] is None
+
+
+def test_parse_safari_cookies_multiple_records_in_one_page(tmp_path):
+    cookies_path = tmp_path / "Cookies.binarycookies"
+    _build_binarycookies_file(str(cookies_path), [
+        ("a.example", "n1", "/", "v1", 0, 0.0, 1.0),
+        ("b.example", "n2", "/x", "v2", 1, 0.0, 2.0),
+        ("c.example", "n3", "/y", "v3", 4, 0.0, 3.0),
+    ])
+    result = ba.parse_safari_cookies_binarycookies(str(cookies_path))
+    assert len(result) == 3
+    assert {r["url"] for r in result} == {"a.example", "b.example", "c.example"}
+
+
+def test_parse_safari_cookies_wrong_magic_returns_empty_not_error(tmp_path):
+    bad_path = tmp_path / "Cookies.binarycookies"
+    bad_path.write_bytes(b"NOTC" + b"\x00" * 100)
+    assert ba.parse_safari_cookies_binarycookies(str(bad_path)) == []
+
+
+def test_parse_safari_cookies_empty_file_returns_empty_not_error(tmp_path):
+    empty_path = tmp_path / "Cookies.binarycookies"
+    empty_path.write_bytes(b"")
+    assert ba.parse_safari_cookies_binarycookies(str(empty_path)) == []
+
+
+def test_parse_safari_cookies_truncated_file_returns_partial_not_error(tmp_path):
+    # A real page-size table entry claiming more bytes than the file
+    # actually has - must stop cleanly, never raise or read past the
+    # buffer.
+    cookies_path = tmp_path / "Cookies.binarycookies"
+    _build_binarycookies_file(str(cookies_path), [("a.example", "n", "/", "v", 0, 0.0, 1.0)])
+    real_bytes = cookies_path.read_bytes()
+    truncated_path = tmp_path / "Cookies_truncated.binarycookies"
+    truncated_path.write_bytes(real_bytes[:len(real_bytes) - 10])
+    # Must not raise - either returns [] (page-size mismatch caught) or a
+    # partial/degraded result, never an exception.
+    result = ba.parse_safari_cookies_binarycookies(str(truncated_path))
+    assert isinstance(result, list)
+
+
+def test_parse_safari_cookies_respects_the_max_cookies_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(ba, "BROWSER_ARTIFACT_MAX_COOKIES", 2)
+    cookies_path = tmp_path / "Cookies.binarycookies"
+    _build_binarycookies_file(str(cookies_path), [
+        ("a.example", "n1", "/", "v1", 0, 0.0, 1.0),
+        ("b.example", "n2", "/", "v2", 0, 0.0, 2.0),
+        ("c.example", "n3", "/", "v3", 0, 0.0, 3.0),
+    ])
+    result = ba.parse_safari_cookies_binarycookies(str(cookies_path))
+    assert len(result) == 2
+
+
+# --- Dispatcher: Safari filenames ---
+
+def test_dispatch_routes_safari_filenames_too(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ba, "parse_safari_history_db", lambda p: calls.append(("history", p)) or [{"a": 1}])
+    monkeypatch.setattr(ba, "parse_safari_bookmarks_plist", lambda p: calls.append(("bookmarks", p)) or [{"b": 2}])
+    monkeypatch.setattr(ba, "parse_safari_downloads_plist", lambda p: calls.append(("downloads", p)) or [{"c": 3}])
+    monkeypatch.setattr(ba, "parse_safari_cookies_binarycookies", lambda p: calls.append(("cookies", p)) or [{"d": 4}])
+
+    assert ba.parse_browser_profile_file("/x/History.db", "History.db") == [{"a": 1}]
+    assert ba.parse_browser_profile_file("/x/Bookmarks.plist", "Bookmarks.plist") == [{"b": 2}]
+    assert ba.parse_browser_profile_file("/x/Downloads.plist", "Downloads.plist") == [{"c": 3}]
+    assert ba.parse_browser_profile_file("/x/Cookies.binarycookies", "Cookies.binarycookies") == [{"d": 4}]
+    assert {c[0] for c in calls} == {"history", "bookmarks", "downloads", "cookies"}
+
+
+def test_dispatch_swallows_a_safari_parse_exception_and_returns_empty(tmp_path):
+    bad_path = tmp_path / "Cookies.binarycookies"
+    bad_path.write_bytes(b"not a real binarycookies file at all, no magic")
+    result = ba.parse_browser_profile_file(str(bad_path), "Cookies.binarycookies")
+    assert result == []

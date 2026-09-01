@@ -22,6 +22,8 @@ import core.evtx_utils as evtx_utils
 _BROWSER_ARTIFACT_TYPES = {
     "chrome_history", "chrome_downloads", "chrome_bookmarks", "chrome_cookies",
     "firefox_history", "firefox_downloads", "firefox_bookmarks", "firefox_cookies",
+    # Safari, 2026-09-01 - core/browser_artifacts.py's own third browser family.
+    "safari_history", "safari_downloads", "safari_bookmarks", "safari_cookies",
 }
 _REGISTRY_ARTIFACT_TYPES = {
     "registry_recent_docs", "registry_typed_urls", "registry_run_history",
