@@ -449,48 +449,105 @@ finishes" checkbox can chain a successful acquisition directly into it.
 Beyond browser history, this station recovers several other well-known artifact types directly from
 a real folder or from inside an unmounted image — no extraction step required either way:
 
-- **Windows Registry hives** (`NTUSER.DAT`/`SYSTEM`/`SOFTWARE`/`AMCACHE.HVE`/`USRCLASS.DAT`) —
-  recently opened documents, typed Explorer/Internet Explorer paths, Run-dialog history, USB device
-  connection history, the installed-programs list, Amcache's own per-executable application
-  inventory, ShellBags (proves a folder was browsed via Explorer — including removable/network/
-  since-deleted folders that leave no other trace), and Shimcache/AppCompatCache (program-execution
-  evidence; Windows 10/11 binary format only — an older Windows version's cache simply yields no
-  records rather than being misread).
-- **NTFS `$MFT`** — every file record's own creation/modified/access/change timestamps from both
+**Windows**
+
+- **Registry hives** (`NTUSER.DAT`/`SYSTEM`/`SOFTWARE`/`AMCACHE.HVE`/`USRCLASS.DAT`) — one action
+  covers all of: recently opened documents, typed Explorer/Internet Explorer paths, Run-dialog
+  history, USB device connection history, the installed-programs list, Amcache's own per-executable
+  application inventory, ShellBags (proves a folder was browsed via Explorer — including removable/
+  network/since-deleted folders that leave no other trace), Shimcache/AppCompatCache (program-
+  execution evidence; Windows 10/11 binary format only), UserAssist (proves a program was actually
+  *launched* via the GUI shell, with a run count and how long it stayed in focus — distinct from
+  Prefetch/Amcache, neither of which distinguishes a GUI launch from a command-line one), BAM/DAM
+  (a last-activity timestamp per executable — presence is strong evidence, but absence proves
+  nothing, since some launch modes never populate it), RDP connection history (which remote hosts
+  this user connected to via Remote Desktop, with the last-used username), Office recent files/
+  folders per application (Word/Excel/PowerPoint/Access/Publisher), and Explorer search-box history
+  (fully populated on Windows 7 through pre-23H2 Windows 11, but Microsoft stopped writing it
+  entirely starting Windows 11 23H2 — an empty result there is expected, not a parsing failure).
+- **`$MFT`** — every file record's own creation/modified/access/change timestamps from both
   `$STANDARD_INFORMATION` and `$FILE_NAME` attributes, with records flagged as suspected timestomping
   when those two disagree in a way consistent with backdating (a well-known DFIR heuristic — flagged,
   never asserted as certain).
-- **NTFS `$UsnJrnl` change journal** — a chronological log of every file create/rename/delete/write on
+- **`$UsnJrnl` change journal** — a chronological log of every file create/rename/delete/write on
   the volume, including files created and deleted entirely between two `$MFT` snapshots, which leave
   no trace anywhere else on the volume.
-- **Windows Event Logs** (`.evtx`) — a curated set of security-relevant event types: successful and
+- **Event Logs** (`.evtx`) — a curated set of security-relevant event types: successful and
   failed logons, process creation, account creation, service installation, and audit-log-cleared (a
   classic anti-forensic indicator).
-- **Windows Prefetch** (`.pf`) — which executables ran, how many times, and when.
-- **Windows Recycle Bin** (`$I*` metadata files) — a deleted file's original name, path, size, and
+- **Prefetch** (`.pf`) — which executables ran, how many times, and when.
+- **Jump Lists** (`.automaticDestinations-ms`/`.customDestinations-ms`) — recently/frequently
+  accessed files per application, with pin status and last-access time where available.
+- **Recycle Bin** (`$I*` metadata files) — a deleted file's original name, path, size, and
   deletion time.
 - **LNK shortcuts** (`.lnk`) — target path, arguments, working directory, icon location, and the
   shortcut's own embedded timestamps. Parsed one file at a time, not scanned across a folder.
-- **Email files** (`.eml`/`.mbox`/`.pst`/`.ost`) — subject, sender/recipients, date, a body preview,
-  and attachment count per message. Standalone `.msg` files aren't covered yet.
-- **Linux artifacts** — shell history (`.bash_history`/`.zsh_history`/`.python_history`),
-  `/etc/passwd` account listings, cron jobs, and `auth.log`/`secure` authentication events (SSH
-  login/logout, `sudo` usage). An experimental, opt-in-only `wtmp`/`utmp` login-history parser is
-  also available (offered specifically through the Auto Analyze picker for a Linux image, not the
-  default set) — login-record binary layout genuinely varies by system, so it includes a built-in
-  sanity check that refuses to produce results rather than guess wrong against an unfamiliar layout.
+- **Thumbcache** (`thumbcache_*.db`) — extracts every embedded thumbnail as a real, viewable image
+  file. These can persist after the original photo or document has been deleted; the per-entry
+  identifier is usually a one-way hash, not the original filename, shown as such when a real
+  filename genuinely can't be recovered.
+- **Sticky Notes** (`plum.sqlite`) — the actual text of every note, including deleted ones (Sticky
+  Notes uses a soft-delete tombstone, not real removal). Correctly recovers recent notes/edits that
+  only exist in an unsaved database sidecar file, not yet folded into the main database.
+- **Windows Notification database** (`wpndatabase.db`) — everything sent to the Action Center: which
+  app, when, and often the actual text of the notification.
+- **Windows Timeline / Activity History** (`ActivitiesCache.db`) — which apps were used, which
+  documents were opened, and which websites were visited, each with a timestamp. A Windows 11 image
+  made after Microsoft's January 2024 update will show much less activity history than a Windows 10
+  image — that's a real change in what Windows itself records, not a parsing gap.
+- **SRUM** (`SRUDB.dat`) — one of the single highest-value modern Windows artifacts: per-application
+  network data usage and execution/timeline history, tracked over a rolling window, even for
+  applications that have since been uninstalled.
+- **PowerShell console history** (`ConsoleHost_history.txt` and similar) — every command typed at a
+  PowerShell prompt, with multi-line pasted commands correctly reassembled into one entry. This file
+  never records a timestamp at all — a real limitation of the format itself, not something missing
+  from this feature.
+- **Windows Firewall connection log** (`pfirewall.log`) — every logged allowed/blocked connection,
+  when an administrator has turned that logging on. It's off by default, so this file is commonly
+  not present at all — that's expected, not a problem.
+
+**Linux**
+
+- **Shell history** (`.bash_history`/`.zsh_history`/`.python_history`) — a per-command timestamp is
+  captured automatically whenever the shell was configured to record one (bash's `HISTTIMEFORMAT`
+  marker convention, or zsh's `EXTENDED_HISTORY` format, including its own multi-line continuation
+  scheme) — a genuinely untimestamped file (the common case for either shell, and macOS's own real
+  default) still parses correctly, just without a timestamp.
+- **`/etc/passwd`**, **cron jobs**, and **`auth.log`**/`secure` authentication events (SSH
+  login/logout, `sudo` usage).
+- An experimental, opt-in-only `wtmp`/`utmp` login-history parser is also available (offered
+  specifically through the Auto Analyze picker for a Linux image, not the default set) — login-record
+  binary layout genuinely varies by system, so it includes a built-in sanity check that refuses to
+  produce results rather than guess wrong against an unfamiliar layout.
+
+**macOS**
+
+- **LaunchAgents/LaunchDaemons** (`~/Library/LaunchAgents`, `/Library/LaunchAgents`,
+  `/Library/LaunchDaemons`, `/System/Library/LaunchDaemons`) — one of the most common real
+  techniques Mac malware uses to survive a reboot. Works fully against an already-extracted evidence
+  folder (for example, a direct file copy from a connected Mac) regardless of the disk-image
+  question below. **A real, disclosed limitation**: this station cannot currently browse *inside* a
+  modern Mac's own disk image at all — virtually every Mac sold since 2017-2018 uses a filesystem
+  format (APFS) this station's underlying image-browsing library doesn't yet support. The whole-image
+  version of this tool still works against an older, pre-APFS Mac's disk image.
+
+**Cross-platform / mobile**
+
 - **Cryptocurrency wallet files** — detects common wallet filenames (Bitcoin Core's `wallet.dat`,
   geth/Ethereum keystore files, Electrum wallets, and others). Detection only — wallet file formats
   are typically encrypted or binary, so this doesn't attempt to open or decrypt them.
+- **Email files** (`.eml`/`.mbox`/`.pst`/`.ost`) — subject, sender/recipients, date, a body preview,
+  and attachment count per message. Standalone `.msg` files aren't covered yet.
 - **Mobile chat/app data** — SMS/iMessage, Contacts, and Call History parsed directly out of an
   already-captured, unencrypted iOS backup (an encrypted backup is detected and reported as such,
-  never silently skipped).
-- **Browser artifacts** (Chrome/Chromium and Firefox) — see the paragraph below.
+  never silently skipped), or out of an Android device's own on-device SMS/contacts/call-log
+  databases when a rooted `Physical` acquisition's raw image is right-clicked.
+- **Browser artifacts** (Chrome/Chromium, Firefox, and Safari) — see the paragraph below.
 
 Right-click a folder (or a whole acquired image) and choose the matching **Parse...** action, or use
-**Auto Analyze** to run the Windows- or Linux-relevant ones automatically. Results show up in File
-Views' analysis-index categories and in Reporting's Files & Artifacts tab, all with readable labels
-— not raw internal keys.
+**Auto Analyze** to run the relevant ones for that evidence type automatically. Results show up in
+File Views' analysis-index categories and in Reporting's Files & Artifacts tab, all with readable
+labels — not raw internal keys.
 
 ### Fuzzy hashing and Volume Shadow Copies
 

@@ -132,10 +132,24 @@ via Remote Desktop, with the last-used username — Office recent files/folders 
 Explorer search-box history), Event Logs, Prefetch,
 Recycle Bin, LNK shortcuts, Jump Lists (Automatic/Custom Destinations), Thumbcache (extracting
 every embedded thumbnail as a real, viewable image — these can persist after the original photo or
-document has been deleted), and Sticky Notes (the actual text of every note, including deleted
-ones, correctly recovering recent edits that only exist in an unsaved database sidecar file); NTFS `$MFT` (with
+document has been deleted), Sticky Notes (the actual text of every note, including deleted
+ones, correctly recovering recent edits that only exist in an unsaved database sidecar file), the
+Windows Notification database (Action Center history, including the actual text pushed to
+notifications) and Windows Timeline/Activity History (apps used, documents opened, websites
+visited — richer on Windows 10 than on a post-Jan-2024-update Windows 11 image, disclosed rather
+than treated as a parsing gap), SRUM (per-application network usage and execution history, tracked
+over a rolling window even for since-uninstalled applications — one of the single highest-value
+modern Windows artifacts), and PowerShell console command history (multi-line pasted commands are
+correctly reassembled — no timestamp is ever recorded in this file, a real limitation of the format
+itself, not a gap); the Windows Firewall connection log, when logging has been turned on (off by
+default); NTFS `$MFT` (with
 timestomping detection) and `$UsnJrnl` change-journal
-records; Linux shell history, `/etc/passwd`, cron, and `auth.log`; cryptocurrency wallet files; email
+records; Linux shell history (including zsh's timestamped `EXTENDED_HISTORY` format when a shell was
+configured to record it), `/etc/passwd`, cron, and `auth.log`; macOS LaunchAgents/LaunchDaemons
+persistence items (one of the most common real Mac malware-persistence techniques — works against an
+already-extracted evidence folder regardless of the disk-image format; browsing *inside* a modern
+Mac's own disk image isn't supported yet, since it uses a filesystem format this station can't open
+directly — a real, disclosed limitation, not a silently-missing feature); cryptocurrency wallet files; email
 files (`.eml`/`.mbox`/`.pst`/`.ost`); and mobile chat/app data (SMS/iMessage, Contacts, Call History)
 straight out of an already-captured iOS backup — all without extracting anything first, real folder or
 unmounted image alike. Fuzzy hashing (TLSH) catches a lightly-modified or recompiled variant of a
