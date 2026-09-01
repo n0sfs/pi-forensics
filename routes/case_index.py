@@ -177,6 +177,12 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "recyclebin_deleted_file": "Recycle Bin: Deleted Files",
     "jumplist_automatic_entry": "Jump List: Automatic Destinations",
     "jumplist_custom_shortcut": "Jump List: Custom Destinations",
+    # Thumbcache (2026-09-01) - core/thumbcache_utils.py. The one artifact
+    # type in this whole map whose 'value' is a real, extracted, directly
+    # openable image file on disk rather than a text summary - every other
+    # field/behavior (this label map, File Views, the Evidence Timeline's
+    # NULL-timestamp filtering) needed zero special-casing for that.
+    "thumbcache_thumbnail": "Thumbcache: Extracted Thumbnail",
     # Linux Artifact Parsing (2026-08-25) - this app's first Linux-specific
     # artifact parsers (core/linux_artifacts.py). wtmp is deliberately
     # labeled "Experimental" - see that module's own docstring for why
