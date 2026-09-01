@@ -736,6 +736,14 @@ _ARTIFACT_SCAN_SKIP_DIR_NAMES = {'RECOVERED_FILES'}  # extundelete's fixed outpu
 _ARTIFACT_SCAN_SKIP_DIR_SUFFIXES = ('_photorec', '_foremost', '_scalpel', '_triagescan')  # bulk carved-file output - same skip-list convention as reporting.py's _discover_case_files()
 _ARTIFACT_SCAN_MAX_FILES = 5000  # safety cap on one sweep - a case folder is typically small; only guards a pathological one
 
+# Throttle, added 2026-09-01 after a real, live-measured performance bug -
+# see _backfill_case_artifact_tags()'s own docstring below for the full
+# story (a real 6+ minute case_index_summary() response, live-measured
+# against this app's own long-lived production case folder).
+_ARTIFACT_BACKFILL_INTERVAL_SECONDS = 300  # same interval/reasoning as core/auth.py's LAST_LOGIN_PERSIST_INTERVAL
+_artifact_backfill_last_run = {}  # case_folder -> epoch seconds of last completed sweep, in-memory (resets on restart - a restart just means the next request re-sweeps once, harmless)
+
+
 def _backfill_case_artifact_tags(case_folder):
     """Best-effort sweep: walk the case folder and apply the correct
     role-specific tag (CASE_ROLE_TAG_NAMES) to anything classify_case_role()
@@ -747,13 +755,32 @@ def _backfill_case_artifact_tags(case_folder):
     but only if the case's index DB already exists - never eagerly creates
     one just to check, so a case with no artifacts yet and no prior index
     still gets no DB file, matching this module's existing laziness.
-    Called from case_index_summary() on every fetch (cheap - a shallow walk
-    plus a filename check per file; a DB write only happens for a genuinely
-    new match, since _auto_tag_case_artifact() itself already dedupes).
-    Errors are swallowed exactly like every other best-effort write in this
-    module - this must never break a File Views load."""
+
+    Called from case_index_summary() on every fetch - THROTTLED to once per
+    _ARTIFACT_BACKFILL_INTERVAL_SECONDS per case_folder (added 2026-09-01,
+    same interval/reasoning as core/auth.py's LAST_LOGIN_PERSIST_INTERVAL).
+    This function's own original docstring called the walk "cheap," which
+    is true in isolation (a shallow os.walk() + a filename check per file),
+    but that assumption broke down for real, not hypothetically: a live
+    timing test against this app's own long-lived, heavily-test-populated
+    production case folder measured case_index_summary() taking over 6
+    MINUTES to respond - re-running this full walk on literally every File
+    Views load, over a real NFS-backed evidence mount, at a scale this
+    sweep's own 5000-file cap doesn't meaningfully bound once a case
+    accumulates enough subfolders (each real directory listing over NFS
+    costs real round-trip latency, independent of how few files are in it).
+    The throttle preserves the exact same eventual-consistency guarantee
+    (a file this sweep would have caught still gets tagged, just up to 5
+    minutes later instead of on literally every single page load) while
+    fixing the actual reported cost. Errors are swallowed exactly like
+    every other best-effort write in this module - this must never break a
+    File Views load."""
     if not case_folder or not case_consolidated_path(case_folder):
         return
+    now = time.time()
+    if now - _artifact_backfill_last_run.get(case_folder, 0) < _ARTIFACT_BACKFILL_INTERVAL_SECONDS:
+        return
+    _artifact_backfill_last_run[case_folder] = now  # set before the walk, not after - a slow sweep in flight must not let a concurrent request pile a second one on top of it
     try:
         db_path = case_index_db_path(case_folder)
         if db_path and os.path.isfile(db_path):
