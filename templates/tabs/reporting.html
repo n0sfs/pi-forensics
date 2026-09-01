@@ -315,7 +315,7 @@
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repTimelinePane" role="tabpanel">
-                                                    <div class="small text-subtle mb-2">Every acquired image's MACB filesystem timeline (plus real file timestamps from a mobile pull/backup or Logical Acquisition folder), merged with parsed browser/registry/event-log artifacts - evidence pulled from the drive/phone itself, not examiner workflow entries (see the Case Notes and Custody Log tabs for those). A large image's MACB data can run to thousands of rows; use the filters below to narrow it.</div>
+                                                    <div class="small text-subtle mb-2">Every acquired image's MACB filesystem timeline (plus real file timestamps from a mobile pull/backup or Logical Acquisition folder), merged with parsed browser/registry/event-log/mobile-app artifacts - evidence pulled from the drive/phone itself, not examiner workflow entries (see the Case Notes and Custody Log tabs for those). A large image's MACB data can run to thousands of rows; use the filters below to narrow it - the Category row is the fast way to see just a phone's texts, web history, or app-based chats.</div>
                                                     <div class="d-flex flex-wrap align-items-center gap-3 mb-2 small">
                                                         <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="macb" checked onchange="renderCaseTimeline()">Filesystem (MACB)</label>
                                                         <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="parsed_artifact" checked onchange="renderCaseTimeline()">Parsed Artifacts</label>
@@ -330,6 +330,16 @@
                                                         </select>
                                                         <button type="button" class="btn btn-xs btn-outline-info py-0 px-2 ms-auto" onclick="exportCaseTimelineCsv()"><i class="bi bi-download me-1"></i>Export CSV</button>
                                                     </div>
+                                                    <div class="d-flex flex-wrap align-items-center gap-3 mb-2 small">
+                                                        <span class="text-subtle">Category:</span>
+                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-category-check" value="Communications" checked onchange="renderCaseTimeline()">Communications</label>
+                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-category-check" value="Web Activity" checked onchange="renderCaseTimeline()">Web Activity</label>
+                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-category-check" value="Social Media" checked onchange="renderCaseTimeline()">Social Media</label>
+                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-category-check" value="Device &amp; System" checked onchange="renderCaseTimeline()">Device &amp; System</label>
+                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-category-check" value="Filesystem" checked onchange="renderCaseTimeline()">Filesystem</label>
+                                                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setCaseTimelineCategoryFilter(['Communications','Web Activity','Social Media'])">Phone Activity Only</button>
+                                                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setCaseTimelineCategoryFilter(null)">All Categories</button>
+                                                    </div>
                                                     <div class="border border-secondary rounded-2 mb-2 p-2" style="height: 180px; background-color:#090b10;"><canvas id="caseTimelineChart"></canvas></div>
                                                     <div id="caseTimelineFilterIndicator" class="small mb-2" style="display:none;">
                                                         <span class="badge bg-info text-dark">Filtered to <span class="timeline-filter-label"></span></span>
@@ -339,8 +349,8 @@
                                                     <div id="caseTimelineNotes" class="small text-warning mb-2" style="display:none;"></div>
                                                     <div class="table-responsive font-monospace small border border-secondary rounded-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
                                                         <table class="table table-sm table-dark mb-0">
-                                                            <thead><tr class="text-info"><th>Timestamp</th><th>Source</th><th>Activity</th><th>Detail</th></tr></thead>
-                                                            <tbody id="caseTimelineBody"><tr><td colspan="4" class="text-subtle p-2">Open this tab to build this case's timeline.</td></tr></tbody>
+                                                            <thead><tr class="text-info"><th>Timestamp</th><th>Source</th><th>Category</th><th>Activity</th><th>Detail</th></tr></thead>
+                                                            <tbody id="caseTimelineBody"><tr><td colspan="5" class="text-subtle p-2">Open this tab to build this case's timeline.</td></tr></tbody>
                                                         </table>
                                                     </div>
                                                 </div>

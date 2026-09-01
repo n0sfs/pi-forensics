@@ -1881,13 +1881,23 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     leapp_installed_app: 'ALEAPP/iLEAPP: Installed Apps',
     leapp_account: 'ALEAPP/iLEAPP: Accounts',
     leapp_sms_message: 'ALEAPP/iLEAPP: SMS Messages',
+    leapp_mms_message: 'ALEAPP/iLEAPP: MMS Messages',
     leapp_call_log: 'ALEAPP/iLEAPP: Call Logs',
     leapp_contact: 'ALEAPP/iLEAPP: Contacts',
     leapp_browser_history: 'ALEAPP/iLEAPP: Browser History',
+    leapp_browser_web_visit: 'ALEAPP/iLEAPP: Browser Web Visits',
     leapp_browser_bookmark: 'ALEAPP/iLEAPP: Browser Bookmarks',
     leapp_browser_autofill: 'ALEAPP/iLEAPP: Browser Autofill',
     leapp_whatsapp_message: 'ALEAPP/iLEAPP: WhatsApp Messages',
+    leapp_whatsapp_call_log: 'ALEAPP/iLEAPP: WhatsApp Calls',
     leapp_whatsapp_contact: 'ALEAPP/iLEAPP: WhatsApp Contacts',
+    leapp_instagram_message: 'ALEAPP/iLEAPP: Instagram Direct Messages',
+    leapp_snapchat_message: 'ALEAPP/iLEAPP: Snapchat Messages',
+    leapp_facebook_messenger_message: 'ALEAPP/iLEAPP: Facebook Messenger Chats',
+    leapp_telegram_message: 'ALEAPP/iLEAPP: Telegram Messages',
+    leapp_signal_message: 'ALEAPP/iLEAPP: Signal Messages',
+    leapp_tiktok_message: 'ALEAPP/iLEAPP: TikTok Messages',
+    leapp_reddit_message: 'ALEAPP/iLEAPP: Reddit Chat Messages',
     leapp_app_usage: 'ALEAPP/iLEAPP: App Usage Stats',
     leapp_module_finding: 'ALEAPP/iLEAPP: Other Module Finding',
     takeout_search_history: 'Google Takeout: Search History',
@@ -10226,6 +10236,17 @@ const CASE_TIMELINE_SOURCE_COLOR = {
     macb: '#0dcaf0', parsed_artifact: '#6c757d',
 };
 const CASE_TIMELINE_SOURCES = ['macb', 'parsed_artifact'];
+// Category filter (2026-09-01) - lets an examiner narrow a phone's timeline
+// down to just Communications/Web Activity/Social Media instead of scanning
+// every raw activity string by eye. The category itself is computed server-
+// side per row (routes/reporting.py's CASE_TIMELINE_ACTIVITY_CATEGORY) and
+// rides along in each event's own "category" field - this is presentation-
+// only (a badge color + the quick-filter buttons' own hardcoded category
+// lists), never a second copy of the classification logic itself.
+const CASE_TIMELINE_CATEGORY_BADGE = {
+    'Communications': 'bg-primary', 'Web Activity': 'bg-warning text-dark',
+    'Social Media': 'bg-success', 'Device & System': 'bg-secondary', 'Filesystem': 'bg-info text-dark',
+};
 // Spelled-out labels for the single-letter MACB codes and the raw
 // artifact_type strings, used only when rendering the interactive table -
 // the underlying data (and the PDF/HTML report's own Filesystem Timeline
@@ -10244,7 +10265,7 @@ const CASE_TIMELINE_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May
 async function loadCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
     if (!body || !activeCase) return;
-    body.innerHTML = '<tr><td colspan="4" class="text-subtle p-2">Building timeline...</td></tr>';
+    body.innerHTML = '<tr><td colspan="5" class="text-subtle p-2">Building timeline...</td></tr>';
     caseTimelineBucketFilter = null;   // a fresh case load shouldn't carry over a stale drill-down from a previous case
     caseTimelineEvidenceFilter = '__all__';
     caseTimelineYearFilter = '__all__';
@@ -10253,7 +10274,7 @@ async function loadCaseTimeline() {
         const res = await fetch(`/api/cases/timeline?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
         const data = await res.json();
         if (!data.success) {
-            body.innerHTML = `<tr><td colspan="4" class="text-danger p-2">${data.error || 'Request failed.'}</td></tr>`;
+            body.innerHTML = `<tr><td colspan="5" class="text-danger p-2">${data.error || 'Request failed.'}</td></tr>`;
             return;
         }
         caseTimelineCache = data;
@@ -10261,7 +10282,7 @@ async function loadCaseTimeline() {
         populateCaseTimelineYearFilter(data.events);
         renderCaseTimeline();
     } catch (err) {
-        body.innerHTML = '<tr><td colspan="4" class="text-danger p-2">Request failed.</td></tr>';
+        body.innerHTML = '<tr><td colspan="5" class="text-danger p-2">Request failed.</td></tr>';
     }
 }
 
@@ -10498,6 +10519,18 @@ function clearCaseTimelineBucketFilter() {
     renderCaseTimeline();
 }
 
+// Quick-filter buttons for the category row - `categories` is either an
+// array of category values to check (everything else unchecked), or null
+// to check every category checkbox. Never a separate filter-state variable
+// of its own; renderCaseTimeline() already reads whatever's checked in the
+// DOM fresh on every call, matching the existing source-checkbox pattern.
+function setCaseTimelineCategoryFilter(categories) {
+    document.querySelectorAll('.case-timeline-category-check').forEach((el) => {
+        el.checked = categories === null || categories.includes(el.value);
+    });
+    renderCaseTimeline();
+}
+
 function renderCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
     const notesEl = document.getElementById('caseTimelineNotes');
@@ -10506,6 +10539,9 @@ function renderCaseTimeline() {
     const enabledSources = new Set(
         [...document.querySelectorAll('.case-timeline-source-check:checked')].map((el) => el.value)
     );
+    const enabledCategories = new Set(
+        [...document.querySelectorAll('.case-timeline-category-check:checked')].map((el) => el.value)
+    );
     const evidenceSel = document.getElementById('caseTimelineEvidenceSelect');
     caseTimelineEvidenceFilter = evidenceSel ? evidenceSel.value : '__all__';
     const yearSel = document.getElementById('caseTimelineYearSelect');
@@ -10513,7 +10549,7 @@ function renderCaseTimeline() {
     const monthSel = document.getElementById('caseTimelineMonthSelect');
     caseTimelineMonthFilter = (monthSel && !monthSel.disabled) ? monthSel.value : '__all__';
 
-    let rows = caseTimelineCache.events.filter((e) => enabledSources.has(e.source));
+    let rows = caseTimelineCache.events.filter((e) => enabledSources.has(e.source) && enabledCategories.has(e.category));
     if (caseTimelineEvidenceFilter !== '__all__') {
         rows = rows.filter((e) => e.evidence_id === caseTimelineEvidenceFilter);
     }
@@ -10552,7 +10588,7 @@ function renderCaseTimeline() {
     }
 
     if (rows.length === 0) {
-        body.innerHTML = '<tr><td colspan="4" class="text-subtle p-2">No timeline entries match the current filters.</td></tr>';
+        body.innerHTML = '<tr><td colspan="5" class="text-subtle p-2">No timeline entries match the current filters.</td></tr>';
         return;
     }
 
@@ -10599,6 +10635,12 @@ function renderCaseTimeline() {
             srcTd.appendChild(devBadge);
         }
 
+        const catTd = document.createElement('td');
+        const catBadge = document.createElement('span');
+        catBadge.className = `badge ${CASE_TIMELINE_CATEGORY_BADGE[e.category] || 'bg-secondary'}`;
+        catBadge.textContent = e.category || '';
+        catTd.appendChild(catBadge);
+
         const actTd = document.createElement('td');
         const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
                                                     : (FILE_VIEWS_WEB_ARTIFACT_LABELS[e.activity] || e.activity);
@@ -10609,6 +10651,7 @@ function renderCaseTimeline() {
 
         tr.appendChild(tsTd);
         tr.appendChild(srcTd);
+        tr.appendChild(catTd);
         tr.appendChild(actTd);
         tr.appendChild(detailTd);
         body.appendChild(tr);
@@ -10624,7 +10667,7 @@ function exportCaseTimelineCsv() {
         const s = (val === null || val === undefined) ? '' : String(val);
         return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ['Timestamp', 'Source', 'Activity', 'Detail', 'Evidence ID', 'Deleted', 'Suspicious', 'Device Time'];
+    const header = ['Timestamp', 'Source', 'Category', 'Activity', 'Detail', 'Evidence ID', 'Deleted', 'Suspicious', 'Device Time'];
     const lines = [header];
     caseTimelineFilteredRows.forEach((e) => {
         const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
@@ -10632,6 +10675,7 @@ function exportCaseTimelineCsv() {
         lines.push([
             new Date(e.timestamp * 1000).toLocaleString(),
             CASE_TIMELINE_SOURCE_LABEL[e.source] || e.source,
+            e.category || '',
             activityLabel || '', e.detail || '', e.evidence_id || '',
             e.deleted ? 'Yes' : 'No', e.suspicious ? 'Yes' : 'No',
             e.real_device_timestamp ? 'Yes' : 'No',
