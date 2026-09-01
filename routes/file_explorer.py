@@ -57,6 +57,9 @@ from core.macos_launchd_utils import find_launchd_plist_files, parse_launchd_pli
 from core.winsearch_utils import find_winsearch_files, parse_winsearch_file
 from core.webcache_utils import find_webcache_files, parse_webcache_file
 from core.bits_utils import find_bits_files, parse_bits_file
+from core.rdp_bitmap_cache_utils import find_rdp_bitmap_cache_files, parse_rdp_bitmap_cache_file
+from core.ocr_utils import is_ocr_candidate_image, run_ocr_on_image
+from core.video_keyframe_utils import generate_video_contact_sheet, is_video_candidate_file
 from core.recyclebin_utils import find_recyclebin_files, parse_recyclebin_file
 from core.mft_utils import find_mft_files, analyze_mft_file
 from core.usnjrnl_utils import find_usnjrnl_files, parse_usnjrnl_file
@@ -1533,6 +1536,47 @@ def parse_bits():
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 
+@file_explorer_bp.route('/api/files/parse_rdp_bitmap_cache', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_rdp_bitmap_cache():
+    """Whole-directory scan for RDP Bitmap Cache containers (Cache####.bin/
+    bcache##.bmc under a Terminal Server Client folder) - same shape as
+    parse_srum() above, just a different candidate-file matcher/dispatcher
+    pair (core/rdp_bitmap_cache_utils.py). Metadata-only (tile count/keys/
+    dimensions), no pixel/image extraction - see that module's own
+    docstring for why."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidate_paths, truncated = find_rdp_bitmap_cache_files(target_dir)
+    counts = {}
+    files_parsed = 0
+    for path in candidate_paths:
+        records = parse_rdp_bitmap_cache_file(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("rdp_bitmap_cache_parsed", {
+        "directory": target_dir, "candidates_found": len(candidate_paths),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidate_paths), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
 @file_explorer_bp.route('/api/files/parse_jumplists', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -2267,6 +2311,66 @@ def run_strings():
         return jsonify({"success": False, "error": "strings timed out."}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+@file_explorer_bp.route('/api/files/video_contact_sheet', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def run_video_contact_sheet():
+    """Generates a real, single JPEG "contact sheet" image (a grid of
+    evenly-spaced keyframe thumbnails) for a single right-clicked video
+    file - the same shape as Thumbcache extraction above (writes a real
+    output file, needs an explicit destination), just for a single file
+    producing a single output rather than a whole-directory bulk scan
+    (core/video_keyframe_utils.py)."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
+
+    base = re.sub(r'[^A-Za-z0-9_.-]', '_', os.path.splitext(os.path.basename(file_path))[0])
+    out_path = os.path.join(dest_dir, f"{base}_contact_sheet.jpg")
+    frame_count, error = generate_video_contact_sheet(file_path, out_path)
+    if error:
+        return jsonify({"success": False, "error": error}), 500
+
+    summary = f"{frame_count}-frame contact sheet generated"
+    _record_analysis_result(case_folder, {"source_type": "real_fs", "path": file_path,
+                                           "name": os.path.basename(file_path)}, "Video Contact Sheet", summary, out_path)
+    _auto_tag_case_artifact(dest_dir, out_path)
+    log_chain_of_custody("video_contact_sheet_generated", {"path": file_path, "output_path": out_path})
+    return jsonify({"success": True, "file_name": os.path.basename(file_path),
+                     "frame_count": frame_count, "output_path": out_path})
+
+@file_explorer_bp.route('/api/files/ocr', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def run_ocr():
+    """OCR text extraction (Tesseract) for a single right-clicked image
+    file - same shape as run_strings() above, just a different underlying
+    tool (core/ocr_utils.py)."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
+
+    text, error = run_ocr_on_image(file_path)
+    if error:
+        return jsonify({"success": False, "error": error}), 500
+
+    summary = f"{len(text)} character(s) recognized" if text else "no recognizable text found"
+    _record_analysis_result(case_folder, {"source_type": "real_fs", "path": file_path,
+                                           "name": os.path.basename(file_path)}, "OCR", summary, text)
+    log_chain_of_custody("ocr_scan", {"path": file_path})
+    return jsonify({"success": True, "file_name": os.path.basename(file_path),
+                     "output": text or "[no recognizable text found]"})
 
 # --- Quick Triage Scan: fast, capped IOC scan for a single right-clicked file ---
 # Reuses build_scan_patterns()/the same regex-per-chunk-with-overlap

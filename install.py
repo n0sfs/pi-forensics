@@ -197,6 +197,20 @@ apt_packages = [
                    # first" rule. Deliberately exfatprogs, not the older exfat-fuse/exfat-utils
                    # pairing - exfatprogs is the actively-maintained, kernel-driver-compatible
                    # successor Debian trixie actually ships.
+    "tesseract-ocr",  # OCR text extraction from images (screenshots, scanned documents,
+                      # photographed text) - a File Explorer analysis action, invoked directly
+                      # via subprocess (no pytesseract pip wrapper needed - it's just a thin
+                      # subprocess shim around this same CLI). Confirmed present on Debian
+                      # trixie/arm64 (5.5.0-1+b1) via apt-cache before adding here. English-
+                      # language data (tesseract-ocr-eng) ships bundled with this package on
+                      # Debian - additional language packs are a disclosed, deliberate
+                      # out-of-scope for v1, not silently missing.
+    "ffmpeg",  # video keyframe/thumbnail contact-sheet extraction - a File Explorer analysis
+               # action. Already present as a transitive dependency on the deployed station
+               # (via the Raspberry Pi OS desktop image), but declared explicitly here rather
+               # than relied on undeclared, per this project's own "always declare what's
+               # actually needed" discipline. Confirmed present on Debian trixie/arm64 via
+               # apt-cache before adding here.
 ]
 subprocess.run(["apt-get", "update"], check=True)
 subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)

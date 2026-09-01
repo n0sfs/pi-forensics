@@ -1924,6 +1924,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     winsearch_indexed_item: 'Windows Search Index (Windows.edb)',
     webcache_entry: 'Legacy IE/Edge WebCache History (WebCacheV01/V24.dat)',
     bits_job: 'BITS Job Queue (qmgr.db)',
+    rdp_bitmap_cache_tile: 'RDP Bitmap Cache Tile (metadata only)',
     email_message: 'Email Message',
     // Live Collection USB, Phase 2 (2026-09-01) - kept in sync with
     // routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS. This exact side
@@ -4383,6 +4384,8 @@ const CTX_MENU_IMAGE_ITEMS = [
     { id: 'ctxMenuImageTag', visible: entry => !entry.is_dir, disabledWhen: () => !activeCase },
     { id: 'ctxMenuImageBinwalk', visible: entry => !entry.is_dir },
     { id: 'ctxMenuImageStrings', visible: entry => !entry.is_dir },
+    { id: 'ctxMenuImageOcr', visible: entry => !entry.is_dir && isOcrCandidateImage(entry.name) },
+    { id: 'ctxMenuImageVideoContactSheet', visible: entry => !entry.is_dir && isVideoCandidateFile(entry.name) },
     { id: 'ctxMenuImageCheckHashLists', visible: entry => !entry.is_dir },
     { id: 'ctxMenuImageYaraScan', visible: entry => !entry.is_dir },
     { id: 'ctxMenuImageFuzzyHash', visible: entry => !entry.is_dir },
@@ -4473,6 +4476,8 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnRunBinwalk', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
     { id: 'btnRunClamscan', section: 'ctxSecAnalyze', visible: () => true },  // works on either a file or a directory (-r)
     { id: 'btnRunStrings', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
+    { id: 'btnRunOcr', section: 'ctxSecAnalyze', visible: item => !item.is_dir && isOcrCandidateImage(item.name) },
+    { id: 'btnRunVideoContactSheet', section: 'ctxSecAnalyze', visible: item => !item.is_dir && isVideoCandidateFile(item.name) },
     { id: 'btnQuickTriageScan', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
     { id: 'btnRunHashdeep', section: 'ctxSecAnalyze', visible: item => item.is_dir },  // recursive manifest - needs a directory
     { id: 'btnCheckHashLists', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
@@ -4495,6 +4500,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnParseWinsearch', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseWebcache', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseBits', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseRdpBitmapCache', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseRecycleBin', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseCryptoWallets', section: 'ctxSecArtifacts', visible: item => item.is_dir },
@@ -4540,6 +4546,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnEnterWinsearchImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterWebcacheImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterBitsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterRdpBitmapCacheImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterRecycleBinImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterLinuxArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterAndroidArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
@@ -4592,7 +4599,8 @@ function autoHideEmptyCtxMenuSections(rootId) {
 // different table (parsed_artifacts, keyed by extracted record identity,
 // not "was this folder ever scanned") and aren't covered here.
 const CTX_MENU_ANALYSIS_TOOL_NAMES = {
-    btnRunBinwalk: 'Binwalk', btnRunClamscan: 'ClamAV', btnRunStrings: 'Strings',
+    btnRunBinwalk: 'Binwalk', btnRunClamscan: 'ClamAV', btnRunStrings: 'Strings', btnRunOcr: 'OCR',
+    btnRunVideoContactSheet: 'Video Contact Sheet',
     btnCheckHashLists: 'Hash Set Check', btnFuzzyHash: 'TLSH', btnRunYaraScan: 'YARA',
     btnSqliteDissect: 'SQLite Dissect', btnApkAnalyze: 'androguard APK Analysis',
     btnIpaAnalyze: 'IPA Static Analysis', btnBugreportParse: 'Bugreport Deep Parse',
@@ -4673,6 +4681,7 @@ async function contextMenuBrowseImageAnd(action) {
         winsearch: runImageWinsearchParse,
         webcache: runImageWebcacheParse,
         bits: runImageBitsParse,
+        rdpbitmapcache: runImageRdpBitmapCacheParse,
     };
     if (actions[action]) actions[action]();
 }
@@ -5287,6 +5296,84 @@ async function runSelectedStrings() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = data.success ? data.output : `[ERROR] ${data.error}`;
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runSelectedVideoContactSheet() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/video_contact_sheet', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Contact sheet generation failed: ${data.error}`, 'danger'); return; }
+        showToast(`Contact sheet generated (${data.frame_count} frames): ${data.output_path}`, 'success');
+    } catch (err) {
+        showToast('Contact sheet generation failed: request error.', 'danger');
+    }
+}
+
+async function runImageVideoContactSheet() {
+    if (!explorerImageSelected) return;
+    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    try {
+        const res = await fetch('/api/image/video_contact_sheet', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: explorerImagePath, offset: explorerImageOffset,
+                inode: explorerImageSelected.inode, name: explorerImageSelected.name,
+                path: explorerImageSelected.path || null, destination_dir: destinationDir,
+                case_folder: activeCase ? activeCase.case_folder : null
+            })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Contact sheet generation failed: ${data.error}`, 'danger'); return; }
+        showToast(`Contact sheet generated (${data.frame_count} frames): ${data.output_path}`, 'success');
+    } catch (err) {
+        showToast('Contact sheet generation failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedOcr() {
+    if (!activeSelectedFile) return;
+    showToolOutputModal(`OCR: ${activeSelectedFile.split('/').pop()}`, 'bi-textarea-t');
+
+    try {
+        const res = await fetch('/api/files/ocr', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = data.success ? data.output : `[ERROR] ${data.error}`;
+    } catch (err) {
+        const container = document.getElementById("toolOutputContainer");
+        if (container) container.textContent = '[REQUEST FAILED]';
+    }
+}
+
+async function runImageOcr() {
+    if (!explorerImageSelected) return;
+    showToolOutputModal(`OCR: ${explorerImageSelected.name}`, 'bi-textarea-t');
+    try {
+        const res = await fetch('/api/image/ocr', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_path: explorerImagePath, offset: explorerImageOffset,
+                inode: explorerImageSelected.inode, name: explorerImageSelected.name,
+                path: explorerImageSelected.path || null,
+                case_folder: activeCase ? activeCase.case_folder : null
+            })
         });
         const data = await res.json();
         const container = document.getElementById("toolOutputContainer");
@@ -6334,6 +6421,58 @@ async function runImageBitsParse() {
     }
 }
 
+async function runSelectedRdpBitmapCacheParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_rdp_bitmap_cache', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`RDP Bitmap Cache scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No RDP Bitmap Cache files (Cache####.bin/bcache##.bmc) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} RDP Bitmap Cache file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} RDP Bitmap Cache file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('RDP Bitmap Cache scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageRdpBitmapCacheParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_rdp_bitmap_cache', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`RDP Bitmap Cache scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No RDP Bitmap Cache files (Cache####.bin/bcache##.bmc) found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} RDP Bitmap Cache file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} RDP Bitmap Cache file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('RDP Bitmap Cache scan failed: request error.', 'danger');
+    }
+}
+
 async function runSelectedPowerShellHistoryParse() {
     if (!activeSelectedFile) return;
     try {
@@ -7183,6 +7322,22 @@ function isSqliteFile(name) {
 function isPhotoImagePath(path) {
     const PHOTO_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
     return PHOTO_EXTENSIONS.some(ext => path.toLowerCase().endsWith(ext));
+}
+
+// OCR candidate gate - mirrors core/ocr_utils.py's own OCR_IMAGE_EXTENSIONS
+// exactly (broader than isPhotoImagePath() above, which is scoped to
+// browser-renderable thumbnail formats only - tesseract/leptonica also
+// reads .tif/.tiff/.pnm scanned-document formats a browser can't preview).
+function isOcrCandidateImage(name) {
+    const OCR_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.gif', '.webp', '.pnm'];
+    return OCR_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
+}
+
+// Video contact-sheet candidate gate - mirrors core/video_keyframe_utils.py's
+// own VIDEO_FILE_EXTENSIONS exactly.
+function isVideoCandidateFile(name) {
+    const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.mpg', '.mpeg'];
+    return VIDEO_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
 }
 
 // Entry point for both the context menu's "Browse as Image" action (reads
