@@ -21,6 +21,19 @@ file after updating to see what changed.
 
 ---
 
+## [1.21.0] - 2026-09-01
+
+### New
+
+- **Windows Sticky Notes can now be parsed and read directly.** A new "Parse Sticky Notes" action
+  (right-click a folder, or run it against a whole acquired image) finds the built-in Sticky Notes
+  app's own database and reads the actual text of every note - including deleted ones, which the app
+  keeps rather than truly erasing. Correctly recovers the most recent notes and edits even when
+  they've only been saved to a temporary companion file the app hasn't yet folded into its main
+  database - a real gap a naive copy of just the main file would silently miss.
+
+---
+
 ## [1.20.0] - 2026-09-01
 
 ### New

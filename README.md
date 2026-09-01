@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.20.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.21.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -130,9 +130,10 @@ Windows Registry hives (incl. Amcache, ShellBags, Shimcache/AppCompatCache, User
 program-execution timestamps, RDP connection history — which remote hosts this user connected to
 via Remote Desktop, with the last-used username — Office recent files/folders per application, and
 Explorer search-box history), Event Logs, Prefetch,
-Recycle Bin, LNK shortcuts, Jump Lists (Automatic/Custom Destinations), and Thumbcache (extracting
+Recycle Bin, LNK shortcuts, Jump Lists (Automatic/Custom Destinations), Thumbcache (extracting
 every embedded thumbnail as a real, viewable image — these can persist after the original photo or
-document has been deleted); NTFS `$MFT` (with
+document has been deleted), and Sticky Notes (the actual text of every note, including deleted
+ones, correctly recovering recent edits that only exist in an unsaved database sidecar file); NTFS `$MFT` (with
 timestomping detection) and `$UsnJrnl` change-journal
 records; Linux shell history, `/etc/passwd`, cron, and `auth.log`; cryptocurrency wallet files; email
 files (`.eml`/`.mbox`/`.pst`/`.ost`); and mobile chat/app data (SMS/iMessage, Contacts, Call History)
@@ -328,7 +329,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.20.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.21.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
