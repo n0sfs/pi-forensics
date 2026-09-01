@@ -63,3 +63,4 @@ mount_history.json
 
 # Local Claude Code context (not for the repo)
 CLAUDE.md
+.claude/

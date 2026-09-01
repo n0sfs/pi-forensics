@@ -174,24 +174,38 @@ bring it back — possibly days later — to import.
 4. Click **Erase & Build Live Collection USB**. The drive is wiped, formatted (exFAT, for reliable
    read/write across Windows, macOS, and Linux), and loaded with a real open-source collector (UAC)
    for Linux/macOS/BSD targets and a small, fully readable PowerShell script for Windows targets —
-   both run directly from the drive with nothing to install.
+   both run directly from the drive with nothing to install. If the station had internet access at
+   install time, memory-acquisition tools (AVML for Linux, WinPmem for Windows) are bundled onto the
+   drive too, ready to use; if not, the drive still works fully for everything except memory capture.
 
 Take the finished drive to the machine you need to examine, plug it in, and follow the README on
 the drive (open a terminal and run `./run_collector.sh` on Linux/macOS, or double-click
 `launch_collector.cmd` on Windows). Everything collected is written back onto the same drive.
 Nothing here ever touches a network.
 
+**Memory (RAM) capture, if you want it.** Early in the collection run, if the target is running as
+root/Administrator, the memory-acquisition tools were bundled onto the drive, and there's enough
+free space on the drive for the RAM to fit (checked automatically, with a small safety margin), the
+script asks whether to capture a full memory image before continuing — defaulting to **No** if you
+just press Enter. Say yes and it captures the entire contents of RAM to the drive (Linux via AVML,
+in LiME format; Windows via WinPmem, as a plain raw image) before moving on to everything else,
+since RAM is the single most volatile thing being collected. The result — `memory.lime` or
+`memory.raw` — lands right alongside every other collected file and gets pulled in like everything
+else on import, ready to open with [Memory forensics](#memory-forensics) once it's in the case.
+Declining (or if the checks above rule it out) skips straight to the rest of the collection with no
+prompt held up.
+
 **What actually gets collected.** On Linux/macOS/BSD, UAC's `ir_triage` profile captures a real
 live-response snapshot: running processes (with hashes and open files/sockets), live network
-connections, mounted storage, package lists, shell/SSH history, and a live-filesystem timeline. On
-Windows, the bundled PowerShell script gathers running processes with command lines, TCP/UDP
-connections with their owning process, logged-on sessions, ARP and DNS caches, services, scheduled
-tasks, startup/autorun entries, and installed hotfixes (driver enumeration is attempted too, and
-honestly logged as skipped if the script wasn't run elevated). This is the entire point of the
-feature: every one of those is volatile state that's **gone the instant the machine is powered
-off** — imaging the same machine's disk five minutes later cannot recover any of it. It's a
-lightweight snapshot, not a substitute for a full acquisition or a memory (RAM) capture — see
-[Memory forensics](#memory-forensics) if you need the latter.
+connections, mounted storage, package lists, shell/SSH history, and a live-filesystem timeline, plus
+clipboard contents captured separately right after UAC finishes. On Windows, the bundled PowerShell
+script gathers running processes with command lines (each executable's own SHA-256 hash computed
+too, matching UAC's own process-hashing on the Unix side), TCP/UDP connections with their owning
+process, logged-on sessions, ARP and DNS caches, services, scheduled tasks, startup/autorun entries,
+installed hotfixes, mapped network drives, and clipboard contents (driver enumeration is attempted
+too, and honestly logged as skipped if the script wasn't run elevated). This is the entire point of
+the feature: every one of those is volatile state that's **gone the instant the machine is powered
+off** — imaging the same machine's disk five minutes later cannot recover any of it.
 
 **Import Collection Results:** plug the drive back into the station (it's read-only again by
 default — no separate unlock needed for this half), select it, and click **Scan for Collection
@@ -199,9 +213,18 @@ Results**. Check off whichever result run(s) you want, fill in an Evidence ID, a
 Selected Results** — every file is copied into the active case, individually hashed with a
 manifest, and recorded as a real case-report event. In File Explorer, the imported folder groups
 alongside this app's other generated-analysis-output folders rather than sitting unclassified among
-real evidence; it isn't automatically parsed into a structured category (Registry, Event Log, and
-so on all look for very specific real-Windows-artifact filenames, not free-form collector output),
-but every file in it can still be browsed, previewed, hashed, tagged, or scanned like any other.
+real evidence, and every file in it can be browsed, previewed, hashed, tagged, or scanned like any
+other. On top of that, the Windows-side results (processes, network connections, logged-on users,
+services, scheduled tasks, autoruns, mapped drives, clipboard) are automatically parsed into File
+Explorer's searchable **Parsed Artifacts** category and Reporting's Evidence Timeline — no separate
+action needed — and every process executable's hash is checked against every configured [Hash Set,
+URL List, and YARA rule](#hash-sets-url-lists-and-yara-rules) automatically, with any match recorded
+as its own flagged artifact. A `SUMMARY.txt` (and machine-readable `summary.json`) is generated
+alongside the raw files and manifest, giving you counts (processes, connections, services, hash-set
+matches, and whether a memory image was captured) at a glance without opening anything else. The
+Unix/UAC side's own individual output files aren't yet parsed into structured records the same way
+— that's a larger, still-planned piece of work — but every file it produced is fully browsable, and
+its captured clipboard text is parsed the same way the Windows side's is.
 
 ---
 

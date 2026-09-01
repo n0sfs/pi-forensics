@@ -344,10 +344,10 @@ const GUIDE_SCENARIOS = {
         title: "I need volatile data from a running machine, not a dead disk",
         steps: [
             "Go to the Live Collection USB tab. This is separate from Forensic Acquisition on purpose - it's the one place this station deliberately writes to a USB drive rather than treating it as read-only evidence.",
-            "Pick a blank/spare USB drive (never one holding evidence) from the dropdown, type the exact confirmation text shown (e.g. \"WIPE /dev/sdb\"), then click \"Erase & Build Live Collection USB\". This wipes the drive and puts a collector script on it for both Linux/macOS (UAC) and Windows (a bundled PowerShell script).",
-            "Take that USB to the separate, still-running target machine. On Linux/macOS/BSD, run run_collector.sh as root (falls back to a limited, honestly-logged non-root run if root isn't available). On Windows, double-click launch_collector.cmd.",
+            "Pick a blank/spare USB drive (never one holding evidence) from the dropdown, type the exact confirmation text shown (e.g. \"WIPE /dev/sdb\"), then click \"Erase & Build Live Collection USB\". This wipes the drive and puts a collector script on it for both Linux/macOS (UAC) and Windows (a bundled PowerShell script), plus memory-acquisition tools (AVML/WinPmem) if the station had internet access when it was set up.",
+            "Take that USB to the separate, still-running target machine. On Linux/macOS/BSD, run run_collector.sh as root (falls back to a limited, honestly-logged non-root run if root isn't available). On Windows, double-click launch_collector.cmd. Early on, if running elevated with enough free space on the drive, it asks whether to also capture a full memory (RAM) image before continuing - defaults to No if you just press Enter.",
             "Bring the USB back to this station, go back to the Live Collection USB tab, select the drive, and click \"Scan for Collection Results\" to see what runs are on it.",
-            "Enter a Case Number/Evidence ID and click \"Import Selected Results\" - every file is copied into the active case, individually hashed, and recorded as a real case-report event, read-only against the USB the whole time.",
+            "Enter a Case Number/Evidence ID and click \"Import Selected Results\" - every file is copied into the active case, individually hashed, and recorded as a real case-report event, read-only against the USB the whole time. Windows-side results (processes, connections, sessions, services, and more) are automatically parsed into File Explorer's Parsed Artifacts and the Evidence Timeline, with every process hash checked against your configured Hash Sets - no separate step needed.",
         ],
         tabId: "live-collection-tab"
     },
@@ -698,8 +698,9 @@ const TOOL_REFERENCE_GROUPS = [
     {
         group: "Live Collection USB",
         tools: [
-            ["UAC (Unix-like Artifacts Collector)", "Real, open-source live-response collector (github.com/tclahr/uac) for Linux/macOS/BSD/Solaris targets - process list/tree with hashes, open files/sockets, live network state, mounted storage, package lists, shell/SSH history, and a live-filesystem timeline (ir_triage profile). Bundled onto every Live Collection USB build; runs on the separate target machine, not on this station."],
-            ["Live Collector (Windows)", "A hand-written PowerShell script bundled onto every Live Collection USB build - process list with command lines, TCP/UDP connections with owning PIDs, logged-on sessions, ARP/DNS cache, services, scheduled tasks, autoruns, and installed hotfixes. Double-click the launcher on the target Windows machine to run it."],
+            ["UAC (Unix-like Artifacts Collector)", "Real, open-source live-response collector (github.com/tclahr/uac) for Linux/macOS/BSD/Solaris targets - process list/tree with hashes, open files/sockets, live network state, mounted storage, package lists, shell/SSH history, a live-filesystem timeline (ir_triage profile), and clipboard contents. Bundled onto every Live Collection USB build; runs on the separate target machine, not on this station."],
+            ["Live Collector (Windows)", "A hand-written PowerShell script bundled onto every Live Collection USB build - process list with command lines and file hashes, TCP/UDP connections with owning PIDs, logged-on sessions, ARP/DNS cache, services, scheduled tasks, autoruns, installed hotfixes, mapped network drives, and clipboard contents. Double-click the launcher on the target Windows machine to run it."],
+            ["AVML / WinPmem (memory capture)", "Optional full memory (RAM) acquisition, offered interactively during Live Collection USB's own collection run when there's enough free space and it's running elevated - AVML (github.com/microsoft/avml) for Linux, in LiME format; WinPmem (github.com/Velocidex/WinPmem) for Windows, as a plain raw image. Import into a case like any other Live Collection result, then open with Memory Forensics."],
         ]
     },
     {
@@ -1868,6 +1869,19 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     registry_shellbag: 'Registry: ShellBags (Folder Access)',
     registry_shimcache: 'Registry: Shimcache (Program Execution)',
     email_message: 'Email Message',
+    // Live Collection USB, Phase 2 (2026-09-01) - kept in sync with
+    // routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS. This exact side
+    // has already been forgotten once for a different artifact type - see
+    // that constant's own comment for the real bug that caused.
+    live_collection_process: 'Live Collection: Running Process',
+    live_collection_network_connection: 'Live Collection: Network Connection',
+    live_collection_logged_on_user: 'Live Collection: Logged-On User/Session',
+    live_collection_service: 'Live Collection: Service',
+    live_collection_scheduled_task: 'Live Collection: Scheduled Task',
+    live_collection_autorun: 'Live Collection: Autorun/Startup Item',
+    live_collection_mapped_drive: 'Live Collection: Mapped Network Drive',
+    live_collection_clipboard: 'Live Collection: Clipboard Contents',
+    live_collection_hash_list_match: 'Live Collection: Hash List Match',
 };
 
 function buildFileViewsHierarchy(summary) {
