@@ -21,6 +21,19 @@ file after updating to see what changed.
 
 ---
 
+## [1.26.1] - 2026-09-01
+
+### Fixed
+
+- **A fresh install could fail to build `mquire` (Linux memory forensics for x86_64 images) at all.**
+  The build step relied on the Debian-packaged Rust compiler, which turned out to be too old for one
+  of `mquire`'s own dependencies. The installer now installs and uses an up-to-date Rust toolchain
+  specifically for this one step (via `rustup`, run as the station's own unprivileged service account,
+  never as root), so this no longer depends on how current Debian's own Rust package happens to be.
+  No change to `mquire` itself or what it does - already-working stations are unaffected.
+
+---
+
 ## [1.26.0] - 2026-09-01
 
 ### New
