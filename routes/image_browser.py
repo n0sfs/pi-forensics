@@ -78,6 +78,7 @@ from core.windows_activity_utils import (
     WINDOWS_ACTIVITY_SCAN_MAX_CANDIDATES,
     parse_windows_activity_file, windows_activity_canonical_filename, windows_activity_base_name,
 )
+from core.srum_utils import SRUM_FILENAME, SRUM_SCAN_MAX_CANDIDATES, parse_srum_file
 from core.jumplist_utils import (
     JUMPLIST_AUTOMATIC_EXTENSION, JUMPLIST_CUSTOM_EXTENSION, JUMPLIST_SCAN_MAX_CANDIDATES, parse_jumplist_file,
 )
@@ -1967,6 +1968,64 @@ def image_parse_windows_activity():
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 
+@image_browser_bp.route('/api/image/parse_srum', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_srum():
+    """In-image counterpart to parse_srum() (routes/file_explorer.py) -
+    same single-file extract-to-temp-then-parse shape image_parse_
+    prefetch() already established (SRUM's SRUDB.dat has no -wal/-shm
+    sidecar concept, unlike Sticky Notes/wpndatabase.db/ActivitiesCache.db,
+    so it doesn't need their grouping-by-directory extraction shape)."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    candidates, truncated = _image_scan_candidate_files(
+        image_path, lambda name, path: name.lower() == SRUM_FILENAME.lower(), SRUM_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']), suffix='.dat')
+            records = parse_srum_file(tmp_path)
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("srum_files_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
 @image_browser_bp.route('/api/image/parse_recyclebin', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -3265,6 +3324,7 @@ AUTO_ANALYZE_STEP_LABELS = {
     "linux_artifacts": "Linux Artifacts (shell history/passwd/cron/auth log)",
     "recover_deleted": "Recover Deleted Files (Filesystem-Aware)",
     "android_artifacts": "Android SMS/Contacts/Call Log (rooted physical images only)",
+    "srum": "SRUM (Application/Network Usage History)",
 }
 AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts", "jumplists"]
 AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts"]
@@ -3275,7 +3335,10 @@ AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts"]
 # still carries a disclosed, real gap (never tested against a rooted-
 # device physical acquisition - see core/android_artifacts.py's own
 # docstring) - opt-in until that gap closes, not a hard technical limit.
-AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted", "android_artifacts"]
+# srum is opt-in for the identical never-tested-against-real-hardware
+# reason (see core/srum_utils.py's own docstring) - not a Windows default
+# yet, moved there once a real SRUDB.dat sample has been parsed end-to-end.
+AUTO_ANALYZE_EXTRA_STEPS = ["recover_deleted", "android_artifacts", "srum"]
 AUTO_ANALYZE_ALL_VALID_STEPS = set(AUTO_ANALYZE_STEP_LABELS.keys())
 
 
@@ -3357,6 +3420,13 @@ def _auto_analyze_step_prefetch(image_path, case_folder, source_ip=None, user=No
     return _auto_analyze_run_generic_artifact_scan(
         image_path, case_folder, lambda name, path: name.lower().endswith(PREFETCH_EXTENSION),
         parse_prefetch_file, PREFETCH_SCAN_MAX_CANDIDATES, "prefetch_files_parsed_image",
+        source_ip=source_ip, user=user)
+
+
+def _auto_analyze_step_srum(image_path, case_folder, source_ip=None, user=None):
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, lambda name, path: name.lower() == SRUM_FILENAME.lower(),
+        parse_srum_file, SRUM_SCAN_MAX_CANDIDATES, "srum_files_parsed_image",
         source_ip=source_ip, user=user)
 
 
@@ -3483,6 +3553,7 @@ _AUTO_ANALYZE_STEP_FUNCTIONS = {
     "linux_artifacts": _auto_analyze_step_linux_artifacts,
     "recover_deleted": _auto_analyze_step_recover_deleted,
     "android_artifacts": _auto_analyze_step_android_artifacts,
+    "srum": _auto_analyze_step_srum,
 }
 
 

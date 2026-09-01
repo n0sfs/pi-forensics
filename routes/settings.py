@@ -1404,6 +1404,8 @@ TOOL_VERSION_COMMANDS = [
     {"tool": "libpff-python", "cmd": [VOL3_PIP_BIN, "show", "libpff-python"], "package": None},
     {"tool": "py-tlsh", "cmd": [VOL3_PIP_BIN, "show", "py-tlsh"], "package": None},
     {"tool": "libvshadow-python", "cmd": [VOL3_PIP_BIN, "show", "libvshadow-python"], "package": None},
+    # SRUM (SRUDB.dat) parsing, 2026-09-01 - core/srum_utils.py.
+    {"tool": "libesedb-python", "cmd": [VOL3_PIP_BIN, "show", "libesedb-python"], "package": None},
 ]
 # Every installable package this endpoint will ever run apt-get for - the
 # same allowlist install.py's sudoers file grants exact NOPASSWD entries

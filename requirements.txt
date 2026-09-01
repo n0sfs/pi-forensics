@@ -171,3 +171,9 @@ py-tlsh>=5.0.0
 # on the Pi's real ARM64/Debian-trixie venv as a genuine prebuilt
 # manylinux2014_aarch64 wheel - zero compile step.
 libvshadow-python>=20260714
+
+# libesedb-python (2026-09-01) - SRUM (SRUDB.dat) parsing (core/srum_
+# utils.py), this app's first ESE/.edb-format parser. Confirmed live on
+# the Pi's real ARM64/Debian-trixie venv as a genuine prebuilt
+# manylinux2014_aarch64 wheel - zero compile step.
+libesedb-python>=20260704
