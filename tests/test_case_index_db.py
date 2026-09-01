@@ -207,16 +207,63 @@ def test_backfill_is_idempotent_and_skips_recovery_tool_output_dirs(case_folder)
     # this app itself just created (the per-case SQLite index file, which is
     # itself a recognized report artifact once it exists on disk), but must
     # never re-tag anything it already tagged, and must still never reach
-    # into the carve-output dir.
+    # into the carve-output dir. Clear this case_folder's own throttle entry
+    # first (2026-09-01, a real performance fix - see the function's own
+    # docstring) - without this, the second call below would be a silent
+    # no-op (still within the same 300s throttle window as the first call),
+    # which would make this test pass for the wrong reason (nothing ran a
+    # second time at all) instead of genuinely proving idempotency.
+    case_index_db._artifact_backfill_last_run.pop(case_folder, None)
     case_index_db._backfill_case_artifact_tags(case_folder)
     second_paths = _all_tagged_role_paths(case_folder)
+    assert carved_lookalike not in second_paths
     db_path = case_index_db.case_index_db_path(case_folder)
     conn = case_index_db._case_index_connect(db_path)
     dupes = conn.execute(
         "SELECT path, COUNT(*) c FROM tagged_items GROUP BY tag_id, path HAVING c > 1").fetchall()
     conn.close()
     assert not dupes
-    assert carved_lookalike not in second_paths
+
+
+def test_backfill_throttle_skips_a_second_sweep_within_the_window(case_folder, monkeypatch):
+    # The real 2026-09-01 performance fix, proven directly: a second call
+    # within _ARTIFACT_BACKFILL_INTERVAL_SECONDS must not walk the
+    # filesystem again at all - confirmed here by monkeypatching os.walk
+    # itself to fail loudly if it's ever called a second time, rather than
+    # just asserting on the (harder-to-distinguish) end state.
+    report = os.path.join(case_folder, "2026-CASE-TEST_case.pdf")
+    with open(report, "w") as f:
+        f.write("x")
+
+    case_index_db._backfill_case_artifact_tags(case_folder)
+    assert report in _all_tagged_role_paths(case_folder)
+
+    real_walk = case_index_db.os.walk
+    def _walk_that_fails_if_called(*a, **k):
+        raise AssertionError("os.walk() was called on a throttled second sweep - the throttle didn't take effect")
+    monkeypatch.setattr(case_index_db.os, "walk", _walk_that_fails_if_called)
+    case_index_db._backfill_case_artifact_tags(case_folder)  # must return immediately, never reach os.walk()
+    monkeypatch.setattr(case_index_db.os, "walk", real_walk)
+
+
+def test_backfill_throttle_records_last_run_time_and_clearing_it_allows_a_real_second_sweep(case_folder):
+    assert case_folder not in case_index_db._artifact_backfill_last_run
+    case_index_db._backfill_case_artifact_tags(case_folder)
+    assert case_folder in case_index_db._artifact_backfill_last_run
+
+    new_report = os.path.join(case_folder, "2026-CASE-TEST_case.html")
+    with open(new_report, "w") as f:
+        f.write("x")
+    # Still throttled - a file created AFTER the first sweep must not be
+    # picked up by a second, still-within-the-window call.
+    case_index_db._backfill_case_artifact_tags(case_folder)
+    assert new_report not in _all_tagged_role_paths(case_folder)
+
+    # Clearing the throttle entry (simulating the window having elapsed)
+    # lets the next call genuinely re-sweep and pick it up.
+    case_index_db._artifact_backfill_last_run.pop(case_folder, None)
+    case_index_db._backfill_case_artifact_tags(case_folder)
+    assert new_report in _all_tagged_role_paths(case_folder)
 
 
 def test_backfill_migrates_legacy_case_artifact_tag_into_role_specific_tags(case_folder):
