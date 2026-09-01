@@ -32,6 +32,8 @@ _REGISTRY_ARTIFACT_TYPES = {
 _LNK_ARTIFACT_TYPES = {"lnk_shortcut"}
 _PREFETCH_ARTIFACT_TYPES = {"prefetch_execution"}
 _RECYCLEBIN_ARTIFACT_TYPES = {"recyclebin_deleted_file"}
+# Windows Jump Lists, 2026-09-01 - core/jumplist_utils.py.
+_JUMPLIST_ARTIFACT_TYPES = {"jumplist_automatic_entry", "jumplist_custom_shortcut"}
 _LINUX_ARTIFACT_TYPES = {
     "linux_shell_history", "linux_passwd_account", "linux_cron_job",
     "linux_auth_log", "linux_journald_log", "linux_wtmp_login",
@@ -74,7 +76,7 @@ _APPLE_EXPORT_ARTIFACT_TYPES = {
 def test_parsed_artifact_type_labels_covers_every_known_producer():
     evtx_types = {v[0] for v in evtx_utils.EVENT_ID_ALLOWLIST.values()}
     expected = (_BROWSER_ARTIFACT_TYPES | _REGISTRY_ARTIFACT_TYPES | evtx_types | _LNK_ARTIFACT_TYPES
-                | _PREFETCH_ARTIFACT_TYPES | _RECYCLEBIN_ARTIFACT_TYPES | _LINUX_ARTIFACT_TYPES
+                | _PREFETCH_ARTIFACT_TYPES | _RECYCLEBIN_ARTIFACT_TYPES | _JUMPLIST_ARTIFACT_TYPES | _LINUX_ARTIFACT_TYPES
                 | _URL_IOC_ARTIFACT_TYPES | _CRYPTO_ARTIFACT_TYPES | _MOBILE_ARTIFACT_TYPES
                 | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES
                 | _ANDROID_ARTIFACT_TYPES | _LEAPP_TSV_ARTIFACT_TYPES | _TAKEOUT_ARTIFACT_TYPES

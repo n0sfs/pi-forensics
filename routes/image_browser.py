@@ -66,6 +66,9 @@ from core.crypto_artifacts import (
 from core.mobile_artifacts import find_mobile_backup_manifest, parse_mobile_backup_manifest
 from core.evtx_utils import EVTX_EXTENSION, EVTX_SCAN_MAX_CANDIDATES, parse_evtx_file
 from core.prefetch_utils import PREFETCH_EXTENSION, PREFETCH_SCAN_MAX_CANDIDATES, parse_prefetch_file
+from core.jumplist_utils import (
+    JUMPLIST_AUTOMATIC_EXTENSION, JUMPLIST_CUSTOM_EXTENSION, JUMPLIST_SCAN_MAX_CANDIDATES, parse_jumplist_file,
+)
 from core.recyclebin_utils import RECYCLEBIN_SCAN_MAX_CANDIDATES, parse_recyclebin_file
 from core.mft_utils import analyze_mft_file
 from core.usnjrnl_utils import parse_usnjrnl_stream
@@ -1634,6 +1637,70 @@ def image_parse_prefetch():
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 
+@image_browser_bp.route('/api/image/parse_jumplists', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_jumplists():
+    """In-image counterpart to parse_jumplists() (routes/file_explorer.py)."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    def _is_jumplist_candidate(name, path):
+        lower = name.lower()
+        return lower.endswith(JUMPLIST_AUTOMATIC_EXTENSION) or lower.endswith(JUMPLIST_CUSTOM_EXTENSION)
+
+    candidates, truncated = _image_scan_candidate_files(image_path, _is_jumplist_candidate, JUMPLIST_SCAN_MAX_CANDIDATES)
+    if candidates is None:
+        return jsonify({"success": False, "error": "No recognized filesystem found in this image."}), 500
+
+    counts = {}
+    files_parsed = 0
+    for fs, fsinfo, entry, path in candidates:
+        tmp_path = None
+        try:
+            # AutomaticDestinations is a real OLE2 container - olefile
+            # needs a real path on disk to open (unlike LnkParse3, which
+            # accepts any file-like object), so this still has to go
+            # through the extract-to-temp step every in-image parser here
+            # already uses. filename=entry['name'] (not tmp_path's own
+            # meaningless temp suffix) is what makes the dispatcher pick
+            # the right one of the two Jump List formats.
+            tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']))
+            records = parse_jumplist_file(tmp_path, filename=entry['name'])
+        except Exception:
+            records = []
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {
+                "source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                "inode": entry['inode'], "path": path,
+            }, records)
+
+    log_chain_of_custody("jumplists_parsed_image", {
+        "image_path": image_path, "candidates_found": len(candidates),
+        "files_parsed": files_parsed, "counts": counts, "truncated": truncated,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(candidates), "files_parsed": files_parsed,
+        "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
+    })
+
 @image_browser_bp.route('/api/image/parse_recyclebin', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -2928,11 +2995,12 @@ AUTO_ANALYZE_STEP_LABELS = {
     "prefetch": "Prefetch Files",
     "recyclebin": "Recycle Bin",
     "browser_artifacts": "Browser Artifacts (Chrome/Firefox/Safari)",
+    "jumplists": "Jump Lists (Automatic + Custom Destinations)",
     "linux_artifacts": "Linux Artifacts (shell history/passwd/cron/auth log)",
     "recover_deleted": "Recover Deleted Files (Filesystem-Aware)",
     "android_artifacts": "Android SMS/Contacts/Call Log (rooted physical images only)",
 }
-AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts"]
+AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts", "jumplists"]
 AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts"]
 # Opt-in, either profile - recover_deleted for cost/risk reasons (a bulk
 # write action, not just read-only parsing); android_artifacts because it's
@@ -3023,6 +3091,16 @@ def _auto_analyze_step_prefetch(image_path, case_folder, source_ip=None, user=No
     return _auto_analyze_run_generic_artifact_scan(
         image_path, case_folder, lambda name, path: name.lower().endswith(PREFETCH_EXTENSION),
         parse_prefetch_file, PREFETCH_SCAN_MAX_CANDIDATES, "prefetch_files_parsed_image",
+        source_ip=source_ip, user=user)
+
+
+def _auto_analyze_step_jumplists(image_path, case_folder, source_ip=None, user=None):
+    def _is_jumplist_candidate(name, path):
+        lower = name.lower()
+        return lower.endswith(JUMPLIST_AUTOMATIC_EXTENSION) or lower.endswith(JUMPLIST_CUSTOM_EXTENSION)
+    return _auto_analyze_run_generic_artifact_scan(
+        image_path, case_folder, _is_jumplist_candidate,
+        parse_jumplist_file, JUMPLIST_SCAN_MAX_CANDIDATES, "jumplists_parsed_image",
         source_ip=source_ip, user=user)
 
 
@@ -3135,6 +3213,7 @@ _AUTO_ANALYZE_STEP_FUNCTIONS = {
     "prefetch": _auto_analyze_step_prefetch,
     "recyclebin": _auto_analyze_step_recyclebin,
     "browser_artifacts": _auto_analyze_step_browser_artifacts,
+    "jumplists": _auto_analyze_step_jumplists,
     "linux_artifacts": _auto_analyze_step_linux_artifacts,
     "recover_deleted": _auto_analyze_step_recover_deleted,
     "android_artifacts": _auto_analyze_step_android_artifacts,

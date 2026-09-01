@@ -737,7 +737,7 @@ const TOOL_REFERENCE_GROUPS = [
             ["Volatility3", "Analyzes an already-captured Windows memory (RAM) image - process lists, network connections, loaded modules, and more. Right-click a memory-image file and choose \"Memory Forensics...\"."],
             ["mquire", "Analyzes an already-captured x86_64 Linux memory (RAM) image, reading symbol info the kernel embeds in the image itself - no separate download needed. Same \"Memory Forensics...\" action, pick the mquire engine."],
             ["Browser Artifact Parser", "Extracts history, bookmarks, downloads, and cookies from a Chrome/Chromium-family, Firefox, or Safari browser profile, on disk or inside an acquired image. Built in, no external tool needed."],
-            ["Registry / Event Log / Prefetch / Recycle Bin / LNK Parsers", "Built-in parsers for Windows Registry hives (incl. Amcache), .evtx Event Logs, Prefetch execution history, Recycle Bin metadata, and .lnk shortcuts - no external tool needed, work on a real folder or directly inside an acquired image."],
+            ["Registry / Event Log / Prefetch / Recycle Bin / LNK / Jump List Parsers", "Built-in parsers for Windows Registry hives (incl. Amcache), .evtx Event Logs, Prefetch execution history, Recycle Bin metadata, .lnk shortcuts, and Jump Lists (recently/frequently accessed files per application, from .automaticDestinations-ms and .customDestinations-ms files) - no external tool needed, work on a real folder or directly inside an acquired image."],
             ["Linux Artifact Parser", "Built-in parser for shell history, /etc/passwd, cron jobs, and auth.log/secure authentication events on a Linux filesystem - no external tool needed."],
             ["YARA", "Scans a file against your own saved YARA rulesets (Settings > Case & Reporting > Analysis & IOC Lists). Right-click a file and choose \"Scan with YARA Rules\"."],
             ["Auto Analyze", "Not a single external tool - detects what kind of evidence you've selected (Windows/Linux disk image, memory image, mobile backup) and runs a curated set of the tools above automatically, as one background job. Top of the right-click menu."],
@@ -1852,6 +1852,8 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     registry_amcache: 'Registry: Amcache Application Inventory',
     prefetch_execution: 'Prefetch: Program Execution',
     recyclebin_deleted_file: 'Recycle Bin: Deleted Files',
+    jumplist_automatic_entry: 'Jump List: Automatic Destinations',
+    jumplist_custom_shortcut: 'Jump List: Custom Destinations',
     // Linux Artifact Parsing (2026-08-25) - kept in sync with routes/
     // case_index.py's PARSED_ARTIFACT_TYPE_LABELS by hand, same as every
     // entry above (this is the exact class of gap this project's own
@@ -4461,6 +4463,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnParseRegistryHives', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseEvtxLogs', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParsePrefetch', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseJumplists', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseRecycleBin', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseCryptoWallets', section: 'ctxSecArtifacts', visible: item => item.is_dir },
@@ -4495,6 +4498,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnEnterRegistryImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterEvtxImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterPrefetchImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterJumplistsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterRecycleBinImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterLinuxArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterAndroidArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
@@ -4610,6 +4614,7 @@ async function contextMenuBrowseImageAnd(action) {
         registryhives: runImageRegistryParse,
         evtxlogs: runImageEvtxParse,
         prefetch: runImagePrefetchParse,
+        jumplists: runImageJumplistsParse,
         recyclebin: runImageRecycleBinParse,
         linuxartifacts: runImageLinuxArtifactsParse,
         androidartifacts: runImageAndroidArtifactsParse,
@@ -5848,6 +5853,58 @@ async function runImagePrefetchParse() {
         }
     } catch (err) {
         showToast('Prefetch scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedJumplistsParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_jumplists', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Jump List scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Jump List files (.automaticDestinations-ms / .customDestinations-ms) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Jump List file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Jump List file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Jump List scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageJumplistsParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_jumplists', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Jump List scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Jump List files (.automaticDestinations-ms / .customDestinations-ms) found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Jump List file(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} Jump List file(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Jump List scan failed: request error.', 'danger');
     }
 }
 

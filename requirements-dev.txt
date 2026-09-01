@@ -6,3 +6,15 @@
 # See tests/conftest.py for why some tests skip themselves on a non-Linux
 # dev machine, and .github/workflows/tests.yml for what CI actually runs.
 pytest>=7.0.0
+
+# Test-fixture-only: builds a real, valid OLE2/CFBF (Compound File Binary)
+# container for tests/test_jumplist_utils.py's AutomaticDestinations
+# fixtures. Not needed in production - core/jumplist_utils.py only ever
+# READS these files (via olefile, in requirements.txt), it never writes
+# one - and no maintained pure-Python CFBF *writer* exists that this app's
+# actual code could use even if it needed to. Round-trip-verified
+# (2026-09-01) against olefile's own reader before being trusted: a real
+# LNK blob written via pycfb.CFBWriter, then read back via
+# olefile.OleFileIO.openstream(), parses correctly through the exact same
+# LnkParse3 code path production evidence would go through.
+pycfb>=0.0.3
