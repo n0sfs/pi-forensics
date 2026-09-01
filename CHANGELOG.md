@@ -21,6 +21,30 @@ file after updating to see what changed.
 
 ---
 
+## [1.27.0] - 2026-09-01
+
+### New
+
+- **A real, filtered phone timeline: text messages, web history, and social media/messaging apps now
+  show up with real timestamps on the Evidence Timeline, and can be filtered by category.** ALEAPP/
+  iLEAPP's parsed mobile-app data (SMS, MMS, call logs, WhatsApp, Instagram, Snapchat, Facebook
+  Messenger, Telegram, Signal, TikTok, Reddit chats, plus Chrome/Firefox web history and visits) now
+  carries a real timestamp instead of always showing "no time recorded" - so it actually appears in
+  the chronological timeline, not just in the searchable artifact list.
+- **A new Category filter on the Evidence Timeline** (Reporting > Evidence Timeline): Communications,
+  Web Activity, Social Media, Device & System, and Filesystem, each with its own checkbox and a
+  colored badge on every row. A "Phone Activity Only" button narrows straight to just Communications +
+  Web Activity + Social Media in one click; "All Categories" resets. The exported CSV now includes the
+  category too.
+
+### Fixed
+
+- **The in-app version number (shown on the login page, the navbar, and Settings > Diagnostics) had
+  been stuck at v1.11.0 for many releases** - the file it reads from was never updated as part of the
+  normal release process, even though README/CHANGELOG kept moving forward. Fixed going forward.
+
+---
+
 ## [1.26.1] - 2026-09-01
 
 ### Fixed
