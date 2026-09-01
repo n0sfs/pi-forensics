@@ -4482,6 +4482,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnParseThumbcache', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseStickyNotes', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseWindowsActivity', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseSrum', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseRecycleBin', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseCryptoWallets', section: 'ctxSecArtifacts', visible: item => item.is_dir },
@@ -4520,6 +4521,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnEnterThumbcacheImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterStickyNotesImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterWindowsActivityImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterSrumImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterRecycleBinImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterLinuxArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterAndroidArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
@@ -4639,6 +4641,7 @@ async function contextMenuBrowseImageAnd(action) {
         thumbcache: runImageThumbcacheParse,
         stickynotes: runImageStickyNotesParse,
         windowsactivity: runImageWindowsActivityParse,
+        srum: runImageSrumParse,
         recyclebin: runImageRecycleBinParse,
         linuxartifacts: runImageLinuxArtifactsParse,
         androidartifacts: runImageAndroidArtifactsParse,
@@ -6096,6 +6099,58 @@ async function runImageWindowsActivityParse() {
         }
     } catch (err) {
         showToast('Notifications/Timeline scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedSrumParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_srum', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`SRUM scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No SRUM database (SRUDB.dat) found under this folder.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} SRUM database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} SRUM database(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('SRUM scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageSrumParse() {
+    if (!explorerImagePath) return;
+    try {
+        const res = await fetch('/api/image/parse_srum', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`SRUM scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No SRUM database (SRUDB.dat) found in this image.', 'success');
+            return;
+        }
+        const truncNote = data.truncated ? ' (capped)' : '';
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} SRUM database(s): ${summary}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} SRUM database(s): ${summary}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('SRUM scan failed: request error.', 'danger');
     }
 }
 
