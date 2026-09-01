@@ -55,6 +55,84 @@ Write-Host 'Pi Forensics Suite - Live Collection (Windows)'
 Write-Host "Running as administrator: $IsElevated"
 Write-Host ''
 
+# --- 0. Optional memory (RAM) capture (WinPmem, github.com/Velocidex/
+#         WinPmem, Apache-2.0) - runs first, ahead of even the process
+#         list below, since memory is the single most volatile artifact
+#         this script can collect. Opt-in, asked interactively right here
+#         on the target machine - the Pi has no way to know this machine's
+#         RAM size or this drive's free space before now, so this is never
+#         a choice baked in when the USB was built. Needs administrator
+#         (the driver-load WinPmem's own "acquire" command performs
+#         requires it) - if not elevated, this is skipped outright without
+#         even asking, since it would just fail.
+#
+#         This build's "acquire" command has no raw-output flag at all -
+#         confirmed directly against the real binary's own --help, not
+#         assumed from WinPmem's public docs (which describe a different,
+#         older winpmem.exe variant's CLI) - it always produces an AFF4
+#         container. Rather than accept AFF4 (which this app's own
+#         Volatility3 has zero support for - confirmed no aff4.py layer,
+#         no pyaff4 installed), this runs the same binary's own real
+#         "extract" subcommand immediately afterward to decompress the
+#         AFF4 container back into a plain raw file, then discards the
+#         AFF4 intermediate - zero new dependency needed anywhere else in
+#         this app, and the result is exactly the plain raw memory.raw
+#         file the rest of this app's Memory Forensics feature expects. ---
+if (-not $IsElevated) {
+    Write-CollectionLog -Category 'memory_capture' -Status 'skipped' -Detail 'requires administrator privileges - re-run elevated to capture memory'
+} else {
+    $WinpmemBin = Join-Path $PSScriptRoot 'memory\winpmem.exe'
+    # Independent architecture check - deliberately not reusing Section 1's
+    # $os variable, since Section 0 (this section) runs BEFORE Section 1
+    # defines it (memory capture is placed first on purpose, ahead of even
+    # the process list, as the single most volatile artifact this script
+    # collects).
+    $archCheck = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue).OSArchitecture
+    if (-not (Test-Path $WinpmemBin)) {
+        Write-CollectionLog -Category 'memory_capture' -Status 'skipped' -Detail 'winpmem.exe was not found on this drive (install.py vendoring may not have run) - skipping'
+    } elseif ($archCheck -match 'ARM') {
+        Write-CollectionLog -Category 'memory_capture' -Status 'skipped' -Detail 'ARM64 Windows target - no compatible WinPmem binary on this USB'
+    } else {
+        try {
+            $ramBytes = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
+            $ramMb = [math]::Round($ramBytes / 1MB)
+            $drive = (Get-Item $RunDir).PSDrive
+            $freeMb = [math]::Round($drive.Free / 1MB)
+            $needMb = $ramMb * 1.1
+            if ($freeMb -lt $needMb) {
+                Write-CollectionLog -Category 'memory_capture' -Status 'skipped' -Detail "not enough free space (target has ~$ramMb MB RAM, this drive has ~$freeMb MB free)"
+            } else {
+                Write-Host ''
+                Write-Host "Memory capture available: target has ~$ramMb MB RAM, this drive has ~$freeMb MB free."
+                Write-Host 'This can take several minutes and will use most of that free space.'
+                $memAns = Read-Host 'Also capture a memory (RAM) image? [y/N]'
+                if ($memAns -match '^[yY]') {
+                    Write-Host 'Capturing memory image (this may take a while)...'
+                    $aff4Path = Join-Path $RunDir 'memory.aff4'
+                    $rawPath = Join-Path $RunDir 'memory.raw'
+                    & $WinpmemBin acquire $aff4Path
+                    if ($LASTEXITCODE -eq 0 -and (Test-Path $aff4Path)) {
+                        & $WinpmemBin extract $aff4Path $rawPath
+                        if ($LASTEXITCODE -eq 0 -and (Test-Path $rawPath)) {
+                            Remove-Item $aff4Path -ErrorAction SilentlyContinue
+                            Write-CollectionLog -Category 'memory_capture' -Status 'ok' -Detail "$([math]::Round((Get-Item $rawPath).Length / 1MB)) MB captured"
+                        } else {
+                            Write-CollectionLog -Category 'memory_capture' -Status 'failed' -Detail 'winpmem extract step failed - AFF4 file left in place for manual recovery'
+                        }
+                    } else {
+                        Write-CollectionLog -Category 'memory_capture' -Status 'failed' -Detail 'winpmem acquire step failed or was blocked - continuing without it, not fatal to the rest of the collection'
+                        Remove-Item $aff4Path -ErrorAction SilentlyContinue
+                    }
+                } else {
+                    Write-CollectionLog -Category 'memory_capture' -Status 'skipped' -Detail 'declined by examiner'
+                }
+            }
+        } catch {
+            Write-CollectionLog -Category 'memory_capture' -Status 'failed' -Detail $_.Exception.Message
+        }
+    }
+}
+
 # --- 1. Basic system info (least volatile of this set, but cheap and
 #         always worth having as context for everything else below) ---
 try {
@@ -99,6 +177,33 @@ try {
     }
 } catch {
     Write-CollectionLog -Category 'processes' -Status 'failed' -Detail $_.Exception.Message
+}
+
+# --- 2b. Process-executable hashes - closes a parity gap against UAC's
+#         Unix-side hash_running_processes category, which this script
+#         never had an equivalent for. Hashes each UNIQUE executable path
+#         from the process list above once, not once per process - a
+#         shared service host (svchost.exe) or common DLL would otherwise
+#         get hashed dozens of times for no benefit. Written as a separate
+#         process_hashes.json rather than folded into processes.json's own
+#         shape, so that file's format stays exactly what it always was. ---
+try {
+    $uniquePaths = $procs | Where-Object { $_.executable_path } | Select-Object -ExpandProperty executable_path -Unique
+    $hashFailures = 0
+    $procHashes = foreach ($p in $uniquePaths) {
+        try {
+            $h = Get-FileHash -Path $p -Algorithm SHA256 -ErrorAction Stop
+            [PSCustomObject]@{ executable_path = $p; sha256 = $h.Hash }
+        } catch {
+            $hashFailures++
+        }
+    }
+    if (Write-ArtifactJson -Name 'process_hashes' -Data $procHashes) {
+        $status = if ($hashFailures -gt 0) { 'partial' } else { 'ok' }
+        Write-CollectionLog -Category 'process_hashes' -Status $status -Detail "$($procHashes.Count) hashed, $hashFailures failed (locked/deleted-since-listed)"
+    }
+} catch {
+    Write-CollectionLog -Category 'process_hashes' -Status 'failed' -Detail $_.Exception.Message
 }
 
 # --- 3. Network connections (TCP/UDP) ---
@@ -299,6 +404,46 @@ if ($IsElevated) {
     }
 } else {
     Write-CollectionLog -Category 'loaded_drivers' -Status 'skipped' -Detail 'requires administrator privileges - not run'
+}
+
+# --- 11. Mapped network drives ---
+try {
+    if (Get-Command Get-SmbMapping -ErrorAction SilentlyContinue) {
+        $mapped = Get-SmbMapping -ErrorAction Stop | ForEach-Object {
+            [PSCustomObject]@{ local_path = $_.LocalPath; remote_path = $_.RemotePath; status = $_.Status }
+        }
+    } else {
+        # Legacy fallback for a target without the SMB PowerShell module -
+        # parse net use's own text output, honestly labeled as the fallback
+        # source, matching every other category's fallback-labeling
+        # convention already used in this script.
+        $mapped = (net use) | Select-Object -Skip 4 | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -and $line -ne '' -and $line -notmatch '^The command completed') {
+                [PSCustomObject]@{ local_path = $null; remote_path = $null; status = $null; raw_line = $line; source = 'net use (legacy fallback)' }
+            }
+        } | Where-Object { $_ }
+    }
+    if (Write-ArtifactJson -Name 'mapped_drives' -Data $mapped) {
+        Write-CollectionLog -Category 'mapped_drives' -Status 'ok' -Detail "$($mapped.Count) mapping(s)"
+    }
+} catch {
+    Write-CollectionLog -Category 'mapped_drives' -Status 'failed' -Detail $_.Exception.Message
+}
+
+# --- 12. Clipboard contents ---
+try {
+    $clipContent = Get-Clipboard -ErrorAction Stop -Raw
+    if ($clipContent) {
+        $clipData = [PSCustomObject]@{ content = ($clipContent -join "`n"); collected_at = (Get-Date).ToString('o') }
+        if (Write-ArtifactJson -Name 'clipboard' -Data $clipData) {
+            Write-CollectionLog -Category 'clipboard' -Status 'ok'
+        }
+    } else {
+        Write-CollectionLog -Category 'clipboard' -Status 'skipped' -Detail 'clipboard was empty'
+    }
+} catch {
+    Write-CollectionLog -Category 'clipboard' -Status 'failed' -Detail $_.Exception.Message
 }
 
 # --- Final collection log, written last so it reflects every category

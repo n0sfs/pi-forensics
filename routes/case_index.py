@@ -211,6 +211,24 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     # Email parsing (2026-08-30, tool-survey follow-up) - .eml/.mbox via the
     # standard library, .pst/.ost via libpff-python (core/email_utils.py).
     "email_message": "Email Message",
+    # Live Collection USB, Phase 2 (2026-09-01) - volatile artifacts parsed
+    # out of a completed collection run's Windows-JSON output (core/live_
+    # collection_results_utils.py); clipboard is the one Unix-side type
+    # that's individually parsed too (see that module's own docstring for
+    # why the rest of UAC's own raw-text output isn't). REMEMBER: also add
+    # every new key here to FILE_VIEWS_WEB_ARTIFACT_LABELS in static/js/
+    # main.js - forgetting that exact side has already caused a real,
+    # documented bug once in this codebase (see that constant's own
+    # comment).
+    "live_collection_process": "Live Collection: Running Process",
+    "live_collection_network_connection": "Live Collection: Network Connection",
+    "live_collection_logged_on_user": "Live Collection: Logged-On User/Session",
+    "live_collection_service": "Live Collection: Service",
+    "live_collection_scheduled_task": "Live Collection: Scheduled Task",
+    "live_collection_autorun": "Live Collection: Autorun/Startup Item",
+    "live_collection_mapped_drive": "Live Collection: Mapped Network Drive",
+    "live_collection_clipboard": "Live Collection: Clipboard Contents",
+    "live_collection_hash_list_match": "Live Collection: Hash List Match",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])
