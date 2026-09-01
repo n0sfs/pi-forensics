@@ -34,7 +34,7 @@ from core.paths import (
     safe_path, log_chain_of_custody, is_valid_block_device,
     is_valid_block_device_or_partition, _DEVICE_RE,
 )
-from core.config import EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS
+from core.config import EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job,
     get_active_proc, clear_active_proc,
@@ -50,9 +50,12 @@ from core.live_collection_utils import (
     PIF_COLLECT_LABEL, UAC_DEFAULT_PROFILE,
     check_existing_collection_volume, wipe_and_format_device,
     mount_collection_partition, unmount_collection_partition,
-    discover_collection_runs, unmount_all_partitions,
+    discover_collection_runs, unmount_all_partitions, run_timestamp_to_epoch,
 )
-from core.case_index_db import _auto_tag_case_artifact
+from core.case_index_db import _auto_tag_case_artifact, _record_parsed_artifacts
+from core.live_collection_results_utils import (
+    parse_windows_collector_run, parse_unix_collector_run, build_hash_list_match_records,
+)
 # Guided Workflow automation Tier 2 (2026-08-27) - the one deliberate,
 # documented exception to this project's own established "every routes/*.py
 # Blueprint only ever imports from core/, never from another routes/*.py
@@ -1910,6 +1913,13 @@ LIVE_COLLECTION_SCAN_MOUNTPOINT = os.path.join(INSTALL_DIR, ".live_collection_mo
 LIVE_COLLECTION_IMPORT_MOUNTPOINT = os.path.join(INSTALL_DIR, ".live_collection_mounts", "import")
 LIVE_COLLECTION_ASSETS_DIR = os.path.join(INSTALL_DIR, "live_collection_assets")
 LIVE_COLLECTION_UAC_DIR = os.path.join(INSTALL_DIR, "live_collection", "uac")
+# Optional memory-acquisition tools (AVML for Unix targets, WinPmem for
+# Windows) vendored by install.py's own single-file-release-asset download
+# step - see that step's own comment for exactly why/how. Same "local
+# constant, not centralized in core/config.py" precedent as
+# LIVE_COLLECTION_UAC_DIR just above (both are consumed by exactly this one
+# build worker, in exactly this one file).
+LIVE_COLLECTION_MEMORY_DIR = os.path.join(INSTALL_DIR, "live_collection", "memory")
 
 
 def execution_worker_build_collection_usb(device, device_info):
@@ -1993,6 +2003,36 @@ def execution_worker_build_collection_usb(device, device_info):
                         if asset_name.endswith((".sh",)):
                             os.chmod(dst, 0o755)
                 append_log("[*] Copied Windows collector, launcher, and README.")
+
+                # Optional memory-acquisition tools - same "if missing, log
+                # and continue, never fail the whole build" tolerance as
+                # every other asset copy above (install.py's own vendoring
+                # step is itself non-fatal-on-failure, so this is a real,
+                # expected state on a station that installed offline).
+                if os.path.isdir(LIVE_COLLECTION_MEMORY_DIR) and os.listdir(LIVE_COLLECTION_MEMORY_DIR):
+                    memory_files = os.listdir(LIVE_COLLECTION_MEMORY_DIR)
+                    uac_memory_dest = os.path.join(mnt, "uac", "memory")
+                    windows_memory_dest = os.path.join(mnt, "windows", "memory")
+                    os.makedirs(uac_memory_dest, exist_ok=True)
+                    os.makedirs(windows_memory_dest, exist_ok=True)
+                    copied_any = False
+                    for name in memory_files:
+                        src = os.path.join(LIVE_COLLECTION_MEMORY_DIR, name)
+                        if name.startswith("avml"):
+                            dst = os.path.join(uac_memory_dest, name)
+                            shutil.copy2(src, dst)
+                            os.chmod(dst, 0o755)
+                            copied_any = True
+                        elif name == "winpmem.exe":
+                            shutil.copy2(src, os.path.join(windows_memory_dest, name))
+                            copied_any = True
+                    if copied_any:
+                        append_log("[*] Copied optional memory-acquisition tools (AVML/WinPmem).")
+                else:
+                    append_log("[!] Memory-acquisition tools were not found on this station "
+                               "(install.py's vendoring step may not have run, or ran without "
+                               "internet access) - the memory-capture prompt on this drive will "
+                               "have nothing to run.")
 
                 update_job(status="Finalizing (unmounting)...", progress_percent=90.0)
             finally:
@@ -2189,6 +2229,106 @@ def execution_worker_import_live_collection(device, selected_relative_paths, cas
                     hash_str = ", ".join(f"{a}={h}" for a, h in entry["hashes"].items())
                     f.write(f"{entry['original_relative_path']}\t{entry['size_bytes']} bytes\t{hash_str}\n")
             append_log(f"[*] Wrote manifest.json and manifest.txt ({files_copied} file(s) recorded).")
+
+            # Parses every already-copied run's own result files into this
+            # app's standard artifact-record shape (see core/live_
+            # collection_results_utils.py's own docstring for the split
+            # between the fully-scoped Windows-JSON side and the
+            # deliberately narrow Unix/UAC side) - a cheap additional pass
+            # over data already in hand from the copy loop above, not a
+            # second scan. Reads from output_root (the already-copied
+            # DESTINATION), never the source USB - matches this worker's
+            # own "never re-read from the source drive" discipline
+            # everywhere else. Persisted via the exact same _record_
+            # parsed_artifacts() every other artifact parser in this app
+            # already uses - File Views' "Parsed Artifacts" category, the
+            # Reporting Web Artifacts gallery, and the Evidence Timeline all
+            # pick these up automatically once live_collection_* is in both
+            # PARSED_ARTIFACT_TYPE_LABELS (routes/case_index.py) and its
+            # required JS-side mirror (static/js/main.js) - zero further
+            # wiring needed here.
+            all_parsed_records = []
+            all_process_records = []
+            for run in runs_to_import:
+                run_label = f"{run['platform']}_{run['run_name']}"
+                run_dest = os.path.join(output_root, run_label)
+                run_ts = run_timestamp_to_epoch(run.get('timestamp') or '') or time.time()
+                try:
+                    if run['platform'] == 'windows':
+                        run_records = parse_windows_collector_run(run_dest, run_ts)
+                    else:
+                        run_records = parse_unix_collector_run(run_dest, run_ts)
+                except Exception as e:
+                    append_log(f"[-] Could not parse results for {run_label}: {e}")
+                    run_records = []
+                all_parsed_records.extend(run_records)
+                all_process_records.extend([r for r in run_records if r['artifact_type'] == 'live_collection_process'])
+
+            hash_list_match_count = 0
+            if all_process_records:
+                # Same "check every configured list automatically, no
+                # examiner selection needed" precedent already established
+                # by routes/file_explorer.py's own browser-artifact URL-list
+                # check (confirmed before writing this) - never a new UI/
+                # request parameter for which lists to check.
+                try:
+                    hash_sets = load_hash_list_sets([hl['id'] for hl in get_hash_lists()])
+                    match_records = build_hash_list_match_records(all_process_records, hash_sets, run_timestamp=time.time())
+                    all_parsed_records.extend(match_records)
+                    hash_list_match_count = len(match_records)
+                    if hash_list_match_count:
+                        append_log(f"[!] {hash_list_match_count} process executable(s) matched a configured hash list.")
+                except Exception as e:
+                    append_log(f"[-] Hash-list cross-reference failed (non-fatal): {e}")
+
+            if all_parsed_records:
+                try:
+                    persisted = _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": output_root}, all_parsed_records)
+                    append_log(f"[*] Parsed {persisted} artifact record(s) into the case index.")
+                except Exception as e:
+                    append_log(f"[-] Could not persist parsed artifact records (non-fatal): {e}")
+
+            # A one-page summary at a glance, alongside the existing
+            # manifest.json/manifest.txt - built from data this worker
+            # already has in hand (the manifest entries + the parse pass
+            # just above), no extra file re-reads.
+            try:
+                by_type_counts = {}
+                for r in all_parsed_records:
+                    by_type_counts[r['artifact_type']] = by_type_counts.get(r['artifact_type'], 0) + 1
+                memory_entry = next((e for e in manifest_entries if os.path.basename(e['original_relative_path']) in ('memory.lime', 'memory.raw')), None)
+                summary_data = {
+                    "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "imported_runs": manifest_data["imported_runs"],
+                    "process_count": by_type_counts.get('live_collection_process', 0),
+                    "network_connection_count": by_type_counts.get('live_collection_network_connection', 0),
+                    "service_count": by_type_counts.get('live_collection_service', 0),
+                    "scheduled_task_count": by_type_counts.get('live_collection_scheduled_task', 0),
+                    "autorun_count": by_type_counts.get('live_collection_autorun', 0),
+                    "hash_list_match_count": hash_list_match_count,
+                    "memory_image_captured": memory_entry is not None,
+                    "memory_image_size_bytes": memory_entry['size_bytes'] if memory_entry else None,
+                }
+                with open(os.path.join(output_root, "summary.json"), 'w') as f:
+                    json.dump(summary_data, f, indent=2)
+                with open(os.path.join(output_root, "SUMMARY.txt"), 'w') as f:
+                    f.write(f"Live Collection Import Summary - generated {summary_data['generated_at']}\n")
+                    f.write(f"Imported run(s): {', '.join(summary_data['imported_runs'])}\n\n")
+                    f.write(f"Processes: {summary_data['process_count']}\n")
+                    f.write(f"Network connections: {summary_data['network_connection_count']}\n")
+                    f.write(f"Services: {summary_data['service_count']}\n")
+                    f.write(f"Scheduled tasks: {summary_data['scheduled_task_count']}\n")
+                    f.write(f"Autorun/startup entries: {summary_data['autorun_count']}\n")
+                    f.write(f"Hash-list matches: {summary_data['hash_list_match_count']}\n")
+                    if summary_data['memory_image_captured']:
+                        mb = round(summary_data['memory_image_size_bytes'] / (1024 * 1024))
+                        f.write(f"Memory image: captured ({mb} MB)\n")
+                    else:
+                        f.write("Memory image: not captured\n")
+                append_log("[*] Wrote summary.json and SUMMARY.txt.")
+            except Exception as e:
+                append_log(f"[-] Could not write summary (non-fatal): {e}")
+
             # Tags the whole import folder (not just manifest.json) into the
             # per-case index as an 'analysis_log'-role artifact - matches
             # classify_case_role()'s live_collection_import_<timestamp>

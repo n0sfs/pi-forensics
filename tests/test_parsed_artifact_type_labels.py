@@ -40,6 +40,14 @@ _MOBILE_ARTIFACT_TYPES = {"mobile_sms_message", "mobile_contact", "mobile_call_l
 _NTFS_JOURNAL_ARTIFACT_TYPES = {"mft_file_record", "usnjrnl_change_record"}
 _REGISTRY_ARTIFACT_TYPES = _REGISTRY_ARTIFACT_TYPES | {"registry_shellbag", "registry_shimcache"}
 _EMAIL_ARTIFACT_TYPES = {"email_message"}
+# Live Collection USB, Phase 2 (2026-09-01) - core/live_collection_results_utils.py.
+_LIVE_COLLECTION_ARTIFACT_TYPES = {
+    "live_collection_process", "live_collection_network_connection",
+    "live_collection_logged_on_user", "live_collection_service",
+    "live_collection_scheduled_task", "live_collection_autorun",
+    "live_collection_mapped_drive", "live_collection_clipboard",
+    "live_collection_hash_list_match",
+}
 
 
 def test_parsed_artifact_type_labels_covers_every_known_producer():
@@ -47,7 +55,7 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
     expected = (_BROWSER_ARTIFACT_TYPES | _REGISTRY_ARTIFACT_TYPES | evtx_types | _LNK_ARTIFACT_TYPES
                 | _PREFETCH_ARTIFACT_TYPES | _RECYCLEBIN_ARTIFACT_TYPES | _LINUX_ARTIFACT_TYPES
                 | _URL_IOC_ARTIFACT_TYPES | _CRYPTO_ARTIFACT_TYPES | _MOBILE_ARTIFACT_TYPES
-                | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES)
+                | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES)
     actual = set(case_index.PARSED_ARTIFACT_TYPE_LABELS.keys())
     missing = expected - actual
     assert not missing, f"artifact_type(s) producible by a parser but missing from PARSED_ARTIFACT_TYPE_LABELS (row-fetch route would silently return no rows for these): {missing}"

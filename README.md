@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.11.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.12.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -79,9 +79,19 @@ ARP/DNS caches, loaded kernel modules/drivers, and more - that a disk image alon
 recover, since all of it is gone the instant that machine is powered off. On Unix-like targets UAC's
 `ir_triage` profile also gathers live network state, mounted storage, package lists, shell/SSH
 history, and a live-filesystem timeline; on Windows the bundled script also covers services,
-scheduled tasks, autoruns, and installed hotfixes. Bring the drive back and import the results into
-the active case - read-only against the USB throughout, every file individually hashed with a
-manifest, and a real case-report event recorded.
+scheduled tasks, autoruns, installed hotfixes, mapped network drives, and clipboard contents, with
+process executables hashed on both platforms for consistency. Both collectors can also acquire a
+full memory (RAM) image of the target - AVML for Linux, WinPmem for Windows - through an
+interactive, default-declined, space-and-privilege-checked prompt at collection time, since the
+target's RAM size and available USB space are only known once the drive is actually plugged in.
+Bring the drive back and import the results into the active case - read-only against the USB
+throughout, every file individually hashed with a manifest, and a real case-report event recorded.
+On import, the Windows-side results (processes, network connections, logged-on users, services,
+scheduled tasks, autoruns, mapped drives, clipboard) are automatically parsed into File Explorer's
+searchable "Parsed Artifacts" index and the Evidence Timeline, every process executable's hash is
+cross-referenced against every configured Hash Set with a match recorded as its own flagged
+artifact, and a `SUMMARY.txt`/`summary.json` at-a-glance overview is generated alongside the raw
+files and full manifest.
 
 ### File recovery
 One tool selector for PhotoRec (signature-based file carving, ~480 known types), `extundelete`
@@ -300,7 +310,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.11.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.12.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.

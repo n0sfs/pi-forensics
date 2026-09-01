@@ -171,3 +171,84 @@ def test_start_import_accepts_a_valid_request_and_claims_the_job_slot(client, no
     assert res.status_code == 200
     assert res.get_json()["success"] is True
     assert jobs.current_job["active"] is True
+
+
+class TestImportWorkerParseAndSummaryWiring:
+    """Calls execution_worker_import_live_collection directly (not through
+    the route/a real thread - no_op_thread mocks that away for every other
+    test in this file, so it's never actually exercised elsewhere), with a
+    real Windows-collector-shaped fixture run directory on disk, to prove
+    the Phase 2 parse-at-import/hash-cross-reference/summary wiring
+    (routes/acquisition.py) actually calls into core/live_collection_
+    results_utils.py's already-thoroughly-unit-tested pure functions and
+    produces real summary.json/SUMMARY.txt output - not just that those
+    pure functions work in isolation (tests/test_live_collection_results_
+    utils.py already proves that), but that this worker's own glue code
+    wires them up correctly end-to-end."""
+
+    def _build_fixture_run(self, tmp_path):
+        import json as _json
+        src_root = tmp_path / "usb_mount"
+        run_dir = src_root / "windows" / "results" / "TESTHOST_20260901_120000"
+        run_dir.mkdir(parents=True)
+        with open(run_dir / "processes.json", 'w') as f:
+            _json.dump([
+                {"pid": 1, "parent_pid": 0, "name": "evil.exe", "executable_path": "C:\\evil.exe",
+                 "command_line": "evil.exe", "creation_date": "", "owner": ""},
+            ], f)
+        with open(run_dir / "process_hashes.json", 'w') as f:
+            _json.dump([{"executable_path": "C:\\evil.exe", "sha256": "b" * 64}], f)
+        with open(run_dir / "network_connections.json", 'w') as f:
+            _json.dump([], f)
+        return str(src_root)
+
+    def test_worker_writes_summary_and_persists_parsed_records(self, tmp_path, evidence_root, monkeypatch):
+        src_root = self._build_fixture_run(tmp_path)
+
+        monkeypatch.setattr(acq, "mount_collection_partition", lambda *a, **k: {"success": True, "error": None})
+        monkeypatch.setattr(acq, "unmount_collection_partition", lambda *a, **k: None)
+        monkeypatch.setattr(acq, "LIVE_COLLECTION_IMPORT_MOUNTPOINT", src_root)
+        monkeypatch.setattr(acq, "discover_collection_runs", lambda mount_path: [
+            {"platform": "windows", "run_name": "TESTHOST_20260901_120000",
+             "relative_path": "windows/results/TESTHOST_20260901_120000",
+             "hostname": "TESTHOST", "timestamp": "20260901_120000", "file_count": 3, "total_bytes": 100},
+        ])
+        recorded = {}
+
+        def _fake_record_parsed_artifacts(case_folder, identity, records):
+            recorded['records'] = records
+            return len(records)
+
+        monkeypatch.setattr(acq, "_record_parsed_artifacts", _fake_record_parsed_artifacts)
+        monkeypatch.setattr(acq, "_auto_tag_case_artifact", lambda *a, **k: None)
+        monkeypatch.setattr(acq, "load_hash_list_sets", lambda ids: {"badlist": {"name": "Bad", "label": "known_bad", "algorithm": "sha256", "hashes": {"b" * 64}}})
+        monkeypatch.setattr(acq, "get_hash_lists", lambda: [{"id": "badlist"}])
+        monkeypatch.setattr(acq, "_write_report", lambda *a, **k: None)
+
+        report_data = {
+            "tool": "live_collection_import", "case_metadata": {}, "acquisition_parameters": {},
+            "attachments": {"files": [], "reference_urls": []}, "acquisition_status": "IN_PROGRESS",
+            "timestamp_start": "x", "computed_verification_hashes": {},
+        }
+        acq.execution_worker_import_live_collection(
+            "/dev/sdz", ["windows/results/TESTHOST_20260901_120000"],
+            evidence_root, ["sha256"], "/tmp/fake_report.json", report_data,
+        )
+
+        output_root = os.path.join(evidence_root, [d for d in os.listdir(evidence_root) if d.startswith("live_collection_import_")][0])
+        assert os.path.isfile(os.path.join(output_root, "summary.json"))
+        assert os.path.isfile(os.path.join(output_root, "SUMMARY.txt"))
+
+        import json as _json
+        with open(os.path.join(output_root, "summary.json")) as f:
+            summary = _json.load(f)
+        assert summary["process_count"] == 1
+        assert summary["hash_list_match_count"] == 1
+        assert summary["memory_image_captured"] is False
+
+        # The real parsed process record + the real hash-list-match record
+        # both reached _record_parsed_artifacts (mocked above to capture them)
+        assert 'records' in recorded
+        types = {r['artifact_type'] for r in recorded['records']}
+        assert 'live_collection_process' in types
+        assert 'live_collection_hash_list_match' in types

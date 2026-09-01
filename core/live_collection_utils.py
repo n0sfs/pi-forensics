@@ -41,6 +41,7 @@ import re
 import glob
 import json
 import subprocess
+import time
 
 PIF_COLLECT_LABEL = "PIF_COLLECT"
 UAC_DEFAULT_PROFILE = "ir_triage"
@@ -197,6 +198,27 @@ def unmount_collection_partition(mountpoint):
 _UAC_RUN_DIR_RE = re.compile(r'^uac-(?P<hostname>.+)-(?P<os>[a-z]+)-(?P<timestamp>\d{8}T\d{6}Z?)$')
 _WINDOWS_RUN_DIR_RE = re.compile(r'^(?P<hostname>.+)_(?P<timestamp>\d{8}_\d{6})$')
 COLLECTION_RUN_ROOTS = {"unix": "uac/output", "windows": "windows/results"}
+
+
+def run_timestamp_to_epoch(timestamp_str):
+    """Converts a run's own directory-name timestamp (either shape above -
+    '%Y%m%dT%H%M%S' with an optional trailing Z from UAC, or '%Y%m%d_%H%M%S'
+    from windows_collector.ps1's Get-Date) into a Unix epoch float, used to
+    stamp every artifact record parsed from that run with a single, honest
+    "as of this snapshot" capture time (see core/live_collection_results_
+    utils.py's own docstring for why a per-run, not per-record, timestamp).
+    Treated as naive local time on this station, not UTC - windows_
+    collector.ps1's own Get-Date call is unambiguously local time, and this
+    is meant as a rough "when was this collected" reference for the
+    Evidence Timeline, not a to-the-second-precise value. Returns None
+    (never raises) if the string doesn't match either known shape."""
+    cleaned = timestamp_str.rstrip('Z')
+    for fmt in ('%Y%m%dT%H%M%S', '%Y%m%d_%H%M%S'):
+        try:
+            return time.mktime(time.strptime(cleaned, fmt))
+        except ValueError:
+            continue
+    return None
 
 
 def _dir_stats(path):

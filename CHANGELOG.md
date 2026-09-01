@@ -21,6 +21,36 @@ file after updating to see what changed.
 
 ---
 
+## [1.12.0] - 2026-09-01
+
+### New
+
+- **Live Collection USB can now capture a full memory (RAM) image, not just process/network/session
+  data.** Early in a collection run - on a target running elevated, with the tools available on the
+  drive, and only if there's enough free space to fit the RAM - the collector script asks whether to
+  capture memory before continuing (defaulting to No). Say yes and it captures the entire contents of
+  RAM before moving on to everything else, since RAM is the single most volatile thing being
+  collected: AVML for Linux targets (in LiME format), WinPmem for Windows targets (as a plain raw
+  image, via a real acquire-then-extract sequence so no new dependency was needed to read it back).
+  The result lands on the drive alongside everything else and imports into the case ready to open
+  with Memory Forensics.
+- **A few more genuinely volatile things are now collected.** Windows collection now also gathers
+  mapped network drives and clipboard contents, and hashes every process's own executable file
+  (matching what the Linux/macOS/BSD side already did) - closing a real gap where the two platforms'
+  results weren't apples-to-apples. Unix/macOS/BSD targets now also capture clipboard contents right
+  after the main collection finishes.
+- **Imported results are now automatically turned into something you can actually search and
+  cross-reference, not just a pile of raw files.** On import, the Windows-side results (processes,
+  network connections, logged-on users, services, scheduled tasks, autoruns, mapped drives,
+  clipboard) are parsed straight into File Explorer's searchable Parsed Artifacts category and the
+  Evidence Timeline - no separate action needed. Every process executable's hash is checked against
+  every Hash Set you've configured, and any match is recorded as its own flagged artifact. A plain
+  `SUMMARY.txt` (and a machine-readable `summary.json`) is generated alongside the raw files and
+  manifest, giving you process/connection/service/hash-match counts and whether a memory image was
+  captured, without needing to open anything else first.
+
+---
+
 ## [1.11.0] - 2026-08-31
 
 ### New

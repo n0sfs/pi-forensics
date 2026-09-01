@@ -580,6 +580,114 @@ if not os.path.exists(uac_script_path):
         print(f"[!] UAC vendoring failed ({e}) - the Live Collection USB feature's Unix/Linux/macOS "
               f"collector will not be available.")
 
+
+def _download_release_asset(url, dest_path, min_size_bytes, user_agent):
+    """Downloads a single GitHub release-asset binary to dest_path - the one
+    genuinely new vendoring pattern in this file (UAC/mquire/ALEAPP/iLEAPP/
+    pysim above all `git clone`/`fetch` a pinned tag; neither AVML nor
+    WinPmem need a build step, they ship real prebuilt binaries as release
+    assets instead, so a plain HTTP download is the correct, simpler
+    mechanism here). Mirrors download_offline_tiles()'s _download_tile_set()
+    (this same file) for its try/except-and-skip tolerance and its own
+    urllib.request.Request(...)+urlopen(...) pattern - no new dependency,
+    urllib is already imported.
+
+    Writes to a temp path first, renaming into place only once the full
+    body has downloaded successfully - a half-written binary is worse than
+    a missing one (a missing one is cleanly detected and skipped by the
+    collector scripts' own executable-existence checks; a corrupt one would
+    fail unpredictably later, on a live target machine, not here). Neither
+    AVML nor WinPmem publish a checksums file (confirmed live via a real
+    HEAD request against the plausible filenames at both projects before
+    this was written), so min_size_bytes (the real, confirmed size of each
+    asset) is used as a cheap corruption/redirect-to-an-error-page sanity
+    check instead - a genuine binary download will never come back small.
+    Returns True on success, False on any failure (never raises)."""
+    tmp_path = dest_path + ".partial"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+        if len(data) < min_size_bytes:
+            print(f"[!] Downloaded asset for {os.path.basename(dest_path)} is only {len(data)} "
+                  f"bytes (expected at least {min_size_bytes}) - likely a redirect to an error "
+                  f"page, not the real binary. Discarding.")
+            return False
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+        os.replace(tmp_path, dest_path)
+        return True
+    except Exception as e:
+        print(f"[!] Could not download {os.path.basename(dest_path)} ({e}).")
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return False
+
+
+# 2f. Vendor AVML (github.com/microsoft/avml, MIT) and WinPmem (github.com/
+# Velocidex/WinPmem, Apache-2.0) - optional memory (RAM) acquisition for the
+# Live Collection USB feature. Both ship real prebuilt release-asset
+# binaries, no build step needed (unlike mquire's cargo build above) - see
+# _download_release_asset()'s own docstring for why a plain HTTP download,
+# not a git-clone-of-a-tag, is the right mechanism here.
+#
+# AVML: pinned to v0.20.0 (the real latest tag at the time this was
+# written). Two architecture variants are bundled - `avml` (x86_64,
+# 7,593,712 bytes) and `avml-aarch64` (6,342,704 bytes, both sizes
+# confirmed live via a real HEAD request before this was written) - because
+# the eventual TARGET machine's architecture is unknown until the finished
+# USB is actually plugged into it; run_collector.sh picks the right one at
+# collection time via `uname -m`, not here.
+#
+# WinPmem: real research initially assumed a simple `winpmem_mini_x64.exe`
+# asset existed - it doesn't, under either of WinPmem's two real release
+# tags (confirmed live via the GitHub Releases API). The asset actually
+# used here, go-winpmem_amd64_1.0-rc2_signed.exe (5,257,728 bytes), is
+# pinned to the v4.1.dev1 release specifically (not the older v4.0.rc1,
+# despite that one sounding more "released") because v4.1.dev1 is the one
+# containing the fix for a documented WinPmem-<4.1 CVE (an out-of-bounds
+# write that can disable signed-driver-enforcement) - the same asset file
+# also happens to be attached to both releases, but the tag pinned here is
+# what determines which one a future re-vendor actually fetches. Renamed to
+# the stable local name `winpmem.exe` on download, since the collector
+# script only needs one name to invoke, not the verbose real release
+# filename.
+AVML_TAG = "v0.20.0"
+AVML_RELEASES = "https://github.com/microsoft/avml/releases/download"
+AVML_ASSETS = {"avml": ("avml", 7_593_712), "avml-aarch64": ("avml-aarch64", 6_342_704)}
+WINPMEM_TAG = "v4.1.dev1"
+WINPMEM_ASSET_URL = (
+    "https://github.com/Velocidex/WinPmem/releases/download/"
+    "v4.1.dev1/go-winpmem_amd64_1.0-rc2_signed.exe"
+)
+WINPMEM_ASSET_MIN_SIZE = 5_000_000
+
+memory_dir = os.path.join(INSTALL_DIR, "live_collection", "memory")
+if not os.path.isdir(memory_dir) or not os.listdir(memory_dir):
+    print(f"\n[*] Vendoring AVML {AVML_TAG} and WinPmem {WINPMEM_TAG} "
+          f"(Live Collection USB - optional memory acquisition)...")
+    os.makedirs(memory_dir, exist_ok=True)
+    ua = "pi-forensics-suite-installer"
+    any_ok = False
+    for asset_name, (dest_name, min_size) in AVML_ASSETS.items():
+        url = f"{AVML_RELEASES}/{AVML_TAG}/{asset_name}"
+        dest = os.path.join(memory_dir, dest_name)
+        if _download_release_asset(url, dest, min_size, ua):
+            os.chmod(dest, 0o755)
+            any_ok = True
+    winpmem_dest = os.path.join(memory_dir, "winpmem.exe")
+    if _download_release_asset(WINPMEM_ASSET_URL, winpmem_dest, WINPMEM_ASSET_MIN_SIZE, ua):
+        any_ok = True
+    if any_ok:
+        print(f"[+] Memory-acquisition tools vendored to {memory_dir} "
+              f"({len(os.listdir(memory_dir))}/3 assets present).")
+    else:
+        print(f"[!] Could not vendor any memory-acquisition tools (no internet access right now?) "
+              f"- Live Collection USB will still work, just without the optional memory-capture "
+              f"prompt. Retry by re-running install.py once online.")
+
 # 3. Directory Ownership Setup
 print(f"\n[*] Setting directory permissions on {INSTALL_DIR} for '{SERVICE_USER}'...")
 subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", INSTALL_DIR], check=True)
