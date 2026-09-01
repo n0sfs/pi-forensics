@@ -523,7 +523,7 @@ a real folder or from inside an unmounted image — no extraction step required 
   exact command it ran when the job finished, and who owns it. Doesn't recover individual downloaded-
   file details (source URL, destination path) in this version — a deliberate scope decision rather
   than a guessed, possibly-wrong result.
-- **RDP Bitmap Cache** (`Cache####.bin`/`bcache##.bmc`) — evidence that a Remote Desktop client
+- **RDP Bitmap Cache** (`Cache0001.bin`/`bcache22.bmc`) — evidence that a Remote Desktop client
   session took place on this machine. This version reports per-tile metadata (a real deduplication
   key, tile dimensions) but doesn't reconstruct the actual on-screen images.
 

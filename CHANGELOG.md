@@ -39,7 +39,7 @@ file after updating to see what changed.
   job's name, the exact command it ran on completion, and who owns it. Deliberately does not attempt to
   recover individual downloaded-file details in this version - a real, disclosed scope decision rather
   than a guessed, possibly-wrong result.
-- **RDP Bitmap Cache detection** (Cache####.bin / bcache##.bmc) - evidence that a Remote Desktop client
+- **RDP Bitmap Cache detection** (Cache0001.bin / bcache22.bmc) - evidence that a Remote Desktop client
   session took place on this machine, with per-tile metadata (a real deduplication key, tile
   dimensions) even though this version doesn't reconstruct the actual on-screen images.
 - **OCR text extraction** - pulls readable text out of screenshots, scanned documents, or photographed
