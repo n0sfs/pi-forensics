@@ -902,13 +902,28 @@ def case_timeline():
     if conn:
         try:
             for row in conn.execute(
-                    "SELECT artifact_type, title, value, timestamp, image_path FROM parsed_artifacts WHERE timestamp IS NOT NULL"):
-                artifact_type, title, value, ts, image_path = row
+                    "SELECT artifact_type, title, value, timestamp, image_path, extra_json FROM parsed_artifacts WHERE timestamp IS NOT NULL"):
+                artifact_type, title, value, ts, image_path, extra_json = row
+                # Most parsed_artifact types have no meaningful per-row
+                # "deleted" concept at all (a Registry entry, a browser
+                # history row, ...) - a plain False was correct-by-omission
+                # for all of them. Sticky Notes (2026-09-01) is the first
+                # type to carry a real one (a soft-delete tombstone, not a
+                # row removal), found live while verifying that feature -
+                # read it from extra_json when present rather than
+                # hardcoding False, so this genuinely varies now instead of
+                # silently misrepresenting a deleted note as not deleted.
+                is_deleted = False
+                if extra_json:
+                    try:
+                        is_deleted = bool(json.loads(extra_json).get('deleted', False))
+                    except (json.JSONDecodeError, AttributeError):
+                        is_deleted = False
                 combined.append({
                     "timestamp": ts, "source": "parsed_artifact",
                     "activity": artifact_type, "detail": title or value or '',
                     "evidence_id": image_path_to_evidence_id.get(image_path) if image_path else None,
-                    "deleted": False,
+                    "deleted": is_deleted,
                     "suspicious": artifact_type in CASE_TIMELINE_SUSPICIOUS_ARTIFACT_TYPES,
                 })
         finally:
