@@ -21,6 +21,26 @@ file after updating to see what changed.
 
 ---
 
+## [1.25.0] - 2026-09-01
+
+### New
+
+- **This app's first macOS-specific artifact support**: LaunchAgents/LaunchDaemons persistence items -
+  the small program-launch configuration files macOS itself uses to auto-start background processes,
+  and one of the most common real-world techniques Mac malware uses to survive a reboot. Reached the
+  same way as every other new artifact this session - right-click a folder, or run against a whole
+  acquired image. **Important, disclosed limitation**: this app cannot currently browse a modern Mac's
+  disk image at all - virtually every Mac sold since 2017-2018 uses a filesystem format (APFS) this
+  app's underlying browsing library doesn't yet support. This new tool still works fully against an
+  already-extracted evidence folder (for example, a direct file copy from a connected Mac) regardless
+  of that limitation, and works against an image only if it's an older, HFS+-formatted Mac disk.
+- **Mac/Linux shell history can now capture real per-command timestamps when the shell was configured
+  to record them** (zsh's EXTENDED_HISTORY option - not the default on a stock, unmodified Mac, but
+  common on a security-conscious or professionally-managed one). Detected automatically per line, so
+  a stock Mac's plain, un-timestamped history file is completely unaffected.
+
+---
+
 ## [1.24.0] - 2026-09-01
 
 ### New
