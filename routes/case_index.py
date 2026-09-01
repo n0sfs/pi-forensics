@@ -237,6 +237,15 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "takeout_location_history": "Google Takeout: Location History (Best-Effort)",
     "takeout_maps_place": "Google Takeout: Maps Places (Best-Effort)",
     "takeout_photo_metadata": "Google Takeout: Photo Metadata (Best-Effort)",
+    # Apple "Data & Privacy" export import (core/apple_export_utils.py) -
+    # same scope boundary as Google Takeout above. Contacts/Calendars ride
+    # genuine open standards (vCard/iCalendar) and need no best-effort
+    # label; Safari/Photos do, per that module's own disclosed research.
+    "apple_contact": "Apple Export: Contacts",
+    "apple_calendar_event": "Apple Export: Calendar Events",
+    "apple_reminder": "Apple Export: Reminders",
+    "apple_safari_bookmark": "Apple Export: Safari Bookmarks (Best-Effort)",
+    "apple_photo_metadata": "Apple Export: Photo Metadata (Best-Effort)",
     # NTFS $MFT / $UsnJrnl parsing (2026-08-30, tool-survey follow-up) -
     # core/mft_utils.py (wraps analyzeMFT) and core/usnjrnl_utils.py
     # (hand-rolled USN_RECORD_V2 parser).

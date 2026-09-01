@@ -1887,6 +1887,11 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     takeout_location_history: 'Google Takeout: Location History (Best-Effort)',
     takeout_maps_place: 'Google Takeout: Maps Places (Best-Effort)',
     takeout_photo_metadata: 'Google Takeout: Photo Metadata (Best-Effort)',
+    apple_contact: 'Apple Export: Contacts',
+    apple_calendar_event: 'Apple Export: Calendar Events',
+    apple_reminder: 'Apple Export: Reminders',
+    apple_safari_bookmark: 'Apple Export: Safari Bookmarks (Best-Effort)',
+    apple_photo_metadata: 'Apple Export: Photo Metadata (Best-Effort)',
     // NTFS $MFT / $UsnJrnl parsing (2026-08-30, tool-survey follow-up) -
     // kept in sync with routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS.
     mft_file_record: 'NTFS: $MFT File Record',
@@ -4461,6 +4466,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnLeappScan', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnExportLeappGeolocation', section: 'ctxSecArtifacts', visible: item => item.is_dir, disabledWhen: () => !activeCase },
     { id: 'btnImportTakeout', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnImportAppleExport', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     // ...while these are single-file, exact-name/extension-matched.
     { id: 'btnParseLnk', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.lnk'), analysisTool: 'LNK Shortcut' },
     { id: 'btnAnalyzeMft', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toUpperCase() === '$MFT' },
@@ -5585,6 +5591,26 @@ async function runTakeoutImport() {
     }
 }
 
+async function runAppleExportImport() {
+    if (!activeSelectedFile) return;
+    if (!confirm("Import this folder as an already-extracted Apple Data & Privacy export?\n\nApple delivers this as an encrypted zip with a separately-emailed password - this folder must already be extracted (using that password) before importing.\n\nThis only reads an archive you already obtained yourself through Apple's own official export tool - it never accesses a live Apple account.\n\nContacts/Calendars use stable formats; Safari Bookmarks and Photo metadata are best-effort.")) return;
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile;
+    try {
+        const res = await fetch('/api/files/import_apple_export', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null, destination_dir: destinationDir })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Apple Data & Privacy export import started - a completion notice will appear when it finishes.', 'info');
+        } else {
+            showToast(`Apple export import failed to start: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast('Apple export import failed: request error.', 'danger');
+    }
+}
+
 async function runLeappGeolocationExport() {
     if (!activeCase) { showToast('Select an active case first.', 'warning'); return; }
     try {
@@ -6396,6 +6422,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     live_collection_build: (status) => `Live Collection USB build finished: ${status}\n\nThe drive is ready - plug it into a live target machine and follow the README on the drive.`,
     live_collection_import: (status) => `Live collection import finished: ${status}\n\nCheck the case folder for the new live_collection_import_<timestamp> folder and its hash manifest.`,
     takeout_import: (status) => `Google Takeout import finished: ${status}\n\nSee File Views > Parsed Artifacts for Search/YouTube History and other imported data, and Reporting > Geolocation for any location data found.`,
+    apple_export_import: (status) => `Apple Data & Privacy export import finished: ${status}\n\nSee File Views > Parsed Artifacts for Contacts/Calendars/Reminders and other imported data, and Reporting > Geolocation for any GPS-tagged photos found.`,
 };
 let lastImageJobActiveByFormat = {}; // job format -> was it active as of the last poll
 
@@ -6426,6 +6453,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     image_geolocation_kml: 'navBadgeExplorer', image_triage_scan: 'navBadgeExplorer',
     memory_forensics_scan: 'navBadgeExplorer', mquire_scan: 'navBadgeExplorer', image_conversion: 'navBadgeExplorer',
     auto_analyze_image: 'navBadgeExplorer', leapp_scan: 'navBadgeExplorer', takeout_import: 'navBadgeExplorer',
+    apple_export_import: 'navBadgeExplorer',
 };
 const NAV_BADGE_TO_TAB_ID = {
     navBadgeAcquisition: 'acquisition-tab', navBadgeLiveCollection: 'live-collection-tab', navBadgeMobile: 'mobile-tab',
