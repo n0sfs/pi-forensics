@@ -836,6 +836,216 @@ def _parse_rdp_connections(root_key):
     return records
 
 
+# Microsoft Office File/Place MRU: NTUSER.DAT\Software\Microsoft\Office\
+# {version}\{App}\{File,Place} MRU - per-application recently-opened-
+# document (File MRU) and recently-accessed-folder (Place MRU) history, a
+# genuinely different signal from RecentDocs (already covered above,
+# which only tracks the Explorer shell's own recent-items shortcuts,
+# loosely grouped by extension, not per-application with full paths).
+#
+# Grounded via real, sourced research before writing any code, cross-
+# validated primarily against plaso/log2timeline's real production parser
+# (plaso/parsers/winreg_plugins/officemru.py, whose own docstring states
+# the exact composite value-string format verbatim), corroborated by
+# Cyber Triage's and Cisco XDR's independent Office-MRU artifact
+# references for the key-path/account-variant structure.
+#
+# The value's embedded timestamp is confirmed to be a standard Windows
+# FILETIME (the exact epoch filetime_to_unix() below already implements)
+# - but encoded as literal ASCII HEX DIGITS inside the composite string
+# itself, not raw binary bytes - parsed via int(hex_str, 16), never
+# struct.unpack, then fed through the same existing FILETIME converter
+# every other FILETIME-based artifact in this module already uses.
+#
+# Two real Office-version composite-string shapes exist and one shared
+# regex parses both correctly (confirmed via plaso's own source, which
+# uses this identical pattern for both): Office 12 (2007) -
+# '[F00000000][T<hex>]*\\<path>'; Office 14+ (2010 through current
+# Microsoft 365, all sharing internal version "16.0") - adds an
+# '[O00000000]' segment before the '*' separator. Office 11.0 (2003) and
+# earlier use a structurally different 'Open Find' mechanism with no
+# solidly cross-validated format found - deliberately out of scope here,
+# matching this module's own established "target a reasonably modern,
+# common schema, disclose the cutoff" precedent (Shimcache, Recycle Bin).
+#
+# Signed-in-account users (Office 2016+) store the same MRU keys one
+# level deeper, under 'User MRU\{LiveId_<hash>|AD_<hash>}\File MRU' - the
+# hash suffix is unguessable, so (mirroring this module's own established
+# "walk every subkey generically rather than hardcode an unguessable
+# name" precedent, already used for UserAssist's GUID subkeys) every
+# subkey actually present under 'User MRU' is walked, never assumed to
+# match a specific naming pattern.
+_OFFICE_MRU_VERSIONS = ('12.0', '14.0', '15.0', '16.0')  # 13.0 was never used (skipped by MS); pre-12.0 out of scope, see above
+_OFFICE_MRU_APPS = ('Word', 'Excel', 'PowerPoint', 'Access', 'Publisher')
+_OFFICE_MRU_ITEM_VALUE_RE = re.compile(r'^Item \d+$', re.IGNORECASE)
+_OFFICE_MRU_COMPOSITE_RE = re.compile(r'\[F00000000\]\[T([0-9A-Fa-f]+)\].*\*[\\]?(.*)')
+
+
+def _parse_office_mru_key(key, artifact_type, app_name):
+    records = []
+    try:
+        values = list(key.values())
+    except Registry.RegistryKeyNotFoundException:
+        return records
+    for v in values:
+        if not _OFFICE_MRU_ITEM_VALUE_RE.match(v.name()):
+            continue
+        try:
+            raw = v.value()
+        except Exception:
+            continue
+        if not isinstance(raw, str):
+            continue
+        m = _OFFICE_MRU_COMPOSITE_RE.match(raw)
+        if not m:
+            continue
+        hex_filetime, item_path = m.group(1), m.group(2)
+        if not item_path:
+            continue
+        try:
+            filetime_int = int(hex_filetime, 16)
+        except ValueError:
+            continue
+        records.append({
+            "artifact_type": artifact_type, "title": item_path, "url": "", "value": item_path,
+            "timestamp": filetime_to_unix(filetime_int),
+            "extra": {"application": app_name, "item_value_name": v.name()},
+        })
+    return records
+
+
+def _parse_office_mru(root_key):
+    records = []
+    try:
+        office_key = root_key.find_key(r'Software\Microsoft\Office')
+    except Registry.RegistryKeyNotFoundException:
+        return records
+    for version in _OFFICE_MRU_VERSIONS:
+        try:
+            version_key = office_key.find_key(version)
+        except Registry.RegistryKeyNotFoundException:
+            continue
+        for app_name in _OFFICE_MRU_APPS:
+            try:
+                app_key = version_key.find_key(app_name)
+            except Registry.RegistryKeyNotFoundException:
+                continue
+            for mru_subkey_name, artifact_type in (('File MRU', 'office_mru_file'), ('Place MRU', 'office_mru_place')):
+                try:
+                    mru_key = app_key.find_key(mru_subkey_name)
+                    records += _parse_office_mru_key(mru_key, artifact_type, app_name)
+                except Registry.RegistryKeyNotFoundException:
+                    pass
+            try:
+                user_mru_key = app_key.find_key('User MRU')
+                account_subkeys = list(user_mru_key.subkeys())
+            except Registry.RegistryKeyNotFoundException:
+                continue
+            for account_key in account_subkeys:
+                for mru_subkey_name, artifact_type in (('File MRU', 'office_mru_file'), ('Place MRU', 'office_mru_place')):
+                    try:
+                        mru_key = account_key.find_key(mru_subkey_name)
+                        records += _parse_office_mru_key(mru_key, artifact_type, app_name)
+                    except Registry.RegistryKeyNotFoundException:
+                        pass
+    return records
+
+
+# WordWheelQuery: NTUSER.DAT\Software\Microsoft\Windows\CurrentVersion\
+# Explorer\WordWheelQuery - what a user has typed into the Windows
+# Explorer search box.
+#
+# Grounded via real, sourced research before writing any code, cross-
+# validated across THREE independent sources: RegRipper3.0's canonical,
+# currently-maintained Perl plugin (wordwheelquery.pl, fetched directly -
+# confirms the exact unpack("V*", ...) little-endian-uint32 layout and
+# the 0xFFFFFFFF terminator), libyal/winreg-kb's formal MRUListEx format
+# reference, and plaso/log2timeline's real production parser plus its own
+# byte-level test fixture (which independently confirms the identical
+# layout empirically, not just in prose).
+#
+# Uses MRUListEx - a GENUINELY DIFFERENT binary format from this module's
+# existing RunMRU parser (which reads the simple MRUList format: a plain
+# string of single-character keys like "a","b","c" pointing at REG_SZ
+# values). MRUListEx is a REG_BINARY value literally named 'MRUListEx'
+# holding a sequence of 4-byte little-endian uint32 values, each one the
+# DECIMAL value name of an entry (0x00000001 -> the value literally named
+# "1"), terminated by a 0xFFFFFFFF sentinel that must be popped/ignored,
+# never treated as index 4294967295. First entry = most recently used.
+# Each referenced value itself is UTF-16LE, null-terminated.
+#
+# No per-entry timestamp exists in this format (confirmed identically by
+# all three sources - RegRipper's own plugin only ever reads the KEY's
+# own LastWrite time) - same honest-proxy-timestamp treatment this module
+# already applies to Default\MRU (registry_rdp_mru above): every entry
+# from one key shares that one key's own LastWriteTime, not a genuine
+# per-entry time.
+#
+# Honest, disclosed limitation (confirmed via a real, dated 2024
+# hands-on investigation, not assumed): this key stops being populated
+# entirely starting Windows 11 23H2 - Explorer's search box moved to
+# live as-you-type querying against the search index instead of
+# committing an MRU write on Enter. Fully valid and commonly populated on
+# Windows 7/8/10 and pre-23H2 Windows 11 (still the large majority of
+# real-world images), but an empty result on a modern Windows 11 image
+# proves nothing about whether the user ever searched anything - never
+# claim otherwise.
+_WORDWHEELQUERY_MAX_ENTRIES = 500
+
+
+def _parse_wordwheelquery(root_key):
+    records = []
+    try:
+        key = root_key.find_key(r'Software\Microsoft\Windows\CurrentVersion\Explorer\WordWheelQuery')
+    except Registry.RegistryKeyNotFoundException:
+        return records
+    mrulistex_raw = None
+    value_map = {}
+    try:
+        for v in key.values():
+            if v.name() == 'MRUListEx':
+                try:
+                    mrulistex_raw = v.raw_data()
+                except Exception:
+                    mrulistex_raw = None
+            else:
+                value_map[v.name()] = v
+    except Registry.RegistryKeyNotFoundException:
+        return records
+    if not mrulistex_raw:
+        return records
+
+    indices = []
+    for offset in range(0, len(mrulistex_raw) - 3, 4):
+        try:
+            idx = struct.unpack_from('<I', mrulistex_raw, offset)[0]
+        except struct.error:
+            break
+        if idx == 0xFFFFFFFF:  # terminator sentinel, never a real index
+            break
+        indices.append(idx)
+        if len(indices) >= _WORDWHEELQUERY_MAX_ENTRIES:
+            break
+
+    ts = _dt_to_epoch(key.timestamp())
+    for position, idx in enumerate(indices):
+        v = value_map.get(str(idx))
+        if v is None:
+            continue
+        try:
+            raw = v.raw_data()
+        except Exception:
+            continue
+        term = raw.decode('utf-16-le', errors='ignore').rstrip('\x00') if raw else ''
+        if not term:
+            continue
+        records.append({
+            "artifact_type": "registry_wordwheelquery", "title": term, "url": "", "value": term,
+            "timestamp": ts, "extra": {"mru_position": position, "mru_index": idx},
+        })
+    return records
+
+
 def parse_registry_hive_file(path, filename):
     """Dispatches a candidate hive file (matched by exact basename against
     REGISTRY_HIVE_FILENAMES) to the right curated key set, returning a flat
@@ -851,7 +1061,8 @@ def parse_registry_hive_file(path, filename):
             upper = filename.upper()
             if upper == 'NTUSER.DAT':
                 return (_parse_recent_docs(root) + _parse_typed_paths(root) + _parse_run_history(root)
-                        + _parse_user_assist(root) + _parse_rdp_connections(root))
+                        + _parse_user_assist(root) + _parse_rdp_connections(root) + _parse_office_mru(root)
+                        + _parse_wordwheelquery(root))
             if upper == 'SYSTEM':
                 return _parse_usb_history(root) + _parse_shimcache(root) + _parse_bam_dam(root)
             if upper == 'SOFTWARE':

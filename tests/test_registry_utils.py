@@ -1217,3 +1217,328 @@ def test_parse_rdp_connections_missing_terminal_server_client_key_yields_no_reco
     _build_test_hive(hive_path)  # a real hive with unrelated content, no Terminal Server Client key at all
     records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
     assert [r for r in records if r["artifact_type"] in ("registry_rdp_server", "registry_rdp_mru")] == []
+
+
+# --- Office File/Place MRU + WordWheelQuery (2026-09-01) ---
+
+def _build_office_mru_hive(path, direct_entries=None, user_mru_entries=None):
+    """Tree: Software/Microsoft/Office/{version}/{app}/{File,Place} MRU,
+    optionally one level deeper under User MRU/{account}/... too. Mirrors
+    _build_rdp_ntuser_hive()'s exact nested-subkey construction technique,
+    generalized for an extra Office-version/app/account layer.
+    direct_entries: [(version, app, mru_kind, [(item_name, composite_str), ...]), ...]
+    user_mru_entries: [(version, app, account_name, mru_kind, [(item_name, composite_str), ...]), ...]
+    """
+    direct_entries = direct_entries or []
+    user_mru_entries = user_mru_entries or []
+    h = _HiveBuilder()
+
+    def make_vk(name, data_str, reg_type=1):
+        data_bytes = _utf16(data_str)
+        data_off = h.alloc(data_bytes)
+        name_b = name.encode('utf-8')
+        vk = b'vk' + struct.pack('<H', len(name_b)) + struct.pack('<I', len(data_bytes))
+        vk += struct.pack('<I', data_off) + struct.pack('<I', reg_type)
+        vk += struct.pack('<H', 1) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(vk))
+
+    def make_values_list(vk_offsets):
+        return h.alloc(b''.join(struct.pack('<I', o) for o in vk_offsets)) if vk_offsets else None
+
+    def make_nk(name, subkey_list_off, subkey_count, values_list_off, values_count, is_root=False):
+        flags = 0x0020 | (0x0004 if is_root else 0)
+        name_b = name.encode('utf-8')
+        nk = b'nk' + struct.pack('<H', flags) + struct.pack('<Q', _FT_NOW)
+        nk += struct.pack('<I', 0) + struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', subkey_count if subkey_count else 0xFFFFFFFF) + struct.pack('<I', 0)
+        nk += struct.pack('<I', subkey_list_off if subkey_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', values_count if values_count else 0xFFFFFFFF)
+        nk += struct.pack('<I', values_list_off if values_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF) + struct.pack('<I', 0xFFFFFFFF)
+        nk += b'\x00' * (0x48 - 0x34)
+        nk += struct.pack('<H', len(name_b)) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(nk))
+
+    def make_lf(nk_offsets):
+        body = b'lf' + struct.pack('<H', len(nk_offsets))
+        for off in nk_offsets:
+            body += struct.pack('<I', off) + b'\x00\x00\x00\x00'
+        return h.alloc(body)
+
+    def make_mru_key(mru_kind, items):
+        vk_offsets = [make_vk(item_name, composite) for item_name, composite in items]
+        vl = make_values_list(vk_offsets)
+        return make_nk(mru_kind, None, 0, vl, len(vk_offsets))
+
+    # version -> app -> {'direct_mru': [nk...], 'user_mru_accounts': {account: [nk...]}}
+    tree = {}
+    for version, app, mru_kind, items in direct_entries:
+        tree.setdefault(version, {}).setdefault(app, {'direct_mru': [], 'user_mru_accounts': {}})
+        tree[version][app]['direct_mru'].append(make_mru_key(mru_kind, items))
+    for version, app, account, mru_kind, items in user_mru_entries:
+        tree.setdefault(version, {}).setdefault(app, {'direct_mru': [], 'user_mru_accounts': {}})
+        tree[version][app]['user_mru_accounts'].setdefault(account, []).append(make_mru_key(mru_kind, items))
+
+    version_nk_offsets = []
+    for version, apps in tree.items():
+        app_nk_offsets = []
+        for app, spec in apps.items():
+            app_children = list(spec['direct_mru'])
+            for account, account_mru_nks in spec['user_mru_accounts'].items():
+                lf_account_children = make_lf(account_mru_nks)
+                nk_account = make_nk(account, lf_account_children, 1, None, 0)
+                for mru_nk in account_mru_nks:
+                    h.set_parent(mru_nk, nk_account)
+                lf_user_mru_children = make_lf([nk_account])
+                nk_user_mru = make_nk('User MRU', lf_user_mru_children, 1, None, 0)
+                h.set_parent(nk_account, nk_user_mru)
+                app_children.append(nk_user_mru)
+            lf_app_children = make_lf(app_children)
+            nk_app = make_nk(app, lf_app_children, len(app_children), None, 0)
+            for child in app_children:
+                h.set_parent(child, nk_app)
+            app_nk_offsets.append(nk_app)
+        lf_apps = make_lf(app_nk_offsets)
+        nk_version = make_nk(version, lf_apps, 1, None, 0)
+        for nk_app in app_nk_offsets:
+            h.set_parent(nk_app, nk_version)
+        version_nk_offsets.append(nk_version)
+
+    lf_versions = make_lf(version_nk_offsets)
+    nk_office = make_nk('Office', lf_versions, 1, None, 0)
+    for nk_version in version_nk_offsets:
+        h.set_parent(nk_version, nk_office)
+    lf_ms = make_lf([nk_office])
+    nk_ms = make_nk('Microsoft', lf_ms, 1, None, 0)
+    h.set_parent(nk_office, nk_ms)
+    lf_sw = make_lf([nk_ms])
+    nk_sw = make_nk('Software', lf_sw, 1, None, 0)
+    h.set_parent(nk_ms, nk_sw)
+    lf_root = make_lf([nk_sw])
+    root_off = make_nk('ROOT', lf_root, 1, None, 0, is_root=True)
+    h.set_parent(nk_sw, root_off)
+
+    hbin_data = bytes(h.buf)
+    hbin_total = 0x20 + len(hbin_data)
+    hbin_size = ((hbin_total + 0xFFF) // 0x1000) * 0x1000
+    hbin = b'hbin' + struct.pack('<I', 0) + struct.pack('<I', hbin_size)
+    hbin += b'\x00' * (0x20 - 0xC) + hbin_data + b'\x00' * (hbin_size - hbin_total)
+
+    regf = struct.pack('<I', 0x66676572) + struct.pack('<I', 1) + struct.pack('<I', 1)
+    regf += struct.pack('<Q', _FT_NOW) + struct.pack('<I', 1) + struct.pack('<I', 5)
+    regf += struct.pack('<I', 0) + struct.pack('<I', 1) + struct.pack('<I', root_off)
+    regf += struct.pack('<I', hbin_size) + struct.pack('<I', 1)
+    regf += _utf16('NTUSER.DAT').ljust(64, b'\x00')
+    regf += b'\x00' * (0x1000 - len(regf))
+    regf = regf[:0x1000]
+
+    with open(path, 'wb') as f:
+        f.write(regf)
+        f.write(hbin)
+
+
+def test_parse_office_mru_office14plus_format_with_o_block(tmp_path):
+    last_run = _filetime(datetime.datetime(2026, 8, 25, 16, 20, 0))
+    composite = f'[F00000000][T{last_run:016X}][O00000000]*C:\\Users\\suspect\\Documents\\budget.xlsx'
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_office_mru_hive(hive_path, direct_entries=[
+        ('16.0', 'Excel', 'File MRU', [('Item 1', composite)]),
+    ])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    file_mru = [r for r in records if r["artifact_type"] == "office_mru_file"]
+    assert len(file_mru) == 1
+    r = file_mru[0]
+    assert r["title"] == 'C:\\Users\\suspect\\Documents\\budget.xlsx'
+    assert r["value"] == 'C:\\Users\\suspect\\Documents\\budget.xlsx'
+    assert r["extra"]["application"] == 'Excel'
+    assert r["timestamp"] == datetime.datetime(2026, 8, 25, 16, 20, 0, tzinfo=datetime.timezone.utc).timestamp()
+
+
+def test_parse_office_mru_office12_format_no_o_block(tmp_path):
+    # Office 12 (2007) composite strings never have the [O00000000] segment
+    # Office 14+ adds - the shared regex must still correctly parse this.
+    last_run = _filetime(datetime.datetime(2026, 8, 20, 9, 0, 0))
+    composite = f'[F00000000][T{last_run:016X}]*C:\\legacy_office_2007_file.doc'
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_office_mru_hive(hive_path, direct_entries=[
+        ('12.0', 'Word', 'Place MRU', [('Item 1', composite)]),
+    ])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    place_mru = [r for r in records if r["artifact_type"] == "office_mru_place"]
+    assert len(place_mru) == 1
+    assert place_mru[0]["value"] == 'C:\\legacy_office_2007_file.doc'
+    assert place_mru[0]["extra"]["application"] == 'Word'
+
+
+def test_parse_office_mru_signed_in_account_user_mru_variant(tmp_path):
+    # Office 2016+'s signed-in-account layout: an extra, unguessable-hash-
+    # named subkey level under 'User MRU' - walked generically, never
+    # assumed to match a specific LiveId_/AD_ naming pattern.
+    last_run = _filetime(datetime.datetime(2026, 8, 28, 11, 0, 0))
+    composite = f'[F00000000][T{last_run:016X}][O00000000]*C:\\Users\\suspect\\report.pptx'
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_office_mru_hive(hive_path, user_mru_entries=[
+        ('16.0', 'PowerPoint', 'LiveId_a1b2c3d4e5f6', 'File MRU', [('Item 1', composite)]),
+    ])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    file_mru = [r for r in records if r["artifact_type"] == "office_mru_file"]
+    assert len(file_mru) == 1
+    assert file_mru[0]["value"] == 'C:\\Users\\suspect\\report.pptx'
+    assert file_mru[0]["extra"]["application"] == 'PowerPoint'
+
+
+def test_parse_office_mru_ignores_non_item_values_and_malformed_composites(tmp_path):
+    real_ft = _filetime(datetime.datetime(2026, 8, 20, 12, 0, 0))
+    real_composite = f'[F00000000][T{real_ft:016X}][O00000000]*C:\\real.docx'
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_office_mru_hive(hive_path, direct_entries=[
+        ('16.0', 'Word', 'File MRU', [
+            ('SomeOtherValue', 'not an item at all'),
+            ('Item 1', 'garbage, does not match the composite format'),
+            ('Item 2', real_composite),
+        ]),
+    ])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    file_mru = [r for r in records if r["artifact_type"] == "office_mru_file"]
+    assert len(file_mru) == 1
+    assert file_mru[0]["value"] == 'C:\\real.docx'
+
+
+def test_parse_office_mru_missing_office_key_yields_no_records(tmp_path):
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_test_hive(hive_path)
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    assert [r for r in records if r["artifact_type"] in ("office_mru_file", "office_mru_place")] == []
+
+
+def _build_mrulistex_bytes(indices):
+    return b''.join(struct.pack('<I', i) for i in indices) + struct.pack('<I', 0xFFFFFFFF)
+
+
+def _build_wordwheelquery_hive(path, ordered_terms):
+    """ordered_terms: [search_term_str, ...] in most-recent-first order.
+    Builds a real MRUListEx binary value (index array + 0xFFFFFFFF
+    terminator) plus one UTF-16LE value per term, named by its own
+    decimal index - the exact real layout confirmed via RegRipper3.0's/
+    plaso's own production source."""
+    h = _HiveBuilder()
+
+    def make_binary_vk(name, raw, reg_type=3):
+        off = h.alloc(raw)
+        name_b = name.encode('utf-8')
+        vk = b'vk' + struct.pack('<H', len(name_b)) + struct.pack('<I', len(raw))
+        vk += struct.pack('<I', off) + struct.pack('<I', reg_type)
+        vk += struct.pack('<H', 1) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(vk))
+
+    def make_values_list(vk_offsets):
+        return h.alloc(b''.join(struct.pack('<I', o) for o in vk_offsets))
+
+    def make_nk(name, subkey_list_off, subkey_count, values_list_off, values_count, is_root=False):
+        flags = 0x0020 | (0x0004 if is_root else 0)
+        name_b = name.encode('utf-8')
+        nk = b'nk' + struct.pack('<H', flags) + struct.pack('<Q', _FT_NOW)
+        nk += struct.pack('<I', 0) + struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', subkey_count if subkey_count else 0xFFFFFFFF) + struct.pack('<I', 0)
+        nk += struct.pack('<I', subkey_list_off if subkey_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', values_count if values_count else 0xFFFFFFFF)
+        nk += struct.pack('<I', values_list_off if values_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF) + struct.pack('<I', 0xFFFFFFFF)
+        nk += b'\x00' * (0x48 - 0x34)
+        nk += struct.pack('<H', len(name_b)) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(nk))
+
+    def make_lf(nk_offsets):
+        body = b'lf' + struct.pack('<H', len(nk_offsets))
+        for off in nk_offsets:
+            body += struct.pack('<I', off) + b'\x00\x00\x00\x00'
+        return h.alloc(body)
+
+    # Indices assigned in reverse (last term = index 0) so index order
+    # genuinely differs from MRU order - proves MRUListEx's own ordering
+    # is what the parser actually follows, not incidental value order.
+    n = len(ordered_terms)
+    vk_offsets = []
+    for reverse_i, term in enumerate(ordered_terms):
+        idx = n - 1 - reverse_i
+        term_bytes = _utf16(term) + b'\x00\x00'
+        vk_offsets.append(make_binary_vk(str(idx), term_bytes))
+    mrulistex_indices = [n - 1 - reverse_i for reverse_i in range(n)]
+    vk_offsets.append(make_binary_vk('MRUListEx', _build_mrulistex_bytes(mrulistex_indices)))
+
+    vl = make_values_list(vk_offsets)
+    nk_wwq = make_nk('WordWheelQuery', None, 0, vl, len(vk_offsets))
+    lf_explorer_children = make_lf([nk_wwq])
+    nk_explorer = make_nk('Explorer', lf_explorer_children, 1, None, 0)
+    h.set_parent(nk_wwq, nk_explorer)
+    lf_cv = make_lf([nk_explorer])
+    nk_cv = make_nk('CurrentVersion', lf_cv, 1, None, 0)
+    h.set_parent(nk_explorer, nk_cv)
+    lf_windows = make_lf([nk_cv])
+    nk_windows = make_nk('Windows', lf_windows, 1, None, 0)
+    h.set_parent(nk_cv, nk_windows)
+    lf_ms = make_lf([nk_windows])
+    nk_ms = make_nk('Microsoft', lf_ms, 1, None, 0)
+    h.set_parent(nk_windows, nk_ms)
+    lf_sw = make_lf([nk_ms])
+    nk_sw = make_nk('Software', lf_sw, 1, None, 0)
+    h.set_parent(nk_ms, nk_sw)
+    lf_root = make_lf([nk_sw])
+    root_off = make_nk('ROOT', lf_root, 1, None, 0, is_root=True)
+    h.set_parent(nk_sw, root_off)
+
+    hbin_data = bytes(h.buf)
+    hbin_total = 0x20 + len(hbin_data)
+    hbin_size = ((hbin_total + 0xFFF) // 0x1000) * 0x1000
+    hbin = b'hbin' + struct.pack('<I', 0) + struct.pack('<I', hbin_size)
+    hbin += b'\x00' * (0x20 - 0xC) + hbin_data + b'\x00' * (hbin_size - hbin_total)
+
+    regf = struct.pack('<I', 0x66676572) + struct.pack('<I', 1) + struct.pack('<I', 1)
+    regf += struct.pack('<Q', _FT_NOW) + struct.pack('<I', 1) + struct.pack('<I', 5)
+    regf += struct.pack('<I', 0) + struct.pack('<I', 1) + struct.pack('<I', root_off)
+    regf += struct.pack('<I', hbin_size) + struct.pack('<I', 1)
+    regf += _utf16('NTUSER.DAT').ljust(64, b'\x00')
+    regf += b'\x00' * (0x1000 - len(regf))
+    regf = regf[:0x1000]
+
+    with open(path, 'wb') as f:
+        f.write(regf)
+        f.write(hbin)
+
+
+def test_parse_wordwheelquery_real_entries_in_correct_mru_order(tmp_path):
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_wordwheelquery_hive(hive_path, ['most recent search', 'older search', 'oldest search'])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    wwq = [r for r in records if r["artifact_type"] == "registry_wordwheelquery"]
+    assert len(wwq) == 3
+    # Confirms the parser genuinely follows MRUListEx's own index order,
+    # not the incidental order values happen to be stored in the hive
+    # (the fixture deliberately assigns indices in reverse of MRU order).
+    assert [r["title"] for r in wwq] == ['most recent search', 'older search', 'oldest search']
+    assert [r["extra"]["mru_position"] for r in wwq] == [0, 1, 2]
+    # No per-entry timestamp exists in this format - every entry shares
+    # the one key's own LastWriteTime.
+    assert len({r["timestamp"] for r in wwq}) == 1
+    assert wwq[0]["timestamp"] == datetime.datetime(2026, 8, 20, 12, 0, 0, tzinfo=datetime.timezone.utc).timestamp()
+
+
+def test_parse_wordwheelquery_terminator_is_never_treated_as_a_real_index(tmp_path):
+    # A hand-built single-entry list to directly confirm the 0xFFFFFFFF
+    # sentinel itself never gets treated as index 4294967295 and looked
+    # up as a real value.
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_wordwheelquery_hive(hive_path, ['only one term'])
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    wwq = [r for r in records if r["artifact_type"] == "registry_wordwheelquery"]
+    assert len(wwq) == 1
+    assert wwq[0]["title"] == 'only one term'
+
+
+def test_parse_wordwheelquery_missing_key_yields_no_records(tmp_path):
+    hive_path = tmp_path / "NTUSER.DAT"
+    _build_test_hive(hive_path)
+    records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
+    assert [r for r in records if r["artifact_type"] == "registry_wordwheelquery"] == []

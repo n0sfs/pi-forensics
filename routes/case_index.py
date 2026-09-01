@@ -270,6 +270,9 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "registry_bam_dam": "Registry: BAM/DAM (Program Execution)",
     "registry_rdp_server": "Registry: RDP Connection History (Server)",
     "registry_rdp_mru": "Registry: RDP Connection History (Recent)",
+    "office_mru_file": "Registry: Office Recent Files",
+    "office_mru_place": "Registry: Office Recent Folders",
+    "registry_wordwheelquery": "Registry: Explorer Search History",
     # Email parsing (2026-08-30, tool-survey follow-up) - .eml/.mbox via the
     # standard library, .pst/.ost via libpff-python (core/email_utils.py).
     "email_message": "Email Message",

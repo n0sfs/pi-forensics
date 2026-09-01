@@ -47,6 +47,7 @@ _NTFS_JOURNAL_ARTIFACT_TYPES = {"mft_file_record", "usnjrnl_change_record"}
 _REGISTRY_ARTIFACT_TYPES = _REGISTRY_ARTIFACT_TYPES | {
     "registry_shellbag", "registry_shimcache", "registry_userassist",
     "registry_bam_dam", "registry_rdp_server", "registry_rdp_mru",
+    "office_mru_file", "office_mru_place", "registry_wordwheelquery",
 }
 _EMAIL_ARTIFACT_TYPES = {"email_message"}
 # Live Collection USB, Phase 2 (2026-09-01) - core/live_collection_results_utils.py.
