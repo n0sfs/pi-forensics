@@ -107,6 +107,7 @@ def test_classify_extension(name, expected_category, expected_ext):
     ("2026-CASE-01_USBDrive-1_mft_analysis.json", "analysis_log"),
     ("2026-CASE-01_USBDrive-1_usnjrnl_parsed.json", "analysis_log"),
     ("live_collection_import_20260831_142530", "analysis_log"),
+    ("thumbcache_256_thumbcache_extracted", "analysis_log"),
     # Anchored to the exact timestamp shape - a similarly-named real evidence
     # folder an examiner happens to create must never be misclassified.
     ("live_collection_import_notes", None),

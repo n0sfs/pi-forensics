@@ -738,6 +738,7 @@ const TOOL_REFERENCE_GROUPS = [
             ["mquire", "Analyzes an already-captured x86_64 Linux memory (RAM) image, reading symbol info the kernel embeds in the image itself - no separate download needed. Same \"Memory Forensics...\" action, pick the mquire engine."],
             ["Browser Artifact Parser", "Extracts history, bookmarks, downloads, and cookies from a Chrome/Chromium-family, Firefox, or Safari browser profile, on disk or inside an acquired image. Built in, no external tool needed."],
             ["Registry / Event Log / Prefetch / Recycle Bin / LNK / Jump List Parsers", "Built-in parsers for Windows Registry hives (incl. Amcache), .evtx Event Logs, Prefetch execution history, Recycle Bin metadata, .lnk shortcuts, and Jump Lists (recently/frequently accessed files per application, from .automaticDestinations-ms and .customDestinations-ms files) - no external tool needed, work on a real folder or directly inside an acquired image."],
+            ["Thumbcache Parser", "Built-in parser for Windows Thumbcache files (thumbcache_*.db, Windows 8-10/11 format) - extracts every embedded thumbnail as a real, viewable image, which can persist after the original photo/document has been deleted. The internal identifier is usually a one-way hash, not the original filename (shown as such when a plausible real filename can be recovered instead). No external tool needed, works on a real folder or directly inside an acquired image."],
             ["Linux Artifact Parser", "Built-in parser for shell history, /etc/passwd, cron jobs, and auth.log/secure authentication events on a Linux filesystem - no external tool needed."],
             ["YARA", "Scans a file against your own saved YARA rulesets (Settings > Case & Reporting > Analysis & IOC Lists). Right-click a file and choose \"Scan with YARA Rules\"."],
             ["Auto Analyze", "Not a single external tool - detects what kind of evidence you've selected (Windows/Linux disk image, memory image, mobile backup) and runs a curated set of the tools above automatically, as one background job. Top of the right-click menu."],
@@ -1854,6 +1855,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     recyclebin_deleted_file: 'Recycle Bin: Deleted Files',
     jumplist_automatic_entry: 'Jump List: Automatic Destinations',
     jumplist_custom_shortcut: 'Jump List: Custom Destinations',
+    thumbcache_thumbnail: 'Thumbcache: Extracted Thumbnail',
     // Linux Artifact Parsing (2026-08-25) - kept in sync with routes/
     // case_index.py's PARSED_ARTIFACT_TYPE_LABELS by hand, same as every
     // entry above (this is the exact class of gap this project's own
@@ -4465,6 +4467,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnParseEvtxLogs', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParsePrefetch', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseJumplists', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    { id: 'btnParseThumbcache', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseRecycleBin', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
     { id: 'btnParseCryptoWallets', section: 'ctxSecArtifacts', visible: item => item.is_dir },
@@ -4500,6 +4503,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnEnterEvtxImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterPrefetchImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterJumplistsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnEnterThumbcacheImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterRecycleBinImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterLinuxArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnEnterAndroidArtifactsImage', section: 'ctxSecWholeImage', visible: item => !item.is_dir && isImageFile(item.name) },
@@ -4616,6 +4620,7 @@ async function contextMenuBrowseImageAnd(action) {
         evtxlogs: runImageEvtxParse,
         prefetch: runImagePrefetchParse,
         jumplists: runImageJumplistsParse,
+        thumbcache: runImageThumbcacheParse,
         recyclebin: runImageRecycleBinParse,
         linuxartifacts: runImageLinuxArtifactsParse,
         androidartifacts: runImageAndroidArtifactsParse,
@@ -5906,6 +5911,69 @@ async function runImageJumplistsParse() {
         }
     } catch (err) {
         showToast('Jump List scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedThumbcacheParse() {
+    if (!activeSelectedFile) return;
+    // Thumbcache extraction WRITES real image files (unlike every other
+    // parse_X action above, which only indexes metadata) - same evidence-
+    // must-never-be-modified destination reasoning as runSelectedHashdeep().
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+    try {
+        const res = await fetch('/api/files/parse_thumbcache', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Thumbcache scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Thumbcache files (thumbcache_*.db) found under this folder.', 'success');
+            return;
+        }
+        const unsupportedNote = data.unsupported_versions && data.unsupported_versions.length
+            ? ` (${data.unsupported_versions.length} file(s) used an unsupported pre-Windows-8 format and were skipped)` : '';
+        const truncNote = data.truncated ? ' (capped - not every candidate file may have been reached)' : '';
+        if (data.thumbnails_extracted === 0) {
+            showToast(`Scanned ${data.candidates_found} Thumbcache file(s) - no extractable thumbnails found${unsupportedNote}${truncNote}.`, 'success');
+        } else if (!data.indexed) {
+            showToast(`Extracted ${data.thumbnails_extracted} thumbnail(s) from ${data.files_parsed} file(s) to ${data.destination_dir}${unsupportedNote}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Extracted ${data.thumbnails_extracted} thumbnail(s) from ${data.files_parsed} file(s)${unsupportedNote}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Thumbcache scan failed: request error.', 'danger');
+    }
+}
+
+async function runImageThumbcacheParse() {
+    if (!explorerImagePath) return;
+    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    try {
+        const res = await fetch('/api/image/parse_thumbcache', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`Thumbcache scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No Thumbcache files (thumbcache_*.db) found in this image.', 'success');
+            return;
+        }
+        const unsupportedNote = data.unsupported_versions && data.unsupported_versions.length
+            ? ` (${data.unsupported_versions.length} file(s) used an unsupported pre-Windows-8 format and were skipped)` : '';
+        const truncNote = data.truncated ? ' (capped)' : '';
+        if (data.thumbnails_extracted === 0) {
+            showToast(`Scanned ${data.candidates_found} Thumbcache file(s) - no extractable thumbnails found${unsupportedNote}${truncNote}.`, 'success');
+        } else if (!data.indexed) {
+            showToast(`Extracted ${data.thumbnails_extracted} thumbnail(s) from ${data.files_parsed} file(s) to ${data.destination_dir}${unsupportedNote}${truncNote}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Extracted ${data.thumbnails_extracted} thumbnail(s) from ${data.files_parsed} file(s)${unsupportedNote}${truncNote}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('Thumbcache scan failed: request error.', 'danger');
     }
 }
 
