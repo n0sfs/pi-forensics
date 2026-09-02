@@ -21,6 +21,20 @@ file after updating to see what changed.
 
 ---
 
+## [1.27.1] - 2026-09-02
+
+### Fixed
+
+- **iOS `.ipa` static analysis's optional Mach-O binary layer would crash the whole analysis on any
+  real app with a real executable inside it**, instead of the graceful "LIEF couldn't parse this"
+  fallback it was designed to show. Found and fixed while adding the first-ever automated tests for
+  six mobile-forensics tools that had shipped without them (SQLite Dissect, APK static analysis,
+  WhatsApp backup decryption, iOS crash-report pull, SIM/UICC card reading, `adb bugreport` parsing) -
+  all now have real test coverage. No change to what any of these tools actually do; the `.ipa`
+  Mach-O fix is the only functional change.
+
+---
+
 ## [1.27.0] - 2026-09-01
 
 ### New
