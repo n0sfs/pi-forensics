@@ -133,7 +133,25 @@ def _parse_macho(zf, app_dir, executable_name):
         return None, "LIEF could not parse this file as Mach-O (not a recognized Mach-O binary)."
 
     slices = []
-    for binary in fat.it_binaries:
+    # Real, live-confirmed correction (found by this module's own first-
+    # ever test suite, 2026-09-02): `FatBinary` has no `it_binaries`
+    # attribute worth iterating - that name resolves to an internal
+    # nanobind type-binding object, not a real iterator, and would raise
+    # TypeError the moment this function ever actually ran against a real
+    # .ipa. The object is directly iterable instead (confirmed live
+    # against the real installed lief 1.0.0: `list(fat)` yields the real
+    # per-architecture Binary objects). Also confirmed live: LIEF doesn't
+    # reliably raise/return None/report size==0 for genuinely unparseable
+    # input with a plausible-looking Mach-O magic prefix - it can instead
+    # hand back one all-zero/garbage placeholder Binary (real confirmed
+    # symptom: `header.magic == 0`, a real Mach-O's magic is always
+    # nonzero) - filtered out here rather than reported as a real slice.
+    for binary in fat:
+        try:
+            if getattr(binary.header, 'magic', None) in (None, 0):
+                continue  # a garbage/failed-parse placeholder, not a real architecture slice
+        except Exception:
+            continue
         try:
             cpu_type = str(binary.header.cpu_type).rsplit('.', 1)[-1]
         except Exception:
@@ -148,6 +166,9 @@ def _parse_macho(zf, app_dir, executable_name):
         except Exception:
             pass
         slices.append(slice_info)
+
+    if not slices:
+        return None, "LIEF could not parse this file as Mach-O (not a recognized Mach-O binary)."
 
     return {"executable": executable_name, "slices": slices}, None
 
