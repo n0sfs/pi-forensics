@@ -13,6 +13,10 @@
                             </div>
                             <div class="card-body">
                                 <div class="text-subtle small mb-3">Pick a workspace below, or use the sidebar on the left. Each tile lists what that area covers.</div>
+                                <div class="alert alert-info small py-2 px-3 mb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                    <span><i class="bi bi-signpost-2-fill me-1"></i>New here? A live, step-by-step checklist (create a case, acquire it, run analysis) tracks whichever case is active and tells you what's next.</span>
+                                    <button type="button" class="btn btn-sm btn-outline-info fw-bold flex-shrink-0" onclick="goToGuidedWorkflow()"><i class="bi bi-check2-square me-1"></i>Guided Workflow</button>
+                                </div>
                                 <div class="row g-3">
                                     <div class="col-md-6 col-lg-4" id="homeCardAcquisition">
                                         <div class="card home-tile h-100" tabindex="0" role="button" onclick="switchToTab('acquisition-tab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchToTab('acquisition-tab');}">

@@ -22,6 +22,14 @@
                                     </div>
                                     <div class="d-flex flex-wrap align-items-center gap-2">
                                         <span class="small text-subtle fw-normal">Follows the case selected in the bar above - select or create one there to populate this</span>
+                                        <!-- Case Notes/Custody Log/Attach-to-Case/tags all save immediately - only
+                                             Report Narrative, Case Status, Case Details, and the Files & Artifacts
+                                             exhibit checklist/captions here wait for an explicit click. This badge
+                                             is the visible cue for that second group - see markReportingDirty()/
+                                             clearReportingDirty() in main.js. -->
+                                        <span id="reportUnsavedIndicator" class="badge bg-warning text-dark" style="display:none;" title="Report Narrative, Case Status, Case Details, and exhibit changes below don't save until you click this button.">
+                                            <i class="bi bi-exclamation-circle-fill me-1"></i>Unsaved changes
+                                        </span>
                                         <button id="btnSaveReportChanges" class="btn btn-sm btn-success fw-bold" onclick="saveReportMetadata()">
                                             <i class="bi bi-save me-1"></i>Save Report Changes
                                         </button>
@@ -42,7 +50,7 @@
                                                 <button class="list-group-item list-group-item-action active" id="repOverviewTab" data-bs-toggle="list" data-bs-target="#repOverviewPane" type="button" role="tab"><i class="bi bi-speedometer2"></i>Overview</button>
                                                 <button class="list-group-item list-group-item-action" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
                                                 <button class="list-group-item list-group-item-action" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
-                                                <button class="list-group-item list-group-item-action" id="repCustodyTab" data-bs-toggle="list" data-bs-target="#repCustodyPane" type="button" role="tab" onclick="renderCustodyLogList()"><i class="bi bi-people-fill"></i>Custody Log</button>
+                                                <button class="list-group-item list-group-item-action" id="repCustodyTab" data-bs-toggle="list" data-bs-target="#repCustodyPane" type="button" role="tab" onclick="renderCustodyLogList()"><i class="bi bi-people-fill"></i>Physical Custody Log</button>
                                                 <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab" onclick="renderReportFilesGallery()"><i class="bi bi-paperclip"></i>Files &amp; Artifacts</button>
                                                 <button class="list-group-item list-group-item-action" id="repGeoTab" data-bs-toggle="list" data-bs-target="#repGeoPane" type="button" role="tab" onclick="renderReportGeolocationList()"><i class="bi bi-geo-alt"></i>Geolocation</button>
                                                 <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
@@ -156,8 +164,9 @@
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repCaseNotesPane" role="tabpanel">
-                                                    <div class="small text-subtle mb-2">
+                                                    <div class="alert alert-info small py-2 px-3 mb-2">
                                                         A chronological, append-only journal of what was done and observed - this is the "Forensic Analysis / Steps Taken" section of the exported report. Each note gets a timestamp, author, and a local SHA-256 integrity hash computed at save time (a tamper-evidence check on this station only, not a legal timestamp authority). Editing a note keeps its original text in an "Edited" history rather than overwriting it.
+                                                        <div class="mt-1"><i class="bi bi-arrow-right-short"></i>Writing a closing summary for a non-technical reader instead? See <a href="#" onclick="new bootstrap.Tab(document.getElementById('repNarrativeTab')).show(); return false;">Report Narrative</a>.</div>
                                                     </div>
                                                     <!-- Add-note form stays first/fixed so it's always reachable without
                                                          scrolling past a growing list - the notes list below it is what
@@ -235,7 +244,10 @@
                                                     <div id="customFieldsContainer" class="row g-2 mb-3"></div>
                                                     <hr class="border-secondary my-3">
                                                     <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-file-text me-1"></i>Report Narrative</h6>
-                                                    <div class="small text-subtle mb-2">Examiner-authored narrative for the exported report - filled in once analysis is complete, distinct from the running Case Notes journal.</div>
+                                                    <div class="alert alert-info small py-2 px-3 mb-2">
+                                                        Examiner-authored narrative for the exported report - filled in once analysis is complete, distinct from the running Case Notes journal.
+                                                        <div class="mt-1"><i class="bi bi-arrow-right-short"></i>Logging what you did/observed as you go instead? See <a href="#" onclick="new bootstrap.Tab(document.getElementById('repCaseNotesTab')).show(); return false;">Case Notes</a>.</div>
+                                                    </div>
                                                     <div class="mb-2">
                                                         <label class="telemetry-grid-label d-block mb-1">Executive Summary</label>
                                                         <textarea id="editExecSummary" class="form-control form-control-sm" rows="3" placeholder="High-level summary of the case, scope, and outcome for a non-technical reader..."></textarea>
@@ -257,11 +269,13 @@
                                                         <textarea id="editConclusion" class="form-control form-control-sm" rows="2" placeholder="Closing statement..."></textarea>
                                                     </div>
                                                     <div class="mb-2">
-                                                        <label class="telemetry-grid-label d-block mb-1">Indicators of Compromise <span class="text-subtle">(DFIR template)</span></label>
+                                                        <label class="telemetry-grid-label d-block mb-1">Indicators of Compromise</label>
+                                                        <div class="text-warning small mb-1"><i class="bi bi-exclamation-triangle me-1"></i>Only appears in a DFIR export by default - not included in Standard, Forensics (Police), or CASE/UCO reports (can be added to a custom Report Template in Settings).</div>
                                                         <textarea id="editIocs" class="form-control form-control-sm" rows="2" placeholder="IPs, domains, file hashes, file paths, or other IOCs discovered during the investigation..."></textarea>
                                                     </div>
                                                     <div class="mb-2">
-                                                        <label class="telemetry-grid-label d-block mb-1">Recommendations / Next Steps <span class="text-subtle">(DFIR &amp; Forensics templates)</span></label>
+                                                        <label class="telemetry-grid-label d-block mb-1">Recommendations / Next Steps</label>
+                                                        <div class="text-warning small mb-1"><i class="bi bi-exclamation-triangle me-1"></i>Only appears in a DFIR or Forensics (Police) export by default - not included in Standard or CASE/UCO reports (can be added to a custom Report Template in Settings).</div>
                                                         <textarea id="editRecommendations" class="form-control form-control-sm" rows="2" placeholder="Containment/eradication actions taken, remaining follow-up work, or evidence-handling recommendations..."></textarea>
                                                     </div>
                                                     <div class="small text-subtle">Saved via "Save Report Changes" in the header above.</div>
@@ -275,6 +289,7 @@
 
                                                     <div class="mb-3">
                                                         <div class="small fw-bold text-bright mb-1"><i class="bi bi-bookmark-star me-1"></i>Exhibits (Attached)</div>
+                                                        <div class="text-subtle small mb-1">Exhibit numbers reflect current order below and may shift if an exhibit is added or removed.</div>
                                                         <div id="reportExhibitsList" class="bg-app-dark border border-secondary p-2 rounded-2" style="max-height: 260px; overflow-y: auto;">
                                                             <span class="text-subtle small italic">Loading...</span>
                                                         </div>
@@ -390,7 +405,18 @@
                                                             <button type="button" id="exportEditTemplateBtn" class="btn btn-xs btn-outline-info py-0 px-2" style="display:none;" onclick="openReportTemplateBuilder(currentExportCustomTemplateId)"><i class="bi bi-pencil-square me-1"></i>Edit this template</button>
                                                         </div>
                                                     </div>
-                                                    <div class="row g-3" id="exportPdfHtmlOptionsRow">
+                                                    <!-- Export action moved up here (was previously below the Sections/
+                                                         Items/Files columns) so it's reachable without opening the
+                                                         "Customize contents" disclosure below - the defaults already
+                                                         checked in that section produce a complete report on their own. -->
+                                                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 my-2 py-2 px-2 bg-app-dark border border-secondary rounded-2">
+                                                        <span class="small text-subtle">The checkboxes below already default to a complete report - export now, or open "Customize contents" first to change what's included.</span>
+                                                        <button type="button" class="btn btn-sm btn-outline-info fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
+                                                    </div>
+                                                    <div id="exportReportStatus" class="small text-subtle mb-2"></div>
+                                                    <details class="mb-2" id="exportPdfHtmlOptionsRow">
+                                                        <summary class="small fw-bold text-bright" style="cursor:pointer;"><i class="bi bi-sliders me-1"></i>Customize contents (sections, evidence items, files)</summary>
+                                                    <div class="row g-3 mt-1">
                                                         <div class="col-md-4">
                                                             <div id="exportSectionsFieldsGroup">
                                                             <label class="telemetry-grid-label d-block mb-1">Sections to Include</label>
@@ -481,10 +507,7 @@
                                                             </div>
                                                         </div>
                                                     </div>
-                                                    <div class="d-flex justify-content-between align-items-center mt-3 pt-2 border-top border-secondary">
-                                                        <span id="exportReportStatus" class="small text-subtle"></span>
-                                                        <button type="button" class="btn btn-sm btn-outline-info fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
-                                                    </div>
+                                                    </details>
                                                     <div id="exportPreviewGroup" class="mt-3">
                                                         <div class="d-flex justify-content-between align-items-center mb-1 flex-wrap gap-2">
                                                             <label class="telemetry-grid-label d-block mb-0">Preview</label>
