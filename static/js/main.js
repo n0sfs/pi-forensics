@@ -7271,7 +7271,11 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     case_bundle_export: (status) => `Case bundle export finished: ${status}\n\nCheck the case folder for the generated *_case_bundle_<timestamp>.zip file.`,
     auto_analyze_image: (status) => `Auto Analyze finished: ${status}\n\nSee the Audit Log (Settings > Security) for the full per-step results, or File Views > Parsed Artifacts for the individual tools' output.`,
     vss_materialize: (status) => `Shadow copy materialization finished: ${status}\n\nCheck the case folder for the generated *_shadowcopyN.dd file - browse it via File Explorer's normal "Browse as Image" action, same as any other acquired image.`,
-    live_collection_build: (status) => `Live Collection USB build finished: ${status}\n\nThe drive is ready - plug it into a live target machine and follow the README on the drive.`,
+    live_collection_build: (status) => `Live Collection USB build finished: ${status}` + (
+        status === 'Completed Successfully'
+            ? '\n\nThe drive is ready - plug it into a live target machine and follow the README on the drive.'
+            : '\n\nCheck the status panel\'s log for what went wrong before using this drive.'
+    ),
     live_collection_import: (status) => `Live collection import finished: ${status}\n\nCheck the case folder for the new live_collection_import_<timestamp> folder and its hash manifest.`,
     takeout_import: (status) => `Google Takeout import finished: ${status}\n\nSee File Views > Parsed Artifacts for Search/YouTube History and other imported data, and Reporting > Geolocation for any location data found.`,
     apple_export_import: (status) => `Apple Data & Privacy export import finished: ${status}\n\nSee File Views > Parsed Artifacts for Contacts/Calendars/Reminders and other imported data, and Reporting > Geolocation for any GPS-tagged photos found.`,

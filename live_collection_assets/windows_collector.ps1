@@ -359,7 +359,19 @@ try {
         if (Test-Path $regPath) {
             $props = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
             if ($props) {
-                $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS(Path|ParentPath|ChildName|Provider)$' } | ForEach-Object {
+                # Get-ItemProperty on the registry provider always injects 5
+                # PowerShell meta-properties alongside the real values -
+                # PSPath/PSParentPath/PSChildName/PSProvider/PSDrive. Real
+                # bug found live (2026-09-03) against a real Windows target:
+                # this filter excluded only 4 of the 5 (missing PSDrive), so
+                # the PSDrive meta-property - a full PSDriveInfo object,
+                # itself carrying a nested ProviderInfo with deep internal
+                # PowerShell state - leaked through as if it were a real
+                # startup entry and got recursively serialized, bloating a
+                # single collection run's autoruns.json to ~13.6MB of
+                # PowerShell object internals instead of a small, clean list
+                # of actual startup entries.
+                $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS(Path|ParentPath|ChildName|Provider|Drive)$' } | ForEach-Object {
                     $autoruns += [PSCustomObject]@{ source = $regPath; name = $_.Name; value = $_.Value }
                 }
             }
