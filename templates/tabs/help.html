@@ -12,6 +12,7 @@
                         <button class="list-group-item list-group-item-action" id="helpNavReportFields" data-bs-toggle="list" data-bs-target="#help-pane-reportfields" type="button" role="tab"><i class="bi bi-table"></i>Report Field Mapping</button>
                         <button class="list-group-item list-group-item-action" id="helpNavQuickstart" data-bs-toggle="list" data-bs-target="#help-pane-quickstart" type="button" role="tab" onclick="loadHelpDocFrame('helpQuickstartFrame', 'quickstart')"><i class="bi bi-rocket-takeoff"></i>Quick-Start Guide</button>
                         <button class="list-group-item list-group-item-action" id="helpNavChangelog" data-bs-toggle="list" data-bs-target="#help-pane-changelog" type="button" role="tab" onclick="loadHelpDocFrame('helpChangelogFrame', 'changelog')"><i class="bi bi-list-check"></i>Release Notes</button>
+                        <button class="list-group-item list-group-item-action" id="helpNavThirdParty" data-bs-toggle="list" data-bs-target="#help-pane-thirdparty" type="button" role="tab" onclick="loadHelpDocFrame('helpThirdPartyFrame', 'third-party-notices')"><i class="bi bi-file-earmark-text"></i>Third-Party Notices</button>
                     </div>
 
                     <div class="help-content tab-content" id="helpTabContent">
@@ -182,6 +183,10 @@
 
                         <div class="tab-pane fade" id="help-pane-changelog" role="tabpanel">
                             <iframe id="helpChangelogFrame" class="help-doc-frame" title="Release Notes"></iframe>
+                        </div>
+
+                        <div class="tab-pane fade" id="help-pane-thirdparty" role="tabpanel">
+                            <iframe id="helpThirdPartyFrame" class="help-doc-frame" title="Third-Party Notices"></iframe>
                         </div>
 
                     </div>

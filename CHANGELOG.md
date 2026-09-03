@@ -21,6 +21,26 @@ file after updating to see what changed.
 
 ---
 
+## [1.27.3] - 2026-09-02
+
+Documentation only - no code behavior changed. This app installs, imports, vendors, or loads a large
+number of pre-existing third-party forensic tools and libraries to do its job (`dc3dd`, The Sleuth
+Kit, ClamAV, Volatility 3, MVT, Bootstrap, Leaflet, and dozens more); this release makes clear that
+none of them are covered by this project's own GPLv3 license - each keeps its own separate one.
+
+### Added
+
+- **THIRD_PARTY_NOTICES.md** (repo root) - a full, researched list of every third-party tool, Python
+  package, vendored tool, and frontend library this station installs or loads, organized by how it
+  reaches the station, with its actual license. A few carry non-standard terms worth reading directly
+  rather than assuming they behave like a typical open-source license - MVT's own license adds a
+  binding informed-consent requirement, Volatility 3 uses a custom non-OSI license, and SQLite Dissect
+  was issued under specific US Department of Defense statutory authority. Also viewable in-app under
+  **Help > Third-Party Notices**, and linked from **Settings > Service Controls & Diagnostics >
+  Updates**.
+- `LICENSE` now opens with a short note pointing to THIRD_PARTY_NOTICES.md before the GPLv3 text
+  itself, and the README's own license section does the same.
+
 ## [1.27.2] - 2026-09-02
 
 A full UI/UX audit and cleanup pass - no new tools or features, just fixing what a systematic review
