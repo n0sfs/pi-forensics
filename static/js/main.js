@@ -279,65 +279,64 @@ const CASE_STATUS_BAR_COLOR = {
     'Closed': 'bg-success', 'Archived': 'bg-dark',
 };
 
+// Builds one stat card's DOM node. 'total_cases' gets the original bar+
+// legend status-breakdown treatment (needs its own 'breakdown' field from
+// the API); every other/future stat is a plain label+number card - adding
+// a new stat to REPORTING_STAT_DEFINITIONS (routes/reporting.py) needs zero
+// changes here unless it also wants its own special rendering.
+function renderReportingStatCard(stat) {
+    const wrap = document.createElement('div');
+    wrap.className = 'd-flex flex-wrap align-items-center gap-2';
+
+    const label = document.createElement('span');
+    label.className = 'small text-subtle';
+    label.textContent = stat.label;
+    wrap.appendChild(label);
+
+    const value = document.createElement('span');
+    value.className = 'reports-stat-value';
+    value.textContent = String(stat.value);
+    wrap.appendChild(value);
+
+    if (stat.key === 'total_cases' && stat.breakdown && Object.keys(stat.breakdown).length > 0) {
+        const bar = document.createElement('div');
+        bar.className = 'reports-stat-bar';
+        bar.style.width = '70px';
+        const legend = document.createElement('div');
+        legend.className = 'd-flex flex-wrap align-items-center gap-2 small text-subtle';
+        Object.keys(stat.breakdown).forEach(status => {
+            const count = stat.breakdown[status];
+            const seg = document.createElement('div');
+            seg.className = CASE_STATUS_BAR_COLOR[status] || 'bg-secondary';
+            seg.style.flex = String(count);
+            seg.title = `${status}: ${count}`;
+            bar.appendChild(seg);
+
+            const legendItem = document.createElement('span');
+            const dot = document.createElement('span');
+            dot.className = `reports-stat-legend-dot ${CASE_STATUS_BAR_COLOR[status] || 'bg-secondary'}`;
+            legendItem.appendChild(dot);
+            legendItem.appendChild(document.createTextNode(`${status} (${count})`));
+            legend.appendChild(legendItem);
+        });
+        wrap.appendChild(bar);
+        wrap.appendChild(legend);
+    }
+    return wrap;
+}
+
 async function loadReportingStats() {
-    const casesEl = document.getElementById('repStatCases');
-    const barEl = document.getElementById('repStatCasesBar');
-    const legendEl = document.getElementById('repStatCasesLegend');
-    if (!casesEl) return; // Reporting tab isn't in the DOM (shouldn't happen, but don't throw if so)
+    const rowEl = document.getElementById('reportingStatsRow');
+    if (!rowEl) return; // Reporting tab isn't in the DOM (shouldn't happen, but don't throw if so)
 
     try {
-        const res = await fetch('/api/cases/list');
+        const res = await fetch('/api/reporting/stats');
         const data = await res.json();
-        if (!data.success) {
-            casesEl.textContent = '--';
-            if (barEl) barEl.style.display = 'none';
-            if (legendEl) legendEl.innerHTML = '';
-            return;
-        }
-
-        const cases = data.cases || [];
-        casesEl.textContent = String(cases.length);
-
-        // Status breakdown mini-chart - one segment per distinct status
-        // actually present (proportional width), plus a horizontal dot-
-        // legend with counts (stacked below the bar in the original
-        // standalone box; inline here since this now shares one header
-        // row with the Case Report title and Save button). Hidden
-        // entirely when there are no cases yet, rather than showing an
-        // empty bar. A legacy (pre-case_status-field) case buckets into
-        // "Legacy" rather than being silently dropped.
-        if (barEl && legendEl) {
-            const counts = {};
-            cases.forEach(c => {
-                const status = c.case_status || 'Legacy';
-                counts[status] = (counts[status] || 0) + 1;
-            });
-            barEl.innerHTML = '';
-            legendEl.innerHTML = '';
-            if (cases.length > 0) {
-                Object.keys(counts).forEach(status => {
-                    const seg = document.createElement('div');
-                    seg.className = CASE_STATUS_BAR_COLOR[status] || 'bg-secondary';
-                    seg.style.flex = String(counts[status]);
-                    seg.title = `${status}: ${counts[status]}`;
-                    barEl.appendChild(seg);
-
-                    const legendItem = document.createElement('span');
-                    const dot = document.createElement('span');
-                    dot.className = `reports-stat-legend-dot ${CASE_STATUS_BAR_COLOR[status] || 'bg-secondary'}`;
-                    legendItem.appendChild(dot);
-                    legendItem.appendChild(document.createTextNode(`${status} (${counts[status]})`));
-                    legendEl.appendChild(legendItem);
-                });
-                barEl.style.display = 'flex';
-            } else {
-                barEl.style.display = 'none';
-            }
-        }
+        rowEl.innerHTML = '';
+        if (!data.success || !data.stats || !data.stats.length) return;
+        data.stats.forEach(stat => rowEl.appendChild(renderReportingStatCard(stat)));
     } catch (err) {
-        casesEl.textContent = '--';
-        if (barEl) barEl.style.display = 'none';
-        if (legendEl) legendEl.innerHTML = '';
+        rowEl.innerHTML = '';
     }
 }
 
@@ -9216,6 +9215,49 @@ async function fetchCustomReportTemplates() {
     renderCustomReportTemplatesList();
 }
 
+// Reporting's header-row stat cards (Total Cases, Active Cases, Evidence
+// Items, Reports Exported, ...) - registry is server truth (routes/
+// reporting.py's REPORTING_STAT_DEFINITIONS), fetched once and cached so a
+// future new stat needs zero JS changes here, only a new backend entry.
+let reportingStatsRegistryCache = []; // [{key, label, description}, ...]
+
+async function fetchReportingStatsRegistry() {
+    if (reportingStatsRegistryCache.length) return;
+    try {
+        const res = await fetch('/api/reporting/stats/registry');
+        const data = await res.json();
+        if (data.success) reportingStatsRegistryCache = data.stats || [];
+    } catch (err) { /* non-fatal - the picker just stays empty */ }
+}
+
+function renderReportingStatsPicker(enabledKeys) {
+    const container = document.getElementById('reportingStatsPickerContainer');
+    if (!container) return;
+    if (!reportingStatsRegistryCache.length) {
+        container.innerHTML = '<span class="text-subtle small">No stats available.</span>';
+        return;
+    }
+    container.innerHTML = '';
+    reportingStatsRegistryCache.forEach(stat => {
+        const row = document.createElement('div');
+        row.className = 'form-check';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.className = 'form-check-input reporting-stat-check';
+        input.id = `statPick_${stat.key}`;
+        input.value = stat.key;
+        input.checked = enabledKeys.includes(stat.key);
+        const label = document.createElement('label');
+        label.className = 'form-check-label small';
+        label.htmlFor = input.id;
+        label.title = stat.description || '';
+        label.textContent = stat.label;
+        row.appendChild(input);
+        row.appendChild(label);
+        container.appendChild(row);
+    });
+}
+
 // Appends one <option value="custom:ID"> per saved template after the 3
 // built-in ones, preserving the select's current value if it's still
 // valid - shared by both the Settings default select and the Export pane
@@ -9715,6 +9757,7 @@ async function loadCaseReportingSettings() {
     // doesn't recognize yet silently no-ops, leaving the select stuck on
     // whatever its first option is.
     await fetchCustomReportTemplates();
+    await fetchReportingStatsRegistry();
 
     try {
         const res = await fetch('/api/settings/case_reporting');
@@ -9765,6 +9808,14 @@ async function loadCaseReportingSettings() {
 
         caseReportingFieldsEditing = (data.custom_case_fields || []).map(f => ({ ...f }));
         renderCustomFieldDefsEditor();
+
+        // Every existing station's saved config has no 'reporting_stats' key
+        // at all - defaults to just total_cases (see REPORTING_STATS_DEFAULT_
+        // ENABLED's own comment in routes/reporting.py for why), not every
+        // stat, so an update doesn't silently expand what Reporting shows.
+        const enabledStats = (data.reporting_stats && data.reporting_stats.enabled && data.reporting_stats.enabled.length)
+            ? data.reporting_stats.enabled : ['total_cases'];
+        renderReportingStatsPicker(enabledStats);
     } catch (err) { /* non-fatal - card just shows its default markup state */ }
 }
 
@@ -9906,6 +9957,9 @@ async function saveCaseReportingSettings() {
     const customFields = caseReportingFieldsEditing
         .map(f => ({ key: f.key || '', label: (f.label || '').trim(), default_value: (f.default_value || '').trim() }))
         .filter(f => f.label.length > 0);
+    // Preserves checkbox/DOM order, which is registry order (render order
+    // for the Reporting header row too) - not re-sorted here.
+    const enabledStats = Array.from(document.querySelectorAll('.reporting-stat-check:checked')).map(cb => cb.value);
 
     try {
         const res = await fetch('/api/settings/case_reporting', {
@@ -9913,7 +9967,8 @@ async function saveCaseReportingSettings() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 report_defaults: { template, sections, job_fields: jobFields, branding: { header_text: headerText } },
-                custom_case_fields: customFields
+                custom_case_fields: customFields,
+                reporting_stats: { enabled: enabledStats },
             })
         });
         const data = await res.json();
