@@ -21,6 +21,31 @@ file after updating to see what changed.
 
 ---
 
+## [1.29.0] - 2026-09-03
+
+Continuing the usability pass from v1.28.0 - this time File Explorer's own toolbar/menu density,
+plus a search box for Settings, both flagged as bigger structural items during the same review.
+
+### Added
+
+- **Settings now has a search box** at the top of the tab. Type a term (e.g. "password", "reboot",
+  "YARA") and it filters live across all 5 categories - clicking a result switches to the right
+  category, expands the matching section, scrolls it into view, and briefly highlights it. Covers
+  every top-level Security/Case & Reporting/Network section plus Drive Management and Diagnostics'
+  own Service/Updates/Diagnostics/Power groups - roughly 20 distinct settings that previously
+  required browsing 5 categories by hand to find.
+- File Explorer's image-mode toolbar (previously ~17 icon-only buttons in one row) is now just
+  Search, Timeline, a "More Analysis" dropdown, and Exit Image - everything else (Geolocation,
+  Hash Manifest, Triage Scan, Recover Deleted, and every artifact parser) moved into the dropdown,
+  grouped and labeled with real text instead of icon-only.
+- File Explorer's right-click "Artifact Parsers" section (33 items, the single largest menu section
+  in the app) is now 4 smaller sections - Windows Artifacts, Linux & macOS Artifacts, Mobile &
+  Cloud Imports, and Cross-Platform Artifacts - so a right-click shows a shorter list of headers
+  instead of one long scrolling list. Every button kept its exact action - this is purely about
+  finding things faster, not new capability.
+
+---
+
 ## [1.28.0] - 2026-09-03
 
 A usability pass on Reporting/Case Management (the area most requested for review), plus a couple of
