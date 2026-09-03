@@ -105,6 +105,51 @@ def _record(artifact_type, title, url, value, timestamp, extra):
     }
 
 
+_VALUE_MAX_LEN = 500
+
+
+def _safe_value_text(value, max_len=_VALUE_MAX_LEN):
+    """Every _parse_* function below interpolates a raw JSON field straight
+    from the collector's own output into a record's `value` string, always
+    assuming it's a plain scalar. Windows PowerShell can hand back something
+    else entirely - confirmed live, not hypothetical: a still-not-yet-fixed
+    windows_collector.ps1 run (see that script's own PSDrive metadata-leak
+    fix, 2026-09-03) produced one autoruns.json entry whose "value" field
+    was a deeply-nested PSDriveInfo object rather than a string. Naively
+    str()-ing that into an f-string produced a single ~4MB field, which was
+    enough to hang both a direct API client and the real File Explorer UI
+    trying to render it - not a style nit, a genuine denial-of-service on
+    this app's own File Views. A dict/list is never str()-ified whole here
+    (avoids paying that cost at all, not just capping it after the fact);
+    every other type is stringified and length-capped, matching this
+    module's own pre-existing convention (_parse_scheduled_tasks' fallback
+    branch already did `json.dumps(t)[:500]`, just not unconditionally)."""
+    if value is None:
+        return ''
+    if isinstance(value, (dict, list)):
+        kind = 'object' if isinstance(value, dict) else 'list'
+        return (f"[unexpected {kind} value with {len(value)} field(s) - "
+                f"collector output may be malformed, not a plain value]")
+    text = str(value)
+    if len(text) > max_len:
+        text = text[:max_len] + f"... [{len(text) - max_len} more character(s) omitted]"
+    return text
+
+
+def _safe_extra(raw, max_len=_VALUE_MAX_LEN):
+    """Applies the same _safe_value_text() capping to every top-level value
+    of a raw collector-output dict before it's stored as a parsed_artifact's
+    `extra` field. `value` alone being capped isn't enough - extra is stored
+    in full (not display-truncated) elsewhere in this app, so an uncapped
+    nested object surviving here would still bloat the case index even
+    after the fix above. Only dict/list values are touched; every plain
+    scalar (str/int/float/bool/None) is passed through unchanged so fields
+    like `pid` stay real ints in extra, matching existing behavior."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: (_safe_value_text(v, max_len) if isinstance(v, (dict, list)) else v) for k, v in raw.items()}
+
+
 def _parse_processes(run_dir, ts):
     procs = _load_json(run_dir, 'processes.json')
     if not isinstance(procs, list):
@@ -121,11 +166,11 @@ def _parse_processes(run_dir, ts):
             continue
         exe_path = p.get('executable_path')
         sha256 = hash_by_path.get(exe_path) if exe_path else None
-        cmdline = p.get('command_line') or exe_path or ''
+        cmdline = _safe_value_text(p.get('command_line') or exe_path or '')
         value = f"PID {p.get('pid')} (parent {p.get('parent_pid')}) - {cmdline}"
         extra = {
             'pid': p.get('pid'), 'parent_pid': p.get('parent_pid'),
-            'executable_path': exe_path, 'command_line': p.get('command_line'),
+            'executable_path': exe_path, 'command_line': cmdline,
             'creation_date': p.get('creation_date'), 'owner': p.get('owner'),
             'sha256': sha256,
         }
@@ -154,8 +199,8 @@ def _parse_network_connections(run_dir, ts):
             local = c.get('local', '')
             remote = c.get('remote') or ''
         title = f"{proto} {local}" + (f" -> {remote}" if remote else '')
-        value = c.get('state') or ''
-        extra = dict(c)
+        value = _safe_value_text(c.get('state') or '')
+        extra = _safe_extra(c)
         records.append(_record('live_collection_network_connection', title, '', value, ts, extra))
     return records
 
@@ -182,8 +227,11 @@ def _parse_services(run_dir, ts):
         if not isinstance(s, dict):
             continue
         title = s.get('display_name') or s.get('name') or ''
-        value = f"{s.get('state', '')} ({s.get('start_mode', '')}) - {s.get('path', '')}"
-        records.append(_record('live_collection_service', title, '', value, ts, dict(s)))
+        state = _safe_value_text(s.get('state', ''))
+        start_mode = _safe_value_text(s.get('start_mode', ''))
+        path = _safe_value_text(s.get('path', ''))
+        value = f"{state} ({start_mode}) - {path}"
+        records.append(_record('live_collection_service', title, '', value, ts, _safe_extra(s)))
     return records
 
 
@@ -201,8 +249,13 @@ def _parse_scheduled_tasks(run_dir, ts):
         # so this branch degrades gracefully to whatever keys are present
         # rather than assuming task_name exists).
         title = t.get('task_name') or t.get('TaskName') or next(iter(t.values()), '') or ''
-        value = f"{t.get('state', '')} - {t.get('actions', '')}" if 'task_name' in t else json.dumps(t)[:500]
-        records.append(_record('live_collection_scheduled_task', str(title), '', value, ts, dict(t)))
+        if 'task_name' in t:
+            state = _safe_value_text(t.get('state', ''))
+            actions = _safe_value_text(t.get('actions', ''))
+            value = f"{state} - {actions}"
+        else:
+            value = json.dumps(t, default=str)[:500]
+        records.append(_record('live_collection_scheduled_task', str(title), '', value, ts, _safe_extra(t)))
     return records
 
 
@@ -215,8 +268,10 @@ def _parse_autoruns(run_dir, ts):
         if not isinstance(a, dict):
             continue
         title = a.get('name', '')
-        value = f"{a.get('value', '')} ({a.get('source', '')})"
-        records.append(_record('live_collection_autorun', title, '', value, ts, dict(a)))
+        raw_value = _safe_value_text(a.get('value', ''))
+        source = _safe_value_text(a.get('source', ''))
+        value = f"{raw_value} ({source})"
+        records.append(_record('live_collection_autorun', title, '', value, ts, _safe_extra(a)))
     return records
 
 
@@ -229,8 +284,10 @@ def _parse_mapped_drives(run_dir, ts):
         if not isinstance(d, dict):
             continue
         title = d.get('local_path', '')
-        value = f"{d.get('remote_path', '')} ({d.get('status', '')})"
-        records.append(_record('live_collection_mapped_drive', title, '', value, ts, dict(d)))
+        remote_path = _safe_value_text(d.get('remote_path', ''))
+        status = _safe_value_text(d.get('status', ''))
+        value = f"{remote_path} ({status})"
+        records.append(_record('live_collection_mapped_drive', title, '', value, ts, _safe_extra(d)))
     return records
 
 
