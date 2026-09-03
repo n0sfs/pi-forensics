@@ -68,7 +68,7 @@ from core.config import (
     get_report_defaults, get_custom_case_fields,
 )
 from core.jobs import _read_case_file, _write_case_file, current_job, job_lock, update_job, snapshot_job
-from core.case_index_db import _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact, _case_index_open_readonly
+from core.case_index_db import _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact, _case_index_open_readonly, list_case_folders
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
 reporting_bp = Blueprint('reporting', __name__)
@@ -82,6 +82,7 @@ def settings_case_reporting():
             "success": True,
             "report_defaults": cfg.get('report_defaults', {}),
             "custom_case_fields": cfg.get('custom_case_fields', []),
+            "reporting_stats": cfg.get('reporting_stats', {}),
         })
 
     # GET is left ungated above - Reporting's Export pane reads these
@@ -168,8 +169,99 @@ def settings_case_reporting():
             fields.append({"key": key, "label": label, "default_value": default_value})
         cfg['custom_case_fields'] = fields
 
+    if 'reporting_stats' in req:
+        # Which stat cards Reporting's header row shows, station-wide - an
+        # unrecognized/stale key (e.g. from a station on an older version
+        # that hasn't picked up a newly-added stat definition, or the
+        # reverse) is silently dropped rather than stored, so a bad value
+        # here can never make /api/reporting/stats choke later. Order is
+        # preserved (not sorted) - it's also render order for the row.
+        incoming_enabled = (req['reporting_stats'] or {}).get('enabled') or []
+        cfg['reporting_stats'] = {
+            "enabled": [k for k in incoming_enabled if k in REPORTING_STAT_KEYS]
+        }
+
     save_runtime_config(cfg)
     return jsonify({"success": True})
+
+# Reporting's own header-row "stat cards" (Total Cases, Active Cases,
+# Evidence Items, Reports Exported, ...) - station-wide, examiner-selected
+# via Settings > Case & Reporting. REPORTING_STAT_DEFINITIONS is the single
+# source of truth both the computation below AND the Settings picker read
+# from (a GET route, not a second hardcoded JS copy - this app already got
+# bitten once by exactly that duplication, see Auto Analyze's own step
+# registry / GET /api/image/auto_analyze/steps for the identical fix).
+REPORTING_STAT_DEFINITIONS = [
+    {"key": "total_cases", "label": "Total Cases",
+     "description": "Every case on this station, with a status breakdown (Open/In Review/On Hold/Closed/Archived)."},
+    {"key": "active_cases", "label": "Active Cases",
+     "description": "Cases not yet marked Closed or Archived - work still open."},
+    {"key": "evidence_items", "label": "Evidence Items",
+     "description": "Total acquisition events recorded across every consolidated-format case."},
+    {"key": "reports_exported", "label": "Reports Exported",
+     "description": "PDF/HTML report exports logged station-wide. Only counts exports made after this stat "
+                     "shipped (2026-09-03) - report exports weren't logged to the audit trail before then, "
+                     "so there's no earlier history to retroactively count."},
+]
+REPORTING_STAT_KEYS = {d["key"] for d in REPORTING_STAT_DEFINITIONS}
+# Every existing station's saved config predates this feature and has no
+# 'reporting_stats' key at all - defaulting to just total_cases (the one
+# stat that already existed) means a station's Reporting header looks
+# exactly the same after an update as before it, matching this app's own
+# established "a brand-new toggle defaults to preserving today's behavior,
+# not silently expanding it" precedent (see report_defaults.sections'
+# geolocation key, defaulted unchecked for the identical reason).
+REPORTING_STATS_DEFAULT_ENABLED = ["total_cases"]
+
+def _compute_reporting_stats(enabled_keys):
+    """Computes only the requested stat keys. total_cases/active_cases/
+    evidence_items all share a single list_case_folders() walk rather than
+    one directory walk per stat; reports_exported reads the chain-of-custody
+    log once, only if actually enabled. One unrecognized/removed key is
+    silently skipped, never a 500 - this stays out of the request's own
+    validation, since a stale saved key shouldn't be able to break the
+    whole row."""
+    stats = []
+    needs_cases = any(k in enabled_keys for k in ("total_cases", "active_cases", "evidence_items"))
+    cases = list_case_folders() if needs_cases else []
+
+    for key in enabled_keys:
+        if key not in REPORTING_STAT_KEYS:
+            continue
+        definition = next(d for d in REPORTING_STAT_DEFINITIONS if d["key"] == key)
+        entry = {"key": key, "label": definition["label"]}
+        if key == "total_cases":
+            counts = {}
+            for c in cases:
+                status = c.get("case_status") or "Legacy"
+                counts[status] = counts.get(status, 0) + 1
+            entry["value"] = len(cases)
+            entry["breakdown"] = counts
+        elif key == "active_cases":
+            entry["value"] = sum(1 for c in cases if (c.get("case_status") or "Open") not in ("Closed", "Archived"))
+        elif key == "evidence_items":
+            entry["value"] = sum((c.get("event_count") or 0) for c in cases if c.get("schema") == "consolidated")
+        elif key == "reports_exported":
+            coc_entries = _read_coc_entries(limit=None)
+            entry["value"] = sum(1 for e in coc_entries if e.get("action") == "report_exported")
+        stats.append(entry)
+    return stats
+
+@reporting_bp.route('/api/reporting/stats/registry', methods=['GET'])
+@requires_auth
+def reporting_stats_registry():
+    return jsonify({"success": True, "stats": REPORTING_STAT_DEFINITIONS})
+
+@reporting_bp.route('/api/reporting/stats', methods=['GET'])
+@requires_auth
+def reporting_stats():
+    cfg = load_runtime_config()
+    enabled = (cfg.get('reporting_stats', {}) or {}).get('enabled') or REPORTING_STATS_DEFAULT_ENABLED
+    enabled = [k for k in enabled if k in REPORTING_STAT_KEYS] or REPORTING_STATS_DEFAULT_ENABLED
+    try:
+        return jsonify({"success": True, "stats": _compute_reporting_stats(enabled)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 CUSTOM_REPORT_TEMPLATE_NAME_MAX = 80
 
@@ -4363,6 +4455,7 @@ def export_report():
             f.write(f"{digest}  {os.path.basename(out_path)}\n")
         _auto_tag_case_artifact(case_folder, out_path)
         _auto_tag_case_artifact(case_folder, out_path + '.sha256')
+        log_chain_of_custody("report_exported", {"case_folder": case_folder, "format": fmt, "template": template_value})
 
         resp = send_file(out_path, as_attachment=True)
         resp.headers['X-Report-Sha256'] = digest
