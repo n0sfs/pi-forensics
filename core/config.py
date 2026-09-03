@@ -408,6 +408,7 @@ DOC_FILES = {
     "quickstart": os.path.join(_REPO_ROOT, "docs", "quickstart.md"),
     "user-manual": os.path.join(_REPO_ROOT, "docs", "user-manual.md"),
     "changelog": os.path.join(_REPO_ROOT, "CHANGELOG.md"),
+    "third-party-notices": os.path.join(_REPO_ROOT, "THIRD_PARTY_NOTICES.md"),
 }
 
 
@@ -430,6 +431,7 @@ DOC_TITLES = {
     "quickstart": "Quick-Start Guide",
     "user-manual": "User Manual",
     "changelog": "Release Notes",
+    "third-party-notices": "Third-Party Notices",
 }
 
 # Self-contained inline CSS (no external stylesheet/font/CDN dependency) so
@@ -672,7 +674,7 @@ def render_doc_html(doc_id):
 
     layout_open, sidenav_html, layout_close, script_html = "", "", "", ""
 
-    if doc_id in ("changelog", "user-manual"):
+    if doc_id in ("changelog", "user-manual", "third-party-notices"):
         intro_html, sections = _split_html_by_h2(body_html)
         linkable = [s for s in sections if s["id"]]
         if linkable:
@@ -693,9 +695,9 @@ def render_doc_html(doc_id):
                     for i, s in enumerate(sections)
                 )
                 body_html = intro_html + entries
-            # user-manual: body_html is left exactly as rendered - only a
-            # nav derived from its existing headings is added alongside it,
-            # the flowing document itself is untouched.
+            # user-manual / third-party-notices: body_html is left exactly as
+            # rendered - only a nav derived from its existing headings is
+            # added alongside it, the flowing document itself is untouched.
 
     return f"""<!doctype html>
 <html lang="en">

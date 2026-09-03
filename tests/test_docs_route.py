@@ -65,6 +65,7 @@ def test_logged_in_account_gets_real_rendered_html_for_each_doc(client, runtime_
         ("quickstart", ">Quick-Start Guide</h1>", "Quick-Start Guide"),
         ("user-manual", ">Pi Forensics Suite", "User Manual"),
         ("changelog", ">Changelog</h1>", "Release Notes"),
+        ("third-party-notices", ">Third-Party Notices</h1>", "Third-Party Notices"),
     ):
         res = client.get(f"/docs/{doc_id}")
         assert res.status_code == 200

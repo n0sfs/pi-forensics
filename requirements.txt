@@ -1,3 +1,8 @@
+# Adding, removing, or changing a package here? Update THIRD_PARTY_NOTICES.md
+# (repo root) too - it tracks each dependency's own license separately from
+# this project's own GPLv3, and this file is one of its two sources of truth
+# (install.py's `apt_packages` list is the other).
+#
 # Upper bounds added below (2026-08-23, Low finding #4 from the 2026-08-22
 # security audit): Flask/gunicorn/cryptography previously had a floor with
 # no ceiling - not an active vulnerability in any of the three (their known

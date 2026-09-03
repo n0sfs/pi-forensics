@@ -1,3 +1,11 @@
+A note from the maintainer, before the license text below: this license covers Pi Forensics
+Suite's own original source code only. This project installs, imports, vendors, or loads a
+large number of pre-existing third-party forensic tools, Python libraries, and frontend
+assets to do its job - each of those keeps its own separate license, and none of them are
+covered by, or become subject to, the GPLv3 terms below. See THIRD_PARTY_NOTICES.md for the
+full list, including a few licenses that are worth reading closely because they aren't
+standard open-source terms (notably MVT, Volatility 3, and SQLite Dissect).
+
                     GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 
