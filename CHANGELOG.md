@@ -21,6 +21,31 @@ file after updating to see what changed.
 
 ---
 
+## [1.30.2] - 2026-09-03
+
+### Fixed
+
+- **Live Collection USB's "Build" step now reliably completes on real physical USB drives.**
+  Testing against a real drive for the first time surfaced four real bugs, all now fixed:
+  - The wipe/format step could fail partway through with a "write failed" error, because this
+    station's write-protection rules re-lock a freshly-created partition the instant it's created,
+    independently of the whole-disk unlock already in place - the partition itself needed its own
+    explicit unlock before formatting.
+  - A slow real USB drive can need longer than 30 seconds to finish flushing its write cache during
+    unmount - previously this could time out and fail the whole build even though every file had
+    already copied successfully; it's now given more time, an explicit `sync` first, and no longer
+    treated as fatal (a slow-but-uncertain unmount now shows as a caveat, not a false failure).
+  - Two other setup steps (re-reading the partition table, waiting for the system to catch up) had
+    the same "too tight a timeout for real hardware" problem - both fixed the same way.
+  - A logging bug after a fully successful build could crash and get wrongly reported as "Failed"
+    even though the drive was built completely correctly - fixed.
+- **The Windows collector script's Autorun/Startup Items artifact could balloon to over 13MB** of
+  mostly irrelevant PowerShell internal data, due to a registry-reading bug that let one internal
+  PowerShell property leak through where it shouldn't have. Fixed - a future build's collector
+  script will produce a normal-sized, clean list of actual startup entries instead.
+
+---
+
 ## [1.30.1] - 2026-09-03
 
 ### Fixed

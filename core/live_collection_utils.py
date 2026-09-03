@@ -53,6 +53,9 @@ BLOCKDEV_BIN = "/sbin/blockdev"
 
 _WIPE_FORMAT_TIMEOUT_SECONDS = 120
 _MOUNT_TIMEOUT_SECONDS = 30
+_SYNC_TIMEOUT_SECONDS = 60
+_UNMOUNT_TIMEOUT_SECONDS = 90
+_SETTLE_TIMEOUT_SECONDS = 60
 
 
 def unmount_all_partitions(device):
@@ -136,11 +139,54 @@ def wipe_and_format_device(device, append_log=None):
     # Confirmed live via the Phase 0 loopback spike: mkfs can otherwise
     # race the kernel/udev not having created the partition device node
     # yet if this pair is skipped.
-    subprocess.run(["sudo", BLOCKDEV_BIN, "--rereadpt", device], capture_output=True, timeout=15)
-    subprocess.run(["udevadm", "settle"], capture_output=True, timeout=15)
+    #
+    # A second real bug found live (2026-09-03), against the same physical
+    # USB drive that surfaced the partition-lock and unmount bugs above:
+    # `udevadm settle` genuinely completes in ~1s on this station when
+    # tested standalone against an idle system, but reliably timed out at
+    # 15s twice in a row during this exact sequence - re-reading a real
+    # partition table off real USB flash (not the fast loopback devices
+    # this module's original design/spike testing used) plus running every
+    # write-block udev rule's RUN+= action for both the whole disk and the
+    # freshly-created partition genuinely takes longer than 15s on real
+    # hardware, especially after several back-to-back wipe/reformat cycles.
+    # Neither call is treated as fatal any more, both got a materially
+    # longer timeout, and - critically - this is still safe even if a call
+    # times out anyway: the very next real safety check
+    # ("if not os.path.exists(partition)") independently confirms the
+    # partition genuinely appeared before mkfs.exfat is ever allowed to
+    # run, regardless of whether rereadpt/settle themselves finished
+    # cleanly within their own timeout window.
+    try:
+        subprocess.run(["sudo", BLOCKDEV_BIN, "--rereadpt", device], capture_output=True, timeout=_SETTLE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        subprocess.run(["udevadm", "settle"], capture_output=True, timeout=_SETTLE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
 
     if not os.path.exists(partition):
         return {"success": False, "error": f"Partition table was written but {partition} never appeared - aborting before formatting.", "partition_device": None}
+
+    # Real bug found live (2026-09-03): this station's write-block udev
+    # rules are two INDEPENDENT rules, not one - "KERNEL==sd[a-z]" (whole
+    # disk) and a separate "KERNEL==sd[a-z][0-9]*" (partitions), each firing
+    # blockdev --setro on its OWN device node's own "add" uevent.
+    # _unlock_device_for_write() (routes/acquisition.py) only ever unlocks
+    # the whole-disk device, before sfdisk runs - but sfdisk writing the
+    # partition table makes the kernel create `partition` as a genuinely
+    # NEW device node, which fires its own independent "add" uevent the
+    # partition-specific rule catches and re-locks read-only, regardless of
+    # the whole-disk unlock already in place. mkfs.exfat then fails with
+    # "write failed(errno : 1)" (EPERM) - confirmed exactly this via a real
+    # failed Build against a real USB drive, then confirmed both /dev/sda
+    # and /dev/sda1 independently show ro=1 after the failure. The
+    # partition device needs its own explicit unlock too, not just the
+    # whole disk - this fires once, right after the partition's own "add"
+    # event already happened (rereadpt+settle above), so there's no race
+    # with the udev rule re-locking it a second time afterward.
+    subprocess.run(["sudo", BLOCKDEV_BIN, "--setrw", partition], capture_output=True, timeout=15)
 
     log(f"[*] Formatting {partition} exFAT, volume label {PIF_COLLECT_LABEL}...")
     res = subprocess.run(
@@ -177,14 +223,67 @@ def mount_collection_partition(partition_device, mountpoint, uid, gid, read_only
 
 
 def unmount_collection_partition(mountpoint):
-    """Best-effort unmount + directory cleanup. Never raises - matches
-    this app's established "unmount steps are always best-effort" pattern
-    (e.g. toggle_write_block()'s own unmount loop)."""
-    subprocess.run(["sudo", "umount", mountpoint], capture_output=True, timeout=_MOUNT_TIMEOUT_SECONDS)
+    """Best-effort unmount + directory cleanup.
+
+    Real bug found live (2026-09-03), against a real physical USB drive
+    after a real ~49MB asset copy: `umount` can genuinely take longer than
+    a plain mount ever would, since it has to flush the kernel's write-back
+    cache to the physical device first - a real, slow USB flash drive can
+    need well over 30s for that, unlike the fast loopback-backed devices
+    this module's design/spike testing used, which flush near-instantly.
+    Worse, a Python subprocess.run(timeout=...) that kills the `umount`
+    process after a timeout doesn't reliably abort the underlying kernel
+    unmount if it was blocked in uninterruptible sleep on device I/O - the
+    unmount can go on to complete on its own moments later (confirmed live:
+    the mount table showed nothing mounted well after the reported
+    timeout), but the flush getting interrupted mid-flight can leave the
+    filesystem's own metadata on the physical device inconsistent (confirmed
+    live: the resulting partition failed to remount at all - "bad
+    superblock"). This function's own original docstring already promised
+    "never raises," but had no try/except around the actual subprocess.run()
+    call at all, so a real TimeoutExpired here previously escaped straight
+    up into the caller's own exception handling, failing the whole job even
+    though the actual valuable work (wipe/format/asset copy) had already
+    succeeded.
+
+    Fixed with two changes: an explicit `sync` *before* attempting `umount`,
+    so the flush happens on its own timeline (with its own generous
+    timeout) rather than hidden inside umount's own blocking wait - by the
+    time umount actually runs, there should be little or nothing left to
+    flush, making it fast; and a real try/except around the umount call
+    itself with a materially longer, dedicated timeout, so this function
+    finally, genuinely never raises as documented. Returns {"success": bool,
+    "warning": str|None} - "warning" is set (but success can still be True)
+    when sync or umount didn't cleanly finish in time, so a caller with
+    other, already-confirmed-successful work to report (e.g. the Build
+    job's own asset copy) can decide not to hard-fail the whole job over a
+    slow bookkeeping step, while still surfacing that something took an
+    unusually long time and the drive is worth double-checking."""
+    warning = None
+    try:
+        sync_res = subprocess.run(["sync"], capture_output=True, timeout=_SYNC_TIMEOUT_SECONDS)
+        if sync_res.returncode != 0:
+            warning = "sync exited non-zero before unmount - the drive may still have pending writes."
+    except subprocess.TimeoutExpired:
+        warning = f"sync did not finish within {_SYNC_TIMEOUT_SECONDS}s before unmount - the drive may still have pending writes."
+    except Exception:
+        pass
+
+    try:
+        res = subprocess.run(["sudo", "umount", mountpoint], capture_output=True, timeout=_UNMOUNT_TIMEOUT_SECONDS)
+        if res.returncode != 0:
+            warning = (warning + " " if warning else "") + "umount exited non-zero - the drive may not be fully written."
+    except subprocess.TimeoutExpired:
+        warning = (warning + " " if warning else "") + f"umount did not finish within {_UNMOUNT_TIMEOUT_SECONDS}s - it may still be running in the background."
+    except Exception as e:
+        warning = (warning + " " if warning else "") + f"umount raised an unexpected error: {e}"
+
     try:
         os.rmdir(mountpoint)
     except OSError:
         pass
+
+    return {"success": warning is None, "warning": warning}
 
 
 # Phase B discovery - both platforms write into a fixed pair of roots

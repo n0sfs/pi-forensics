@@ -136,10 +136,22 @@ def _relock_device_after_write(device_path):
     """Always-safe teardown - re-locks the device and clears the
     exemption. Called from the build job's own `finally:` block on every
     exit path (success/Stop/exception), so the app's default-safe posture
-    is restored regardless of how the job ended."""
+    is restored regardless of how the job ended.
+
+    Also explicitly relocks device_path + "1" (the partition) - found live
+    (2026-09-03) that a completed build otherwise left the partition itself
+    writable indefinitely: this app's write-block udev rules independently
+    lock the whole disk and each partition on their OWN "add" uevent, so
+    core.live_collection_utils.wipe_and_format_device() has to explicitly
+    unlock the freshly-created partition before mkfs.exfat can write to it
+    (see that function's own comment for the full story) - but nothing
+    naturally re-locks that same partition afterward, since it doesn't get
+    a second "add" event just from being mounted/copied to. Relocking it
+    here too, alongside the whole disk, closes that gap."""
     with device_write_lock:
         active_write_unlocked_devices.pop(device_path, None)
         subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path], capture_output=True)
+        subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path + "1"], capture_output=True)
 
 
 def _live_collection_startup_reconciliation():
@@ -1922,7 +1934,7 @@ LIVE_COLLECTION_UAC_DIR = os.path.join(INSTALL_DIR, "live_collection", "uac")
 LIVE_COLLECTION_MEMORY_DIR = os.path.join(INSTALL_DIR, "live_collection", "memory")
 
 
-def execution_worker_build_collection_usb(device, device_info):
+def execution_worker_build_collection_usb(device, device_info, source_ip=None, user=None):
     log_history = []
 
     def append_log(msg):
@@ -1978,6 +1990,14 @@ def execution_worker_build_collection_usb(device, device_info):
                 if os.path.isdir(LIVE_COLLECTION_UAC_DIR):
                     uac_dest = os.path.join(mnt, "uac")
                     for name in os.listdir(LIVE_COLLECTION_UAC_DIR):
+                        # install.py's vendoring step is a full `git clone`,
+                        # not a source-only export - .git/.github are pure
+                        # dev/CI metadata with zero runtime value on a
+                        # collection drive (confirmed live: .git alone is
+                        # 8.4MB, ~28% of the whole UAC payload) and were
+                        # being copied onto every built USB for nothing.
+                        if name in ('.git', '.github'):
+                            continue
                         src = os.path.join(LIVE_COLLECTION_UAC_DIR, name)
                         dst = os.path.join(uac_dest, name)
                         if os.path.isdir(src):
@@ -2036,15 +2056,24 @@ def execution_worker_build_collection_usb(device, device_info):
 
                 update_job(status="Finalizing (unmounting)...", progress_percent=90.0)
             finally:
-                unmount_collection_partition(LIVE_COLLECTION_BUILD_MOUNTPOINT)
+                unmount_result = unmount_collection_partition(LIVE_COLLECTION_BUILD_MOUNTPOINT)
 
+            if unmount_result.get("warning"):
+                # The asset copy already fully succeeded by this point - a
+                # slow/uncertain unmount on its own isn't reason enough to
+                # report the whole build as failed (see unmount_collection_
+                # partition()'s own docstring for why this can happen on
+                # real physical media), but it IS worth a clear, visible
+                # caveat rather than silently claiming full success.
+                append_log(f"[!] {unmount_result['warning']} The drive's tooling was fully copied, but "
+                           f"double-check it mounts cleanly on the target machine before relying on it.")
             update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
             append_log("[+] Live Collection USB build completed successfully.")
             log_chain_of_custody("live_collection_usb_built", {
                 "device": device, "model": device_info.get("model"),
                 "serial": device_info.get("serial"), "size": device_info.get("size"),
                 "reused_existing_volume": fast_path["already_prepared"],
-            })
+            }, source_ip=source_ip, user=user)
         finally:
             _relock_device_after_write(device)
 
@@ -2072,7 +2101,23 @@ def start_build_collection_usb():
         update_job(active=False)
         return jsonify({"success": False, "error": f"'{device}' is not a recognized whole-disk device."}), 400
 
-    thread = threading.Thread(target=execution_worker_build_collection_usb, args=(device, device_info))
+    # Real bug found live (2026-09-03): the worker's own completion
+    # log_chain_of_custody() call runs from inside this background thread,
+    # which has no active Flask request/app context - calling it with no
+    # explicit source_ip/user (its default fallback reads request/g)
+    # raised "Working outside of application context" AFTER a genuinely
+    # successful build, and the outer exception handler then overwrote the
+    # already-correct "Completed Successfully" status back to "Failed" -
+    # reporting a real success as a failure. Capture both here, in the real
+    # request thread, and thread them through explicitly - the same
+    # established pattern already used elsewhere in this file (see e.g.
+    # the decrypted-source cleanup thread above).
+    requester_ip = request.remote_addr
+    requester_user = getattr(g, 'forensic_user', None)
+    thread = threading.Thread(
+        target=execution_worker_build_collection_usb,
+        args=(device, device_info, requester_ip, requester_user),
+    )
     thread.daemon = True
     thread.start()
 
