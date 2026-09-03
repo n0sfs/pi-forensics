@@ -50,7 +50,7 @@
                                     </h2>
                                     <div id="secUserGroups" class="accordion-collapse collapse">
                                         <div class="accordion-body">
-                                            <div class="small text-subtle mb-2">Every user belongs to exactly one group. <strong>Admin</strong> always has full access to everything and can't be changed. <strong>Analyst</strong> is the default operational group (every tool, no station configuration or user management) - its permissions can be adjusted below. Create additional custom groups with whatever mix of access a role needs.</div>
+                                            <div class="small text-subtle mb-2">Every user belongs to exactly one group. <strong>Admin</strong> always has full access to everything and can't be changed. <strong>Analyst</strong> is the default operational group (every tool, no station configuration or user management) - its permissions can be adjusted below. Create additional custom groups with whatever mix of access a role needs. This is separate from the "Examiner" name recorded per case for chain of custody - that's who did the work; this permission group is what any login in it is allowed to do.</div>
                                             <div class="d-flex justify-content-between align-items-center mb-1">
                                                 <span class="telemetry-grid-label">Configured Groups</span>
                                                 <button class="btn btn-xs btn-outline-info fw-bold py-0 px-2" onclick="openUserGroupModal(null)"><i class="bi bi-plus-lg me-1"></i>New Group</button>
@@ -87,8 +87,10 @@
                                             <div class="row g-2 mb-2">
                                                 <div class="col-md-6"><input type="file" id="configRestoreFile" class="form-control form-control-sm" accept=".pfback"></div>
                                                 <div class="col-md-4"><input type="password" id="configRestorePassphrase" class="form-control form-control-sm" placeholder="Backup passphrase"></div>
-                                                <div class="col-md-2"><button class="btn btn-sm btn-outline-danger fw-bold w-100" onclick="submitConfigRestore()"><i class="bi bi-upload me-1"></i>Restore</button></div>
+                                                <div class="col-md-2"><button id="btnConfigRestore" class="btn btn-sm btn-outline-danger fw-bold w-100" onclick="submitConfigRestore()" disabled><i class="bi bi-upload me-1"></i>Restore</button></div>
                                             </div>
+                                            <input type="text" id="configRestoreConfirmText" class="form-control form-control-sm mb-2"
+                                                   placeholder="Type RESTORE to confirm" oninput="checkConfigRestoreConfirmText()" autocomplete="off">
                                             <div id="configBackupStatus" class="small"></div>
                                         </div>
                                     </div>

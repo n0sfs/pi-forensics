@@ -1,7 +1,7 @@
-            <!-- APP 2: SELF-CONTAINED DDRESCUE RECOVERY MODULE & DUAL-PANE FILE EXPLORER TAB -->
+            <!-- SELF-CONTAINED FILE RECOVERY MODULE (PhotoRec/extundelete/foremost/scalpel/Triage Scan/TestDisk/ddrescue Mapfile Inspector) -->
             <div class="tab-pane fade" id="ddrescue-app" role="tabpanel">
                             <div class="card">
-                                <div class="card-header py-2"><i class="bi bi-tools me-2"></i>Recovery Tools</div>
+                                <div class="card-header py-2"><i class="bi bi-tools me-2"></i>File Recovery</div>
                                 <div class="card-body py-2">
                                     <div class="row g-3">
                                         <div class="col-md-5">
@@ -49,10 +49,11 @@
                                                 <div class="small text-subtle mt-1">Manage saved keyword lists in Settings &gt; Case &amp; Reporting.</div>
                                             </div>
 
+                                            <div class="telemetry-grid-label mb-1"><i class="bi bi-folder-symlink me-1"></i>Case &amp; Evidence Metadata</div>
                                             <div id="recoveryMetadataRow" class="row g-2 mb-3">
-                                                <div class="col-6 col-md-4"><input type="text" id="recoveryCaseNum" class="form-control form-control-sm" placeholder="Case #"></div>
-                                                <div class="col-6 col-md-4"><input type="text" id="recoveryEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID"></div>
-                                                <div class="col-6 col-md-4"><input type="text" id="recoveryExaminer" class="form-control form-control-sm" placeholder="Examiner"></div>
+                                                <div class="col-6 col-md-4"><label class="visually-hidden" for="recoveryCaseNum">Case Number</label><input type="text" id="recoveryCaseNum" class="form-control form-control-sm" placeholder="Case # (2026-CASE-01)"></div>
+                                                <div class="col-6 col-md-4"><label class="visually-hidden" for="recoveryEvidenceId">Evidence ID</label><input type="text" id="recoveryEvidenceId" class="form-control form-control-sm" placeholder="Evidence ID (e.g. ITEM-01)"></div>
+                                                <div class="col-6 col-md-4"><label class="visually-hidden" for="recoveryExaminer">Examiner Name</label><input type="text" id="recoveryExaminer" class="form-control form-control-sm" placeholder="Examiner Name"></div>
                                             </div>
 
                                             <div class="d-flex gap-2">
