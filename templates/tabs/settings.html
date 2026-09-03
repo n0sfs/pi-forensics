@@ -1,5 +1,13 @@
             <!-- APP 5: SETTINGS -->
             <div class="tab-pane fade" id="settings-app" role="tabpanel">
+                <div class="mb-2 position-relative" style="max-width: 420px;">
+                    <div class="input-group input-group-sm">
+                        <span class="input-group-text bg-app-dark border-secondary text-info"><i class="bi bi-search"></i></span>
+                        <input type="text" id="settingsSearchInput" class="form-control bg-app-dark text-light border-secondary" placeholder="Search settings (e.g. &quot;password&quot;, &quot;reboot&quot;, &quot;YARA&quot;)..." autocomplete="off" oninput="filterSettingsSearch()" onkeydown="handleSettingsSearchKeydown(event)" aria-label="Search settings">
+                        <button type="button" class="btn btn-outline-secondary" id="settingsSearchClearBtn" onclick="clearSettingsSearch()" style="display:none;" aria-label="Clear settings search"><i class="bi bi-x-lg"></i></button>
+                    </div>
+                    <div id="settingsSearchResults" class="list-group position-absolute w-100 shadow" style="z-index:1050; display:none; max-height: 320px; overflow-y:auto;"></div>
+                </div>
                 <div class="settings-shell">
                     <div class="settings-nav list-group" id="settingsNavList" role="tablist">
                         <button class="list-group-item list-group-item-action active" id="settingsNavAuth" data-bs-toggle="list" data-bs-target="#settings-pane-auth" type="button" role="tab"><i class="bi bi-shield-lock-fill"></i>Security</button>

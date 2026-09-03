@@ -38,12 +38,15 @@
                             </div>
                             <div class="row g-2">
                                 <div class="col-md-3">
+                                    <div id="diagGroupService">
                                     <div class="telemetry-grid-label mb-1">Service</div>
                                     <div class="d-grid gap-1 mb-3">
                                         <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartForensicService()"><i class="bi bi-arrow-repeat me-1"></i>Restart Service</button>
                                         <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button>
                                     </div>
+                                    </div>
 
+                                    <div id="diagGroupUpdates">
                                     <div class="telemetry-grid-label mb-1 d-flex align-items-center flex-wrap gap-2">
                                         Updates <span class="text-subtle fw-normal">- v{{ app_version }}</span>
                                         <span id="updateAvailableBadge" class="badge bg-warning text-dark" style="display:none;"></span>
@@ -62,7 +65,9 @@
                                             <li><a class="dropdown-item" href="/docs/third-party-notices" target="_blank" rel="noopener"><i class="bi bi-file-earmark-text me-1"></i>View Third-Party Notices</a></li>
                                         </ul>
                                     </div>
+                                    </div>
 
+                                    <div id="diagGroupDiagnostics">
                                     <div class="telemetry-grid-label mb-1">Diagnostics</div>
                                     <div class="d-grid gap-1 mb-3">
                                         <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="purgeConsoleLogs()"><i class="bi bi-trash3 me-1"></i>Purge Terminal Log Buffer</button>
@@ -81,11 +86,14 @@
                                             </ul>
                                         </div>
                                     </div>
+                                    </div>
 
+                                    <div id="diagGroupPower">
                                     <div class="telemetry-grid-label mb-1">Power</div>
                                     <div class="d-grid gap-1 p-2 border border-danger rounded-2">
                                         <button class="btn btn-sm btn-warning text-dark fw-bold text-start" onclick="triggerSystemPower('reboot')"><i class="bi bi-arrow-clockwise me-1"></i>Reboot Appliance</button>
                                         <button class="btn btn-sm btn-danger fw-bold text-start" onclick="triggerSystemPower('poweroff')"><i class="bi bi-power me-1"></i>Power Off Station</button>
+                                    </div>
                                     </div>
                                 </div>
                                 <div class="col-md-9">

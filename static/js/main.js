@@ -4552,41 +4552,43 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnFuzzyHash', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
     { id: 'btnRunYaraScan', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
     { id: 'btnExtractGeolocation', section: 'ctxSecAnalyze', visible: item => item.is_dir },  // scans a whole folder of photos at once
-    // Artifact Parsers - the whole-folder scanners only ever apply to a directory...
-    { id: 'btnParseBrowserArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseRegistryHives', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseEvtxLogs', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParsePrefetch', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseJumplists', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseThumbcache', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseStickyNotes', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseWindowsActivity', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseSrum', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParsePowerShellHistory', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseFirewallLog', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseMacosLaunchd', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseWinsearch', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseWebcache', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseBits', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseRdpBitmapCache', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseRecycleBin', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseCryptoWallets', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseEmailArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnParseMobileArtifacts', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnLeappScan', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnExportLeappGeolocation', section: 'ctxSecArtifacts', visible: item => item.is_dir, disabledWhen: () => !activeCase },
-    { id: 'btnImportTakeout', section: 'ctxSecArtifacts', visible: item => item.is_dir },
-    { id: 'btnImportAppleExport', section: 'ctxSecArtifacts', visible: item => item.is_dir },
+    // Artifact Parsers, split into 4 platform-grouped sections (Windows / Linux & macOS /
+    // Mobile & Cloud Imports / Cross-Platform) so a single 33-item flat list isn't the default
+    // view - the whole-folder scanners only ever apply to a directory...
+    { id: 'btnParseBrowserArtifacts', section: 'ctxSecArtifactsGeneric', visible: item => item.is_dir },
+    { id: 'btnParseRegistryHives', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseEvtxLogs', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParsePrefetch', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseJumplists', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseThumbcache', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseStickyNotes', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseWindowsActivity', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseSrum', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParsePowerShellHistory', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseFirewallLog', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseMacosLaunchd', section: 'ctxSecArtifactsLinuxMac', visible: item => item.is_dir },
+    { id: 'btnParseWinsearch', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseWebcache', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseBits', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseRdpBitmapCache', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseRecycleBin', section: 'ctxSecArtifactsWindows', visible: item => item.is_dir },
+    { id: 'btnParseLinuxArtifacts', section: 'ctxSecArtifactsLinuxMac', visible: item => item.is_dir },
+    { id: 'btnParseCryptoWallets', section: 'ctxSecArtifactsGeneric', visible: item => item.is_dir },
+    { id: 'btnParseEmailArtifacts', section: 'ctxSecArtifactsGeneric', visible: item => item.is_dir },
+    { id: 'btnParseMobileArtifacts', section: 'ctxSecArtifactsMobile', visible: item => item.is_dir },
+    { id: 'btnLeappScan', section: 'ctxSecArtifactsMobile', visible: item => item.is_dir },
+    { id: 'btnExportLeappGeolocation', section: 'ctxSecArtifactsMobile', visible: item => item.is_dir, disabledWhen: () => !activeCase },
+    { id: 'btnImportTakeout', section: 'ctxSecArtifactsMobile', visible: item => item.is_dir },
+    { id: 'btnImportAppleExport', section: 'ctxSecArtifactsMobile', visible: item => item.is_dir },
     // ...while these are single-file, exact-name/extension-matched.
-    { id: 'btnParseLnk', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.lnk'), analysisTool: 'LNK Shortcut' },
-    { id: 'btnAnalyzeMft', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toUpperCase() === '$MFT' },
-    { id: 'btnParseUsnjrnl', section: 'ctxSecArtifacts', visible: item => !item.is_dir && (item.name.toUpperCase() === '$J' || item.name.toUpperCase().includes('USNJRNL')) },
-    { id: 'btnSqliteDissect', section: 'ctxSecArtifacts', visible: item => !item.is_dir && isSqliteFile(item.name), analysisTool: 'SQLite Dissect' },
-    { id: 'btnApkAnalyze', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.apk'), analysisTool: 'androguard APK Analysis' },
-    { id: 'btnWhatsappDecrypt', section: 'ctxSecArtifacts', visible: item => !item.is_dir && /\.(crypt12|crypt14|crypt15)$/i.test(item.name) },
-    { id: 'btnIpaAnalyze', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.ipa'), analysisTool: 'IPA Static Analysis (plist/mobileprovision/LIEF)' },
-    { id: 'btnBugreportParse', section: 'ctxSecArtifacts', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.zip'), analysisTool: 'Bugreport Deep Parse (dumpstate-py)' },
+    { id: 'btnParseLnk', section: 'ctxSecArtifactsWindows', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.lnk'), analysisTool: 'LNK Shortcut' },
+    { id: 'btnAnalyzeMft', section: 'ctxSecArtifactsWindows', visible: item => !item.is_dir && item.name.toUpperCase() === '$MFT' },
+    { id: 'btnParseUsnjrnl', section: 'ctxSecArtifactsWindows', visible: item => !item.is_dir && (item.name.toUpperCase() === '$J' || item.name.toUpperCase().includes('USNJRNL')) },
+    { id: 'btnSqliteDissect', section: 'ctxSecArtifactsGeneric', visible: item => !item.is_dir && isSqliteFile(item.name), analysisTool: 'SQLite Dissect' },
+    { id: 'btnApkAnalyze', section: 'ctxSecArtifactsMobile', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.apk'), analysisTool: 'androguard APK Analysis' },
+    { id: 'btnWhatsappDecrypt', section: 'ctxSecArtifactsMobile', visible: item => !item.is_dir && /\.(crypt12|crypt14|crypt15)$/i.test(item.name) },
+    { id: 'btnIpaAnalyze', section: 'ctxSecArtifactsMobile', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.ipa'), analysisTool: 'IPA Static Analysis (plist/mobileprovision/LIEF)' },
+    { id: 'btnBugreportParse', section: 'ctxSecArtifactsMobile', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.zip'), analysisTool: 'Bugreport Deep Parse (dumpstate-py)' },
     // Mobile & Memory
     { id: 'btnRunMvtIos', section: 'ctxSecMobileMemory', visible: item => item.is_dir },
     { id: 'btnRunMvtAndroid', section: 'ctxSecMobileMemory', visible: item => item.is_dir },
@@ -13544,6 +13546,159 @@ function goToGuidedWorkflow() {
     const navBtn = document.getElementById('helpNavWorkflow');
     if (navBtn) new bootstrap.Tab(navBtn).show();
 }
+
+// Settings search - a client-side index over every top-level accordion
+// section (Security/Case & Reporting/Network, auto-discovered via the
+// `.accordion-button.fw-bold` marker every real feature's collapse toggle
+// already carries) plus a handful of curated non-accordion landmarks
+// (Drive Management, and Diagnostics' own Service/Updates/Diagnostics/Power
+// groups, which have no accordion item to collapse/expand). Together these
+// are the "roughly 20 distinct configurable features" that made browse-only
+// discovery slow across Settings' 5 categories. Built lazily on first use
+// and cached - the accordion-button markup itself is static, only the
+// content inside each collapsed body loads/changes dynamically.
+let settingsSearchIndexCache = null;
+let settingsSearchCurrentResults = [];
+
+const SETTINGS_SEARCH_PANE_TO_NAV = {
+    'settings-pane-auth': 'settingsNavAuth',
+    'settings-pane-eject': 'settingsNavEject',
+    'settings-pane-diag': 'settingsNavDiag',
+    'settings-pane-casereporting': 'settingsNavCaseReporting',
+    'settings-pane-network': 'settingsNavNetwork',
+};
+
+// keywords covers terms an examiner would plausibly type that don't
+// literally appear in the (deliberately short) button label - e.g. several
+// accordion items were condensed 2026-08-26 into broader labels ("Analysis
+// & IOC Lists" covers Keyword/Hash/URL/YARA Lists + MalwareBazaar), so a
+// literal-label-only match would miss exactly the specific terms someone
+// searching for one of those sub-features would type.
+const SETTINGS_SEARCH_EXTRA_ENTRIES = [
+    { label: 'Drive Management (Write Blocker / Safe Detach)', navBtnId: 'settingsNavEject', scrollTargetId: 'driveMgmtGroup', keywords: 'eject unlock protect readonly' },
+    { label: 'Service Controls (Restart Service, Reload Touch Kiosk)', navBtnId: 'settingsNavDiag', scrollTargetId: 'diagGroupService', keywords: 'restart reload kiosk' },
+    { label: 'Software Updates (Check for Updates, Update App/OS, Release Notes)', navBtnId: 'settingsNavDiag', scrollTargetId: 'diagGroupUpdates', keywords: 'update upgrade git changelog version' },
+    { label: 'Diagnostic Commands & Tool Versions', navBtnId: 'settingsNavDiag', scrollTargetId: 'diagGroupDiagnostics', keywords: 'purge terminal log dmesg lsusb tool versions' },
+    { label: 'Power Controls (Reboot / Power Off)', navBtnId: 'settingsNavDiag', scrollTargetId: 'diagGroupPower', keywords: 'reboot restart shutdown poweroff' },
+];
+
+function buildSettingsSearchIndex() {
+    const index = [];
+    document.querySelectorAll('#settingsTabContent .accordion-button.fw-bold').forEach(btn => {
+        const targetSel = btn.getAttribute('data-bs-target');
+        if (!targetSel) return;
+        const pane = btn.closest('.tab-pane');
+        const navBtnId = pane ? SETTINGS_SEARCH_PANE_TO_NAV[pane.id] : null;
+        if (!navBtnId) return;
+        const navBtn = document.getElementById(navBtnId);
+        const label = btn.textContent.trim();
+        const categoryLabel = navBtn ? navBtn.textContent.trim() : '';
+        const keywords = btn.dataset.searchKeywords || '';
+        index.push({
+            label,
+            categoryLabel,
+            navBtnId,
+            targetId: targetSel.replace(/^#/, ''),
+            scrollTargetId: null,
+            searchText: `${label} ${categoryLabel} ${keywords}`.toLowerCase(),
+        });
+    });
+    SETTINGS_SEARCH_EXTRA_ENTRIES.forEach(entry => {
+        const navBtn = document.getElementById(entry.navBtnId);
+        const categoryLabel = navBtn ? navBtn.textContent.trim() : '';
+        index.push({
+            label: entry.label,
+            categoryLabel,
+            navBtnId: entry.navBtnId,
+            targetId: null,
+            scrollTargetId: entry.scrollTargetId,
+            searchText: `${entry.label} ${categoryLabel} ${entry.keywords || ''}`.toLowerCase(),
+        });
+    });
+    return index;
+}
+
+function handleSettingsSearchKeydown(ev) {
+    if (ev.key === 'Escape') {
+        clearSettingsSearch();
+    } else if (ev.key === 'Enter' && settingsSearchCurrentResults.length === 1) {
+        goToSettingsSearchResult(0);
+    }
+}
+
+function clearSettingsSearch() {
+    const input = document.getElementById('settingsSearchInput');
+    if (input) { input.value = ''; input.focus(); }
+    filterSettingsSearch();
+}
+
+function filterSettingsSearch() {
+    const input = document.getElementById('settingsSearchInput');
+    const resultsEl = document.getElementById('settingsSearchResults');
+    const clearBtn = document.getElementById('settingsSearchClearBtn');
+    if (!input || !resultsEl) return;
+    const query = input.value.trim().toLowerCase();
+    if (clearBtn) clearBtn.style.display = query ? '' : 'none';
+    if (!query) {
+        resultsEl.style.display = 'none';
+        resultsEl.innerHTML = '';
+        settingsSearchCurrentResults = [];
+        return;
+    }
+    if (!settingsSearchIndexCache) settingsSearchIndexCache = buildSettingsSearchIndex();
+    settingsSearchCurrentResults = settingsSearchIndexCache.filter(entry => entry.searchText.includes(query));
+    if (!settingsSearchCurrentResults.length) {
+        resultsEl.innerHTML = '<div class="list-group-item bg-app-dark text-subtle border-secondary small">No matching settings found.</div>';
+        resultsEl.style.display = '';
+        return;
+    }
+    resultsEl.innerHTML = settingsSearchCurrentResults.map((entry, idx) =>
+        `<button type="button" class="list-group-item list-group-item-action bg-app-dark text-light border-secondary small" onclick="goToSettingsSearchResult(${idx})">` +
+        `<span class="text-info">${escapeHtmlForPopup(entry.categoryLabel)}</span> &raquo; ${escapeHtmlForPopup(entry.label)}</button>`
+    ).join('');
+    resultsEl.style.display = '';
+}
+
+function goToSettingsSearchResult(idx) {
+    const entry = settingsSearchCurrentResults[idx];
+    if (!entry) return;
+    const navBtn = document.getElementById(entry.navBtnId);
+    if (navBtn) new bootstrap.Tab(navBtn).show();
+    const resultsEl = document.getElementById('settingsSearchResults');
+    if (resultsEl) { resultsEl.style.display = 'none'; resultsEl.innerHTML = ''; }
+    const input = document.getElementById('settingsSearchInput');
+    const clearBtn = document.getElementById('settingsSearchClearBtn');
+    if (input) input.value = '';
+    if (clearBtn) clearBtn.style.display = 'none';
+    // A short delay so the tab switch / accordion expand finishes rendering
+    // before we measure its position to scroll to - same pattern
+    // goToDriveManagement()'s own callers already rely on elsewhere.
+    setTimeout(() => {
+        let target = null;
+        if (entry.targetId) {
+            const collapseEl = document.getElementById(entry.targetId);
+            if (collapseEl) {
+                if (!collapseEl.classList.contains('show')) new bootstrap.Collapse(collapseEl, { show: true });
+                target = collapseEl.closest('.accordion-item') || collapseEl;
+            }
+        } else if (entry.scrollTargetId) {
+            target = document.getElementById(entry.scrollTargetId);
+        }
+        if (target) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            target.classList.add('settings-search-highlight');
+            setTimeout(() => target.classList.remove('settings-search-highlight'), 1600);
+        }
+    }, 350);
+}
+
+// Clicking anywhere outside the search box/results dropdown closes it.
+document.addEventListener('click', ev => {
+    const resultsEl = document.getElementById('settingsSearchResults');
+    if (!resultsEl || resultsEl.style.display === 'none') return;
+    if (ev.target.closest && (ev.target.closest('#settingsSearchResults') || ev.target.closest('#settingsSearchInput'))) return;
+    resultsEl.style.display = 'none';
+});
 
 // Shows the write-block status of whichever drive is selected in Drive
 // Management's own dropdown - deliberately a fresh /api/system_info lookup
