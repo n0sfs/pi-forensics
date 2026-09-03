@@ -21,6 +21,22 @@ file after updating to see what changed.
 
 ---
 
+## [1.30.3] - 2026-09-03
+
+### Fixed
+
+- **A malformed value from the Live Collection USB Windows collector could hang File Explorer.**
+  Verifying real collected data end-to-end (a follow-up to the real-hardware Live Collection USB
+  testing in 1.30.2) found one autorun entry whose recorded "value" was a deeply-nested Windows
+  object rather than plain text - a leftover from before this same session's collector-script fix.
+  Turning that into text with no size limit produced a single field several megabytes in size, which
+  was large enough to hang both the app's own API and the File Explorer page trying to display it.
+  Every place that builds this kind of summary text (processes, network connections, services,
+  scheduled tasks, and autorun entries) now caps how much it will ever try to display, and shows a
+  short, clear placeholder instead of an unexpected object - the real data for that one entry is
+  gone (it was never real forensic content to begin with, just a leaked internal detail), but every
+  category now loads normally.
+
 ## [1.30.2] - 2026-09-03
 
 ### Fixed

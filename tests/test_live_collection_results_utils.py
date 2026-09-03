@@ -304,3 +304,154 @@ def test_hash_list_cross_reference_missing_sha256_is_skipped():
         'extra': {'executable_path': 'C:\\a.exe', 'sha256': None},
     }]
     assert lcru.build_hash_list_match_records(process_records, _fake_hash_sets(), run_timestamp=1.0) == []
+
+
+# --- _safe_value_text / _safe_extra: the 2026-09-03 real-world bug fix ---
+#
+# Found live, not hypothetical: a genuine windows_collector.ps1 run (before
+# that script's own PSDrive metadata-leak fix landed) produced one
+# autoruns.json entry whose "value" field was a deeply-nested PSDriveInfo
+# object instead of a plain string. The old code's bare f-string
+# interpolation (`f"{a.get('value', '')} (...)"`) implicitly called str()
+# on it with no cap at all, producing a single ~4MB field that hung both a
+# direct API client and the real File Explorer UI trying to render it -
+# reproduced here with a much smaller (but still non-scalar) stand-in,
+# since the point is proving the *shape* of leak is handled, not
+# replicating the exact byte count.
+
+def test_safe_value_text_passes_short_scalars_through_unchanged():
+    assert lcru._safe_value_text("C:\\Windows\\System32\\evil.exe") == "C:\\Windows\\System32\\evil.exe"
+    assert lcru._safe_value_text(42) == "42"
+    assert lcru._safe_value_text(None) == ""
+
+
+def test_safe_value_text_caps_a_long_string():
+    text = lcru._safe_value_text("A" * 1000)
+    assert len(text) < 1000
+    assert text.startswith("A" * 500)
+    assert "500 more character(s) omitted" in text
+
+
+def test_safe_value_text_never_str_ifies_a_nested_object_whole():
+    # This is the exact shape of the real leaked PSDriveInfo object -
+    # nested dicts/lists, not a plain scalar.
+    leaked = {"Credential": {"Password": None, "UserName": None}, "Provider": {"Drives": ["HKLM", "HKCU"]}}
+    text = lcru._safe_value_text(leaked)
+    assert "Credential" not in text  # never dumped the real nested content
+    assert "unexpected object value with 2 field(s)" in text
+    assert len(text) < 200  # a short, bounded placeholder, not a multi-KB/MB dump
+
+
+def test_safe_value_text_handles_a_leaked_list_too():
+    text = lcru._safe_value_text(["HKLM", "HKCU"])
+    assert "unexpected list value with 2 field(s)" in text
+
+
+def test_safe_extra_leaves_plain_scalars_untouched():
+    raw = {"pid": 100, "name": "svchost.exe", "path": None}
+    assert lcru._safe_extra(raw) == raw
+
+
+def test_safe_extra_replaces_a_nested_value_with_a_bounded_placeholder():
+    raw = {"name": "PSDrive", "value": {"Provider": {"Drives": ["HKLM", "HKCU"]}}}
+    safe = lcru._safe_extra(raw)
+    assert safe["name"] == "PSDrive"
+    assert isinstance(safe["value"], str)
+    assert "unexpected object value" in safe["value"]
+    assert "Drives" not in safe["value"]
+
+
+def test_safe_extra_non_dict_input_returns_empty_dict():
+    assert lcru._safe_extra("not a dict") == {}
+    assert lcru._safe_extra(None) == {}
+
+
+def test_parse_autoruns_survives_a_real_powershell_object_leak(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "autoruns.json", [
+        {"source": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", "name": "Updater",
+         "value": "C:\\Temp\\evil.exe --beacon"},
+        # The real leaked shape: PowerShell's Get-ItemProperty synthetic
+        # PSDrive property, slipping through as its own spurious "autorun"
+        # entry because the collector's old metadata filter regex missed it.
+        {"source": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", "name": "PSDrive",
+         "value": {"Credential": {"Password": None, "UserName": None},
+                    "Provider": {"Drives": ["HKLM", "HKCU"], "Name": "Registry"}}},
+    ])
+
+    records = lcru._parse_autoruns(run_dir, ts=1756598400.0)
+
+    assert len(records) == 2
+    clean = next(r for r in records if r['title'] == 'Updater')
+    assert 'evil.exe --beacon' in clean['value']
+
+    leaked = next(r for r in records if r['title'] == 'PSDrive')
+    # The record still exists (not silently dropped) but never carries the
+    # raw nested object anywhere - not in `value`, not in `extra`.
+    assert len(leaked['value']) < 200
+    assert 'Credential' not in leaked['value']
+    assert 'Drives' not in leaked['value']
+    assert isinstance(leaked['extra']['value'], str)
+    assert 'Drives' not in leaked['extra']['value']
+
+
+def test_parse_services_survives_a_nested_state_field(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "services.json", [
+        {"name": "wuauserv", "display_name": "Windows Update",
+         "state": {"unexpected": "nested object"}, "start_mode": "Auto", "path": "C:\\svchost.exe"},
+    ])
+    records = lcru._parse_services(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert 'unexpected object value' in records[0]['value']
+    assert len(records[0]['value']) < 300
+
+
+def test_parse_network_connections_survives_a_nested_state_field(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "network_connections.json", [
+        {"protocol": "TCP", "local_address": "10.0.0.5", "local_port": 1234,
+         "state": {"unexpected": "nested object"}},
+    ])
+    records = lcru._parse_network_connections(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert 'unexpected object value' in records[0]['value']
+
+
+def test_parse_mapped_drives_survives_a_nested_status_field(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "mapped_drives.json", [
+        {"local_path": "Z:", "remote_path": "\\\\fileserver\\share", "status": {"unexpected": "nested"}},
+    ])
+    records = lcru._parse_mapped_drives(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert 'unexpected object value' in records[0]['value']
+
+
+def test_parse_processes_survives_a_nested_command_line_field(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "processes.json", [
+        {"pid": 100, "parent_pid": 4, "name": "svchost.exe",
+         "executable_path": "C:\\svchost.exe", "command_line": {"unexpected": "nested"}},
+    ])
+    records = lcru._parse_processes(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert 'unexpected object value' in records[0]['value']
+    assert isinstance(records[0]['extra']['command_line'], str)
+
+
+def test_parse_scheduled_tasks_survives_a_nested_actions_field(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "scheduled_tasks.json", [
+        {"task_name": "\\Microsoft\\Windows\\UpdateCheck", "state": "Ready",
+         "actions": {"unexpected": "nested"}},
+    ])
+    records = lcru._parse_scheduled_tasks(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert 'unexpected object value' in records[0]['value']
