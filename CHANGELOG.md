@@ -21,6 +21,21 @@ file after updating to see what changed.
 
 ---
 
+## [1.30.0] - 2026-09-03
+
+### Added
+
+- **Reporting's header row now has a customizable set of stat cards**, instead of always showing
+  just Total Cases. Settings > Case & Reporting > Report Configuration gained a "Reporting Header
+  Stats" picker with 4 options: Total Cases (the existing status-breakdown chart, still on by
+  default), Active Cases (cases not yet Closed/Archived), Evidence Items (total acquisition events
+  across every case), and Reports Exported (a new counter - report PDF/HTML exports are now logged
+  to the Audit Trail, so this only counts exports made from this point forward). Every existing
+  station keeps showing exactly Total Cases until you opt into more, so nothing changes unless you
+  go pick something.
+
+---
+
 ## [1.29.0] - 2026-09-03
 
 Continuing the usability pass from v1.28.0 - this time File Explorer's own toolbar/menu density,
