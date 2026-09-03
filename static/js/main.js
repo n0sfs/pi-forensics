@@ -764,7 +764,7 @@ const TOOL_REFERENCE_GROUPS = [
         group: "File Recovery",
         tools: [
             ["PhotoRec", "Recovers files by matching known file signatures in raw data, even on damaged/reformatted media. Loses original filenames."],
-            ["extundelete", "Recovers deleted files from ext2/3/4 Linux filesystems by reading the filesystem journal - can restore original filenames/paths, unlike carving tools."],
+            ["extundelete", "Recovers deleted files from ext2/3/4 Linux filesystems by reading the filesystem journal - can restore original filenames/paths, unlike carving tools. This station's build is unmaintained since ~2013 and can crash on a filesystem with modern ext4 features (metadata_csum/64bit) - PhotoRec is a working fallback if it fails."],
             ["foremost / scalpel", "Alternative file carvers to PhotoRec - narrower format support but sometimes faster. scalpel is multithreaded and uses a curated signature list (jpg/png/gif/pdf/zip by default)."],
             ["TestDisk (partition analysis)", "Read-only listing of partitions TestDisk can find on a device or image - never writes anything back, unlike TestDisk's separate (and not exposed here) repair mode."],
             ["Quick Triage Scan", "Scans a device or image for emails, URLs, IP addresses, card-like numbers, and phone numbers - built in, no external tool needed."],
@@ -14865,7 +14865,7 @@ function updateRecoveryToolControls() {
 
     const HELP = {
         photorec: "Recovers files by matching known file signatures - works even on formatted or damaged drives, but recovered files lose their original names/folder structure.",
-        extundelete: "Recovers deleted files from ext2/3/4 Linux filesystems via the filesystem journal - can restore original filenames/paths, unlike carving tools. Won't help on FAT/NTFS/APFS/HFS+.",
+        extundelete: "Recovers deleted files from ext2/3/4 Linux filesystems via the filesystem journal - can restore original filenames/paths, unlike carving tools. Won't help on FAT/NTFS/APFS/HFS+. This station's extundelete build is old (unmaintained since ~2013) and can crash against a filesystem using modern ext4 features (metadata_csum/64bit) - if it fails, try PhotoRec instead, which isn't affected.",
         foremost: "Alternative to PhotoRec - narrower format support, sometimes faster for common types. Scans for all supported file types by default.",
         scalpel: "Multithreaded file carving, often faster than PhotoRec/foremost on larger images - but only recovers the types enabled in scalpel.conf (jpg/png/gif/pdf/zip by default).",
         triage_scan: "Built-in scan for emails, URLs, IP addresses, card-like numbers, and phone numbers - no external tool, works on any system. Writes one text file per category.",

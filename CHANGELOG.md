@@ -21,6 +21,21 @@ file after updating to see what changed.
 
 ---
 
+## [1.30.1] - 2026-09-03
+
+### Fixed
+
+- **File Recovery's extundelete tool now tells you what actually went wrong** when it fails,
+  instead of the same generic "exited with code N" message for every failure. Confirmed live
+  against a real ext4 test image: this station's extundelete build (the only version Debian
+  packages, unmaintained since around 2013) can crash outright on a filesystem using ext4 features
+  that are enabled by default on most modern Linux installs (`metadata_csum`/`64bit`), rather than
+  exiting cleanly. When that happens, the job log and the Tool Reference help text now say so
+  directly and point you at PhotoRec as a working alternative (it recovers by file-signature
+  carving, not by reading filesystem metadata, so it isn't affected by this).
+
+---
+
 ## [1.30.0] - 2026-09-03
 
 ### Added

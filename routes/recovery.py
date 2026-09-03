@@ -161,7 +161,31 @@ def execution_worker_extundelete(source, dest_dir, report_file_path, report_data
             report_data["output_size_bytes"] = final_size
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
-            append_log(f"[-] extundelete exited with code {proc.returncode} - is the source an ext2/3/4 filesystem?")
+            if proc.returncode is not None and proc.returncode < 0:
+                # A negative returncode means the process was killed by a
+                # signal (Python subprocess convention: -N == signal N), not
+                # a clean "this isn't ext2/3/4" refusal - confirmed live
+                # (2026-09-03) against a real, hand-built ext4 image:
+                # extundelete 0.2.4 (the only version Debian trixie packages
+                # - its own upstream has had no real release since ~2013)
+                # reliably SIGSEGVs (-11) against a filesystem formatted with
+                # modern ext4 features (metadata_csum/64bit/orphan_file) that
+                # current mke2fs enables by default - i.e. almost any real
+                # ext4 filesystem from a reasonably modern Linux install.
+                # Reformatting a synthetic test image with those features
+                # disabled let the exact same recovery complete successfully
+                # and recover byte-identical files, confirming this is a
+                # genuine extundelete/libext2fs version-compatibility gap in
+                # the tool itself, not a bug in this app's own invocation of
+                # it - so the guidance here is "try a different tool," not
+                # "check your source path."
+                append_log(f"[-] extundelete crashed (signal {-proc.returncode}) rather than exiting cleanly - "
+                           f"this usually means the source uses modern ext4 features (metadata_csum/64bit) "
+                           f"that this station's extundelete build (0.2.4, unmaintained since ~2013) can't "
+                           f"parse. Try PhotoRec instead - it carves by file signature, not filesystem "
+                           f"metadata, so it isn't affected by this.")
+            else:
+                append_log(f"[-] extundelete exited with code {proc.returncode} - is the source an ext2/3/4 filesystem?")
             report_data["acquisition_status"] = "FAILED"
 
         _write_report(report_file_path, report_data, append_log)
