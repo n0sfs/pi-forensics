@@ -577,11 +577,6 @@
                         <span class="nav-icon-wrap"><i class="bi bi-hdd-stack"></i><span class="nav-badge" id="navBadgeAcquisition" style="display:none;"></span></span><span class="tab-label">Forensic Acquisition</span>
                     </button>
                 </li>
-                <li class="nav-item" role="presentation" id="navItemLiveCollection">
-                    <button class="nav-link" id="live-collection-tab" data-bs-toggle="tab" data-bs-target="#live-collection-app" type="button" role="tab" title="Live Collection USB">
-                        <span class="nav-icon-wrap"><i class="bi bi-usb-drive"></i><span class="nav-badge" id="navBadgeLiveCollection" style="display:none;"></span></span><span class="tab-label">Live Collection USB</span>
-                    </button>
-                </li>
                 <li class="nav-item" role="presentation" id="navItemMobile">
                     <button class="nav-link" id="mobile-tab" data-bs-toggle="tab" data-bs-target="#mobile-app" type="button" role="tab" onclick="refreshMobileDevices()" title="Mobile Forensics">
                         <span class="nav-icon-wrap"><i class="bi bi-phone"></i><span class="nav-badge" id="navBadgeMobile" style="display:none;"></span></span><span class="tab-label">Mobile Forensics</span>
@@ -590,6 +585,16 @@
                 <li class="nav-item" role="presentation" id="navItemRecovery">
                     <button class="nav-link" id="ddrescue-tab" data-bs-toggle="tab" data-bs-target="#ddrescue-app" type="button" role="tab" title="File Recovery (PhotoRec, extundelete, foremost, scalpel)">
                         <span class="nav-icon-wrap"><i class="bi bi-life-preserver"></i><span class="nav-badge" id="navBadgeRecovery" style="display:none;"></span></span><span class="tab-label">File Recovery</span>
+                    </button>
+                </li>
+                <!-- Moved below File Recovery/Mobile (2026-09-03 usability pass) - Live
+                     Collection USB is a real but occasional/advanced workflow (build a USB,
+                     physically move it to a separate machine, run collectors, bring it back),
+                     and its old 2nd position implied it was a required early step for every
+                     examiner, ahead of the far more common Mobile/Recovery paths. -->
+                <li class="nav-item" role="presentation" id="navItemLiveCollection">
+                    <button class="nav-link" id="live-collection-tab" data-bs-toggle="tab" data-bs-target="#live-collection-app" type="button" role="tab" title="Live Collection USB">
+                        <span class="nav-icon-wrap"><i class="bi bi-usb-drive"></i><span class="nav-badge" id="navBadgeLiveCollection" style="display:none;"></span></span><span class="tab-label">Live Collection USB</span>
                     </button>
                 </li>
                 <li class="nav-item" role="presentation" id="navItemExplorer">

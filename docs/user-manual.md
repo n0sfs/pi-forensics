@@ -727,6 +727,13 @@ The **Reporting** tab is where a case's data lives once collected — and where 
 only shows content once a case is active (create or select one via the Case button, same as
 everywhere else).
 
+Most of what you do here saves immediately (Case Notes, the Physical Custody Log, tagging, and
+attaching a file from File Explorer's own right-click menu) — but Report Narrative, Case Status,
+Case Details, and the exhibit checklist/captions/reference URLs in Files & Artifacts only persist
+when you click **Save Report Changes**. Reporting shows an "Unsaved changes" badge next to that
+button the moment any of those have edits, and warns before you close the tab or switch to a
+different case with unsaved changes still pending, so nothing gets lost silently.
+
 - **Overview** (the default view) — a dashboard for the case: evidence item count, tag counts
   (Notable items called out), analysis activity, case notes, case age, plus two case-wide actions:
   **Verify All Evidence** (re-hashes every completed acquisition's own output file and compares it
@@ -744,9 +751,9 @@ everywhere else).
   integrity hash automatically, and editing a note preserves the original text rather than
   overwriting it (an edit history, not a silent change). This becomes the report's "Forensic
   Analysis / Steps Taken" section.
-- **Custody Log** — a dedicated, **append-only** record of *physical* evidence handoffs between
-  people (from/to custodian, reason, method, notes) — genuinely distinct from both Case Notes above
-  (your own investigative notes) and Audit Trail below (a log of actions taken in the software).
+- **Physical Custody Log** — a dedicated, **append-only** record of *physical* evidence handoffs
+  between people (from/to custodian, reason, method, notes) — genuinely distinct from both Case Notes
+  above (your own investigative notes) and Audit Trail below (a log of actions taken in the software).
   There's no edit option by design; a correction is logged as a new entry.
 - **Files & Artifacts** — every exhibit attached to the case (with thumbnails, tags, and
   analysis-tool history shown inline), plus other files discovered sitting in the case folder that
