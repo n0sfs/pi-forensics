@@ -474,6 +474,14 @@
         .help-content { flex: 1; min-width: 0; padding: 20px; }
         .help-doc-frame { width: 100%; height: clamp(420px, 78vh, 950px); border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-dark); }
 
+        /* Settings search - the brief pulse a jumped-to result gets so it's
+           obvious which of ~20 scattered settings the search just landed on. */
+        .settings-search-highlight { animation: settingsSearchPulse 1.4s ease; border-radius: 6px; }
+        @keyframes settingsSearchPulse {
+            0% { box-shadow: 0 0 0 0 rgba(var(--accent-cyan-rgb), 0.9); }
+            100% { box-shadow: 0 0 0 14px rgba(var(--accent-cyan-rgb), 0); }
+        }
+
         @media (max-width: 767.98px) {
             /* File Explorer's folder tree: hidden by default below this
                breakpoint (matches the main sidebar's own narrow-screen
