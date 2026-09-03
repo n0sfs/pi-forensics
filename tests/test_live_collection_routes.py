@@ -24,6 +24,7 @@ from werkzeug.security import generate_password_hash
 
 import core.config as config
 import core.jobs as jobs
+import core.paths as paths
 import routes.acquisition as acq
 from tests.conftest import RemoteTestClient, login_user_session
 
@@ -252,3 +253,127 @@ class TestImportWorkerParseAndSummaryWiring:
         types = {r['artifact_type'] for r in recorded['records']}
         assert 'live_collection_process' in types
         assert 'live_collection_hash_list_match' in types
+
+
+class TestBuildWorkerUnmountWarningHandling:
+    """execution_worker_build_collection_usb()'s own handling of a warning
+    from unmount_collection_partition() (2026-09-03) - calls the worker
+    function directly (not through the route/a real thread), mirroring
+    TestImportWorkerParseAndSummaryWiring's own pattern above, to prove the
+    real bug fix this session found live against a real physical USB drive:
+    a slow/uncertain unmount on its own must not report the whole build as
+    Failed when the actual valuable work (wipe/format/asset copy) already
+    succeeded - but it must still be surfaced as a clear, visible caveat,
+    not silently swallowed either."""
+
+    def _run_build(self, monkeypatch, tmp_path, unmount_return):
+        monkeypatch.setattr(acq, "check_existing_collection_volume", lambda device: {"already_prepared": True, "reason": "test fast-path"})
+        monkeypatch.setattr(acq, "_unlock_device_for_write", lambda device: None)
+        monkeypatch.setattr(acq, "_relock_device_after_write", lambda device: None)
+        monkeypatch.setattr(acq, "unmount_all_partitions", lambda device: None)
+        monkeypatch.setattr(acq, "mount_collection_partition", lambda *a, **k: {"success": True, "error": None})
+        monkeypatch.setattr(acq, "unmount_collection_partition", lambda *a, **k: unmount_return)
+        monkeypatch.setattr(acq, "log_chain_of_custody", lambda *a, **k: None)
+        # Point every vendored-asset directory at somewhere that doesn't
+        # exist - the worker's own established "not vendored, log and
+        # continue" tolerance means the copy blocks cleanly no-op, so this
+        # test only needs to exercise the unmount-result handling itself.
+        missing = str(tmp_path / "does_not_exist")
+        monkeypatch.setattr(acq, "LIVE_COLLECTION_UAC_DIR", missing)
+        monkeypatch.setattr(acq, "LIVE_COLLECTION_ASSETS_DIR", missing)
+        monkeypatch.setattr(acq, "LIVE_COLLECTION_MEMORY_DIR", missing)
+        monkeypatch.setattr(acq, "LIVE_COLLECTION_BUILD_MOUNTPOINT", str(tmp_path / "mnt"))
+
+        acq.execution_worker_build_collection_usb("/dev/sdz", {"model": "Test", "serial": "1", "size": "1 GB"})
+        return jobs.snapshot_job()
+
+    def test_a_clean_unmount_reports_success_with_no_warning_in_the_log(self, monkeypatch, tmp_path):
+        job = self._run_build(monkeypatch, tmp_path, {"success": True, "warning": None})
+        assert job["status"] == "Completed Successfully"
+        # Deliberately not asserting "[!]" is absent entirely - the
+        # missing-vendored-assets tolerance (LIVE_COLLECTION_UAC_DIR etc.
+        # pointed at a nonexistent path above) legitimately logs its own
+        # unrelated "[!] ... was not found on this station" lines. What
+        # this test actually needs to prove is that a CLEAN unmount never
+        # adds the unmount-specific warning text on top of those.
+        assert "double-check it mounts cleanly" not in job["log"]
+
+    def test_an_unmount_warning_does_not_fail_the_job_but_is_logged(self, monkeypatch, tmp_path):
+        job = self._run_build(monkeypatch, tmp_path, {
+            "success": False,
+            "warning": "umount did not finish within 90s - it may still be running in the background.",
+        })
+        # The real fix: a slow/uncertain unmount alone must not turn an
+        # otherwise-fully-successful build into a reported failure.
+        assert job["status"] == "Completed Successfully"
+        assert "umount did not finish within 90s" in job["log"]
+        assert "double-check it mounts cleanly" in job["log"]
+
+
+class TestBuildWorkerChainOfCustodyLoggingFromBackgroundThread:
+    """execution_worker_build_collection_usb()'s own completion
+    log_chain_of_custody() call (2026-09-03) - a real bug found live
+    against a real physical USB drive: the build itself fully succeeded
+    (wipe/format/copy all completed, "[+] Live Collection USB build
+    completed successfully." was logged, status was already set to
+    "Completed Successfully"), but the very next line -
+    log_chain_of_custody("live_collection_usb_built", ...) with no explicit
+    source_ip/user - raised "Working outside of application context" since
+    it ran inside this background worker thread, which has no active Flask
+    request. The worker's own outer exception handler then caught that and
+    overwrote the already-correct status back to "Failed" - reporting a
+    genuine success as a failure. Fixed by capturing source_ip/user in the
+    real request thread (start_build_collection_usb()) before spawning the
+    worker, then threading them through explicitly - the same established
+    pattern already used elsewhere in this file for this exact class of
+    bug (see e.g. the decrypted-source cleanup thread).
+
+    Deliberately does NOT mock log_chain_of_custody (unlike every other
+    test in this file) - the whole point is exercising the REAL function,
+    since a mocked version could never have caught this in the first
+    place."""
+
+    def _run_build(self, monkeypatch, tmp_path, source_ip, user):
+        monkeypatch.setattr(acq, "check_existing_collection_volume", lambda device: {"already_prepared": True, "reason": "test fast-path"})
+        monkeypatch.setattr(acq, "_unlock_device_for_write", lambda device: None)
+        monkeypatch.setattr(acq, "_relock_device_after_write", lambda device: None)
+        monkeypatch.setattr(acq, "unmount_all_partitions", lambda device: None)
+        monkeypatch.setattr(acq, "mount_collection_partition", lambda *a, **k: {"success": True, "error": None})
+        monkeypatch.setattr(acq, "unmount_collection_partition", lambda *a, **k: {"success": True, "warning": None})
+        missing = str(tmp_path / "does_not_exist")
+        monkeypatch.setattr(acq, "LIVE_COLLECTION_UAC_DIR", missing)
+        monkeypatch.setattr(acq, "LIVE_COLLECTION_ASSETS_DIR", missing)
+        monkeypatch.setattr(acq, "LIVE_COLLECTION_MEMORY_DIR", missing)
+        monkeypatch.setattr(acq, "LIVE_COLLECTION_BUILD_MOUNTPOINT", str(tmp_path / "mnt"))
+        log_file = tmp_path / "chain_of_custody.log"
+        monkeypatch.setattr(paths, "COC_LOG_FILE", str(log_file))
+
+        acq.execution_worker_build_collection_usb(
+            "/dev/sdz", {"model": "Test", "serial": "1", "size": "1 GB"},
+            source_ip=source_ip, user=user,
+        )
+        return jobs.snapshot_job(), log_file
+
+    def test_the_old_no_context_call_shape_reproduces_the_real_crash(self, monkeypatch, tmp_path):
+        # Simulates the PRE-FIX call (no source_ip/user given at all, so
+        # log_chain_of_custody() falls back to reading request/g, which
+        # don't exist here - same as the real background thread) - proves
+        # the exact bug this session found live, not just that the fix
+        # works in isolation.
+        job, log_file = self._run_build(monkeypatch, tmp_path, source_ip=None, user=None)
+        assert job["status"] == "Failed"
+        assert "Working outside of application context" in job["log"]
+        # And crucially: the actual build work already fully succeeded
+        # before this - the bug is purely in how it gets *reported*.
+        assert "[+] Live Collection USB build completed successfully." in job["log"]
+
+    def test_explicit_source_ip_and_user_avoids_the_crash_and_writes_a_real_log_entry(self, monkeypatch, tmp_path):
+        job, log_file = self._run_build(monkeypatch, tmp_path, source_ip="203.0.113.5", user="test_examiner")
+        assert job["status"] == "Completed Successfully"
+        assert "Working outside of application context" not in job["log"]
+
+        assert log_file.is_file()
+        log_contents = log_file.read_text()
+        assert "live_collection_usb_built" in log_contents
+        assert "203.0.113.5" in log_contents
+        assert "test_examiner" in log_contents
