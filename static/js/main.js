@@ -67,6 +67,64 @@ let currentAttachedFilesList = [];
 let currentAttachmentCaptions = {};
 let currentReferenceUrlsList = [];
 
+// Tracks whether Reporting has edits that only persist via the explicit
+// "Save Report Changes" button (Report Narrative, Case Status, Case
+// Details/custom fields, and the Files & Artifacts exhibit checklist/
+// captions/reference URLs) - unlike Case Notes, Custody Log, tags, and
+// "Attach to Case" from File Explorer, which all save immediately. See
+// markReportingDirty()/clearReportingDirty() below, and
+// #reportUnsavedIndicator in reporting.html.
+let reportHasUnsavedChanges = false;
+
+function markReportingDirty() {
+    if (reportHasUnsavedChanges) return;
+    reportHasUnsavedChanges = true;
+    const indicator = document.getElementById('reportUnsavedIndicator');
+    if (indicator) indicator.style.display = '';
+}
+
+function clearReportingDirty() {
+    reportHasUnsavedChanges = false;
+    const indicator = document.getElementById('reportUnsavedIndicator');
+    if (indicator) indicator.style.display = 'none';
+}
+
+// Delegated rather than one listener per field: #repNarrativePane holds
+// Case Status, Case Details (renderCustomFieldsForCase() rebuilds its own
+// inputs on every case load, so a per-field listener would need
+// re-attaching every time), and all 7 narrative textareas - one listener
+// on the pane covers all of them, and setting .value programmatically
+// (loadCaseForEditing() populating fresh case data) never fires input/
+// change, so this can't mistake a case reload for a real edit.
+document.addEventListener('input', (ev) => {
+    if (ev.target.closest && ev.target.closest('#repNarrativePane')) markReportingDirty();
+});
+document.addEventListener('change', (ev) => {
+    if (ev.target.closest && ev.target.closest('#repNarrativePane')) markReportingDirty();
+});
+
+// beforeunload only guards a real navigation/refresh/tab-close - switching
+// between this app's own sidebar tabs is a client-side show/hide with no
+// page reload, so it never fires and never needs to (the DOM keeps
+// whatever was typed). Switching or clearing the ACTIVE CASE is different -
+// that's about to overwrite every field this flag tracks with different
+// data - see confirmDiscardUnsavedReportingChanges() below.
+window.addEventListener('beforeunload', (ev) => {
+    if (!reportHasUnsavedChanges) return;
+    ev.preventDefault();
+    ev.returnValue = '';
+});
+
+// Called at the top of selectCase()/createCase()/clearActiveCase(), all of
+// which flow into applyActiveCaseToFields() -> loadCaseForEditing(), which
+// would otherwise silently overwrite unsaved Reporting edits with the
+// new/cleared case's own data. Returns true (safe to proceed) when there's
+// nothing to lose.
+function confirmDiscardUnsavedReportingChanges() {
+    if (!reportHasUnsavedChanges) return true;
+    return confirm('You have unsaved changes in this case\'s Report Narrative, Case Details, or Files & Artifacts. Switching cases will discard them. Continue without saving?');
+}
+
 // activeCase shape: {case_number, examiner, case_folder} | null
 let activeCase = null;
 let caseManagerModalInstance = null;
@@ -8806,7 +8864,7 @@ async function renderReportFilesGallery() {
             capInput.className = 'form-control form-control-sm mt-1';
             capInput.placeholder = 'Optional caption for the exported report...';
             capInput.value = currentAttachmentCaptions[filePath] || '';
-            capInput.addEventListener('input', () => { currentAttachmentCaptions[filePath] = capInput.value; });
+            capInput.addEventListener('input', () => { currentAttachmentCaptions[filePath] = capInput.value; markReportingDirty(); });
             textWrap.appendChild(capInput);
         }
         row.appendChild(textWrap);
@@ -8949,6 +9007,7 @@ function renderReportUrlRows() {
         const val = addInput.value.trim();
         if (!val) return;
         currentReferenceUrlsList.push(val);
+        markReportingDirty();
         renderReportUrlRows();
     };
     addInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); doAdd(); } });
@@ -8998,6 +9057,7 @@ function renderReportUrlRows() {
         delBtn.innerHTML = '<i class="bi bi-trash"></i>';
         delBtn.onclick = () => {
             currentReferenceUrlsList.splice(idx, 1);
+            markReportingDirty();
             renderReportUrlRows();
         };
         row.appendChild(delBtn);
@@ -9079,12 +9139,14 @@ function toggleAttachmentFile(filePath, checked) {
         currentAttachedFilesList = currentAttachedFilesList.filter(p => p !== filePath);
         delete currentAttachmentCaptions[filePath];
     }
+    markReportingDirty();
     renderReportFilesGallery();
 }
 
 function addFileAttachment(filePath) {
     if (filePath && !currentAttachedFilesList.includes(filePath)) {
         currentAttachedFilesList.push(filePath);
+        markReportingDirty();
         renderReportFilesGallery();
     }
 }
@@ -9509,6 +9571,13 @@ function renderCustomFieldsForCase(values) {
     if (!container) return;
     container.innerHTML = '';
     values = values || {};
+    if (!customFieldDefsCache.length) {
+        const empty = document.createElement('div');
+        empty.className = 'col-12 text-subtle small';
+        empty.textContent = 'No custom fields configured for this station yet - add some in Settings > Case & Reporting > Custom Case Fields if you want extra fields captured per case.';
+        container.appendChild(empty);
+        return;
+    }
     customFieldDefsCache.forEach(def => {
         const col = document.createElement('div');
         col.className = 'col-md-6';
@@ -9610,7 +9679,13 @@ function renderCustomFieldItemPickerList() {
         row.onmouseleave = () => { row.style.backgroundColor = ''; };
         row.appendChild(document.createTextNode(item.label)); // untrusted evidence/tag/exhibit name, text-only
         row.onclick = () => {
-            if (cfPickerTargetInput) cfPickerTargetInput.value = item.value;
+            if (cfPickerTargetInput) {
+                cfPickerTargetInput.value = item.value;
+                // Setting .value programmatically never fires input/change on its
+                // own - dispatch one so the delegated #repNarrativePane listener
+                // (markReportingDirty()) picks this up the same as real typing.
+                cfPickerTargetInput.dispatchEvent(new Event('input', { bubbles: true }));
+            }
             customFieldItemPickerModalInstance?.hide();
         };
         listEl.appendChild(row);
@@ -9900,6 +9975,9 @@ async function clearReportLogo() {
 // whether there's an active case at all vs. an active case whose
 // consolidated report file doesn't exist yet (not-yet-migrated legacy case).
 async function loadCaseForEditing() {
+    // Every path below (re)populates the pane from server/cleared data, so
+    // whatever was flagged dirty before this call started no longer applies.
+    clearReportingDirty();
     const noCaseEl = document.getElementById("reportsNoCaseState");
     const loadedEl = document.getElementById("reportsLoadedState");
     const noCaseIcon = document.getElementById("reportsNoCaseIcon");
@@ -11382,6 +11460,7 @@ async function saveReportMetadata() {
             if (previewEl) {
                 previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
             }
+            clearReportingDirty();
             showToast("Report JSON saved successfully!", 'success');
         } else {
             showToast(`Save error: ${data.error}`, 'danger');
@@ -12666,6 +12745,7 @@ function openCaseManagerModal() {
 }
 
 async function createCase() {
+    if (!confirmDiscardUnsavedReportingChanges()) return;
     const caseNumber = document.getElementById("newCaseNumber")?.value.trim();
     const examiner = document.getElementById("newCaseExaminer")?.value.trim();
     const parentDir = document.getElementById("newCaseParentDir")?.value.trim() || '/mnt';
@@ -12771,11 +12851,14 @@ function renderCaseList() {
 
     listEl.innerHTML = '';
     cases.forEach(c => {
+        const isCurrent = !!(activeCase && c.case_folder === activeCase.case_folder);
+
         // A plain div, not a <button>, because legacy rows nest their
         // own Migrate <button> inside it below - button-in-button is
         // invalid HTML.
         const btn = document.createElement("div");
-        btn.className = "list-group-item list-group-item-action bg-dark text-light border-secondary py-2";
+        btn.className = "list-group-item list-group-item-action bg-dark text-light py-2"
+            + (isCurrent ? " border-info border-2" : " border-secondary");
         btn.style.cursor = 'pointer';
 
         const topRow = document.createElement('div');
@@ -12783,6 +12866,12 @@ function renderCaseList() {
         const nameSpan = document.createElement('span');
         nameSpan.className = 'fw-bold text-info';
         nameSpan.appendChild(document.createTextNode(c.case_number)); // examiner-entered, text-only
+        if (isCurrent) {
+            const currentBadge = document.createElement('span');
+            currentBadge.className = 'badge bg-info text-dark ms-2';
+            currentBadge.innerHTML = '<i class="bi bi-check-lg"></i> Current';
+            nameSpan.appendChild(currentBadge);
+        }
         const statusBadge = document.createElement('span');
         statusBadge.className = `badge ms-2 ${CASE_STATUS_BADGE_CLASS[c.case_status] || 'bg-info text-dark'}`;
         statusBadge.textContent = (c.case_status || 'Open').toUpperCase();
@@ -12799,9 +12888,15 @@ function renderCaseList() {
         topRow.appendChild(nameSpan);
         topRow.appendChild(dateSpan);
 
+        // Examiner name stays visible (short, useful at a glance); the raw
+        // filesystem path moves into a title tooltip instead of always
+        // rendering in monospace - implementation detail most users don't
+        // need to see on every row, but still reachable on hover for anyone
+        // who wants to confirm which share/location a case lives under.
         const subRow = document.createElement('div');
-        subRow.className = 'small text-subtle font-monospace';
-        subRow.appendChild(document.createTextNode(`${c.examiner || '--'} · ${c.case_folder}`));
+        subRow.className = 'small text-subtle';
+        subRow.title = c.case_folder;
+        subRow.appendChild(document.createTextNode(c.examiner ? `Examiner: ${c.examiner}` : 'No examiner recorded'));
 
         btn.appendChild(topRow);
         btn.appendChild(subRow);
@@ -12862,6 +12957,7 @@ async function migrateCase(c) {
 }
 
 async function selectCase(c) {
+    if (!confirmDiscardUnsavedReportingChanges()) return;
     activeCase = { case_number: c.case_number, examiner: c.examiner, case_folder: c.case_folder };
     persistActiveCase();
     renderActiveCaseBar();
@@ -12878,6 +12974,7 @@ async function selectCase(c) {
 }
 
 function clearActiveCase() {
+    if (!confirmDiscardUnsavedReportingChanges()) return;
     activeCase = null;
     persistActiveCase();
     renderActiveCaseBar();
@@ -13435,6 +13532,16 @@ async function fetchSystemInfo() {
 function goToDriveManagement() {
     switchToTab('settings-tab');
     const navBtn = document.getElementById('settingsNavEject');
+    if (navBtn) new bootstrap.Tab(navBtn).show();
+}
+
+// Home's own "New here?" banner - jumps straight to Help > Guided Workflow
+// (a live, per-active-case checklist) rather than leaving it undiscovered
+// as just one more item in Help's own 9-item nav, mirroring the same
+// switch-tab-then-switch-sub-nav pattern goToDriveManagement() already uses.
+function goToGuidedWorkflow() {
+    switchToTab('help-tab');
+    const navBtn = document.getElementById('helpNavWorkflow');
     if (navBtn) new bootstrap.Tab(navBtn).show();
 }
 

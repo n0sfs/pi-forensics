@@ -21,6 +21,45 @@ file after updating to see what changed.
 
 ---
 
+## [1.28.0] - 2026-09-03
+
+A usability pass on Reporting/Case Management (the area most requested for review), plus a couple of
+smaller, related fixes elsewhere. Prompted by a full usability review across every tab, with the
+deepest look specifically at cases and reporting.
+
+### Added
+
+- **Reporting now shows an "Unsaved changes" indicator** whenever the Report Narrative, Case Status,
+  Case Details, or the Files & Artifacts exhibit checklist/captions/reference URLs have edits that
+  haven't been saved yet - these only persist via the explicit "Save Report Changes" button, unlike
+  Case Notes, the Physical Custody Log, tags, and "Attach to Case," which all save immediately. The
+  station now also warns before closing the tab or switching to a different case while there are
+  unsaved changes, instead of silently discarding them.
+- Home gained a "New here?" banner linking straight to the Guided Workflow checklist under Help,
+  instead of leaving it undiscovered as one of nine items in Help's own nav.
+- The Case Manager's case list now highlights whichever case is currently active with a "Current"
+  badge, and shows the examiner's name instead of a raw filesystem path on every row (still available
+  as a tooltip).
+- Reporting's Export pane now shows the Export button immediately, with a note that the defaults
+  already produce a complete report - the section/evidence-item/file checklists are still there, just
+  collapsed by default behind a "Customize contents" toggle instead of always taking up the whole pane.
+- The Indicators of Compromise and Recommendations / Next Steps fields in Report Narrative now say
+  plainly which report templates actually include them by default (DFIR only, and DFIR/Police
+  respectively) - previously easy to fill in and then find missing from a Standard export.
+- Custom Case Fields shows a clear "not configured yet" message when a station has none defined,
+  instead of an empty gap that looked like a rendering error.
+- The Exhibits list now notes that exhibit numbers can shift if a file is added or removed, and the
+  Case Notes / Report Narrative tabs each link directly to the other, since they're easy to mix up on
+  a first pass (a running work journal vs. a polished closing narrative).
+
+### Changed
+
+- Live Collection USB moved down in the sidebar, below Mobile Forensics and File Recovery - its old
+  position implied it was an early, required step for every examiner, when it's really an occasional,
+  more advanced workflow.
+- Reporting's "Custody Log" tab is now labeled "Physical Custody Log," matching the fuller name it
+  already used elsewhere in the app, to reduce confusion with Settings' separate "Audit Log."
+
 ## [1.27.3] - 2026-09-02
 
 Documentation only - no code behavior changed. This app installs, imports, vendors, or loads a large
