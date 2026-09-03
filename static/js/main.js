@@ -11384,7 +11384,7 @@ async function saveReportMetadata() {
             }
             showToast("Report JSON saved successfully!", 'success');
         } else {
-            showToast(`Save Error: ${data.error}`, 'danger');
+            showToast(`Save error: ${data.error}`, 'danger');
         }
     } catch (err) {
         showToast(`Save failed: ${err.message}`, 'danger');
@@ -12398,8 +12398,24 @@ function onMemForensicsEngineChange() {
     document.getElementById("mquireTableList").style.display = isMquire ? '' : 'none';
 }
 
+// Real bug, found during a 2026-09-02 UI audit: unlike openAutoAnalyzeModal()'s
+// own _resetAutoAnalyzeModal(), this modal never reset its plugin/table
+// checkboxes between opens - an examiner who checked 3 non-default plugins for
+// one file, ran a scan, closed the modal, and reopened it for a different file
+// would silently still have those same 3 checked, changing what gets scanned
+// for the new file without any visible signal. cb.defaultChecked (not a
+// hardcoded list) is what the HTML's own `checked` attribute set on each
+// checkbox already encodes - reusing it here means this stays correct even if
+// a future session adds/removes a plugin option without touching this function.
+function _resetMemoryForensicsModal() {
+    document.querySelectorAll('#memForensicsPluginList input[type=checkbox], #mquireTableList input[type=checkbox]').forEach(cb => {
+        cb.checked = cb.defaultChecked;
+    });
+}
+
 function openMemoryForensicsModal() {
     if (!activeSelectedFile) return;
+    _resetMemoryForensicsModal();
     document.getElementById("memForensicsFileName").textContent = activeSelectedFile.split('/').pop();
     const status = document.getElementById("memForensicsStatus");
     if (status) status.textContent = 'Select the plugins to run, then click Start Scan.';
@@ -12468,6 +12484,7 @@ let leappScanModalInstance = null;
 
 function openLeappScanModal() {
     if (!activeSelectedFile) return;
+    document.getElementById("leappTool").value = 'aleapp'; // reset to first option - see _resetMemoryForensicsModal()'s comment for why this matters
     document.getElementById("leappFolderName").textContent = activeSelectedFile.split('/').filter(Boolean).pop();
     const status = document.getElementById("leappScanStatus");
     if (status) status.textContent = 'Select the correct parser for this extraction\'s platform, then click Start Scan.';
@@ -13475,7 +13492,7 @@ async function toggleWriteBlockForSelectedDrive() {
             await fetchSystemInfo(); // keeps the top-right badge in sync if it's the same drive
             showToast(`Drive ${drive} Write-Blocker status set to: ${newEnableState ? 'PROTECTED (Read-Only)' : 'UNLOCKED (Read-Write)'}`, 'info');
         } else {
-            showToast(`Write Blocker Toggle Failed: ${data.error}`, 'danger');
+            showToast(`Write blocker toggle failed: ${data.error}`, 'danger');
         }
     } catch (err) {
         console.error("Write blocker toggle error:", err);
@@ -14054,11 +14071,11 @@ async function mountNetworkDrive(hostId, protocolId, shareSelectId, mountStatusI
             loadNetworkHistory();
             loadAutoMountShares();
         } else {
-            if (mountStatus) mountStatus.innerText = `Mount Error: ${data.error}`;
-            showToast(`Mount Failed: ${data.error}`, 'danger');
+            if (mountStatus) mountStatus.innerText = `Mount failed: ${data.error}`;
+            showToast(`Mount failed: ${data.error}`, 'danger');
         }
     } catch (err) {
-        if (mountStatus) mountStatus.innerText = `Mount Failed: ${err.message}`;
+        if (mountStatus) mountStatus.innerText = `Mount failed: ${err.message}`;
     }
 }
 
@@ -14430,7 +14447,7 @@ async function startAcquisition() {
             // mirror that transition in fetchProgress() so the UI doesn't
             // keep offering "Lock / Cleanup" for a mount that's already gone.
             if (useUnlockedSource) encVolMountConsumedByJob = true;
-        } else showToast(`Start Failed: ${data.error}`, 'danger');
+        } else showToast(`Start failed: ${data.error}`, 'danger');
     } catch (err) {}
 }
 
@@ -14610,7 +14627,7 @@ async function startRecoveryTool() {
             if (document.getElementById("btnRecoveryStart")) document.getElementById("btnRecoveryStart").disabled = true;
             if (document.getElementById("btnRecoveryStop")) document.getElementById("btnRecoveryStop").disabled = false;
         } else {
-            showToast(`Start Failed: ${data.error}`, 'danger');
+            showToast(`Start failed: ${data.error}`, 'danger');
         }
     } catch (err) {
         console.error(`Error starting ${tool}:`, err);
@@ -14772,7 +14789,7 @@ function updateMobileDeviceMode() {
     if (iosControls) iosControls.style.display = mode === 'ios' ? '' : 'none';
     if (androidControls) androidControls.style.display = mode === 'android' ? '' : 'none';
     if (simControls) simControls.style.display = mode === 'sim' ? '' : 'none';
-    if (startLabel) startLabel.textContent = mode === 'ios' ? 'Start iOS Backup' : mode === 'android' ? 'Start Android Acquisition' : 'N/A - Use Read Card Above';
+    if (startLabel) startLabel.textContent = mode === 'ios' ? 'Start iOS Backup' : mode === 'android' ? 'Start Android Acquisition' : 'Use Read Card Above';
 
     refreshMobileStartButtonState();
 }
@@ -15012,7 +15029,7 @@ async function startIosBackup() {
             body: JSON.stringify({ udid, destination: dest, encrypt_password, metadata })
         });
         const data = await res.json();
-        if (!data.success) showToast(`Start Failed: ${data.error}`, 'danger');
+        if (!data.success) showToast(`Start failed: ${data.error}`, 'danger');
     } catch (err) {}
 }
 
@@ -15064,7 +15081,7 @@ async function startAndroidAcquisition() {
             body: JSON.stringify(body)
         });
         const data = await res.json();
-        if (!data.success) showToast(`Start Failed: ${data.error}`, 'danger');
+        if (!data.success) showToast(`Start failed: ${data.error}`, 'danger');
     } catch (err) {}
 }
 
@@ -15810,6 +15827,21 @@ async function downloadConfigBackup() {
     }
 }
 
+// Real UI-audit finding (2026-09-02): Restore replaces every user account,
+// group, and setting on this station behind just a passphrase field + one
+// confirm() dialog - a much lower bar than Live Collection USB's own
+// drive-wipe, which requires typing the exact device path before its own
+// button even enables. This reuses that same typed-confirmation pattern
+// (checkLiveCollectionBuildConfirmText() is the template) as a second,
+// stronger layer on top of the existing confirm() below, which stays
+// exactly as it was - this only adds friction, it doesn't remove anything.
+function checkConfigRestoreConfirmText() {
+    const input = document.getElementById('configRestoreConfirmText');
+    const btn = document.getElementById('btnConfigRestore');
+    if (!input || !btn) return;
+    btn.disabled = input.value !== 'RESTORE';
+}
+
 async function submitConfigRestore() {
     const fileEl = document.getElementById("configRestoreFile");
     const passEl = document.getElementById("configRestorePassphrase");
@@ -15845,6 +15877,9 @@ async function submitConfigRestore() {
         if (data.success) {
             if (fileEl) fileEl.value = '';
             if (passEl) passEl.value = '';
+            const confirmEl = document.getElementById('configRestoreConfirmText');
+            if (confirmEl) confirmEl.value = '';
+            checkConfigRestoreConfirmText(); // re-disables the button now that the typed phrase is cleared
             loadUserList();
             loadUserGroups();
         }

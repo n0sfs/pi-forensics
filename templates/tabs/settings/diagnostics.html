@@ -9,7 +9,7 @@
                                  fetchSystemInfo()/fetchNetworkInterfaces() populate both this and
                                  the navbar version from the exact same single poll, two views of one
                                  source of truth, not a second polling loop. -->
-                            <div class="d-flex d-md-none flex-wrap align-items-center gap-3 text-nowrap mb-3 p-2 bg-black border border-secondary rounded-2">
+                            <div class="d-flex d-md-none flex-wrap align-items-center gap-3 text-nowrap mb-3 p-2 bg-app-dark border border-secondary rounded-2">
                                 <div class="d-flex align-items-center gap-2">
                                     <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
                                     <span id="cpuValSettings" class="telemetry-val">0%</span>
@@ -69,14 +69,14 @@
                                             <button class="btn btn-sm btn-outline-info fw-bold text-start w-100 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"
                                                 title="A fixed, read-only allowlist - not a general shell. SSH in for anything not listed here."><i class="bi bi-terminal me-1"></i>Run Diagnostic</button>
                                             <ul class="dropdown-menu dropdown-menu-dark">
-                                                <li><button class="dropdown-item" onclick="runDiagnostic('dmesg')">dmesg</button></li>
-                                                <li><button class="dropdown-item" onclick="runDiagnostic('lsusb')">lsusb</button></li>
-                                                <li><button class="dropdown-item" onclick="runDiagnostic('df')">df -h</button></li>
-                                                <li><button class="dropdown-item" onclick="runDiagnostic('ip_a')">ip a</button></li>
-                                                <li><button class="dropdown-item" onclick="runDiagnostic('uptime')">uptime</button></li>
-                                                <li><button class="dropdown-item" onclick="runDiagnostic('lsblk')">lsblk</button></li>
-                                                <li><button class="dropdown-item" onclick="runDiagnostic('free')">free -h</button></li>
-                                                <li><button class="dropdown-item" onclick="runDiagnostic('mounts')">mount</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('dmesg')">dmesg (kernel log)</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('lsusb')">lsusb (connected USB devices)</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('df')">df -h (disk space usage)</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('ip_a')">ip a (network interfaces)</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('uptime')">uptime (system uptime &amp; load)</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('lsblk')">lsblk (block devices/partitions)</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('free')">free -h (memory usage)</button></li>
+                                                <li><button class="dropdown-item" onclick="runDiagnostic('mounts')">mount (mounted filesystems)</button></li>
                                             </ul>
                                         </div>
                                     </div>

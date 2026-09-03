@@ -21,6 +21,49 @@ file after updating to see what changed.
 
 ---
 
+## [1.27.2] - 2026-09-02
+
+A full UI/UX audit and cleanup pass - no new tools or features, just fixing what a systematic review
+of every tab, template, and the frontend's own JavaScript/CSS turned up. Three research passes plus a
+design review covered the whole app; the fixes below are the low-risk, worth-doing subset that came
+out of it.
+
+### Fixed
+
+- Memory Forensics' plugin/table checklist could carry over stale selections from a previous scan
+  after reopening the modal for a different file - it now resets to its defaults every time it opens,
+  so a scan can no longer silently run with leftover checkboxes from an earlier file.
+- Settings > Restore From Backup (which replaces every user account, group, and setting on the
+  station) now requires typing `RESTORE` before the button enables - previously it only needed a
+  passphrase and a single click-through confirmation, noticeably less friction than Live Collection
+  USB's own drive-wipe step already has for a comparable or smaller blast radius.
+
+### Changed
+
+- Case Number / Evidence ID / Examiner fields across Acquisition, Mobile, File Recovery, and Live
+  Collection USB now have real accessible labels, not just placeholder text (which disappears the
+  moment you start typing and was never a reliable label for a screen reader).
+- Icon-only buttons on File Explorer's image toolbar and the sidebar collapse toggle now have
+  accessible names, not just hover tooltips - tooltips don't fire on a touchscreen, which is how this
+  app is meant to run.
+- File Recovery's card header now matches its own sidebar label ("File Recovery," it previously read
+  "Recovery Tools" nowhere else in the app), gained the "Case & Evidence Metadata" heading its sibling
+  tabs already had above the same three fields, and its placeholder text now shows example values
+  like the rest of the app already does.
+- Reporting's Export button is no longer styled red - exporting a report isn't a destructive action,
+  and every other export/download button in the app already used a neutral color.
+- A handful of inconsistently-worded toast messages ("Mount Failed" vs. "Mount failed", etc.) were
+  normalized to the app's own dominant style.
+- Settings' Diagnostics dropdown now shows what each raw command actually does (e.g. "lsusb
+  (connected USB devices)") instead of a bare Unix command name with no explanation.
+- Settings' User Groups accordion now clarifies that a permission group ("Analyst") and the
+  "Examiner" name recorded per case are two different things - one is what a login is allowed to do,
+  the other is who did the work.
+- A number of hardcoded colors that already had a matching design token now use it (no visible
+  change), and a few leftover/stale code comments from earlier tab restructuring were cleaned up.
+
+---
+
 ## [1.27.1] - 2026-09-02
 
 ### Fixed
