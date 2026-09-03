@@ -121,6 +121,11 @@ while True:
 
 # 1. Install Required APT Packages (Including gddrescue & ReportLab dependencies)
 print("\n[*] Installing system dependencies via APT...")
+# Adding, removing, or changing a package below (or a vendored/git-cloned
+# tool further down this file) - update THIRD_PARTY_NOTICES.md (repo root)
+# too. It tracks each dependency's own license separately from this
+# project's own GPLv3 - this list and requirements.txt are its two sources
+# of truth.
 apt_packages = [
     "python3-venv", "python3-pip", "python3-psutil", "python3-dev",
     "dc3dd", "dcfldd", "ewf-tools", "gddrescue", "afflib-tools", "smartmontools",
@@ -321,8 +326,9 @@ for mvt_bin in (mvt_ios_bin, mvt_android_bin):
             print(f"[!] Could not download IOC indicators for {os.path.basename(mvt_bin)} right now - "
                   f"use the dashboard's Tool Versions > 'Update MVT Indicators' button once online.")
 
-# 2c. Build mquire (Linux memory forensics, x86_64-only for v1 - see its own
-# worker docstring for why) from source. Pinned to a known-tested tag, not
+# 2c. Build mquire (github.com/trailofbits/mquire, Apache License 2.0) for
+# Linux memory forensics (x86_64-only for v1 - see its own worker docstring
+# for why) from source. Pinned to a known-tested tag, not
 # `main`/HEAD, matching this project's own "pinned known-working version"
 # discipline elsewhere (e.g. pytsk3's own version floor in requirements.txt) -
 # a moving upstream target here would mean install.py's own success/failure

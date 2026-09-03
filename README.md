@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.27.2-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.27.3-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -343,7 +343,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.27.2 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.27.3 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
@@ -575,3 +575,5 @@ Contributions welcome! Submit pull requests or open issues for improvements or b
 ## Disclaimer and License
 Provided as-is, without any warranty and distributed under the GNU General Public License v3 or later. You can redistribute and/or modify it under the terms of this license. Its methodology has been vetted to be forensically sound, but always verify the integrity of your images using appropriate forensic tools and procedures.
 See prior research here: "Low Budget Forensics using ARM Based Single Board Computers" - https://commons.erau.edu/jdfsl/vol11/iss1/3/
+
+This project's own GPLv3 license covers its own original code only. To do its job, the station installs, imports, vendors, or loads a large number of pre-existing third-party forensic tools, Python libraries, and frontend assets (`dc3dd`, The Sleuth Kit, ClamAV, Volatility 3, MVT, Bootstrap, Leaflet, and dozens more) — each keeps its own separate license, none of which are covered by this project's GPLv3. See **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)** for the full list, including a few (MVT, Volatility 3, SQLite Dissect) that carry non-standard terms worth reading directly rather than assuming they behave like a typical open-source license. It's also viewable from inside the app itself under Help > Third-Party Notices.
