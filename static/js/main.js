@@ -1946,6 +1946,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     android_companion_sms_message: 'Android: SMS via Companion App (Non-Rooted)',
     android_companion_contact: 'Android: Contact via Companion App (Non-Rooted)',
     android_companion_call_log_entry: 'Android: Call Log via Companion App (Non-Rooted)',
+    android_companion_calendar_event: 'Android: Calendar Event via Companion App (Non-Rooted)',
     whatsapp_message: 'WhatsApp: Messages (Native Parse)',
     whatsapp_call_log: 'WhatsApp: Calls (Native Parse)',
     whatsapp_contact: 'WhatsApp: Contacts (Native Parse)',
@@ -15783,6 +15784,7 @@ function onMobileAndroidSelect() {
     refreshMobileStartButtonState();
     refreshCompanionSmsButtonState();
     refreshCompanionContactsCallLogButtonState();
+    refreshCompanionCalendarButtonState();
 }
 
 async function pullWhatsappKey() {
@@ -15935,6 +15937,73 @@ async function cleanupCompanionContactsCallLogExtraction() {
         + 'cleaned up on its own. Continue?')) return;
     try {
         const res = await fetch('/api/mobile/android/companion_contacts_calllog/cleanup', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: dev.serial }),
+        });
+        const data = await res.json();
+        if (!data.success) return showToast(`Cleanup failed: ${data.error}`, 'danger');
+        showToast('Device state cleanup complete.', 'success');
+    } catch (err) {
+        showToast('Request failed.', 'danger');
+    }
+}
+
+// Companion-app Calendar extraction (2026-09-04) - see routes/mobile.py's
+// execution_worker_android_companion_calendar() and its own module
+// docstring. Mirrors startCompanionContactsCallLogExtraction()/
+// cleanupCompanionContactsCallLogExtraction() above exactly, minus the
+// data-types selector - Calendar always queries both events and their
+// attendees together (an attendee record is meaningless without its
+// parent event).
+function refreshCompanionCalendarButtonState() {
+    const btn = document.getElementById("btnCompanionCalendarStart");
+    if (!btn) return;
+    const dev = _currentlySelectedAndroidDevice();
+    btn.disabled = !dev || !dev.authorized;
+}
+
+async function startCompanionCalendarExtraction() {
+    const dev = _currentlySelectedAndroidDevice();
+    if (!dev) return showToast('Select a connected, authorized Android device first.', 'warning');
+
+    if (!confirm(
+        'This installs a small companion app on the device to read its Calendar events and their '
+        + 'attendees, then removes it and reverses every change when finished.\n\nLike Contacts/Call '
+        + 'Log, this never disrupts the phone\'s own Calendar app - READ_CALENDAR does not require '
+        + 'becoming a "default app."\n\nEvery step (install, permission grant, query, cleanup) is '
+        + 'recorded in the case report. Continue?'
+    )) return;
+
+    const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById("mobileDest")?.value || '/mnt');
+    const metadata = {
+        case_number: document.getElementById("mobileCaseNum")?.value || 'UNASSIGNED',
+        evidence_id: document.getElementById("mobileEvidenceId")?.value || 'ITEM-01',
+        examiner: document.getElementById("mobileExaminer")?.value || '',
+    };
+
+    try {
+        const res = await fetch('/api/mobile/android/companion_calendar/start', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: dev.serial, destination: destinationDir, metadata }),
+        });
+        const data = await res.json();
+        if (!data.success) return showToast(`Start failed: ${data.error}`, 'danger');
+        showToast('Companion-app Calendar extraction started.', 'success');
+        document.getElementById("btnCompanionCalendarStart").disabled = true;
+        document.getElementById("btnMobileStart").disabled = true;
+    } catch (err) {
+        showToast('Request failed.', 'danger');
+    }
+}
+
+async function cleanupCompanionCalendarExtraction() {
+    const dev = _currentlySelectedAndroidDevice();
+    if (!dev) return showToast('Select a connected Android device first.', 'warning');
+    if (!confirm('This revokes READ_CALENDAR and uninstalls the companion collector from the selected '
+        + 'device. Use this only if a previous extraction was interrupted and never cleaned up on its '
+        + 'own. Continue?')) return;
+    try {
+        const res = await fetch('/api/mobile/android/companion_calendar/cleanup', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ serial: dev.serial }),
         });
@@ -17478,10 +17547,12 @@ async function fetchProgress() {
             if (document.getElementById("btnMobileStart")) document.getElementById("btnMobileStart").disabled = true;
             if (document.getElementById("btnCompanionSmsStart")) document.getElementById("btnCompanionSmsStart").disabled = true;
             if (document.getElementById("btnCompanionContactsCallLogStart")) document.getElementById("btnCompanionContactsCallLogStart").disabled = true;
+            if (document.getElementById("btnCompanionCalendarStart")) document.getElementById("btnCompanionCalendarStart").disabled = true;
         } else {
             refreshMobileStartButtonState();     // re-derives disabled state from current device trust/selection + mode
             refreshCompanionSmsButtonState();
             refreshCompanionContactsCallLogButtonState();
+            refreshCompanionCalendarButtonState();
         }
 
     } catch (err) {}

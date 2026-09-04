@@ -42,6 +42,10 @@ from core.android_companion_contacts_calllog_utils import (
     CONTACTS_QUERY_COLUMNS, CALLLOG_QUERY_COLUMNS,
     build_companion_contact_records, build_companion_call_log_records,
 )
+from core.android_companion_calendar_utils import (
+    PIF_COMPANION_CALENDAR_AUTHORITY, CALENDAR_EVENTS_QUERY_COLUMNS, CALENDAR_ATTENDEES_QUERY_COLUMNS,
+    build_companion_calendar_records,
+)
 
 # 2026-08-30, physical/raw Android acquisition: dc3dd/dcfldd's progress-line
 # and post-completion hash-extraction parsers already live in
@@ -2251,4 +2255,295 @@ def cleanup_android_companion_contacts_calllog():
 
     log_chain_of_custody("android_companion_contacts_calllog_manual_cleanup",
                           {"serial": serial, "results": results})
+    return jsonify({"success": True, "results": results})
+
+
+# --- Companion-app Calendar extraction (non-rooted), 2026-09-04 ---
+# See core/android_companion_calendar_utils.py's own module docstring for
+# the full research/grounding (the real, live-confirmed READ_CALENDAR
+# permission and content://com.android.calendar/{events,attendees} URIs,
+# every column-name string and int constant value pulled directly off the
+# real Android API reference pages, not guessed). Mirrors execution_
+# worker_android_companion_contacts_calllog() above closely - same overall
+# shape (install -> grant -> query -> parse -> index -> ALWAYS clean up in
+# finally), and genuinely simpler in the same way that worker already is
+# simpler than SMS's: READ_CALENDAR is a plain runtime permission, no
+# role-assumption/restoration step, no device-functionality disruption
+# window. Shares PIF_COMPANION_APK/PIF_COMPANION_PACKAGE with every other
+# companion worker - all four data types ship in one apk.
+
+
+def execution_worker_android_companion_calendar(serial, output_path, report_file_path, report_data,
+                                                  case_folder, requester_ip=None, requester_user=None):
+    """Installs the vendored pif-companion collector, grants READ_CALENDAR,
+    queries the Events and Attendees relay ContentProviders (attendees are
+    grouped by event_id and folded into each event's own record - see
+    build_companion_calendar_records()'s own docstring), then ALWAYS
+    revokes the permission and uninstalls the collector before finishing -
+    cleanup runs in the outer `finally` block regardless of success,
+    failure, or a Stop request partway through, matching every other
+    companion worker's own established pattern (including the identical
+    requester_ip/requester_user capture-before-spawn fix - this worker runs
+    in a background daemon thread with no Flask application context, so
+    log_chain_of_custody()'s own request/g fallback would raise here
+    otherwise).
+
+    A Stop request is checked once, before either query runs - unlike the
+    Contacts/Call Log worker's two-query asymmetry, there's only one
+    combined query pair here (events, then their attendees), so a Stop
+    either lands before both (nothing captured, acquisition_status stays
+    at its starting IN_PROGRESS value) or after both have already
+    completed (by which point there's nothing left to stop)."""
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    device_log = {"steps": [], "event_count": 0, "attendee_count": 0}
+
+    def record_step(name, rc, note=""):
+        device_log["steps"].append({"step": name, "returncode": rc, "note": note,
+                                     "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+
+    apk_installed = False
+    calendar_granted = False
+
+    try:
+        update_job(format="android_companion_calendar", status="Initializing...", progress_percent=0.0,
+                   log=f"[*] Initializing companion-app Calendar extraction on {serial}...")
+
+        if not os.path.isfile(PIF_COMPANION_APK):
+            raise RuntimeError(
+                "pif-companion.apk is not vendored on this station - re-run install.py with internet "
+                "access to download it, then retry."
+            )
+
+        append_log(f"[*] Installing companion collector ({PIF_COMPANION_PACKAGE})...")
+        rc, out, err = _adb_run(serial, ["install", "-r", PIF_COMPANION_APK],
+                                 ANDROID_COMPANION_ADB_TIMEOUT)
+        record_step("install", rc, (out + err).strip()[:500])
+        if rc != 0:
+            raise RuntimeError(f"adb install failed: {(err or out).strip()[:300]}")
+        apk_installed = True
+        append_log("[+] Collector installed.")
+
+        update_job(status="Granting READ_CALENDAR permission...")
+        append_log("[*] Granting READ_CALENDAR permission.")
+        rc, out, err = _adb_run(
+            serial, ["shell", "pm", "grant", PIF_COMPANION_PACKAGE, "android.permission.READ_CALENDAR"],
+            ANDROID_COMPANION_ADB_TIMEOUT)
+        record_step("pm_grant_calendar", rc, (out + err).strip()[:300])
+        if rc != 0:
+            raise RuntimeError(f"Could not grant READ_CALENDAR: {(err or out).strip()[:300]}")
+        calendar_granted = True
+
+        if snapshot_job()["status"] == "Stopped":
+            append_log("[!] Stop requested before any query ran - skipping queries, still restoring "
+                       "device state below.")
+        else:
+            update_job(status="Querying Calendar Events...")
+            append_log("[*] Querying Calendar Events via the collector's relay ContentProvider...")
+            events_projection = ":".join(CALENDAR_EVENTS_QUERY_COLUMNS)
+            rc, out, err = _adb_run(
+                serial,
+                ["shell", "content", "query", "--uri", f"content://{PIF_COMPANION_CALENDAR_AUTHORITY}/events",
+                 "--projection", events_projection],
+                ANDROID_COMPANION_QUERY_TIMEOUT)
+            record_step("content_query_events", rc, f"{len((out or '').splitlines())} line(s) returned")
+            event_rows = []
+            if rc != 0:
+                append_log(f"[!] Calendar Events query failed: {(err or out).strip()[:300]}")
+            else:
+                event_rows = parse_content_query_output(out, columns=CALENDAR_EVENTS_QUERY_COLUMNS)
+                append_log(f"[+] Found {len(event_rows)} calendar event(s).")
+
+            update_job(status="Querying Calendar Attendees...")
+            append_log("[*] Querying Calendar Attendees via the collector's relay ContentProvider...")
+            attendees_projection = ":".join(CALENDAR_ATTENDEES_QUERY_COLUMNS)
+            rc, out, err = _adb_run(
+                serial,
+                ["shell", "content", "query", "--uri", f"content://{PIF_COMPANION_CALENDAR_AUTHORITY}/attendees",
+                 "--projection", attendees_projection],
+                ANDROID_COMPANION_QUERY_TIMEOUT)
+            record_step("content_query_attendees", rc, f"{len((out or '').splitlines())} line(s) returned")
+            attendee_rows = []
+            if rc != 0:
+                append_log(f"[!] Calendar Attendees query failed: {(err or out).strip()[:300]}")
+            else:
+                attendee_rows = parse_content_query_output(out, columns=CALENDAR_ATTENDEES_QUERY_COLUMNS)
+                append_log(f"[+] Found {len(attendee_rows)} attendee record(s).")
+
+            event_records = build_companion_calendar_records(event_rows, attendee_rows)
+            device_log["event_count"] = len(event_records)
+            device_log["attendee_count"] = len(attendee_rows)
+
+            if event_records:
+                identity = {"source_type": "real_fs", "image_path": None, "fs_offset": None, "inode": None,
+                            "path": output_path}
+                indexed = _record_parsed_artifacts(case_folder, identity, event_records)
+                if indexed:
+                    append_log(f"[+] Indexed {indexed} record(s) into the case's searchable Parsed "
+                               "Artifacts and the Evidence Timeline.")
+
+            report_data["acquisition_parameters"]["event_records_captured"] = device_log["event_count"]
+            report_data["acquisition_parameters"]["attendee_records_captured"] = device_log["attendee_count"]
+            report_data["acquisition_status"] = "COMPLETED"
+
+    except Exception as e:
+        error_message = str(e)
+        append_log(f"[!] {error_message}")
+        report_data["acquisition_status"] = "FAILED"
+        report_data["error"] = error_message
+
+    finally:
+        # Cleanup always runs here, regardless of the try block's outcome -
+        # matches every other companion worker's own established reasoning.
+        append_log("[*] Restoring device state...")
+
+        if calendar_granted:
+            rc, out, err = _adb_run(
+                serial, ["shell", "pm", "revoke", PIF_COMPANION_PACKAGE, "android.permission.READ_CALENDAR"],
+                ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("pm_revoke_calendar", rc)
+
+        if apk_installed:
+            rc, out, err = _adb_run(serial, ["uninstall", PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("uninstall", rc)
+            if rc != 0:
+                append_log(f"[!!] Could not automatically uninstall the collector - manually run "
+                           f"'adb uninstall {PIF_COMPANION_PACKAGE}' against the device to remove it.")
+            else:
+                append_log("[+] Collector uninstalled.")
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        report_data["acquisition_parameters"]["device_modification_log"] = device_log
+
+        try:
+            with open(output_path, "w") as f:
+                json.dump({
+                    "source": "pif-companion.apk relay (hand-built for this app, mirroring "
+                              "github.com/gonodono/adbsms's own relay-provider design)",
+                    "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "event_count": device_log["event_count"],
+                    "attendee_count": device_log["attendee_count"],
+                    "device_modification_log": device_log,
+                    "note": "This action installed a small app on the device, granted it READ_CALENDAR, "
+                            "queried calendar events and their attendees, then revoked the permission and "
+                            "uninstalled the app - see device_modification_log above for the exact "
+                            "sequence and outcome of each step. Like Contacts/Call Log, this never "
+                            "disrupted the device's own Calendar app at any point.",
+                }, f, indent=2)
+            _auto_tag_case_artifact(case_folder, output_path)
+        except OSError:
+            pass
+
+        _write_report(report_file_path, report_data, append_log)
+        log_chain_of_custody("android_companion_calendar_extract", {
+            "serial": serial,
+            "event_count": device_log["event_count"],
+            "attendee_count": device_log["attendee_count"],
+            "status": report_data["acquisition_status"],
+            "device_modification_log": device_log,
+        }, source_ip=requester_ip, user=requester_user)
+
+        final_status = None
+        if report_data["acquisition_status"] == "COMPLETED":
+            final_status = "Completed Successfully"
+        elif report_data["acquisition_status"] == "FAILED":
+            final_status = "Failed"
+        if final_status:
+            update_job(status=final_status, progress_percent=100.0, active=False)
+        else:
+            update_job(active=False)
+
+
+@mobile_bp.route('/api/mobile/android/companion_calendar/start', methods=['POST'])
+@requires_auth
+@requires_permission('mobile')
+def start_android_companion_calendar():
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    serial = req.get('serial', '')
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    metadata = req.get('metadata', {})
+
+    if not _ANDROID_SERIAL_RE.match(serial or ''):
+        update_job(active=False)
+        return jsonify({"error": "Invalid or missing device serial. Refresh the device list and select "
+                                  "a connected, authorized Android device."}), 400
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except Exception as e:
+        update_job(active=False)
+        return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_android_companion_calendar"
+    output_path = os.path.join(dest_path, f"{base_name}_extraction.json")
+
+    report_data = {
+        "tool": "android_companion_calendar",
+        "case_metadata": metadata,
+        "device_serial": serial,
+        "acquisition_parameters": {
+            "platform": "Android",
+            "method": "pif-companion.apk relay (installs/modifies/restores device state - see "
+                      "device_modification_log)",
+            "output_destination": output_path,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
+
+    requester_ip = request.remote_addr
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_android_companion_calendar,
+        args=(serial, output_path, report_target, report_data, dest_path, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("android_companion_calendar_extract_start", {"serial": serial, "destination": output_path})
+    return jsonify({"success": True, "message": "Companion-app Calendar extraction started."})
+
+
+@mobile_bp.route('/api/mobile/android/companion_calendar/cleanup', methods=['POST'])
+@requires_auth
+@requires_permission('mobile')
+def cleanup_android_companion_calendar():
+    """Manual safety-net cleanup, reachable at any time a device is
+    connected, independent of this app's own job state - revokes
+    READ_CALENDAR and uninstalls the collector. Mirrors every other
+    companion cleanup route's own established reasoning exactly."""
+    req = request.get_json() or {}
+    serial = req.get('serial', '')
+    if not _ANDROID_SERIAL_RE.match(serial or ''):
+        return jsonify({"error": "Invalid or missing device serial."}), 400
+
+    results = {}
+    rc, out, err = _adb_run(
+        serial, ["shell", "pm", "revoke", PIF_COMPANION_PACKAGE, "android.permission.READ_CALENDAR"],
+        ANDROID_COMPANION_ADB_TIMEOUT)
+    results["calendar_permission_revoked"] = (rc == 0)
+
+    rc, out, err = _adb_run(serial, ["uninstall", PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+    results["uninstalled"] = (rc == 0)
+
+    log_chain_of_custody("android_companion_calendar_manual_cleanup", {"serial": serial, "results": results})
     return jsonify({"success": True, "results": results})

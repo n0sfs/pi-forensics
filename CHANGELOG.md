@@ -21,6 +21,22 @@ file after updating to see what changed.
 
 ---
 
+## [1.48.0] - 2026-09-04
+
+### Added
+- **Companion-app Calendar extraction for non-rooted Android devices** (Mobile Forensics > Android >
+  Companion-App Extraction (Advanced)). Extends the companion-app extraction mechanism to a 4th data
+  type: calendar events and their attendees. Installs the same companion app already used for SMS/
+  Contacts/Call Log, grants it a single READ_CALENDAR permission, and reads each event's title, time,
+  location, organizer, recurrence rule, and every invited attendee's own RSVP status - genuinely
+  valuable pattern-of-life evidence (meetings, appointments, who was invited and whether they
+  accepted) this app had no other way to capture from a non-rooted device. Like Contacts/Call Log,
+  this never disrupts the phone's own Calendar app at any point, and every step is recorded in the
+  case report; a "Force Cleanup" action is also available in case a previous extraction was ever
+  interrupted before its own automatic cleanup could run.
+
+---
+
 ## [1.47.1] - 2026-09-04
 
 ### Changed

@@ -2,25 +2,28 @@
 
 Source for `pif-companion.apk`, the companion app the Mobile Forensics tab's
 "Companion-App Extraction (Advanced)" section installs onto a connected
-Android device for two genuinely separate, additive extraction actions -
+Android device for four genuinely separate, additive extraction actions -
 SMS (`execution_worker_android_companion_sms()`, `core/android_companion_
-sms_utils.py`) and Contacts/Call Log (`execution_worker_android_companion_
+sms_utils.py`), Contacts/Call Log (`execution_worker_android_companion_
 contacts_calllog()`, `core/android_companion_contacts_calllog_utils.py`),
-both in `routes/mobile.py` - see either module's own docstring for the full
-picture on why each is needed.
+and Calendar events + attendees (`execution_worker_android_companion_
+calendar()`, `core/android_companion_calendar_utils.py`), all three in
+`routes/mobile.py` - see any module's own docstring for the full picture on
+why each is needed.
 
 ## What it is
 
-Three tiny `ContentProvider` classes (`ContactsProvider.java`/
-`CallLogProvider.java`/`SmsProvider.java`) - each a pure authority-rewriting
-relay onto a real system provider (`com.android.contacts`/`call_log`/`sms`),
-restricted to `SHELL_UID` callers only. Contacts/Call Log were hand-built
-first (2026-09-04), mirroring the exact same relay-provider design already
-proven by [github.com/gonodono/adbsms](https://github.com/gonodono/adbsms)
-(MIT) - its real source was cloned and read to confirm the pattern before
-this app was written, since no equivalent existing open-source relay tool
-was found for Contacts/Call Log (2026-09-04 survey - the closest candidates
-were either UI-driven dev tools with no headless build, or long-archived
+Four tiny `ContentProvider` classes (`ContactsProvider.java`/
+`CallLogProvider.java`/`SmsProvider.java`/`CalendarProvider.java`) - each a
+pure authority-rewriting relay onto a real system provider
+(`com.android.contacts`/`call_log`/`sms`/`com.android.calendar`), restricted
+to `SHELL_UID` callers only. Contacts/Call Log were hand-built first
+(2026-09-04), mirroring the exact same relay-provider design already proven
+by [github.com/gonodono/adbsms](https://github.com/gonodono/adbsms) (MIT) -
+its real source was cloned and read to confirm the pattern before this app
+was written, since no equivalent existing open-source relay tool was found
+for Contacts/Call Log (2026-09-04 survey - the closest candidates were
+either UI-driven dev tools with no headless build, or long-archived
 pre-runtime-permission-model tools with no LICENSE file).
 
 SMS support was folded into this same app the same day (`SmsProvider.java`,
@@ -36,12 +39,27 @@ manifest requirements (6 permissions + 4 unbacked component stubs, gated
 via `tools:ignore="MissingClass"` on the `<application>` tag) were ported
 directly from adbsms's real, still-cloned source.
 
+Calendar support (`CalendarProvider.java`, versionCode 3/versionName 1.0.3)
+was added the same day, once the user asked to keep extending the companion
+app's own reach - a single plain `READ_CALENDAR` runtime permission, no
+role-assumption dance needed at all. Every real column-name string and
+integer status/relationship/type constant `core/android_companion_calendar_
+utils.py` relies on was independently confirmed live against Google's own
+real, rendered `CalendarContract.EventsColumns`/`CalendarContract.
+AttendeesColumns` API reference pages (via a real browser session, not the
+`android` CLI's own offline doc-search index, which only covers guide-level
+docs and returned "no document found" for the raw Javadoc reference pages
+when tried first) - not assumed from the Java constant's own name, which
+caught one real, easy-to-miss mismatch (`EventsColumns.STATUS`'s actual
+column-name string is `"eventStatus"`, not the more obvious-looking
+`"status"`).
+
 Headless by design (no launcher icon, no MainActivity) - it's never meant to
 be opened or interacted with directly, only driven via `adb shell pm grant`/
 `adb shell cmd role add-role-holder`/`adb shell content query`/
-`adb uninstall` from `routes/mobile.py`'s two workers, each of which always
-installs it, grants exactly what's needed for that one extraction, queries,
-then reverses every change and uninstalls before finishing.
+`adb uninstall` from `routes/mobile.py`'s three workers, each of which
+always installs it, grants exactly what's needed for that one extraction,
+queries, then reverses every change and uninstalls before finishing.
 
 ## Why the built APK is committed, not downloaded
 
@@ -87,13 +105,15 @@ never distributed through the Play Store.
 ## Known, disclosed gap
 
 Never yet run against a real Android device - no real device was connected
-during either provider's build session. Every individual piece (the relay-
+during any provider's build session. Every individual piece (the relay-
 provider mechanism itself, mirrored from adbsms's own proven design; the
-real `content://com.android.contacts/data`, `content://call_log/calls`, and
-`content://sms` URIs and their real, stable permission/role requirements,
-confirmed via the `android` CLI's own official doc-search tool and, for SMS
-specifically, adbsms's own real source) is independently grounded, but the
-fully-integrated real-device happy path (install -> grant/role-assign ->
-query -> parse -> uninstall/role-restore) has never been exercised end to
-end for either data type. Worth a real confirmation the next time a real
-Android phone is available.
+real `content://com.android.contacts/data`, `content://call_log/calls`,
+`content://sms`, and `content://com.android.calendar/{events,attendees}`
+URIs and their real, stable permission/role requirements, confirmed via the
+`android` CLI's own official doc-search tool, adbsms's own real source for
+SMS specifically, and a real live browser session against Google's own API
+reference pages for Calendar's exact column/constant values) is
+independently grounded, but the fully-integrated real-device happy path
+(install -> grant/role-assign -> query -> parse -> uninstall/role-restore)
+has never been exercised end to end for any of the four data types. Worth a
+real confirmation the next time a real Android phone is available.
