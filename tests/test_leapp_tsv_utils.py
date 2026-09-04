@@ -250,6 +250,62 @@ def test_uncurated_module_never_gets_a_timestamp():
     assert "leapp_module_finding" not in leapp.LEAPP_TIMESTAMP_COLUMNS
 
 
+def test_installed_app_timestamp_parsed_from_vending_and_library_real_module_headers(tmp_path):
+    # 2026-09-04, Android pattern-of-life item 4 - leapp_installed_app maps
+    # 3 real, structurally different ALEAPP modules; only 2 of them carry
+    # any timestamp. InstalledappsVending's real header has BOTH
+    # 'First Download' and 'Last Updated' - 'First Download' must win
+    # since it's listed first in LEAPP_TIMESTAMP_COLUMNS.
+    # InstalledappsLibrary's real header only has 'Purchase Time'.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "InstalledappsVending.tsv"),
+               ["User", "First Download", "Package Name", "Title", "Install Reason",
+                "Last Updated", "Auto Update?", "Account"],
+               [["0", "2026-08-30 07:00:00+00:00", "com.example.vending", "Example App",
+                 "user-initiated", "2026-08-31 09:00:00+00:00", "1", "user@example.com"]])
+    _write_tsv(str(tsv_dir / "InstalledappsLibrary.tsv"),
+               ["User", "Purchase Time", "Account", "Doc ID"],
+               [["0", "2026-08-29 05:00:00+00:00", "user@example.com", "abc123"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert len(records) == 2
+    by_source = {r["extra"]["leapp_module"]: r for r in records}
+    assert all(r["artifact_type"] == "leapp_installed_app" for r in records)
+    assert by_source["InstalledappsVending"]["timestamp"] == 1788073200.0  # First Download, not Last Updated
+    assert by_source["InstalledappsLibrary"]["timestamp"] == 1787979600.0  # Purchase Time
+
+
+def test_installed_app_gass_module_has_genuinely_no_timestamp_column_at_all(tmp_path):
+    # InstalledappsGass's real data_headers is ('User', 'Bundle ID',
+    # 'Version Code', 'SHA-256 Hash') - no datetime column exists in the
+    # source module itself, so timestamp=None here is the honestly
+    # correct outcome, not a gap this fix could ever close.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "InstalledappsGass.tsv"),
+               ["User", "Bundle ID", "Version Code", "SHA-256 Hash"],
+               [["0", "com.example.gass", "1", "deadbeef"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert len(records) == 1
+    assert records[0]["artifact_type"] == "leapp_installed_app"
+    assert records[0]["timestamp"] is None
+
+
+def test_app_usage_timestamp_parsed_from_the_primary_datetime_column(tmp_path):
+    # usagestats.py's real data_headers has 4 separate datetime-typed
+    # columns - 'Timestamp / Last Time Active' is the module's own
+    # primary per-event field, listed first.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "Usage Stats.tsv"),
+               ["User (UID)", "Timestamp / Last Time Active", "Usage Type", "Package"],
+               [["10123", "2026-08-30 14:00:00+00:00", "MOVE_TO_FOREGROUND", "com.example.app"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert len(records) == 1
+    assert records[0]["artifact_type"] == "leapp_app_usage"
+    assert records[0]["timestamp"] == 1788098400.0
+
+
 def test_all_artifact_types_constant_matches_actual_curated_values():
     # Guards against the module's own two sources of truth (the curated
     # dict's values, and the exported "every type this module can
