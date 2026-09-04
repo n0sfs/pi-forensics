@@ -9303,10 +9303,11 @@ async function renderReportGeolocationList() {
     }
 }
 
-// Formats an epoch-seconds timestamp for the Contacts pane's first/last
-// seen columns - shared, tiny helper local to this feature; every other
-// timestamp-formatting helper in this file is tied to a different specific
-// table's own column shape, none of them fit reusing here.
+// Formats an epoch-seconds timestamp for the Pattern of Life pane (Contact
+// Correlation's first/last-seen columns, and the Apps/Accounts lists below)
+// - shared, tiny helper local to this feature; every other timestamp-
+// formatting helper in this file is tied to a different specific table's
+// own column shape, none of them fit reusing here.
 function _formatContactCorrelationTimestamp(ts) {
     if (ts === null || ts === undefined) return "--";
     try { return new Date(ts * 1000).toLocaleString(); } catch (err) { return "--"; }
@@ -9413,6 +9414,206 @@ async function loadContactCorrelation() {
     wrapper.style.overflowX = 'auto';
     wrapper.appendChild(table);
     container.appendChild(wrapper);
+}
+
+// --- Pattern of Life pane orchestration (2026-09-04) ---
+// The pane's own top-level tab click calls this instead of
+// loadContactCorrelation() directly - fires all three sections' loaders.
+// Deliberately not awaited/sequenced against each other: each section
+// manages its own container's loading/error state independently, exactly
+// like every other multi-section Reporting pane in this file (e.g.
+// loadCaseForEditing()'s own fire-and-forget calls into renderCaseNotesList()/
+// renderCaseJobs()/loadCaseHistory()) - a slow section never blocks a fast
+// one from showing its own data first.
+function loadPatternOfLife() {
+    loadContactCorrelation();
+    loadPatternOfLifeActivityChart();
+    loadPatternOfLifeAppsAccounts();
+}
+
+// Activity-by-hour-of-day / activity-by-day-of-week chart - built entirely
+// from /api/cases/timeline (already fully tested, already flowing through
+// this same page for the Evidence Timeline tab), filtered client-side to
+// just the "Communications"/"Social Media" categories that same route's own
+// server-side classification already computes (routes/reporting.py's
+// CASE_TIMELINE_ACTIVITY_CATEGORY) - deliberately NOT a new backend route or
+// SQL query, since this is a pure re-aggregation of data this app already
+// trusts. Excludes "Filesystem"/"Web Activity"/"Device & System" on purpose
+// - this chart answers "when is this person actively texting/calling/
+// messaging," not "when did anything happen on this device at all" (that's
+// what the fuller Evidence Timeline tab is already for).
+let patternOfLifeActivityRows = null;      // cached filtered rows, so the granularity toggle never re-fetches
+let patternOfLifeActivityGranularity = 'hour'; // 'hour' | 'dow'
+let patternOfLifeActivityChart = null;
+
+async function loadPatternOfLifeActivityChart() {
+    const summaryEl = document.getElementById('patternOfLifeActivitySummary');
+    const emptyEl = document.getElementById('patternOfLifeActivityEmpty');
+    const canvas = document.getElementById('patternOfLifeActivityChart');
+    if (!canvas || !activeCase) return;
+    if (summaryEl) summaryEl.textContent = 'Loading...';
+    if (emptyEl) emptyEl.style.display = 'none';
+
+    try {
+        const res = await fetch(`/api/cases/timeline?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
+        const data = await res.json();
+        if (!data.success) {
+            if (summaryEl) summaryEl.textContent = data.error || 'Request failed.';
+            return;
+        }
+        const COMM_CATEGORIES = ['Communications', 'Social Media'];
+        patternOfLifeActivityRows = (data.events || []).filter((e) => COMM_CATEGORIES.includes(e.category));
+    } catch (err) {
+        if (summaryEl) summaryEl.textContent = 'Request failed.';
+        return;
+    }
+
+    if (summaryEl) {
+        summaryEl.textContent = patternOfLifeActivityRows.length
+            ? `${patternOfLifeActivityRows.length} communication event(s) analyzed`
+            : '';
+    }
+    renderPatternOfLifeActivityChart();
+}
+
+function setPatternOfLifeActivityGranularity(mode) {
+    patternOfLifeActivityGranularity = mode;
+    const hourBtn = document.getElementById('polGranHourBtn');
+    const dowBtn = document.getElementById('polGranDowBtn');
+    if (hourBtn) hourBtn.classList.toggle('active', mode === 'hour');
+    if (dowBtn) dowBtn.classList.toggle('active', mode === 'dow');
+    renderPatternOfLifeActivityChart();
+}
+
+const PATTERN_OF_LIFE_DOW_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function renderPatternOfLifeActivityChart() {
+    const canvas = document.getElementById('patternOfLifeActivityChart');
+    const emptyEl = document.getElementById('patternOfLifeActivityEmpty');
+    if (!canvas) return;
+    const rows = patternOfLifeActivityRows || [];
+
+    if (rows.length === 0) {
+        if (patternOfLifeActivityChart) { patternOfLifeActivityChart.destroy(); patternOfLifeActivityChart = null; }
+        canvas.style.display = 'none';
+        if (emptyEl) emptyEl.style.display = '';
+        return;
+    }
+    canvas.style.display = '';
+    if (emptyEl) emptyEl.style.display = 'none';
+
+    let labels, counts;
+    if (patternOfLifeActivityGranularity === 'dow') {
+        counts = new Array(7).fill(0);
+        rows.forEach((e) => { counts[new Date(e.timestamp * 1000).getDay()] += 1; });
+        labels = PATTERN_OF_LIFE_DOW_LABELS;
+    } else {
+        counts = new Array(24).fill(0);
+        rows.forEach((e) => { counts[new Date(e.timestamp * 1000).getHours()] += 1; });
+        labels = counts.map((_, h) => {
+            const d = new Date(); d.setHours(h, 0, 0, 0);
+            return d.toLocaleTimeString(undefined, { hour: 'numeric' });
+        });
+    }
+
+    if (patternOfLifeActivityChart) {
+        patternOfLifeActivityChart.data.labels = labels;
+        patternOfLifeActivityChart.data.datasets[0].data = counts;
+        patternOfLifeActivityChart.update();
+        return;
+    }
+
+    patternOfLifeActivityChart = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: { labels, datasets: [{ label: 'Communications', data: counts, backgroundColor: '#a78bfa' }] },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            scales: {
+                x: { ticks: { color: '#94a3b8', maxRotation: 0, autoSkip: true }, grid: { display: false } },
+                y: { beginAtZero: true, ticks: { color: '#94a3b8', precision: 0 }, grid: { color: 'rgba(255,255,255,0.06)' } },
+            },
+            plugins: { legend: { display: false } },
+        },
+    });
+}
+
+// Device Profile: Apps & Accounts - both lists reuse the already-existing,
+// already-tested /api/case_index/parsed_artifacts row-fetch route (File
+// Views' own "Parsed Artifacts" backend) rather than a new endpoint. Both
+// artifact types are captured automatically during a plain `adb pull` - see
+// routes/mobile.py's _capture_android_app_inventory()/_capture_android_
+// accounts() - so both should already be populated after any real pull.
+async function loadPatternOfLifeAppsAccounts() {
+    const appsEl = document.getElementById('patternOfLifeAppsContainer');
+    const acctEl = document.getElementById('patternOfLifeAccountsContainer');
+    if (!appsEl || !acctEl || !activeCase) return;
+
+    async function fetchCategory(category) {
+        try {
+            const res = await fetch('/api/case_index/parsed_artifacts', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ case_folder: activeCase.case_folder, category }),
+            });
+            const data = await res.json();
+            return (data && data.success) ? data.rows : [];
+        } catch (err) {
+            return null; // distinguish "request failed" from "genuinely zero rows"
+        }
+    }
+
+    const [appRows, acctRows] = await Promise.all([
+        fetchCategory('android_installed_app'),
+        fetchCategory('android_configured_account'),
+    ]);
+
+    appsEl.innerHTML = '';
+    if (appRows === null) {
+        appsEl.appendChild(Object.assign(document.createElement('span'), { className: 'text-danger', textContent: 'Request failed.' }));
+    } else if (appRows.length === 0) {
+        appsEl.appendChild(Object.assign(document.createElement('span'), { className: 'text-subtle', textContent: 'No app inventory captured for this case yet - captured automatically on the next Android adb pull acquisition.' }));
+    } else {
+        // Already ordered by timestamp DESC (most recently installed/updated
+        // first) by the backend route itself - that's exactly "recently
+        // installed/updated" framing, no client-side re-sort needed.
+        appRows.forEach((row) => {
+            const line = document.createElement('div');
+            line.className = 'mb-1';
+            const pkg = document.createElement('div');
+            pkg.className = 'fw-bold text-subtle';
+            pkg.textContent = row.title;
+            const detail = document.createElement('div');
+            detail.className = 'text-subtle';
+            detail.style.opacity = '0.8';
+            detail.textContent = (row.value || '') + (row.timestamp ? ` | Installed: ${_formatContactCorrelationTimestamp(row.timestamp)}` : '');
+            line.appendChild(pkg);
+            line.appendChild(detail);
+            appsEl.appendChild(line);
+        });
+    }
+
+    acctEl.innerHTML = '';
+    if (acctRows === null) {
+        acctEl.appendChild(Object.assign(document.createElement('span'), { className: 'text-danger', textContent: 'Request failed.' }));
+    } else if (acctRows.length === 0) {
+        acctEl.appendChild(Object.assign(document.createElement('span'), { className: 'text-subtle', textContent: 'No configured accounts captured for this case yet - captured automatically on the next Android adb pull acquisition.' }));
+    } else {
+        [...acctRows].sort((a, b) => (a.title || '').localeCompare(b.title || '')).forEach((row) => {
+            const line = document.createElement('div');
+            line.className = 'mb-1';
+            const name = document.createElement('span');
+            name.className = 'fw-bold text-subtle';
+            name.textContent = row.title;
+            const type = document.createElement('span');
+            type.className = 'text-subtle ms-2';
+            type.style.opacity = '0.8';
+            type.textContent = `(${(row.extra && row.extra.type) || 'unknown type'})`;
+            line.appendChild(name);
+            line.appendChild(type);
+            acctEl.appendChild(line);
+        });
+    }
 }
 
 function toggleAttachmentFile(filePath, checked) {

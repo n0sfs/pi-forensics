@@ -47,7 +47,7 @@
                                                 <button class="list-group-item list-group-item-action" id="repCustodyTab" data-bs-toggle="list" data-bs-target="#repCustodyPane" type="button" role="tab" onclick="renderCustodyLogList()"><i class="bi bi-people-fill"></i>Physical Custody Log</button>
                                                 <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab" onclick="renderReportFilesGallery()"><i class="bi bi-paperclip"></i>Files &amp; Artifacts</button>
                                                 <button class="list-group-item list-group-item-action" id="repGeoTab" data-bs-toggle="list" data-bs-target="#repGeoPane" type="button" role="tab" onclick="renderReportGeolocationList()"><i class="bi bi-geo-alt"></i>Geolocation</button>
-                                                <button class="list-group-item list-group-item-action" id="repContactsTab" data-bs-toggle="list" data-bs-target="#repContactsPane" type="button" role="tab" onclick="loadContactCorrelation()"><i class="bi bi-person-lines-fill"></i>Contacts</button>
+                                                <button class="list-group-item list-group-item-action" id="repContactsTab" data-bs-toggle="list" data-bs-target="#repContactsPane" type="button" role="tab" onclick="loadPatternOfLife()"><i class="bi bi-activity"></i>Pattern of Life</button>
                                                 <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
                                                 <button class="list-group-item list-group-item-action" id="repTimelineTab" data-bs-toggle="list" data-bs-target="#repTimelinePane" type="button" role="tab" onclick="loadCaseTimeline()"><i class="bi bi-clock-history"></i>Evidence Timeline</button>
                                                 <button class="list-group-item list-group-item-action" id="repHistoryTab" data-bs-toggle="list" data-bs-target="#repHistoryPane" type="button" role="tab" onclick="loadCaseHistory()"><i class="bi bi-clock-history"></i>Audit Trail</button>
@@ -319,10 +319,41 @@
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repContactsPane" role="tabpanel">
+                                                    <div class="small text-subtle mb-3">A read-only view built entirely from already-parsed evidence - who this person talked to, when they're typically active, and what's on the device. Nothing here changes any evidence record; parse contacts/communications/app-inventory first (File Explorer's "Parse..." actions, or Auto Analyze) if a section below comes back empty.</div>
+
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-bar-chart-line-fill me-1"></i>Communication Activity Pattern</h6>
+                                                    <div class="small text-subtle mb-2">How often this device sent/received a text, call, or app message (WhatsApp, etc.), grouped by time of day or day of week - a classic pattern-of-life signal (sleep/waking hours, a regular weekday routine, unusual late-night activity). Times are shown in this browser's own local time zone, matching every other timestamp display in this app - the device's own configured time zone at the moment of each event isn't reliably knowable.</div>
+                                                    <div class="d-flex align-items-center gap-2 mb-2">
+                                                        <div class="btn-group btn-group-sm" role="group">
+                                                            <button type="button" class="btn btn-outline-info active" id="polGranHourBtn" onclick="setPatternOfLifeActivityGranularity('hour')">By Hour of Day</button>
+                                                            <button type="button" class="btn btn-outline-info" id="polGranDowBtn" onclick="setPatternOfLifeActivityGranularity('dow')">By Day of Week</button>
+                                                        </div>
+                                                        <span id="patternOfLifeActivitySummary" class="small text-subtle"></span>
+                                                    </div>
+                                                    <div class="border border-secondary rounded-2 mb-3 p-2" style="height: 180px; background-color:#090b10;"><canvas id="patternOfLifeActivityChart"></canvas></div>
+                                                    <div id="patternOfLifeActivityEmpty" class="text-subtle small mb-3" style="display:none;">No timestamped communications (SMS, calls, WhatsApp, or similar) parsed for this case yet.</div>
+
                                                     <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-person-lines-fill me-1"></i>Contact Correlation</h6>
-                                                    <div class="small text-subtle mb-2">Cross-references every parsed contact (phone, iOS backup, Google Takeout, or WhatsApp) against every parsed SMS/call/WhatsApp message in this case, resolving a raw number to a real name wherever the two agree - the most-contacted people surface first. A number independently named by more than one contact source is stronger corroboration. This is a read-only cross-reference of already-parsed data - use File Explorer's "Parse..." context-menu actions (or Auto Analyze) first if this comes back empty.</div>
-                                                    <div id="reportContactsContainer">
+                                                    <div class="small text-subtle mb-2">Cross-references every parsed contact (phone, iOS backup, Google Takeout, or WhatsApp) against every parsed SMS/call/WhatsApp message in this case, resolving a raw number to a real name wherever the two agree - the most-contacted people surface first. A number independently named by more than one contact source is stronger corroboration.</div>
+                                                    <div id="reportContactsContainer" class="mb-3">
                                                         <span class="text-subtle small italic">Loading...</span>
+                                                    </div>
+
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-phone me-1"></i>Device Profile: Apps &amp; Accounts</h6>
+                                                    <div class="small text-subtle mb-2">Captured automatically during any Android `adb pull` acquisition (no root needed) - the installed-app inventory and the signed-in account list at the moment of the pull.</div>
+                                                    <div class="row g-2">
+                                                        <div class="col-md-6">
+                                                            <div class="small fw-bold text-subtle mb-1">Recently Installed / Updated Apps</div>
+                                                            <div id="patternOfLifeAppsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 240px; overflow-y: auto; background-color:#090b10;">
+                                                                <span class="text-subtle">Loading...</span>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="small fw-bold text-subtle mb-1">Configured Accounts</div>
+                                                            <div id="patternOfLifeAccountsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 240px; overflow-y: auto; background-color:#090b10;">
+                                                                <span class="text-subtle">Loading...</span>
+                                                            </div>
+                                                        </div>
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repJobsPane" role="tabpanel">

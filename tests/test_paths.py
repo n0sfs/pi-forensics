@@ -97,6 +97,12 @@ def test_classify_extension(name, expected_category, expected_ext):
     ("case_info.json", "report"),
     ("ITEM-01_report.json", "report"),
     ("2026-CASE-01_USBDrive-1_hash_manifest_sha256.txt", "analysis_log"),
+    # Real-fs "Hash Directory Tree" output - a distinct naming convention
+    # from the whole-image hash manifest above (routes/file_explorer.py's
+    # own _hashdeep_{algo}_manifest.txt vs. routes/image_browser.py's
+    # _hash_manifest_{algo}.txt) - a real gap found and fixed 2026-09-04
+    # while auditing this regex for the Android manifest gap below.
+    ("evidence_folder_hashdeep_sha256_manifest.txt", "analysis_log"),
     ("2026-CASE-01_USBDrive-1_triage_scan_report.txt", "analysis_log"),
     ("2026-CASE-01_USBDrive-1_vol3_pslist.json", "analysis_log"),
     ("dc3dd_output.log", "analysis_log"),
@@ -108,6 +114,12 @@ def test_classify_extension(name, expected_category, expected_ext):
     ("2026-CASE-01_USBDrive-1_usnjrnl_parsed.json", "analysis_log"),
     ("live_collection_import_20260831_142530", "analysis_log"),
     ("thumbcache_256_thumbcache_extracted", "analysis_log"),
+    # Android pull manifests (routes/mobile.py) - a real gap found 2026-09-04:
+    # these three were never in the regex at all, so File Explorer's tree
+    # never grouped them and they were never auto-tagged into the case index.
+    ("2026-CASE-01_PIXEL8A-01_app_inventory.json", "analysis_log"),
+    ("2026-CASE-01_PIXEL8A-01_accounts.json", "analysis_log"),
+    ("2026-CASE-01_PIXEL8A-01_notifications.json", "analysis_log"),
     # Anchored to the exact timestamp shape - a similarly-named real evidence
     # folder an examiner happens to create must never be misclassified.
     ("live_collection_import_notes", None),

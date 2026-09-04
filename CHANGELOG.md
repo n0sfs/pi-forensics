@@ -21,6 +21,30 @@ file after updating to see what changed.
 
 ---
 
+## [1.45.0] - 2026-09-04
+
+### Added
+- **Reporting's "Contacts" tab is now "Pattern of Life"** - a genuine at-a-glance pattern-of-life
+  view instead of just contact correlation on its own. Two new sections join the existing contact
+  correlation table, both built entirely from data this app already parses (no new format-guessing,
+  nothing untested against real data):
+  - **Communication Activity Pattern**: a chart of when this device sent/received a text, call, or
+    app message, switchable between "by hour of day" and "by day of week" - a classic pattern-of-life
+    signal for spotting sleep/waking hours or a regular routine.
+  - **Device Profile: Apps & Accounts**: the recently installed/updated apps and configured accounts
+    captured automatically during any Android `adb pull` (v1.39.0/v1.44.0), shown together in one
+    place instead of only being reachable one at a time through File Views.
+
+### Fixed
+- **Four of this app's own generated files could go unclassified in File Explorer's folder tree and
+  never get auto-tagged into the case index**: the real-filesystem "Hash Directory Tree" manifest
+  (`..._hashdeep_<algo>_manifest.txt`, a different naming convention from the whole-image hash
+  manifest, which was already recognized) and the three Android pull manifests added in v1.39.0/
+  v1.44.0 (installed-app inventory, configured accounts, notification snapshot) were never added to
+  the pattern this app uses to recognize its own output. Found and fixed while grounding the Pattern
+  of Life feature above - all four now group correctly under "Case-Generated Artifacts" and tag
+  correctly, including retroactively for files already on disk from before this fix.
+
 ## [1.44.0] - 2026-09-04
 
 ### Added

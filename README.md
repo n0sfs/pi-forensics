@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.44.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.45.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -222,11 +222,14 @@ Timeline** merging every acquired image's filesystem timeline (plus real file ti
 mobile pull/backup or Logical Acquisition folder — an Android pull captures each file's genuine
 on-device modification time directly from the phone via `adb shell`, since `adb pull` itself
 discards it) with parsed-artifact timestamps (charted by source, with anti-forensic-indicator
-flagging), a **Contacts** tab that cross-references every parsed contact (phone, iOS backup, Google
-Takeout, or WhatsApp) against every parsed SMS/call/WhatsApp message — resolving a raw number to a
-real name wherever the two agree, with the most-contacted people surfacing first and a number named
-by more than one contact source treated as stronger corroboration — and a station-wide Audit Trail
-filtered to the case — plus a cross-source Search across all of them. Export to PDF, HTML, JSON, or CSV, with
+flagging), a **Pattern of Life** tab — a communication-activity chart (by hour of day or day of week,
+built entirely from already-parsed evidence), contact correlation cross-referencing every parsed
+contact (phone, iOS backup, Google Takeout, or WhatsApp) against every parsed SMS/call/WhatsApp
+message to resolve a raw number to a real name wherever the two agree (most-contacted people surface
+first; a number named by more than one contact source is stronger corroboration), and a device
+profile of recently installed/updated apps and configured accounts, both captured automatically
+during any Android `adb pull` — and a station-wide Audit Trail filtered to the case — plus a
+cross-source Search across all of them. Export to PDF, HTML, JSON, or CSV, with
 a choice of a fully configurable layout or a fixed DFIR/law-enforcement/CASE-UCO-aligned structure,
 embedded image/text attachments, and optional station branding (logo + header text).
 
@@ -372,7 +375,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.44.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.45.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
