@@ -390,6 +390,18 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "live_collection_dns_cache_entry": "Live Collection: DNS Cache Entry",
     "live_collection_installed_hotfix": "Live Collection: Installed Hotfix",
     "live_collection_loaded_driver": "Live Collection: Loaded Driver",
+    # Android bugreport deep-parse, structured extraction (core/bugreport_
+    # utils.py::_extract_parsed_artifact_records(), 2026-09-04, Android
+    # pattern-of-life item 6) - the genuinely record-shaped sections of a
+    # parsed `adb bugreport` archive, now individually searchable instead
+    # of only sitting in a raw JSON sidecar file. See that function's own
+    # docstring for exactly which 5 of Dumpstate's 17 real fields this
+    # covers and why the rest are deliberately out of scope.
+    "android_bugreport_package_event": "Android Bugreport: Package Install/Delete Event",
+    "android_bugreport_location": "Android Bugreport: GPS Location",
+    "android_bugreport_crash": "Android Bugreport: Crash (Tombstone)",
+    "android_bugreport_kernel_module": "Android Bugreport: Loaded Kernel Module",
+    "android_bugreport_power_event": "Android Bugreport: Power Off/Reset Event",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])

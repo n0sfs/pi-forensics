@@ -2331,7 +2331,10 @@ def run_bugreport_parse():
         return jsonify({"success": False, "error": f"Parsed successfully but could not write output: {e}"}), 500
 
     section_count = len(result["sections"])
+    artifact_records = result.get("artifact_records") or []
     summary = f"{section_count} section(s) parsed"
+    if artifact_records:
+        summary += f", {len(artifact_records)} record(s) indexed"
 
     case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
     if case_folder and not case_consolidated_path(case_folder):
@@ -2339,6 +2342,19 @@ def run_bugreport_parse():
     identity = {"source_type": "real_fs", "path": file_path, "name": os.path.basename(file_path)}
     _record_analysis_result(case_folder, identity, "Bugreport Deep Parse (dumpstate-py)", summary,
                              json.dumps(result["sections"], indent=2)[:20000])
+
+    # 2026-09-04, Android pattern-of-life item 6: the genuinely record-
+    # shaped sections (package install/delete events, GPS fixes, crash
+    # tombstones, kernel modules, power events - see core/bugreport_
+    # utils.py::_extract_parsed_artifact_records()'s own docstring for the
+    # exact scope) are indexed individually here, on top of the existing
+    # full raw sections dump above - closing the "structured data, but a
+    # dead-end JSON blob" gap this route originally shipped with. Every
+    # OTHER section stays exactly as before (the raw JSON sidecar file +
+    # the one summary analysis_result), not silently expanded beyond
+    # what's actually confirmed record-shaped.
+    if case_folder and artifact_records:
+        _record_parsed_artifacts(case_folder, identity, artifact_records)
 
     log_chain_of_custody("bugreport_parsed", {"path": file_path, "output_path": output_path, "summary": summary})
     return jsonify({"success": True, "output_path": output_path, "sections": result["sections"], "summary": summary})

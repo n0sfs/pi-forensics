@@ -2027,6 +2027,11 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     live_collection_dns_cache_entry: 'Live Collection: DNS Cache Entry',
     live_collection_installed_hotfix: 'Live Collection: Installed Hotfix',
     live_collection_loaded_driver: 'Live Collection: Loaded Driver',
+    android_bugreport_package_event: 'Android Bugreport: Package Install/Delete Event',
+    android_bugreport_location: 'Android Bugreport: GPS Location',
+    android_bugreport_crash: 'Android Bugreport: Crash (Tombstone)',
+    android_bugreport_kernel_module: 'Android Bugreport: Loaded Kernel Module',
+    android_bugreport_power_event: 'Android Bugreport: Power Off/Reset Event',
 };
 
 function buildFileViewsHierarchy(summary) {
