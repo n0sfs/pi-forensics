@@ -522,6 +522,45 @@ def _parse_live_evtx(run_dir, ts):
     return records
 
 
+def _parse_live_registry(run_dir, ts):
+    """Real registry hive exports the collector pulled live from a
+    running Windows system - RecentDocs, TypedPaths, RunMRU, UserAssist,
+    RDP connections, Office MRU, WordWheelQuery, USB device history,
+    Shimcache, BAM/DAM, installed programs, Amcache, and ShellBags - see
+    windows_collector.ps1's own registry pattern-of-life collection step
+    (2026-09-03, admin-only). Reuses core/registry_utils.py's existing
+    find_registry_hive_files()/parse_registry_hive_file() UNCHANGED, same
+    "collect the real file, reuse the already-built parser" approach as
+    Prefetch/Event Logs above - including that module's own real
+    per-value/per-key timestamps (`ts` is unused here for the identical
+    reason it's unused in _parse_live_prefetch/_parse_live_evtx).
+    Deliberately imported HERE, not at this module's own top level -
+    core/registry_utils.py needs python-registry, a genuinely optional
+    pip dependency, matching the same reasoning already documented for
+    pyscca/python-evtx above.
+
+    The collector may write more than one real user's hives, each into
+    its own <username>\\ subfolder (so two different users' identically-
+    named NTUSER.DAT files never collide on disk - see the collector
+    script's own docstring). find_registry_hive_files() already walks
+    the whole run directory recursively by exact basename regardless of
+    nesting, so this needs no per-user bookkeeping of its own at all,
+    unlike the PSReadLine parser above (which does have to track which
+    username each history file came from)."""
+    registry_dir = os.path.join(run_dir, 'registry')
+    if not os.path.isdir(registry_dir):
+        return []
+    try:
+        from core.registry_utils import find_registry_hive_files, parse_registry_hive_file
+    except ImportError:
+        return []
+    paths, _truncated = find_registry_hive_files(registry_dir)
+    records = []
+    for path in paths:
+        records.extend(parse_registry_hive_file(path, os.path.basename(path)))
+    return records
+
+
 def _parse_autoruns(run_dir, ts):
     autoruns = _load_json(run_dir, 'autoruns.json')
     if not isinstance(autoruns, list):
@@ -610,7 +649,7 @@ _WINDOWS_PARSERS = (
     ('scheduled_tasks', _parse_scheduled_tasks), ('autoruns', _parse_autoruns),
     ('installed_hotfixes', _parse_installed_hotfixes), ('loaded_drivers', _parse_loaded_drivers),
     ('powershell_history', _parse_live_powershell_history), ('prefetch', _parse_live_prefetch),
-    ('evtx', _parse_live_evtx),
+    ('evtx', _parse_live_evtx), ('registry', _parse_live_registry),
     ('mapped_drives', _parse_mapped_drives), ('clipboard', _parse_windows_clipboard),
 )
 

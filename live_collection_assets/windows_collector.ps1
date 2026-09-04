@@ -620,7 +620,115 @@ if ($IsElevated) {
     Write-CollectionLog -Category 'evtx_security' -Status 'skipped' -Detail 'requires administrator privileges - not run'
 }
 
-# --- 14. Mapped network drives ---
+# --- 14. Live registry pattern-of-life pull - real registry hive exports
+#      copied while Windows is still running, via the same backup-API
+#      mechanism (reg save) the Windows registry itself exposes for
+#      exactly this purpose - no VSS/live-registry-provider parsing
+#      needed. Output files are named to EXACTLY match this app's
+#      existing REGISTRY_HIVE_FILENAMES so core/registry_utils.py's own,
+#      already-built parser (RecentDocs, TypedPaths, RunMRU, UserAssist,
+#      RDP connections, Office MRU, WordWheelQuery, USB device history,
+#      Shimcache, BAM/DAM, installed programs, Amcache, ShellBags) reads
+#      them completely unchanged at import time - the same "collect the
+#      real file, reuse the already-built parser" pattern as PSReadLine/
+#      Prefetch/Event Logs above.
+#
+#      Genuinely admin-only, unlike most of those others, and confirmed
+#      live rather than assumed: reg save needs SeBackupPrivilege, which
+#      even Administrators-group membership doesn't grant unless the
+#      process token is ACTUALLY elevated (a standard/UAC-filtered token
+#      lacks it entirely) - a non-elevated "reg save HKCU" run against
+#      this very collector's own dev machine failed outright with "A
+#      required privilege is not held by the client."
+#
+#      When elevated: pulls the collecting account's own live NTUSER.DAT
+#      + UsrClass.dat (via reg save, since both are actively open/locked
+#      by this very session); the machine-wide SYSTEM + SOFTWARE hives
+#      (also reg save); a best-effort Amcache.hve copy (that file is
+#      periodically checkpointed rather than continuously held open, so
+#      a plain file copy - not reg save, it isn't a currently-loaded
+#      registry key - is the correct mechanism for it); and every OTHER
+#      real user profile's on-disk NTUSER.DAT/UsrClass.dat via a plain
+#      file copy (works when that user isn't ALSO concurrently logged
+#      in, the common case - a currently-active other session's hive may
+#      still be exclusively locked and is skipped gracefully per-file,
+#      the same disclosed edge-case boundary PSReadLine/Prefetch already
+#      accept above rather than build brittle multi-session handling
+#      for). Each user's hives land in their own <username>\ subfolder so
+#      two different users' identically-named NTUSER.DAT files can never
+#      collide on disk. ---
+if ($IsElevated) {
+    $regOutDir = Join-Path $RunDir 'registry'
+    New-Item -ItemType Directory -Path $regOutDir -Force | Out-Null
+    $regSaved = 0
+    $regFailed = 0
+
+    function Save-LiveHive {
+        param([string]$RegKey, [string]$DestPath)
+        $destDir = Split-Path -Path $DestPath -Parent
+        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+        try {
+            & reg.exe save $RegKey $DestPath /y 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { $script:regSaved++ } else { $script:regFailed++ }
+        } catch {
+            $script:regFailed++
+        }
+    }
+
+    function Copy-LiveHiveFile {
+        param([string]$SourcePath, [string]$DestPath)
+        if (Test-Path $SourcePath) {
+            $destDir = Split-Path -Path $DestPath -Parent
+            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+            try {
+                Copy-Item -Path $SourcePath -Destination $DestPath -ErrorAction Stop
+                $script:regSaved++
+            } catch {
+                $script:regFailed++
+            }
+        }
+    }
+
+    # Own account's live hives - reg save, since these are actively
+    # open/locked by this very session right now.
+    $ownUserDir = Join-Path $regOutDir $env:USERNAME
+    Save-LiveHive -RegKey 'HKCU' -DestPath (Join-Path $ownUserDir 'NTUSER.DAT')
+    Save-LiveHive -RegKey 'HKCU\Software\Classes' -DestPath (Join-Path $ownUserDir 'USRCLASS.DAT')
+
+    # Machine-wide live hives - same reg save mechanism, gated on the
+    # same elevated backup privilege this whole block already requires.
+    Save-LiveHive -RegKey 'HKLM\SYSTEM' -DestPath (Join-Path $regOutDir 'SYSTEM')
+    Save-LiveHive -RegKey 'HKLM\SOFTWARE' -DestPath (Join-Path $regOutDir 'SOFTWARE')
+
+    # Amcache.hve - plain file copy, not reg save (it isn't a currently-
+    # loaded registry key at all, just a periodically-flushed file).
+    Copy-LiveHiveFile -SourcePath (Join-Path $env:WINDIR 'AppCompat\Programs\Amcache.hve') `
+        -DestPath (Join-Path $regOutDir 'AMCACHE.HVE')
+
+    # Every OTHER real user profile's on-disk hive files - plain file
+    # copy (not reg save, since these aren't loaded under THIS process's
+    # own HKCU); succeeds when that user isn't concurrently logged in.
+    Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin @('Public', 'Default', 'Default User', 'All Users') -and $_.Name -ne $env:USERNAME } |
+        ForEach-Object {
+            $userDir = Join-Path $regOutDir $_.Name
+            Copy-LiveHiveFile -SourcePath (Join-Path $_.FullName 'NTUSER.DAT') `
+                -DestPath (Join-Path $userDir 'NTUSER.DAT')
+            Copy-LiveHiveFile -SourcePath (Join-Path $_.FullName 'AppData\Local\Microsoft\Windows\UsrClass.dat') `
+                -DestPath (Join-Path $userDir 'USRCLASS.DAT')
+        }
+
+    if ($regSaved -gt 0) {
+        $failDetail = if ($regFailed -gt 0) { ", $regFailed hive(s) failed/locked/absent" } else { "" }
+        Write-CollectionLog -Category 'registry' -Status 'ok' -Detail "$regSaved hive(s) saved$failDetail"
+    } else {
+        Write-CollectionLog -Category 'registry' -Status 'failed' -Detail 'no hives could be saved'
+    }
+} else {
+    Write-CollectionLog -Category 'registry' -Status 'skipped' -Detail 'requires administrator privileges - not run'
+}
+
+# --- 15. Mapped network drives ---
 try {
     if (Get-Command Get-SmbMapping -ErrorAction SilentlyContinue) {
         $mapped = Get-SmbMapping -ErrorAction Stop | ForEach-Object {
@@ -645,7 +753,7 @@ try {
     Write-CollectionLog -Category 'mapped_drives' -Status 'failed' -Detail $_.Exception.Message
 }
 
-# --- 15. Clipboard contents ---
+# --- 16. Clipboard contents ---
 try {
     $clipContent = Get-Clipboard -ErrorAction Stop -Raw
     if ($clipContent) {
