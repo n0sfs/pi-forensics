@@ -8,6 +8,8 @@ utils.py's python-registry requirement - no importorskip guard needed.
 """
 import json
 import os
+import sys
+import types
 
 import core.live_collection_results_utils as lcru
 
@@ -713,3 +715,147 @@ def test_parse_loaded_drivers_missing_file_returns_empty(tmp_path):
     run_dir = str(tmp_path / "run")
     os.makedirs(run_dir)
     assert lcru._parse_loaded_drivers(run_dir, ts=1.0) == []
+
+
+# --- _parse_plausible_historical_epoch: scheduled-task run history
+# (2026-09-03) - real, historical last-run timestamps, but with a real
+# sentinel-value risk Get-ScheduledTaskInfo is well-documented to have. ---
+
+def test_parse_plausible_historical_epoch_accepts_a_real_recent_date():
+    epoch = lcru._parse_plausible_historical_epoch("2026-09-01T08:00:00.0000000-04:00")
+    assert epoch is not None
+    assert epoch > 0
+
+
+def test_parse_plausible_historical_epoch_rejects_the_never_run_sentinel():
+    # The real, documented Task Scheduler "no value" sentinel - an
+    # implausibly old but perfectly valid-looking ISO date.
+    assert lcru._parse_plausible_historical_epoch("1899-12-30T00:00:00.0000000-05:00") is None
+    assert lcru._parse_plausible_historical_epoch("1601-01-01T00:00:00.0000000Z") is None
+
+
+def test_parse_plausible_historical_epoch_still_rejects_garbage_and_naive():
+    assert lcru._parse_plausible_historical_epoch(None) is None
+    assert lcru._parse_plausible_historical_epoch("not a date") is None
+    assert lcru._parse_plausible_historical_epoch("2026-09-01T08:00:00") is None  # naive, no offset
+
+
+# --- _parse_scheduled_tasks: real run-history wiring ---
+
+def test_parse_scheduled_tasks_uses_real_last_run_time(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "scheduled_tasks.json", [
+        {"task_name": "\\Microsoft\\Windows\\UpdateCheck", "task_path": "\\Microsoft\\Windows\\",
+         "state": "Ready", "actions": "C:\\update.exe ",
+         "last_run_time": "2026-08-30T03:00:00.0000000-04:00",
+         "next_run_time": "2026-09-04T03:00:00.0000000-04:00", "last_task_result": 0},
+    ])
+    records = lcru._parse_scheduled_tasks(run_dir, ts=1756598400.0)
+    assert len(records) == 1
+    assert records[0]['timestamp'] != 1756598400.0
+    assert '2026-08-30T03:00:00.0000000-04:00' in records[0]['value']
+
+
+def test_parse_scheduled_tasks_never_run_falls_back_to_run_ts(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "scheduled_tasks.json", [
+        {"task_name": "\\Custom\\NewTask", "task_path": "\\Custom\\", "state": "Ready",
+         "actions": "C:\\new.exe ", "last_run_time": "1899-12-30T00:00:00.0000000-05:00",
+         "next_run_time": None, "last_task_result": None},
+    ])
+    records = lcru._parse_scheduled_tasks(run_dir, ts=1756598400.0)
+    assert len(records) == 1
+    assert records[0]['timestamp'] == 1756598400.0
+    assert 'never run' in records[0]['value']
+
+
+def test_parse_scheduled_tasks_legacy_shape_unaffected(tmp_path):
+    # The schtasks.exe CSV fallback has no last_run_time field at all -
+    # confirm this path (no 'task_name' key) is completely untouched.
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "scheduled_tasks.json", [
+        {"TaskName": "\\Legacy\\OldTask", "Status": "Ready"},
+    ])
+    records = lcru._parse_scheduled_tasks(run_dir, ts=1756598400.0)
+    assert len(records) == 1
+    assert records[0]['timestamp'] == 1756598400.0
+
+
+# --- _parse_live_powershell_history: real PSReadLine files copied live ---
+
+def test_parse_live_powershell_history_finds_and_parses_real_files(tmp_path):
+    run_dir = str(tmp_path / "run")
+    # Matches the exact structure windows_collector.ps1 now writes
+    # (2026-09-03): <username>/PSReadLine/<HostName>_history.txt.
+    psr_dir = os.path.join(run_dir, "PSReadLine", "testuser", "PSReadLine")
+    os.makedirs(psr_dir)
+    with open(os.path.join(psr_dir, "ConsoleHost_history.txt"), "w", encoding="utf-8") as f:
+        f.write("whoami\nGet-Process | Where-Object { $_.Name -eq 'evil' }\n")
+    records = lcru._parse_live_powershell_history(run_dir, ts=1756598400.0)
+    assert len(records) == 2
+    assert all(r['artifact_type'] == 'powershell_console_history' for r in records)
+    # Deliberately stamped with the run's own capture time - see this
+    # function's own docstring for why that differs from the acquired-
+    # file parser's honest timestamp:None default.
+    assert all(r['timestamp'] == 1756598400.0 for r in records)
+    assert any('whoami' in r['title'] or 'whoami' in r['value'] for r in records)
+
+
+def test_parse_live_powershell_history_no_files_found(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    assert lcru._parse_live_powershell_history(run_dir, ts=1.0) == []
+
+
+# --- _parse_live_prefetch: real .pf files copied live (admin-only) ---
+
+def test_parse_live_prefetch_no_prefetch_dir_returns_empty(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    assert lcru._parse_live_prefetch(run_dir, ts=1.0) == []
+
+
+def test_parse_live_prefetch_gracefully_handles_pyscca_not_installed(tmp_path, monkeypatch):
+    # core.prefetch_utils itself does `import pyscca` at module load time -
+    # forcing that import to fail is meaningful both here (pyscca genuinely
+    # isn't installed on this dev machine) and on a real station missing
+    # it, same documented technique as test_apk_utils.py's own androguard
+    # test. The prefetch/ subfolder existing but pyscca being unavailable
+    # must never crash the whole import worker.
+    run_dir = str(tmp_path / "run")
+    os.makedirs(os.path.join(run_dir, "prefetch"))
+    monkeypatch.setitem(sys.modules, 'core.prefetch_utils', None)
+    monkeypatch.setitem(sys.modules, 'pyscca', None)
+    assert lcru._parse_live_prefetch(run_dir, ts=1.0) == []
+
+
+def test_parse_live_prefetch_wiring_with_a_fake_prefetch_utils_module(tmp_path, monkeypatch):
+    # Proves the actual wiring logic this session added (find the
+    # prefetch/ subfolder, call find_prefetch_files, call
+    # parse_prefetch_file per path, extend the results) is correct,
+    # independent of whether the real native pyscca library is
+    # installed on THIS machine - a fake core.prefetch_utils module is
+    # injected into sys.modules so the local `from core.prefetch_utils
+    # import ...` statement resolves to it instead of the real one.
+    run_dir = str(tmp_path / "run")
+    prefetch_dir = os.path.join(run_dir, "prefetch")
+    os.makedirs(prefetch_dir)
+    fake_pf_path = os.path.join(prefetch_dir, "NOTEPAD.EXE-ABCDEF12.pf")
+    open(fake_pf_path, "w").close()  # content doesn't matter - the fake parser below never reads it
+
+    fake_module = types.ModuleType('core.prefetch_utils')
+    fake_module.find_prefetch_files = lambda root_dir: ([fake_pf_path], False)
+    fake_module.parse_prefetch_file = lambda path: [{
+        'artifact_type': 'prefetch_execution', 'title': 'NOTEPAD.EXE', 'url': '',
+        'value': 'run count: 3', 'timestamp': 1788000000.0, 'extra': {'run_count': 3},
+    }]
+    monkeypatch.setitem(sys.modules, 'core.prefetch_utils', fake_module)
+
+    records = lcru._parse_live_prefetch(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert records[0]['title'] == 'NOTEPAD.EXE'
+    assert records[0]['artifact_type'] == 'prefetch_execution'
+    assert records[0]['timestamp'] == 1788000000.0  # the .pf file's OWN real last-run time, not ts
