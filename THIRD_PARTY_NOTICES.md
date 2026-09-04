@@ -3,18 +3,19 @@
 Pi Forensics Suite's own original source code — the Flask application (`app.py`, `core/`, `routes/`),
 the frontend (`templates/`, `static/js/main.js`), the setup/deployment scripts (`install.py`,
 `uninstall.py`, `systemd/`, `nginx/`), and everything else written for this project — is licensed
-under the Apache License, Version 2.0 (relicensed from GPLv3 on 2026-09-04 - see the maintainer's
-note at the top of [LICENSE](LICENSE)). See [LICENSE](LICENSE) for the full text.
+under the MIT License (this project's license history - MIT at first commit, GPLv3 two days later,
+briefly Apache-2.0, back to MIT the same day - is recorded in the maintainer's note at the top of
+[LICENSE](LICENSE)). See [LICENSE](LICENSE) for the full text.
 
-**None of the license grants below apply to this project's own code, and this project's Apache-2.0
-license does not apply to any of the tools, libraries, or assets listed below.** To do its job, the
+**None of the license grants below apply to this project's own code, and this project's MIT license
+does not apply to any of the tools, libraries, or assets listed below.** To do its job, the
 station installs, imports, vendors, or loads a large number of pre-existing third-party forensic
 tools, Python libraries, and frontend assets. Each one keeps its own original license, exactly as its
 own authors published it. This project does not relicense any of it, and — with the handful of
 vendored exceptions noted below, which are bundled unmodified at a pinned version or commit — does
 not modify any of it either.
 
-## Why this doesn't affect this project's own Apache-2.0 license
+## Why this doesn't affect this project's own MIT license
 
 - **System tools** (installed via `apt-get`) are launched as separate operating-system processes via
   Python's `subprocess` module — never compiled into, statically linked with, or dynamically loaded
@@ -39,7 +40,7 @@ not modify any of it either.
   four are permissively licensed.
 
 If you redistribute, deploy, modify, or build on this station, you're responsible for complying with
-each of the licenses below individually, in addition to this project's own Apache-2.0 license. This document is
+each of the licenses below individually, in addition to this project's own MIT license. This document is
 maintained on a best-effort basis alongside `requirements.txt` and `install.py` — if either changes,
 this list should too (see the pointer comments near the top of each file).
 

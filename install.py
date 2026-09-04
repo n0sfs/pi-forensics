@@ -124,7 +124,7 @@ print("\n[*] Installing system dependencies via APT...")
 # Adding, removing, or changing a package below (or a vendored/git-cloned
 # tool further down this file) - update THIRD_PARTY_NOTICES.md (repo root)
 # too. It tracks each dependency's own license separately from this
-# project's own Apache-2.0 license - this list and requirements.txt are its
+# project's own MIT license - this list and requirements.txt are its
 # two sources of truth.
 apt_packages = [
     "python3-venv", "python3-pip", "python3-psutil", "python3-dev",

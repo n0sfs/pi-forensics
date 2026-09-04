@@ -21,6 +21,18 @@ file after updating to see what changed.
 
 ---
 
+## [1.43.2] - 2026-09-04
+
+### Changed
+- **Relicensed back to MIT**, the same day the switch to Apache-2.0 shipped. After a closer look at
+  the tradeoffs (Apache-2.0's real edge is its explicit patent grant, which matters more once there
+  are outside contributors or a real commercial product - this project's own audience is students,
+  hobbyists, and low-budget users today, better served by MIT's two-paragraph simplicity), the
+  maintainer chose to switch back. Reversible again later, before this project takes any outside
+  contributions - the same reasoning that made both switches straightforward: every commit in this
+  repo's history is the maintainer's own original work. Same scope as the [1.43.1] entry below -
+  this project's own code only, every third-party tool/library keeps its own separate license.
+
 ## [1.43.1] - 2026-09-04
 
 ### Changed
