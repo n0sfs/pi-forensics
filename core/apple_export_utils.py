@@ -114,10 +114,18 @@ def _record(artifact_type, title, url, value, timestamp, extra=None):
             "value": value, "timestamp": timestamp, "extra": extra or {}}
 
 
-def parse_vcard_file(path):
+def parse_vcard_file(path, artifact_type="apple_contact"):
     """RFC 6350 vCard - HIGH CONFIDENCE. A single .vcf file commonly holds
     MANY concatenated BEGIN:VCARD...END:VCARD blocks (a full address-book
-    export), not just one contact."""
+    export), not just one contact. `artifact_type` defaults to Apple's own
+    export (this function's original caller) but vCard is an open
+    standard, not Apple-specific - core/takeout_utils.py's Google Contacts
+    import (2026-09-04) reuses this exact function with
+    artifact_type="takeout_contact" rather than duplicating the parsing
+    logic, matching this app's own "one source, one artifact_type" naming
+    convention (every other artifact_type in this app is source-scoped,
+    e.g. android_contact vs mobile_contact vs apple_contact - a Google-
+    sourced contact must never be silently labeled "Apple Export")."""
     records = []
     try:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
@@ -151,7 +159,7 @@ def parse_vcard_file(path):
             value_parts.append("Email: " + ", ".join(emails))
         if org:
             value_parts.append(f"Org: {org}")
-        records.append(_record("apple_contact", title, "", " | ".join(value_parts) or "(no phone/email)",
+        records.append(_record(artifact_type, title, "", " | ".join(value_parts) or "(no phone/email)",
                                 None, {"phones": phones, "emails": emails, "org": org}))
     return records
 
@@ -165,10 +173,15 @@ def find_apple_vcard_contacts(root):
     return records[:APPLE_MAX_RECORDS_PER_PRODUCT]
 
 
-def parse_icalendar_file(path):
+def parse_icalendar_file(path, event_type="apple_calendar_event", reminder_type="apple_reminder"):
     """RFC 5545 iCalendar - HIGH CONFIDENCE. Covers both VEVENT (calendar
     events) and VTODO (Reminders) blocks, since Apple's export documents
-    both riding the same .ics format."""
+    both riding the same .ics format. event_type/reminder_type default to
+    Apple's own export but iCalendar is an open standard - see
+    parse_vcard_file()'s own docstring above for why a Google-sourced
+    calendar/reminder must get its own source-scoped artifact_type
+    (core/takeout_utils.py, 2026-09-04, passes
+    takeout_calendar_event/takeout_reminder)."""
     records = []
     try:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
@@ -176,7 +189,7 @@ def parse_icalendar_file(path):
     except OSError:
         return records
 
-    for kind, artifact_type in (('VEVENT', 'apple_calendar_event'), ('VTODO', 'apple_reminder')):
+    for kind, artifact_type in (('VEVENT', event_type), ('VTODO', reminder_type)):
         for block in re.findall(rf'BEGIN:{kind}(.*?)END:{kind}', text, re.DOTALL | re.IGNORECASE):
             if len(records) >= APPLE_MAX_RECORDS_PER_PRODUCT:
                 break

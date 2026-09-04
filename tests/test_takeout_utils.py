@@ -8,6 +8,7 @@ variance (legacy Records.json vs. new Timeline.json; GeoJSON vs. CSV for
 Maps).
 """
 import json
+import mailbox
 import os
 import zipfile
 
@@ -18,6 +19,12 @@ def _write_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f)
+
+
+def _write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.write(text)
 
 
 # --- prepare_takeout_root / zip handling ---
@@ -81,8 +88,25 @@ def test_find_takeout_product_folders_matches_real_and_renamed_names(tmp_path):
     (root / "Location History (Timeline)").mkdir()  # the renamed real folder name
     (root / "Maps (your places)").mkdir()
     (root / "Google Photos").mkdir()
+    (root / "Mail").mkdir()  # the real, confirmed Gmail product folder name
+    (root / "Contacts").mkdir()
+    (root / "Calendar").mkdir()
     found = takeout.find_takeout_product_folders(str(tmp_path))  # note: passing the parent, not Takeout/ itself
-    assert set(found.keys()) == {"search_history", "youtube_history", "location_history", "maps", "photos"}
+    assert set(found.keys()) == {
+        "search_history", "youtube_history", "location_history", "maps", "photos",
+        "gmail", "contacts", "calendar",
+    }
+
+
+def test_find_takeout_product_folders_mail_pattern_does_not_match_email(tmp_path):
+    # \bmail\b is a word-boundary match, deliberately NOT a bare substring
+    # match - a hypothetical "Email" or "Voicemail" product folder must
+    # never be mistaken for the real "Mail" (Gmail) product.
+    root = tmp_path / "Takeout"
+    (root / "Email Something Unrelated").mkdir(parents=True)
+    (root / "Voicemail Archive").mkdir()
+    found = takeout.find_takeout_product_folders(str(tmp_path))
+    assert "gmail" not in found
 
 
 def test_find_takeout_product_folders_partial_export_is_not_an_error(tmp_path):
@@ -286,6 +310,177 @@ def test_parse_photos_sidecar_ignores_non_sidecar_json(tmp_path):
 
 
 # --- import_takeout_archive (top-level dispatcher) ---
+
+# --- Gmail (Mail/*.mbox) - HIGH CONFIDENCE, reuses core/email_utils.py ---
+
+def test_parse_takeout_gmail_reuses_email_message_type_not_a_new_one(tmp_path):
+    # Deliberately email_message, not "takeout_gmail_message" - see this
+    # module's own docstring on why Gmail (unlike Contacts/Calendar)
+    # rides the same generic bucket every other desktop mail format
+    # already shares, rather than getting a source-scoped type.
+    mbox_path = tmp_path / "All mail Including Spam and Trash.mbox"
+    box = mailbox.mbox(str(mbox_path))
+    box.lock()
+    try:
+        msg = mailbox.mboxMessage()
+        msg['Subject'] = 'Real Gmail Message'
+        msg['From'] = 'sender@example.com'
+        msg['Date'] = 'Mon, 30 Aug 2026 12:00:00 -0000'
+        msg.set_payload('Body text')
+        box.add(msg)
+        box.flush()
+    finally:
+        box.unlock()
+        box.close()
+    records = takeout.parse_takeout_gmail(str(tmp_path))
+    assert len(records) == 1
+    assert records[0]["artifact_type"] == "email_message"
+    assert records[0]["title"] == "Real Gmail Message"
+
+
+def test_parse_takeout_gmail_multiple_mbox_files_one_per_label(tmp_path):
+    # A real, confirmed Takeout behavior: selecting specific labels
+    # (instead of "All Mail") produces one separate .mbox file per label -
+    # this parser must find and combine all of them, not just the first.
+    for label in ("Inbox", "Sent"):
+        mbox_path = tmp_path / f"{label}.mbox"
+        box = mailbox.mbox(str(mbox_path))
+        box.lock()
+        try:
+            msg = mailbox.mboxMessage()
+            msg['Subject'] = f'{label} message'
+            box.add(msg)
+            box.flush()
+        finally:
+            box.unlock()
+            box.close()
+    records = takeout.parse_takeout_gmail(str(tmp_path))
+    assert {r["title"] for r in records} == {"Inbox message", "Sent message"}
+
+
+def test_parse_takeout_gmail_no_mbox_files_returns_empty(tmp_path):
+    assert takeout.parse_takeout_gmail(str(tmp_path)) == []
+
+
+# --- Contacts (Contacts/**/*.vcf) - HIGH CONFIDENCE, reuses core/apple_export_utils.py ---
+
+def test_parse_takeout_contacts_real_rfc_shape_gets_takeout_type(tmp_path):
+    path = tmp_path / "All Contacts" / "All Contacts.vcf"
+    _write(str(path),
+        "BEGIN:VCARD\r\n"
+        "VERSION:3.0\r\n"
+        "FN:Jane Doe\r\n"
+        "TEL;TYPE=CELL:+15551112222\r\n"
+        "EMAIL;TYPE=HOME:jane@example.com\r\n"
+        "END:VCARD\r\n")
+    records = takeout.parse_takeout_contacts(str(tmp_path))
+    assert len(records) == 1
+    r = records[0]
+    # takeout_contact, NOT apple_contact - the whole point of the
+    # artifact_type parameterization this feature added.
+    assert r["artifact_type"] == "takeout_contact"
+    assert r["title"] == "Jane Doe"
+    assert "+15551112222" in r["value"]
+
+
+def test_parse_takeout_contacts_walks_multiple_real_subfolders(tmp_path):
+    # A real Contacts export commonly nests several subfolders (All
+    # Contacts/My Contacts/Starred in Android) - confirms recursive
+    # discovery finds contacts across all of them, not just the first.
+    _write(str(tmp_path / "All Contacts" / "All Contacts.vcf"), "BEGIN:VCARD\r\nFN:Alice\r\nEND:VCARD\r\n")
+    _write(str(tmp_path / "Starred in Android" / "Starred in Android.vcf"), "BEGIN:VCARD\r\nFN:Bob\r\nEND:VCARD\r\n")
+    records = takeout.parse_takeout_contacts(str(tmp_path))
+    assert {r["title"] for r in records} == {"Alice", "Bob"}
+    assert all(r["artifact_type"] == "takeout_contact" for r in records)
+
+
+def test_parse_takeout_contacts_no_vcf_files_returns_empty(tmp_path):
+    assert takeout.parse_takeout_contacts(str(tmp_path)) == []
+
+
+# --- Calendar (Calendar/*.ics) - HIGH CONFIDENCE, reuses core/apple_export_utils.py ---
+
+def test_parse_takeout_calendar_real_vevent_gets_takeout_event_type(tmp_path):
+    path = tmp_path / "user@gmail.com.ics"
+    _write(str(path),
+        "BEGIN:VCALENDAR\r\n"
+        "BEGIN:VEVENT\r\n"
+        "SUMMARY:Team Meeting\r\n"
+        "DTSTART:20260115T093000Z\r\n"
+        "LOCATION:Conference Room A\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n")
+    records = takeout.parse_takeout_calendar(str(tmp_path))
+    assert len(records) == 1
+    r = records[0]
+    assert r["artifact_type"] == "takeout_calendar_event"
+    assert r["title"] == "Team Meeting"
+    assert r["timestamp"] is not None
+
+
+def test_parse_takeout_calendar_vtodo_becomes_takeout_reminder(tmp_path):
+    path = tmp_path / "Secondary-Calendar-Id.ics"
+    _write(str(path),
+        "BEGIN:VCALENDAR\r\n"
+        "BEGIN:VTODO\r\n"
+        "SUMMARY:Pick up dry cleaning\r\n"
+        "DUE:20260116T170000Z\r\n"
+        "END:VTODO\r\n"
+        "END:VCALENDAR\r\n")
+    records = takeout.parse_takeout_calendar(str(tmp_path))
+    assert len(records) == 1
+    assert records[0]["artifact_type"] == "takeout_reminder"
+    assert records[0]["title"] == "Pick up dry cleaning"
+
+
+def test_parse_takeout_calendar_multiple_ics_files_one_per_calendar(tmp_path):
+    # Real, confirmed Takeout behavior: one .ics per owned calendar, not
+    # a single combined file - the primary calendar's filename pattern
+    # (account email) and a secondary calendar's opaque-ID filename must
+    # both be found, since discovery is extension-based, not name-based.
+    _write(str(tmp_path / "user@gmail.com.ics"),
+        "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Primary Cal Event\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    _write(str(tmp_path / "a1b2c3d4e5f6@group.calendar.google.com.ics"),
+        "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Secondary Cal Event\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    records = takeout.parse_takeout_calendar(str(tmp_path))
+    assert {r["title"] for r in records} == {"Primary Cal Event", "Secondary Cal Event"}
+
+
+def test_parse_takeout_calendar_no_ics_files_returns_empty(tmp_path):
+    assert takeout.parse_takeout_calendar(str(tmp_path)) == []
+
+
+# --- Full dispatcher coverage for the 3 new products ---
+
+def test_import_takeout_archive_covers_gmail_contacts_calendar_no_warnings(tmp_path):
+    root = tmp_path / "Takeout"
+    mbox_path = root / "Mail" / "All mail Including Spam and Trash.mbox"
+    os.makedirs(mbox_path.parent, exist_ok=True)
+    box = mailbox.mbox(str(mbox_path))
+    box.lock()
+    try:
+        msg = mailbox.mboxMessage()
+        msg['Subject'] = 'A Gmail message'
+        box.add(msg)
+        box.flush()
+    finally:
+        box.unlock()
+        box.close()
+    _write(str(root / "Contacts" / "All Contacts" / "All Contacts.vcf"),
+           "BEGIN:VCARD\r\nFN:Jane Doe\r\nEND:VCARD\r\n")
+    _write(str(root / "Calendar" / "user@gmail.com.ics"),
+           "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Meeting\r\nDTSTART:20260115T093000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+
+    result = takeout.import_takeout_archive(str(tmp_path))
+    assert set(result["products_found"]) == {"gmail", "contacts", "calendar"}
+    assert {r["artifact_type"] for r in result["records"]} == {
+        "email_message", "takeout_contact", "takeout_calendar_event",
+    }
+    assert len(result["records"]) == 3
+    # HIGH CONFIDENCE, same treatment as Search/YouTube History above -
+    # none of these three should ever produce a best-effort warning.
+    assert result["warnings"] == []
+
 
 def test_import_takeout_archive_full_realistic_export(tmp_path):
     root = tmp_path / "Takeout"
