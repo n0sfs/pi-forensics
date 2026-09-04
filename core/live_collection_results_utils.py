@@ -493,6 +493,35 @@ def _parse_live_prefetch(run_dir, ts):
     return records
 
 
+def _parse_live_evtx(run_dir, ts):
+    """Windows Event Log excerpts (logon/logoff, workstation lock/unlock,
+    service state changes, audit-log-cleared) the collector exported live
+    as real, filtered .evtx snapshot files - see windows_collector.ps1's
+    own Event Log collection step, 2026-09-03. Reuses core/evtx_utils.py's
+    existing find_evtx_files()/parse_evtx_file() UNCHANGED, same "collect
+    the real format, reuse the already-built parser" approach as Prefetch
+    above - including that module's own real per-event timestamps (each
+    .evtx record genuinely carries one, unlike PSReadLine's format, which
+    has none at all - `ts` is unused here for the identical reason it's
+    unused in _parse_live_prefetch). Deliberately imported HERE, not at
+    this module's own top level - core/evtx_utils.py needs python-evtx, a
+    genuinely optional pip dependency (confirmed not installed on this
+    project's own Windows dev environment, matching the same reasoning
+    already documented for pyscca/core.prefetch_utils above)."""
+    evtx_dir = os.path.join(run_dir, 'evtx')
+    if not os.path.isdir(evtx_dir):
+        return []
+    try:
+        from core.evtx_utils import find_evtx_files, parse_evtx_file
+    except ImportError:
+        return []
+    paths, _truncated = find_evtx_files(evtx_dir)
+    records = []
+    for path in paths:
+        records.extend(parse_evtx_file(path))
+    return records
+
+
 def _parse_autoruns(run_dir, ts):
     autoruns = _load_json(run_dir, 'autoruns.json')
     if not isinstance(autoruns, list):
@@ -581,6 +610,7 @@ _WINDOWS_PARSERS = (
     ('scheduled_tasks', _parse_scheduled_tasks), ('autoruns', _parse_autoruns),
     ('installed_hotfixes', _parse_installed_hotfixes), ('loaded_drivers', _parse_loaded_drivers),
     ('powershell_history', _parse_live_powershell_history), ('prefetch', _parse_live_prefetch),
+    ('evtx', _parse_live_evtx),
     ('mapped_drives', _parse_mapped_drives), ('clipboard', _parse_windows_clipboard),
 )
 

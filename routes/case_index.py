@@ -166,6 +166,12 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "evtx_logon_success": "Event Log: Successful Logons", "evtx_logon_failure": "Event Log: Failed Logons",
     "evtx_process_creation": "Event Log: Process Creation", "evtx_account_created": "Event Log: Account Created",
     "evtx_service_installed": "Event Log: Service Installed", "evtx_audit_log_cleared": "Event Log: Audit Log Cleared",
+    # 2026-09-03: closing the "not globally unique" gap found while
+    # building Live Collection USB's own live .evtx export (see
+    # core/evtx_utils.py's EVENT_ID_ALLOWLIST comment).
+    "evtx_service_state_change": "Event Log: Service Started/Stopped",
+    "evtx_workstation_locked": "Event Log: Workstation Locked",
+    "evtx_workstation_unlocked": "Event Log: Workstation Unlocked",
     "lnk_shortcut": "LNK Shortcuts",
     # Follow-up (2026-08-25) - Amcache (a 4th registry hive, folded into
     # the existing registry_utils.py dispatch), Prefetch, and Recycle Bin -
