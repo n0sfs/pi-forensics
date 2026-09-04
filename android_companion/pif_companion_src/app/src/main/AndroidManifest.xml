@@ -20,6 +20,18 @@
 
     <uses-permission android:name="android.permission.READ_CALENDAR" />
 
+    <!-- Photos/Video metadata support (added 2026-09-04) - accessing
+         another app's media needs the granular Android 13+ permissions
+         plus the older READ_EXTERNAL_STORAGE for pre-13 devices; declaring
+         all three side by side with no maxSdkVersion gate matches the
+         real official "Access media files from shared storage" guide's
+         own literal example - the OS itself only enforces whichever set
+         actually exists on a given device. -->
+
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
     <!-- SMS support (added 2026-09-04, folding in what was previously a
          separate vendored app, github.com/gonodono/adbsms). Full-access-tier
          extraction needs this app to be eligible to temporarily assume the
@@ -64,7 +76,7 @@
         android:label="pif-companion"
         tools:ignore="MissingClass,AllowBackup">
 
-        <!-- All four providers are pure authority-rewriting relays,
+        <!-- All five providers are pure authority-rewriting relays,
              mirroring github.com/gonodono/adbsms's own AdbSmsProvider
              design exactly: they forward whatever content:// call the
              shell makes against this app's own exported authority
@@ -95,6 +107,12 @@
         <provider
             android:name=".CalendarProvider"
             android:authorities="pif.companion.calendar"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+
+        <provider
+            android:name=".MediaProvider"
+            android:authorities="pif.companion.media"
             android:exported="true"
             tools:ignore="ExportedContentProvider" />
 

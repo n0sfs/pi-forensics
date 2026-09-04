@@ -1947,6 +1947,8 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     android_companion_contact: 'Android: Contact via Companion App (Non-Rooted)',
     android_companion_call_log_entry: 'Android: Call Log via Companion App (Non-Rooted)',
     android_companion_calendar_event: 'Android: Calendar Event via Companion App (Non-Rooted)',
+    android_companion_media_image: 'Android: Photo Metadata via Companion App (Non-Rooted)',
+    android_companion_media_video: 'Android: Video Metadata via Companion App (Non-Rooted)',
     whatsapp_message: 'WhatsApp: Messages (Native Parse)',
     whatsapp_call_log: 'WhatsApp: Calls (Native Parse)',
     whatsapp_contact: 'WhatsApp: Contacts (Native Parse)',
@@ -15584,19 +15586,39 @@ function refreshMobileStartButtonState() {
     }
 }
 
-// Companion-app SMS extraction (2026-09-04) - its own Start button,
-// independent of the mode selector above (reachable regardless of which
-// Acquisition Mode is currently chosen, matching pullWhatsappKey()'s own
-// "always available for a trusted device" convention), but sharing the
-// exact same trust check refreshMobileStartButtonState() already uses for
-// Android. Called from onMobileAndroidSelect() and from fetchProgress()'s
-// job-active/inactive transition (mirroring refreshMobileStartButtonState()
-// itself being re-run there).
-function refreshCompanionSmsButtonState() {
-    const btn = document.getElementById("btnCompanionSmsStart");
+// Companion-app unified extraction (2026-09-04) - one checklist + one
+// Start button for all six data types (SMS/Contacts/Call Log/Calendar/
+// Photos/Video), replacing three earlier separate panels each with their
+// own Start button - a real UX problem the user flagged directly once a
+// 4th panel (Calendar) made the "individual boxes" approach visibly
+// unwieldy: "wouldn't we just have a drop down or check boxes with the
+// items we want to pull and then click start extraction? instead of
+// individual boxes?" Reachable regardless of which Acquisition Mode is
+// currently chosen (matching pullWhatsappKey()'s own "always available
+// for a trusted device" convention), sharing the exact same trust check
+// refreshMobileStartButtonState() already uses for Android. Called from
+// onMobileAndroidSelect() and from fetchProgress()'s job-active/inactive
+// transition.
+function onCompanionTypeToggle() {
+    const smsChecked = document.getElementById("companionTypeSms")?.checked;
+    const tierSelect = document.getElementById("mobileCompanionSmsTier");
+    if (tierSelect) tierSelect.disabled = !smsChecked;
+    refreshCompanionUnifiedButtonState();
+}
+
+function _selectedCompanionTypes() {
+    const map = {
+        sms: "companionTypeSms", contacts: "companionTypeContacts", calllog: "companionTypeCalllog",
+        calendar: "companionTypeCalendar", images: "companionTypeImages", video: "companionTypeVideo",
+    };
+    return Object.entries(map).filter(([, id]) => document.getElementById(id)?.checked).map(([type]) => type);
+}
+
+function refreshCompanionUnifiedButtonState() {
+    const btn = document.getElementById("btnCompanionExtractionStart");
     if (!btn) return;
     const dev = _currentlySelectedAndroidDevice();
-    btn.disabled = !dev || !dev.authorized;
+    btn.disabled = !dev || !dev.authorized || _selectedCompanionTypes().length === 0;
 }
 
 function updateMobileDeviceMode() {
@@ -15782,9 +15804,7 @@ function onMobileAndroidSelect() {
     if (whatsappStatus) whatsappStatus.textContent = '';
 
     refreshMobileStartButtonState();
-    refreshCompanionSmsButtonState();
-    refreshCompanionContactsCallLogButtonState();
-    refreshCompanionCalendarButtonState();
+    refreshCompanionUnifiedButtonState();
 }
 
 async function pullWhatsappKey() {
@@ -15813,31 +15833,28 @@ async function pullWhatsappKey() {
     }
 }
 
-// Companion-app SMS extraction (2026-09-04) - see routes/mobile.py's
-// execution_worker_android_companion_sms() and its own module docstring
-// for the full picture. Uses the SAME shared job-slot/Stop-button/status-
-// display machinery every other Android acquisition mode already uses
-// (this app's own established "one shared job, many displays" model), so
-// no dedicated status polling of its own is needed here - fetchProgress()
-// already mirrors whatever job is active into #mobileJobStatus/
-// #mobileLogOutput regardless of which mode started it.
-async function startCompanionSmsExtraction() {
+async function startCompanionUnifiedExtraction() {
     const dev = _currentlySelectedAndroidDevice();
     if (!dev) return showToast('Select a connected, authorized Android device first.', 'warning');
-    const tier = document.getElementById("mobileCompanionSmsTier")?.value || 'readonly';
+    const selectedTypes = _selectedCompanionTypes();
+    if (selectedTypes.length === 0) return showToast('Check at least one data type to extract.', 'warning');
+    const smsTier = document.getElementById("mobileCompanionSmsTier")?.value || 'readonly';
 
-    const tierWarning = tier === 'full'
-        ? '\n\nFULL ACCESS: this will temporarily make the collector the device\'s default SMS app. '
+    const typeLabels = { sms: 'SMS', contacts: 'Contacts', calllog: 'Call Log', calendar: 'Calendar',
+                          images: 'Photos', video: 'Video' };
+    const selectedLabel = selectedTypes.map(t => typeLabels[t]).join(', ');
+    const smsWarning = selectedTypes.includes('sms') && smsTier === 'full'
+        ? '\n\nSMS FULL ACCESS: this will temporarily make the collector the device\'s default SMS app. '
           + 'The phone\'s own real SMS app will NOT receive or send normal messages until this finishes '
           + 'and the original default is restored.'
-        : '\n\nRead-only tier: only inbox and sent messages are visible (Android\'s own restriction for '
-          + 'a non-default SMS app) - no disruption to normal messaging.';
+        : '';
     if (!confirm(
-        'This installs a small companion app (hand-built for this project) on the device to read its '
-        + 'SMS content, then removes it and reverses every change when finished.'
-        + tierWarning
-        + '\n\nEvery step (install, permission/role change, query, cleanup) is recorded in the case report. '
-        + 'Continue?'
+        `This installs a small companion app (hand-built for this project) on the device to read: `
+        + `${selectedLabel}.\n\nIt actively modifies the device (installs an app, grants exactly the `
+        + `permissions needed for what's selected), then removes the app and reverses every change when `
+        + `finished.` + smsWarning
+        + '\n\nEvery step (install, permission/role changes, queries, cleanup) is recorded in the case '
+        + 'report. Continue?'
     )) return;
 
     const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById("mobileDest")?.value || '/mnt');
@@ -15848,162 +15865,30 @@ async function startCompanionSmsExtraction() {
     };
 
     try {
-        const res = await fetch('/api/mobile/android/companion_sms/start', {
+        const res = await fetch('/api/mobile/android/companion_extraction/start', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ serial: dev.serial, access_tier: tier, destination: destinationDir, metadata }),
+            body: JSON.stringify({ serial: dev.serial, selected_types: selectedTypes, sms_tier: smsTier,
+                                    destination: destinationDir, metadata }),
         });
         const data = await res.json();
         if (!data.success) return showToast(`Start failed: ${data.error}`, 'danger');
-        showToast('Companion-app SMS extraction started.', 'success');
-        document.getElementById("btnCompanionSmsStart").disabled = true;
+        showToast('Companion-app extraction started.', 'success');
+        document.getElementById("btnCompanionExtractionStart").disabled = true;
         document.getElementById("btnMobileStart").disabled = true;
     } catch (err) {
         showToast('Request failed.', 'danger');
     }
 }
 
-async function cleanupCompanionSmsExtraction() {
+async function cleanupCompanionUnifiedExtraction() {
     const dev = _currentlySelectedAndroidDevice();
     if (!dev) return showToast('Select a connected Android device first.', 'warning');
-    if (!confirm('This uninstalls the companion collector from the selected device and, if it\'s '
-        + 'currently set as the default SMS app, restores the prior default. Use this only if a '
-        + 'previous extraction was interrupted and never cleaned up on its own. Continue?')) return;
+    if (!confirm('This revokes every permission this feature could have granted (SMS/Contacts/Call Log/'
+        + 'Calendar/Photos/Video), restores the default SMS app if currently reassigned, and uninstalls '
+        + 'the companion collector from the selected device. Use this only if a previous extraction was '
+        + 'interrupted and never cleaned up on its own. Continue?')) return;
     try {
-        const res = await fetch('/api/mobile/android/companion_sms/cleanup', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ serial: dev.serial }),
-        });
-        const data = await res.json();
-        if (!data.success) return showToast(`Cleanup failed: ${data.error}`, 'danger');
-        showToast('Device state cleanup complete.', 'success');
-    } catch (err) {
-        showToast('Request failed.', 'danger');
-    }
-}
-
-// Companion-app Contacts/Call Log extraction (2026-09-04) - see routes/
-// mobile.py's execution_worker_android_companion_contacts_calllog() and
-// its own module docstring. Mirrors startCompanionSmsExtraction()/
-// cleanupCompanionSmsExtraction() above exactly, minus the tier-specific
-// disruption warning - neither permission here requires the phone's own
-// Contacts/Phone apps to stop working at any point.
-function refreshCompanionContactsCallLogButtonState() {
-    const btn = document.getElementById("btnCompanionContactsCallLogStart");
-    if (!btn) return;
-    const dev = _currentlySelectedAndroidDevice();
-    btn.disabled = !dev || !dev.authorized;
-}
-
-async function startCompanionContactsCallLogExtraction() {
-    const dev = _currentlySelectedAndroidDevice();
-    if (!dev) return showToast('Select a connected, authorized Android device first.', 'warning');
-    const dataTypes = document.getElementById("mobileCompanionContactsCallLogTypes")?.value || 'both';
-
-    if (!confirm(
-        'This installs a small companion app on the device to read its Contacts and/or Call Log '
-        + 'content, then removes it and reverses every change when finished.\n\nUnlike the SMS '
-        + 'companion above, this never disrupts the phone\'s own Contacts/Phone apps - neither '
-        + 'permission requires becoming a "default app."\n\nEvery step (install, permission grants, '
-        + 'query, cleanup) is recorded in the case report. Continue?'
-    )) return;
-
-    const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById("mobileDest")?.value || '/mnt');
-    const metadata = {
-        case_number: document.getElementById("mobileCaseNum")?.value || 'UNASSIGNED',
-        evidence_id: document.getElementById("mobileEvidenceId")?.value || 'ITEM-01',
-        examiner: document.getElementById("mobileExaminer")?.value || '',
-    };
-
-    try {
-        const res = await fetch('/api/mobile/android/companion_contacts_calllog/start', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ serial: dev.serial, data_types: dataTypes, destination: destinationDir, metadata }),
-        });
-        const data = await res.json();
-        if (!data.success) return showToast(`Start failed: ${data.error}`, 'danger');
-        showToast('Companion-app Contacts/Call Log extraction started.', 'success');
-        document.getElementById("btnCompanionContactsCallLogStart").disabled = true;
-        document.getElementById("btnMobileStart").disabled = true;
-    } catch (err) {
-        showToast('Request failed.', 'danger');
-    }
-}
-
-async function cleanupCompanionContactsCallLogExtraction() {
-    const dev = _currentlySelectedAndroidDevice();
-    if (!dev) return showToast('Select a connected Android device first.', 'warning');
-    if (!confirm('This revokes READ_CONTACTS/READ_CALL_LOG and uninstalls the companion collector from '
-        + 'the selected device. Use this only if a previous extraction was interrupted and never '
-        + 'cleaned up on its own. Continue?')) return;
-    try {
-        const res = await fetch('/api/mobile/android/companion_contacts_calllog/cleanup', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ serial: dev.serial }),
-        });
-        const data = await res.json();
-        if (!data.success) return showToast(`Cleanup failed: ${data.error}`, 'danger');
-        showToast('Device state cleanup complete.', 'success');
-    } catch (err) {
-        showToast('Request failed.', 'danger');
-    }
-}
-
-// Companion-app Calendar extraction (2026-09-04) - see routes/mobile.py's
-// execution_worker_android_companion_calendar() and its own module
-// docstring. Mirrors startCompanionContactsCallLogExtraction()/
-// cleanupCompanionContactsCallLogExtraction() above exactly, minus the
-// data-types selector - Calendar always queries both events and their
-// attendees together (an attendee record is meaningless without its
-// parent event).
-function refreshCompanionCalendarButtonState() {
-    const btn = document.getElementById("btnCompanionCalendarStart");
-    if (!btn) return;
-    const dev = _currentlySelectedAndroidDevice();
-    btn.disabled = !dev || !dev.authorized;
-}
-
-async function startCompanionCalendarExtraction() {
-    const dev = _currentlySelectedAndroidDevice();
-    if (!dev) return showToast('Select a connected, authorized Android device first.', 'warning');
-
-    if (!confirm(
-        'This installs a small companion app on the device to read its Calendar events and their '
-        + 'attendees, then removes it and reverses every change when finished.\n\nLike Contacts/Call '
-        + 'Log, this never disrupts the phone\'s own Calendar app - READ_CALENDAR does not require '
-        + 'becoming a "default app."\n\nEvery step (install, permission grant, query, cleanup) is '
-        + 'recorded in the case report. Continue?'
-    )) return;
-
-    const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById("mobileDest")?.value || '/mnt');
-    const metadata = {
-        case_number: document.getElementById("mobileCaseNum")?.value || 'UNASSIGNED',
-        evidence_id: document.getElementById("mobileEvidenceId")?.value || 'ITEM-01',
-        examiner: document.getElementById("mobileExaminer")?.value || '',
-    };
-
-    try {
-        const res = await fetch('/api/mobile/android/companion_calendar/start', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ serial: dev.serial, destination: destinationDir, metadata }),
-        });
-        const data = await res.json();
-        if (!data.success) return showToast(`Start failed: ${data.error}`, 'danger');
-        showToast('Companion-app Calendar extraction started.', 'success');
-        document.getElementById("btnCompanionCalendarStart").disabled = true;
-        document.getElementById("btnMobileStart").disabled = true;
-    } catch (err) {
-        showToast('Request failed.', 'danger');
-    }
-}
-
-async function cleanupCompanionCalendarExtraction() {
-    const dev = _currentlySelectedAndroidDevice();
-    if (!dev) return showToast('Select a connected Android device first.', 'warning');
-    if (!confirm('This revokes READ_CALENDAR and uninstalls the companion collector from the selected '
-        + 'device. Use this only if a previous extraction was interrupted and never cleaned up on its '
-        + 'own. Continue?')) return;
-    try {
-        const res = await fetch('/api/mobile/android/companion_calendar/cleanup', {
+        const res = await fetch('/api/mobile/android/companion_extraction/cleanup', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ serial: dev.serial }),
         });
@@ -17545,14 +17430,10 @@ async function fetchProgress() {
         if (document.getElementById("btnMobileStop")) document.getElementById("btnMobileStop").disabled = !data.active;
         if (data.active) {
             if (document.getElementById("btnMobileStart")) document.getElementById("btnMobileStart").disabled = true;
-            if (document.getElementById("btnCompanionSmsStart")) document.getElementById("btnCompanionSmsStart").disabled = true;
-            if (document.getElementById("btnCompanionContactsCallLogStart")) document.getElementById("btnCompanionContactsCallLogStart").disabled = true;
-            if (document.getElementById("btnCompanionCalendarStart")) document.getElementById("btnCompanionCalendarStart").disabled = true;
+            if (document.getElementById("btnCompanionExtractionStart")) document.getElementById("btnCompanionExtractionStart").disabled = true;
         } else {
             refreshMobileStartButtonState();     // re-derives disabled state from current device trust/selection + mode
-            refreshCompanionSmsButtonState();
-            refreshCompanionContactsCallLogButtonState();
-            refreshCompanionCalendarButtonState();
+            refreshCompanionUnifiedButtonState();
         }
 
     } catch (err) {}
