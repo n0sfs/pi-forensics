@@ -1,30 +1,37 @@
 # pif-companion (Android)
 
-Source for `pif-companion.apk`, the companion app the Mobile Forensics tab's
-"Companion-App Extraction (Advanced)" section installs onto a connected
-Android device for four genuinely separate, additive extraction actions -
-SMS (`execution_worker_android_companion_sms()`, `core/android_companion_
-sms_utils.py`), Contacts/Call Log (`execution_worker_android_companion_
-contacts_calllog()`, `core/android_companion_contacts_calllog_utils.py`),
-and Calendar events + attendees (`execution_worker_android_companion_
-calendar()`, `core/android_companion_calendar_utils.py`), all three in
-`routes/mobile.py` - see any module's own docstring for the full picture on
-why each is needed.
+Source for `pif-companion.apk`, the companion app Mobile Forensics' Android
+controls install onto a connected device for six genuinely separate,
+additive extraction data types (SMS, Contacts, Call Log, Calendar, Photos,
+Video) - all now driven by ONE consolidated flow (`execution_worker_
+android_companion_extraction()`, `routes/mobile.py`) with a single
+checkbox-driven "Start Extraction" button, per the user's own explicit UX
+feedback: *"wouldn't we just have a drop down or check boxes with the items
+we want to pull and then click start extraction? instead of individual
+boxes?"* (2026-09-04). This replaced three earlier separate per-type panels/
+workers/route pairs (each independently installing/uninstalling the same
+collector) - the app itself and its five provider classes are unchanged in
+mechanism, only the ORCHESTRATION (what installs/grants/queries/cleans up,
+and in what order) was consolidated. Each data type's own parsing logic
+still lives in its own dedicated module (`core/android_companion_{sms,
+contacts_calllog,calendar,media}_utils.py`) - see any module's own docstring
+for the full picture on why each is needed.
 
 ## What it is
 
-Four tiny `ContentProvider` classes (`ContactsProvider.java`/
-`CallLogProvider.java`/`SmsProvider.java`/`CalendarProvider.java`) - each a
-pure authority-rewriting relay onto a real system provider
-(`com.android.contacts`/`call_log`/`sms`/`com.android.calendar`), restricted
-to `SHELL_UID` callers only. Contacts/Call Log were hand-built first
-(2026-09-04), mirroring the exact same relay-provider design already proven
-by [github.com/gonodono/adbsms](https://github.com/gonodono/adbsms) (MIT) -
-its real source was cloned and read to confirm the pattern before this app
-was written, since no equivalent existing open-source relay tool was found
-for Contacts/Call Log (2026-09-04 survey - the closest candidates were
-either UI-driven dev tools with no headless build, or long-archived
-pre-runtime-permission-model tools with no LICENSE file).
+Five tiny `ContentProvider` classes (`ContactsProvider.java`/
+`CallLogProvider.java`/`SmsProvider.java`/`CalendarProvider.java`/
+`MediaProvider.java`) - each a pure authority-rewriting relay onto a real
+system provider (`com.android.contacts`/`call_log`/`sms`/`com.android.
+calendar`/`media`), restricted to `SHELL_UID` callers only. Contacts/Call
+Log were hand-built first (2026-09-04), mirroring the exact same relay-
+provider design already proven by [github.com/gonodono/adbsms]
+(https://github.com/gonodono/adbsms) (MIT) - its real source was cloned and
+read to confirm the pattern before this app was written, since no
+equivalent existing open-source relay tool was found for Contacts/Call Log
+(2026-09-04 survey - the closest candidates were either UI-driven dev tools
+with no headless build, or long-archived pre-runtime-permission-model tools
+with no LICENSE file).
 
 SMS support was folded into this same app the same day (`SmsProvider.java`,
 versionCode 2/versionName 1.0.2), replacing what had originally been a
@@ -54,12 +61,32 @@ caught one real, easy-to-miss mismatch (`EventsColumns.STATUS`'s actual
 column-name string is `"eventStatus"`, not the more obvious-looking
 `"status"`).
 
+Photos/Video metadata support (`MediaProvider.java`, versionCode 4/
+versionName 1.0.4) was added the same day too, as the 5th and last data
+type before the four-panel-to-one-consolidated-panel UX redesign above -
+one shared relay class serves BOTH `content://media/external/images/media`
+and `content://media/external/video/media` under the real, confirmed
+`MediaStore.AUTHORITY = "media"`. It queries the OS's own MediaStore INDEX
+only (filename, size, dimensions, timestamps, owning app, favorite/trashed/
+pending flags) - never the actual image/video bytes, which the app's
+existing "Pull Accessible Storage" adb-pull mode already copies. Checks
+`READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO` (API 33+) or `READ_EXTERNAL_STORAGE`
+(older devices), granting all three independently and non-fatally rather
+than detecting the connected device's exact API level - see `core/android_
+companion_media_utils.py`'s own docstring for the full column-name/
+timestamp-unit research (confirmed live against Google's real API
+reference, not guessed) and its deliberate exclusion of GPS data (MediaStore
+itself redacts location "for privacy reasons" - this app's existing
+exiftool-based Geolocation Export on real pulled files is the correct path
+for that).
+
 Headless by design (no launcher icon, no MainActivity) - it's never meant to
 be opened or interacted with directly, only driven via `adb shell pm grant`/
 `adb shell cmd role add-role-holder`/`adb shell content query`/
-`adb uninstall` from `routes/mobile.py`'s three workers, each of which
-always installs it, grants exactly what's needed for that one extraction,
-queries, then reverses every change and uninstalls before finishing.
+`adb uninstall` from `routes/mobile.py`'s one consolidated worker, which
+always installs it exactly once regardless of how many data types are
+selected, grants only what's needed for those types, queries each in
+sequence, then reverses every change and uninstalls once before finishing.
 
 ## Why the built APK is committed, not downloaded
 
@@ -108,12 +135,13 @@ Never yet run against a real Android device - no real device was connected
 during any provider's build session. Every individual piece (the relay-
 provider mechanism itself, mirrored from adbsms's own proven design; the
 real `content://com.android.contacts/data`, `content://call_log/calls`,
-`content://sms`, and `content://com.android.calendar/{events,attendees}`
-URIs and their real, stable permission/role requirements, confirmed via the
-`android` CLI's own official doc-search tool, adbsms's own real source for
-SMS specifically, and a real live browser session against Google's own API
-reference pages for Calendar's exact column/constant values) is
-independently grounded, but the fully-integrated real-device happy path
-(install -> grant/role-assign -> query -> parse -> uninstall/role-restore)
-has never been exercised end to end for any of the four data types. Worth a
-real confirmation the next time a real Android phone is available.
+`content://sms`, `content://com.android.calendar/{events,attendees}`, and
+`content://media/external/{images,video}/media` URIs and their real, stable
+permission/role requirements, confirmed via the `android` CLI's own official
+doc-search tool, adbsms's own real source for SMS specifically, and a real
+live browser session against Google's own API reference pages for Calendar/
+MediaStore's exact column/constant values) is independently grounded, but
+the fully-integrated real-device happy path (install -> grant/role-assign ->
+query -> parse -> uninstall/role-restore) has never been exercised end to
+end for any of the six data types. Worth a real confirmation the next time a
+real Android phone is available.

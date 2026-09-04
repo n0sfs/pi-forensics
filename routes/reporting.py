@@ -953,15 +953,19 @@ CASE_TIMELINE_ACTIVITY_CATEGORY = {
     "android_companion_sms_message": "Communications",
     "android_companion_contact": "Communications",
     "android_companion_call_log_entry": "Communications",
-    "android_companion_calendar_event": "Communications",
     "leapp_sms_message": "Communications", "leapp_mms_message": "Communications", "leapp_call_log": "Communications",
     "leapp_contact": "Communications", "email_message": "Communications", "apple_contact": "Communications",
     "takeout_contact": "Communications",
-    # takeout_calendar_event/takeout_reminder deliberately fall through to
-    # the default "Device & System" category, exactly like their existing
-    # apple_calendar_event/apple_reminder siblings - neither is a real
-    # communication, and this app's fixed 5-category timeline has no
-    # dedicated calendar/scheduling bucket.
+    # android_companion_calendar_event/takeout_calendar_event/
+    # takeout_reminder deliberately fall through to the default "Device &
+    # System" category, exactly like their existing apple_calendar_event/
+    # apple_reminder siblings - neither a calendar entry nor (as of
+    # 2026-09-04) a Photo/Video metadata record is a real communication,
+    # and this app's fixed 5-category timeline has no dedicated calendar/
+    # scheduling or media bucket. (Found and fixed a real, pre-existing
+    # miscategorization here: android_companion_calendar_event had been
+    # left mapped to "Communications" above, directly contradicting this
+    # very comment and its own sibling calendar types - corrected to match.)
     # Web Activity
     "chrome_history": "Web Activity", "chrome_downloads": "Web Activity",
     "chrome_bookmarks": "Web Activity", "chrome_cookies": "Web Activity",

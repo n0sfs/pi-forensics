@@ -130,8 +130,25 @@ def parse_content_query_output(raw_stdout, columns=None):
         row = {}
         for i, col in enumerate(columns):
             marker = f"{col}="
-            start = body.find(marker)
-            if start == -1:
+            # Boundary-aware search, not a bare body.find(marker) - a plain
+            # unanchored substring search can find a column's own marker
+            # INSIDE an earlier, longer column name that happens to end
+            # with the same text (e.g. MediaStore's "bucket_display_name="
+            # itself ends with the literal substring "_display_name=", so a
+            # naive search for the later, real "_display_name=" column
+            # matched there instead - a real bug this exact check caught
+            # live, 2026-09-04). Every genuine column boundary in this
+            # format is either the very start of `body` (first column
+            # only, no comma before it) or immediately preceded by ", " -
+            # anchoring to one of those two positions is what a same-name
+            # substring collision inside a longer column's own value can
+            # never satisfy.
+            boundary_idx = body.find(f", {marker}")
+            if boundary_idx != -1:
+                start = boundary_idx + 2
+            elif body.startswith(marker):
+                start = 0
+            else:
                 continue
             value_start = start + len(marker)
             if i + 1 < len(columns):

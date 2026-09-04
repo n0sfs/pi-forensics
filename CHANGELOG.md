@@ -21,6 +21,31 @@ file after updating to see what changed.
 
 ---
 
+## [1.49.0] - 2026-09-04
+
+### Added
+- **Companion-app Photos/Video metadata extraction for non-rooted Android devices** (Mobile Forensics
+  > Android > Companion-App Extraction (Advanced)). Extends the companion-app extraction mechanism to
+  a 5th and 6th data type: photo and video metadata read directly from the device's own MediaStore
+  index - filename, size, dimensions, capture/added/modified timestamps, which album/folder, which app
+  contributed it (Camera vs. WhatsApp vs. a screenshot tool, etc.), and favorite/trashed/pending flags.
+  This reads the OS's own catalog of every photo/video it knows about, not the raw image/video bytes
+  themselves (the existing "Pull Accessible Storage" acquisition mode already copies those); GPS/
+  location data is deliberately not read this way, since Android's MediaStore redacts it for privacy -
+  use the existing exiftool-based Geolocation Export on real pulled files for that instead.
+
+### Changed
+- **Companion-app extraction consolidated into one checkbox-driven panel.** The four separate,
+  always-open panels (one per data type - SMS, Contacts/Call Log, Calendar, and now Photos/Video) have
+  been replaced with a single panel: check the data types you want, pick an SMS access tier if SMS is
+  selected, and click one "Start Extraction" button. The companion app is now installed and removed
+  exactly once per extraction, regardless of how many data types are selected, and every selected
+  type's results land in one combined case report event instead of several separate ones. Nothing
+  about what each data type reads, or how the device is restored to its original state afterward,
+  changed - only how it's chosen and started.
+
+---
+
 ## [1.48.0] - 2026-09-04
 
 ### Added
