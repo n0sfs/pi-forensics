@@ -399,7 +399,7 @@ def _capture_android_device_mtimes(serial, output_path):
                 "note": "Real on-device file modification times, captured immediately after the pull "
                         "completed - adb pull itself does not carry these across the transfer.",
                 "files": files,
-            }, f)
+            }, f, indent=2)
     except OSError:
         return 0
     return len(files)
@@ -529,7 +529,7 @@ def _capture_android_app_inventory(serial, output_path, case_folder):
                         "app has no reliable way to know the device's real configured timezone.",
                 "package_count": len(records),
                 "packages": [r["extra"] for r in records],
-            }, f)
+            }, f, indent=2)
     except OSError:
         pass  # the parsed_artifacts rows below are the real record either way
     else:
