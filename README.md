@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.34.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.35.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -86,9 +86,10 @@ workstation lock/unlock, account creation, process creation, service install/sta
 audit-log-clearing - the last two requiring elevation), and (also elevated) a live registry
 pattern-of-life pull - the current user's, and every other real user's, RecentDocs/TypedPaths/
 RunMRU/UserAssist/RDP connection history/Office and Explorer search MRU, plus the machine's own USB
-device history, Shimcache, BAM/DAM execution evidence, installed programs, Amcache inventory, and
-ShellBags folder-browse history - saved live via the registry's own backup API, the exact same way a
-proper offline hive export works, just without powering the machine off first. Process executables
+device history, Bluetooth pairing history, Shimcache, BAM/DAM execution evidence, installed
+programs, Amcache inventory, and ShellBags folder-browse history - saved live via the registry's own
+backup API, the exact same way a proper offline hive export works, just without powering the machine
+off first. Process executables
 are hashed on both platforms for consistency. Both collectors can also acquire a
 full memory (RAM) image of the target - AVML for Linux, WinPmem for Windows - through an
 interactive, default-declined, space-and-privilege-checked prompt at collection time, since the
@@ -141,8 +142,8 @@ an MVT spyware/IOC scan, YARA rule scanning, and hash-set/known-bad-URL matching
 saved lists (with one-click MalwareBazaar/URLhaus imports). Dedicated artifact parsers recover
 Windows Registry hives (incl. Amcache, ShellBags, Shimcache/AppCompatCache, UserAssist, BAM/DAM
 program-execution timestamps, RDP connection history — which remote hosts this user connected to
-via Remote Desktop, with the last-used username — Office recent files/folders per application, and
-Explorer search-box history), Event Logs, Prefetch,
+via Remote Desktop, with the last-used username — Office recent files/folders per application,
+Explorer search-box history, and Bluetooth pairing history), Event Logs, Prefetch,
 Recycle Bin, LNK shortcuts, Jump Lists (Automatic/Custom Destinations), Thumbcache (extracting
 every embedded thumbnail as a real, viewable image — these can persist after the original photo or
 document has been deleted), Sticky Notes (the actual text of every note, including deleted
@@ -356,7 +357,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.34.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.35.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.

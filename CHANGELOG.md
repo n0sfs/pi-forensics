@@ -21,6 +21,28 @@ file after updating to see what changed.
 
 ---
 
+## [1.35.0] - 2026-09-03
+
+### Added
+
+- **Bluetooth device pairing history is now parsed from the Windows Registry's SYSTEM hive** -
+  which devices have ever been paired with a Windows machine (device name and MAC address), and
+  when the machine last saw or connected to each one. Reuses the app's already-built Registry hive
+  parser and its existing SYSTEM-hive dispatch, so this automatically applies everywhere that
+  parser already runs - whole-image and single-hive scans in File Explorer, and Live Collection
+  USB's own live registry pull (v1.34.0, above).
+- Grounded against the same real, established forensic tooling used to research every other
+  registry artifact this app has added: RegRipper's own maintained Bluetooth plugin (both the
+  current and a 2013 revision) and an independent Microsoft support confirmation of the exact
+  timestamp math, giving high confidence in both the registry location and the timestamp format.
+  Scoped deliberately narrower than a fuller parser could attempt, per real, disclosed limits found
+  in those same sources: the device name's exact text encoding isn't authoritatively documented
+  anywhere found, so it's decoded best-effort rather than trusted outright, and the timestamp may
+  only ever reflect a device's original pairing rather than a later reconnection - both caveats
+  visible directly on the record itself, not buried in documentation an examiner would never see.
+
+---
+
 ## [1.34.0] - 2026-09-03
 
 ### Added

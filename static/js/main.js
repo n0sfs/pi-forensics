@@ -1984,6 +1984,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     office_mru_file: 'Registry: Office Recent Files',
     office_mru_place: 'Registry: Office Recent Folders',
     registry_wordwheelquery: 'Registry: Explorer Search History',
+    registry_bluetooth_device: 'Registry: Bluetooth Paired Device',
     sticky_note: 'Windows Sticky Notes',
     windows_notification: 'Windows Notification History (Action Center)',
     windows_timeline_activity: 'Windows Timeline (Activity History)',
