@@ -21,6 +21,17 @@ file after updating to see what changed.
 
 ---
 
+## [1.41.1] - 2026-09-04
+
+### Fixed
+
+- **File Explorer's Preview pane now pretty-prints `.json` files** instead of showing them as
+  whatever single unbroken line they happen to be stored as on disk. Several of this app's own
+  JSON output files (including the new Android app inventory manifest from v1.39.0) were never
+  indented, since that's a display concern, not a data-correctness one - now fixed at the source
+  too, but the real fix is in the Preview pane itself, so any `.json` file (from this app or
+  anywhere else) reads correctly regardless of how it was originally saved.
+
 ## [1.41.0] - 2026-09-04
 
 ### Added

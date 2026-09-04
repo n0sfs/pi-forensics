@@ -4179,6 +4179,24 @@ function renderKmlViewer(container, kmlText, mapHeightCss) {
     container.appendChild(table);
 }
 
+// Pretty-prints a .json file's text preview (2-space indent) instead of
+// showing it as whatever single unbroken line it happens to be stored as
+// on disk - several of this app's own JSON writers (and any external
+// tool's output) never bother indenting their own output, since that's
+// purely a display concern, not a data-correctness one. Falls back to
+// the raw text UNCHANGED for a non-.json file, a truncated/malformed
+// JSON file (JSON.parse legitimately fails on a preview cut off mid-
+// token), or an already-pretty file - never fabricates or drops content,
+// purely a re-serialization of the exact same parsed value.
+function prettyPrintJsonPreview(rawText, filename) {
+    if (!filename || !filename.toLowerCase().endsWith('.json')) return rawText;
+    try {
+        return JSON.stringify(JSON.parse(rawText), null, 2);
+    } catch (err) {
+        return rawText;
+    }
+}
+
 async function previewSelectedFile(item) {
     const preview = document.getElementById('explorerPreview');
     if (!preview) return;
@@ -4356,7 +4374,9 @@ async function previewSelectedFile(item) {
             const pre = document.createElement('pre');
             pre.className = 'log-window mb-0';
             pre.style.height = '100%';
-            pre.textContent = data.success ? (data.content + (data.truncated ? '\n\n[... truncated, file is larger than the preview limit ...]' : '')) : `[ERROR] ${data.error}`;
+            pre.textContent = data.success
+                ? (prettyPrintJsonPreview(data.content, item.name) + (data.truncated ? '\n\n[... truncated, file is larger than the preview limit ...]' : ''))
+                : `[ERROR] ${data.error}`;
             preview.appendChild(pre);
         } catch (err) {
             preview.innerHTML = '<span class="text-danger small">Preview failed to load.</span>';
@@ -7956,7 +7976,7 @@ async function previewExplorerImageEntry(entry) {
             const pre = document.createElement('pre');
             pre.className = 'log-window mb-0';
             pre.style.height = '100%';
-            pre.textContent = data.text + (data.truncated ? '\n\n[... truncated, file is larger than the preview limit ...]' : ''); // untrusted evidence content, text node only
+            pre.textContent = prettyPrintJsonPreview(data.text, entry.name) + (data.truncated ? '\n\n[... truncated, file is larger than the preview limit ...]' : ''); // untrusted evidence content, text node only
             preview.appendChild(pre);
         }
     } catch (err) {
