@@ -1944,6 +1944,8 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     android_configured_account: 'Android: Configured Accounts (adb pull)',
     android_notification_snapshot: 'Android: Notification Snapshot, metadata only (adb pull)',
     android_companion_sms_message: 'Android: SMS via Companion App (Non-Rooted)',
+    android_companion_contact: 'Android: Contact via Companion App (Non-Rooted)',
+    android_companion_call_log_entry: 'Android: Call Log via Companion App (Non-Rooted)',
     whatsapp_message: 'WhatsApp: Messages (Native Parse)',
     whatsapp_call_log: 'WhatsApp: Calls (Native Parse)',
     whatsapp_contact: 'WhatsApp: Contacts (Native Parse)',
@@ -7463,7 +7465,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     // Mobile Forensics
     ios_backup: 'navBadgeMobile', android_pull: 'navBadgeMobile',
     android_backup: 'navBadgeMobile', android_bugreport: 'navBadgeMobile',
-    android_companion_sms: 'navBadgeMobile',
+    android_companion_sms: 'navBadgeMobile', android_companion_contacts_calllog: 'navBadgeMobile',
     // File Recovery (whole-device/whole-image tools reached from that tab)
     photorec: 'navBadgeRecovery', extundelete: 'navBadgeRecovery',
     foremost: 'navBadgeRecovery', scalpel: 'navBadgeRecovery', triage_scan: 'navBadgeRecovery',
@@ -15780,6 +15782,7 @@ function onMobileAndroidSelect() {
 
     refreshMobileStartButtonState();
     refreshCompanionSmsButtonState();
+    refreshCompanionContactsCallLogButtonState();
 }
 
 async function pullWhatsappKey() {
@@ -15865,6 +15868,73 @@ async function cleanupCompanionSmsExtraction() {
         + 'previous extraction was interrupted and never cleaned up on its own. Continue?')) return;
     try {
         const res = await fetch('/api/mobile/android/companion_sms/cleanup', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: dev.serial }),
+        });
+        const data = await res.json();
+        if (!data.success) return showToast(`Cleanup failed: ${data.error}`, 'danger');
+        showToast('Device state cleanup complete.', 'success');
+    } catch (err) {
+        showToast('Request failed.', 'danger');
+    }
+}
+
+// Companion-app Contacts/Call Log extraction (2026-09-04) - see routes/
+// mobile.py's execution_worker_android_companion_contacts_calllog() and
+// its own module docstring. Mirrors startCompanionSmsExtraction()/
+// cleanupCompanionSmsExtraction() above exactly, minus the tier-specific
+// disruption warning - neither permission here requires the phone's own
+// Contacts/Phone apps to stop working at any point.
+function refreshCompanionContactsCallLogButtonState() {
+    const btn = document.getElementById("btnCompanionContactsCallLogStart");
+    if (!btn) return;
+    const dev = _currentlySelectedAndroidDevice();
+    btn.disabled = !dev || !dev.authorized;
+}
+
+async function startCompanionContactsCallLogExtraction() {
+    const dev = _currentlySelectedAndroidDevice();
+    if (!dev) return showToast('Select a connected, authorized Android device first.', 'warning');
+    const dataTypes = document.getElementById("mobileCompanionContactsCallLogTypes")?.value || 'both';
+
+    if (!confirm(
+        'This installs a small companion app on the device to read its Contacts and/or Call Log '
+        + 'content, then removes it and reverses every change when finished.\n\nUnlike the SMS '
+        + 'companion above, this never disrupts the phone\'s own Contacts/Phone apps - neither '
+        + 'permission requires becoming a "default app."\n\nEvery step (install, permission grants, '
+        + 'query, cleanup) is recorded in the case report. Continue?'
+    )) return;
+
+    const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById("mobileDest")?.value || '/mnt');
+    const metadata = {
+        case_number: document.getElementById("mobileCaseNum")?.value || 'UNASSIGNED',
+        evidence_id: document.getElementById("mobileEvidenceId")?.value || 'ITEM-01',
+        examiner: document.getElementById("mobileExaminer")?.value || '',
+    };
+
+    try {
+        const res = await fetch('/api/mobile/android/companion_contacts_calllog/start', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: dev.serial, data_types: dataTypes, destination: destinationDir, metadata }),
+        });
+        const data = await res.json();
+        if (!data.success) return showToast(`Start failed: ${data.error}`, 'danger');
+        showToast('Companion-app Contacts/Call Log extraction started.', 'success');
+        document.getElementById("btnCompanionContactsCallLogStart").disabled = true;
+        document.getElementById("btnMobileStart").disabled = true;
+    } catch (err) {
+        showToast('Request failed.', 'danger');
+    }
+}
+
+async function cleanupCompanionContactsCallLogExtraction() {
+    const dev = _currentlySelectedAndroidDevice();
+    if (!dev) return showToast('Select a connected Android device first.', 'warning');
+    if (!confirm('This revokes READ_CONTACTS/READ_CALL_LOG and uninstalls the companion collector from '
+        + 'the selected device. Use this only if a previous extraction was interrupted and never '
+        + 'cleaned up on its own. Continue?')) return;
+    try {
+        const res = await fetch('/api/mobile/android/companion_contacts_calllog/cleanup', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ serial: dev.serial }),
         });
@@ -17407,9 +17477,11 @@ async function fetchProgress() {
         if (data.active) {
             if (document.getElementById("btnMobileStart")) document.getElementById("btnMobileStart").disabled = true;
             if (document.getElementById("btnCompanionSmsStart")) document.getElementById("btnCompanionSmsStart").disabled = true;
+            if (document.getElementById("btnCompanionContactsCallLogStart")) document.getElementById("btnCompanionContactsCallLogStart").disabled = true;
         } else {
             refreshMobileStartButtonState();     // re-derives disabled state from current device trust/selection + mode
             refreshCompanionSmsButtonState();
+            refreshCompanionContactsCallLogButtonState();
         }
 
     } catch (err) {}

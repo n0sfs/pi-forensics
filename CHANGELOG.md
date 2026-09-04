@@ -21,6 +21,25 @@ file after updating to see what changed.
 
 ---
 
+## [1.47.0] - 2026-09-04
+
+### Added
+- **Companion-app Contacts/Call Log extraction for non-rooted Android devices** (Mobile Forensics >
+  Android). Extends the companion-app extraction mechanism introduced for SMS above to the other two
+  data types that are excluded from `adb backup` on every Android device, at the OS level, with no
+  way around that short of root. Installs a small companion app (hand-built for this project,
+  mirroring the same open-source relay-provider design as the SMS collector, since no suitable
+  existing open-source tool was found for Contacts/Call Log specifically) that reads content through
+  Android's own normal runtime-permission system, then removes the app and reverses every change
+  when finished - just like SMS extraction, every step is recorded in the case report, not just
+  logged internally. Genuinely **lower-risk** than SMS extraction: neither `READ_CONTACTS` nor
+  `READ_CALL_LOG` requires the phone to reassign a "default app" role, so unlike the SMS full-access
+  tier, the device's own Contacts and Phone apps are never disrupted at any point. Choose Contacts
+  only, Call Log only, or both. A "Force Cleanup" action is also available in case a previous
+  extraction was ever interrupted before its own automatic cleanup could run.
+
+---
+
 ## [1.46.0] - 2026-09-04
 
 ### Added
