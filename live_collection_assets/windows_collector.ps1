@@ -361,11 +361,29 @@ try {
 try {
     if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
         $tasks = Get-ScheduledTask -ErrorAction Stop | ForEach-Object {
+            # Get-ScheduledTaskInfo is a SEPARATE, per-task call - not
+            # available on the task object Get-ScheduledTask itself
+            # returns - the only source of real run-history data
+            # (LastRunTime/NextRunTime/LastTaskResult). A per-task
+            # failure (a task deleted between the two calls, an access
+            # error) never aborts the rest of the list.
+            $info = try { $_ | Get-ScheduledTaskInfo -ErrorAction Stop } catch { $null }
             [PSCustomObject]@{
                 task_name = $_.TaskName
                 task_path = $_.TaskPath
                 state     = $_.State
                 actions   = ($_.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)" }) -join '; '
+                # .ToString('o') for the same reason as every other
+                # historical timestamp in this script. LastRunTime/
+                # NextRunTime are well-documented to come back as a
+                # "zero date" sentinel (commonly ~1899) for a task that's
+                # never run or has no scheduled next run, rather than
+                # $null - the Python-side parser rejects an implausibly
+                # old date rather than trusting it, so this is passed
+                # through as-is, not filtered here.
+                last_run_time = if ($info -and $info.LastRunTime) { $info.LastRunTime.ToString('o') } else { $null }
+                next_run_time = if ($info -and $info.NextRunTime) { $info.NextRunTime.ToString('o') } else { $null }
+                last_task_result = if ($info) { $info.LastTaskResult } else { $null }
             }
         }
     } else {
@@ -472,7 +490,81 @@ if ($IsElevated) {
     Write-CollectionLog -Category 'loaded_drivers' -Status 'skipped' -Detail 'requires administrator privileges - not run'
 }
 
-# --- 11. Mapped network drives ---
+# --- 11. PowerShell console history (PSReadLine) - real command history,
+#      copied as real *_history.txt files (not parsed here) so this app's
+#      existing core/powershell_history_utils.py parser reads them
+#      unchanged at import time, the same "collect the real file, reuse
+#      the already-built parser" pattern as Prefetch below. Always the
+#      collecting account's own profile; when elevated, also sweeps every
+#      OTHER real user profile on the machine, since the account running
+#      this script may not be the one under investigation. Each user's
+#      copy lands under its own <username>\PSReadLine\ subfolder - real,
+#      unrenamed filenames preserved (ConsoleHost_history.txt etc.),
+#      matching that parser's own parent-directory-name-based discovery
+#      convention exactly, just with a username folder above it. ---
+try {
+    $psrOutDir = Join-Path $RunDir 'PSReadLine'
+    $psrTargets = @(@{ user = $env:USERNAME; dir = (Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine') })
+    if ($IsElevated) {
+        Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notin @('Public', 'Default', 'Default User', 'All Users') -and $_.Name -ne $env:USERNAME } |
+            ForEach-Object {
+                $psrTargets += @{ user = $_.Name; dir = (Join-Path $_.FullName 'AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine') }
+            }
+    }
+    $psrCopied = 0
+    foreach ($target in $psrTargets) {
+        if (Test-Path $target.dir) {
+            $files = Get-ChildItem -Path $target.dir -Filter '*_history.txt' -ErrorAction SilentlyContinue
+            if ($files) {
+                $destDir = Join-Path (Join-Path $psrOutDir $target.user) 'PSReadLine'
+                New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+                foreach ($f in $files) {
+                    try { Copy-Item -Path $f.FullName -Destination $destDir -ErrorAction Stop; $psrCopied++ } catch { }
+                }
+            }
+        }
+    }
+    if ($psrCopied -gt 0) {
+        Write-CollectionLog -Category 'powershell_history' -Status 'ok' -Detail "$psrCopied file(s) copied"
+    } else {
+        Write-CollectionLog -Category 'powershell_history' -Status 'skipped' -Detail 'no PSReadLine history files found'
+    }
+} catch {
+    Write-CollectionLog -Category 'powershell_history' -Status 'failed' -Detail $_.Exception.Message
+}
+
+# --- 12. Prefetch (.pf) files - real execution evidence (run counts,
+#      last-run times) this app already knows how to parse. Admin-only
+#      on a live system (the Prefetch folder is access-restricted), so
+#      this is honestly logged as privilege-limited when skipped, the
+#      same pattern as loaded_drivers above - never silently absent with
+#      no explanation. Copied as real .pf files, not parsed here - this
+#      app's existing core/prefetch_utils.py parser reads them unchanged
+#      at import time, same as PSReadLine above. A single locked/in-use
+#      file (a program actively launching right now) never aborts the
+#      rest of the copy. ---
+if ($IsElevated) {
+    try {
+        $pfSrc = Join-Path $env:WINDIR 'Prefetch'
+        $pfFiles = Get-ChildItem -Path $pfSrc -Filter '*.pf' -ErrorAction Stop
+        $pfCopied = 0
+        if ($pfFiles) {
+            $pfDest = Join-Path $RunDir 'prefetch'
+            New-Item -ItemType Directory -Path $pfDest -Force | Out-Null
+            foreach ($f in $pfFiles) {
+                try { Copy-Item -Path $f.FullName -Destination $pfDest -ErrorAction Stop; $pfCopied++ } catch { }
+            }
+        }
+        Write-CollectionLog -Category 'prefetch' -Status 'ok' -Detail "$pfCopied of $($pfFiles.Count) file(s) copied"
+    } catch {
+        Write-CollectionLog -Category 'prefetch' -Status 'failed' -Detail $_.Exception.Message
+    }
+} else {
+    Write-CollectionLog -Category 'prefetch' -Status 'skipped' -Detail 'requires administrator privileges - not run'
+}
+
+# --- 13. Mapped network drives ---
 try {
     if (Get-Command Get-SmbMapping -ErrorAction SilentlyContinue) {
         $mapped = Get-SmbMapping -ErrorAction Stop | ForEach-Object {
@@ -497,7 +589,7 @@ try {
     Write-CollectionLog -Category 'mapped_drives' -Status 'failed' -Detail $_.Exception.Message
 }
 
-# --- 12. Clipboard contents ---
+# --- 14. Clipboard contents ---
 try {
     $clipContent = Get-Clipboard -ErrorAction Stop -Raw
     if ($clipContent) {
