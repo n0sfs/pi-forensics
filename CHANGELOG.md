@@ -21,6 +21,22 @@ file after updating to see what changed.
 
 ---
 
+## [1.38.0] - 2026-09-04
+
+### Added
+
+- **Reporting gained a new "Contacts" tab: automatic contact correlation for pattern-of-life
+  analysis.** Once you've parsed contacts (Android's own on-device contacts, an iOS backup's
+  Contacts, a Google Takeout import, or WhatsApp's `wa.db`) and communications (SMS, call logs,
+  WhatsApp messages/calls) for a case, this new tab cross-references them automatically - resolving
+  a raw phone number sitting in a text message or call log to a real contact name, regardless of
+  whether the two sources formatted that number differently (`+15551234567` vs `(555) 123-4567` vs
+  a WhatsApp JID all resolve to the same person). The most-contacted people surface first, and a
+  number independently confirmed by more than one contact source (e.g. both the phone's own
+  contacts and WhatsApp's contacts naming the same number "Jane Doe") is shown as stronger
+  corroboration. This is a read-only report computed fresh from already-parsed data - it never
+  changes any evidence record, and correlating nothing costs nothing extra.
+
 ## [1.37.0] - 2026-09-04
 
 ### Added
