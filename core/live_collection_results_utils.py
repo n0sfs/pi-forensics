@@ -36,7 +36,7 @@ Evidence Timeline as a dense "state as of this snapshot" cluster.
 """
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 # --- Windows side ---
 
@@ -188,6 +188,40 @@ def _parse_iso_datetime_epoch(text):
     if parsed.tzinfo is None:
         return None
     return parsed.timestamp()
+
+
+_MIN_PLAUSIBLE_YEAR = 2000
+# Computed once, in the forward direction (a real datetime -> its epoch) -
+# datetime.fromtimestamp() (the REVERSE direction, epoch -> datetime) is
+# genuinely unsafe here: confirmed live that it raises OSError on Windows
+# for a negative epoch (a real, well-known cross-platform C-runtime
+# limitation, not a Linux-only quirk this app could assume away just
+# because production runs on Debian). A plain float comparison against
+# this precomputed cutoff avoids the round-trip entirely.
+_MIN_PLAUSIBLE_EPOCH = datetime(_MIN_PLAUSIBLE_YEAR, 1, 1, tzinfo=timezone.utc).timestamp()
+
+
+def _parse_plausible_historical_epoch(text):
+    """Like _parse_iso_datetime_epoch() above, but additionally rejects a
+    date before _MIN_PLAUSIBLE_YEAR. Get-ScheduledTaskInfo's own
+    LastRunTime/NextRunTime properties are well-documented, real Task
+    Scheduler/PowerShell behavior (a widely-reported gotcha, not this
+    app's own guess): a task that's never run, or has no scheduled next
+    run, gets a sentinel "zero date" (commonly rendered around 1899 - the
+    OLE Automation Date epoch the underlying COM Task Scheduler API uses
+    for "no value") instead of a real $null. A sentinel value still
+    PARSES successfully as a perfectly valid ISO datetime (unlike a
+    genuinely missing/malformed field, which _parse_iso_datetime_epoch
+    already catches) - without this extra guard it would silently become
+    a real, wrong Evidence Timeline entry claiming a task last ran in
+    1899. Every genuine timestamp anywhere in this app is comfortably
+    after this cutoff, so a real value is never rejected by it."""
+    epoch = _parse_iso_datetime_epoch(text)
+    if epoch is None:
+        return None
+    if epoch < _MIN_PLAUSIBLE_EPOCH:
+        return None
+    return epoch
 
 
 def _parse_system_info(run_dir, ts):
@@ -376,13 +410,86 @@ def _parse_scheduled_tasks(run_dir, ts):
         # so this branch degrades gracefully to whatever keys are present
         # rather than assuming task_name exists).
         title = t.get('task_name') or t.get('TaskName') or next(iter(t.values()), '') or ''
+        record_ts = ts
         if 'task_name' in t:
             state = _safe_value_text(t.get('state', ''))
             actions = _safe_value_text(t.get('actions', ''))
-            value = f"{state} - {actions}"
+            # Real "when did this task last actually run" data
+            # (2026-09-03) - only present on the Get-ScheduledTask branch
+            # (the schtasks.exe CSV fallback below has no equivalent
+            # field). See _parse_plausible_historical_epoch()'s own
+            # docstring for why a sentinel "never run" date is rejected
+            # rather than trusted as a real historical timestamp.
+            last_run = _parse_plausible_historical_epoch(t.get('last_run_time'))
+            last_run_display = _safe_value_text(t.get('last_run_time')) if last_run is not None else 'never run'
+            value = f"{state} - {actions} (last run: {last_run_display})"
+            if last_run is not None:
+                record_ts = last_run
         else:
             value = json.dumps(t, default=str)[:500]
-        records.append(_record('live_collection_scheduled_task', str(title), '', value, ts, _safe_extra(t)))
+        records.append(_record('live_collection_scheduled_task', str(title), '', value, record_ts, _safe_extra(t)))
+    return records
+
+
+def _parse_live_powershell_history(run_dir, ts):
+    """Reuses core/powershell_history_utils.py's existing PSReadLine
+    parser UNCHANGED against real *_history.txt files the collector
+    copied live off the target (see windows_collector.ps1's own
+    PowerShell console history collection step, 2026-09-03) - the same
+    "collect the real file, reuse the already-built parser" approach as
+    Prefetch below. Imported at module level here (unlike Prefetch),
+    since that module has zero optional/native dependencies - pure
+    stdlib, same as this one.
+
+    Unlike an acquired-file parse (where every record's own timestamp is
+    honestly None - PSReadLine's file format has no per-command
+    timestamp at all, see that module's own docstring), a LIVE
+    collection record is deliberately stamped with the run's own capture
+    time instead: "this command history existed on the machine at the
+    moment of this collection" is itself a real, useful fact for a live-
+    collection context, genuinely distinct from "we don't know when this
+    ran" (which stays true either way - this doesn't fabricate per-
+    command precision that doesn't exist, it just anchors the whole file
+    to when it was captured, matching every other no-natural-timestamp
+    category in this module, e.g. services/loaded_drivers)."""
+    from core.powershell_history_utils import find_powershell_history_files, parse_powershell_history_file
+    paths, _truncated = find_powershell_history_files(run_dir)
+    records = []
+    for path in paths:
+        for r in parse_powershell_history_file(path):
+            r['timestamp'] = ts
+            records.append(r)
+    return records
+
+
+def _parse_live_prefetch(run_dir, ts):
+    """Prefetch (.pf) files the collector could copy live (admin-only -
+    see windows_collector.ps1's own privilege-gated collection step,
+    2026-09-03). Reuses core/prefetch_utils.py's existing parser
+    UNCHANGED - deliberately imported HERE, inside the function, not at
+    this module's own top level. core/prefetch_utils.py needs pyscca, a
+    native, POSIX-only dependency this app already treats as optional
+    build-time-only elsewhere (routes/file_explorer.py/routes/
+    image_browser.py both already import it unconditionally, but those
+    two are already gated behind core.jobs' own POSIX-only pwd/fcntl
+    requirement in every test that touches them). This module is
+    otherwise pure stdlib and deliberately stays importable on ANY
+    machine, including this project's own Windows dev environment - a
+    module-level import here would silently break that property. `ts`
+    is unused (each .pf file already carries its own real last-run
+    timestamp from parse_prefetch_file() itself) - kept for signature
+    consistency with every other _parse_* function in this module."""
+    prefetch_dir = os.path.join(run_dir, 'prefetch')
+    if not os.path.isdir(prefetch_dir):
+        return []
+    try:
+        from core.prefetch_utils import find_prefetch_files, parse_prefetch_file
+    except ImportError:
+        return []
+    paths, _truncated = find_prefetch_files(prefetch_dir)
+    records = []
+    for path in paths:
+        records.extend(parse_prefetch_file(path))
     return records
 
 
@@ -473,6 +580,7 @@ _WINDOWS_PARSERS = (
     ('services', _parse_services),
     ('scheduled_tasks', _parse_scheduled_tasks), ('autoruns', _parse_autoruns),
     ('installed_hotfixes', _parse_installed_hotfixes), ('loaded_drivers', _parse_loaded_drivers),
+    ('powershell_history', _parse_live_powershell_history), ('prefetch', _parse_live_prefetch),
     ('mapped_drives', _parse_mapped_drives), ('clipboard', _parse_windows_clipboard),
 )
 

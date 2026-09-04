@@ -21,6 +21,23 @@ file after updating to see what changed.
 
 ---
 
+## [1.32.0] - 2026-09-03
+
+### Added
+
+- **Live Collection USB's Windows collector now pulls three more artifact types, all reusing this
+  app's own already-built parsers with zero new parsing logic**:
+  - **Scheduled tasks now show real run history** - when each task actually last ran, its result
+    code, and its next scheduled run, not just its current state. A task that's never actually run
+    is honestly shown as such rather than a misleading date.
+  - **PowerShell console history** is now copied and parsed automatically - every command typed at
+    a PowerShell prompt on the target, for the account running the collector and (when run as
+    administrator) every other real user profile on the machine.
+  - **Prefetch execution evidence** is now copied and parsed automatically when the collector runs
+    elevated - real run counts and last-execution times for what's actually been launched on that
+    machine, closing a real gap between what an already-acquired disk image can show and what a
+    live collection could.
+
 ## [1.31.0] - 2026-09-03
 
 ### Added
