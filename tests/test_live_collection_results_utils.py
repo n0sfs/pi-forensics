@@ -911,3 +911,105 @@ def test_parse_live_evtx_wiring_with_a_fake_evtx_utils_module(tmp_path, monkeypa
     assert len(records) == 1
     assert records[0]['artifact_type'] == 'evtx_workstation_locked'
     assert records[0]['timestamp'] == 1788400000.0  # the event's OWN real timestamp, not ts
+
+
+def test_parse_live_registry_no_registry_dir_returns_empty(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    assert lcru._parse_live_registry(run_dir, ts=1.0) == []
+
+
+def test_parse_live_registry_gracefully_handles_python_registry_not_installed(tmp_path, monkeypatch):
+    # core.registry_utils itself does `from Registry import Registry` at
+    # module load time - forcing that import to fail is meaningful both
+    # here (python-registry genuinely isn't installed on this dev
+    # machine) and on a real station missing it, same documented
+    # technique as the Prefetch/EVTX equivalents above. The registry/
+    # subfolder existing but python-registry being unavailable must
+    # never crash the whole import worker.
+    run_dir = str(tmp_path / "run")
+    os.makedirs(os.path.join(run_dir, "registry"))
+    monkeypatch.setitem(sys.modules, 'core.registry_utils', None)
+    monkeypatch.setitem(sys.modules, 'Registry', None)
+    monkeypatch.setitem(sys.modules, 'Registry.Registry', None)
+    assert lcru._parse_live_registry(run_dir, ts=1.0) == []
+
+
+def test_parse_live_registry_wiring_with_a_fake_registry_utils_module(tmp_path, monkeypatch):
+    # Proves the actual wiring logic this session added (find the
+    # registry/ subfolder, call find_registry_hive_files, call
+    # parse_registry_hive_file(path, basename) per path, extend the
+    # results, preserve each value's OWN real timestamp rather than
+    # overwriting with ts) is correct, independent of whether the real
+    # python-registry library is installed on THIS machine - a fake
+    # core.registry_utils module is injected into sys.modules so the
+    # local `from core.registry_utils import ...` statement resolves to
+    # it. parse_registry_hive_file takes (path, filename) - a genuinely
+    # different signature from parse_prefetch_file/parse_evtx_file's
+    # (path)-only shape, since the dispatcher needs the exact basename
+    # to pick the right curated key set (NTUSER.DAT vs SYSTEM vs
+    # SOFTWARE vs AMCACHE.HVE vs USRCLASS.DAT) - this fake asserts the
+    # real basename is what actually gets passed, not the full path.
+    run_dir = str(tmp_path / "run")
+    registry_dir = os.path.join(run_dir, "registry")
+    os.makedirs(registry_dir)
+    fake_hive_path = os.path.join(registry_dir, "alice", "NTUSER.DAT")
+    os.makedirs(os.path.dirname(fake_hive_path))
+    open(fake_hive_path, "w").close()  # content doesn't matter - the fake parser below never reads it
+
+    seen_calls = []
+
+    def fake_parse(path, filename):
+        seen_calls.append((path, filename))
+        return [{
+            'artifact_type': 'registry_recentdoc', 'title': 'report.docx', 'url': '',
+            'value': '', 'timestamp': 1788400500.0,
+            'extra': {'user_subfolder': 'alice'},
+        }]
+
+    fake_module = types.ModuleType('core.registry_utils')
+    fake_module.find_registry_hive_files = lambda root_dir: ([fake_hive_path], False)
+    fake_module.parse_registry_hive_file = fake_parse
+    monkeypatch.setitem(sys.modules, 'core.registry_utils', fake_module)
+
+    records = lcru._parse_live_registry(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert records[0]['artifact_type'] == 'registry_recentdoc'
+    assert records[0]['timestamp'] == 1788400500.0  # the value's OWN real timestamp, not ts
+    # The dispatcher needs the exact basename (never the full path, and
+    # never lowercased) to correctly identify the hive type.
+    assert seen_calls == [(fake_hive_path, 'NTUSER.DAT')]
+
+
+def test_parse_live_registry_handles_two_different_users_same_basename_without_collision(tmp_path, monkeypatch):
+    # The collector writes each real user's hives into their own
+    # <username>\ subfolder specifically so two different users'
+    # identically-named NTUSER.DAT files never collide on disk (see
+    # windows_collector.ps1's own docstring for the registry step) -
+    # this proves find_registry_hive_files' recursive-by-basename walk
+    # correctly finds BOTH files as distinct paths, and that each gets
+    # its own independent parse call rather than one silently
+    # overwriting the other.
+    run_dir = str(tmp_path / "run")
+    registry_dir = os.path.join(run_dir, "registry")
+    alice_hive = os.path.join(registry_dir, "alice", "NTUSER.DAT")
+    bob_hive = os.path.join(registry_dir, "bob", "NTUSER.DAT")
+    for p in (alice_hive, bob_hive):
+        os.makedirs(os.path.dirname(p))
+        open(p, "w").close()
+
+    def fake_parse(path, filename):
+        user = os.path.basename(os.path.dirname(path))
+        return [{
+            'artifact_type': 'registry_recentdoc', 'title': f'{user}_doc.docx', 'url': '',
+            'value': '', 'timestamp': 1788400500.0, 'extra': {},
+        }]
+
+    fake_module = types.ModuleType('core.registry_utils')
+    fake_module.find_registry_hive_files = lambda root_dir: ([alice_hive, bob_hive], False)
+    fake_module.parse_registry_hive_file = fake_parse
+    monkeypatch.setitem(sys.modules, 'core.registry_utils', fake_module)
+
+    records = lcru._parse_live_registry(run_dir, ts=1.0)
+    titles = sorted(r['title'] for r in records)
+    assert titles == ['alice_doc.docx', 'bob_doc.docx']
