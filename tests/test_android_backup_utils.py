@@ -250,6 +250,78 @@ def test_parse_mms_backup_json_real_aosp_sample_seconds_not_ms():
     assert "To: recipient@example.com" in r["extra"]["addresses"]
 
 
+def test_parse_sms_backup_json_full_message_type_label_coverage():
+    # Telephony.TextBasedSmsColumns.MESSAGE_TYPE_* - confirmed via the real
+    # AOSP framework source (core/java/android/provider/Telephony.java).
+    expected = {0: "All", 1: "Received", 2: "Sent", 3: "Draft", 4: "Outbox", 5: "Failed", 6: "Queued"}
+    raw = json.dumps([
+        {"address": "+1", "body": f"msg type {t}", "date": "1000000", "type": str(t)}
+        for t in expected
+    ]).encode("utf-8")
+    records = ab_utils.parse_sms_backup_json(raw, "000000_sms_backup")
+    assert len(records) == len(expected)
+    for t, label in expected.items():
+        matching = [r for r in records if r["value"] == f"msg type {t}"]
+        assert len(matching) == 1
+        assert label in matching[0]["title"]
+
+
+def test_parse_sms_backup_json_unrecognized_type_falls_back_cleanly():
+    raw = json.dumps([{"address": "+1", "body": "x", "date": "1000000", "type": "99"}]).encode("utf-8")
+    records = ab_utils.parse_sms_backup_json(raw, "x")
+    assert "Type 99" in records[0]["title"]
+
+
+def test_parse_mms_backup_json_extracts_attachment_metadata_and_subject_and_flags():
+    # Real, confirmed field names from the AOSP source - "attachments" never
+    # carries the actual photo/video bytes (this backup format never
+    # contains them at all), only filename/mime_type metadata.
+    raw = json.dumps([{
+        "date": "1600000000", "msg_box": "1", "mms_body": "",
+        "sub": "Vacation photos", "sub_cs": "106",
+        "read": 1, "archived": 0,
+        "mms_addresses": [{"address": "+15551112222", "type": 137}],
+        "attachments": [
+            {"filename": "IMG_20240115.jpg", "mime_type": "image/jpeg"},
+            {"filename": "clip.mp4", "mime_type": "video/mp4"},
+        ],
+    }]).encode("utf-8")
+
+    records = ab_utils.parse_mms_backup_json(raw, "000000_mms_backup")
+    assert len(records) == 1
+    r = records[0]
+    # No mms_body, but a real subject line - value falls back to it rather
+    # than showing an empty string.
+    assert r["value"] == "Vacation photos"
+    assert r["extra"]["subject"] == "Vacation photos"
+    assert r["extra"]["read"] == 1
+    assert r["extra"]["archived"] == 0
+    assert r["extra"]["attachments"] == [
+        {"filename": "IMG_20240115.jpg", "mime_type": "image/jpeg"},
+        {"filename": "clip.mp4", "mime_type": "video/mp4"},
+    ]
+    assert "[2 attachment(s)]" in r["title"]
+
+
+def test_parse_mms_backup_json_no_body_no_subject_no_attachments_has_placeholder_value():
+    raw = json.dumps([{"date": "1600000000", "msg_box": "1", "mms_addresses": []}]).encode("utf-8")
+    records = ab_utils.parse_mms_backup_json(raw, "x")
+    assert records[0]["value"] == "(no text content)"
+    assert records[0]["extra"]["attachments"] == []
+    assert "attachment" not in records[0]["title"]
+
+
+def test_parse_mms_backup_json_malformed_attachment_entries_skipped_not_fatal():
+    raw = json.dumps([{
+        "date": "1600000000", "msg_box": "1", "mms_body": "still parses",
+        "attachments": ["not a dict", {"filename": "ok.png", "mime_type": "image/png"}, 42],
+    }]).encode("utf-8")
+    records = ab_utils.parse_mms_backup_json(raw, "x")
+    assert len(records) == 1
+    assert records[0]["value"] == "still parses"
+    assert records[0]["extra"]["attachments"] == [{"filename": "ok.png", "mime_type": "image/png"}]
+
+
 def test_parse_sms_backup_json_skips_malformed_entries_without_crashing():
     raw = json.dumps([
         "this is not a dict",

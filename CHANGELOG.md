@@ -21,6 +21,22 @@ file after updating to see what changed.
 
 ---
 
+## [1.43.0] - 2026-09-04
+
+### Added
+- **Richer Android Backup (.ab) SMS/MMS parsing** - the SMS message-type label now covers the full
+  real set (Received/Sent/Draft/Outbox/Failed/Queued, not just the two most common), and MMS records
+  now also capture attachment metadata (filename and file type per attachment - the actual photo/video
+  bytes are never included in an `adb backup`, only this metadata, confirmed against the real Android
+  source), the message subject line, and read/archived flags.
+
+### Investigated, not built
+- Contacts and Call Log **cannot** be recovered from a `.ab` Android Backup file, confirmed directly
+  against the real Android source: the app that owns both (`com.android.providers.contacts`) declares
+  itself excluded from `adb backup` entirely, at the operating-system level - the data never enters the
+  backup file in the first place, regardless of what tool reads it afterward. The existing rooted
+  physical-image parser remains the only real path to that content.
+
 ## [1.42.0] - 2026-09-04
 
 ### Added
