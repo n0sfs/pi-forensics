@@ -38,6 +38,26 @@ record is skipped and counted, never crashes the whole file/import. This
 mirrors this app's own established "disclose what's uncertain, don't
 silently claim full coverage" discipline (e.g. MVT-Android's disclosed
 best-effort status, linux_wtmp_login's "(Experimental)" label).
+
+Gmail/Contacts/Calendar (2026-09-04, Android pattern-of-life follow-up)
+reuse this app's OWN ALREADY-EXISTING .mbox/vCard/iCalendar parsers
+(core/email_utils.py, core/apple_export_utils.py) rather than writing new
+ones - all three formats are open, RFC-documented standards this app
+already parses with HIGH confidence, and Google Takeout's own product
+folders for these three (real, sourced research: Metaspike's own quoted
+Takeout export path for Mail, Google's own Accounts Help page confirming
+vCard for Contacts, and community write-ups on Calendar's per-calendar
+.ics naming) have shown no documented renaming, unlike Location History's
+own confirmed one-time rename. HIGH CONFIDENCE for the same structural
+reason Search/YouTube History are: this module discovers files by
+EXTENSION, recursively, within a loosely-matched product folder - it
+never depends on an exact filename or exact subfolder layout, so the
+real-world variation these three products DO have (Gmail may produce one
+.mbox per selected label, not just one; Contacts commonly nests multiple
+subfolders like "All Contacts"/"Starred in Android"; Calendar's per-
+calendar .ics filenames vary between the account's own email address for
+the primary calendar and an opaque ID for secondary ones) never actually
+matters to this app's own discovery logic.
 """
 import csv
 import io
@@ -45,6 +65,9 @@ import json
 import os
 import re
 import zipfile
+
+from core.email_utils import parse_mbox_file
+from core.apple_export_utils import parse_vcard_file, parse_icalendar_file
 
 TAKEOUT_MAX_RECORDS_PER_PRODUCT = 10_000
 TAKEOUT_MAX_PHOTO_SIDECARS = 5_000
@@ -60,6 +83,13 @@ _PRODUCT_FOLDER_PATTERNS = {
     "location_history": re.compile(r'location history|semantic location', re.IGNORECASE),
     "maps": re.compile(r'^maps', re.IGNORECASE),
     "photos": re.compile(r'google photos', re.IGNORECASE),
+    # \bmail\b (word-boundary), not a bare substring match - deliberately
+    # doesn't match "email" (no word boundary between the 'e' and 'm'),
+    # confirmed real folder name is "Mail" (Metaspike's own quoted real
+    # Takeout export path), not "Gmail".
+    "gmail": re.compile(r'\bmail\b', re.IGNORECASE),
+    "contacts": re.compile(r'contacts', re.IGNORECASE),
+    "calendar": re.compile(r'calendar', re.IGNORECASE),
 }
 
 
@@ -438,6 +468,73 @@ def parse_takeout_photos_sidecars(folder):
     return records
 
 
+def parse_takeout_gmail(folder):
+    """Takeout/Mail/*.mbox - HIGH CONFIDENCE (see module docstring).
+    Reuses core/email_utils.py's parse_mbox_file() UNCHANGED, producing
+    the SAME generic "email_message" artifact_type that .eml/.pst/.ost
+    already share in this app - deliberately NOT a source-scoped
+    "takeout_gmail_message" type, since email_message was never source-
+    scoped to begin with (an .eml file's own origin is never encoded in
+    its artifact_type either). Walks recursively and matches by
+    extension, since Google produces more than one .mbox file if
+    specific labels (rather than "All Mail") were selected at export
+    time - a real, confirmed behavior, not a hypothetical edge case."""
+    records = []
+    for root, _dirs, files in os.walk(folder):
+        for fname in files:
+            if fname.lower().endswith('.mbox'):
+                records.extend(parse_mbox_file(os.path.join(root, fname)))
+                if len(records) >= TAKEOUT_MAX_RECORDS_PER_PRODUCT:
+                    return records[:TAKEOUT_MAX_RECORDS_PER_PRODUCT]
+    return records[:TAKEOUT_MAX_RECORDS_PER_PRODUCT]
+
+
+def parse_takeout_contacts(folder):
+    """Takeout/Contacts/**/*.vcf - HIGH CONFIDENCE (see module docstring).
+    Reuses core/apple_export_utils.py's parse_vcard_file() UNCHANGED,
+    stamped with "takeout_contact" (not "apple_contact") - vCard is an
+    open standard, not Apple's, and this app's own convention scopes a
+    contact's artifact_type by its real SOURCE (android_contact vs
+    mobile_contact vs apple_contact already coexist as distinct types for
+    the identical underlying concept). Walks recursively, since a real
+    Contacts export commonly nests multiple subfolders (e.g. "All
+    Contacts"/"My Contacts"/"Starred in Android") whose exact names vary
+    per account - recursive-by-extension discovery makes that variation
+    irrelevant to this parser."""
+    records = []
+    for root, _dirs, files in os.walk(folder):
+        for fname in files:
+            if fname.lower().endswith('.vcf'):
+                records.extend(parse_vcard_file(os.path.join(root, fname), artifact_type="takeout_contact"))
+                if len(records) >= TAKEOUT_MAX_RECORDS_PER_PRODUCT:
+                    return records[:TAKEOUT_MAX_RECORDS_PER_PRODUCT]
+    return records[:TAKEOUT_MAX_RECORDS_PER_PRODUCT]
+
+
+def parse_takeout_calendar(folder):
+    """Takeout/Calendar/*.ics - HIGH CONFIDENCE (see module docstring).
+    Reuses core/apple_export_utils.py's parse_icalendar_file() UNCHANGED,
+    stamped with "takeout_calendar_event"/"takeout_reminder" (not the
+    apple_* equivalents), for the identical source-scoping reason as
+    Contacts above. Google exports one .ics per calendar the account
+    OWNS (confirmed: the primary calendar's file is commonly named after
+    the account's own email address, secondary calendars get an opaque
+    ID - this parser never depends on either naming, matching by
+    extension only) - subscribed/shared "Other calendars" are not
+    included in a Takeout export at all, a real limitation of the source
+    data itself, not of this parser."""
+    records = []
+    for root, _dirs, files in os.walk(folder):
+        for fname in files:
+            if fname.lower().endswith('.ics'):
+                records.extend(parse_icalendar_file(
+                    os.path.join(root, fname),
+                    event_type="takeout_calendar_event", reminder_type="takeout_reminder"))
+                if len(records) >= TAKEOUT_MAX_RECORDS_PER_PRODUCT:
+                    return records[:TAKEOUT_MAX_RECORDS_PER_PRODUCT]
+    return records[:TAKEOUT_MAX_RECORDS_PER_PRODUCT]
+
+
 def import_takeout_archive(takeout_root):
     """Top-level dispatcher - walks discovered product folders and calls
     the right per-product parser for each, returning a summary dict.
@@ -454,6 +551,12 @@ def import_takeout_archive(takeout_root):
         all_records.extend(parse_takeout_search_history(products['search_history']))
     if 'youtube_history' in products:
         all_records.extend(parse_takeout_youtube_history(products['youtube_history']))
+    if 'gmail' in products:
+        all_records.extend(parse_takeout_gmail(products['gmail']))
+    if 'contacts' in products:
+        all_records.extend(parse_takeout_contacts(products['contacts']))
+    if 'calendar' in products:
+        all_records.extend(parse_takeout_calendar(products['calendar']))
     if 'location_history' in products:
         recs = parse_takeout_location_history(products['location_history'])
         all_records.extend(recs)

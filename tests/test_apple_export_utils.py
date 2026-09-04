@@ -96,6 +96,23 @@ def test_find_apple_vcard_contacts_walks_recursively(tmp_path):
     assert records[0]["title"] == "Deep Contact"
 
 
+def test_parse_vcard_artifact_type_override_for_non_apple_callers(tmp_path):
+    # 2026-09-04: parameterized specifically so core/takeout_utils.py's
+    # Google Contacts import can reuse this exact function while stamping
+    # a genuinely different, source-scoped artifact_type - proves the
+    # override actually changes the record's own type, not just accepted
+    # and ignored.
+    path = tmp_path / "Contacts.vcf"
+    _write(str(path), "BEGIN:VCARD\r\nFN:Jane Doe\r\nEND:VCARD\r\n")
+    records = apple.parse_vcard_file(str(path), artifact_type="takeout_contact")
+    assert len(records) == 1
+    assert records[0]["artifact_type"] == "takeout_contact"
+    # find_apple_vcard_contacts() itself must be COMPLETELY unaffected -
+    # it never passes an override, so it must still default to Apple's own.
+    records2 = apple.find_apple_vcard_contacts(str(tmp_path))
+    assert records2[0]["artifact_type"] == "apple_contact"
+
+
 # --- iCalendar (RFC 5545) - HIGH CONFIDENCE ---
 
 def test_parse_icalendar_real_vevent_shape(tmp_path):
@@ -167,6 +184,26 @@ def test_find_apple_icalendar_events_walks_recursively(tmp_path):
     _write(str(tmp_path / "sub" / "Calendar.ics"), "BEGIN:VEVENT\r\nSUMMARY:Deep Event\r\nEND:VEVENT\r\n")
     records = apple.find_apple_icalendar_events(str(tmp_path))
     assert len(records) == 1
+
+
+def test_parse_icalendar_event_and_reminder_type_override_for_non_apple_callers(tmp_path):
+    # 2026-09-04: parameterized for core/takeout_utils.py's Google
+    # Calendar import - proves BOTH overrides (event and reminder) are
+    # independently honored, and that find_apple_icalendar_events()
+    # (which never passes an override) still defaults to Apple's own.
+    path = tmp_path / "Mixed.ics"
+    _write(str(path),
+        "BEGIN:VEVENT\r\nSUMMARY:Team Meeting\r\nEND:VEVENT\r\n"
+        "BEGIN:VTODO\r\nSUMMARY:Buy milk\r\nEND:VTODO\r\n")
+    records = apple.parse_icalendar_file(
+        str(path), event_type="takeout_calendar_event", reminder_type="takeout_reminder")
+    events = [r for r in records if r["artifact_type"] == "takeout_calendar_event"]
+    reminders = [r for r in records if r["artifact_type"] == "takeout_reminder"]
+    assert len(events) == 1 and events[0]["title"] == "Team Meeting"
+    assert len(reminders) == 1 and reminders[0]["title"] == "Buy milk"
+
+    records2 = apple.find_apple_icalendar_events(str(tmp_path))
+    assert records2[0]["artifact_type"] == "apple_calendar_event"
 
 
 # --- Safari Bookmarks (BEST-EFFORT: NETSCAPE-Bookmark-file HTML) ---
