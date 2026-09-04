@@ -98,7 +98,10 @@ from core.evtx_utils import find_evtx_files, parse_evtx_file
 from core.lnk_utils import parse_lnk_file
 from core.sqlite_dissect_utils import run_sqlite_dissect
 from core.apk_utils import analyze_apk
-from core.whatsapp_utils import decrypt_whatsapp_backup
+from core.whatsapp_utils import (
+    decrypt_whatsapp_backup, find_whatsapp_databases,
+    parse_whatsapp_messages, parse_whatsapp_call_log, parse_whatsapp_contacts,
+)
 from core.ipa_utils import analyze_ipa
 from core.bugreport_utils import parse_bugreport
 from core.jobs import job_lock, current_job, update_job, snapshot_job, _stream_subprocess
@@ -2211,6 +2214,63 @@ def run_whatsapp_decrypt():
 
     log_chain_of_custody("whatsapp_backup_decrypted", {"path": crypt_path, "key_path": key_path, "output_path": output_path})
     return jsonify({"success": True, "output_path": output_path, "log": result["log"]})
+
+@file_explorer_bp.route('/api/files/parse_whatsapp', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_whatsapp():
+    """Whole-directory scan for a real (decrypted) msgstore.db and/or
+    wa.db - same shape as parse_browser_artifacts()/parse_registry()
+    above. Reachable both against this app's own WhatsApp-decrypt
+    feature's output (a plain folder, no root needed) and a rooted
+    physical image's extracted /data/data/com.whatsapp/databases/ folder.
+    A wa.db found alongside a msgstore.db is parsed BOTH ways - attached
+    for name resolution inside the message/call-log parse, AND parsed on
+    its own for a standalone contact list - these are genuinely different
+    outputs, matching how ALEAPP itself keeps its own WhatsApp Contacts
+    module separate from its own message modules even though both
+    reference the same table."""
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    found = find_whatsapp_databases(target_dir)
+    counts = {}
+    files_parsed = 0
+
+    for path in found["msgstore"]:
+        records = parse_whatsapp_messages(path) + parse_whatsapp_call_log(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    for path in found["wa_db"]:
+        records = parse_whatsapp_contacts(path)
+        if not records:
+            continue
+        files_parsed += 1
+        for r in records:
+            counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+        if case_folder:
+            _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": path}, records)
+
+    log_chain_of_custody("whatsapp_databases_parsed", {
+        "directory": target_dir, "msgstore_found": len(found["msgstore"]),
+        "wa_db_found": len(found["wa_db"]), "files_parsed": files_parsed, "counts": counts,
+    })
+    return jsonify({
+        "success": True, "candidates_found": len(found["msgstore"]) + len(found["wa_db"]),
+        "files_parsed": files_parsed, "counts": counts, "indexed": bool(case_folder),
+    })
 
 # --- iOS .ipa Static Analysis (Info.plist / mobileprovision / optional LIEF Mach-O) ---
 @file_explorer_bp.route('/api/files/ipa_analyze', methods=['POST'])

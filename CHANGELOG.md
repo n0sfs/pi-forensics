@@ -21,6 +21,28 @@ file after updating to see what changed.
 
 ---
 
+## [1.37.0] - 2026-09-04
+
+### Added
+
+- **WhatsApp local backups can now be natively parsed, not just decrypted.** Right-click a folder
+  containing a decrypted `msgstore.db` (this app's own WhatsApp-decrypt feature's own output - no
+  root or ALEAPP run required) or a rooted physical Android image's extracted `/data/data/
+  com.whatsapp/databases/` folder, and choose "Parse WhatsApp Database" to pull out real 1:1 and
+  group messages, calls, and (if a `wa.db` file is present) contacts - all searchable in File
+  Views and on the Evidence Timeline, exactly like every other artifact this app produces. Grounded
+  directly against this app's own already-pinned, actively-maintained ALEAPP source (the same
+  schema its existing WhatsApp coverage already trusts), not guessed.
+
+### Fixed
+
+- **A real bug found during this feature's own live verification**: a group chat message's sender
+  was never resolving to a real contact name, even with a contacts database available - the query
+  was looking up the GROUP's own identity instead of the specific member who sent that message.
+  Fixed and covered by a dedicated regression test before release.
+
+---
+
 ## [1.36.0] - 2026-09-04
 
 ### Added
