@@ -26,6 +26,11 @@ static/vendor/osm_tiles/
 # itself is never something this repo ships or builds from source either.
 /bin/
 
+# Same class again - install.py downloads the vendored adbsms.min.apk
+# (companion-app SMS extraction) here at install time; never built or
+# shipped from this repo.
+/android_companion_tools/
+
 # Evidence & Data Files (DO NOT PUSH EVIDENCE TO GITHUB)
 *.dd
 *.raw
