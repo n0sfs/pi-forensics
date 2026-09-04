@@ -117,7 +117,7 @@ def test_cleanup_skips_uninstall_when_install_never_succeeded():
         # pm_grant/query/pm_revoke/uninstall calls, since install itself
         # never succeeded.
         assert mocks["_adb_run"].call_count == 1
-        assert mocks["_adb_run"].call_args[0][1] == ["install", "-r", mobile.ANDROID_COMPANION_SMS_APK]
+        assert mocks["_adb_run"].call_args[0][1] == ["install", "-r", mobile.PIF_COMPANION_APK]
 
 
 def test_stop_requested_before_query_skips_query_but_still_cleans_up():

@@ -97,7 +97,7 @@ def test_cleanup_skips_permission_revoke_when_install_never_succeeded():
         )
 
         assert mocks["_adb_run"].call_count == 1
-        assert mocks["_adb_run"].call_args[0][1] == ["install", "-r", mobile.ANDROID_COMPANION_CONTACTS_CALLLOG_APK]
+        assert mocks["_adb_run"].call_args[0][1] == ["install", "-r", mobile.PIF_COMPANION_APK]
 
 
 def test_data_types_contacts_only_never_grants_calllog_permission():

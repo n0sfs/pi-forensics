@@ -91,22 +91,38 @@
                                                     <div id="mobileWhatsappKeyStatus" class="small text-subtle mt-1"></div>
                                                 </div>
 
-                                                <!-- Companion-app SMS extraction (2026-09-04) - the one Android
-                                                     acquisition mode that deliberately modifies the device
-                                                     (installs a small open-source relay app, grants a
-                                                     permission or reassigns the default SMS role, then
-                                                     restores everything) rather than only reading from it. A
+                                                <!-- Companion-app SMS/Contacts/Call Log extraction (2026-09-04,
+                                                     consolidated into one collapsed-by-default disclosure the
+                                                     same day) - the only Android acquisition modes that
+                                                     deliberately modify the device (install a small relay app,
+                                                     grant a permission or reassign the default SMS role, then
+                                                     restore everything) rather than only reading from it. A
                                                      genuine gap-closer: this app's .ab decoder can never see
                                                      SMS on a device whose messaging app is excluded from
                                                      `adb backup`, and Contacts/Call Log are excluded from
                                                      `adb backup` on every device (see core/android_backup_
-                                                     utils.py's own docstring). Uses the SAME shared job slot/
-                                                     Stop button as every other Android mode below - see
-                                                     execution_worker_android_companion_sms() in
+                                                     utils.py's own docstring). Collapsed by default so these
+                                                     two genuinely separate, additive actions - not alternative
+                                                     acquisition modes, an examiner might run either or both
+                                                     alongside whichever mode is selected below - don't always
+                                                     eat vertical space above the more commonly used standard
+                                                     modes. Plain Bootstrap data-bs-toggle="collapse", matching
+                                                     this app's own established zero-custom-JS pattern for a
+                                                     single disclosure (see file_explorer.html's "Create New
+                                                     Tag" toggle for the identical technique). Both panels use
+                                                     the SAME shared job slot/Stop button as every other Android
+                                                     mode below - see execution_worker_android_companion_sms()/
+                                                     execution_worker_android_companion_contacts_calllog() in
                                                      routes/mobile.py. -->
+                                                <button class="btn btn-sm btn-outline-secondary w-100 mb-2 d-flex align-items-center justify-content-between" type="button" data-bs-toggle="collapse" data-bs-target="#mobileCompanionExtractionSection">
+                                                    <span><i class="bi bi-phone-vibrate me-1"></i>Companion-App Extraction (Advanced)</span>
+                                                    <i class="bi bi-chevron-down"></i>
+                                                </button>
+                                                <div class="collapse mb-2" id="mobileCompanionExtractionSection">
+
                                                 <div id="mobileCompanionSmsPanel" class="mb-2 p-2 border border-warning rounded-2">
                                                     <div class="small fw-bold text-warning mb-1"><i class="bi bi-exclamation-triangle-fill me-1"></i>Extract SMS via Companion App (Non-Rooted)</div>
-                                                    <div class="small text-subtle mb-2">Installs a small, open-source (MIT-licensed <a href="https://github.com/gonodono/adbsms" target="_blank" rel="noopener">adbsms.min</a>) relay app on the device to read SMS through Android's own normal permission system - the only way to get real SMS content from a non-rooted, non-backup-eligible messaging app. This <strong>actively modifies the device</strong> (unlike Pull/Backup/Bugreport below): it installs an app, grants it a permission, queries, then uninstalls it and reverses every change - every step is disclosed in the resulting case record. Choose a tier, then click Start below.</div>
+                                                    <div class="small text-subtle mb-2">Installs a small companion app (hand-built for this project, mirroring the same open-source relay-provider design as the collector below) on the device to read SMS through Android's own normal permission system - the only way to get real SMS content from a non-rooted, non-backup-eligible messaging app. This <strong>actively modifies the device</strong> (unlike Pull/Backup/Bugreport below): it installs an app, grants it a permission, queries, then uninstalls it and reverses every change - every step is disclosed in the resulting case record. Choose a tier, then click Start below.</div>
                                                     <select id="mobileCompanionSmsTier" class="form-select form-select-sm mb-2">
                                                         <option value="readonly" selected>Read-only (inbox + sent only - no disruption to normal messaging)</option>
                                                         <option value="full">Full access (every folder - phone's own SMS app stops working until this finishes)</option>
@@ -115,18 +131,9 @@
                                                     <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cleanupCompanionSmsExtraction()" title="Manually uninstall the collector / restore the default SMS app on the currently-selected device - use this if a prior extraction was interrupted and never cleaned up on its own."><i class="bi bi-arrow-counterclockwise me-1"></i>Force Cleanup</button>
                                                 </div>
 
-                                                <!-- Companion-app Contacts/Call Log extraction (2026-09-04) -
-                                                     same mechanism as the SMS panel above (a small relay app,
-                                                     installed then always removed), but genuinely lower-risk:
-                                                     neither READ_CONTACTS nor READ_CALL_LOG needs any default-
-                                                     app-role assumption, so there is no window where the
-                                                     phone's own Contacts/Phone apps stop working - hence the
-                                                     calmer info-blue styling here versus the SMS panel's
-                                                     warning-yellow. See execution_worker_android_companion_
-                                                     contacts_calllog() in routes/mobile.py. -->
                                                 <div id="mobileCompanionContactsCallLogPanel" class="mb-2 p-2 border border-info rounded-2">
                                                     <div class="small fw-bold text-info mb-1"><i class="bi bi-person-lines-fill me-1"></i>Extract Contacts/Call Log via Companion App (Non-Rooted)</div>
-                                                    <div class="small text-subtle mb-2">Installs a small companion app (hand-built for this project, mirroring the same open-source relay-provider design as the SMS collector above) to read Contacts and/or Call Log through Android's own normal permission system - both are excluded from `adb backup` on every device, with no way around that short of root. This <strong>actively modifies the device</strong> (installs an app, grants one or both of READ_CONTACTS/READ_CALL_LOG), but - unlike SMS - never disrupts the phone's own Contacts/Phone apps at any point, since neither permission requires becoming a "default app." Every step is disclosed in the resulting case record; the collector is always uninstalled and both permissions revoked when finished.</div>
+                                                    <div class="small text-subtle mb-2">Installs a small companion app (hand-built for this project, mirroring the same open-source relay-provider design as the SMS collector above - all three data types ship in one app) to read Contacts and/or Call Log through Android's own normal permission system - both are excluded from `adb backup` on every device, with no way around that short of root. This <strong>actively modifies the device</strong> (installs an app, grants one or both of READ_CONTACTS/READ_CALL_LOG), but - unlike SMS - never disrupts the phone's own Contacts/Phone apps at any point, since neither permission requires becoming a "default app." Every step is disclosed in the resulting case record; the collector is always uninstalled and both permissions revoked when finished.</div>
                                                     <select id="mobileCompanionContactsCallLogTypes" class="form-select form-select-sm mb-2">
                                                         <option value="both" selected>Both Contacts and Call Log</option>
                                                         <option value="contacts">Contacts only</option>
@@ -134,6 +141,8 @@
                                                     </select>
                                                     <button id="btnCompanionContactsCallLogStart" type="button" class="btn btn-outline-info btn-sm fw-bold" onclick="startCompanionContactsCallLogExtraction()" disabled><i class="bi bi-play-fill me-1"></i>Start Contacts/Call Log Extraction</button>
                                                     <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cleanupCompanionContactsCallLogExtraction()" title="Manually revoke both permissions / uninstall the collector on the currently-selected device - use this if a prior extraction was interrupted and never cleaned up on its own."><i class="bi bi-arrow-counterclockwise me-1"></i>Force Cleanup</button>
+                                                </div>
+
                                                 </div>
 
                                                 <label class="telemetry-grid-label d-block mb-1">Acquisition Mode</label>
