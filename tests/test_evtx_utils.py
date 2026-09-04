@@ -75,15 +75,66 @@ def test_event_id_regex_extracts_id_from_a_real_event_xml_string():
     assert m.group(1) == "4624"
 
 
-def test_event_id_allowlist_covers_the_six_curated_ids_with_valid_shape():
-    assert set(eu.EVENT_ID_ALLOWLIST.keys()) == {"4624", "4625", "4688", "4720", "7045", "1102"}
-    for event_id, (artifact_type, label, primary_field) in eu.EVENT_ID_ALLOWLIST.items():
+def test_event_id_allowlist_covers_the_nine_curated_ids_with_valid_shape():
+    assert set(eu.EVENT_ID_ALLOWLIST.keys()) == {
+        "4624", "4625", "4688", "4720", "7045", "1102", "7036", "4800", "4801",
+    }
+    for event_id, (artifact_type, label, primary_field, required_provider) in eu.EVENT_ID_ALLOWLIST.items():
         assert artifact_type.startswith("evtx_")
         assert isinstance(label, str) and label
         assert isinstance(primary_field, str) and primary_field
+        assert required_provider is None or (isinstance(required_provider, str) and required_provider)
     # 1102 (audit log cleared) - a classic anti-forensic indicator - must
     # be present by name, not silently folded into a generic bucket.
     assert eu.EVENT_ID_ALLOWLIST["1102"][0] == "evtx_audit_log_cleared"
+
+
+# A real, hand-captured Event XML string (2026-09-03) - a WiFi driver
+# (Netwtw04) on a real, live Windows machine genuinely reusing EventID
+# 7036 for its own, completely unrelated message while building this
+# app's own live Windows Event Log collection feature. Confirms the
+# EVENT_ID_ALLOWLIST Provider check this exact discovery motivated.
+_REAL_REUSED_7036_XML = """<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Netwtw04'/><EventID Qualifiers='16384'>7036</EventID><Version>0</Version><Level>4</Level><Task>0</Task><Opcode>0</Opcode><Keywords>0x80000000000000</Keywords><TimeCreated SystemTime='2026-08-08T23:17:56.2902914Z'/><EventRecordID>513542</EventRecordID><Correlation/><Execution ProcessID='4' ThreadID='14364'/><Channel>System</Channel><Computer>LAPTOP-KKPV777T</Computer><Security/></System><EventData><Data>\\Device\\NDMP22</Data><Data>Intel(R) Dual Band Wireless-AC 7265</Data></EventData></Event>"""
+
+# A realistic, correctly-shaped Service Control Manager 7036 event -
+# param1/param2 confirmed against Microsoft's own real, stable, widely-
+# documented schema for this specific provider's own event (distinct
+# from the driver-reused collision above, which has NO named fields at
+# all - this is what a REAL "service entered a state" event looks like).
+_REAL_SCM_7036_XML = """<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Service Control Manager" Guid="{555908d1-a6d7-4695-8e1e-26931d2012f4}" EventSourceName="Service Control Manager"/><EventID Qualifiers="16384">7036</EventID><Version>0</Version><Level>4</Level><Task>0</Task><Opcode>0</Opcode><Keywords>0x8080000000000000</Keywords><TimeCreated SystemTime="2026-08-30T07:15:00.0000000Z"/><EventRecordID>99999</EventRecordID><Correlation/><Execution ProcessID="640" ThreadID="6620"/><Channel>System</Channel><Computer>DESKTOP-TEST</Computer><Security/></System><EventData><Data Name="param1">Windows Update</Data><Data Name="param2">running</Data></EventData></Event>"""
+
+# A real, correctly-shaped 4800 (workstation locked) event -
+# TargetUserName confirmed against Microsoft's own documented schema for
+# this Security-Auditing-sourced event.
+_REAL_4800_XML = """<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-Security-Auditing" Guid="{54849625-5478-4994-a5ba-3e3b0328c30d}"/><EventID Qualifiers="">4800</EventID><Version>0</Version><Level>0</Level><Task>13312</Task><Opcode>0</Opcode><Keywords>0x8020000000000000</Keywords><TimeCreated SystemTime="2026-08-30T18:30:00.0000000Z"/><EventRecordID>123456</EventRecordID><Correlation/><Execution ProcessID="700" ThreadID="704"/><Channel>Security</Channel><Computer>DESKTOP-TEST</Computer><Security UserID=""/></System><EventData><Data Name="TargetUserSid">S-1-5-21-1</Data><Data Name="TargetUserName">testuser</Data><Data Name="TargetDomainName">DESKTOP-TEST</Data><Data Name="SessionId">2</Data></EventData></Event>"""
+
+
+def test_provider_check_rejects_a_real_reused_event_id_collision():
+    # This is the exact real-world case that motivated the fix - a
+    # driver's own 7036 must NOT be labeled "Service State Changed".
+    m = eu._EVENT_ID_RE.search(_REAL_REUSED_7036_XML)
+    assert m.group(1) == "7036"
+    root_el = ET.fromstring(_REAL_REUSED_7036_XML)
+    provider_el = root_el.find('e:System/e:Provider', eu._NS)
+    assert provider_el.get('Name') == 'Netwtw04'
+    assert provider_el.get('Name') != eu.EVENT_ID_ALLOWLIST['7036'][3]  # required provider
+
+
+def test_provider_check_accepts_the_real_scm_7036_event():
+    root_el = ET.fromstring(_REAL_SCM_7036_XML)
+    provider_el = root_el.find('e:System/e:Provider', eu._NS)
+    assert provider_el.get('Name') == eu.EVENT_ID_ALLOWLIST['7036'][3]
+    data = eu._event_data_dict(root_el)
+    assert data['param1'] == 'Windows Update'
+    assert data['param2'] == 'running'
+
+
+def test_4800_workstation_locked_shape_and_provider():
+    root_el = ET.fromstring(_REAL_4800_XML)
+    provider_el = root_el.find('e:System/e:Provider', eu._NS)
+    assert provider_el.get('Name') == eu.EVENT_ID_ALLOWLIST['4800'][3]
+    data = eu._event_data_dict(root_el)
+    assert data['TargetUserName'] == 'testuser'
 
 
 def test_find_evtx_files_matches_by_extension_case_insensitively(tmp_path):

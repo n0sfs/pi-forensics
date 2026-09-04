@@ -39,16 +39,42 @@ _EVENT_ID_RE = re.compile(r'<EventID[^>]*>(\d+)</EventID>')
 
 # Curated Event ID -> (artifact_type, human label, primary EventData field
 # name used to build a specific title, fallback title if that field is
-# absent). 1102 (audit log cleared) is a classic anti-forensic indicator,
-# deliberately called out by name in this allowlist rather than lumped in
-# generically.
+# absent, required Provider name or None). 1102 (audit log cleared) is a
+# classic anti-forensic indicator, deliberately called out by name in
+# this allowlist rather than lumped in generically.
+#
+# The Provider check (2026-09-03) closes a real, live-confirmed gap: a
+# numeric Event ID is NOT globally unique across providers - only unique
+# within a single provider's own event definitions. A real machine's own
+# System log was found (while building this app's live Windows Event Log
+# collection) to contain a WiFi driver (Netwtw04) reusing EventID 7036
+# for its own, completely unrelated message - with unnamed EventData
+# fields the primary_field lookup below can't even extract, so an
+# unfiltered match would have produced a real, wrong "Service State
+# Changed" record for something that was never a service state change at
+# all. Every event ID below that names one specific real Windows
+# component is now defended with its own required Provider check;
+# 'Microsoft-Windows-Security-Auditing' is the one universal provider
+# every Security-log audit event in this allowlist (4624/4625/4688/4720/
+# 4800/4801/1102) is genuinely sourced from, and 'Service Control
+# Manager' is the one that genuinely means "a service started/stopped/
+# was installed" for 7036/7045.
+_SECURITY_AUDITING_PROVIDER = 'Microsoft-Windows-Security-Auditing'
+_SCM_PROVIDER = 'Service Control Manager'
 EVENT_ID_ALLOWLIST = {
-    '4624': ('evtx_logon_success', 'Successful Logon', 'TargetUserName'),
-    '4625': ('evtx_logon_failure', 'Failed Logon', 'TargetUserName'),
-    '4688': ('evtx_process_creation', 'Process Created', 'NewProcessName'),
-    '4720': ('evtx_account_created', 'User Account Created', 'TargetUserName'),
-    '7045': ('evtx_service_installed', 'Service Installed', 'ServiceName'),
-    '1102': ('evtx_audit_log_cleared', 'Audit Log Cleared', 'SubjectUserName'),
+    '4624': ('evtx_logon_success', 'Successful Logon', 'TargetUserName', _SECURITY_AUDITING_PROVIDER),
+    '4625': ('evtx_logon_failure', 'Failed Logon', 'TargetUserName', _SECURITY_AUDITING_PROVIDER),
+    '4688': ('evtx_process_creation', 'Process Created', 'NewProcessName', _SECURITY_AUDITING_PROVIDER),
+    '4720': ('evtx_account_created', 'User Account Created', 'TargetUserName', _SECURITY_AUDITING_PROVIDER),
+    '7045': ('evtx_service_installed', 'Service Installed', 'ServiceName', _SCM_PROVIDER),
+    '1102': ('evtx_audit_log_cleared', 'Audit Log Cleared', 'SubjectUserName', _SECURITY_AUDITING_PROVIDER),
+    # 2026-09-03 additions, alongside this session's Live Collection USB
+    # pattern-of-life work (live-exported .evtx snapshots feed this exact
+    # same parser, unchanged, per that feature's own established "collect
+    # the real format, reuse the already-built parser" convention).
+    '7036': ('evtx_service_state_change', 'Service State Changed', 'param1', _SCM_PROVIDER),
+    '4800': ('evtx_workstation_locked', 'Workstation Locked', 'TargetUserName', _SECURITY_AUDITING_PROVIDER),
+    '4801': ('evtx_workstation_unlocked', 'Workstation Unlocked', 'TargetUserName', _SECURITY_AUDITING_PROVIDER),
 }
 
 
@@ -105,13 +131,21 @@ def parse_evtx_file(path):
                 if not m or m.group(1) not in EVENT_ID_ALLOWLIST:
                     continue
                 event_id = m.group(1)
-                artifact_type, label, primary_field = EVENT_ID_ALLOWLIST[event_id]
+                artifact_type, label, primary_field, required_provider = EVENT_ID_ALLOWLIST[event_id]
                 if type_counts.get(artifact_type, 0) >= EVTX_MAX_MATCHES_PER_TYPE:
                     continue
                 try:
                     root_el = ET.fromstring(xml_str)
                 except ET.ParseError:
                     continue
+                if required_provider is not None:
+                    # See EVENT_ID_ALLOWLIST's own comment - a numeric
+                    # Event ID alone is not a safe filter, confirmed live
+                    # against a real machine's own reused-ID collision.
+                    provider_el = root_el.find('e:System/e:Provider', _NS)
+                    provider_name = provider_el.get('Name') if provider_el is not None else None
+                    if provider_name != required_provider:
+                        continue
                 event_data = _event_data_dict(root_el)
                 primary_value = event_data.get(primary_field, '')
                 title = f"{label}: {primary_value}" if primary_value else label

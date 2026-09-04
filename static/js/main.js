@@ -1899,6 +1899,10 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     evtx_logon_success: 'Event Log: Successful Logons', evtx_logon_failure: 'Event Log: Failed Logons',
     evtx_process_creation: 'Event Log: Process Creation', evtx_account_created: 'Event Log: Account Created',
     evtx_service_installed: 'Event Log: Service Installed', evtx_audit_log_cleared: 'Event Log: Audit Log Cleared',
+    // 2026-09-03: see routes/case_index.py's matching comment.
+    evtx_service_state_change: 'Event Log: Service Started/Stopped',
+    evtx_workstation_locked: 'Event Log: Workstation Locked',
+    evtx_workstation_unlocked: 'Event Log: Workstation Unlocked',
     lnk_shortcut: 'LNK Shortcuts',
     // Follow-up (2026-08-25) - Amcache/Prefetch/Recycle Bin. This is the
     // client-side mirror of routes/case_index.py's PARSED_ARTIFACT_TYPE_
