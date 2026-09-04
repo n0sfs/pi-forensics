@@ -13,6 +13,13 @@
         android:name="android.permission.READ_CALL_LOG"
         tools:ignore="SmsAndCallLogPolicy" />
 
+    <!-- Calendar support (added 2026-09-04, same day as Contacts/Call Log) -
+         also a plain "dangerous"-protection-level runtime permission, no
+         special role or Play-Store-policy lint category the way SMS/
+         Call Log have. -->
+
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+
     <!-- SMS support (added 2026-09-04, folding in what was previously a
          separate vendored app, github.com/gonodono/adbsms). Full-access-tier
          extraction needs this app to be eligible to temporarily assume the
@@ -57,7 +64,7 @@
         android:label="pif-companion"
         tools:ignore="MissingClass,AllowBackup">
 
-        <!-- All three providers are pure authority-rewriting relays,
+        <!-- All four providers are pure authority-rewriting relays,
              mirroring github.com/gonodono/adbsms's own AdbSmsProvider
              design exactly: they forward whatever content:// call the
              shell makes against this app's own exported authority
@@ -82,6 +89,12 @@
         <provider
             android:name=".SmsProvider"
             android:authorities="pif.companion.sms"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+
+        <provider
+            android:name=".CalendarProvider"
+            android:authorities="pif.companion.calendar"
             android:exported="true"
             tools:ignore="ExportedContentProvider" />
 

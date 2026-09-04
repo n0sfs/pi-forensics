@@ -26,10 +26,22 @@ static/vendor/osm_tiles/
 # itself is never something this repo ships or builds from source either.
 /bin/
 
-# Same class again - install.py downloads the vendored adbsms.min.apk
-# (companion-app SMS extraction) here at install time; never built or
-# shipped from this repo.
+# Same class again - install.py copies the committed pif-companion.apk
+# (android_companion/pif-companion.apk, this project's own hand-built
+# companion-app SMS/Contacts/Call Log/Calendar extraction relay) here at
+# install time. The install-time COPY destination is never itself
+# committed - only the real source under android_companion/ is.
 /android_companion_tools/
+
+# Gradle build cache/output for android_companion/pif_companion_src - the
+# actual source (Java files, manifest, gradle.properties/build.gradle.kts)
+# IS committed; the regenerable build cache and compiled output are not,
+# matching the standard Android/Gradle .gitignore convention. The final
+# built APK itself is committed separately, at android_companion/
+# pif-companion.apk (see the note above), not read from this build/ dir.
+/android_companion/pif_companion_src/.gradle/
+/android_companion/pif_companion_src/app/build/
+/android_companion/pif_companion_src/build/
 
 # Evidence & Data Files (DO NOT PUSH EVIDENCE TO GITHUB)
 *.dd

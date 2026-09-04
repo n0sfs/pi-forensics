@@ -953,6 +953,7 @@ CASE_TIMELINE_ACTIVITY_CATEGORY = {
     "android_companion_sms_message": "Communications",
     "android_companion_contact": "Communications",
     "android_companion_call_log_entry": "Communications",
+    "android_companion_calendar_event": "Communications",
     "leapp_sms_message": "Communications", "leapp_mms_message": "Communications", "leapp_call_log": "Communications",
     "leapp_contact": "Communications", "email_message": "Communications", "apple_contact": "Communications",
     "takeout_contact": "Communications",
