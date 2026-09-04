@@ -21,6 +21,24 @@ file after updating to see what changed.
 
 ---
 
+## [1.42.0] - 2026-09-04
+
+### Added
+- **Android Backup File (.ab) support** - this app's own Mobile Forensics "Backup" acquisition mode
+  (`adb backup`) already produced a real `.ab` file, but nothing ever read it. A rooted phone (needed
+  for the existing native SMS/MMS parser) is rare in real casework, so this closes the much more common
+  gap:
+  - A new built-in decoder parses a real `.ab` file directly - header validation, DEFLATE decompression,
+    and (for a password-protected backup) AES-256/PBKDF2 decryption matching Android's own real
+    algorithm - and extracts SMS and MMS content straight into the case's searchable Parsed Artifacts
+    index and Evidence Timeline. Reachable from File Explorer's right-click menu on any `.ab` file
+    (real files, and one found inside an already-acquired disk image).
+  - The same action can instead run Amnesty International's MVT (Mobile Verification Toolkit) directly
+    against the `.ab` file for a spyware/IOC check - MVT's own `check-backup` command accepts a raw
+    `.ab` file (with a password, if needed) without any separate extraction step first, correcting an
+    earlier assumption in this app that a pre-decrypted extraction was required.
+  - An optional password field covers a backup that was password-protected on-device at backup time.
+
 ## [1.41.1] - 2026-09-04
 
 ### Fixed

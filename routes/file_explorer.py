@@ -74,6 +74,9 @@ from core.linux_artifacts import (
     find_linux_wtmp_files, parse_linux_wtmp_file,
     LINUX_ARTIFACT_DEFAULT_TYPES,
 )
+from core.android_backup_utils import (
+    extract_parsed_artifact_records_from_backup, AndroidBackupError, AndroidBackupPasswordError,
+)
 
 # Dispatcher for the real-fs Linux-artifact route below - keeps the scan
 # loop generic across all 5 types instead of 5 near-identical copy-pasted
@@ -1758,6 +1761,58 @@ def parse_recyclebin():
         "counts": counts, "truncated": truncated, "indexed": bool(case_folder),
     })
 
+@file_explorer_bp.route('/api/files/parse_android_backup', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def parse_android_backup():
+    """Parses a real .ab file - this app's own Mobile Forensics "Backup"
+    acquisition mode's output (routes/mobile.py execution_worker_android(),
+    `adb backup -apk -shared -all -f output.ab`) - via a hand-rolled decoder
+    (core/android_backup_utils.py), extracting SMS/MMS content directly into
+    the case's parsed_artifacts index. A single-file action, not a
+    whole-directory scan, matching analyze_mft()'s shape below - `.ab` is
+    always exactly one file, never a folder to walk. Built 2026-09-04,
+    Android pattern-of-life follow-up: a rooted phone (needed for the
+    already-existing native mmssms.db parser) is rare in real casework, but
+    this app's own non-root `adb backup` acquisition mode already produces a
+    real .ab file with nothing to ever parse it - this closes that gap."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    password = req.get('password') or None
+    try:
+        result = extract_parsed_artifact_records_from_backup(file_path, password=password)
+    except AndroidBackupPasswordError as e:
+        return jsonify({"success": False, "error": str(e), "password_required": True}), 400
+    except AndroidBackupError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Failed to parse Android backup: {e}"}), 500
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    if case_folder and result["records"]:
+        _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": file_path}, result["records"])
+
+    counts = {}
+    for r in result["records"]:
+        counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+
+    log_chain_of_custody("android_backup_parsed", {
+        "path": file_path, "encrypted": result["header"]["encryption"] != "none",
+        "total_files_in_backup": len(result["files"]),
+        "sms_files": len(result["sms_files"]), "mms_files": len(result["mms_files"]),
+        "counts": counts,
+    })
+    return jsonify({
+        "success": True, "header": result["header"], "total_files_in_backup": len(result["files"]),
+        "sms_files_found": len(result["sms_files"]), "mms_files_found": len(result["mms_files"]),
+        "counts": counts, "indexed": bool(case_folder and result["records"]),
+    })
+
 @file_explorer_bp.route('/api/files/analyze_mft', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -2558,12 +2613,22 @@ def quick_triage_scan():
 # (known spyware, e.g. Pegasus) - this does NOT acquire anything itself, it
 # runs against output the Mobile Forensics tab already produced. iOS is a
 # clean fit: mvt-ios's check-backup expects exactly the directory structure
-# idevicebackup2 --full already writes. Android is best-effort only -
-# mvt-android's check-backup expects a decrypted `adb backup` (.ab)
-# extraction, which doesn't line up with this app's adb pull/bugreport
-# output; it will error clearly on those rather than silently finding
-# nothing, so it's still exposed rather than blocked outright.
-def _run_mvt_scan_body(target_dir, dest_dir, platform):
+# idevicebackup2 --full already writes. Android's adb pull/bugreport output
+# stays best-effort only (mvt-android's check-backup wants a real `adb
+# backup` .ab file or an ABE-decrypted extraction of one, not a pull/
+# bugreport directory - it errors clearly rather than silently finding
+# nothing, so it's still exposed rather than blocked outright).
+#
+# 2026-09-04 correction, Android pattern-of-life follow-up: this module's own
+# comment previously claimed mvt-android's check-backup "expects a decrypted
+# .ab extraction" - wrong, confirmed via MVT's own real official docs
+# (docs.mvt.re/en/latest/android/backup/): check-backup takes the raw .ab
+# FILE directly (with --backup-password for an encrypted one) as its
+# recommended, primary path; ABE-based manual pre-extraction is only listed
+# as a fallback "if issues occur". Fixed here by accepting a real .ab file as
+# a target (alongside the existing directory-target mode, unchanged) and
+# passing --backup-password through when supplied.
+def _run_mvt_scan_body(target_path, dest_dir, platform, backup_password=None):
     """The actual mvt-ios/mvt-android subprocess call, extracted verbatim
     out of run_mvt_scan() (Phase 3 of Linux Artifacts + Auto Analyze,
     2026-08-25) so Auto Analyze's mobile profile can call it directly as
@@ -2589,14 +2654,17 @@ def _run_mvt_scan_body(target_dir, dest_dir, platform):
         return {"success": False, "status_code": 400,
                 "error": f"{os.path.basename(mvt_bin)} is not installed. Check Advanced Settings > Tool Versions."}
 
-    output_dir = os.path.join(dest_dir, f"{os.path.basename(target_dir.rstrip(os.sep))}_mvt_{platform}_scan")
+    base_name = os.path.basename(target_path.rstrip(os.sep)) if os.path.isdir(target_path) else os.path.basename(target_path)
+    output_dir = os.path.join(dest_dir, f"{base_name}_mvt_{platform}_scan")
     os.makedirs(output_dir, exist_ok=True)
 
+    cmd = [mvt_bin, 'check-backup', '--output', output_dir]
+    if backup_password:
+        cmd += ['--backup-password', backup_password]
+    cmd.append(target_path)
+
     try:
-        res = subprocess.run(
-            [mvt_bin, 'check-backup', '--output', output_dir, target_dir],
-            capture_output=True, text=True, timeout=900
-        )
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
         output = ((res.stdout or "") + (("\n" + res.stderr) if res.stderr else "")).strip() or "[no output]"
         return {"success": True, "platform": platform, "output_dir": output_dir, "output": output}
     except subprocess.TimeoutExpired:
@@ -2609,25 +2677,36 @@ def _run_mvt_scan_body(target_dir, dest_dir, platform):
 @requires_auth
 @requires_permission('file_explorer')
 def run_mvt_scan():
-    """Request-parsing here, real work in _run_mvt_scan_body() above."""
-    req = request.get_json() or {}
-    target_dir = safe_path(req.get('path'))
-    platform = req.get('platform', '')
+    """Request-parsing here, real work in _run_mvt_scan_body() above.
 
-    if not target_dir or not os.path.isdir(target_dir):
-        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+    target_path may be either a directory (the original ios/android backup-
+    folder mode, unchanged) or - for platform == 'android' only, since
+    2026-09-04 - a real .ab file, matching mvt-android's own real check-backup
+    contract. An optional `backup_password` field is passed through for an
+    AES-256-encrypted .ab file."""
+    req = request.get_json() or {}
+    target_path = safe_path(req.get('path'))
+    platform = req.get('platform', '')
+    backup_password = req.get('backup_password') or None
+
+    is_valid_target = bool(target_path) and (
+        os.path.isdir(target_path) or (platform == 'android' and os.path.isfile(target_path))
+    )
+    if not is_valid_target:
+        return jsonify({"success": False, "error": "Path not found, outside the permitted evidence directory, or not a valid MVT scan target (a directory, or - for Android - a real .ab backup file)."}), 400
     if platform not in ('ios', 'android'):
         return jsonify({"success": False, "error": "platform must be 'ios' or 'android'."}), 400
 
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), target_dir)
+    source_for_dest_guard = target_path if os.path.isdir(target_path) else os.path.dirname(target_path)
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), source_for_dest_guard)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
-    result = _run_mvt_scan_body(target_dir, dest_dir, platform)
+    result = _run_mvt_scan_body(target_path, dest_dir, platform, backup_password=backup_password)
     if not result["success"]:
         status_code = result.pop("status_code", 500)
         return jsonify(result), status_code
-    log_chain_of_custody("mvt_scan", {"path": target_dir, "platform": platform, "output_dir": result["output_dir"]})
+    log_chain_of_custody("mvt_scan", {"path": target_path, "platform": platform, "output_dir": result["output_dir"]})
     return jsonify(result)
 
 # --- Memory Forensics: Volatility3 analysis of an already-captured Windows

@@ -112,6 +112,9 @@ from core.android_artifacts import (
 
 LINUX_ARTIFACT_IMAGE_MAX_CANDIDATES = 100  # combined across whichever types are requested per run
 from core.lnk_utils import parse_lnk_file
+from core.android_backup_utils import (
+    extract_parsed_artifact_records_from_backup, AndroidBackupError, AndroidBackupPasswordError,
+)
 
 image_browser_bp = Blueprint('image_browser', __name__)
 
@@ -3414,6 +3417,71 @@ def image_binwalk():
                                            "inode": str(inode), "path": req.get('path'), "name": name_hint},
                              "Binwalk", summary, output)
     return jsonify({"success": True, "file_name": name_hint, "output": output})
+
+@image_browser_bp.route('/api/image/parse_android_backup', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_parse_android_backup():
+    """In-image counterpart of routes/file_explorer.py's parse_android_backup()
+    - for the rare case a real .ab Android Backup file is sitting inside an
+    already-acquired disk image rather than as a real-fs file (the primary,
+    much more common case, since this app's own Mobile Forensics "Backup"
+    mode already writes one straight to the case folder). Same single-
+    selected-entry shape as image_binwalk()/image_strings() above -
+    extract-to-temp, parse, clean up."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    offset = req.get('offset', 0)
+    inode = req.get('inode', '')
+    name_hint = req.get('name', '') or 'selected_file'
+    password = req.get('password') or None
+    case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
+
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(offset)
+        inode_num = _tsk_parse_inode(inode)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset or inode."}), 400
+
+    tmp_path = None
+    try:
+        fs = _tsk_open_fs(image_path, offset)
+        tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix='.ab')
+        result = extract_parsed_artifact_records_from_backup(tmp_path, password=password)
+    except AndroidBackupPasswordError as e:
+        return jsonify({"success": False, "error": str(e), "password_required": True}), 400
+    except AndroidBackupError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not parse Android backup: {e}"}), 500
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    if case_folder and case_consolidated_path(case_folder) and result["records"]:
+        _record_parsed_artifacts(case_folder, {
+            "source_type": "image", "image_path": image_path, "fs_offset": offset,
+            "inode": str(inode), "path": req.get('path'), "name": name_hint,
+        }, result["records"])
+
+    counts = {}
+    for r in result["records"]:
+        counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+
+    log_chain_of_custody("android_backup_parsed_image", {
+        "image_path": image_path, "name": name_hint, "encrypted": result["header"]["encryption"] != "none",
+        "sms_files": len(result["sms_files"]), "mms_files": len(result["mms_files"]), "counts": counts,
+    })
+    return jsonify({
+        "success": True, "file_name": name_hint, "header": result["header"],
+        "total_files_in_backup": len(result["files"]), "sms_files_found": len(result["sms_files"]),
+        "mms_files_found": len(result["mms_files"]), "counts": counts,
+    })
 
 @image_browser_bp.route('/api/image/strings', methods=['POST'])
 @requires_auth

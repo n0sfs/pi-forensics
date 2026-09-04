@@ -1938,6 +1938,8 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     android_contact: 'Android: Contacts (Rooted Physical Image Only)',
     android_call_log: 'Android: Call Log (Rooted Physical Image Only)',
     android_mms_message: 'Android: MMS (Rooted Physical Image Only)',
+    android_ab_sms_message: 'Android Backup (.ab): SMS',
+    android_ab_mms_message: 'Android Backup (.ab): MMS',
     android_installed_app: 'Android: Installed App Inventory (adb pull)',
     whatsapp_message: 'WhatsApp: Messages (Native Parse)',
     whatsapp_call_log: 'WhatsApp: Calls (Native Parse)',
@@ -4638,6 +4640,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     // Mobile & Memory
     { id: 'btnRunMvtIos', section: 'ctxSecMobileMemory', visible: item => item.is_dir },
     { id: 'btnRunMvtAndroid', section: 'ctxSecMobileMemory', visible: item => item.is_dir },
+    { id: 'btnAndroidBackupFile', section: 'ctxSecMobileMemory', visible: item => !item.is_dir && isAndroidBackupFile(item.name) },
     { id: 'btnMemoryForensics', section: 'ctxSecMobileMemory', visible: item => !item.is_dir && isMemoryImageFile(item.name) },
     // Whole-Image Analysis shortcuts - same gate as Browse as Image, since
     // each just enters full image mode first (see contextMenuBrowseImageAnd())
@@ -5691,6 +5694,89 @@ async function runWhatsappDecrypt() {
         if (badge) { badge.className = 'badge bg-success'; badge.textContent = 'DECRYPTED'; }
         if (output) output.textContent = `${data.log}\n\nOutput written to:\n${data.output_path}`;
         loadExplorer(explorerPath);
+    } catch (err) {
+        if (badge) { badge.className = 'badge bg-danger'; badge.textContent = 'FAILED'; }
+        if (output) output.textContent = '[REQUEST FAILED]';
+    }
+}
+
+let androidBackupModalInstance = null;
+
+function openAndroidBackupModal() {
+    if (!activeSelectedFile) return;
+    document.getElementById("androidBackupModalFileName").textContent = activeSelectedFile.split('/').pop();
+    const pwEl = document.getElementById("androidBackupModalPassword");
+    if (pwEl) pwEl.value = '';
+    const modeEl = document.getElementById("androidBackupModalMode");
+    if (modeEl) modeEl.value = 'parse';
+    const output = document.getElementById("androidBackupModalOutput");
+    if (output) output.textContent = 'Pick an action and click Run.';
+    const badge = document.getElementById("androidBackupModalBadge");
+    if (badge) { badge.className = 'badge bg-secondary'; badge.textContent = 'AWAITING INPUT'; }
+
+    if (!androidBackupModalInstance) {
+        androidBackupModalInstance = new bootstrap.Modal(document.getElementById('androidBackupModal'));
+    }
+    androidBackupModalInstance.show();
+}
+
+async function runAndroidBackupModalAction() {
+    if (!activeSelectedFile) return;
+    const mode = document.getElementById("androidBackupModalMode").value;
+    const password = document.getElementById("androidBackupModalPassword").value || null;
+    const badge = document.getElementById("androidBackupModalBadge");
+    const output = document.getElementById("androidBackupModalOutput");
+
+    if (badge) { badge.className = 'badge bg-info text-dark'; badge.textContent = 'RUNNING...'; }
+    if (output) output.textContent = 'Running...';
+
+    // Same evidence-must-never-be-modified reasoning as runWhatsappDecrypt()/runSelectedMvtScan() above.
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+
+    try {
+        if (mode === 'mvt') {
+            const res = await fetch('/api/files/mvt_scan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: activeSelectedFile, platform: 'android', backup_password: password, destination_dir: destinationDir })
+            });
+            const data = await res.json();
+            if (!data.success) {
+                if (badge) { badge.className = 'badge bg-danger'; badge.textContent = 'FAILED'; }
+                if (output) output.textContent = `[ERROR] ${data.error}`;
+                return;
+            }
+            if (badge) { badge.className = 'badge bg-success'; badge.textContent = 'SCAN COMPLETE'; }
+            if (output) output.textContent = `${data.output}\n\n[Full results written to: ${data.output_dir}]`;
+            return;
+        }
+
+        const res = await fetch('/api/files/parse_android_backup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, password, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (data.password_required && badge) { badge.className = 'badge bg-warning text-dark'; badge.textContent = 'PASSWORD NEEDED'; }
+            else if (badge) { badge.className = 'badge bg-danger'; badge.textContent = 'FAILED'; }
+            if (output) output.textContent = `[ERROR] ${data.error}`;
+            return;
+        }
+        if (badge) { badge.className = 'badge bg-success'; badge.textContent = 'PARSED'; }
+        const lines = [
+            `Encryption: ${data.header.encryption}`,
+            `Total files in backup: ${data.total_files_in_backup}`,
+            `SMS backup file(s) found: ${data.sms_files_found}`,
+            `MMS backup file(s) found: ${data.mms_files_found}`,
+            '',
+            `Records indexed: ${data.indexed ? 'yes - see File Views > Parsed Artifacts, or Reporting > Evidence Timeline' : 'no (no active case, or no SMS/MMS content found)'}`,
+            '',
+            'Counts by type:',
+            ...Object.entries(data.counts || {}).map(([k, v]) => `  ${k}: ${v}`),
+        ];
+        if (output) output.textContent = lines.join('\n');
+        if (data.indexed) initFileViewsTree(true);
     } catch (err) {
         if (badge) { badge.className = 'badge bg-danger'; badge.textContent = 'FAILED'; }
         if (output) output.textContent = '[REQUEST FAILED]';
@@ -7483,6 +7569,12 @@ function isOcrCandidateImage(name) {
 function isVideoCandidateFile(name) {
     const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.mpg', '.mpeg'];
     return VIDEO_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
+}
+
+// Android Backup Format file gate - mirrors core/android_backup_utils.py's
+// own real .ab extension.
+function isAndroidBackupFile(name) {
+    return name.toLowerCase().endsWith('.ab');
 }
 
 // Entry point for both the context menu's "Browse as Image" action (reads
