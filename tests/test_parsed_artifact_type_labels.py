@@ -85,6 +85,12 @@ _ANDROID_APP_INVENTORY_ARTIFACT_TYPES = {"android_installed_app"}
 # - same no-root, captured-automatically-during-a-pull shape as the app
 # inventory above.
 _ANDROID_ACCOUNTS_NOTIFICATIONS_ARTIFACT_TYPES = {"android_configured_account", "android_notification_snapshot"}
+# Companion-app SMS extraction (routes/mobile.py + core/android_companion_
+# sms_utils.py, 2026-09-04) - a genuinely different, device-modifying
+# acquisition method from every other Android SMS source, hence its own
+# distinct artifact_type rather than reusing android_sms_message/
+# android_ab_sms_message.
+_ANDROID_COMPANION_SMS_ARTIFACT_TYPES = {"android_companion_sms_message"}
 # Native WhatsApp msgstore.db/wa.db parsing (core/whatsapp_utils.py,
 # 2026-09-04) - reachable both real-fs (this app's own decrypt feature's
 # output) and in-image (a rooted physical image).
@@ -141,7 +147,8 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
                 | _URL_IOC_ARTIFACT_TYPES | _CRYPTO_ARTIFACT_TYPES | _MOBILE_ARTIFACT_TYPES
                 | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES
                 | _ANDROID_ARTIFACT_TYPES | _ANDROID_AB_ARTIFACT_TYPES | _ANDROID_APP_INVENTORY_ARTIFACT_TYPES
-                | _ANDROID_ACCOUNTS_NOTIFICATIONS_ARTIFACT_TYPES | _WHATSAPP_NATIVE_ARTIFACT_TYPES
+                | _ANDROID_ACCOUNTS_NOTIFICATIONS_ARTIFACT_TYPES | _ANDROID_COMPANION_SMS_ARTIFACT_TYPES
+                | _WHATSAPP_NATIVE_ARTIFACT_TYPES
                 | _LEAPP_TSV_ARTIFACT_TYPES | _TAKEOUT_ARTIFACT_TYPES
                 | _APPLE_EXPORT_ARTIFACT_TYPES | _WINDOWS_ACTIVITY_ARTIFACT_TYPES | _SRUM_ARTIFACT_TYPES
                 | _POWERSHELL_HISTORY_ARTIFACT_TYPES | _FIREWALL_LOG_ARTIFACT_TYPES
