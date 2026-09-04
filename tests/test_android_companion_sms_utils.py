@@ -1,5 +1,6 @@
 """Tests for core/android_companion_sms_utils.py - the non-rooted, no-root
-companion-app SMS extraction feature (adbsms.min relay, 2026-09-04).
+companion-app SMS extraction feature (pif-companion relay app, 2026-09-04,
+consolidated the same day from a separately-vendored adbsms.min relay).
 
 parse_content_query_output() is the one genuinely risky piece here (a
 hand-rolled parser for AOSP's real, unescaped "Row: N col=val, col=val"
