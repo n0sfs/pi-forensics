@@ -952,6 +952,12 @@ CASE_TIMELINE_ACTIVITY_CATEGORY = {
     "android_sms_message": "Communications", "android_call_log": "Communications", "android_contact": "Communications",
     "leapp_sms_message": "Communications", "leapp_mms_message": "Communications", "leapp_call_log": "Communications",
     "leapp_contact": "Communications", "email_message": "Communications", "apple_contact": "Communications",
+    "takeout_contact": "Communications",
+    # takeout_calendar_event/takeout_reminder deliberately fall through to
+    # the default "Device & System" category, exactly like their existing
+    # apple_calendar_event/apple_reminder siblings - neither is a real
+    # communication, and this app's fixed 5-category timeline has no
+    # dedicated calendar/scheduling bucket.
     # Web Activity
     "chrome_history": "Web Activity", "chrome_downloads": "Web Activity",
     "chrome_bookmarks": "Web Activity", "chrome_cookies": "Web Activity",

@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.35.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.36.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -185,7 +185,8 @@ be exported as a map. A rooted `Physical` acquisition's raw image can also be ri
 SMS/MMS, contacts, and call log straight out of the phone's own on-device databases, into the same
 index. An already-downloaded Google Takeout archive (obtained yourself through Google's own official
 export tool — this app never touches a live account) can be imported the same way, pulling in Search/
-YouTube History, Location History, Maps places, and photo metadata. An already-extracted Apple
+YouTube History, Gmail, Contacts, Calendar/Reminders, Location History, Maps places, and photo
+metadata. An already-extracted Apple
 "Data & Privacy" export (privacy.apple.com — Apple delivers it as a password-protected zip, so you
 extract it yourself first with the password Apple emails you) imports the same way: Contacts and
 Calendars/Reminders parse reliably (genuine open standards, vCard/iCalendar), Safari Bookmarks and
@@ -357,7 +358,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.35.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.36.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.

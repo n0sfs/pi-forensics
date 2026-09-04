@@ -78,6 +78,7 @@ _LEAPP_TSV_ARTIFACT_TYPES = leapp_tsv_utils.LEAPP_TSV_ALL_ARTIFACT_TYPES
 _TAKEOUT_ARTIFACT_TYPES = {
     "takeout_search_history", "takeout_youtube_history", "takeout_location_history",
     "takeout_maps_place", "takeout_photo_metadata",
+    "takeout_contact", "takeout_calendar_event", "takeout_reminder",
 }
 # Android/iOS forensics expansion, Apple export - core/apple_export_utils.py.
 _APPLE_EXPORT_ARTIFACT_TYPES = {

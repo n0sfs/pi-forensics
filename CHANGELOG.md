@@ -21,6 +21,24 @@ file after updating to see what changed.
 
 ---
 
+## [1.36.0] - 2026-09-04
+
+### Added
+
+- **Google Takeout import now covers Gmail, Contacts, and Calendar/Reminders**, alongside the
+  existing Search History/YouTube History/Location History/Maps/Photos coverage. All three reuse
+  this app's own already-built, high-confidence parsers for these exact open, standard formats -
+  Gmail's `.mbox` files (the same parser already used for standalone `.eml`/`.mbox`/`.pst` email),
+  and Contacts/Calendar's `.vcf`/`.ics` files (the same RFC 6350/5545 parsers already used for an
+  Apple "Data & Privacy" export) - rather than writing new ones. A real, confirmed Takeout behavior
+  is handled correctly: selecting specific Gmail labels instead of "All Mail" produces multiple
+  separate `.mbox` files, all of which are found and combined.
+- The first step of a broader pass to build out real Android pattern-of-life analysis (mobile
+  acquisition + File Explorer artifact parsing) - texts, email, apps, messages, contacts, and
+  eventually companion/wearable-device data - more of which follows in upcoming releases.
+
+---
+
 ## [1.35.0] - 2026-09-03
 
 ### Added

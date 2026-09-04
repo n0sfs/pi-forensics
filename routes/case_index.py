@@ -273,6 +273,14 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "takeout_location_history": "Google Takeout: Location History (Best-Effort)",
     "takeout_maps_place": "Google Takeout: Maps Places (Best-Effort)",
     "takeout_photo_metadata": "Google Takeout: Photo Metadata (Best-Effort)",
+    # Gmail/Contacts/Calendar (2026-09-04, Android pattern-of-life
+    # follow-up) - all 3 ride genuine open standards this app already
+    # parses with high confidence (see the module's own docstring), so
+    # none needs a "(Best-Effort)" suffix, matching Contacts/Calendar's
+    # own Apple-export siblings just below.
+    "takeout_contact": "Google Takeout: Contacts",
+    "takeout_calendar_event": "Google Takeout: Calendar Events",
+    "takeout_reminder": "Google Takeout: Reminders",
     # Apple "Data & Privacy" export import (core/apple_export_utils.py) -
     # same scope boundary as Google Takeout above. Contacts/Calendars ride
     # genuine open standards (vCard/iCalendar) and need no best-effort
