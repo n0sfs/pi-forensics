@@ -462,3 +462,149 @@ def test_has_case_analysis_activity_false_for_a_real_tag_that_was_created_but_ne
     # activity even though it's not one of the four default role tags.
     tags = [_tag(is_default=False, count=0)]
     assert case_index_db.has_case_analysis_activity(0, 0, 0, {}, tags) is False
+
+
+# --- normalize_phone_number / correlate_contacts (Android/iOS pattern-of-life, 2026-09-04) ---
+
+@pytest.mark.parametrize("raw,expected", [
+    ("+15551234567", "5551234567"),      # E.164 US -> country code dropped
+    ("(555) 123-4567", "5551234567"),    # US formatted, no country code
+    ("555-123-4567", "5551234567"),
+    ("5551234567", "5551234567"),        # already bare 10-digit
+    ("15551234567@s.whatsapp.net", "5551234567"),  # WhatsApp JID, country-coded
+    ("5551234567@s.whatsapp.net", "5551234567"),   # WhatsApp JID, no country code
+])
+def test_normalize_phone_number_converges_every_real_format_to_the_same_key(raw, expected):
+    assert case_index_db.normalize_phone_number(raw) == expected
+
+
+def test_normalize_phone_number_does_not_strip_a_non_us_country_code():
+    # Only an exactly-11-digit result starting with '1' gets the leading
+    # digit dropped (the real US/NANP shape) - a 12-digit international
+    # number (e.g. a UK +44 number) is a genuinely different length and
+    # must be left alone, not have its own leading digit wrongly treated
+    # as a US country code.
+    assert case_index_db.normalize_phone_number("+442079460958") == "442079460958"
+
+
+@pytest.mark.parametrize("raw", [None, "", "911", "12", "g.us", "123456789012345678"])
+def test_normalize_phone_number_returns_none_for_implausible_values(raw):
+    assert case_index_db.normalize_phone_number(raw) is None
+
+
+def _contact_record(artifact_type, title, phones=None, single_number=None):
+    extra = {}
+    if phones is not None:
+        extra["phones"] = phones
+    if single_number is not None:
+        extra["number"] = single_number
+    return {"artifact_type": artifact_type, "title": title, "url": "",
+            "value": title, "timestamp": None, "extra": extra}
+
+
+def _comm_record(artifact_type, counterpart_key, counterpart_value, timestamp=1700000000.0):
+    return {"artifact_type": artifact_type, "title": "msg", "url": "",
+            "value": "hello", "timestamp": timestamp, "extra": {counterpart_key: counterpart_value}}
+
+
+def _identity(case_folder, path):
+    return {"source_type": "real_fs", "image_path": None, "fs_offset": None, "inode": None, "path": path}
+
+
+def test_correlate_contacts_resolves_sms_counterpart_despite_different_raw_formats(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        [_comm_record("android_sms_message", "address", "(555) 123-4567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 1
+    assert len(result["contacts"]) == 1
+    contact = result["contacts"][0]
+    assert contact["normalized_number"] == "5551234567"
+    assert contact["display_names"] == ["Jane Doe"]
+    assert contact["contact_sources"] == ["android_contact"]
+    assert contact["communication_counts"] == {"SMS": 1}
+    assert contact["total_communications"] == 1
+    assert result["unresolved_communication_count"] == 0
+
+
+def test_correlate_contacts_corroborates_a_number_seen_by_more_than_one_contact_source(case_folder):
+    # Real, disclosed value of this correlation: a number independently
+    # named "Jane Doe" by BOTH the phone's own contacts AND WhatsApp's own
+    # contacts is stronger corroboration than either alone.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "wa.db"),
+        [_contact_record("whatsapp_contact", "Jane W.", single_number="15551234567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 1  # same normalized number, one entry
+    # No communications seeded, so no aggregated "contacts" list entry -
+    # this test only proves the contact-side indexing merges both sources.
+
+
+def test_correlate_contacts_counts_an_unmatched_counterpart_as_unresolved_not_a_ghost_contact(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        [_comm_record("android_sms_message", "address", "+15559999999")])  # a different, unknown number
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["unresolved_communication_count"] == 1
+    assert result["contacts"] == []
+
+
+def test_correlate_contacts_sorts_by_total_communication_count_descending(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Busy Contact", phones=["+15551111111"]),
+         _contact_record("android_contact", "Quiet Contact", phones=["+15552222222"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        [_comm_record("android_sms_message", "address", "+15552222222"),
+         _comm_record("android_sms_message", "address", "+15551111111"),
+         _comm_record("android_sms_message", "address", "+15551111111")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert [c["display_names"] for c in result["contacts"]] == [["Busy Contact"], ["Quiet Contact"]]
+    assert result["contacts"][0]["total_communications"] == 2
+    assert result["contacts"][1]["total_communications"] == 1
+
+
+def test_correlate_contacts_deliberately_excludes_leapp_sourced_types(case_folder):
+    # See core/case_index_db.py's own module comment: leapp_contact/
+    # leapp_sms_message store ALEAPP's raw TSV columns generically under
+    # extra["row"], with no confirmed real column name for a phone number
+    # - correlating them would mean guessing, which this app's own
+    # established discipline treats as worse than not covering it. Seed
+    # rows that WOULD match if these types were (wrongly) included, and
+    # confirm they are not.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "leapp_contacts.tsv"),
+        [{"artifact_type": "leapp_contact", "title": "Should Not Correlate", "url": "",
+          "value": "x", "timestamp": None, "extra": {"phones": ["+15551234567"]}}])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "leapp_sms.tsv"),
+        [{"artifact_type": "leapp_sms_message", "title": "x", "url": "", "value": "x",
+          "timestamp": 1700000000.0, "extra": {"address": "+15551234567"}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 0
+    assert result["contacts"] == []
+    assert result["unresolved_communication_count"] == 0  # leapp_sms_message isn't a scanned comm type at all
+
+
+def test_correlate_contacts_returns_the_empty_shape_for_a_case_never_indexed(case_folder):
+    # case_folder exists (a real consolidated case) but _record_parsed_
+    # artifacts() was never called, so no analysis-index DB file exists
+    # yet - must return the correctly-shaped empty result, not raise.
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result == {"contacts_indexed_count": 0, "unresolved_communication_count": 0,
+                       "truncated": False, "contacts": []}

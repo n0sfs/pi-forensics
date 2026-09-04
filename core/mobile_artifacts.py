@@ -246,29 +246,44 @@ def parse_mobile_contacts(manifest_dir):
     invent one" convention (e.g. core/linux_artifacts.py's /etc/passwd
     parser using the file's own mtime as an honest proxy where no per-
     record timestamp exists; contacts have no comparable proxy either, so
-    this is left None rather than misleadingly proxied)."""
+    this is left None rather than misleadingly proxied).
+
+    ABMultiValue.property is a small, stable, long-documented AddressBook
+    constant: 3 = kABPersonPhoneProperty, 4 = kABPersonEmailProperty -
+    bucketed here into extra["phones"]/extra["emails"] lists (2026-09-04,
+    part of the Android/iOS contact-correlation work) to match every
+    OTHER contact parser's own extra shape (core/android_artifacts.py's
+    android_contact, core/apple_export_utils.py's apple_contact/
+    takeout_contact) - previously this function only ever merged both
+    into one combined display string with no machine-readable phones
+    list, which made this the one contact source correlation couldn't
+    use. Purely additive: `value`'s own combined-string format is
+    unchanged, so nothing that already reads it needs to change."""
     content_path = _resolve_manifest_files(manifest_dir, *MOBILE_ARTIFACT_TARGET_PATHS["mobile_contact"])
     if not content_path:
         return [], False
     records = []
     try:
         conn = _open_sqlite_readonly(content_path)
-        values_by_person = {}
+        phones_by_person, emails_by_person = {}, {}
         try:
-            cur = conn.execute("SELECT record_id, value FROM ABMultiValue WHERE property IN (3, 4)")
-            for record_id, value in cur:
-                values_by_person.setdefault(record_id, []).append(value)
+            cur = conn.execute("SELECT record_id, property, value FROM ABMultiValue WHERE property IN (3, 4)")
+            for record_id, prop, value in cur:
+                bucket = phones_by_person if prop == 3 else emails_by_person
+                bucket.setdefault(record_id, []).append(value)
         except sqlite3.Error:
             pass  # ABMultiValue may not exist on every backup variant - contact names alone still have value
         cur = conn.execute("SELECT ROWID, First, Last, Organization FROM ABPerson LIMIT 20000")
         for row_id, first, last, org in cur:
             name = " ".join(p for p in (first, last) if p) or org or "(unnamed contact)"
-            contact_values = values_by_person.get(row_id, [])
+            phones = phones_by_person.get(row_id, [])
+            emails = emails_by_person.get(row_id, [])
+            contact_values = phones + emails
             records.append({
                 "artifact_type": "mobile_contact", "title": name, "url": "",
                 "value": ", ".join(contact_values) if contact_values else "(no phone/email on file)",
                 "timestamp": None,
-                "extra": {"row_id": row_id, "organization": org},
+                "extra": {"row_id": row_id, "organization": org, "phones": phones, "emails": emails},
             })
         conn.close()
     except sqlite3.Error as e:

@@ -931,3 +931,180 @@ def cross_case_hash_search(hash_value):
                     if len(results) >= CROSS_CASE_SEARCH_MAX_RESULTS:
                         return results, True
     return results, truncated
+
+
+# --- Contact correlation (Android/iOS pattern-of-life, 2026-09-04) ---
+# Cross-references every already-indexed contact source in a case against
+# every already-indexed communication source, so a raw phone number/JID
+# sitting in an SMS/call-log/WhatsApp record can be resolved to a real
+# name - and, just as valuable, a number independently confirmed by more
+# than one contact source (the phone's own contacts AND WhatsApp's own
+# contacts both naming the same number "Jane Doe") is itself a real
+# corroboration signal worth surfacing.
+#
+# Deliberately read-only against the already-indexed parsed_artifacts
+# table (like Evidence Timeline - core/case_index_db.py has no write path
+# here at all): never mutates an already-recorded evidentiary row, and
+# needs no new schema/table, matching this app's "compute a case-wide
+# report fresh from the existing index, don't touch original data"
+# convention already established by /api/cases/timeline.
+#
+# Scoped to the 5 contact types and 6 communication types whose real
+# extra_json shape is directly grounded in this app's own already-shipped,
+# already-tested parser code (core/android_artifacts.py, core/mobile_
+# artifacts.py, core/apple_export_utils.py/core/takeout_utils.py, core/
+# whatsapp_utils.py) - every one of them stores a real phone-number-
+# shaped string in a known extra_json key. Deliberately EXCLUDES every
+# leapp_* contact/communication type (leapp_contact, leapp_sms_message,
+# leapp_call_log, leapp_whatsapp_*, etc.): those store ALEAPP's own raw
+# TSV columns generically under extra_json["row"], and this station has
+# never once seen a real ALEAPP hit to confirm which real column name
+# actually holds a phone number for any of them (see core/leapp_tsv_
+# utils.py's own docstring) - guessing a column name here risks silently
+# matching the wrong field and producing a confidently wrong correlation,
+# which this app's own established discipline treats as worse than not
+# covering it yet. A future session with real ALEAPP hit data to check
+# against should extend this, not guess now.
+CONTACT_CORRELATION_SOURCE_TYPES = {
+    "android_contact": {"phones_key": "phones", "kind": "contact"},
+    "apple_contact": {"phones_key": "phones", "kind": "contact"},
+    "takeout_contact": {"phones_key": "phones", "kind": "contact"},
+    "mobile_contact": {"phones_key": "phones", "kind": "contact"},
+    "whatsapp_contact": {"phones_key": None, "single_key": "number", "kind": "contact"},
+}
+CONTACT_CORRELATION_COMM_TYPES = {
+    "android_sms_message": {"counterpart_key": "address", "channel": "SMS"},
+    "android_call_log": {"counterpart_key": "number", "channel": "Call"},
+    "mobile_sms_message": {"counterpart_key": "counterpart", "channel": "SMS/iMessage"},
+    "mobile_call_log": {"counterpart_key": "address", "channel": "Call"},
+    "whatsapp_message": {"counterpart_key": "sender_jid", "channel": "WhatsApp Message"},
+    "whatsapp_call_log": {"counterpart_key": "caller_jid", "channel": "WhatsApp Call"},
+}
+CONTACT_CORRELATION_MAX_ROWS_PER_TYPE = 20_000
+CONTACT_CORRELATION_MAX_CONTACTS = 2_000
+CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT = 8
+
+
+def normalize_phone_number(raw):
+    """Strips every non-digit character, then - a deliberate, disclosed,
+    US/NANP-biased heuristic, not a universal E.164 normalizer - drops a
+    leading '1' country-code digit from an 11-digit result (matching this
+    app's only real sample data, a real Pixel 8a on a US carrier). Returns
+    None for anything that isn't plausibly a phone number once stripped
+    (too short - a 3-4 digit short code or a stray non-numeric JID like a
+    WhatsApp group's own g.us identifier - or implausibly long), so a
+    non-phone value never silently becomes a false-positive match. This
+    is intentionally an EXACT-match key only: no last-N-digit fuzzy
+    fallback across different lengths, since that risks correlating two
+    genuinely different people who happen to share a suffix - a real,
+    disclosed scope boundary, not silently handled."""
+    if not raw:
+        return None
+    digits = re.sub(r'\D', '', str(raw))
+    if len(digits) == 11 and digits.startswith('1'):
+        digits = digits[1:]
+    if 7 <= len(digits) <= 15:
+        return digits
+    return None
+
+
+def correlate_contacts(case_folder):
+    """Builds a case-wide {normalized_number: {...}} correlation report -
+    see the module comment above for scope. Returns a dict with
+    contacts_indexed_count, unresolved_communication_count, truncated
+    (hit CONTACT_CORRELATION_MAX_CONTACTS), and a 'contacts' list sorted
+    by total communication count descending (the most-contacted people
+    surface first - the highest pattern-of-life signal). Returns a
+    correctly-shaped all-empty result (never None/raises) for a case
+    that's never been indexed, matching this module's own established
+    "nothing to show yet, not an error" convention."""
+    result = {"contacts_indexed_count": 0, "unresolved_communication_count": 0,
+              "truncated": False, "contacts": []}
+    conn = _case_index_open_readonly(case_folder)
+    if not conn:
+        return result
+    try:
+        # Pass 1: every known contact source -> {normalized: {names: set,
+        # sources: set}}. A number seen under more than one contact
+        # source (e.g. both android_contact and whatsapp_contact) is a
+        # real corroboration signal, kept as multiple entries in "sources".
+        known = {}
+
+        def _remember(normalized, name, source_type):
+            if not normalized:
+                return
+            entry = known.setdefault(normalized, {"names": set(), "sources": set()})
+            if name:
+                entry["names"].add(name)
+            entry["sources"].add(source_type)
+
+        contact_types = tuple(CONTACT_CORRELATION_SOURCE_TYPES.keys())
+        placeholders = ",".join("?" * len(contact_types))
+        cur = conn.execute(
+            f"SELECT artifact_type, title, extra_json FROM parsed_artifacts "
+            f"WHERE artifact_type IN ({placeholders}) LIMIT ?",
+            contact_types + (CONTACT_CORRELATION_MAX_ROWS_PER_TYPE * len(contact_types),))
+        for artifact_type, title, extra_json in cur:
+            spec = CONTACT_CORRELATION_SOURCE_TYPES[artifact_type]
+            try:
+                extra = json.loads(extra_json) if extra_json else {}
+            except (TypeError, ValueError):
+                extra = {}
+            if spec.get("phones_key"):
+                for raw in (extra.get(spec["phones_key"]) or []):
+                    _remember(normalize_phone_number(raw), title, artifact_type)
+            elif spec.get("single_key"):
+                _remember(normalize_phone_number(extra.get(spec["single_key"])), title, artifact_type)
+
+        # Pass 2: every communication row -> resolve its counterpart
+        # against `known`, aggregate per-contact counts/timestamps/samples.
+        by_contact = {}
+        unresolved = 0
+        comm_types = tuple(CONTACT_CORRELATION_COMM_TYPES.keys())
+        placeholders = ",".join("?" * len(comm_types))
+        cur = conn.execute(
+            f"SELECT artifact_type, title, value, timestamp, source_path, extra_json "
+            f"FROM parsed_artifacts WHERE artifact_type IN ({placeholders}) "
+            f"ORDER BY timestamp DESC LIMIT ?",
+            comm_types + (CONTACT_CORRELATION_MAX_ROWS_PER_TYPE * len(comm_types),))
+        for artifact_type, title, value, timestamp, source_path, extra_json in cur:
+            spec = CONTACT_CORRELATION_COMM_TYPES[artifact_type]
+            try:
+                extra = json.loads(extra_json) if extra_json else {}
+            except (TypeError, ValueError):
+                extra = {}
+            raw_counterpart = extra.get(spec["counterpart_key"])
+            normalized = normalize_phone_number(raw_counterpart)
+            if not normalized or normalized not in known:
+                unresolved += 1
+                continue
+            entry = by_contact.setdefault(normalized, {
+                "normalized_number": normalized,
+                "display_names": sorted(known[normalized]["names"]),
+                "contact_sources": sorted(known[normalized]["sources"]),
+                "communication_counts": {},
+                "first_seen": timestamp, "last_seen": timestamp,
+                "total_communications": 0, "samples": [],
+            })
+            entry["communication_counts"][spec["channel"]] = entry["communication_counts"].get(spec["channel"], 0) + 1
+            entry["total_communications"] += 1
+            if timestamp is not None:
+                if entry["last_seen"] is None or timestamp > entry["last_seen"]:
+                    entry["last_seen"] = timestamp
+                if entry["first_seen"] is None or timestamp < entry["first_seen"]:
+                    entry["first_seen"] = timestamp
+            if len(entry["samples"]) < CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT:
+                entry["samples"].append({
+                    "artifact_type": artifact_type, "title": title, "value": value,
+                    "timestamp": timestamp, "source_path": source_path,
+                })
+
+        contacts = sorted(by_contact.values(), key=lambda c: c["total_communications"], reverse=True)
+        truncated = len(contacts) > CONTACT_CORRELATION_MAX_CONTACTS
+        result["contacts"] = contacts[:CONTACT_CORRELATION_MAX_CONTACTS]
+        result["contacts_indexed_count"] = len(known)
+        result["unresolved_communication_count"] = unresolved
+        result["truncated"] = truncated
+        return result
+    finally:
+        conn.close()

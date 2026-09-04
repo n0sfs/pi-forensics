@@ -9182,6 +9182,118 @@ async function renderReportGeolocationList() {
     }
 }
 
+// Formats an epoch-seconds timestamp for the Contacts pane's first/last
+// seen columns - shared, tiny helper local to this feature; every other
+// timestamp-formatting helper in this file is tied to a different specific
+// table's own column shape, none of them fit reusing here.
+function _formatContactCorrelationTimestamp(ts) {
+    if (ts === null || ts === undefined) return "--";
+    try { return new Date(ts * 1000).toLocaleString(); } catch (err) { return "--"; }
+}
+
+async function loadContactCorrelation() {
+    const container = document.getElementById("reportContactsContainer");
+    if (!container) return;
+    container.innerHTML = '<span class="text-subtle small italic">Loading...</span>';
+
+    const caseFolder = activeCase ? activeCase.case_folder : "";
+    if (!caseFolder) {
+        container.innerHTML = '<span class="text-subtle small">Select a case first.</span>';
+        return;
+    }
+
+    let data;
+    try {
+        const res = await fetch('/api/case_index/contact_correlation', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: caseFolder })
+        });
+        data = await res.json();
+    } catch (err) {
+        container.innerHTML = '';
+        const errEl = document.createElement('span');
+        errEl.className = 'text-danger small';
+        errEl.textContent = 'Request failed.';
+        container.appendChild(errEl);
+        return;
+    }
+    if (!data || !data.success) {
+        container.innerHTML = '';
+        const errEl = document.createElement('span');
+        errEl.className = 'text-danger small';
+        errEl.textContent = (data && data.error) || 'Failed to load contact correlation.';
+        container.appendChild(errEl);
+        return;
+    }
+
+    container.innerHTML = '';
+
+    const summary = document.createElement('div');
+    summary.className = 'small text-subtle mb-2';
+    summary.textContent = `${data.contacts_indexed_count} known contact number(s) indexed - `
+        + `${data.contacts.length} matched to at least one communication, `
+        + `${data.unresolved_communication_count} communication(s) with an unmatched number`
+        + (data.truncated ? ' (list truncated - too many contacts to show all).' : '.');
+    container.appendChild(summary);
+
+    if (data.contacts.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'text-subtle small';
+        empty.textContent = data.contacts_indexed_count === 0
+            ? 'No parsed contacts and/or communications found yet - parse Android/iOS/WhatsApp contacts and SMS/call logs first (File Explorer\'s "Parse..." actions, or Auto Analyze), then reopen this tab.'
+            : 'Contacts were found, but none matched a parsed SMS/call/WhatsApp record yet.';
+        container.appendChild(empty);
+        return;
+    }
+
+    const table = document.createElement('table');
+    table.className = 'table table-sm table-dark table-hover small mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>Contact</th><th>Number</th><th>Source(s)</th><th>Communications</th><th>First Seen</th><th>Last Seen</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    data.contacts.forEach(contact => {
+        const row = document.createElement('tr');
+
+        const nameCell = document.createElement('td');
+        nameCell.textContent = contact.display_names.length ? contact.display_names.join(' / ') : '(unnamed)';
+        row.appendChild(nameCell);
+
+        const numCell = document.createElement('td');
+        numCell.className = 'font-monospace';
+        numCell.textContent = contact.normalized_number;
+        row.appendChild(numCell);
+
+        const sourcesCell = document.createElement('td');
+        sourcesCell.textContent = contact.contact_sources.join(', ');
+        row.appendChild(sourcesCell);
+
+        const countsCell = document.createElement('td');
+        countsCell.textContent = Object.entries(contact.communication_counts)
+            .map(([channel, count]) => `${channel}: ${count}`).join(', ')
+            + ` (total ${contact.total_communications})`;
+        row.appendChild(countsCell);
+
+        const firstCell = document.createElement('td');
+        firstCell.textContent = _formatContactCorrelationTimestamp(contact.first_seen);
+        row.appendChild(firstCell);
+
+        const lastCell = document.createElement('td');
+        lastCell.textContent = _formatContactCorrelationTimestamp(contact.last_seen);
+        row.appendChild(lastCell);
+
+        tbody.appendChild(row);
+    });
+
+    table.appendChild(tbody);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'bg-app-dark rounded p-2';
+    wrapper.style.overflowX = 'auto';
+    wrapper.appendChild(table);
+    container.appendChild(wrapper);
+}
+
 function toggleAttachmentFile(filePath, checked) {
     if (checked) {
         if (!currentAttachedFilesList.includes(filePath)) currentAttachedFilesList.push(filePath);
