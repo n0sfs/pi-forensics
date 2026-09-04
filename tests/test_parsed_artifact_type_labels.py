@@ -59,6 +59,10 @@ _LIVE_COLLECTION_ARTIFACT_TYPES = {
     "live_collection_scheduled_task", "live_collection_autorun",
     "live_collection_mapped_drive", "live_collection_clipboard",
     "live_collection_hash_list_match",
+    # 2026-09-03: already-collected-but-never-parsed files.
+    "live_collection_system_info", "live_collection_system_boot",
+    "live_collection_arp_entry", "live_collection_dns_cache_entry",
+    "live_collection_installed_hotfix", "live_collection_loaded_driver",
 }
 # Android forensics expansion, Phase B - core/android_artifacts.py. In-image
 # only (rooted `physical` acquisitions), never a real-fs `pull` output.

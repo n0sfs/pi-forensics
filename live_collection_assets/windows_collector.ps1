@@ -144,7 +144,10 @@ try {
         os_version        = $os.Version
         os_build          = $os.BuildNumber
         os_architecture   = $os.OSArchitecture
-        last_boot_time    = $os.LastBootUpTime
+        # Explicit .ToString('o') - same reasoning as creation_date above.
+        # This is a genuinely useful historical timestamp on its own (when
+        # did this machine last start up), not just collection metadata.
+        last_boot_time    = if ($os.LastBootUpTime) { $os.LastBootUpTime.ToString('o') } else { $null }
         current_time      = (Get-Date).ToString('o')
         timezone          = (Get-TimeZone -ErrorAction SilentlyContinue).Id
         manufacturer      = $cs.Manufacturer
@@ -168,7 +171,14 @@ try {
             name           = $_.Name
             executable_path = $_.ExecutablePath
             command_line   = $_.CommandLine
-            creation_date  = $_.CreationDate
+            # .ToString('o') explicitly, matching every other timestamp in
+            # this script - a bare [datetime] handed straight to ConvertTo-
+            # Json has no guaranteed format (it's varied across PowerShell
+            # versions historically). CreationDate is genuinely null for a
+            # few system processes (System Idle Process, sometimes System
+            # itself) - the parser on the receiving end falls back to this
+            # run's own collection time for those, never crashes on it.
+            creation_date  = if ($_.CreationDate) { $_.CreationDate.ToString('o') } else { $null }
             owner          = try { ($_ | Invoke-CimMethod -MethodName GetOwner -ErrorAction Stop).User } catch { $null }
         }
     }
@@ -218,6 +228,11 @@ try {
                 remote_port   = $_.RemotePort
                 state         = $_.State
                 owning_pid    = $_.OwningProcess
+                # Real, per-connection "when was this established" data -
+                # MSFT_NetTCPConnection genuinely exposes this. UDP is
+                # connectionless, Get-NetUDPEndpoint has no equivalent
+                # property, so this is TCP-only, not an oversight below.
+                created       = if ($_.CreationTime) { $_.CreationTime.ToString('o') } else { $null }
             }
         }
         $udp = Get-NetUDPEndpoint -ErrorAction SilentlyContinue | ForEach-Object {
@@ -278,7 +293,18 @@ try {
 # --- 5. ARP cache ---
 try {
     if (Get-Command Get-NetNeighbor -ErrorAction SilentlyContinue) {
-        $arp = Get-NetNeighbor -ErrorAction Stop | Select-Object IPAddress, LinkLayerAddress, State, InterfaceAlias
+        # Explicit snake_case object, matching every other collected
+        # category's own convention - Select-Object alone would have left
+        # PowerShell's PascalCase property names (IPAddress, etc.) in the
+        # JSON, inconsistent with the rest of this script.
+        $arp = Get-NetNeighbor -ErrorAction Stop | ForEach-Object {
+            [PSCustomObject]@{
+                ip_address  = $_.IPAddress
+                mac_address = $_.LinkLayerAddress
+                state       = $_.State
+                interface   = $_.InterfaceAlias
+            }
+        }
     } else {
         $arp = (arp -a) | ForEach-Object { [PSCustomObject]@{ raw_line = $_; source = 'arp -a (legacy fallback)' } }
     }
@@ -292,7 +318,16 @@ try {
 # --- 6. DNS resolver cache ---
 try {
     if (Get-Command Get-DnsClientCache -ErrorAction SilentlyContinue) {
-        $dns = Get-DnsClientCache -ErrorAction Stop | Select-Object Entry, Name, Data, TimeToLive, Type
+        # Same snake_case normalization as arp_cache above.
+        $dns = Get-DnsClientCache -ErrorAction Stop | ForEach-Object {
+            [PSCustomObject]@{
+                entry = $_.Entry
+                name  = $_.Name
+                data  = $_.Data
+                ttl   = $_.TimeToLive
+                type  = $_.Type
+            }
+        }
     } else {
         $dns = (ipconfig /displaydns) | ForEach-Object { [PSCustomObject]@{ raw_line = $_; source = 'ipconfig /displaydns (legacy fallback)' } }
     }
@@ -395,7 +430,16 @@ try {
 
 # --- 10. Installed hotfixes/patches ---
 try {
-    $hotfixes = Get-HotFix -ErrorAction Stop | Select-Object HotFixID, Description, InstalledOn
+    # Snake_case + explicit .ToString('o') on installed_on (same reasoning
+    # as creation_date above) - InstalledOn is also genuinely null for some
+    # real hotfix entries, not just a theoretical edge case.
+    $hotfixes = Get-HotFix -ErrorAction Stop | ForEach-Object {
+        [PSCustomObject]@{
+            hotfix_id   = $_.HotFixID
+            description = $_.Description
+            installed_on = if ($_.InstalledOn) { $_.InstalledOn.ToString('o') } else { $null }
+        }
+    }
     if (Write-ArtifactJson -Name 'installed_hotfixes' -Data $hotfixes) {
         Write-CollectionLog -Category 'installed_hotfixes' -Status 'ok' -Detail "$($hotfixes.Count) hotfix(es)"
     }
@@ -407,7 +451,17 @@ try {
 #      privilege-limited when it can't run, never silently skipped ---
 if ($IsElevated) {
     try {
-        $drivers = Get-CimInstance -ClassName Win32_SystemDriver -ErrorAction Stop | Select-Object Name, DisplayName, State, PathName
+        # Snake_case, matching every other collected category's convention
+        # (see the 2026-09-03 normalization of arp_cache/dns_cache/
+        # installed_hotfixes above, for the identical reason).
+        $drivers = Get-CimInstance -ClassName Win32_SystemDriver -ErrorAction Stop | ForEach-Object {
+            [PSCustomObject]@{
+                name         = $_.Name
+                display_name = $_.DisplayName
+                state        = $_.State
+                path_name    = $_.PathName
+            }
+        }
         if (Write-ArtifactJson -Name 'loaded_drivers' -Data $drivers) {
             Write-CollectionLog -Category 'loaded_drivers' -Status 'ok' -Detail "$($drivers.Count) driver(s)"
         }

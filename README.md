@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.30.3-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.31.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -87,11 +87,14 @@ target's RAM size and available USB space are only known once the drive is actua
 Bring the drive back and import the results into the active case - read-only against the USB
 throughout, every file individually hashed with a manifest, and a real case-report event recorded.
 On import, the Windows-side results (processes, network connections, logged-on users, services,
-scheduled tasks, autoruns, mapped drives, clipboard) are automatically parsed into File Explorer's
-searchable "Parsed Artifacts" index and the Evidence Timeline, every process executable's hash is
-cross-referenced against every configured Hash Set with a match recorded as its own flagged
-artifact, and a `SUMMARY.txt`/`summary.json` at-a-glance overview is generated alongside the raw
-files and full manifest.
+scheduled tasks, autoruns, installed hotfixes, loaded drivers, ARP/DNS cache, system info, mapped
+drives, clipboard) are automatically parsed into File Explorer's searchable "Parsed Artifacts" index
+and the Evidence Timeline, every process executable's hash is cross-referenced against every
+configured Hash Set with a match recorded as its own flagged artifact, and a
+`SUMMARY.txt`/`summary.json` at-a-glance overview is generated alongside the raw files and full
+manifest. Process launch time, network connection establishment time, hotfix install dates, and the
+target's own boot time all carry their real, original timestamps on the Evidence Timeline - not just
+when the collection itself ran.
 
 ### File recovery
 One tool selector for PhotoRec (signature-based file carving, ~480 known types), `extundelete`
@@ -343,7 +346,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.30.3 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.31.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
