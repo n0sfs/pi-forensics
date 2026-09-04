@@ -21,6 +21,20 @@ file after updating to see what changed.
 
 ---
 
+## [1.44.0] - 2026-09-04
+
+### Added
+- **Android configured-accounts and notification-snapshot capture**, both automatic during a plain
+  `adb pull` acquisition (no root needed) - a real, direct extension of the existing app-inventory
+  capture. Configured accounts (Google, WhatsApp, or any other app-registered account type) are
+  captured in full via `adb shell dumpsys account` - real account names/emails, not masked. A
+  notification snapshot captures which apps had a notification visible at the moment of the pull,
+  its post/update time, and its importance ranking, via `adb shell dumpsys notification` - **real
+  notification title/body text is NOT captured**, and never will be: the Android OS itself redacts
+  that content by default for this exact command, and this app deliberately never passes the
+  `--reveal` flag that would attempt to bypass it. Both are searchable in File Views and appear on
+  the Evidence Timeline alongside every other pattern-of-life artifact.
+
 ## [1.43.2] - 2026-09-04
 
 ### Changed
