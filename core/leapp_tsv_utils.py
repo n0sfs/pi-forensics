@@ -175,6 +175,28 @@ LEAPP_TIMESTAMP_COLUMNS = {
     "leapp_signal_message": ("Date Sent", "Date Received"),
     "leapp_tiktok_message": ("Timestamp",),
     "leapp_reddit_message": ("Timestamp",),
+    # 2026-09-04, Android pattern-of-life item 4: leapp_installed_app maps
+    # 3 real, structurally different ALEAPP modules (installedappsGass.py/
+    # installedappsLibrary.py/installedappsVending.py), confirmed directly
+    # against this app's own pinned ALEAPP source on the deployed station -
+    # only 2 of the 3 carry any timestamp at all. installedappsGass.py's
+    # own data_headers is ('User', 'Bundle ID', 'Version Code',
+    # 'SHA-256 Hash') - no datetime column exists in that module at all,
+    # so a Gass-sourced row correctly keeps timestamp=None regardless;
+    # this is not a gap this fix can close, it's a real absence in the
+    # source data. installedappsLibrary.py's own header has ('Purchase
+    # Time', 'datetime'); installedappsVending.py's has both
+    # ('First Download', 'datetime') and ('Last Updated', 'datetime') in
+    # the same row - 'First Download' is listed first since it's the
+    # closer semantic match to "installed" than 'Last Updated' is, and
+    # only the first candidate present in a given file's real header row
+    # is ever used (see _find_timestamp_column_index() below).
+    "leapp_installed_app": ("First Download", "Purchase Time"),
+    # usagestats.py's own real data_headers has 4 separate datetime-typed
+    # columns; 'Timestamp / Last Time Active' is the module's own primary
+    # per-event field (listed first, right after the User column, always
+    # populated - confirmed directly against the real module source).
+    "leapp_app_usage": ("Timestamp / Last Time Active",),
 }
 
 # Every artifact_type this module can ever produce, for the label-dict

@@ -68,6 +68,12 @@ _LIVE_COLLECTION_ARTIFACT_TYPES = {
 # Android forensics expansion, Phase B - core/android_artifacts.py. In-image
 # only (rooted `physical` acquisitions), never a real-fs `pull` output.
 _ANDROID_ARTIFACT_TYPES = {"android_sms_message", "android_contact", "android_call_log"}
+# Installed-app inventory (routes/mobile.py, 2026-09-04) - deliberately
+# NOT in the set above: unlike those 3, this needs no root at all and is
+# captured automatically during a plain `adb pull`, recorded directly by
+# the acquisition worker itself rather than a later File Explorer "Parse
+# ..." action.
+_ANDROID_APP_INVENTORY_ARTIFACT_TYPES = {"android_installed_app"}
 # Native WhatsApp msgstore.db/wa.db parsing (core/whatsapp_utils.py,
 # 2026-09-04) - reachable both real-fs (this app's own decrypt feature's
 # output) and in-image (a rooted physical image).
@@ -116,7 +122,7 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
                 | _THUMBCACHE_ARTIFACT_TYPES | _STICKY_NOTES_ARTIFACT_TYPES | _LINUX_ARTIFACT_TYPES
                 | _URL_IOC_ARTIFACT_TYPES | _CRYPTO_ARTIFACT_TYPES | _MOBILE_ARTIFACT_TYPES
                 | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES
-                | _ANDROID_ARTIFACT_TYPES | _WHATSAPP_NATIVE_ARTIFACT_TYPES
+                | _ANDROID_ARTIFACT_TYPES | _ANDROID_APP_INVENTORY_ARTIFACT_TYPES | _WHATSAPP_NATIVE_ARTIFACT_TYPES
                 | _LEAPP_TSV_ARTIFACT_TYPES | _TAKEOUT_ARTIFACT_TYPES
                 | _APPLE_EXPORT_ARTIFACT_TYPES | _WINDOWS_ACTIVITY_ARTIFACT_TYPES | _SRUM_ARTIFACT_TYPES
                 | _POWERSHELL_HISTORY_ARTIFACT_TYPES | _FIREWALL_LOG_ARTIFACT_TYPES

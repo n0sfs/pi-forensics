@@ -222,6 +222,13 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "android_sms_message": "Android: SMS/MMS (Rooted Physical Image Only)",
     "android_contact": "Android: Contacts (Rooted Physical Image Only)",
     "android_call_log": "Android: Call Log (Rooted Physical Image Only)",
+    # Installed-app inventory (routes/mobile.py::_capture_android_app_
+    # inventory(), 2026-09-04) - unlike the 3 rooted-physical-only types
+    # right above, this needs NO root: it's a live `adb shell dumpsys
+    # package packages` query captured automatically during any real
+    # `adb pull` acquisition, so the label must not carry the misleading
+    # "Rooted Physical Image Only" caveat those 3 correctly do.
+    "android_installed_app": "Android: Installed App Inventory (adb pull)",
     # Native WhatsApp msgstore.db/wa.db parsing (core/whatsapp_utils.py,
     # 2026-09-04) - reachable either from this app's own WhatsApp-decrypt
     # feature's output (a real file, no root needed) or a rooted physical

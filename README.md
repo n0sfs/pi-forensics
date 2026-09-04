@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.38.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.39.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -116,7 +116,11 @@ instead of a separate screen per tool.
 
 ### Mobile forensics
 iOS full backup via `idevicebackup2` (with optional encrypted backup to capture Keychain data) and
-Android via `adb pull`/`backup`/`bugreport`, plus a **physical/raw acquisition mode for already-rooted
+Android via `adb pull`/`backup`/`bugreport` — a real `pull` also automatically captures the device's
+full installed-app inventory (package name, version, install/update time, system vs. user-installed)
+via one non-invasive `adb shell dumpsys package packages` query, no root needed, parsed directly into
+the searchable index and Evidence Timeline alongside the pull's own real on-device file timestamps —
+plus a **physical/raw acquisition mode for already-rooted
 Android devices** — pipes the device's own raw block storage through `adb exec-out su -c dd` straight
 into this app's own `dc3dd`/`dcfldd` engine (E01 isn't possible over a piped source), the same
 hashing/write pipeline used for a locally-attached drive. Reads and displays real device detail before
@@ -363,7 +367,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.38.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.39.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
