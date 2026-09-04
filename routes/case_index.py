@@ -229,6 +229,15 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     # plain "SMS" in this same pass - it never actually produced MMS
     # records before this type existed.
     "android_mms_message": "Android: MMS (Rooted Physical Image Only)",
+    # .ab Android Backup Format decoder (core/android_backup_utils.py,
+    # 2026-09-04, same pattern-of-life follow-up) - the non-root counterpart
+    # to the 4 rooted-only android_* types above: this app's own Mobile
+    # Forensics "Backup" acquisition mode (`adb backup`) already produces a
+    # real .ab file with no root needed at all, reachable both real-fs (the
+    # common case) and in-image (a .ab file found inside an already-acquired
+    # image).
+    "android_ab_sms_message": "Android Backup (.ab): SMS",
+    "android_ab_mms_message": "Android Backup (.ab): MMS",
     # Installed-app inventory (routes/mobile.py::_capture_android_app_
     # inventory(), 2026-09-04) - unlike the 3 rooted-physical-only types
     # right above, this needs NO root: it's a live `adb shell dumpsys
