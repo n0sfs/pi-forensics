@@ -21,6 +21,29 @@ file after updating to see what changed.
 
 ---
 
+## [1.39.0] - 2026-09-04
+
+### Added
+
+- **A real `adb pull` acquisition now automatically captures the device's full installed-app
+  inventory** - one non-invasive `adb shell dumpsys package packages` query, no root needed, run
+  immediately after a successful pull (the same "capture it now, it's gone once the device
+  disconnects" reasoning already used for real on-device file timestamps). Package name, version,
+  install/update time, and whether it's a system or user-installed app are all captured and parsed
+  directly into File Views' searchable index and the Evidence Timeline - genuinely useful
+  pattern-of-life context (what apps does this person actually have installed, and when) without
+  needing a full ALEAPP run.
+
+### Fixed
+
+- **Two ALEAPP-parsed artifact types - Installed Applications and Usage Stats - could never appear
+  on the Evidence Timeline at all**, even when a real ALEAPP run found genuine data for them,
+  because this app had never taught itself which column in either module's real output holds a
+  timestamp. Fixed by reading the exact real column names directly from this app's own pinned
+  ALEAPP source. One of the three real modules that can produce "Installed Applications" data
+  (`InstalledappsGass`) genuinely has no timestamp of its own at all - that one honestly stays
+  timestamp-less, which is correct, not a remaining gap.
+
 ## [1.38.0] - 2026-09-04
 
 ### Added

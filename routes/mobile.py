@@ -16,6 +16,7 @@ import json
 import time
 import subprocess
 import threading
+from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
@@ -27,7 +28,7 @@ from core.jobs import (
     _stream_subprocess, _stream_piped_subprocess, clear_active_proc, clear_upstream_proc,
     build_report_target, write_initial_report, _write_report, reclaim_ownership,
 )
-from core.case_index_db import _auto_tag_case_artifact
+from core.case_index_db import _auto_tag_case_artifact, _record_parsed_artifacts
 from core.whatsapp_utils import pull_whatsapp_key_file
 from core.idevicecrashreport_utils import pull_ios_crash_reports
 from core.sim_utils import list_pcsc_readers, read_sim_card
@@ -404,6 +405,142 @@ def _capture_android_device_mtimes(serial, output_path):
     return len(files)
 
 
+ANDROID_APP_INVENTORY_TIMEOUT = 60
+# `Package [<name>] (<hash>):` marks the start of each package's block in
+# `dumpsys package packages`'s real output - confirmed directly against
+# patrickfav/uber-adb-tools's real, maintained DumpsysPackageParser.java
+# (a working third-party tool that already parses this exact command's
+# output for the identical purpose), not guessed. MULTILINE so ^ anchors
+# each real line, matching that parser's own line-oriented approach.
+_ANDROID_PKG_BLOCK_RE = re.compile(r'^\s*Package \[([^\]]+)\] \([0-9a-fA-F]+\):', re.MULTILINE)
+# Within one package's block, each of these is a real, confirmed
+# `key=value` token followed by whitespace - same non-greedy `(.+?)\s`
+# shape as the reference parser above, applied per-block rather than
+# across the whole dump so one package's codePath can never be captured
+# as another's by accident.
+_ANDROID_PKG_FIELD_RES = {
+    "version_name": re.compile(r'versionName=(.+?)\s'),
+    "version_code": re.compile(r'versionCode=(\d+?)\s'),
+    "code_path": re.compile(r'codePath=(.+?)\s'),
+    "first_install_time": re.compile(r'firstInstallTime=(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})'),
+    "last_update_time": re.compile(r'lastUpdateTime=(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})'),
+}
+
+
+def _android_dumpsys_time_to_unix(value):
+    """dumpsys package's firstInstallTime/lastUpdateTime are printed as a
+    plain 'YYYY-MM-DD HH:MM:SS' string with no timezone marker at all -
+    confirmed via the same real reference parser cited above. This is
+    presumably the DEVICE's own local clock, but this app has no reliable
+    way to know that device's configured timezone from the dump alone -
+    the same honest, disclosed choice already made for the Windows
+    Firewall log's own timezone-ambiguous timestamps elsewhere in this
+    app: stamp it as UTC deterministically (never the ANALYSIS station's
+    own local timezone, which would silently vary station to station)
+    rather than guess at an offset. An examiner who knows the device's
+    real configured timezone can correct for it manually."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def _capture_android_app_inventory(serial, output_path, case_folder):
+    """Best-effort: captures the device's full installed-app inventory via
+    one `adb shell dumpsys package packages` call (no root, no per-package
+    round trips) immediately after a successful pull - like _capture_
+    android_device_mtimes() above, this is genuinely ephemeral live-device
+    state that's gone the moment the device disconnects, not something
+    recoverable later from the pulled files themselves. Writes a raw
+    manifest sidecar (for auditability/re-parsing) AND records real
+    android_installed_app parsed_artifacts rows directly - unlike every
+    other artifact parser in this app, which runs later via a File
+    Explorer "Parse..." action against an already-acquired file, this data
+    only exists to capture while the device is still connected, so
+    indexing it happens right here in the acquisition worker instead.
+    Never raises - a failure here just means no app inventory was
+    captured for this pull, disclosed via the returned count being 0.
+    Returns the number of packages captured."""
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, "shell", "dumpsys package packages"],
+            capture_output=True, text=True, timeout=ANDROID_APP_INVENTORY_TIMEOUT,
+        )
+    except Exception:
+        return 0
+    if result.returncode != 0 or not result.stdout:
+        return 0
+
+    matches = list(_ANDROID_PKG_BLOCK_RE.finditer(result.stdout))
+    if not matches:
+        return 0
+
+    records = []
+    for i, m in enumerate(matches):
+        pkg_name = m.group(1)
+        block_start = m.end()
+        block_end = matches[i + 1].start() if i + 1 < len(matches) else len(result.stdout)
+        block = result.stdout[block_start:block_end]
+
+        fields = {}
+        for key, pattern in _ANDROID_PKG_FIELD_RES.items():
+            field_match = pattern.search(block)
+            if field_match:
+                fields[key] = field_match.group(1)
+
+        code_path = fields.get("code_path", "")
+        is_system_app = code_path.startswith(('/system/', '/product/', '/apex/', '/vendor/'))
+        first_install = _android_dumpsys_time_to_unix(fields.get("first_install_time"))
+        last_update = _android_dumpsys_time_to_unix(fields.get("last_update_time"))
+
+        value_parts = []
+        if fields.get("version_name"):
+            value_parts.append(f"Version: {fields['version_name']}")
+        if fields.get("version_code"):
+            value_parts.append(f"Version Code: {fields['version_code']}")
+        value_parts.append("System App" if is_system_app else "User-Installed")
+        if last_update and last_update != first_install:
+            value_parts.append(f"Last Updated: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(last_update))}")
+
+        records.append({
+            "artifact_type": "android_installed_app", "title": pkg_name, "url": "",
+            "value": " | ".join(value_parts), "timestamp": first_install,
+            "extra": {
+                "package": pkg_name, "version_name": fields.get("version_name"),
+                "version_code": fields.get("version_code"), "code_path": code_path or None,
+                "is_system_app": is_system_app, "last_update_timestamp": last_update,
+            },
+        })
+
+    if not records:
+        return 0
+
+    manifest_path = f"{output_path.rstrip(os.sep)}_app_inventory.json"
+    try:
+        with open(manifest_path, "w") as f:
+            json.dump({
+                "source": "adb shell dumpsys package packages",
+                "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "note": "Raw dumpsys output is not saved here (can run to megabytes of unrelated system "
+                        "service state) - only the per-package fields this app parsed out of it. "
+                        "Timestamps are the device's own printed local time, stamped as UTC since this "
+                        "app has no reliable way to know the device's real configured timezone.",
+                "package_count": len(records),
+                "packages": [r["extra"] for r in records],
+            }, f)
+    except OSError:
+        pass  # the parsed_artifacts rows below are the real record either way
+    else:
+        _auto_tag_case_artifact(case_folder, manifest_path)
+
+    identity = {"source_type": "real_fs", "image_path": None, "fs_offset": None, "inode": None,
+                "path": f"{output_path.rstrip(os.sep)}_app_inventory"}
+    _record_parsed_artifacts(case_folder, identity, records)
+    return len(records)
+
+
 # --- Physical/raw Android acquisition: on-device target enumeration ---
 # PROVISIONAL - every parsing assumption below is from documented Android/
 # Linux convention (kernel /proc, sysfs, and the standard `ls -la` symlink-
@@ -722,6 +859,17 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
                 else:
                     append_log("[-] Could not capture on-device timestamps - Evidence Timeline entries for this "
                                "acquisition will fall back to copy time (disclosed there automatically).")
+
+                append_log("[*] Capturing installed app inventory (adb shell dumpsys package packages)...")
+                app_count = _capture_android_app_inventory(serial, output_path, os.path.dirname(output_path))
+                if app_count:
+                    append_log(f"[+] Captured {app_count} installed app(s) - searchable in File Views and on the "
+                               "Evidence Timeline.")
+                    report_data["acquisition_parameters"]["apps_captured"] = app_count
+                else:
+                    append_log("[-] Could not capture installed app inventory (device disconnected, or "
+                               "dumpsys returned nothing usable) - this is a best-effort enrichment, the "
+                               "pull itself is unaffected.")
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
             append_log(f"[-] adb {mode} exited with code {proc.returncode}")

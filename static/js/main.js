@@ -1937,6 +1937,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     android_sms_message: 'Android: SMS/MMS (Rooted Physical Image Only)',
     android_contact: 'Android: Contacts (Rooted Physical Image Only)',
     android_call_log: 'Android: Call Log (Rooted Physical Image Only)',
+    android_installed_app: 'Android: Installed App Inventory (adb pull)',
     whatsapp_message: 'WhatsApp: Messages (Native Parse)',
     whatsapp_call_log: 'WhatsApp: Calls (Native Parse)',
     whatsapp_contact: 'WhatsApp: Contacts (Native Parse)',
