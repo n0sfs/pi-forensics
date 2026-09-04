@@ -21,6 +21,19 @@ file after updating to see what changed.
 
 ---
 
+## [1.40.0] - 2026-09-04
+
+### Added
+
+- **A rooted physical Android image's SMS/MMS parsing now covers MMS messages, not just SMS.**
+  Right-click a rooted physical image (or its already-extracted `mmssms.db`) and every real MMS
+  message - text content, photo/video attachment filenames, subject lines, sender/recipient, and
+  group-MMS participants - now shows up alongside SMS in the same searchable index and Evidence
+  Timeline. Grounded directly against real Android platform source (`Telephony.Mms`/`Mms.Part`/
+  `Mms.Addr`) and a real, working MMS-parsing library's own address-type constants, including the
+  well-known "MMS timestamps are in seconds, SMS timestamps are in milliseconds" distinction that's
+  a common source of mistakes in this exact area.
+
 ## [1.39.0] - 2026-09-04
 
 ### Added
