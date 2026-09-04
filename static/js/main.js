@@ -2006,6 +2006,14 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     live_collection_mapped_drive: 'Live Collection: Mapped Network Drive',
     live_collection_clipboard: 'Live Collection: Clipboard Contents',
     live_collection_hash_list_match: 'Live Collection: Hash List Match',
+    // 2026-09-03: already-collected-but-never-parsed files, see the
+    // matching backend comment in routes/case_index.py.
+    live_collection_system_info: 'Live Collection: System Info',
+    live_collection_system_boot: 'Live Collection: System Boot Time',
+    live_collection_arp_entry: 'Live Collection: ARP Cache Entry',
+    live_collection_dns_cache_entry: 'Live Collection: DNS Cache Entry',
+    live_collection_installed_hotfix: 'Live Collection: Installed Hotfix',
+    live_collection_loaded_driver: 'Live Collection: Loaded Driver',
 };
 
 function buildFileViewsHierarchy(summary) {

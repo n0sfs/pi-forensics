@@ -36,6 +36,7 @@ Evidence Timeline as a dense "state as of this snapshot" cluster.
 """
 import json
 import os
+from datetime import datetime
 
 # --- Windows side ---
 
@@ -150,6 +151,75 @@ def _safe_extra(raw, max_len=_VALUE_MAX_LEN):
     return {k: (_safe_value_text(v, max_len) if isinstance(v, (dict, list)) else v) for k, v in raw.items()}
 
 
+def _parse_iso_datetime_epoch(text):
+    """windows_collector.ps1 stamps every genuinely historical timestamp
+    (process creation_date, TCP connection created, hotfix installed_on,
+    system last_boot_time) via PowerShell's `.ToString('o')` - confirmed
+    live (2026-09-03) against real PowerShell 5.1/7 output to always
+    produce e.g. "2026-09-03T20:13:04.4885418-04:00" (7-digit, i.e.
+    100-nanosecond-tick, fractional seconds - .NET's native resolution,
+    not milliseconds), and confirmed live that Python 3.13's
+    datetime.fromisoformat() parses that exact format correctly
+    (silently rounding to microsecond precision, which is more than
+    enough here). Every caller of this function is expected to fall back
+    to the collection run's own capture timestamp when this returns None
+    - some of these fields are legitimately absent for real reasons (a
+    process with no CreationDate, e.g. System Idle Process; a hotfix with
+    no InstalledOn), not just malformed collector output, so this always
+    degrades quietly rather than raising.
+
+    A NAIVE (no timezone offset) datetime is deliberately treated as
+    unparseable, not silently converted via `.timestamp()`'s own default
+    of assuming the ANALYSIS machine's local timezone - that would make
+    the resulting timestamp depend on where the case is being reviewed
+    rather than the evidence itself, exactly the class of bug this project
+    has already found and fixed twice this same session for a different
+    reason (Windows Registry FILETIME values, macOS plist dates, both
+    naive-but-actually-UTC). It's moot for real collector output, which
+    is always offset-aware via .ToString('o') - this only matters for a
+    genuinely malformed/legacy field, where falling back to the run's own
+    capture time is the honest, deterministic answer."""
+    if not text or not isinstance(text, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.timestamp()
+
+
+def _parse_system_info(run_dir, ts):
+    """system_info.json is the one Windows category that's a single dict,
+    not a list (_load_json's own generic caller doesn't assume a shape, so
+    this is handled entirely here). Emits up to two records: a general
+    "System Info" summary (always, stamped with the run's own capture
+    time), and - only when last_boot_time actually parses - a separate
+    "System Boot" record stamped with the machine's real, historical
+    boot time. That second one is the genuinely pattern-of-life-useful
+    piece: a real, discrete event on the Evidence Timeline distinct from
+    "when did the examiner run the collector", not just more collection
+    metadata (2026-09-03)."""
+    info = _load_json(run_dir, 'system_info.json')
+    if not isinstance(info, dict):
+        return []
+    hostname = info.get('hostname') or 'Unknown Host'
+    os_caption = _safe_value_text(info.get('os_caption', ''))
+    os_build = _safe_value_text(info.get('os_build', ''))
+    os_arch = _safe_value_text(info.get('os_architecture', ''))
+    summary = f"{os_caption} (build {os_build}, {os_arch})"
+    records = [_record('live_collection_system_info', str(hostname), '', summary, ts, _safe_extra(info))]
+
+    boot_ts = _parse_iso_datetime_epoch(info.get('last_boot_time'))
+    if boot_ts is not None:
+        records.append(_record(
+            'live_collection_system_boot', f"System Boot - {hostname}", '', summary, boot_ts,
+            {'hostname': hostname, 'os_caption': os_caption, 'last_boot_time': info.get('last_boot_time')},
+        ))
+    return records
+
+
 def _parse_processes(run_dir, ts):
     procs = _load_json(run_dir, 'processes.json')
     if not isinstance(procs, list):
@@ -174,7 +244,12 @@ def _parse_processes(run_dir, ts):
             'creation_date': p.get('creation_date'), 'owner': p.get('owner'),
             'sha256': sha256,
         }
-        records.append(_record('live_collection_process', p.get('name'), '', value, ts, extra))
+        # Real per-process launch time (2026-09-03) - falls back to the
+        # collection run's own capture time for the small number of
+        # processes that legitimately have no CreationDate (System Idle
+        # Process, sometimes System itself), never crashes on it.
+        record_ts = _parse_iso_datetime_epoch(p.get('creation_date')) or ts
+        records.append(_record('live_collection_process', p.get('name'), '', value, record_ts, extra))
     return records
 
 
@@ -201,7 +276,12 @@ def _parse_network_connections(run_dir, ts):
         title = f"{proto} {local}" + (f" -> {remote}" if remote else '')
         value = _safe_value_text(c.get('state') or '')
         extra = _safe_extra(c)
-        records.append(_record('live_collection_network_connection', title, '', value, ts, extra))
+        # Real "when was this connection established" data for TCP
+        # (2026-09-03) - never present for UDP (connectionless, no
+        # equivalent PowerShell property) or the legacy netstat fallback
+        # shape, both of which correctly fall back to the run's own ts.
+        record_ts = _parse_iso_datetime_epoch(c.get('created')) or ts
+        records.append(_record('live_collection_network_connection', title, '', value, record_ts, extra))
     return records
 
 
@@ -215,6 +295,53 @@ def _parse_logged_on_users(run_dir, ts):
             continue
         raw = s.get('raw_line', '')
         records.append(_record('live_collection_logged_on_user', 'Logged-On Session', '', raw, ts, {'raw_line': raw}))
+    return records
+
+
+def _parse_arp_cache(run_dir, ts):
+    entries = _load_json(run_dir, 'arp_cache.json')
+    if not isinstance(entries, list):
+        return []
+    records = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        # Two real shapes: Get-NetNeighbor's own snake_case object (see
+        # windows_collector.ps1's 2026-09-03 normalization) vs. the legacy
+        # `arp -a` text fallback (raw_line/source only).
+        if 'ip_address' in e:
+            title = _safe_value_text(e.get('ip_address', ''))
+            mac = _safe_value_text(e.get('mac_address', ''))
+            state = _safe_value_text(e.get('state', ''))
+            value = f"{mac} ({state})"
+        else:
+            title = 'ARP Entry'
+            value = _safe_value_text(e.get('raw_line', ''))
+        records.append(_record('live_collection_arp_entry', title, '', value, ts, _safe_extra(e)))
+    return records
+
+
+def _parse_dns_cache(run_dir, ts):
+    entries = _load_json(run_dir, 'dns_cache.json')
+    if not isinstance(entries, list):
+        return []
+    records = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        # Two real shapes: Get-DnsClientCache's own snake_case object (see
+        # windows_collector.ps1's 2026-09-03 normalization) vs. the legacy
+        # `ipconfig /displaydns` text fallback (raw_line/source only).
+        if 'name' in e:
+            title = _safe_value_text(e.get('name', ''))
+            data = _safe_value_text(e.get('data', ''))
+            rtype = _safe_value_text(e.get('type', ''))
+            ttl = _safe_value_text(e.get('ttl', ''))
+            value = f"{data} (type {rtype}, TTL {ttl})"
+        else:
+            title = 'DNS Cache Entry'
+            value = _safe_value_text(e.get('raw_line', ''))
+        records.append(_record('live_collection_dns_cache_entry', title, '', value, ts, _safe_extra(e)))
     return records
 
 
@@ -275,6 +402,44 @@ def _parse_autoruns(run_dir, ts):
     return records
 
 
+def _parse_installed_hotfixes(run_dir, ts):
+    hotfixes = _load_json(run_dir, 'installed_hotfixes.json')
+    if not isinstance(hotfixes, list):
+        return []
+    records = []
+    for h in hotfixes:
+        if not isinstance(h, dict):
+            continue
+        title = _safe_value_text(h.get('hotfix_id', ''))
+        value = _safe_value_text(h.get('description', ''))
+        # Real "when was this patch applied" data - genuinely historical,
+        # not collection-time metadata (2026-09-03). installed_on is
+        # legitimately null for some real hotfix entries, so this falls
+        # back to the run's own capture time rather than guessing.
+        record_ts = _parse_iso_datetime_epoch(h.get('installed_on')) or ts
+        records.append(_record('live_collection_installed_hotfix', title, '', value, record_ts, _safe_extra(h)))
+    return records
+
+
+def _parse_loaded_drivers(run_dir, ts):
+    drivers = _load_json(run_dir, 'loaded_drivers.json')
+    if not isinstance(drivers, list):
+        return []
+    records = []
+    for d in drivers:
+        if not isinstance(d, dict):
+            continue
+        title = d.get('display_name') or d.get('name') or ''
+        state = _safe_value_text(d.get('state', ''))
+        path = _safe_value_text(d.get('path_name', ''))
+        value = f"{state} - {path}"
+        # No per-driver "loaded at" time is available via Win32_SystemDriver
+        # - a real OS limitation, not a collector gap - so every record
+        # here is stamped with the run's own capture time.
+        records.append(_record('live_collection_loaded_driver', str(title), '', value, ts, _safe_extra(d)))
+    return records
+
+
 def _parse_mapped_drives(run_dir, ts):
     drives = _load_json(run_dir, 'mapped_drives.json')
     if not isinstance(drives, list):
@@ -301,9 +466,13 @@ def _parse_windows_clipboard(run_dir, ts):
 
 
 _WINDOWS_PARSERS = (
+    ('system_info', _parse_system_info),
     ('processes', _parse_processes), ('network_connections', _parse_network_connections),
-    ('logged_on_users', _parse_logged_on_users), ('services', _parse_services),
+    ('logged_on_users', _parse_logged_on_users),
+    ('arp_cache', _parse_arp_cache), ('dns_cache', _parse_dns_cache),
+    ('services', _parse_services),
     ('scheduled_tasks', _parse_scheduled_tasks), ('autoruns', _parse_autoruns),
+    ('installed_hotfixes', _parse_installed_hotfixes), ('loaded_drivers', _parse_loaded_drivers),
     ('mapped_drives', _parse_mapped_drives), ('clipboard', _parse_windows_clipboard),
 )
 

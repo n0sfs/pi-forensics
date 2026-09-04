@@ -40,11 +40,20 @@ def _build_full_fixture(run_dir):
         {"category": "processes", "status": "ok", "detail": "", "timestamp": "2026-08-31T00:00:00Z"},
         {"category": "loaded_drivers", "status": "skipped", "detail": "requires administrator privileges", "timestamp": "x"},
     ])
+    _write_json(run_dir, "system_info.json", {
+        "hostname": "DESKTOP-TEST", "os_caption": "Microsoft Windows 11 Pro", "os_version": "10.0.22631",
+        "os_build": "22631", "os_architecture": "64-bit", "last_boot_time": "2026-08-30T07:00:00.0000000-04:00",
+        "current_time": "2026-08-31T10:00:00.0000000-04:00", "timezone": "Eastern Standard Time",
+        "manufacturer": "Dell Inc.", "model": "OptiPlex 7090", "domain": "WORKGROUP", "collected_as_admin": False,
+    })
     _write_json(run_dir, "processes.json", [
+        # Real windows_collector.ps1 output is always offset-aware via
+        # .ToString('o') (see the 2026-09-03 fix) - this fixture matches
+        # that exact shape, not a naive/unrealistic one.
         {"pid": 100, "parent_pid": 4, "name": "svchost.exe", "executable_path": "C:\\Windows\\System32\\svchost.exe",
-         "command_line": "svchost.exe -k netsvcs", "creation_date": "2026-08-31T10:00:00", "owner": "SYSTEM"},
+         "command_line": "svchost.exe -k netsvcs", "creation_date": "2026-08-31T10:00:00.0000000-04:00", "owner": "SYSTEM"},
         {"pid": 200, "parent_pid": 100, "name": "evil.exe", "executable_path": "C:\\Temp\\evil.exe",
-         "command_line": "evil.exe --beacon", "creation_date": "2026-08-31T10:05:00", "owner": "user1"},
+         "command_line": "evil.exe --beacon", "creation_date": "2026-08-31T10:05:00.0000000-04:00", "owner": "user1"},
     ])
     _write_json(run_dir, "process_hashes.json", [
         {"executable_path": "C:\\Windows\\System32\\svchost.exe", "sha256": "aaaa" * 16},
@@ -52,11 +61,21 @@ def _build_full_fixture(run_dir):
     ])
     _write_json(run_dir, "network_connections.json", [
         {"protocol": "TCP", "local_address": "10.0.0.5", "local_port": 49152,
-         "remote_address": "203.0.113.9", "remote_port": 443, "state": "Established", "owning_pid": 200},
+         "remote_address": "203.0.113.9", "remote_port": 443, "state": "Established", "owning_pid": 200,
+         "created": "2026-08-31T09:58:00.0000000-04:00"},
         {"protocol": "TCP", "local": "127.0.0.1:5000", "remote": "0.0.0.0:0", "state": "LISTENING",
          "owning_pid": 999, "source": "netstat (legacy fallback)"},
     ])
     _write_json(run_dir, "logged_on_users.json", [{"raw_line": "user1  console  1  Active  none  8/31/2026 9:00 AM"}])
+    _write_json(run_dir, "arp_cache.json", [
+        {"ip_address": "10.0.0.1", "mac_address": "aa-bb-cc-dd-ee-ff", "state": "Reachable", "interface": "Ethernet"},
+    ])
+    _write_json(run_dir, "dns_cache.json", [
+        {"entry": "example.com", "name": "example.com", "data": "93.184.216.34", "ttl": 300, "type": 1},
+    ])
+    _write_json(run_dir, "installed_hotfixes.json", [
+        {"hotfix_id": "KB5031354", "description": "Security Update", "installed_on": "2026-08-01T00:00:00.0000000-04:00"},
+    ])
     _write_json(run_dir, "services.json", [
         {"name": "wuauserv", "display_name": "Windows Update", "state": "Running",
          "start_mode": "Auto", "path": "C:\\Windows\\System32\\svchost.exe -k netsvcs", "start_name": "LocalSystem"},
@@ -86,12 +105,17 @@ def test_parse_windows_collector_run_full_fixture(tmp_path):
     for r in records:
         by_type.setdefault(r['artifact_type'], []).append(r)
 
+    assert len(by_type['live_collection_system_info']) == 1
+    assert len(by_type['live_collection_system_boot']) == 1
     assert len(by_type['live_collection_process']) == 2
     assert len(by_type['live_collection_network_connection']) == 2
     assert len(by_type['live_collection_logged_on_user']) == 1
+    assert len(by_type['live_collection_arp_entry']) == 1
+    assert len(by_type['live_collection_dns_cache_entry']) == 1
     assert len(by_type['live_collection_service']) == 1
     assert len(by_type['live_collection_scheduled_task']) == 1
     assert len(by_type['live_collection_autorun']) == 1
+    assert len(by_type['live_collection_installed_hotfix']) == 1
     assert len(by_type['live_collection_mapped_drive']) == 1
     assert len(by_type['live_collection_clipboard']) == 1
 
@@ -101,8 +125,27 @@ def test_parse_windows_collector_run_full_fixture(tmp_path):
     assert evil['extra']['pid'] == 200
     assert 'evil.exe --beacon' in evil['value']
 
-    # Every record from this run carries the exact same run_timestamp
-    assert all(r['timestamp'] == 1756598400.0 for r in records)
+    # Records with a real, offset-aware historical timestamp in the source
+    # data now carry THEIR OWN timestamp (2026-09-03), not the run's own
+    # capture time - process creation, connection establishment, hotfix
+    # install date, and system boot time are all genuinely different
+    # instants than 1756598400.0 (the run_timestamp passed in above).
+    assert evil['timestamp'] != 1756598400.0
+    svchost = next(r for r in by_type['live_collection_process'] if r['title'] == 'svchost.exe')
+    assert svchost['timestamp'] != 1756598400.0
+    assert svchost['timestamp'] != evil['timestamp']  # each process keeps its OWN creation time
+    conn_with_created = next(r for r in by_type['live_collection_network_connection'] if 'Established' in r['value'])
+    assert conn_with_created['timestamp'] != 1756598400.0
+    assert by_type['live_collection_installed_hotfix'][0]['timestamp'] != 1756598400.0
+    assert by_type['live_collection_system_boot'][0]['timestamp'] != 1756598400.0
+
+    # Records with no genuine per-item historical timestamp still fall
+    # back to the run's own capture time, exactly as before this feature.
+    assert by_type['live_collection_service'][0]['timestamp'] == 1756598400.0
+    assert by_type['live_collection_autorun'][0]['timestamp'] == 1756598400.0
+    assert by_type['live_collection_system_info'][0]['timestamp'] == 1756598400.0
+    netstat_fallback_conn = next(r for r in by_type['live_collection_network_connection'] if 'LISTENING' in r['value'])
+    assert netstat_fallback_conn['timestamp'] == 1756598400.0  # legacy shape has no 'created' field at all
 
     # Two real network-connection shapes both parsed correctly
     conn_titles = {r['title'] for r in by_type['live_collection_network_connection']}
@@ -455,3 +498,218 @@ def test_parse_scheduled_tasks_survives_a_nested_actions_field(tmp_path):
     records = lcru._parse_scheduled_tasks(run_dir, ts=1.0)
     assert len(records) == 1
     assert 'unexpected object value' in records[0]['value']
+
+
+# --- _parse_iso_datetime_epoch: the 2026-09-03 per-record-timestamp feature ---
+#
+# windows_collector.ps1 now stamps process creation_date, TCP connection
+# created, hotfix installed_on, and system last_boot_time via PowerShell's
+# `.ToString('o')` (confirmed live against real PowerShell 5.1/7 output -
+# see that script's own comments) so this app can show each record's
+# REAL historical timestamp on the Evidence Timeline instead of always
+# using the collection run's own capture time.
+
+def test_parse_iso_datetime_epoch_accepts_the_real_powershell_format():
+    # Confirmed live: PowerShell's .ToString('o') produces exactly this
+    # shape - 7-digit (100ns-tick) fractional seconds, colon-separated offset.
+    epoch = lcru._parse_iso_datetime_epoch("2026-09-03T20:13:04.4885418-04:00")
+    assert epoch is not None
+    assert abs(epoch - 1788480784.488541) < 0.01
+
+
+def test_parse_iso_datetime_epoch_accepts_a_z_suffix():
+    assert lcru._parse_iso_datetime_epoch("2026-09-03T20:13:04.0000000Z") is not None
+
+
+def test_parse_iso_datetime_epoch_rejects_a_naive_datetime():
+    # No offset at all - deliberately NOT accepted, even though it parses
+    # fine as a naive datetime, because .timestamp() on a naive datetime
+    # would silently assume the ANALYSIS machine's own local timezone -
+    # the same class of bug this project already fixed twice this session
+    # for a different reason (Registry FILETIME, macOS plist dates).
+    assert lcru._parse_iso_datetime_epoch("2026-09-03T20:13:04") is None
+    assert lcru._parse_iso_datetime_epoch("2026-09-03T20:13:04.0000000") is None
+
+
+def test_parse_iso_datetime_epoch_rejects_garbage():
+    assert lcru._parse_iso_datetime_epoch("not a date") is None
+    assert lcru._parse_iso_datetime_epoch("") is None
+    assert lcru._parse_iso_datetime_epoch(None) is None
+    assert lcru._parse_iso_datetime_epoch(12345) is None  # non-string input
+
+
+def test_parse_processes_falls_back_to_run_ts_when_creation_date_is_missing(tmp_path):
+    # A real, common case, not hypothetical - System Idle Process (PID 0)
+    # genuinely has no CreationDate in WMI.
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "processes.json", [
+        {"pid": 0, "parent_pid": 0, "name": "System Idle Process", "executable_path": None,
+         "command_line": None, "creation_date": None, "owner": None},
+    ])
+    records = lcru._parse_processes(run_dir, ts=1756598400.0)
+    assert len(records) == 1
+    assert records[0]['timestamp'] == 1756598400.0
+
+
+def test_parse_network_connections_falls_back_to_run_ts_when_created_is_missing(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "network_connections.json", [
+        {"protocol": "UDP", "local_address": "0.0.0.0", "local_port": 5353, "owning_pid": 500},
+    ])
+    records = lcru._parse_network_connections(run_dir, ts=1756598400.0)
+    assert len(records) == 1
+    assert records[0]['timestamp'] == 1756598400.0
+
+
+# --- _parse_system_info ---
+
+def test_parse_system_info_emits_a_summary_and_a_boot_record(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    # Boot time is deliberately earlier than the run's own ts (below) - both
+    # computed for real via _parse_iso_datetime_epoch itself, not hand-typed
+    # epoch guesses, so this test can't drift from real datetime math again.
+    boot_iso = "2026-08-30T07:00:00.0000000-04:00"
+    run_ts = lcru._parse_iso_datetime_epoch("2026-08-31T10:00:00.0000000-04:00")
+    _write_json(run_dir, "system_info.json", {
+        "hostname": "DESKTOP-TEST", "os_caption": "Microsoft Windows 11 Pro", "os_build": "22631",
+        "os_architecture": "64-bit", "last_boot_time": boot_iso,
+        "current_time": "2026-08-31T10:00:00.0000000-04:00", "timezone": "Eastern Standard Time",
+    })
+    records = lcru._parse_system_info(run_dir, ts=run_ts)
+    assert len(records) == 2
+
+    info = next(r for r in records if r['artifact_type'] == 'live_collection_system_info')
+    assert info['title'] == 'DESKTOP-TEST'
+    assert 'Windows 11 Pro' in info['value']
+    assert info['timestamp'] == run_ts  # this one IS collection metadata
+
+    boot = next(r for r in records if r['artifact_type'] == 'live_collection_system_boot')
+    assert 'DESKTOP-TEST' in boot['title']
+    assert boot['timestamp'] == lcru._parse_iso_datetime_epoch(boot_iso)
+    assert boot['timestamp'] < info['timestamp']  # boot genuinely happened before collection
+
+
+def test_parse_system_info_no_boot_record_when_last_boot_time_missing(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "system_info.json", {"hostname": "DESKTOP-TEST", "os_caption": "Windows 10"})
+    records = lcru._parse_system_info(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert records[0]['artifact_type'] == 'live_collection_system_info'
+
+
+def test_parse_system_info_non_dict_or_missing_returns_empty(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    assert lcru._parse_system_info(run_dir, ts=1.0) == []  # file missing entirely
+    _write_json(run_dir, "system_info.json", ["not", "a", "dict"])
+    assert lcru._parse_system_info(run_dir, ts=1.0) == []
+
+
+# --- _parse_arp_cache ---
+
+def test_parse_arp_cache_modern_shape(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "arp_cache.json", [
+        {"ip_address": "10.0.0.1", "mac_address": "aa-bb-cc-dd-ee-ff", "state": "Reachable", "interface": "Ethernet"},
+    ])
+    records = lcru._parse_arp_cache(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert records[0]['title'] == '10.0.0.1'
+    assert 'aa-bb-cc-dd-ee-ff' in records[0]['value']
+    assert 'Reachable' in records[0]['value']
+
+
+def test_parse_arp_cache_legacy_shape(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "arp_cache.json", [
+        {"raw_line": "  10.0.0.1             aa-bb-cc-dd-ee-ff     dynamic", "source": "arp -a (legacy fallback)"},
+    ])
+    records = lcru._parse_arp_cache(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert '10.0.0.1' in records[0]['value']
+
+
+def test_parse_arp_cache_missing_file_returns_empty(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    assert lcru._parse_arp_cache(run_dir, ts=1.0) == []
+
+
+# --- _parse_dns_cache ---
+
+def test_parse_dns_cache_modern_shape(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "dns_cache.json", [
+        {"entry": "example.com", "name": "example.com", "data": "93.184.216.34", "ttl": 300, "type": 1},
+    ])
+    records = lcru._parse_dns_cache(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert records[0]['title'] == 'example.com'
+    assert '93.184.216.34' in records[0]['value']
+
+
+def test_parse_dns_cache_legacy_shape(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "dns_cache.json", [
+        {"raw_line": "example.com. -------- A -------- 93.184.216.34", "source": "ipconfig /displaydns (legacy fallback)"},
+    ])
+    records = lcru._parse_dns_cache(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert 'example.com' in records[0]['value']
+
+
+# --- _parse_installed_hotfixes ---
+
+def test_parse_installed_hotfixes_with_real_install_date(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "installed_hotfixes.json", [
+        {"hotfix_id": "KB5031354", "description": "Security Update", "installed_on": "2026-08-01T00:00:00.0000000-04:00"},
+    ])
+    records = lcru._parse_installed_hotfixes(run_dir, ts=1756598400.0)
+    assert len(records) == 1
+    assert records[0]['title'] == 'KB5031354'
+    assert records[0]['timestamp'] != 1756598400.0  # a real, distinct historical event
+
+
+def test_parse_installed_hotfixes_falls_back_when_installed_on_missing(tmp_path):
+    # A real, documented quirk of Get-HotFix, not hypothetical - some
+    # entries genuinely have no InstalledOn.
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "installed_hotfixes.json", [
+        {"hotfix_id": "KB0000000", "description": "Unknown", "installed_on": None},
+    ])
+    records = lcru._parse_installed_hotfixes(run_dir, ts=1756598400.0)
+    assert len(records) == 1
+    assert records[0]['timestamp'] == 1756598400.0
+
+
+# --- _parse_loaded_drivers ---
+
+def test_parse_loaded_drivers(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    _write_json(run_dir, "loaded_drivers.json", [
+        {"name": "acpi", "display_name": "Microsoft ACPI Driver", "state": "Running",
+         "path_name": "\\SystemRoot\\System32\\drivers\\acpi.sys"},
+    ])
+    records = lcru._parse_loaded_drivers(run_dir, ts=1756598400.0)
+    assert len(records) == 1
+    assert records[0]['title'] == 'Microsoft ACPI Driver'
+    assert 'acpi.sys' in records[0]['value']
+    assert records[0]['timestamp'] == 1756598400.0  # no per-driver load time exists at the OS level
+
+
+def test_parse_loaded_drivers_missing_file_returns_empty(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    assert lcru._parse_loaded_drivers(run_dir, ts=1.0) == []

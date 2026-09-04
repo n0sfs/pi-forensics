@@ -339,6 +339,15 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "live_collection_mapped_drive": "Live Collection: Mapped Network Drive",
     "live_collection_clipboard": "Live Collection: Clipboard Contents",
     "live_collection_hash_list_match": "Live Collection: Hash List Match",
+    # 2026-09-03: system_info/arp_cache/dns_cache/installed_hotfixes/
+    # loaded_drivers were already collected by windows_collector.ps1 but
+    # never had a parser at all - real data sitting unindexed until now.
+    "live_collection_system_info": "Live Collection: System Info",
+    "live_collection_system_boot": "Live Collection: System Boot Time",
+    "live_collection_arp_entry": "Live Collection: ARP Cache Entry",
+    "live_collection_dns_cache_entry": "Live Collection: DNS Cache Entry",
+    "live_collection_installed_hotfix": "Live Collection: Installed Hotfix",
+    "live_collection_loaded_driver": "Live Collection: Loaded Driver",
 }
 
 @case_index_bp.route('/api/case_index/parsed_artifacts', methods=['POST'])
