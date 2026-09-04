@@ -92,7 +92,11 @@ def _build_addressbook_db():
     conn.execute("CREATE TABLE ABPerson (ROWID INTEGER PRIMARY KEY, First TEXT, Last TEXT, Organization TEXT)")
     conn.execute("CREATE TABLE ABMultiValue (record_id INTEGER, property INTEGER, value TEXT)")
     conn.execute("INSERT INTO ABPerson (ROWID, First, Last, Organization) VALUES (1, 'Jane', 'Doe', NULL)")
+    # A mixed phone (property 3) + email (property 4) row on the SAME
+    # contact - this is exactly the case the old code couldn't tell apart
+    # (both merged into one un-typed list before the 2026-09-04 fix).
     conn.execute("INSERT INTO ABMultiValue (record_id, property, value) VALUES (1, 3, '+15559876543')")
+    conn.execute("INSERT INTO ABMultiValue (record_id, property, value) VALUES (1, 4, 'jane@example.com')")
     conn.commit()
     conn.close()
     data = open(path, "rb").read()
@@ -235,8 +239,21 @@ def test_contact_parsing_joins_name_and_phone_number(tmp_path):
     assert len(records) == 1
     r = records[0]
     assert r["title"] == "Jane Doe"
-    assert r["value"] == "+15559876543"
+    assert r["value"] == "+15559876543, jane@example.com"
     assert r["timestamp"] is None  # no reliable per-record timestamp exists in this schema
+
+
+def test_contact_parsing_buckets_phones_and_emails_separately_in_extra(tmp_path):
+    # 2026-09-04 regression: previously ABMultiValue's phone (property 3)
+    # and email (property 4) rows were merged into one un-typed list with
+    # no machine-readable extra["phones"] - the one contact source the
+    # correlation layer couldn't use. Confirms the fix buckets correctly
+    # even though both values sit on the exact same contact record.
+    backup_dir = _build_synthetic_backup(tmp_path)
+    records, _found = ma.parse_mobile_contacts(str(backup_dir))
+    r = records[0]
+    assert r["extra"]["phones"] == ["+15559876543"]
+    assert r["extra"]["emails"] == ["jane@example.com"]
 
 
 def test_call_log_parsing_extracts_direction_and_duration(tmp_path):

@@ -23,7 +23,7 @@ from core.case_index_db import (
     _case_index_open_readonly, _case_index_open_write,
     _tags_for_paths, _analysis_results_for_paths, TRIAGE_PATTERNS,
     _backfill_case_artifact_tags, KEYWORD_CATEGORY_PREFIX, resolve_scan_category_label,
-    has_case_analysis_activity, cross_case_hash_search,
+    has_case_analysis_activity, cross_case_hash_search, correlate_contacts,
 )
 
 case_index_bp = Blueprint('case_index', __name__)
@@ -412,6 +412,23 @@ def case_index_parsed_artifacts():
         finally:
             conn.close()
     return jsonify({"success": True, "rows": rows})
+
+@case_index_bp.route('/api/case_index/contact_correlation', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def case_index_contact_correlation():
+    """Contact correlation report (core/case_index_db.py::correlate_
+    contacts()) - the "who did the evidence owner actually talk to"
+    pattern-of-life view: cross-references every already-parsed contact
+    source (android_contact/apple_contact/takeout_contact/mobile_contact/
+    whatsapp_contact) against every already-parsed communication source
+    (SMS/call log/WhatsApp messages+calls, Android and iOS both), resolving
+    a raw phone number/JID to a real name wherever the two agree. Purely
+    read-only against the already-indexed parsed_artifacts table - runs
+    fresh on every request, same as /api/cases/timeline, no new schema."""
+    req = request.get_json() or {}
+    result = correlate_contacts(req.get('case_folder'))
+    return jsonify({"success": True, **result})
 
 @case_index_bp.route('/api/case_index/files', methods=['POST'])
 @requires_auth
