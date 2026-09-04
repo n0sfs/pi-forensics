@@ -13,19 +13,59 @@
         android:name="android.permission.READ_CALL_LOG"
         tools:ignore="SmsAndCallLogPolicy" />
 
+    <!-- SMS support (added 2026-09-04, folding in what was previously a
+         separate vendored app, github.com/gonodono/adbsms). Full-access-tier
+         extraction needs this app to be eligible to temporarily assume the
+         android.app.role.SMS role (`cmd role add-role-holder`), which the
+         OS's own role-eligibility check requires these 6 permissions plus 4
+         component declarations below for - mirrored exactly from adbsms's
+         own real, working `min` manifest (its own comments, reproduced
+         verbatim, since they're the actual reason this odd-looking
+         permission list exists and are worth keeping next to it). -->
+
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
+
+    <!-- All of these except RECEIVE_MMS are required for getDefaultSmsPackage() -->
+    <!-- to work correctly on newer Android versions. If you're missing any, that -->
+    <!-- method may return null while your app is the default SMS app, even though the -->
+    <!-- app will still function as the default. What a mess Android's SMS has become! -->
+    <!-- The system's list of these is in com.android.internal.telephony.SmsApplication. -->
+
+    <uses-permission
+        android:name="android.permission.READ_SMS"
+        tools:ignore="SmsAndCallLogPolicy" />
+    <uses-permission
+        android:name="android.permission.WRITE_SMS"
+        tools:ignore="SmsAndCallLogPolicy,SystemPermissionTypo" />
+    <uses-permission
+        android:name="android.permission.RECEIVE_SMS"
+        tools:ignore="SmsAndCallLogPolicy" />
+    <uses-permission
+        android:name="android.permission.RECEIVE_WAP_PUSH"
+        tools:ignore="SmsAndCallLogPolicy" />
+    <uses-permission
+        android:name="android.permission.SEND_SMS"
+        tools:ignore="SmsAndCallLogPolicy" />
+    <uses-permission
+        android:name="android.permission.READ_CELL_BROADCASTS"
+        tools:ignore="SmsAndCallLogPolicy" />
+
     <application
         android:icon="@android:drawable/sym_def_app_icon"
         android:label="pif-companion"
         tools:ignore="MissingClass,AllowBackup">
 
-        <!-- Both providers are pure authority-rewriting relays, mirroring
-             github.com/gonodono/adbsms's own AdbSmsProvider design exactly:
-             they forward whatever content:// call the shell makes against
-             this app's own exported authority straight through to the real
-             system provider, using this app's own granted runtime
-             permission to authorize the read. checkCallingProcess() in each
-             restricts every call to SHELL_UID only, so a co-located app on
-             the device can never abuse this relay to read the same data. -->
+        <!-- All three providers are pure authority-rewriting relays,
+             mirroring github.com/gonodono/adbsms's own AdbSmsProvider
+             design exactly: they forward whatever content:// call the
+             shell makes against this app's own exported authority
+             straight through to the real system provider, using this
+             app's own granted runtime permission to authorize the read.
+             checkCallingProcess() in each restricts every call to
+             SHELL_UID only, so a co-located app on the device can never
+             abuse this relay to read the same data. -->
 
         <provider
             android:name=".ContactsProvider"
@@ -38,6 +78,76 @@
             android:authorities="pif.companion.calllog"
             android:exported="true"
             tools:ignore="ExportedContentProvider" />
+
+        <provider
+            android:name=".SmsProvider"
+            android:authorities="pif.companion.sms"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+
+
+        <!-- Entries required for default SMS app role eligibility. Component
+             classes don't exist, will throw if the OS ever actually tried to
+             invoke them - accepted because this app is never meant to
+             receive/send real SMS through these paths, only to be eligible
+             for the role long enough for a read-only content query to work
+             through SmsProvider above. Exact same approach adbsms's own
+             `min` module already uses, verbatim. -->
+
+        <!--suppress AndroidDomInspection -->
+        <receiver
+            android:name=".SmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_DELIVER" />
+            </intent-filter>
+        </receiver>
+
+        <!--suppress AndroidDomInspection -->
+        <receiver
+            android:name=".MmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_WAP_PUSH">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.WAP_PUSH_DELIVER" />
+                <data android:mimeType="application/vnd.wap.mms-message" />
+            </intent-filter>
+        </receiver>
+
+        <!--suppress AndroidDomInspection -->
+        <activity
+            android:name=".ComposeSmsActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SENDTO" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+            </intent-filter>
+        </activity>
+
+        <!--suppress AndroidDomInspection -->
+        <service
+            android:name=".HeadlessSmsSendService"
+            android:exported="true"
+            android:permission="android.permission.SEND_RESPOND_VIA_MESSAGE">
+            <intent-filter>
+                <action android:name="android.intent.action.RESPOND_VIA_MESSAGE" />
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+            </intent-filter>
+        </service>
 
     </application>
 

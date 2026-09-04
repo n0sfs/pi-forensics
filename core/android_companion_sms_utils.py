@@ -15,16 +15,21 @@ confirmed via real search results and Android's own documented
 Marshmallow+ SMS-provider restriction (a non-default SMS app - which the
 `shell` identity structurally can never be - only sees `inbox`/`sent`
 messages even WITH the permission granted). A companion app is required
-either way; this module drives adbsms.min (github.com/gonodono/adbsms,
-MIT-licensed by Mike M., real, actively maintained), a tiny relay
-`ContentProvider` with a dedicated headless/no-UI build made specifically
-for exactly this "drive it purely from adb shell, no interactive app UI"
-use case. Vendored as a real prebuilt release APK (see install.py's own
-vendoring step, pinned to release 0.0.12, real SHA256-verified), not
-built from source - this dev/build environment has no Android SDK/Gradle/
-Java toolchain available at all (confirmed directly: none of
-java/gradle/sdkmanager/aapt2/d8/apksigner exist anywhere in PATH), so
-hand-constructing or compiling an APK here was never a realistic option.
+either way.
+
+This originally drove a separately vendored third-party app, adbsms.min
+(github.com/gonodono/adbsms, MIT-licensed by Mike M.) - the exact same
+day, this project's own Contacts/Call Log companion (core/android_
+companion_contacts_calllog_utils.py) was hand-built mirroring adbsms's
+own real relay-provider design, once a real Android build toolchain
+(Google's official `android` CLI) was obtained. With that toolchain
+proven and the exact SMS relay mechanism already fully understood from
+reading adbsms's real source, the SMS capability was folded directly
+into that same app (a third ContentProvider, SmsProvider.java, alongside
+ContactsProvider/CallLogProvider) the same day - removing the separate
+third-party dependency entirely rather than maintaining two vendored
+apps for a mechanism this project now fully owns and builds itself. See
+android_companion/README.md for the full app's own provenance.
 
 Two real access tiers, both driven entirely by adb shell commands against
 the installed collector - see execution_worker_android_companion_sms()
@@ -77,9 +82,15 @@ admin-configurable-column trust).
 import re
 
 from core.android_backup_utils import _SMS_TYPE_LABELS
+from core.android_companion_contacts_calllog_utils import PIF_COMPANION_PACKAGE
 
-ADBSMS_MIN_PACKAGE = "dev.gonodono.adbsms.min"
-ADBSMS_MIN_AUTHORITY = "adbsms.min"
+# SmsProvider's own relay authority - a sibling of PIF_COMPANION_CONTACTS_
+# AUTHORITY/PIF_COMPANION_CALLLOG_AUTHORITY (core/android_companion_
+# contacts_calllog_utils.py), all three now served by the exact same
+# vendored app (PIF_COMPANION_PACKAGE, imported above rather than
+# duplicated - this module used to define its own ADBSMS_MIN_PACKAGE/
+# ADBSMS_MIN_AUTHORITY pointing at the separate third-party app).
+PIF_COMPANION_SMS_AUTHORITY = "pif.companion.sms"
 
 # Order matters: 'body' (the one free-text column) must be requested LAST -
 # see the module docstring's explanation of why. Every other column here is

@@ -34,7 +34,7 @@ from core.idevicecrashreport_utils import pull_ios_crash_reports
 from core.sim_utils import list_pcsc_readers, read_sim_card
 from core.config import ALLOWED_HASH_ALGOS
 from core.android_companion_sms_utils import (
-    ADBSMS_MIN_PACKAGE, ADBSMS_MIN_AUTHORITY, SMS_QUERY_COLUMNS,
+    PIF_COMPANION_SMS_AUTHORITY, SMS_QUERY_COLUMNS,
     parse_content_query_output, build_companion_sms_records,
 )
 from core.android_companion_contacts_calllog_utils import (
@@ -1483,15 +1483,22 @@ def start_android_acquisition():
 
 # --- Companion-app SMS extraction (non-rooted), 2026-09-04 ---
 # See core/android_companion_sms_utils.py's own module docstring for the
-# full research/grounding behind this (real, sourced AOSP behavior; the
-# vendored adbsms.min collector; why the two access tiers exist). This is
-# the one Android acquisition mode in this app that DELIBERATELY modifies
-# the device (installs a real app, grants a permission or reassigns a
-# system role) rather than only reading from it - every step below is
-# disclosed in the resulting manifest/report event and the chain-of-
-# custody log, not just internally reasoned about.
+# full research/grounding behind this (real, sourced AOSP behavior; why
+# the two access tiers exist). This is one of two Android acquisition
+# modes in this app that DELIBERATELY modify the device (installs a real
+# app, grants a permission or reassigns a system role) rather than only
+# reading from it - every step below is disclosed in the resulting
+# manifest/report event and the chain-of-custody log, not just internally
+# reasoned about. SMS and Contacts/Call Log both install the SAME
+# PIF_COMPANION_APK (originally two separate apps - a vendored third-party
+# one for SMS, this project's own for Contacts/Call Log - consolidated
+# into one the same day once the real Android build toolchain and the
+# relay mechanism were both fully understood; see PIF_COMPANION_APK's own
+# comment below and android_companion/README.md).
 ANDROID_COMPANION_APK_DIR = os.path.join(INSTALL_DIR, "android_companion_tools")
-ANDROID_COMPANION_SMS_APK = os.path.join(ANDROID_COMPANION_APK_DIR, "adbsms.min.apk")
+# All three companion providers (SMS/Contacts/Call Log) ship in this one
+# app - see android_companion/README.md for its full provenance.
+PIF_COMPANION_APK = os.path.join(ANDROID_COMPANION_APK_DIR, "pif-companion.apk")
 ANDROID_COMPANION_ADB_TIMEOUT = 30
 # A large SMS database's content query can genuinely take longer to stream
 # out over adb than a short pm/cmd call - given its own headroom, distinct
@@ -1517,8 +1524,9 @@ def _adb_run(serial, args, timeout):
 
 def execution_worker_android_companion_sms(serial, access_tier, output_path, report_file_path,
                                              report_data, case_folder, requester_ip=None, requester_user=None):
-    """Installs the vendored adbsms.min collector, extracts SMS content via
-    its relay ContentProvider, then ALWAYS restores the device to its
+    """Installs the vendored pif-companion collector, extracts SMS content
+    via its relay ContentProvider (SmsProvider), then ALWAYS restores the
+    device to its
     prior state (revoke the permission or restore the original default
     SMS app, then uninstall the collector) before finishing - cleanup runs
     in the outer `finally` block regardless of success, failure, or a Stop
@@ -1577,14 +1585,14 @@ def execution_worker_android_companion_sms(serial, access_tier, output_path, rep
         update_job(format="android_companion_sms", status="Initializing...", progress_percent=0.0,
                    log=f"[*] Initializing companion-app SMS extraction ({access_tier} tier) on {serial}...")
 
-        if not os.path.isfile(ANDROID_COMPANION_SMS_APK):
+        if not os.path.isfile(PIF_COMPANION_APK):
             raise RuntimeError(
-                "adbsms.min.apk is not vendored on this station - re-run install.py with internet "
+                "pif-companion.apk is not vendored on this station - re-run install.py with internet "
                 "access to download it, then retry."
             )
 
-        append_log(f"[*] Installing companion collector ({ADBSMS_MIN_PACKAGE})...")
-        rc, out, err = _adb_run(serial, ["install", "-r", ANDROID_COMPANION_SMS_APK], ANDROID_COMPANION_ADB_TIMEOUT)
+        append_log(f"[*] Installing companion collector ({PIF_COMPANION_PACKAGE})...")
+        rc, out, err = _adb_run(serial, ["install", "-r", PIF_COMPANION_APK], ANDROID_COMPANION_ADB_TIMEOUT)
         record_step("install", rc, (out + err).strip()[:500])
         if rc != 0:
             raise RuntimeError(f"adb install failed: {(err or out).strip()[:300]}")
@@ -1603,7 +1611,7 @@ def execution_worker_android_companion_sms(serial, access_tier, output_path, rep
             append_log("[*] Temporarily assuming the default-SMS-app role for full access - the phone's "
                        "own SMS app will not receive/send normal messages until this is restored below.")
             rc, out, err = _adb_run(
-                serial, ["shell", "cmd", "role", "add-role-holder", "android.app.role.SMS", ADBSMS_MIN_PACKAGE],
+                serial, ["shell", "cmd", "role", "add-role-holder", "android.app.role.SMS", PIF_COMPANION_PACKAGE],
                 ANDROID_COMPANION_ADB_TIMEOUT)
             record_step("add-role-holder", rc, (out + err).strip()[:300])
             if rc != 0:
@@ -1614,7 +1622,7 @@ def execution_worker_android_companion_sms(serial, access_tier, output_path, rep
             append_log("[*] Granting READ_SMS permission (read-only tier - inbox/sent only, no disruption "
                        "to normal messaging).")
             rc, out, err = _adb_run(
-                serial, ["shell", "pm", "grant", ADBSMS_MIN_PACKAGE, "android.permission.READ_SMS"],
+                serial, ["shell", "pm", "grant", PIF_COMPANION_PACKAGE, "android.permission.READ_SMS"],
                 ANDROID_COMPANION_ADB_TIMEOUT)
             record_step("pm_grant", rc, (out + err).strip()[:300])
             if rc != 0:
@@ -1641,7 +1649,7 @@ def execution_worker_android_companion_sms(serial, access_tier, output_path, rep
             projection = ":".join(SMS_QUERY_COLUMNS)
             rc, out, err = _adb_run(
                 serial,
-                ["shell", "content", "query", "--uri", f"content://{ADBSMS_MIN_AUTHORITY}",
+                ["shell", "content", "query", "--uri", f"content://{PIF_COMPANION_SMS_AUTHORITY}",
                  "--projection", projection],
                 ANDROID_COMPANION_QUERY_TIMEOUT)
             record_step("content_query", rc, f"{len((out or '').splitlines())} line(s) returned")
@@ -1686,7 +1694,7 @@ def execution_worker_android_companion_sms(serial, access_tier, output_path, rep
             else:
                 rc, out, err = _adb_run(
                     serial, ["shell", "cmd", "role", "remove-role-holder", "android.app.role.SMS",
-                             ADBSMS_MIN_PACKAGE],
+                             PIF_COMPANION_PACKAGE],
                     ANDROID_COMPANION_ADB_TIMEOUT)
                 record_step("remove-role-holder", rc, "no prior default SMS app - role removed entirely")
             if rc != 0:
@@ -1698,16 +1706,16 @@ def execution_worker_android_companion_sms(serial, access_tier, output_path, rep
 
         if permission_granted:
             rc, out, err = _adb_run(
-                serial, ["shell", "pm", "revoke", ADBSMS_MIN_PACKAGE, "android.permission.READ_SMS"],
+                serial, ["shell", "pm", "revoke", PIF_COMPANION_PACKAGE, "android.permission.READ_SMS"],
                 ANDROID_COMPANION_ADB_TIMEOUT)
             record_step("pm_revoke", rc)
 
         if apk_installed:
-            rc, out, err = _adb_run(serial, ["uninstall", ADBSMS_MIN_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+            rc, out, err = _adb_run(serial, ["uninstall", PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
             record_step("uninstall", rc)
             if rc != 0:
                 append_log(f"[!!] Could not automatically uninstall the collector - manually run "
-                           f"'adb uninstall {ADBSMS_MIN_PACKAGE}' against the device to remove it.")
+                           f"'adb uninstall {PIF_COMPANION_PACKAGE}' against the device to remove it.")
             else:
                 append_log("[+] Collector uninstalled.")
 
@@ -1717,7 +1725,8 @@ def execution_worker_android_companion_sms(serial, access_tier, output_path, rep
         try:
             with open(output_path, "w") as f:
                 json.dump({
-                    "source": "adbsms.min companion-app relay (github.com/gonodono/adbsms, MIT)",
+                    "source": "pif-companion.apk relay (hand-built for this app, mirroring "
+                              "github.com/gonodono/adbsms's own relay-provider design)",
                     "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "access_tier": access_tier,
                     "sms_count": device_log["sms_count"],
@@ -1804,7 +1813,7 @@ def start_android_companion_sms():
         "device_serial": serial,
         "acquisition_parameters": {
             "platform": "Android",
-            "method": "adbsms.min companion-app relay (installs/modifies/restores device state - see "
+            "method": "pif-companion.apk relay (installs/modifies/restores device state - see "
                       "device_modification_log)",
             "access_tier": access_tier,
             "output_destination": output_path,
@@ -1860,16 +1869,21 @@ def cleanup_android_companion_sms():
     rc, out, err = _adb_run(serial, ["shell", "cmd", "role", "get-role-holders", "android.app.role.SMS"],
                              ANDROID_COMPANION_ADB_TIMEOUT)
     current_holder = out.strip().splitlines()[0].strip() if (rc == 0 and out.strip()) else None
-    if current_holder == ADBSMS_MIN_PACKAGE:
+    if current_holder == PIF_COMPANION_PACKAGE:
         rc, out, err = _adb_run(serial, ["shell", "cmd", "role", "remove-role-holder", "android.app.role.SMS",
-                                          ADBSMS_MIN_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+                                          PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
         results["role_removed"] = (rc == 0)
 
-    rc, out, err = _adb_run(serial, ["shell", "pm", "revoke", ADBSMS_MIN_PACKAGE, "android.permission.READ_SMS"],
+    rc, out, err = _adb_run(serial, ["shell", "pm", "revoke", PIF_COMPANION_PACKAGE, "android.permission.READ_SMS"],
                              ANDROID_COMPANION_ADB_TIMEOUT)
     results["permission_revoked"] = (rc == 0)
 
-    rc, out, err = _adb_run(serial, ["uninstall", ADBSMS_MIN_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+    # Uninstalling removes every permission this app holds (Contacts/Call
+    # Log's too, if any happened to still be granted) and clears any role
+    # assignment automatically - this cleanup, and the Contacts/Call Log
+    # panel's own separate Force Cleanup button, both fully reset the same
+    # shared app either way now that all three data types ship in one apk.
+    rc, out, err = _adb_run(serial, ["uninstall", PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
     results["uninstalled"] = (rc == 0)
 
     log_chain_of_custody("android_companion_sms_manual_cleanup", {"serial": serial, "results": results})
@@ -1888,8 +1902,8 @@ def cleanup_android_companion_sms():
 # finally), simplified where the underlying mechanism genuinely is
 # simpler - there's no role-assumption/restoration step here at all, and
 # no device-functionality disruption window, since neither permission
-# requires becoming any kind of "default app."
-ANDROID_COMPANION_CONTACTS_CALLLOG_APK = os.path.join(ANDROID_COMPANION_APK_DIR, "pif-companion.apk")
+# requires becoming any kind of "default app." Shares PIF_COMPANION_APK
+# with the SMS worker above - both install the same apk.
 
 _ANDROID_COMPANION_DATA_TYPES_RE = re.compile(r'^(contacts|calllog|both)$')
 
@@ -1956,14 +1970,14 @@ def execution_worker_android_companion_contacts_calllog(serial, data_types, outp
         update_job(format="android_companion_contacts_calllog", status="Initializing...", progress_percent=0.0,
                    log=f"[*] Initializing companion-app Contacts/Call Log extraction ({data_types}) on {serial}...")
 
-        if not os.path.isfile(ANDROID_COMPANION_CONTACTS_CALLLOG_APK):
+        if not os.path.isfile(PIF_COMPANION_APK):
             raise RuntimeError(
                 "pif-companion.apk is not vendored on this station - re-run install.py with internet "
                 "access to download it, then retry."
             )
 
         append_log(f"[*] Installing companion collector ({PIF_COMPANION_PACKAGE})...")
-        rc, out, err = _adb_run(serial, ["install", "-r", ANDROID_COMPANION_CONTACTS_CALLLOG_APK],
+        rc, out, err = _adb_run(serial, ["install", "-r", PIF_COMPANION_APK],
                                  ANDROID_COMPANION_ADB_TIMEOUT)
         record_step("install", rc, (out + err).strip()[:500])
         if rc != 0:

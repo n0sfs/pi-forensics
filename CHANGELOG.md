@@ -21,6 +21,25 @@ file after updating to see what changed.
 
 ---
 
+## [1.47.1] - 2026-09-04
+
+### Changed
+- **Companion-app SMS extraction now uses this app's own hand-built app, not a separate third-party
+  tool.** The SMS collector previously installed a separately-vendored open-source app
+  ([adbsms.min](https://github.com/gonodono/adbsms)); it's now folded directly into the same
+  companion app already used for Contacts/Call Log extraction, so there's only one app for the
+  station to install/manage instead of two. Nothing about how SMS extraction works or what it
+  produces has changed - same two access tiers, same disclosed device-modification behavior, same
+  case-report record.
+- **Both companion-app extraction panels (SMS, Contacts/Call Log) are now tucked into a collapsed
+  "Companion-App Extraction (Advanced)" section** on the Android side of Mobile Forensics, instead of
+  always sitting open above the standard Pull/Backup/Bugreport modes. These two actions are genuinely
+  optional add-ons an examiner can run alongside whichever standard mode is selected, not another
+  acquisition mode choice - collapsing them by default keeps the tab less cluttered for the more
+  commonly used standard modes, while keeping both one click away.
+
+---
+
 ## [1.47.0] - 2026-09-04
 
 ### Added

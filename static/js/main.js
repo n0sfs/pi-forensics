@@ -15831,8 +15831,8 @@ async function startCompanionSmsExtraction() {
         : '\n\nRead-only tier: only inbox and sent messages are visible (Android\'s own restriction for '
           + 'a non-default SMS app) - no disruption to normal messaging.';
     if (!confirm(
-        'This installs a small, open-source (MIT-licensed) app on the device to read its SMS content, '
-        + 'then removes it and reverses every change when finished.'
+        'This installs a small companion app (hand-built for this project) on the device to read its '
+        + 'SMS content, then removes it and reverses every change when finished.'
         + tierWarning
         + '\n\nEvery step (install, permission/role change, query, cleanup) is recorded in the case report. '
         + 'Continue?'

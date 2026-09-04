@@ -786,49 +786,30 @@ if not os.path.isdir(memory_dir) or not os.listdir(memory_dir):
               f"- Live Collection USB will still work, just without the optional memory-capture "
               f"prompt. Retry by re-running install.py once online.")
 
-# 2g. Vendor adbsms.min (github.com/gonodono/adbsms, MIT, real prebuilt
-# release APK - no build step, same _download_release_asset() pattern as
-# AVML/WinPmem above) - the companion-app SMS extraction feature
-# (2026-09-04, Mobile Forensics' Android controls). Pinned to release
-# 0.0.12, the real latest tag at the time this was researched and
-# confirmed via a live download+SHA256 check before writing this - unlike
-# AVML/WinPmem, adbsms DOES publish a real checksums.txt, so the SHA256 is
-# verified here too, not just a size floor.
-ADBSMS_TAG = "0.0.12"
-ADBSMS_ASSET_URL = f"https://github.com/gonodono/adbsms/releases/download/{ADBSMS_TAG}/adbsms.min.apk"
-ADBSMS_ASSET_MIN_SIZE = 8_000
-ADBSMS_ASSET_SHA256 = "2c94430d743b11a666500097c8f36cf6ee77b63fab3f9342c05e0b2cba3678a8"
-
+# 2g. Vendor pif-companion.apk (Mobile Forensics - non-rooted companion-app
+# SMS/Contacts/Call Log extraction). This project's OWN small app (source
+# at android_companion/pif_companion_src/, mirroring github.com/gonodono/
+# adbsms's own relay-provider design exactly - that project's real source
+# was read directly to confirm the mechanism before writing this app's own
+# three ContentProvider classes), built with Google's official `android`
+# CLI (developer.android.com/tools/agents/android-cli) on a real dev
+# machine and committed as a small (~KB-scale) prebuilt binary directly
+# into this repo - matching this project's own established scalpel.conf
+# precedent (a static asset that ships with the repo needs no extra
+# deploy logic, since it's already at INSTALL_DIR once the repo is cloned
+# there). Building it via Gradle/AGP on the Pi itself at install time was
+# deliberately ruled out - a full Android SDK/Gradle/AGP build is a
+# genuinely heavy operation this low-power ARM board's already-documented
+# tight storage/CPU budget shouldn't be asked to carry, unlike mquire's
+# comparatively lightweight `cargo build` above.
+#
+# SMS support was originally a separate vendored third-party app
+# (adbsms.min, github.com/gonodono/adbsms) fetched via a real download +
+# SHA256 check; folded into this same app on 2026-09-04, the same day it
+# was first built, once its own relay mechanism was fully understood -
+# removing that separate download/dependency entirely rather than
+# maintaining two vendored apps for a mechanism this project now owns.
 android_companion_dir = os.path.join(INSTALL_DIR, "android_companion_tools")
-adbsms_dest = os.path.join(android_companion_dir, "adbsms.min.apk")
-if not os.path.isfile(adbsms_dest):
-    print(f"\n[*] Vendoring adbsms.min {ADBSMS_TAG} (Mobile Forensics - "
-          f"non-rooted companion-app SMS extraction)...")
-    os.makedirs(android_companion_dir, exist_ok=True)
-    if _download_release_asset(ADBSMS_ASSET_URL, adbsms_dest, ADBSMS_ASSET_MIN_SIZE,
-                                "pi-forensics-suite-installer", sha256=ADBSMS_ASSET_SHA256):
-        print(f"[+] adbsms.min vendored to {adbsms_dest}.")
-    else:
-        print(f"[!] Could not vendor adbsms.min (no internet access right now?) - the companion-app "
-              f"SMS extraction feature will not be available until this is retried. Retry by "
-              f"re-running install.py once online.")
-
-# pif-companion.apk (Mobile Forensics - non-rooted companion-app Contacts/
-# Call Log extraction, 2026-09-04). Unlike adbsms.min above, this is NOT a
-# third-party download - it's this project's OWN small app (source at
-# android_companion/pif_companion_src/, mirroring github.com/gonodono/
-# adbsms's own relay-provider design exactly, since no suitable existing
-# open-source relay tool was found for Contacts/Call Log), built once with
-# Google's official `android` CLI (developer.android.com/tools/agents/
-# android-cli) on a real dev machine and committed as a small (~KB-scale)
-# prebuilt binary directly into this repo - matching this project's own
-# established scalpel.conf precedent (a static asset that ships with the
-# repo needs no extra deploy logic, since it's already at INSTALL_DIR once
-# the repo is cloned there). Building it via Gradle/AGP on the Pi itself
-# at install time was deliberately ruled out - a full Android SDK/Gradle/
-# AGP build is a genuinely heavy operation this low-power ARM board's
-# already-documented tight storage/CPU budget shouldn't be asked to carry,
-# unlike mquire's comparatively lightweight `cargo build` above.
 pif_companion_src = os.path.join(INSTALL_DIR, "android_companion", "pif-companion.apk")
 pif_companion_dest = os.path.join(android_companion_dir, "pif-companion.apk")
 if not os.path.isfile(pif_companion_dest):
