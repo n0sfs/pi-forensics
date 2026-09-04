@@ -21,6 +21,17 @@ file after updating to see what changed.
 
 ---
 
+## [1.43.1] - 2026-09-04
+
+### Changed
+- **Relicensed from GPLv3 to the Apache License 2.0.** Verified via this repository's own git history
+  before making the change: this codebase started as the maintainer's own original MIT-licensed work
+  (the very first commit), and GPLv3 was the maintainer's own later, unilateral choice - not a fork of
+  a third party's GPL-licensed project, so no third party's rights are affected. This only changes the
+  terms for this project's own original code (`app.py`, `core/`, `routes/`, the frontend, the setup
+  scripts) - every third-party tool and library this station installs, imports, or vendors keeps its
+  own separate, unchanged license, exactly as documented in `THIRD_PARTY_NOTICES.md`.
+
 ## [1.43.0] - 2026-09-04
 
 ### Added
