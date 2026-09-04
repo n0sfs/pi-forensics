@@ -21,6 +21,39 @@ file after updating to see what changed.
 
 ---
 
+## [1.34.0] - 2026-09-03
+
+### Added
+
+- **Live Collection USB's Windows collector now also pulls a live registry pattern-of-life
+  snapshot**, elevated only. Covers what's been done recently and where - RecentDocs, TypedPaths,
+  RunMRU, UserAssist (GUI-launched program history), RDP connection history, and Office/Explorer
+  search MRU for the collecting account and every other real user profile on the machine, plus the
+  machine-wide USB device history, Shimcache, BAM/DAM execution evidence, installed program list,
+  Amcache application inventory, and ShellBags folder-browse history. Reuses this app's own
+  already-built, already-mature registry hive parser (the same one that's read acquired NTUSER.DAT/
+  SYSTEM/SOFTWARE/Amcache.hve/UsrClass.dat files for months) with zero new parsing logic - the
+  collector just exports live hive copies (via the registry's own backup API, the same mechanism a
+  real offline hive export uses, just against a still-running system) named to exactly match what
+  that parser already expects.
+- Every real user profile's exported hives now land in their own named subfolder on the collection
+  drive, so two different users' identically-named `NTUSER.DAT` files can never collide - the same
+  discovery mechanism already used for PowerShell history/Prefetch handles the multi-user layout
+  automatically, with zero code changes of its own.
+
+### Disclosed
+
+- The live registry export step needs a genuinely elevated (UAC-elevated) session, not just
+  Administrators-group membership - confirmed directly: even an admin account's own hive export
+  fails without it, since the underlying mechanism needs a privilege elevation alone doesn't grant.
+  The export/parse pipeline itself is fully tested, including a real end-to-end run against genuine
+  registry hive files on the deployed station - what hasn't been exercised yet is the collector
+  script's own registry step inside an actual elevated session on a real Windows machine, since that
+  needs interactive administrator consent this project's own automated testing can't provide. Worth
+  a quick real confirmation next time the collector runs elevated on a real target.
+
+---
+
 ## [1.33.0] - 2026-09-03
 
 ### Added
