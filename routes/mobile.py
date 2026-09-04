@@ -541,6 +541,181 @@ def _capture_android_app_inventory(serial, output_path, case_folder):
     return len(records)
 
 
+ANDROID_ACCOUNTS_TIMEOUT = 30
+# "User <UserInfo.toString()>:" then, per user, "Accounts: N" followed by N
+# "  Account {name=..., type=...}" lines - confirmed directly against the
+# real AOSP source (AccountManagerService.java's dump()/dumpUser()) rather
+# than guessed: dumpUser() does `fout.println("  " + account.toString())`,
+# and Account.toString() (core/java/android/accounts/Account.java) is
+# literally `"Account {name=" + name + ", type=" + type + "}"`. The account
+# name (a real email/username, e.g. a signed-in Google account) is printed
+# in full, never masked - confirmed via the same source, not assumed.
+_ANDROID_ACCOUNT_LINE_RE = re.compile(r'^\s*Account \{name=(.*?), type=(.*?)\}\s*$', re.MULTILINE)
+
+
+def _capture_android_accounts(serial, output_path, case_folder):
+    """Best-effort: captures the device's configured accounts (Google,
+    Exchange, any other app-registered account type) via one
+    `adb shell dumpsys account` call - no root needed, same "ephemeral
+    live-device state, capture it now or lose it" reasoning as _capture_
+    android_app_inventory() above. Never raises - a failure here just
+    means no account list was captured for this pull. Returns the number
+    of accounts captured."""
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, "shell", "dumpsys account"],
+            capture_output=True, text=True, timeout=ANDROID_ACCOUNTS_TIMEOUT,
+        )
+    except Exception:
+        return 0
+    if result.returncode != 0 or not result.stdout:
+        return 0
+
+    records = []
+    for m in _ANDROID_ACCOUNT_LINE_RE.finditer(result.stdout):
+        name, acct_type = m.group(1), m.group(2)
+        records.append({
+            "artifact_type": "android_configured_account", "title": name, "url": "",
+            "value": f"Account Type: {acct_type}", "timestamp": None,
+            "extra": {"name": name, "type": acct_type},
+        })
+
+    if not records:
+        return 0
+
+    manifest_path = f"{output_path.rstrip(os.sep)}_accounts.json"
+    try:
+        with open(manifest_path, "w") as f:
+            json.dump({
+                "source": "adb shell dumpsys account",
+                "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "note": "Raw dumpsys output is not saved here - only the account name/type pairs "
+                        "this app parsed out of it. dumpsys account has no per-account timestamp "
+                        "field at all, so these records carry none.",
+                "account_count": len(records),
+                "accounts": [r["extra"] for r in records],
+            }, f, indent=2)
+    except OSError:
+        pass
+    else:
+        _auto_tag_case_artifact(case_folder, manifest_path)
+
+    identity = {"source_type": "real_fs", "image_path": None, "fs_offset": None, "inode": None,
+                "path": f"{output_path.rstrip(os.sep)}_accounts"}
+    _record_parsed_artifacts(case_folder, identity, records)
+    return len(records)
+
+
+ANDROID_NOTIFICATIONS_TIMEOUT = 30
+# Real, confirmed via the real AOSP source (NotificationManagerService.java/
+# NotificationRecord.java), not guessed - and worth stating plainly because
+# it's easy to oversell: `adb shell dumpsys notification` with no extra
+# flags runs in REDACTED mode by default (DumpFilter.redact = true; only
+# --noredact/--reveal turns it off, and this app deliberately never passes
+# that - see below). Under the default redacted mode, a notification's
+# actual TITLE/BODY TEXT is NOT recoverable - NotificationRecord.dump()
+# replaces every text-bearing "extras" value with a bare "[length=N]"
+# placeholder (dumpNotification()'s own shouldRedactStringExtra() check).
+# What IS genuinely, reliably captured: which package posted each currently
+# -visible notification, its real post time (StatusBarNotification.
+# getPostTime(), a real System.currentTimeMillis() wall-clock value - not
+# elapsed-realtime, confirmed via where mCreationTimeMs is actually set),
+# its importance ranking, and its stable notification "key" - a real
+# activity-timeline signal (which apps were actively notifying, and when),
+# not a message-content recovery tool. Deliberately never passes --reveal:
+# this app has no way to verify from source alone whether that flag is
+# genuinely reachable from an unprivileged `adb shell` context or gated by
+# an additional permission this reading didn't surface, and the risk of
+# silently exposing real notification content (which could include 2FA
+# codes, private messages, etc.) if that assumption were wrong is not one
+# to take on unverified - a known, disclosed limitation, not an oversight.
+_ANDROID_NOTIF_RECORD_RE = re.compile(
+    r'NotificationRecord\(0x[0-9a-fA-F]+: pkg=(\S+) user=(\S+) id=(-?\d+) tag=(\S+) importance=(-?\d+) key=(\S+):'
+)
+_ANDROID_NOTIF_FIELD_RES = {
+    "creation_time_ms": re.compile(r'mCreationTimeMs=(\d+)'),
+    "update_time_ms": re.compile(r'mUpdateTimeMs=(\d+)'),
+}
+
+
+def _capture_android_notification_snapshot(serial, output_path, case_folder):
+    """Best-effort: captures a snapshot of the device's currently-visible
+    notifications (package, post time, importance, key - real content is
+    redacted by default, see the module comment above) via one
+    `adb shell dumpsys notification` call - no root, no --reveal. Same
+    "ephemeral live-device state" reasoning as the two capture functions
+    above. Never raises. Returns the number of notification records
+    captured."""
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, "shell", "dumpsys notification"],
+            capture_output=True, text=True, timeout=ANDROID_NOTIFICATIONS_TIMEOUT,
+        )
+    except Exception:
+        return 0
+    if result.returncode != 0 or not result.stdout:
+        return 0
+
+    matches = list(_ANDROID_NOTIF_RECORD_RE.finditer(result.stdout))
+    if not matches:
+        return 0
+
+    records = []
+    for i, m in enumerate(matches):
+        pkg, user, notif_id, tag, importance, key = m.groups()
+        block_start = m.end()
+        block_end = matches[i + 1].start() if i + 1 < len(matches) else len(result.stdout)
+        block = result.stdout[block_start:block_end]
+
+        fields = {}
+        for fkey, pattern in _ANDROID_NOTIF_FIELD_RES.items():
+            field_match = pattern.search(block)
+            if field_match:
+                fields[fkey] = field_match.group(1)
+
+        creation_ms = fields.get("creation_time_ms")
+        timestamp = int(creation_ms) / 1000.0 if creation_ms else None
+        update_ms = fields.get("update_time_ms")
+        update_timestamp = int(update_ms) / 1000.0 if update_ms else None
+
+        records.append({
+            "artifact_type": "android_notification_snapshot", "title": pkg, "url": "",
+            "value": f"Importance: {importance} | Key: {key} (content redacted - see module docstring)",
+            "timestamp": timestamp,
+            "extra": {
+                "package": pkg, "user": user, "notification_id": notif_id, "tag": tag,
+                "importance": importance, "key": key, "update_timestamp": update_timestamp,
+            },
+        })
+
+    if not records:
+        return 0
+
+    manifest_path = f"{output_path.rstrip(os.sep)}_notifications.json"
+    try:
+        with open(manifest_path, "w") as f:
+            json.dump({
+                "source": "adb shell dumpsys notification",
+                "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "note": "Real content (title/body text) is redacted by default by the OS itself - "
+                        "not something this app chose to strip. Only package identity, post/update "
+                        "time, importance ranking, and the notification's key are real, recoverable "
+                        "metadata here. Raw dumpsys output is not saved (can run to hundreds of KB "
+                        "of unrelated system-service state).",
+                "notification_count": len(records),
+                "notifications": [r["extra"] for r in records],
+            }, f, indent=2)
+    except OSError:
+        pass
+    else:
+        _auto_tag_case_artifact(case_folder, manifest_path)
+
+    identity = {"source_type": "real_fs", "image_path": None, "fs_offset": None, "inode": None,
+                "path": f"{output_path.rstrip(os.sep)}_notifications"}
+    _record_parsed_artifacts(case_folder, identity, records)
+    return len(records)
+
+
 # --- Physical/raw Android acquisition: on-device target enumeration ---
 # PROVISIONAL - every parsing assumption below is from documented Android/
 # Linux convention (kernel /proc, sysfs, and the standard `ls -la` symlink-
@@ -870,6 +1045,29 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
                     append_log("[-] Could not capture installed app inventory (device disconnected, or "
                                "dumpsys returned nothing usable) - this is a best-effort enrichment, the "
                                "pull itself is unaffected.")
+
+                append_log("[*] Capturing configured accounts (adb shell dumpsys account)...")
+                account_count = _capture_android_accounts(serial, output_path, os.path.dirname(output_path))
+                if account_count:
+                    append_log(f"[+] Captured {account_count} configured account(s) - searchable in File "
+                               "Views and on the Evidence Timeline.")
+                    report_data["acquisition_parameters"]["accounts_captured"] = account_count
+                else:
+                    append_log("[-] Could not capture configured accounts (device disconnected, no "
+                               "accounts configured, or dumpsys returned nothing usable) - best-effort "
+                               "enrichment, the pull itself is unaffected.")
+
+                append_log("[*] Capturing a notification snapshot (adb shell dumpsys notification)...")
+                notif_count = _capture_android_notification_snapshot(serial, output_path, os.path.dirname(output_path))
+                if notif_count:
+                    append_log(f"[+] Captured {notif_count} currently-visible notification(s) - package/"
+                               "time/importance only, real content is redacted by the OS by default. "
+                               "Searchable in File Views and on the Evidence Timeline.")
+                    report_data["acquisition_parameters"]["notifications_captured"] = notif_count
+                else:
+                    append_log("[-] Could not capture a notification snapshot (device disconnected, no "
+                               "notifications currently visible, or dumpsys returned nothing usable) - "
+                               "best-effort enrichment, the pull itself is unaffected.")
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
             append_log(f"[-] adb {mode} exited with code {proc.returncode}")

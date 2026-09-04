@@ -1941,6 +1941,8 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     android_ab_sms_message: 'Android Backup (.ab): SMS',
     android_ab_mms_message: 'Android Backup (.ab): MMS',
     android_installed_app: 'Android: Installed App Inventory (adb pull)',
+    android_configured_account: 'Android: Configured Accounts (adb pull)',
+    android_notification_snapshot: 'Android: Notification Snapshot, metadata only (adb pull)',
     whatsapp_message: 'WhatsApp: Messages (Native Parse)',
     whatsapp_call_log: 'WhatsApp: Calls (Native Parse)',
     whatsapp_contact: 'WhatsApp: Contacts (Native Parse)',

@@ -245,6 +245,14 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     # `adb pull` acquisition, so the label must not carry the misleading
     # "Rooted Physical Image Only" caveat those 3 correctly do.
     "android_installed_app": "Android: Installed App Inventory (adb pull)",
+    # Configured accounts + notification snapshot (routes/mobile.py::
+    # _capture_android_accounts()/_capture_android_notification_snapshot(),
+    # 2026-09-04) - same no-root, captured-live-during-a-pull shape as the
+    # app inventory above. Notification content is redacted by the OS
+    # itself by default - see that function's own docstring for why the
+    # label deliberately says "metadata" rather than implying full content.
+    "android_configured_account": "Android: Configured Accounts (adb pull)",
+    "android_notification_snapshot": "Android: Notification Snapshot, metadata only (adb pull)",
     # Native WhatsApp msgstore.db/wa.db parsing (core/whatsapp_utils.py,
     # 2026-09-04) - reachable either from this app's own WhatsApp-decrypt
     # feature's output (a real file, no root needed) or a rooted physical
