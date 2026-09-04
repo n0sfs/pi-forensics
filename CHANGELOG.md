@@ -21,6 +21,36 @@ file after updating to see what changed.
 
 ---
 
+## [1.33.0] - 2026-09-03
+
+### Added
+
+- **Live Collection USB's Windows collector now also pulls a 30-day excerpt of the Security and
+  System Event Logs**, reusing this app's own already-built Event Log parser with zero new parsing
+  logic. Covers successful and failed logons, workstation lock/unlock, user account creation,
+  process creation, service installation, service start/stop state changes, and audit-log-clearing
+  (a classic anti-forensic indicator) - the last two event types require the collector to run
+  elevated. Every event keeps its own real, original timestamp on the Evidence Timeline, not the
+  time the collection itself ran.
+
+### Fixed
+
+- **A real correctness bug in the Event Log parser itself, found while building the feature above
+  and fixed retroactively for every existing use of it (not just the new live-collection path)**:
+  a numeric Windows Event ID is only guaranteed unique *within one provider's own event
+  definitions* - a different, unrelated Windows component can reuse the same ID for its own,
+  completely different kind of event. This was confirmed against a real Windows machine, where a
+  WiFi network driver was found reusing Event ID 7036 (normally "a service changed state") for its
+  own internal logging. Previously, this app's Event Log parser matched on Event ID alone, meaning
+  such a collision could be silently misfiled as a real service state change. The parser now also
+  checks the event's actual source (its "Provider" name) before accepting it, and this check has
+  been applied to every event type this app has ever recognized, not only the ones added in this
+  release. If you've previously parsed a `.evtx` file for service state changes (Event ID 7036)
+  and want to double-check the results, re-run "Parse Event Logs" from File Explorer's right-click
+  menu against that same file.
+
+---
+
 ## [1.32.0] - 2026-09-03
 
 ### Added

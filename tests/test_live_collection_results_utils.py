@@ -859,3 +859,55 @@ def test_parse_live_prefetch_wiring_with_a_fake_prefetch_utils_module(tmp_path, 
     assert records[0]['title'] == 'NOTEPAD.EXE'
     assert records[0]['artifact_type'] == 'prefetch_execution'
     assert records[0]['timestamp'] == 1788000000.0  # the .pf file's OWN real last-run time, not ts
+
+
+# --- _parse_live_evtx: real .evtx files exported live via wevtutil ---
+
+def test_parse_live_evtx_no_evtx_dir_returns_empty(tmp_path):
+    run_dir = str(tmp_path / "run")
+    os.makedirs(run_dir)
+    assert lcru._parse_live_evtx(run_dir, ts=1.0) == []
+
+
+def test_parse_live_evtx_gracefully_handles_python_evtx_not_installed(tmp_path, monkeypatch):
+    # core.evtx_utils itself does `import Evtx.Evtx` at module load time -
+    # forcing that import to fail is meaningful both here (python-evtx
+    # genuinely isn't installed on this dev machine) and on a real
+    # station missing it, same documented technique as
+    # test_parse_live_prefetch_gracefully_handles_pyscca_not_installed
+    # above. The evtx/ subfolder existing but python-evtx being
+    # unavailable must never crash the whole import worker.
+    run_dir = str(tmp_path / "run")
+    os.makedirs(os.path.join(run_dir, "evtx"))
+    monkeypatch.setitem(sys.modules, 'core.evtx_utils', None)
+    monkeypatch.setitem(sys.modules, 'Evtx.Evtx', None)
+    assert lcru._parse_live_evtx(run_dir, ts=1.0) == []
+
+
+def test_parse_live_evtx_wiring_with_a_fake_evtx_utils_module(tmp_path, monkeypatch):
+    # Proves the actual wiring logic this session added (find the evtx/
+    # subfolder, call find_evtx_files, call parse_evtx_file per path,
+    # extend the results, preserve each event's OWN real timestamp
+    # rather than overwriting with ts) is correct, independent of
+    # whether the real python-evtx library is installed on THIS machine -
+    # a fake core.evtx_utils module is injected into sys.modules so the
+    # local `from core.evtx_utils import ...` statement resolves to it.
+    run_dir = str(tmp_path / "run")
+    evtx_dir = os.path.join(run_dir, "evtx")
+    os.makedirs(evtx_dir)
+    fake_evtx_path = os.path.join(evtx_dir, "Security.evtx")
+    open(fake_evtx_path, "w").close()  # content doesn't matter - the fake parser below never reads it
+
+    fake_module = types.ModuleType('core.evtx_utils')
+    fake_module.find_evtx_files = lambda root_dir: ([fake_evtx_path], False)
+    fake_module.parse_evtx_file = lambda path: [{
+        'artifact_type': 'evtx_workstation_locked', 'title': 'Workstation Locked: testuser', 'url': '',
+        'value': 'TargetUserName=testuser', 'timestamp': 1788400000.0,
+        'extra': {'event_id': '4800', 'record_id': 123456},
+    }]
+    monkeypatch.setitem(sys.modules, 'core.evtx_utils', fake_module)
+
+    records = lcru._parse_live_evtx(run_dir, ts=1.0)
+    assert len(records) == 1
+    assert records[0]['artifact_type'] == 'evtx_workstation_locked'
+    assert records[0]['timestamp'] == 1788400000.0  # the event's OWN real timestamp, not ts

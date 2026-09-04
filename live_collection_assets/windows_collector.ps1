@@ -564,7 +564,63 @@ if ($IsElevated) {
     Write-CollectionLog -Category 'prefetch' -Status 'skipped' -Detail 'requires administrator privileges - not run'
 }
 
-# --- 13. Mapped network drives ---
+# --- 13. Windows Event Log excerpts - exported as real, filtered .evtx
+#      snapshot files (not parsed here) via wevtutil, so this app's
+#      existing core/evtx_utils.py parser reads them unchanged at import
+#      time, same pattern as PSReadLine/Prefetch above. Both exports are
+#      bounded to the last 30 days via wevtutil's own XPath time filter -
+#      a live collection prioritizes speed and a reasonably-sized
+#      artifact over exhaustive history; the full log is still on the
+#      machine if a deeper pull is ever needed separately. Real command/
+#      query syntax confirmed live (2026-09-03) against a genuine Windows
+#      machine before being written here, not assumed from documentation
+#      - including a real, live-caught finding: a plain EventID=7036
+#      filter also matched an unrelated driver's own reused numeric ID,
+#      so the Security-log query below also requires the real, correct
+#      Provider for each event (matching core/evtx_utils.py's own,
+#      separately-hardened Provider check on the read side). The System
+#      log (service start/stop) is readable without elevation on a
+#      default configuration; the Security log (logons, workstation
+#      lock/unlock, audit-log-cleared) is not, so that half is admin-
+#      gated and honestly logged as privilege-limited when skipped, the
+#      same pattern as loaded_drivers/Prefetch above. ---
+try {
+    $evtxOutDir = Join-Path $RunDir 'evtx'
+    New-Item -ItemType Directory -Path $evtxOutDir -Force | Out-Null
+    $evtxTimeWindowMs = 30 * 24 * 60 * 60 * 1000  # 30 days
+    $sysQuery = "*[System[Provider[@Name='Service Control Manager'] and (EventID=7036) and TimeCreated[timediff(@SystemTime) <= $evtxTimeWindowMs]]]"
+    $sysOut = Join-Path $evtxOutDir 'System.evtx'
+    wevtutil epl System $sysOut "/q:$sysQuery" /ow:true 2>$null
+    if (Test-Path $sysOut) {
+        Write-CollectionLog -Category 'evtx_system' -Status 'ok'
+    } else {
+        Write-CollectionLog -Category 'evtx_system' -Status 'failed' -Detail 'wevtutil export produced no file'
+    }
+} catch {
+    Write-CollectionLog -Category 'evtx_system' -Status 'failed' -Detail $_.Exception.Message
+}
+
+if ($IsElevated) {
+    try {
+        $evtxOutDir = Join-Path $RunDir 'evtx'
+        New-Item -ItemType Directory -Path $evtxOutDir -Force | Out-Null
+        $evtxTimeWindowMs = 30 * 24 * 60 * 60 * 1000
+        $secQuery = "*[System[Provider[@Name='Microsoft-Windows-Security-Auditing'] and (EventID=4624 or EventID=4625 or EventID=4800 or EventID=4801 or EventID=1102) and TimeCreated[timediff(@SystemTime) <= $evtxTimeWindowMs]]]"
+        $secOut = Join-Path $evtxOutDir 'Security.evtx'
+        wevtutil epl Security $secOut "/q:$secQuery" /ow:true 2>$null
+        if (Test-Path $secOut) {
+            Write-CollectionLog -Category 'evtx_security' -Status 'ok'
+        } else {
+            Write-CollectionLog -Category 'evtx_security' -Status 'failed' -Detail 'wevtutil export produced no file'
+        }
+    } catch {
+        Write-CollectionLog -Category 'evtx_security' -Status 'failed' -Detail $_.Exception.Message
+    }
+} else {
+    Write-CollectionLog -Category 'evtx_security' -Status 'skipped' -Detail 'requires administrator privileges - not run'
+}
+
+# --- 14. Mapped network drives ---
 try {
     if (Get-Command Get-SmbMapping -ErrorAction SilentlyContinue) {
         $mapped = Get-SmbMapping -ErrorAction Stop | ForEach-Object {
@@ -589,7 +645,7 @@ try {
     Write-CollectionLog -Category 'mapped_drives' -Status 'failed' -Detail $_.Exception.Message
 }
 
-# --- 14. Clipboard contents ---
+# --- 15. Clipboard contents ---
 try {
     $clipContent = Get-Clipboard -ErrorAction Stop -Raw
     if ($clipContent) {
