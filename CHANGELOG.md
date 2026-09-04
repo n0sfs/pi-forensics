@@ -21,6 +21,21 @@ file after updating to see what changed.
 
 ---
 
+## [1.41.0] - 2026-09-04
+
+### Added
+
+- **Deep-parsing an `adb bugreport` archive no longer produces only a raw JSON file.** Package
+  install/delete events, GPS location fixes, crash reports (tombstones), and loaded kernel modules
+  are now individually indexed into the same searchable "Parsed Artifacts" list every other artifact
+  type in this app already uses - and, wherever the underlying data actually carries a real
+  timestamp (installs/deletes, GPS fixes, crashes), they now show up on the Evidence Timeline too.
+  The full raw output is still saved alongside this - nothing about the existing JSON export
+  changed, this is purely additive. A few sections (battery stats, running processes, network
+  sockets, and similar "current state at the moment of the dump" snapshots) are deliberately left as
+  before, since making those genuinely searchable would mean guessing at an internal data shape this
+  app has never been able to confirm against a real sample bugreport.
+
 ## [1.40.0] - 2026-09-04
 
 ### Added
