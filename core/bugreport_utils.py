@@ -34,6 +34,7 @@ import dataclasses
 import io
 import logging
 import zipfile
+from datetime import datetime
 
 
 def _make_json_safe(obj):
@@ -63,19 +64,179 @@ def _make_json_safe(obj):
     return str(obj)
 
 
+def _bytes_to_str(value):
+    """Decodes a bytes value the same way _make_json_safe() does above,
+    for use by _extract_parsed_artifact_records() below - which runs
+    against the RAW Dumpstate dataclass, before _make_json_safe() has
+    run, so it needs this same small decode step independently."""
+    if isinstance(value, bytes):
+        return value.decode('utf-8', errors='replace')
+    return value
+
+
+def _extract_parsed_artifact_records(ds):
+    """Turns the genuinely record-shaped, individually-meaningful
+    sections of a parsed Dumpstate into this app's standard artifact
+    record shape ({artifact_type, title, url, value, timestamp, extra}) -
+    2026-09-04, Android pattern-of-life item 6 - closing the "structured
+    data, but a dead-end JSON blob" gap this module originally shipped
+    with (every section only ever landed in one raw JSON sidecar file and
+    one summary analysis_result, never individually searchable or
+    Evidence-Timeline-visible). Deliberately runs against the RAW
+    dataclass instance `ds`, NOT the already-JSON-safety-converted
+    `sections` dict _make_json_safe() produces below - that conversion
+    already stringifies every real datetime.datetime object via a bare
+    str(), which would mean re-parsing a string back into a timestamp
+    instead of using the real object dumpstate-py itself already gives us.
+
+    Scoped to 5 of Dumpstate's 17 real fields (confirmed via direct
+    dataclasses.fields() introspection against the real installed
+    package, not guessed) - the ones confirmed record-shaped (a real list
+    of individually-meaningful items) with either a real per-item
+    timestamp or genuine standalone search value:
+
+      package_install_log - PackageInstallInfo/PackageDeleteInfo both
+      carry a real datetime.datetime `timestamp` field (confirmed via
+      dataclasses.fields()), so this is the cleanest, highest-confidence
+      section here.
+
+      gps_data_log - one entry per location PROVIDER (network/gps/etc.),
+      each holding last_locations: list[LocationInfo] - a real, nested
+      per-fix list, each fix carrying its own real datetime.datetime
+      timestamp plus latitude/longitude/accuracy.
+
+      tombstones_log - Tombstone.timestamp is a plain str, but confirmed
+      (via reading dumpstate-py's own tombstones.py parser source
+      directly) to come from a real, standard Android tombstone file's
+      own "Timestamp:" line, whose real format
+      ("2025-03-20 11:42:07.312000000+0000") was independently confirmed
+      via real Android crash-forensics literature AND confirmed to parse
+      correctly via datetime.fromisoformat() on this app's own real
+      Python 3.13 venv before being trusted here - not assumed.
+
+      loaded_modules_log - no per-item timestamp exists in this dump
+      format at all (a live kernel-module snapshot, not a timestamped
+      event log) - timestamp stays honestly None, matching this
+      codebase's established "no timestamp exists, don't invent one"
+      convention, but the module name/size/used-by list is still real,
+      useful, SEARCHABLE data worth indexing even without timeline
+      placement (e.g. spotting a suspicious/rootkit-shaped module name).
+
+      power_info_log - PowerEvent.timestamp is confirmed (via reading
+      dumpstate-py's own power.py parser source directly:
+      `event.timestamp = lines[0]`) to be raw, UN-PARSED first-line text
+      from the dump section - not a confirmed structured format at all,
+      so it is NEVER converted to a real epoch timestamp here (that would
+      risk silently fabricating a wrong value from an unconfirmed
+      format). Still indexed as a searchable, timestamp-less record with
+      the raw text preserved in `extra`, rather than dropped entirely.
+
+    The other 12 fields (header_log, vm_traces_log, anr_files_log,
+    usb_data_log, mount_points_log, package_info_log, process_info_log,
+    battery_stats_log, socket_ss_log, socket_netstat_log, socket_dev_log,
+    account_service_log, keyguard_service_log) are single "current state
+    at dump time" snapshots, not lists of individually-timestamped
+    events - battery_stats_log in particular has a confirmed-live but
+    genuinely unconfirmed-shape internal structure
+    (dict[bytes, list[dict[...]]], no real sample bugreport available to
+    check actual key names against) that would risk a wrong guess if
+    forced into structured records. All 12 stay exactly as before: in the
+    full raw JSON sidecar file and the one summary analysis_result - not
+    silently dropped, just genuinely out of this pass's confidently-
+    correct scope. A future session with a real sample bugreport archive
+    to check against should extend this, not guess now."""
+    records = []
+
+    for info in (ds.package_install_log or []):
+        # PackageInstallInfo and PackageDeleteInfo share the same
+        # timestamp/observer/package_name/result fields (confirmed via
+        # dataclasses.fields() on both real classes) - duck-typed here
+        # via the one field only PackageInstallInfo has, rather than
+        # importing and isinstance-checking both classes by name.
+        is_install = hasattr(info, 'version_code')
+        title = f"{'Installed' if is_install else 'Deleted'}: {info.package_name}"
+        value_parts = [f"Result code: {info.result}"]
+        if is_install and getattr(info, 'version_code', None):
+            value_parts.append(f"Version code: {info.version_code}")
+        ts = info.timestamp.timestamp() if info.timestamp else None
+        records.append({
+            "artifact_type": "android_bugreport_package_event", "title": title, "url": "",
+            "value": " | ".join(value_parts), "timestamp": ts,
+            "extra": {"package_name": info.package_name, "event": "install" if is_install else "delete",
+                      "result": info.result, "observer": _bytes_to_str(info.observer)},
+        })
+
+    for source_entry in (ds.gps_data_log or []):
+        for loc in (source_entry.last_locations or []):
+            ts = loc.timestamp.timestamp() if loc.timestamp else None
+            records.append({
+                "artifact_type": "android_bugreport_location", "title": f"GPS: {source_entry.source}",
+                "url": "", "value": f"{loc.latitude}, {loc.longitude} (accuracy {loc.accuracy}m)",
+                "timestamp": ts,
+                "extra": {"source": source_entry.source, "provider": _bytes_to_str(loc.provider),
+                          "latitude": loc.latitude, "longitude": loc.longitude, "accuracy": loc.accuracy,
+                          "altitude": loc.altitude, "speed": loc.speed},
+            })
+
+    for tomb in (ds.tombstones_log or []):
+        ts = None
+        if tomb.timestamp:
+            try:
+                ts = datetime.fromisoformat(tomb.timestamp).timestamp()
+            except ValueError:
+                ts = None
+        records.append({
+            "artifact_type": "android_bugreport_crash",
+            "title": f"Crash: {tomb.process_name} (signal {tomb.signal})", "url": "",
+            "value": f"PID {tomb.pid}, {tomb.abort_message or tomb.code or 'no message captured'}",
+            "timestamp": ts,
+            "extra": {"process_name": tomb.process_name, "pid": tomb.pid, "signal": tomb.signal,
+                      "abort_message": tomb.abort_message, "cmdline": tomb.cmdline},
+        })
+
+    for mod in (ds.loaded_modules_log or []):
+        name = _bytes_to_str(mod.name)
+        records.append({
+            "artifact_type": "android_bugreport_kernel_module", "title": name, "url": "",
+            "value": f"Size: {mod.size} bytes", "timestamp": None,
+            "extra": {"name": name, "size": mod.size,
+                      "used_by": [_bytes_to_str(u) for u in (mod.used_by or [])]},
+        })
+
+    for evt in (ds.power_info_log or []):
+        raw_ts = _bytes_to_str(evt.timestamp) if evt.timestamp else None
+        reason = _bytes_to_str(evt.reason) if evt.reason else None
+        records.append({
+            "artifact_type": "android_bugreport_power_event",
+            "title": f"Power off/reset: {reason or '(no reason captured)'}", "url": "",
+            "value": raw_ts or "(no timestamp text captured)", "timestamp": None,
+            "extra": {"reason": reason, "raw_timestamp_text": raw_ts},
+        })
+
+    return records
+
+
 def parse_bugreport(path):
-    """Returns {"success": bool, "error": str|None, "sections": dict|None}.
-    `sections` is a JSON-safe dict of every dumpstate-py field that was
-    actually populated (a section not found in this particular bug report
-    is simply absent, not present-and-null) - real values throughout, no
-    partial/garbage data on a parse failure (parse() itself never raises
-    on unrecognized input per live confirmation, it just leaves fields
-    unset). Never raises."""
+    """Returns {"success": bool, "error": str|None, "sections": dict|None,
+    "artifact_records": list|None}. `sections` is a JSON-safe dict of
+    every dumpstate-py field that was actually populated (a section not
+    found in this particular bug report is simply absent, not present-
+    and-null) - real values throughout, no partial/garbage data on a
+    parse failure (parse() itself never raises on unrecognized input per
+    live confirmation, it just leaves fields unset). `artifact_records`
+    (2026-09-04, Android pattern-of-life item 6) is the new, additive
+    output of _extract_parsed_artifact_records() above - this app's
+    standard {artifact_type, title, url, value, timestamp, extra} shape
+    for the genuinely record-shaped sections, so a caller can index them
+    into parsed_artifacts (searchable/Evidence-Timeline-visible) on top
+    of the existing full raw sections dict, without either output
+    changing the other. Never raises."""
     try:
         import dumpstate
     except ImportError:
         return {"success": False, "error": "dumpstate-py is not installed on this station. "
-                "Check Settings > Service Controls & Diagnostics > Tool Versions.", "sections": None}
+                "Check Settings > Service Controls & Diagnostics > Tool Versions.",
+                "sections": None, "artifact_records": None}
 
     logging.getLogger('dumpstate-py').setLevel(logging.CRITICAL)
 
@@ -92,19 +253,21 @@ def parse_bugreport(path):
                 if not member:
                     return {"success": False, "error": "This zip does not contain a "
                             "dumpstate-* member - not a recognized adb bugreport archive.",
-                            "sections": None}
+                            "sections": None, "artifact_records": None}
                 raw_bytes = zf.read(member)
         else:
             with open(path, 'rb') as f:
                 raw_bytes = f.read()
     except (OSError, zipfile.BadZipFile) as e:
-        return {"success": False, "error": f"Could not read this file: {e}", "sections": None}
+        return {"success": False, "error": f"Could not read this file: {e}",
+                "sections": None, "artifact_records": None}
 
     try:
         ds = dumpstate.Dumpstate()
         ds.parse(io.BytesIO(raw_bytes), sections={})  # {} = exclude nothing, parse every known section
     except Exception as e:
-        return {"success": False, "error": f"dumpstate-py failed to parse this file: {e}", "sections": None}
+        return {"success": False, "error": f"dumpstate-py failed to parse this file: {e}",
+                "sections": None, "artifact_records": None}
 
     sections = {}
     for field in dataclasses.fields(ds):
@@ -126,4 +289,13 @@ def parse_bugreport(path):
         except Exception:
             continue  # one malformed section should never fail the whole parse
 
-    return {"success": True, "error": None, "sections": sections}
+    try:
+        artifact_records = _extract_parsed_artifact_records(ds)
+    except Exception:
+        # The new, less-tested extraction layer must never break the
+        # already-working raw-sections output above - a bug here just
+        # means no individually-searchable records this run, not a
+        # failed parse overall.
+        artifact_records = []
+
+    return {"success": True, "error": None, "sections": sections, "artifact_records": artifact_records}

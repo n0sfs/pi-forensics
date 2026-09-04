@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL_v3-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.40.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.41.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -180,7 +180,10 @@ status via LIEF), decrypt a WhatsApp local backup against a pulled key file into
 database and natively parse it - 1:1 and group messages (correctly resolving who sent what inside a
 group chat), calls, and contacts, real message content and timestamps, no ALEAPP run required - and
 deep-parse an already-captured `adb bugreport` archive into structured sections
-(processes, packages, mounts, kernel modules, GPS, crash traces, sockets, battery/power events). For
+(processes, packages, mounts, kernel modules, GPS, crash traces, sockets, battery/power events) - the
+package install/delete log, GPS fixes, crash reports, and loaded kernel modules are also individually
+indexed into the same searchable "Parsed Artifacts" list every other artifact type uses, not left
+only in the full raw JSON output. For
 a much deeper pass on an already-pulled Android or iOS extraction, right-click it and run
 **ALEAPP/iLEAPP** — the same open-source, community-maintained parsers many examiners already use,
 covering hundreds of app-specific artifacts (WhatsApp, Signal, Chrome, WiFi history, and far more),
@@ -367,7 +370,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.40.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.41.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.

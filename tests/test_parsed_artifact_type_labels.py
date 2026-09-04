@@ -115,6 +115,13 @@ _WEBCACHE_ARTIFACT_TYPES = {"webcache_entry"}
 _BITS_ARTIFACT_TYPES = {"bits_job"}
 # RDP Bitmap Cache, 2026-09-01 - core/rdp_bitmap_cache_utils.py.
 _RDP_BITMAP_CACHE_ARTIFACT_TYPES = {"rdp_bitmap_cache_tile"}
+# Android bugreport deep-parse, structured extraction (core/bugreport_
+# utils.py, 2026-09-04, Android pattern-of-life item 6) - see that
+# module's _extract_parsed_artifact_records() docstring for exact scope.
+_ANDROID_BUGREPORT_ARTIFACT_TYPES = {
+    "android_bugreport_package_event", "android_bugreport_location",
+    "android_bugreport_crash", "android_bugreport_kernel_module", "android_bugreport_power_event",
+}
 
 
 def test_parsed_artifact_type_labels_covers_every_known_producer():
@@ -129,7 +136,7 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
                 | _APPLE_EXPORT_ARTIFACT_TYPES | _WINDOWS_ACTIVITY_ARTIFACT_TYPES | _SRUM_ARTIFACT_TYPES
                 | _POWERSHELL_HISTORY_ARTIFACT_TYPES | _FIREWALL_LOG_ARTIFACT_TYPES
                 | _MACOS_LAUNCHD_ARTIFACT_TYPES | _WINSEARCH_ARTIFACT_TYPES | _WEBCACHE_ARTIFACT_TYPES
-                | _BITS_ARTIFACT_TYPES | _RDP_BITMAP_CACHE_ARTIFACT_TYPES)
+                | _BITS_ARTIFACT_TYPES | _RDP_BITMAP_CACHE_ARTIFACT_TYPES | _ANDROID_BUGREPORT_ARTIFACT_TYPES)
     actual = set(case_index.PARSED_ARTIFACT_TYPE_LABELS.keys())
     missing = expected - actual
     assert not missing, f"artifact_type(s) producible by a parser but missing from PARSED_ARTIFACT_TYPE_LABELS (row-fetch route would silently return no rows for these): {missing}"
