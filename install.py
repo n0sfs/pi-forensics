@@ -6,6 +6,7 @@ import json
 import time
 import math
 import pwd
+import hashlib
 import getpass
 import shutil
 import tempfile
@@ -666,7 +667,7 @@ if not os.path.exists(uac_script_path):
               f"collector will not be available.")
 
 
-def _download_release_asset(url, dest_path, min_size_bytes, user_agent):
+def _download_release_asset(url, dest_path, min_size_bytes, user_agent, sha256=None):
     """Downloads a single GitHub release-asset binary to dest_path - the one
     genuinely new vendoring pattern in this file (UAC/mquire/ALEAPP/iLEAPP/
     pysim above all `git clone`/`fetch` a pinned tag; neither AVML nor
@@ -686,8 +687,13 @@ def _download_release_asset(url, dest_path, min_size_bytes, user_agent):
     HEAD request against the plausible filenames at both projects before
     this was written), so min_size_bytes (the real, confirmed size of each
     asset) is used as a cheap corruption/redirect-to-an-error-page sanity
-    check instead - a genuine binary download will never come back small.
-    Returns True on success, False on any failure (never raises)."""
+    check for those two. `sha256`, added 2026-09-04 when adbsms (which DOES
+    publish real checksums) became this function's third caller, is a
+    strictly stronger check used instead of the size floor whenever a
+    caller has one - min_size_bytes is still enforced first regardless (a
+    genuinely truncated download should never even reach the more
+    expensive hash computation). Returns True on success, False on any
+    failure (never raises)."""
     tmp_path = dest_path + ".partial"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": user_agent})
@@ -698,6 +704,13 @@ def _download_release_asset(url, dest_path, min_size_bytes, user_agent):
                   f"bytes (expected at least {min_size_bytes}) - likely a redirect to an error "
                   f"page, not the real binary. Discarding.")
             return False
+        if sha256:
+            actual = hashlib.sha256(data).hexdigest()
+            if actual != sha256:
+                print(f"[!] Downloaded asset for {os.path.basename(dest_path)} has SHA256 "
+                      f"{actual}, expected {sha256} - discarding rather than trust a mismatched "
+                      f"download.")
+                return False
         with open(tmp_path, "wb") as f:
             f.write(data)
         os.replace(tmp_path, dest_path)
@@ -772,6 +785,33 @@ if not os.path.isdir(memory_dir) or not os.listdir(memory_dir):
         print(f"[!] Could not vendor any memory-acquisition tools (no internet access right now?) "
               f"- Live Collection USB will still work, just without the optional memory-capture "
               f"prompt. Retry by re-running install.py once online.")
+
+# 2g. Vendor adbsms.min (github.com/gonodono/adbsms, MIT, real prebuilt
+# release APK - no build step, same _download_release_asset() pattern as
+# AVML/WinPmem above) - the companion-app SMS extraction feature
+# (2026-09-04, Mobile Forensics' Android controls). Pinned to release
+# 0.0.12, the real latest tag at the time this was researched and
+# confirmed via a live download+SHA256 check before writing this - unlike
+# AVML/WinPmem, adbsms DOES publish a real checksums.txt, so the SHA256 is
+# verified here too, not just a size floor.
+ADBSMS_TAG = "0.0.12"
+ADBSMS_ASSET_URL = f"https://github.com/gonodono/adbsms/releases/download/{ADBSMS_TAG}/adbsms.min.apk"
+ADBSMS_ASSET_MIN_SIZE = 8_000
+ADBSMS_ASSET_SHA256 = "2c94430d743b11a666500097c8f36cf6ee77b63fab3f9342c05e0b2cba3678a8"
+
+android_companion_dir = os.path.join(INSTALL_DIR, "android_companion_tools")
+adbsms_dest = os.path.join(android_companion_dir, "adbsms.min.apk")
+if not os.path.isfile(adbsms_dest):
+    print(f"\n[*] Vendoring adbsms.min {ADBSMS_TAG} (Mobile Forensics - "
+          f"non-rooted companion-app SMS extraction)...")
+    os.makedirs(android_companion_dir, exist_ok=True)
+    if _download_release_asset(ADBSMS_ASSET_URL, adbsms_dest, ADBSMS_ASSET_MIN_SIZE,
+                                "pi-forensics-suite-installer", sha256=ADBSMS_ASSET_SHA256):
+        print(f"[+] adbsms.min vendored to {adbsms_dest}.")
+    else:
+        print(f"[!] Could not vendor adbsms.min (no internet access right now?) - the companion-app "
+              f"SMS extraction feature will not be available until this is retried. Retry by "
+              f"re-running install.py once online.")
 
 # 3. Directory Ownership Setup
 print(f"\n[*] Setting directory permissions on {INSTALL_DIR} for '{SERVICE_USER}'...")
