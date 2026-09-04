@@ -115,6 +115,27 @@
                                                     <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cleanupCompanionSmsExtraction()" title="Manually uninstall the collector / restore the default SMS app on the currently-selected device - use this if a prior extraction was interrupted and never cleaned up on its own."><i class="bi bi-arrow-counterclockwise me-1"></i>Force Cleanup</button>
                                                 </div>
 
+                                                <!-- Companion-app Contacts/Call Log extraction (2026-09-04) -
+                                                     same mechanism as the SMS panel above (a small relay app,
+                                                     installed then always removed), but genuinely lower-risk:
+                                                     neither READ_CONTACTS nor READ_CALL_LOG needs any default-
+                                                     app-role assumption, so there is no window where the
+                                                     phone's own Contacts/Phone apps stop working - hence the
+                                                     calmer info-blue styling here versus the SMS panel's
+                                                     warning-yellow. See execution_worker_android_companion_
+                                                     contacts_calllog() in routes/mobile.py. -->
+                                                <div id="mobileCompanionContactsCallLogPanel" class="mb-2 p-2 border border-info rounded-2">
+                                                    <div class="small fw-bold text-info mb-1"><i class="bi bi-person-lines-fill me-1"></i>Extract Contacts/Call Log via Companion App (Non-Rooted)</div>
+                                                    <div class="small text-subtle mb-2">Installs a small companion app (hand-built for this project, mirroring the same open-source relay-provider design as the SMS collector above) to read Contacts and/or Call Log through Android's own normal permission system - both are excluded from `adb backup` on every device, with no way around that short of root. This <strong>actively modifies the device</strong> (installs an app, grants one or both of READ_CONTACTS/READ_CALL_LOG), but - unlike SMS - never disrupts the phone's own Contacts/Phone apps at any point, since neither permission requires becoming a "default app." Every step is disclosed in the resulting case record; the collector is always uninstalled and both permissions revoked when finished.</div>
+                                                    <select id="mobileCompanionContactsCallLogTypes" class="form-select form-select-sm mb-2">
+                                                        <option value="both" selected>Both Contacts and Call Log</option>
+                                                        <option value="contacts">Contacts only</option>
+                                                        <option value="calllog">Call Log only</option>
+                                                    </select>
+                                                    <button id="btnCompanionContactsCallLogStart" type="button" class="btn btn-outline-info btn-sm fw-bold" onclick="startCompanionContactsCallLogExtraction()" disabled><i class="bi bi-play-fill me-1"></i>Start Contacts/Call Log Extraction</button>
+                                                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cleanupCompanionContactsCallLogExtraction()" title="Manually revoke both permissions / uninstall the collector on the currently-selected device - use this if a prior extraction was interrupted and never cleaned up on its own."><i class="bi bi-arrow-counterclockwise me-1"></i>Force Cleanup</button>
+                                                </div>
+
                                                 <label class="telemetry-grid-label d-block mb-1">Acquisition Mode</label>
                                                 <select id="mobileAndroidMode" class="form-select form-select-sm mb-1" onchange="updateAndroidModeHelp()">
                                                     <option value="pull" selected>Pull Accessible Storage (adb pull)</option>

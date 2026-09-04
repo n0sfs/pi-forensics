@@ -37,6 +37,11 @@ from core.android_companion_sms_utils import (
     ADBSMS_MIN_PACKAGE, ADBSMS_MIN_AUTHORITY, SMS_QUERY_COLUMNS,
     parse_content_query_output, build_companion_sms_records,
 )
+from core.android_companion_contacts_calllog_utils import (
+    PIF_COMPANION_PACKAGE, PIF_COMPANION_CONTACTS_AUTHORITY, PIF_COMPANION_CALLLOG_AUTHORITY,
+    CONTACTS_QUERY_COLUMNS, CALLLOG_QUERY_COLUMNS,
+    build_companion_contact_records, build_companion_call_log_records,
+)
 
 # 2026-08-30, physical/raw Android acquisition: dc3dd/dcfldd's progress-line
 # and post-completion hash-extraction parsers already live in
@@ -1868,4 +1873,368 @@ def cleanup_android_companion_sms():
     results["uninstalled"] = (rc == 0)
 
     log_chain_of_custody("android_companion_sms_manual_cleanup", {"serial": serial, "results": results})
+    return jsonify({"success": True, "results": results})
+
+
+# --- Companion-app Contacts/Call Log extraction (non-rooted), 2026-09-04 ---
+# See core/android_companion_contacts_calllog_utils.py's own module
+# docstring for the full research/grounding (why Contacts and Call Log are
+# unreachable via .ab/adb backup on a modern device; why, unlike SMS,
+# neither needs any default-app-role dance - just a plain pm grant per
+# permission; the hand-built pif-companion.apk, since no suitable existing
+# open-source relay tool was found for these two data types). This mirrors
+# execution_worker_android_companion_sms() above closely (same overall
+# shape: install -> grant -> query -> parse -> index -> ALWAYS clean up in
+# finally), simplified where the underlying mechanism genuinely is
+# simpler - there's no role-assumption/restoration step here at all, and
+# no device-functionality disruption window, since neither permission
+# requires becoming any kind of "default app."
+ANDROID_COMPANION_CONTACTS_CALLLOG_APK = os.path.join(ANDROID_COMPANION_APK_DIR, "pif-companion.apk")
+
+_ANDROID_COMPANION_DATA_TYPES_RE = re.compile(r'^(contacts|calllog|both)$')
+
+
+def execution_worker_android_companion_contacts_calllog(serial, data_types, output_path, report_file_path,
+                                                          report_data, case_folder, requester_ip=None,
+                                                          requester_user=None):
+    """Installs the vendored pif-companion collector, grants whichever of
+    READ_CONTACTS/READ_CALL_LOG `data_types` selects, queries the
+    corresponding relay ContentProvider(s), then ALWAYS revokes every
+    permission it granted and uninstalls the collector before finishing -
+    cleanup runs in the outer `finally` block regardless of success,
+    failure, or a Stop request partway through, matching
+    execution_worker_android_companion_sms()'s own established pattern
+    (including the identical requester_ip/requester_user capture-before-
+    spawn fix that pattern's own docstring explains at length - this
+    worker runs in a background daemon thread with no Flask application
+    context, so log_chain_of_custody()'s own request/g fallback would
+    raise here otherwise).
+
+    `data_types` is 'contacts', 'calllog', or 'both' - each selected type
+    gets its own independent grant/query/revoke sequence, so a partial
+    failure on one type (e.g. the device denies READ_CALL_LOG for some
+    reason) doesn't prevent the other from still being attempted.
+
+    A Stop request is checked at two points, with a deliberate asymmetry:
+    a Stop that lands BEFORE any query ever ran leaves acquisition_status
+    at its starting IN_PROGRESS value (nothing to show, matching
+    execution_worker_android_companion_sms()'s own identical convention)
+    - but a Stop that lands BETWEEN the two queries (e.g. Contacts already
+    succeeded, Call Log was about to start) still marks the run COMPLETED,
+    since real data was already captured and indexed. This is honest, not
+    misleading, precisely because device_log["steps"] only ever contains
+    entries for steps that genuinely ran - a skipped query is genuinely
+    absent from it, and call_log_count staying 0 makes the gap visible in
+    the case record rather than silently implied to be "everything."
+
+    device_log (written into both the manifest JSON and the case report
+    event's own acquisition_parameters) is the actual chain-of-custody-
+    honest record of what changed on the device and when - not a debug
+    log, the primary disclosure artifact this feature exists to produce
+    alongside the Contacts/Call Log data itself."""
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    want_contacts = data_types in ("contacts", "both")
+    want_calllog = data_types in ("calllog", "both")
+    device_log = {"data_types": data_types, "steps": [], "contact_count": 0, "call_log_count": 0}
+
+    def record_step(name, rc, note=""):
+        device_log["steps"].append({"step": name, "returncode": rc, "note": note,
+                                     "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+
+    apk_installed = False
+    contacts_granted = False
+    calllog_granted = False
+
+    try:
+        update_job(format="android_companion_contacts_calllog", status="Initializing...", progress_percent=0.0,
+                   log=f"[*] Initializing companion-app Contacts/Call Log extraction ({data_types}) on {serial}...")
+
+        if not os.path.isfile(ANDROID_COMPANION_CONTACTS_CALLLOG_APK):
+            raise RuntimeError(
+                "pif-companion.apk is not vendored on this station - re-run install.py with internet "
+                "access to download it, then retry."
+            )
+
+        append_log(f"[*] Installing companion collector ({PIF_COMPANION_PACKAGE})...")
+        rc, out, err = _adb_run(serial, ["install", "-r", ANDROID_COMPANION_CONTACTS_CALLLOG_APK],
+                                 ANDROID_COMPANION_ADB_TIMEOUT)
+        record_step("install", rc, (out + err).strip()[:500])
+        if rc != 0:
+            raise RuntimeError(f"adb install failed: {(err or out).strip()[:300]}")
+        apk_installed = True
+        append_log("[+] Collector installed.")
+
+        if want_contacts:
+            update_job(status="Granting READ_CONTACTS permission...")
+            append_log("[*] Granting READ_CONTACTS permission.")
+            rc, out, err = _adb_run(
+                serial, ["shell", "pm", "grant", PIF_COMPANION_PACKAGE, "android.permission.READ_CONTACTS"],
+                ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("pm_grant_contacts", rc, (out + err).strip()[:300])
+            if rc != 0:
+                raise RuntimeError(f"Could not grant READ_CONTACTS: {(err or out).strip()[:300]}")
+            contacts_granted = True
+
+        if want_calllog:
+            update_job(status="Granting READ_CALL_LOG permission...")
+            append_log("[*] Granting READ_CALL_LOG permission.")
+            rc, out, err = _adb_run(
+                serial, ["shell", "pm", "grant", PIF_COMPANION_PACKAGE, "android.permission.READ_CALL_LOG"],
+                ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("pm_grant_calllog", rc, (out + err).strip()[:300])
+            if rc != 0:
+                raise RuntimeError(f"Could not grant READ_CALL_LOG: {(err or out).strip()[:300]}")
+            calllog_granted = True
+
+        all_records = []
+
+        if snapshot_job()["status"] == "Stopped":
+            # Same, already-established convention as execution_worker_
+            # android_companion_sms() above: a genuinely stopped job stays
+            # at its starting IN_PROGRESS acquisition_status, never falsely
+            # marked COMPLETED.
+            append_log("[!] Stop requested before any query ran - skipping queries, still restoring "
+                       "device state below.")
+        else:
+            if contacts_granted:
+                update_job(status="Querying Contacts...")
+                append_log("[*] Querying Contacts via the collector's relay ContentProvider...")
+                projection = ":".join(CONTACTS_QUERY_COLUMNS)
+                rc, out, err = _adb_run(
+                    serial,
+                    ["shell", "content", "query", "--uri", f"content://{PIF_COMPANION_CONTACTS_AUTHORITY}/data",
+                     "--projection", projection],
+                    ANDROID_COMPANION_QUERY_TIMEOUT)
+                record_step("content_query_contacts", rc, f"{len((out or '').splitlines())} line(s) returned")
+                if rc != 0:
+                    append_log(f"[!] Contacts query failed: {(err or out).strip()[:300]}")
+                else:
+                    rows = parse_content_query_output(out, columns=CONTACTS_QUERY_COLUMNS)
+                    contact_records = build_companion_contact_records(rows)
+                    all_records.extend(contact_records)
+                    device_log["contact_count"] = len(contact_records)
+                    append_log(f"[+] Parsed {len(contact_records)} contact detail record(s).")
+
+            if snapshot_job()["status"] != "Stopped" and calllog_granted:
+                update_job(status="Querying Call Log...")
+                append_log("[*] Querying Call Log via the collector's relay ContentProvider...")
+                projection = ":".join(CALLLOG_QUERY_COLUMNS)
+                rc, out, err = _adb_run(
+                    serial,
+                    ["shell", "content", "query", "--uri", f"content://{PIF_COMPANION_CALLLOG_AUTHORITY}/calls",
+                     "--projection", projection],
+                    ANDROID_COMPANION_QUERY_TIMEOUT)
+                record_step("content_query_calllog", rc, f"{len((out or '').splitlines())} line(s) returned")
+                if rc != 0:
+                    append_log(f"[!] Call Log query failed: {(err or out).strip()[:300]}")
+                else:
+                    rows = parse_content_query_output(out, columns=CALLLOG_QUERY_COLUMNS)
+                    call_records = build_companion_call_log_records(rows)
+                    all_records.extend(call_records)
+                    device_log["call_log_count"] = len(call_records)
+                    append_log(f"[+] Parsed {len(call_records)} call log record(s).")
+
+            if all_records:
+                identity = {"source_type": "real_fs", "image_path": None, "fs_offset": None, "inode": None,
+                            "path": output_path}
+                indexed = _record_parsed_artifacts(case_folder, identity, all_records)
+                if indexed:
+                    append_log(f"[+] Indexed {indexed} record(s) into the case's searchable Parsed "
+                               "Artifacts and the Evidence Timeline.")
+
+            report_data["acquisition_parameters"]["contact_records_captured"] = device_log["contact_count"]
+            report_data["acquisition_parameters"]["call_log_records_captured"] = device_log["call_log_count"]
+            report_data["acquisition_status"] = "COMPLETED"
+
+    except Exception as e:
+        error_message = str(e)
+        append_log(f"[!] {error_message}")
+        report_data["acquisition_status"] = "FAILED"
+        report_data["error"] = error_message
+
+    finally:
+        # Cleanup always runs here, regardless of the try block's outcome -
+        # matches execution_worker_android_companion_sms()'s own
+        # established reasoning exactly. Each step is attempted
+        # independently so one failing doesn't skip the next.
+        append_log("[*] Restoring device state...")
+
+        if contacts_granted:
+            rc, out, err = _adb_run(
+                serial, ["shell", "pm", "revoke", PIF_COMPANION_PACKAGE, "android.permission.READ_CONTACTS"],
+                ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("pm_revoke_contacts", rc)
+
+        if calllog_granted:
+            rc, out, err = _adb_run(
+                serial, ["shell", "pm", "revoke", PIF_COMPANION_PACKAGE, "android.permission.READ_CALL_LOG"],
+                ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("pm_revoke_calllog", rc)
+
+        if apk_installed:
+            rc, out, err = _adb_run(serial, ["uninstall", PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("uninstall", rc)
+            if rc != 0:
+                append_log(f"[!!] Could not automatically uninstall the collector - manually run "
+                           f"'adb uninstall {PIF_COMPANION_PACKAGE}' against the device to remove it.")
+            else:
+                append_log("[+] Collector uninstalled.")
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        report_data["acquisition_parameters"]["device_modification_log"] = device_log
+
+        try:
+            with open(output_path, "w") as f:
+                json.dump({
+                    "source": "pif-companion.apk relay (hand-built for this app, mirroring "
+                              "github.com/gonodono/adbsms's own relay-provider design)",
+                    "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "data_types": data_types,
+                    "contact_count": device_log["contact_count"],
+                    "call_log_count": device_log["call_log_count"],
+                    "device_modification_log": device_log,
+                    "note": "This action installed a small app on the device, granted it one or both of "
+                            "READ_CONTACTS/READ_CALL_LOG, queried the requested data, then revoked every "
+                            "permission and uninstalled the app - see device_modification_log above for "
+                            "the exact sequence and outcome of each step. Unlike SMS extraction, this "
+                            "never disrupted the device's own Contacts/Phone apps at any point.",
+                }, f, indent=2)
+            _auto_tag_case_artifact(case_folder, output_path)
+        except OSError:
+            pass
+
+        _write_report(report_file_path, report_data, append_log)
+        log_chain_of_custody("android_companion_contacts_calllog_extract", {
+            "serial": serial, "data_types": data_types,
+            "contact_count": device_log["contact_count"],
+            "call_log_count": device_log["call_log_count"],
+            "status": report_data["acquisition_status"],
+            "device_modification_log": device_log,
+        }, source_ip=requester_ip, user=requester_user)
+
+        # Same established convention as execution_worker_android_
+        # companion_sms() above - only overwrite the job's own status text
+        # for a genuine completion or a genuine failure; active=False is
+        # the one thing that must always happen regardless of outcome.
+        final_status = None
+        if report_data["acquisition_status"] == "COMPLETED":
+            final_status = "Completed Successfully"
+        elif report_data["acquisition_status"] == "FAILED":
+            final_status = "Failed"
+        if final_status:
+            update_job(status=final_status, progress_percent=100.0, active=False)
+        else:
+            update_job(active=False)
+
+
+@mobile_bp.route('/api/mobile/android/companion_contacts_calllog/start', methods=['POST'])
+@requires_auth
+@requires_permission('mobile')
+def start_android_companion_contacts_calllog():
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    serial = req.get('serial', '')
+    data_types = req.get('data_types', 'both')
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    metadata = req.get('metadata', {})
+
+    if not _ANDROID_SERIAL_RE.match(serial or ''):
+        update_job(active=False)
+        return jsonify({"error": "Invalid or missing device serial. Refresh the device list and select "
+                                  "a connected, authorized Android device."}), 400
+    if not _ANDROID_COMPANION_DATA_TYPES_RE.match(data_types or ''):
+        update_job(active=False)
+        return jsonify({"error": "data_types must be 'contacts', 'calllog', or 'both'."}), 400
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except Exception as e:
+        update_job(active=False)
+        return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_android_companion_contacts_calllog"
+    output_path = os.path.join(dest_path, f"{base_name}_extraction.json")
+
+    report_data = {
+        "tool": "android_companion_contacts_calllog",
+        "case_metadata": metadata,
+        "device_serial": serial,
+        "acquisition_parameters": {
+            "platform": "Android",
+            "method": "pif-companion.apk relay (installs/modifies/restores device state - see "
+                      "device_modification_log)",
+            "data_types": data_types,
+            "output_destination": output_path,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
+
+    # Captured here, in the real request thread, and passed through
+    # explicitly - see execution_worker_android_companion_contacts_calllog()'s
+    # own docstring for why this matters.
+    requester_ip = request.remote_addr
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_android_companion_contacts_calllog,
+        args=(serial, data_types, output_path, report_target, report_data, dest_path,
+              requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("android_companion_contacts_calllog_extract_start",
+                          {"serial": serial, "data_types": data_types, "destination": output_path})
+    return jsonify({"success": True, "message": "Companion-app Contacts/Call Log extraction started."})
+
+
+@mobile_bp.route('/api/mobile/android/companion_contacts_calllog/cleanup', methods=['POST'])
+@requires_auth
+@requires_permission('mobile')
+def cleanup_android_companion_contacts_calllog():
+    """Manual safety-net cleanup, reachable at any time a device is
+    connected, independent of this app's own job state - revokes both
+    permissions (idempotent even if only one, or neither, was ever
+    granted) and uninstalls the collector. Mirrors
+    cleanup_android_companion_sms()'s own established reasoning exactly."""
+    req = request.get_json() or {}
+    serial = req.get('serial', '')
+    if not _ANDROID_SERIAL_RE.match(serial or ''):
+        return jsonify({"error": "Invalid or missing device serial."}), 400
+
+    results = {}
+    rc, out, err = _adb_run(
+        serial, ["shell", "pm", "revoke", PIF_COMPANION_PACKAGE, "android.permission.READ_CONTACTS"],
+        ANDROID_COMPANION_ADB_TIMEOUT)
+    results["contacts_permission_revoked"] = (rc == 0)
+
+    rc, out, err = _adb_run(
+        serial, ["shell", "pm", "revoke", PIF_COMPANION_PACKAGE, "android.permission.READ_CALL_LOG"],
+        ANDROID_COMPANION_ADB_TIMEOUT)
+    results["calllog_permission_revoked"] = (rc == 0)
+
+    rc, out, err = _adb_run(serial, ["uninstall", PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+    results["uninstalled"] = (rc == 0)
+
+    log_chain_of_custody("android_companion_contacts_calllog_manual_cleanup",
+                          {"serial": serial, "results": results})
     return jsonify({"success": True, "results": results})
