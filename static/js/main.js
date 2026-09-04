@@ -1943,6 +1943,7 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     android_installed_app: 'Android: Installed App Inventory (adb pull)',
     android_configured_account: 'Android: Configured Accounts (adb pull)',
     android_notification_snapshot: 'Android: Notification Snapshot, metadata only (adb pull)',
+    android_companion_sms_message: 'Android: SMS via Companion App (Non-Rooted)',
     whatsapp_message: 'WhatsApp: Messages (Native Parse)',
     whatsapp_call_log: 'WhatsApp: Calls (Native Parse)',
     whatsapp_contact: 'WhatsApp: Contacts (Native Parse)',
@@ -7462,6 +7463,7 @@ const JOB_FORMAT_TO_NAV_BADGE = {
     // Mobile Forensics
     ios_backup: 'navBadgeMobile', android_pull: 'navBadgeMobile',
     android_backup: 'navBadgeMobile', android_bugreport: 'navBadgeMobile',
+    android_companion_sms: 'navBadgeMobile',
     // File Recovery (whole-device/whole-image tools reached from that tab)
     photorec: 'navBadgeRecovery', extundelete: 'navBadgeRecovery',
     foremost: 'navBadgeRecovery', scalpel: 'navBadgeRecovery', triage_scan: 'navBadgeRecovery',
@@ -15579,6 +15581,21 @@ function refreshMobileStartButtonState() {
     }
 }
 
+// Companion-app SMS extraction (2026-09-04) - its own Start button,
+// independent of the mode selector above (reachable regardless of which
+// Acquisition Mode is currently chosen, matching pullWhatsappKey()'s own
+// "always available for a trusted device" convention), but sharing the
+// exact same trust check refreshMobileStartButtonState() already uses for
+// Android. Called from onMobileAndroidSelect() and from fetchProgress()'s
+// job-active/inactive transition (mirroring refreshMobileStartButtonState()
+// itself being re-run there).
+function refreshCompanionSmsButtonState() {
+    const btn = document.getElementById("btnCompanionSmsStart");
+    if (!btn) return;
+    const dev = _currentlySelectedAndroidDevice();
+    btn.disabled = !dev || !dev.authorized;
+}
+
 function updateMobileDeviceMode() {
     const mode = document.getElementById("mobileDeviceMode")?.value || 'ios';
     const iosControls = document.getElementById("mobileIosControls");
@@ -15762,6 +15779,7 @@ function onMobileAndroidSelect() {
     if (whatsappStatus) whatsappStatus.textContent = '';
 
     refreshMobileStartButtonState();
+    refreshCompanionSmsButtonState();
 }
 
 async function pullWhatsappKey() {
@@ -15787,6 +15805,74 @@ async function pullWhatsappKey() {
         loadExplorer(explorerPath);
     } catch (err) {
         if (statusEl) statusEl.textContent = '[REQUEST FAILED]';
+    }
+}
+
+// Companion-app SMS extraction (2026-09-04) - see routes/mobile.py's
+// execution_worker_android_companion_sms() and its own module docstring
+// for the full picture. Uses the SAME shared job-slot/Stop-button/status-
+// display machinery every other Android acquisition mode already uses
+// (this app's own established "one shared job, many displays" model), so
+// no dedicated status polling of its own is needed here - fetchProgress()
+// already mirrors whatever job is active into #mobileJobStatus/
+// #mobileLogOutput regardless of which mode started it.
+async function startCompanionSmsExtraction() {
+    const dev = _currentlySelectedAndroidDevice();
+    if (!dev) return showToast('Select a connected, authorized Android device first.', 'warning');
+    const tier = document.getElementById("mobileCompanionSmsTier")?.value || 'readonly';
+
+    const tierWarning = tier === 'full'
+        ? '\n\nFULL ACCESS: this will temporarily make the collector the device\'s default SMS app. '
+          + 'The phone\'s own real SMS app will NOT receive or send normal messages until this finishes '
+          + 'and the original default is restored.'
+        : '\n\nRead-only tier: only inbox and sent messages are visible (Android\'s own restriction for '
+          + 'a non-default SMS app) - no disruption to normal messaging.';
+    if (!confirm(
+        'This installs a small, open-source (MIT-licensed) app on the device to read its SMS content, '
+        + 'then removes it and reverses every change when finished.'
+        + tierWarning
+        + '\n\nEvery step (install, permission/role change, query, cleanup) is recorded in the case report. '
+        + 'Continue?'
+    )) return;
+
+    const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById("mobileDest")?.value || '/mnt');
+    const metadata = {
+        case_number: document.getElementById("mobileCaseNum")?.value || 'UNASSIGNED',
+        evidence_id: document.getElementById("mobileEvidenceId")?.value || 'ITEM-01',
+        examiner: document.getElementById("mobileExaminer")?.value || '',
+    };
+
+    try {
+        const res = await fetch('/api/mobile/android/companion_sms/start', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: dev.serial, access_tier: tier, destination: destinationDir, metadata }),
+        });
+        const data = await res.json();
+        if (!data.success) return showToast(`Start failed: ${data.error}`, 'danger');
+        showToast('Companion-app SMS extraction started.', 'success');
+        document.getElementById("btnCompanionSmsStart").disabled = true;
+        document.getElementById("btnMobileStart").disabled = true;
+    } catch (err) {
+        showToast('Request failed.', 'danger');
+    }
+}
+
+async function cleanupCompanionSmsExtraction() {
+    const dev = _currentlySelectedAndroidDevice();
+    if (!dev) return showToast('Select a connected Android device first.', 'warning');
+    if (!confirm('This uninstalls the companion collector from the selected device and, if it\'s '
+        + 'currently set as the default SMS app, restores the prior default. Use this only if a '
+        + 'previous extraction was interrupted and never cleaned up on its own. Continue?')) return;
+    try {
+        const res = await fetch('/api/mobile/android/companion_sms/cleanup', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: dev.serial }),
+        });
+        const data = await res.json();
+        if (!data.success) return showToast(`Cleanup failed: ${data.error}`, 'danger');
+        showToast('Device state cleanup complete.', 'success');
+    } catch (err) {
+        showToast('Request failed.', 'danger');
     }
 }
 
@@ -17320,8 +17406,10 @@ async function fetchProgress() {
         if (document.getElementById("btnMobileStop")) document.getElementById("btnMobileStop").disabled = !data.active;
         if (data.active) {
             if (document.getElementById("btnMobileStart")) document.getElementById("btnMobileStart").disabled = true;
+            if (document.getElementById("btnCompanionSmsStart")) document.getElementById("btnCompanionSmsStart").disabled = true;
         } else {
             refreshMobileStartButtonState();     // re-derives disabled state from current device trust/selection + mode
+            refreshCompanionSmsButtonState();
         }
 
     } catch (err) {}

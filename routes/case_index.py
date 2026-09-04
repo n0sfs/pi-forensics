@@ -253,6 +253,7 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     # label deliberately says "metadata" rather than implying full content.
     "android_configured_account": "Android: Configured Accounts (adb pull)",
     "android_notification_snapshot": "Android: Notification Snapshot, metadata only (adb pull)",
+    "android_companion_sms_message": "Android: SMS via Companion App (Non-Rooted)",
     # Native WhatsApp msgstore.db/wa.db parsing (core/whatsapp_utils.py,
     # 2026-09-04) - reachable either from this app's own WhatsApp-decrypt
     # feature's output (a real file, no root needed) or a rooted physical

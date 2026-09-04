@@ -18,11 +18,11 @@ import subprocess
 import threading
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody
-from core.config import EVIDENCE_ROOT
+from core.config import EVIDENCE_ROOT, INSTALL_DIR
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
     _stream_subprocess, _stream_piped_subprocess, clear_active_proc, clear_upstream_proc,
@@ -33,6 +33,10 @@ from core.whatsapp_utils import pull_whatsapp_key_file
 from core.idevicecrashreport_utils import pull_ios_crash_reports
 from core.sim_utils import list_pcsc_readers, read_sim_card
 from core.config import ALLOWED_HASH_ALGOS
+from core.android_companion_sms_utils import (
+    ADBSMS_MIN_PACKAGE, ADBSMS_MIN_AUTHORITY, SMS_QUERY_COLUMNS,
+    parse_content_query_output, build_companion_sms_records,
+)
 
 # 2026-08-30, physical/raw Android acquisition: dc3dd/dcfldd's progress-line
 # and post-completion hash-extraction parsers already live in
@@ -1470,3 +1474,398 @@ def start_android_acquisition():
 
     log_chain_of_custody("android_acquisition_start", {"mode": mode, "serial": serial, "destination": output_path})
     return jsonify({"success": True, "message": f"Android {mode} started."})
+
+
+# --- Companion-app SMS extraction (non-rooted), 2026-09-04 ---
+# See core/android_companion_sms_utils.py's own module docstring for the
+# full research/grounding behind this (real, sourced AOSP behavior; the
+# vendored adbsms.min collector; why the two access tiers exist). This is
+# the one Android acquisition mode in this app that DELIBERATELY modifies
+# the device (installs a real app, grants a permission or reassigns a
+# system role) rather than only reading from it - every step below is
+# disclosed in the resulting manifest/report event and the chain-of-
+# custody log, not just internally reasoned about.
+ANDROID_COMPANION_APK_DIR = os.path.join(INSTALL_DIR, "android_companion_tools")
+ANDROID_COMPANION_SMS_APK = os.path.join(ANDROID_COMPANION_APK_DIR, "adbsms.min.apk")
+ANDROID_COMPANION_ADB_TIMEOUT = 30
+# A large SMS database's content query can genuinely take longer to stream
+# out over adb than a short pm/cmd call - given its own headroom, distinct
+# from ANDROID_COMPANION_ADB_TIMEOUT above.
+ANDROID_COMPANION_QUERY_TIMEOUT = 180
+
+
+def _adb_run(serial, args, timeout):
+    """Small shared helper for one short adb command against `serial` -
+    every step of execution_worker_android_companion_sms() below is
+    exactly one of these, so the worker's own step sequence stays
+    readable instead of repeating subprocess.run(...) boilerplate at every
+    step. Returns (returncode, stdout, stderr); never raises - a timeout
+    or any other exception is folded into a synthetic -1 returncode with
+    the exception text as stderr, so every call site can check
+    .returncode uniformly without its own try/except."""
+    try:
+        result = subprocess.run(["adb", "-s", serial] + args, capture_output=True, text=True, timeout=timeout)
+        return result.returncode, result.stdout, result.stderr
+    except Exception as e:
+        return -1, "", str(e)
+
+
+def execution_worker_android_companion_sms(serial, access_tier, output_path, report_file_path,
+                                             report_data, case_folder, requester_ip=None, requester_user=None):
+    """Installs the vendored adbsms.min collector, extracts SMS content via
+    its relay ContentProvider, then ALWAYS restores the device to its
+    prior state (revoke the permission or restore the original default
+    SMS app, then uninstall the collector) before finishing - cleanup runs
+    in the outer `finally` block regardless of success, failure, or a Stop
+    request partway through, since leaving a phone with a reassigned
+    default SMS app or an uninstalled-but-still-permission-granted
+    collector would be a real, ongoing problem for the device, not just a
+    loose end in this app's own bookkeeping.
+
+    `requester_ip`/`requester_user` are captured by the route handler
+    (start_android_companion_sms()) in the real request thread and passed
+    through explicitly - this worker runs in a background daemon thread
+    with no Flask application/request context, so log_chain_of_custody()'s
+    own request/g fallback would raise here (confirmed live: this exact
+    bug shipped and was caught during this feature's own live testing -
+    the worker's job never released the shared job slot because the
+    unhandled exception hit partway through the finally block, after
+    cleanup and the report write had already succeeded but before the
+    final update_job(active=False) call). The same capture-before-spawn
+    fix this codebase has already applied to several other background-
+    thread call sites (network config's delayed-revert thread, the image
+    triage scan job, chained_auto_analyze - see routes/acquisition.py).
+
+    `access_tier` is 'readonly' (grants READ_SMS only - Android's own
+    real, documented restriction means this sees only inbox/sent, but
+    never disrupts the phone's own live messaging) or 'full' (temporarily
+    assumes the default-SMS-app role for every folder, at the real cost of
+    the phone's own SMS app going nonfunctional for that window - see the
+    confirm dialog in the UI and the module docstring in core/android_
+    companion_sms_utils.py for the full disclosure).
+
+    device_log (written into both the manifest JSON and the case report
+    event's own acquisition_parameters) is the actual chain-of-custody-
+    honest record of what changed on the device and when - not a debug
+    log, the primary disclosure artifact this feature exists to produce
+    alongside the SMS data itself."""
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    device_log = {"access_tier": access_tier, "steps": [], "sms_count": 0}
+
+    def record_step(name, rc, note=""):
+        device_log["steps"].append({"step": name, "returncode": rc, "note": note,
+                                     "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+
+    original_sms_role_holder = None
+    permission_granted = False
+    role_assumed = False
+    apk_installed = False
+
+    try:
+        update_job(format="android_companion_sms", status="Initializing...", progress_percent=0.0,
+                   log=f"[*] Initializing companion-app SMS extraction ({access_tier} tier) on {serial}...")
+
+        if not os.path.isfile(ANDROID_COMPANION_SMS_APK):
+            raise RuntimeError(
+                "adbsms.min.apk is not vendored on this station - re-run install.py with internet "
+                "access to download it, then retry."
+            )
+
+        append_log(f"[*] Installing companion collector ({ADBSMS_MIN_PACKAGE})...")
+        rc, out, err = _adb_run(serial, ["install", "-r", ANDROID_COMPANION_SMS_APK], ANDROID_COMPANION_ADB_TIMEOUT)
+        record_step("install", rc, (out + err).strip()[:500])
+        if rc != 0:
+            raise RuntimeError(f"adb install failed: {(err or out).strip()[:300]}")
+        apk_installed = True
+        append_log("[+] Collector installed.")
+
+        if access_tier == "full":
+            update_job(status="Checking current default SMS app...")
+            rc, out, err = _adb_run(serial, ["shell", "cmd", "role", "get-role-holders", "android.app.role.SMS"],
+                                     ANDROID_COMPANION_ADB_TIMEOUT)
+            original_sms_role_holder = out.strip().splitlines()[0].strip() if (rc == 0 and out.strip()) else None
+            record_step("get-role-holders", rc, f"original={original_sms_role_holder!r}")
+            append_log(f"[*] Current default SMS app: {original_sms_role_holder or '(none currently set)'}")
+
+            update_job(status="Assuming default-SMS-app role (full access)...")
+            append_log("[*] Temporarily assuming the default-SMS-app role for full access - the phone's "
+                       "own SMS app will not receive/send normal messages until this is restored below.")
+            rc, out, err = _adb_run(
+                serial, ["shell", "cmd", "role", "add-role-holder", "android.app.role.SMS", ADBSMS_MIN_PACKAGE],
+                ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("add-role-holder", rc, (out + err).strip()[:300])
+            if rc != 0:
+                raise RuntimeError(f"Could not assume the default SMS app role: {(err or out).strip()[:300]}")
+            role_assumed = True
+        else:
+            update_job(status="Granting READ_SMS permission (read-only tier)...")
+            append_log("[*] Granting READ_SMS permission (read-only tier - inbox/sent only, no disruption "
+                       "to normal messaging).")
+            rc, out, err = _adb_run(
+                serial, ["shell", "pm", "grant", ADBSMS_MIN_PACKAGE, "android.permission.READ_SMS"],
+                ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("pm_grant", rc, (out + err).strip()[:300])
+            if rc != 0:
+                raise RuntimeError(f"Could not grant READ_SMS: {(err or out).strip()[:300]}")
+            permission_granted = True
+
+        if snapshot_job()["status"] == "Stopped":
+            # Matches execution_worker_android()'s own established
+            # convention (this file, above): a genuinely stopped job is
+            # neither COMPLETED nor FAILED - report_data["acquisition_
+            # status"] is simply left at its starting "IN_PROGRESS" value,
+            # an honest signal that this run never reached a real
+            # completion determination, rather than falsely claiming
+            # success for an extraction that never actually queried
+            # anything. (A real correctness bug caught by this feature's
+            # own test suite before shipping - the first version of this
+            # branch unconditionally set "COMPLETED" a few lines below
+            # regardless of whether the query ever ran.)
+            append_log("[!] Stop requested before the query ran - skipping the query, still restoring "
+                       "device state below.")
+        else:
+            update_job(status="Querying SMS content...")
+            append_log("[*] Querying SMS content via the collector's relay ContentProvider...")
+            projection = ":".join(SMS_QUERY_COLUMNS)
+            rc, out, err = _adb_run(
+                serial,
+                ["shell", "content", "query", "--uri", f"content://{ADBSMS_MIN_AUTHORITY}",
+                 "--projection", projection],
+                ANDROID_COMPANION_QUERY_TIMEOUT)
+            record_step("content_query", rc, f"{len((out or '').splitlines())} line(s) returned")
+            if rc != 0:
+                raise RuntimeError(f"content query failed: {(err or out).strip()[:300]}")
+
+            rows = parse_content_query_output(out)
+            records = build_companion_sms_records(rows)
+            append_log(f"[+] Parsed {len(records)} SMS record(s).")
+
+            identity = {"source_type": "real_fs", "image_path": None, "fs_offset": None, "inode": None,
+                        "path": output_path}
+            indexed = _record_parsed_artifacts(case_folder, identity, records)
+            if indexed:
+                append_log(f"[+] Indexed {indexed} record(s) into the case's searchable Parsed Artifacts "
+                           "and the Evidence Timeline.")
+
+            device_log["sms_count"] = len(records)
+            report_data["acquisition_parameters"]["sms_records_captured"] = len(records)
+            report_data["acquisition_status"] = "COMPLETED"
+
+    except Exception as e:
+        error_message = str(e)
+        append_log(f"[!] {error_message}")
+        report_data["acquisition_status"] = "FAILED"
+        report_data["error"] = error_message
+
+    finally:
+        # Cleanup always runs here, regardless of the try block's outcome -
+        # see this function's own docstring for why. Every step is
+        # attempted independently (one failing doesn't skip the next), and
+        # every real outcome (including a failure to restore state) is
+        # both logged loudly to the examiner and recorded in device_log.
+        append_log("[*] Restoring device state...")
+        if role_assumed:
+            if original_sms_role_holder:
+                rc, out, err = _adb_run(
+                    serial, ["shell", "cmd", "role", "add-role-holder", "android.app.role.SMS",
+                             original_sms_role_holder],
+                    ANDROID_COMPANION_ADB_TIMEOUT)
+                record_step("restore-role-holder", rc, f"restored to {original_sms_role_holder}")
+            else:
+                rc, out, err = _adb_run(
+                    serial, ["shell", "cmd", "role", "remove-role-holder", "android.app.role.SMS",
+                             ADBSMS_MIN_PACKAGE],
+                    ANDROID_COMPANION_ADB_TIMEOUT)
+                record_step("remove-role-holder", rc, "no prior default SMS app - role removed entirely")
+            if rc != 0:
+                append_log("[!!] Could not automatically restore the device's default SMS app - a manual "
+                           "fix may be needed on the device itself (Settings > Apps > Default apps > "
+                           "SMS app).")
+            else:
+                append_log("[+] Default SMS app restored.")
+
+        if permission_granted:
+            rc, out, err = _adb_run(
+                serial, ["shell", "pm", "revoke", ADBSMS_MIN_PACKAGE, "android.permission.READ_SMS"],
+                ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("pm_revoke", rc)
+
+        if apk_installed:
+            rc, out, err = _adb_run(serial, ["uninstall", ADBSMS_MIN_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("uninstall", rc)
+            if rc != 0:
+                append_log(f"[!!] Could not automatically uninstall the collector - manually run "
+                           f"'adb uninstall {ADBSMS_MIN_PACKAGE}' against the device to remove it.")
+            else:
+                append_log("[+] Collector uninstalled.")
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        report_data["acquisition_parameters"]["device_modification_log"] = device_log
+
+        try:
+            with open(output_path, "w") as f:
+                json.dump({
+                    "source": "adbsms.min companion-app relay (github.com/gonodono/adbsms, MIT)",
+                    "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "access_tier": access_tier,
+                    "sms_count": device_log["sms_count"],
+                    "device_modification_log": device_log,
+                    "note": "This action installed a small app on the device, granted it a permission "
+                            "(or temporarily made it the default SMS app for full access), queried SMS "
+                            "content, then reversed every change - see device_modification_log above for "
+                            "the exact sequence and outcome of each step.",
+                }, f, indent=2)
+            _auto_tag_case_artifact(case_folder, output_path)
+        except OSError:
+            pass
+
+        _write_report(report_file_path, report_data, append_log)
+        log_chain_of_custody("android_companion_sms_extract", {
+            "serial": serial, "access_tier": access_tier,
+            "sms_count": device_log["sms_count"],
+            "status": report_data["acquisition_status"],
+            "device_modification_log": device_log,
+        }, source_ip=requester_ip, user=requester_user)
+
+        # Matches execution_worker_android()'s own established convention
+        # exactly: only overwrite the job's own status text for a genuine
+        # completion or a genuine failure - a Stop request already set
+        # status="Stopped" via stop_imaging()'s own call, and overwriting
+        # it here (the bug this replaced did, unconditionally) would
+        # falsely show "Failed" for a run the examiner deliberately
+        # stopped, not one that actually failed. active=False is the one
+        # thing that must ALWAYS happen here regardless of outcome - see
+        # this function's own docstring for the real bug that taught this.
+        final_status = None
+        if report_data["acquisition_status"] == "COMPLETED":
+            final_status = "Completed Successfully"
+        elif report_data["acquisition_status"] == "FAILED":
+            final_status = "Failed"
+        if final_status:
+            update_job(status=final_status, progress_percent=100.0, active=False)
+        else:
+            update_job(active=False)
+
+
+_ANDROID_COMPANION_TIER_RE = re.compile(r'^(readonly|full)$')
+
+
+@mobile_bp.route('/api/mobile/android/companion_sms/start', methods=['POST'])
+@requires_auth
+@requires_permission('mobile')
+def start_android_companion_sms():
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    serial = req.get('serial', '')
+    access_tier = req.get('access_tier', 'readonly')
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    metadata = req.get('metadata', {})
+
+    if not _ANDROID_SERIAL_RE.match(serial or ''):
+        update_job(active=False)
+        return jsonify({"error": "Invalid or missing device serial. Refresh the device list and select "
+                                  "a connected, authorized Android device."}), 400
+    if not _ANDROID_COMPANION_TIER_RE.match(access_tier or ''):
+        update_job(active=False)
+        return jsonify({"error": "access_tier must be 'readonly' or 'full'."}), 400
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except Exception as e:
+        update_job(active=False)
+        return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_android_companion_sms"
+    output_path = os.path.join(dest_path, f"{base_name}_extraction.json")
+
+    report_data = {
+        "tool": "android_companion_sms",
+        "case_metadata": metadata,
+        "device_serial": serial,
+        "acquisition_parameters": {
+            "platform": "Android",
+            "method": "adbsms.min companion-app relay (installs/modifies/restores device state - see "
+                      "device_modification_log)",
+            "access_tier": access_tier,
+            "output_destination": output_path,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
+
+    # Captured here, in the real request thread, and passed through
+    # explicitly - the worker itself runs in a background daemon thread
+    # with no Flask request context (see the worker's own docstring for
+    # why this matters and the real bug this fixed).
+    requester_ip = request.remote_addr
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_android_companion_sms,
+        args=(serial, access_tier, output_path, report_target, report_data, dest_path,
+              requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("android_companion_sms_extract_start",
+                          {"serial": serial, "access_tier": access_tier, "destination": output_path})
+    return jsonify({"success": True, "message": "Companion-app SMS extraction started."})
+
+
+@mobile_bp.route('/api/mobile/android/companion_sms/cleanup', methods=['POST'])
+@requires_auth
+@requires_permission('mobile')
+def cleanup_android_companion_sms():
+    """Manual safety-net cleanup, reachable at any time a device is
+    connected, independent of this app's own job state - uninstalls the
+    collector and, if it's currently the default SMS app, restores the
+    prior default (or removes the role if none was set). Never claims the
+    shared job slot (it's a quick, few-second action, and gating it behind
+    "no other job running" would make it useless in exactly the one real
+    scenario it exists for: this app itself crashed mid-extraction and the
+    normal finally-block cleanup in execution_worker_android_companion_sms()
+    above never got to run). Idempotent - safe to call even if nothing was
+    ever installed; each step's own failure is reported but never blocks
+    the next."""
+    req = request.get_json() or {}
+    serial = req.get('serial', '')
+    if not _ANDROID_SERIAL_RE.match(serial or ''):
+        return jsonify({"error": "Invalid or missing device serial."}), 400
+
+    results = {}
+    rc, out, err = _adb_run(serial, ["shell", "cmd", "role", "get-role-holders", "android.app.role.SMS"],
+                             ANDROID_COMPANION_ADB_TIMEOUT)
+    current_holder = out.strip().splitlines()[0].strip() if (rc == 0 and out.strip()) else None
+    if current_holder == ADBSMS_MIN_PACKAGE:
+        rc, out, err = _adb_run(serial, ["shell", "cmd", "role", "remove-role-holder", "android.app.role.SMS",
+                                          ADBSMS_MIN_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+        results["role_removed"] = (rc == 0)
+
+    rc, out, err = _adb_run(serial, ["shell", "pm", "revoke", ADBSMS_MIN_PACKAGE, "android.permission.READ_SMS"],
+                             ANDROID_COMPANION_ADB_TIMEOUT)
+    results["permission_revoked"] = (rc == 0)
+
+    rc, out, err = _adb_run(serial, ["uninstall", ADBSMS_MIN_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+    results["uninstalled"] = (rc == 0)
+
+    log_chain_of_custody("android_companion_sms_manual_cleanup", {"serial": serial, "results": results})
+    return jsonify({"success": True, "results": results})

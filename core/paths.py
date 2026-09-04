@@ -158,6 +158,9 @@ _CASE_ROLE_ANALYSIS_LOG_RE = re.compile(
     # inventory, configured accounts, and the notification-metadata snapshot
     # captured automatically alongside device_timestamps.json above.
     r'|_app_inventory\.json|_accounts\.json|_notifications\.json'
+    # Companion-app SMS extraction manifest (routes/mobile.py, 2026-09-04) -
+    # the device-modification disclosure + extracted SMS summary.
+    r'|_companion_sms_extraction\.json'
     r'|^live_collection_import_\d{8}_\d{6})$')
 _CASE_ROLE_BUNDLE_RE = re.compile(r'_case_bundle_\d{8}-\d{6}\.zip$')
 

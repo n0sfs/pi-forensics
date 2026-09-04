@@ -21,6 +21,26 @@ file after updating to see what changed.
 
 ---
 
+## [1.46.0] - 2026-09-04
+
+### Added
+- **Companion-app SMS extraction for non-rooted Android devices** (Mobile Forensics > Android). This
+  app's `.ab` Android Backup decoder can only ever see SMS from a messaging app that's actually
+  included in `adb backup` (many aren't), and Contacts/Call Log are excluded from `adb backup`
+  entirely, on every device, at the OS level - no tooling can work around that without root. This
+  closes the SMS half of that gap: installs a small, real, open-source (MIT-licensed) relay app,
+  [adbsms.min](https://github.com/gonodono/adbsms), which reads SMS through Android's own normal
+  runtime-permission system, then removes the app and reverses every change when finished. Two
+  tiers: **read-only** (grants the permission only - Android's own real restriction means this sees
+  inbox/sent messages only, but never disrupts normal messaging) and **full access** (temporarily
+  makes the collector the device's default SMS app to see every folder - draft/outbox/failed/queued
+  too - at the real, disclosed cost of the phone's own SMS app going offline until this finishes and
+  the original default is restored). This is the one Android acquisition mode that deliberately
+  modifies the device rather than only reading from it - every step (install, permission/role
+  change, query, cleanup) is recorded in the resulting case report, not just logged internally. A
+  "Force Cleanup" action is also available in case a previous extraction was ever interrupted before
+  its own automatic cleanup could run.
+
 ## [1.45.0] - 2026-09-04
 
 ### Added
