@@ -103,6 +103,13 @@ _ANDROID_COMPANION_CONTACTS_CALLLOG_ARTIFACT_TYPES = {"android_companion_contact
 # acquisition method as SMS/Contacts/Call Log above, the 4th and last data
 # type to ship in this app's own vendored pif-companion.apk.
 _ANDROID_COMPANION_CALENDAR_ARTIFACT_TYPES = {"android_companion_calendar_event"}
+# Companion-app Photos/Video metadata extraction (routes/mobile.py + core/
+# android_companion_media_utils.py, 2026-09-04) - the 5th data type, ridden
+# by the same MediaProvider relay authority for both images and video. Also
+# the point at which the 4 previously-separate companion panels were
+# consolidated into one checkbox-driven "Start Extraction" panel, per the
+# user's own explicit UX feedback.
+_ANDROID_COMPANION_MEDIA_ARTIFACT_TYPES = {"android_companion_media_image", "android_companion_media_video"}
 # Native WhatsApp msgstore.db/wa.db parsing (core/whatsapp_utils.py,
 # 2026-09-04) - reachable both real-fs (this app's own decrypt feature's
 # output) and in-image (a rooted physical image).
@@ -161,6 +168,7 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
                 | _ANDROID_ARTIFACT_TYPES | _ANDROID_AB_ARTIFACT_TYPES | _ANDROID_APP_INVENTORY_ARTIFACT_TYPES
                 | _ANDROID_ACCOUNTS_NOTIFICATIONS_ARTIFACT_TYPES | _ANDROID_COMPANION_SMS_ARTIFACT_TYPES
                 | _ANDROID_COMPANION_CONTACTS_CALLLOG_ARTIFACT_TYPES | _ANDROID_COMPANION_CALENDAR_ARTIFACT_TYPES
+                | _ANDROID_COMPANION_MEDIA_ARTIFACT_TYPES
                 | _WHATSAPP_NATIVE_ARTIFACT_TYPES
                 | _LEAPP_TSV_ARTIFACT_TYPES | _TAKEOUT_ARTIFACT_TYPES
                 | _APPLE_EXPORT_ARTIFACT_TYPES | _WINDOWS_ACTIVITY_ARTIFACT_TYPES | _SRUM_ARTIFACT_TYPES

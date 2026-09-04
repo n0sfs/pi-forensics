@@ -91,71 +91,83 @@
                                                     <div id="mobileWhatsappKeyStatus" class="small text-subtle mt-1"></div>
                                                 </div>
 
-                                                <!-- Companion-app SMS/Contacts/Call Log/Calendar extraction
-                                                     (2026-09-04, all four data types folded into this one
-                                                     collapsed-by-default disclosure the same day) - the only
-                                                     Android acquisition modes that deliberately modify the
-                                                     device (install a small relay app, grant a permission or
-                                                     reassign the default SMS role, then restore everything)
-                                                     rather than only reading from it. A genuine gap-closer:
-                                                     this app's .ab decoder can never see SMS on a device whose
-                                                     messaging app is excluded from `adb backup`, and Contacts/
-                                                     Call Log/Calendar are excluded from `adb backup` on every
-                                                     device (see core/android_backup_utils.py's own docstring
-                                                     for Contacts/Call Log; Calendar has no local backup path
-                                                     at all in practice, since its real data typically syncs to
-                                                     a cloud account - see core/android_companion_calendar_
-                                                     utils.py's own docstring). Collapsed by default so these
-                                                     three genuinely separate, additive actions - not
-                                                     alternative acquisition modes, an examiner might run any
-                                                     combination of them alongside whichever mode is selected
-                                                     below - don't always eat vertical space above the more
-                                                     commonly used standard modes. Plain Bootstrap data-bs-
+                                                <!-- Companion-app extraction - SMS/Contacts/Call Log/
+                                                     Calendar/Photos/Video (2026-09-04, consolidated into
+                                                     ONE checklist + single Start button the same day a 5th
+                                                     data type was added, replacing what had grown into 3
+                                                     separate always-open panels each with their own Start
+                                                     button - a real UX problem the user flagged directly
+                                                     once a 4th panel made the "individual boxes" approach
+                                                     visibly unwieldy). Installs the collector ONCE
+                                                     regardless of how many boxes are checked, grants only
+                                                     the permissions actually needed for whatever's
+                                                     selected, queries each in sequence, then reverses
+                                                     everything and uninstalls once at the end - see
+                                                     execution_worker_android_companion_extraction() in
+                                                     routes/mobile.py. The only Android acquisition path
+                                                     that deliberately modifies the device (install a small
+                                                     relay app, grant a permission or reassign the default
+                                                     SMS role, then restore everything) rather than only
+                                                     reading from it - a genuine gap-closer: SMS/Contacts/
+                                                     Call Log/Calendar are all excluded from `adb backup` on
+                                                     every device (see core/android_backup_utils.py's/
+                                                     android_companion_calendar_utils.py's own docstrings),
+                                                     and Photos/Video metadata (filename, timestamps,
+                                                     dimensions, album, which app contributed it, trashed/
+                                                     favorite flags) is a genuinely different, complementary
+                                                     catalog on top of what "Pull Accessible Storage" below
+                                                     already copies as real files (see core/android_
+                                                     companion_media_utils.py's own docstring for why GPS
+                                                     is deliberately NOT queried here - use the existing
+                                                     Geolocation Export action on pulled files instead).
+                                                     Collapsed by default, plain Bootstrap data-bs-
                                                      toggle="collapse", matching this app's own established
-                                                     zero-custom-JS pattern for a single disclosure (see
-                                                     file_explorer.html's "Create New Tag" toggle for the
-                                                     identical technique). All three panels use the SAME shared
-                                                     job slot/Stop button as every other Android mode below -
-                                                     see execution_worker_android_companion_sms()/
-                                                     execution_worker_android_companion_contacts_calllog()/
-                                                     execution_worker_android_companion_calendar() in
-                                                     routes/mobile.py. -->
+                                                     zero-custom-JS pattern for a single disclosure. Shares
+                                                     the SAME job slot/Stop button as every other Android
+                                                     mode below. -->
                                                 <button class="btn btn-sm btn-outline-secondary w-100 mb-2 d-flex align-items-center justify-content-between" type="button" data-bs-toggle="collapse" data-bs-target="#mobileCompanionExtractionSection">
                                                     <span><i class="bi bi-phone-vibrate me-1"></i>Companion-App Extraction (Advanced)</span>
                                                     <i class="bi bi-chevron-down"></i>
                                                 </button>
                                                 <div class="collapse mb-2" id="mobileCompanionExtractionSection">
+                                                <div class="p-2 border border-secondary rounded-2">
+                                                    <div class="small text-subtle mb-2">Installs a small companion app (hand-built for this project, mirroring an established open-source relay-provider design) on the device to read whichever data types are checked below, through Android's own normal permission system. This <strong>actively modifies the device</strong> for as long as the extraction runs (installs an app, grants exactly the permissions needed for what's checked), then always reverses every change and uninstalls when finished - every step is disclosed in the resulting case record.</div>
 
-                                                <div id="mobileCompanionSmsPanel" class="mb-2 p-2 border border-warning rounded-2">
-                                                    <div class="small fw-bold text-warning mb-1"><i class="bi bi-exclamation-triangle-fill me-1"></i>Extract SMS via Companion App (Non-Rooted)</div>
-                                                    <div class="small text-subtle mb-2">Installs a small companion app (hand-built for this project, mirroring the same open-source relay-provider design as the collector below) on the device to read SMS through Android's own normal permission system - the only way to get real SMS content from a non-rooted, non-backup-eligible messaging app. This <strong>actively modifies the device</strong> (unlike Pull/Backup/Bugreport below): it installs an app, grants it a permission, queries, then uninstalls it and reverses every change - every step is disclosed in the resulting case record. Choose a tier, then click Start below.</div>
-                                                    <select id="mobileCompanionSmsTier" class="form-select form-select-sm mb-2">
-                                                        <option value="readonly" selected>Read-only (inbox + sent only - no disruption to normal messaging)</option>
-                                                        <option value="full">Full access (every folder - phone's own SMS app stops working until this finishes)</option>
+                                                    <div class="form-check mb-1">
+                                                        <input class="form-check-input" type="checkbox" id="companionTypeSms" onchange="onCompanionTypeToggle()">
+                                                        <label class="form-check-label small" for="companionTypeSms"><i class="bi bi-chat-dots me-1"></i><strong>SMS</strong> - the only way to get real SMS content from a non-rooted, non-backup-eligible messaging app.</label>
+                                                    </div>
+                                                    <select id="mobileCompanionSmsTier" class="form-select form-select-sm mb-2 ms-4" style="width: calc(100% - 1.5rem)" disabled>
+                                                        <option value="readonly" selected>Read-only tier (inbox + sent only - no disruption to normal messaging)</option>
+                                                        <option value="full">Full access tier (every folder - phone's own SMS app stops working until this finishes)</option>
                                                     </select>
-                                                    <button id="btnCompanionSmsStart" type="button" class="btn btn-outline-warning btn-sm fw-bold" onclick="startCompanionSmsExtraction()" disabled><i class="bi bi-play-fill me-1"></i>Start Companion SMS Extraction</button>
-                                                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cleanupCompanionSmsExtraction()" title="Manually uninstall the collector / restore the default SMS app on the currently-selected device - use this if a prior extraction was interrupted and never cleaned up on its own."><i class="bi bi-arrow-counterclockwise me-1"></i>Force Cleanup</button>
-                                                </div>
 
-                                                <div id="mobileCompanionContactsCallLogPanel" class="mb-2 p-2 border border-info rounded-2">
-                                                    <div class="small fw-bold text-info mb-1"><i class="bi bi-person-lines-fill me-1"></i>Extract Contacts/Call Log via Companion App (Non-Rooted)</div>
-                                                    <div class="small text-subtle mb-2">Installs a small companion app (hand-built for this project, mirroring the same open-source relay-provider design as the SMS collector above - all three data types ship in one app) to read Contacts and/or Call Log through Android's own normal permission system - both are excluded from `adb backup` on every device, with no way around that short of root. This <strong>actively modifies the device</strong> (installs an app, grants one or both of READ_CONTACTS/READ_CALL_LOG), but - unlike SMS - never disrupts the phone's own Contacts/Phone apps at any point, since neither permission requires becoming a "default app." Every step is disclosed in the resulting case record; the collector is always uninstalled and both permissions revoked when finished.</div>
-                                                    <select id="mobileCompanionContactsCallLogTypes" class="form-select form-select-sm mb-2">
-                                                        <option value="both" selected>Both Contacts and Call Log</option>
-                                                        <option value="contacts">Contacts only</option>
-                                                        <option value="calllog">Call Log only</option>
-                                                    </select>
-                                                    <button id="btnCompanionContactsCallLogStart" type="button" class="btn btn-outline-info btn-sm fw-bold" onclick="startCompanionContactsCallLogExtraction()" disabled><i class="bi bi-play-fill me-1"></i>Start Contacts/Call Log Extraction</button>
-                                                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cleanupCompanionContactsCallLogExtraction()" title="Manually revoke both permissions / uninstall the collector on the currently-selected device - use this if a prior extraction was interrupted and never cleaned up on its own."><i class="bi bi-arrow-counterclockwise me-1"></i>Force Cleanup</button>
-                                                </div>
+                                                    <div class="form-check mb-1">
+                                                        <input class="form-check-input" type="checkbox" id="companionTypeContacts" onchange="onCompanionTypeToggle()">
+                                                        <label class="form-check-label small" for="companionTypeContacts"><i class="bi bi-person-lines-fill me-1"></i><strong>Contacts</strong> - excluded from <code>adb backup</code> on every device, no way around that short of root.</label>
+                                                    </div>
+                                                    <div class="form-check mb-1">
+                                                        <input class="form-check-input" type="checkbox" id="companionTypeCalllog" onchange="onCompanionTypeToggle()">
+                                                        <label class="form-check-label small" for="companionTypeCalllog"><i class="bi bi-telephone me-1"></i><strong>Call Log</strong> - excluded from <code>adb backup</code> on every device.</label>
+                                                    </div>
+                                                    <div class="form-check mb-1">
+                                                        <input class="form-check-input" type="checkbox" id="companionTypeCalendar" onchange="onCompanionTypeToggle()">
+                                                        <label class="form-check-label small" for="companionTypeCalendar"><i class="bi bi-calendar-event me-1"></i><strong>Calendar</strong> - events, times, locations, organizer, recurrence rule, and every invited attendee's own RSVP status.</label>
+                                                    </div>
+                                                    <div class="form-check mb-1">
+                                                        <input class="form-check-input" type="checkbox" id="companionTypeImages" onchange="onCompanionTypeToggle()">
+                                                        <label class="form-check-label small" for="companionTypeImages"><i class="bi bi-image me-1"></i><strong>Photos (metadata only)</strong> - filename, timestamps, dimensions, album/folder, which app contributed it, trashed/favorite flags. Does not pull the actual image bytes - use "Pull Accessible Storage" below for that, or the existing Geolocation Export action for real embedded GPS.</label>
+                                                    </div>
+                                                    <div class="form-check mb-2">
+                                                        <input class="form-check-input" type="checkbox" id="companionTypeVideo" onchange="onCompanionTypeToggle()">
+                                                        <label class="form-check-label small" for="companionTypeVideo"><i class="bi bi-camera-video me-1"></i><strong>Video (metadata only)</strong> - same as Photos, plus duration. Does not pull the actual video bytes.</label>
+                                                    </div>
 
-                                                <div id="mobileCompanionCalendarPanel" class="mb-2 p-2 border border-success rounded-2">
-                                                    <div class="small fw-bold text-success mb-1"><i class="bi bi-calendar-event-fill me-1"></i>Extract Calendar Events via Companion App (Non-Rooted)</div>
-                                                    <div class="small text-subtle mb-2">Installs a small companion app (hand-built for this project, mirroring the same open-source relay-provider design as the SMS collector above - all four data types ship in one app) to read Calendar events and their attendees through Android's own normal permission system. Captures each event's title, time, location, organizer, recurrence rule, and every invited attendee's own RSVP status - genuinely valuable pattern-of-life evidence this app has no other way to reach on a non-rooted device. This <strong>actively modifies the device</strong> (installs an app, grants READ_CALENDAR), but - like Contacts/Call Log - never disrupts the phone's own Calendar app at any point, since the permission doesn't require becoming a "default app." Every step is disclosed in the resulting case record; the collector is always uninstalled and the permission revoked when finished.</div>
-                                                    <button id="btnCompanionCalendarStart" type="button" class="btn btn-outline-success btn-sm fw-bold" onclick="startCompanionCalendarExtraction()" disabled><i class="bi bi-play-fill me-1"></i>Start Calendar Extraction</button>
-                                                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cleanupCompanionCalendarExtraction()" title="Manually revoke READ_CALENDAR / uninstall the collector on the currently-selected device - use this if a prior extraction was interrupted and never cleaned up on its own."><i class="bi bi-arrow-counterclockwise me-1"></i>Force Cleanup</button>
+                                                    <div class="d-flex gap-2">
+                                                        <button id="btnCompanionExtractionStart" type="button" class="btn btn-outline-warning btn-sm fw-bold" onclick="startCompanionUnifiedExtraction()" disabled><i class="bi bi-play-fill me-1"></i>Start Extraction</button>
+                                                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cleanupCompanionUnifiedExtraction()" title="Manually uninstall the collector / revoke every permission this feature could have granted / restore the default SMS app on the currently-selected device - use this if a prior extraction was interrupted and never cleaned up on its own."><i class="bi bi-arrow-counterclockwise me-1"></i>Force Cleanup</button>
+                                                    </div>
                                                 </div>
-
                                                 </div>
 
                                                 <label class="telemetry-grid-label d-block mb-1">Acquisition Mode</label>
