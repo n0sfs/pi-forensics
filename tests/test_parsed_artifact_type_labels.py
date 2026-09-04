@@ -48,6 +48,7 @@ _REGISTRY_ARTIFACT_TYPES = _REGISTRY_ARTIFACT_TYPES | {
     "registry_shellbag", "registry_shimcache", "registry_userassist",
     "registry_bam_dam", "registry_rdp_server", "registry_rdp_mru",
     "office_mru_file", "office_mru_place", "registry_wordwheelquery",
+    "registry_bluetooth_device",
 }
 # Windows Sticky Notes, 2026-09-01 - core/stickynotes_utils.py.
 _STICKY_NOTES_ARTIFACT_TYPES = {"sticky_note"}
