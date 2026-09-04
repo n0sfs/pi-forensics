@@ -64,7 +64,35 @@ same folder-type integer Telephony.Mms uses (1=inbox, 2=sent, 3=drafts,
 4=outbox); "mms_addresses" entries carry an address "type" using the same
 PduHeaders address-type constants already confirmed and used in
 core/android_artifacts.py's native MMS parser (137=FROM, 151/130/129=TO/CC/
-BCC).
+BCC). SMS "type" is Telephony.TextBasedSmsColumns' own MESSAGE_TYPE_* set,
+confirmed by directly reading the real AOSP framework source (core/java/
+android/provider/Telephony.java): 0=All (a query-filter value, not expected
+on a real message row, kept only so an unexpected 0 doesn't fall through
+unlabeled), 1=Inbox, 2=Sent, 3=Draft, 4=Outbox, 5=Failed, 6=Queued. An MMS
+JSON object can also carry "attachments" (a list of {"mime_type",
+"filename"} - real metadata about a photo/video that was attached, but NOT
+its actual bytes: the same AOSP source's own comment states outright "only
+MMS's with text are backed up... MMS's with attachments are restored" via a
+separate on-device mechanism this backup file itself never contains), "sub"/
+"sub_cs" (an MMS subject line + its charset, distinct from "mms_body"), and
+"read"/"archived" flags - all confirmed field names, quoted directly from
+the real AOSP TelephonyBackupAgent source rather than guessed.
+
+Real, confirmed limitation, NOT a gap in this module: Contacts and Call Log
+CANNOT be recovered from a .ab file at all, on stock Android. Confirmed
+directly against the real AOSP manifest
+(packages/providers/ContactsProvider/AndroidManifest.xml) - the whole
+com.android.providers.contacts package (which owns BOTH ContactsProvider2,
+authorities "contacts;com.android.contacts", AND CallLogProvider, authority
+"call_log" - the same single APK) declares android:allowBackup="false" at
+the <application> level. That flag is checked by the OS itself before
+`adb backup` ever runs; when it's false, the app's data is excluded from
+every full backup unconditionally, regardless of what tool or password is
+used to read the resulting file afterward - there is nothing for a smarter
+parser to recover, because the data structurally never enters the .ab file
+in the first place. The only real path to Contacts/Call Log content stays
+the existing native contacts2.db parser (core/android_artifacts.py),
+which needs a rooted physical acquisition.
 """
 import io
 import json
@@ -90,6 +118,9 @@ MMS_BACKUP_FILENAME_RE = re.compile(r"^\d+_mms_backup$")
 
 _MMS_ADDR_TYPE_LABELS = {137: "From", 151: "To", 130: "Cc", 129: "Bcc"}
 _MMS_MSG_BOX_LABELS = {1: "Inbox", 2: "Sent", 3: "Drafts", 4: "Outbox"}
+# Telephony.TextBasedSmsColumns.MESSAGE_TYPE_* - confirmed via the real AOSP
+# framework source, see the module docstring.
+_SMS_TYPE_LABELS = {0: "All", 1: "Received", 2: "Sent", 3: "Draft", 4: "Outbox", 5: "Failed", 6: "Queued"}
 
 
 class AndroidBackupError(Exception):
@@ -317,7 +348,10 @@ def parse_sms_backup_json(raw_bytes, source_path):
         address = msg.get("address") or "(unknown)"
         body = msg.get("body") or ""
         type_int = msg.get("type")
-        direction = {"1": "Received", "2": "Sent"}.get(str(type_int), f"Type {type_int}")
+        try:
+            direction = _SMS_TYPE_LABELS.get(int(type_int), f"Type {type_int}")
+        except (TypeError, ValueError):
+            direction = f"Type {type_int}"
         title = f"SMS ({direction}): {address}"
         records.append({
             "artifact_type": "android_ab_sms_message",
@@ -370,16 +404,42 @@ def parse_mms_backup_json(raw_bytes, source_path):
                 addr_parts.append(f"{label}: {addr_val}")
         addr_summary = "; ".join(addr_parts) if addr_parts else "(no addresses)"
 
+        # Real, confirmed AOSP field names (see the module docstring) -
+        # "attachments" is metadata only (filename/mime_type), never the
+        # actual photo/video bytes, which this backup format never contains
+        # at all. A malformed/missing entry is skipped, not fatal to the
+        # rest of the message.
+        attachments_raw = msg.get("attachments") or []
+        attachments = []
+        if isinstance(attachments_raw, list):
+            for a in attachments_raw:
+                if not isinstance(a, dict):
+                    continue
+                attachments.append({
+                    "filename": a.get("filename"),
+                    "mime_type": a.get("mime_type"),
+                })
+
+        subject = msg.get("sub") or ""
         body = msg.get("mms_body") or ""
+        display_value = body or subject or "(no text content)"
+
         title = f"MMS ({box_label}): {addr_summary}"
+        if attachments:
+            title += f" [{len(attachments)} attachment(s)]"
+
         records.append({
             "artifact_type": "android_ab_mms_message",
             "title": title,
             "url": None,
-            "value": body,
+            "value": display_value,
             "timestamp": _ab_mms_date_to_unix(msg.get("date")),
             "extra": {
                 "addresses": addr_parts,
+                "subject": subject or None,
+                "attachments": attachments,
+                "read": msg.get("read"),
+                "archived": msg.get("archived"),
                 "self_phone": msg.get("self_phone"),
                 "date_sent": _ab_mms_date_to_unix(msg.get("date_sent")),
                 "msg_box": box_int,
