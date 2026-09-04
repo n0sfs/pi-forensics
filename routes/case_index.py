@@ -299,6 +299,10 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "office_mru_file": "Registry: Office Recent Files",
     "office_mru_place": "Registry: Office Recent Folders",
     "registry_wordwheelquery": "Registry: Explorer Search History",
+    # Bluetooth pairing history (2026-09-03, Live Collection USB pattern-
+    # of-life follow-up) - rides the existing SYSTEM-hive Registry
+    # dispatch too, no new route needed.
+    "registry_bluetooth_device": "Registry: Bluetooth Paired Device",
     "sticky_note": "Windows Sticky Notes",
     # SRUM/wpndatabase.db/ActivitiesCache.db (2026-09-01) - a third round of
     # Windows artifact coverage. windows_notification/windows_timeline_

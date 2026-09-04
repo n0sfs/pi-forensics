@@ -268,6 +268,104 @@ def _parse_usb_history(root_key):
     return records
 
 
+def _decode_bluetooth_device_name(raw):
+    """Neither real forensic tool this function's own caller docstring
+    cites (RegRipper's own bthport.pl, both the 2013 and current
+    revisions) trusts a plain REG_SZ-style decode for this value - both
+    read raw bytes and defensively filter, implying the value is
+    genuinely REG_BINARY-typed holding raw device-name bytes, not a
+    clean Unicode string python-registry would auto-decode. The
+    Bluetooth Core spec itself defines a device name as UTF-8, <=248
+    bytes, commonly null-padded - so this splits at the first null byte
+    (avoiding an embedded-null-truncated decode) then decodes UTF-8
+    tolerating any bad byte rather than raising on it."""
+    if not raw:
+        return ''
+    try:
+        return raw.split(b'\x00', 1)[0].decode('utf-8', errors='ignore').strip()
+    except Exception:
+        return ''
+
+
+def _parse_bluetooth_devices(root_key):
+    """SYSTEM\\<ControlSet>\\Services\\BTHPORT\\Parameters\\Devices\\
+    <12-hex-char MAC> - the Microsoft Bluetooth stack's own paired-
+    device history, one subkey per device (subkey name = that device's
+    own Bluetooth MAC address, no separators). Grounded via RegRipper
+    3.0's real, maintained bthport.pl plugin
+    (github.com/keydet89/RegRipper3.0), an independent 2013 revision
+    (github.com/warewolf/regripper), and a Microsoft Q&A answer
+    independently confirming the same conversion - LastSeen/
+    LastConnected are each a raw 8-byte REG_BINARY value holding a
+    standard Windows FILETIME (confirmed via the exact 1601-epoch offset
+    constant baked into RegRipper's own conversion math, matching this
+    module's own _FILETIME_EPOCH_OFFSET_SECONDS byte-for-byte), reused
+    unchanged via filetime_to_unix() - no new epoch logic needed.
+
+    Deliberately narrower than a fuller parser could attempt, per real,
+    disclosed limits found IN those sources themselves, not invented
+    here: (1) LastSeen/LastConnected may only ever reflect a device's
+    ORIGINAL pairing time, never its most recent connection - a single-
+    source (an MS Q&A answer), uncorroborated but high-impact, so it's
+    surfaced directly in the record's own value text rather than
+    silently presented as a trustworthy "last connected" fact; (2) a
+    per-device "Class of Device" value is never parsed - Microsoft's own
+    documentation confirms COD only at the Parameters level (describing
+    THIS machine, not a paired device), and no source found documents a
+    genuine per-device COD value; (3) Bluetooth LE devices are not
+    parsed via any separate path - the one source that raised this
+    possibility (an MS Q&A poster) could not decode it themselves
+    either, and no established forensic tool covers it, so it's a real,
+    disclosed scope boundary rather than a guess; (4) the actual pairing
+    link-key material under the sibling \\Parameters\\Keys\\ subtree is
+    deliberately never read - low investigative value on its own, and
+    SYSTEM-ACL'd even in many acquired hives."""
+    records = []
+    for cs in ('ControlSet001', 'ControlSet002', 'CurrentControlSet'):
+        try:
+            devices = root_key.find_key(cs + r'\Services\BTHPORT\Parameters\Devices')
+        except Registry.RegistryKeyNotFoundException:
+            continue
+        for device_key in devices.subkeys():
+            mac = device_key.name()
+            name = ''
+            try:
+                name = _decode_bluetooth_device_name(device_key.value('Name').raw_data())
+            except (Registry.RegistryValueNotFoundException, Exception):
+                pass
+
+            def _read_filetime_value(value_name):
+                try:
+                    raw = device_key.value(value_name).raw_data()
+                except (Registry.RegistryValueNotFoundException, Exception):
+                    return None
+                if not raw or len(raw) < 8:
+                    return None
+                return filetime_to_unix(struct.unpack('<Q', raw[:8])[0])
+
+            last_seen = _read_filetime_value('LastSeen')
+            last_connected = _read_filetime_value('LastConnected')
+
+            ts = last_connected or last_seen or _dt_to_epoch(device_key.timestamp())
+            title = name or f"Bluetooth device {mac}"
+            value_bits = [f"MAC: {mac}"]
+            if last_connected is not None:
+                value_bits.append("last connected time recorded (may reflect original pairing only, not a later reconnection)")
+            elif last_seen is not None:
+                value_bits.append("last seen time recorded (may reflect original pairing only, not a later reconnection)")
+            records.append({
+                "artifact_type": "registry_bluetooth_device", "title": title, "url": "",
+                "value": "; ".join(value_bits), "timestamp": ts,
+                "extra": {
+                    "mac_address": mac, "device_name": name or None,
+                    "last_seen": last_seen, "last_connected": last_connected,
+                    "control_set": cs,
+                },
+            })
+        break
+    return records
+
+
 def _parse_installed_programs(root_key):
     """SOFTWARE\\...\\Uninstall (both the native and Wow6432Node 32-bit-on-
     64-bit view) - installed-program name/version/install date."""
@@ -1064,7 +1162,8 @@ def parse_registry_hive_file(path, filename):
                         + _parse_user_assist(root) + _parse_rdp_connections(root) + _parse_office_mru(root)
                         + _parse_wordwheelquery(root))
             if upper == 'SYSTEM':
-                return _parse_usb_history(root) + _parse_shimcache(root) + _parse_bam_dam(root)
+                return (_parse_usb_history(root) + _parse_shimcache(root) + _parse_bam_dam(root)
+                        + _parse_bluetooth_devices(root))
             if upper == 'SOFTWARE':
                 return _parse_installed_programs(root)
             if upper == 'AMCACHE.HVE':

@@ -1542,3 +1542,188 @@ def test_parse_wordwheelquery_missing_key_yields_no_records(tmp_path):
     _build_test_hive(hive_path)
     records = ru.parse_registry_hive_file(str(hive_path), 'NTUSER.DAT')
     assert [r for r in records if r["artifact_type"] == "registry_wordwheelquery"] == []
+
+
+def _build_bluetooth_system_hive(path, devices):
+    """devices: {mac_subkey_name: [(value_name, raw_bytes), ...]}. Tree:
+    CurrentControlSet\\Services\\BTHPORT\\Parameters\\Devices\\{mac}\\
+    [values] - mirrors _build_bam_dam_system_hive()'s exact nested-
+    subkey/multi-value-per-key construction technique, just one level
+    deeper (Services -> BTHPORT -> Parameters -> Devices -> {mac})
+    instead of BAM/DAM's (Services -> {service} -> [State ->]
+    UserSettings -> {sid})."""
+    h = _HiveBuilder()
+
+    def make_binary_vk(name, raw):
+        off = h.alloc(raw)
+        name_b = name.encode('utf-8')
+        vk = b'vk' + struct.pack('<H', len(name_b)) + struct.pack('<I', len(raw))
+        vk += struct.pack('<I', off) + struct.pack('<I', 3)  # REG_BINARY
+        vk += struct.pack('<H', 1) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(vk))
+
+    def make_values_list(vk_offsets):
+        return h.alloc(b''.join(struct.pack('<I', o) for o in vk_offsets))
+
+    def make_nk(name, subkey_list_off, subkey_count, values_list_off, values_count, is_root=False):
+        flags = 0x0020 | (0x0004 if is_root else 0)
+        name_b = name.encode('utf-8')
+        nk = b'nk' + struct.pack('<H', flags) + struct.pack('<Q', _FT_NOW)
+        nk += struct.pack('<I', 0) + struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', subkey_count if subkey_count else 0xFFFFFFFF) + struct.pack('<I', 0)
+        nk += struct.pack('<I', subkey_list_off if subkey_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF)
+        nk += struct.pack('<I', values_count if values_count else 0xFFFFFFFF)
+        nk += struct.pack('<I', values_list_off if values_list_off is not None else 0xFFFFFFFF)
+        nk += struct.pack('<I', 0xFFFFFFFF) + struct.pack('<I', 0xFFFFFFFF)
+        nk += b'\x00' * (0x48 - 0x34)
+        nk += struct.pack('<H', len(name_b)) + struct.pack('<H', 0) + name_b
+        return h.alloc(bytes(nk))
+
+    def make_lf(nk_offsets):
+        body = b'lf' + struct.pack('<H', len(nk_offsets))
+        for off in nk_offsets:
+            body += struct.pack('<I', off) + b'\x00\x00\x00\x00'
+        return h.alloc(body)
+
+    device_nk_offsets = []
+    for mac, values in devices.items():
+        vk_offsets = [make_binary_vk(name, raw) for name, raw in values]
+        vl = make_values_list(vk_offsets) if vk_offsets else None
+        nk_device = make_nk(mac, None, 0, vl, len(vk_offsets))
+        device_nk_offsets.append(nk_device)
+
+    lf_devices_children = make_lf(device_nk_offsets)
+    nk_devices = make_nk('Devices', lf_devices_children, 1, None, 0)
+    for nk_device in device_nk_offsets:
+        h.set_parent(nk_device, nk_devices)
+    lf_params_children = make_lf([nk_devices])
+    nk_params = make_nk('Parameters', lf_params_children, 1, None, 0)
+    h.set_parent(nk_devices, nk_params)
+    lf_bthport_children = make_lf([nk_params])
+    nk_bthport = make_nk('BTHPORT', lf_bthport_children, 1, None, 0)
+    h.set_parent(nk_params, nk_bthport)
+    lf_services_children = make_lf([nk_bthport])
+    nk_services = make_nk('Services', lf_services_children, 1, None, 0)
+    h.set_parent(nk_bthport, nk_services)
+    lf_ccs_children = make_lf([nk_services])
+    nk_ccs = make_nk('CurrentControlSet', lf_ccs_children, 1, None, 0)
+    h.set_parent(nk_services, nk_ccs)
+    lf_root = make_lf([nk_ccs])
+    root_off = make_nk('ROOT', lf_root, 1, None, 0, is_root=True)
+    h.set_parent(nk_ccs, root_off)
+
+    hbin_data = bytes(h.buf)
+    hbin_total = 0x20 + len(hbin_data)
+    hbin_size = ((hbin_total + 0xFFF) // 0x1000) * 0x1000
+    hbin = b'hbin' + struct.pack('<I', 0) + struct.pack('<I', hbin_size)
+    hbin += b'\x00' * (0x20 - 0xC) + hbin_data + b'\x00' * (hbin_size - hbin_total)
+
+    regf = struct.pack('<I', 0x66676572) + struct.pack('<I', 1) + struct.pack('<I', 1)
+    regf += struct.pack('<Q', _FT_NOW) + struct.pack('<I', 1) + struct.pack('<I', 5)
+    regf += struct.pack('<I', 0) + struct.pack('<I', 1) + struct.pack('<I', root_off)
+    regf += struct.pack('<I', hbin_size) + struct.pack('<I', 1)
+    regf += _utf16('SYSTEM').ljust(64, b'\x00')
+    regf += b'\x00' * (0x1000 - len(regf))
+    regf = regf[:0x1000]
+
+    with open(path, 'wb') as f:
+        f.write(regf)
+        f.write(hbin)
+
+
+def test_parse_bluetooth_devices_real_entry_with_name_and_both_timestamps(tmp_path):
+    # A precise, independently-computable expected value - not just "is
+    # not None" - confirming filetime_to_unix() is genuinely applied
+    # correctly to these two raw 8-byte values, the same rigor already
+    # established for the BAM/DAM test just above.
+    last_connected_dt = datetime.datetime(2025, 6, 15, 9, 30, 0)
+    last_seen_dt = datetime.datetime(2025, 6, 1, 8, 0, 0)
+    last_connected_raw = struct.pack('<Q', _filetime(last_connected_dt))
+    last_seen_raw = struct.pack('<Q', _filetime(last_seen_dt))
+    name_raw = 'Pixel 8a'.encode('utf-8') + b'\x00' * 4  # null-padded, matching the real spec
+
+    hive_path = tmp_path / "SYSTEM"
+    _build_bluetooth_system_hive(hive_path, {
+        '0011223344AA': [
+            ('Name', name_raw),
+            ('LastSeen', last_seen_raw),
+            ('LastConnected', last_connected_raw),
+        ],
+    })
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    bt_records = [r for r in records if r["artifact_type"] == "registry_bluetooth_device"]
+    assert len(bt_records) == 1
+    rec = bt_records[0]
+    assert rec["title"] == "Pixel 8a"
+    assert rec["extra"]["mac_address"] == "0011223344AA"
+    assert rec["extra"]["device_name"] == "Pixel 8a"
+    expected_connected_epoch = last_connected_dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+    expected_seen_epoch = last_seen_dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+    assert abs(rec["extra"]["last_connected"] - expected_connected_epoch) < 1.0
+    assert abs(rec["extra"]["last_seen"] - expected_seen_epoch) < 1.0
+    # LastConnected wins over LastSeen for the record's own headline timestamp.
+    assert abs(rec["timestamp"] - expected_connected_epoch) < 1.0
+    # The single-source, high-impact caveat from the research must be
+    # visible directly in the record's own value text, not buried only
+    # in this module's docstring where an examiner would never see it.
+    assert "may reflect original pairing only" in rec["value"]
+
+
+def test_parse_bluetooth_devices_falls_back_to_last_seen_when_no_last_connected(tmp_path):
+    last_seen_dt = datetime.datetime(2024, 3, 10, 14, 0, 0)
+    last_seen_raw = struct.pack('<Q', _filetime(last_seen_dt))
+    hive_path = tmp_path / "SYSTEM"
+    _build_bluetooth_system_hive(hive_path, {
+        'AABBCCDDEEFF': [('LastSeen', last_seen_raw)],
+    })
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    bt_records = [r for r in records if r["artifact_type"] == "registry_bluetooth_device"]
+    assert len(bt_records) == 1
+    rec = bt_records[0]
+    expected_epoch = last_seen_dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+    assert abs(rec["timestamp"] - expected_epoch) < 1.0
+    assert "last seen time recorded" in rec["value"]
+    # No Name value at all - falls back to a MAC-derived title, never a
+    # blank/misleading one.
+    assert rec["title"] == "Bluetooth device AABBCCDDEEFF"
+    assert rec["extra"]["device_name"] is None
+
+
+def test_parse_bluetooth_devices_two_devices_no_cross_contamination(tmp_path):
+    hive_path = tmp_path / "SYSTEM"
+    _build_bluetooth_system_hive(hive_path, {
+        '111111111111': [('Name', b'Keyboard\x00\x00')],
+        '222222222222': [('Name', b'Mouse\x00\x00\x00')],
+    })
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    bt_records = [r for r in records if r["artifact_type"] == "registry_bluetooth_device"]
+    titles_by_mac = {r["extra"]["mac_address"]: r["title"] for r in bt_records}
+    assert titles_by_mac == {'111111111111': 'Keyboard', '222222222222': 'Mouse'}
+
+
+def test_decode_bluetooth_device_name_stops_at_first_null_byte():
+    # Confirms the null-terminator split - not a truncated/garbled decode -
+    # is what actually protects against embedded-null padding bytes.
+    raw = 'Real Name'.encode('utf-8') + b'\x00' + b'\xff\xfe\xfd'  # garbage after the null must never leak through
+    assert ru._decode_bluetooth_device_name(raw) == 'Real Name'
+
+
+def test_decode_bluetooth_device_name_tolerates_undecodable_bytes():
+    # A genuinely invalid UTF-8 byte sequence must never raise - it's
+    # silently dropped (errors='ignore'), matching this function's own
+    # documented best-effort, no-strong-claim posture.
+    raw = b'Go' + b'\xff\xfe' + b'od\x00'
+    assert ru._decode_bluetooth_device_name(raw) == 'Good'
+
+
+def test_decode_bluetooth_device_name_empty_or_none_returns_empty_string():
+    assert ru._decode_bluetooth_device_name(b'') == ''
+    assert ru._decode_bluetooth_device_name(None) == ''
+
+
+def test_parse_bluetooth_devices_missing_bthport_key_yields_no_records_not_a_crash(tmp_path):
+    hive_path = tmp_path / "SYSTEM"
+    _build_bam_dam_system_hive(hive_path, {'bam': {'generation': 'state', 'sids': {}}})
+    records = ru.parse_registry_hive_file(str(hive_path), 'SYSTEM')
+    assert [r for r in records if r["artifact_type"] == "registry_bluetooth_device"] == []
