@@ -21,6 +21,30 @@ file after updating to see what changed.
 
 ---
 
+## [1.31.0] - 2026-09-03
+
+### Added
+
+- **Live Collection USB's Windows results now show real historical timestamps, not just
+  "when the collector ran."** Running processes and network connections were previously stamped
+  with a single collection-time timestamp for every item, which meant they all landed at one
+  instant on the Evidence Timeline no matter when they actually started. Process launch time and
+  network connection establishment time are now captured and used directly, so each one appears at
+  its own real moment - genuinely useful for reconstructing what happened and when, not just what
+  was running at the moment the drive was plugged in.
+- **Five categories of data the collector was already gathering, but never showing you, are now
+  parsed and searchable**: system info (hostname, OS version, machine model), a dedicated System
+  Boot Time record (a real historical event, distinct from collection time), ARP cache entries,
+  DNS cache entries, installed hotfixes/patches (with their real install date), and loaded drivers.
+  None of this needed a new collection step - it was already being written to the drive, just never
+  read back in.
+
+### Fixed
+
+- A handful of collected fields (installed hotfixes' names, ARP/DNS cache entries) previously kept
+  Windows' own internal capitalized field names in the raw output rather than matching every other
+  category's plain style - cosmetic only, but now consistent.
+
 ## [1.30.3] - 2026-09-03
 
 ### Fixed
