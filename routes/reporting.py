@@ -951,6 +951,8 @@ CASE_TIMELINE_ACTIVITY_CATEGORY = {
     "mobile_sms_message": "Communications", "mobile_call_log": "Communications", "mobile_contact": "Communications",
     "android_sms_message": "Communications", "android_call_log": "Communications", "android_contact": "Communications",
     "android_companion_sms_message": "Communications",
+    "android_companion_contact": "Communications",
+    "android_companion_call_log_entry": "Communications",
     "leapp_sms_message": "Communications", "leapp_mms_message": "Communications", "leapp_call_log": "Communications",
     "leapp_contact": "Communications", "email_message": "Communications", "apple_contact": "Communications",
     "takeout_contact": "Communications",

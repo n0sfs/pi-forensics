@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Contacts and Call Log are plain "dangerous"-protection-level runtime
+         permissions - unlike SMS, neither needs the app to assume any special
+         default-app role, just a normal `pm grant` at install time. -->
+
+    <uses-permission
+        android:name="android.permission.READ_CONTACTS"
+        tools:ignore="SmsAndCallLogPolicy" />
+    <uses-permission
+        android:name="android.permission.READ_CALL_LOG"
+        tools:ignore="SmsAndCallLogPolicy" />
+
+    <application
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="pif-companion"
+        tools:ignore="MissingClass,AllowBackup">
+
+        <!-- Both providers are pure authority-rewriting relays, mirroring
+             github.com/gonodono/adbsms's own AdbSmsProvider design exactly:
+             they forward whatever content:// call the shell makes against
+             this app's own exported authority straight through to the real
+             system provider, using this app's own granted runtime
+             permission to authorize the read. checkCallingProcess() in each
+             restricts every call to SHELL_UID only, so a co-located app on
+             the device can never abuse this relay to read the same data. -->
+
+        <provider
+            android:name=".ContactsProvider"
+            android:authorities="pif.companion.contacts"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+
+        <provider
+            android:name=".CallLogProvider"
+            android:authorities="pif.companion.calllog"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+
+    </application>
+
+</manifest>

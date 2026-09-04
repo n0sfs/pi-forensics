@@ -813,6 +813,35 @@ if not os.path.isfile(adbsms_dest):
               f"SMS extraction feature will not be available until this is retried. Retry by "
               f"re-running install.py once online.")
 
+# pif-companion.apk (Mobile Forensics - non-rooted companion-app Contacts/
+# Call Log extraction, 2026-09-04). Unlike adbsms.min above, this is NOT a
+# third-party download - it's this project's OWN small app (source at
+# android_companion/pif_companion_src/, mirroring github.com/gonodono/
+# adbsms's own relay-provider design exactly, since no suitable existing
+# open-source relay tool was found for Contacts/Call Log), built once with
+# Google's official `android` CLI (developer.android.com/tools/agents/
+# android-cli) on a real dev machine and committed as a small (~KB-scale)
+# prebuilt binary directly into this repo - matching this project's own
+# established scalpel.conf precedent (a static asset that ships with the
+# repo needs no extra deploy logic, since it's already at INSTALL_DIR once
+# the repo is cloned there). Building it via Gradle/AGP on the Pi itself
+# at install time was deliberately ruled out - a full Android SDK/Gradle/
+# AGP build is a genuinely heavy operation this low-power ARM board's
+# already-documented tight storage/CPU budget shouldn't be asked to carry,
+# unlike mquire's comparatively lightweight `cargo build` above.
+pif_companion_src = os.path.join(INSTALL_DIR, "android_companion", "pif-companion.apk")
+pif_companion_dest = os.path.join(android_companion_dir, "pif-companion.apk")
+if not os.path.isfile(pif_companion_dest):
+    os.makedirs(android_companion_dir, exist_ok=True)
+    if os.path.isfile(pif_companion_src):
+        shutil.copy2(pif_companion_src, pif_companion_dest)
+        print(f"[+] pif-companion.apk vendored to {pif_companion_dest}.")
+    else:
+        print(f"[!] android_companion/pif-companion.apk not found in this repo checkout - the "
+              f"companion-app Contacts/Call Log extraction feature will not be available. This "
+              f"should always be present in a real clone of the repo; check for a shallow/partial "
+              f"checkout if it's missing.")
+
 # 3. Directory Ownership Setup
 print(f"\n[*] Setting directory permissions on {INSTALL_DIR} for '{SERVICE_USER}'...")
 subprocess.run(["chown", "-R", f"{SERVICE_USER}:{SERVICE_USER}", INSTALL_DIR], check=True)

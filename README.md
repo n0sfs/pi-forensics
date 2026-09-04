@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.46.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.47.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -133,15 +133,20 @@ unlocked/trusted (and, for physical acquisition, already rooted) by the examiner
 device, Mobile Forensics can also pull the device's own WhatsApp key file directly, for use with File
 Explorer's WhatsApp backup decryption below. A connected iOS device can also have its crash-report
 logs pulled without touching the originals on the device. A third mode reads a SIM/UICC card inserted
-in a connected PC/SC reader (ICCID, ATR, EID, application IDs). A dedicated **companion-app SMS
-extraction** action closes the one real gap `adb backup` can't (a messaging app that's excluded from
-backup, or a device where SMS matters but Contacts/Call Log genuinely can't be recovered non-rooted
-at all): installs a small, open-source, MIT-licensed relay app ([adbsms.min](https://github.com/gonodono/adbsms))
-that reads SMS through Android's own normal permission system — a read-only tier (inbox/sent, no
-disruption to normal messaging) or an opt-in full-access tier (every folder, at the real cost of the
-phone's own SMS app going offline for that window) — then removes the app and reverses every change,
-with each step disclosed in the case record. This is the one Android mode that deliberately, visibly
-modifies the device rather than only reading from it.
+in a connected PC/SC reader (ICCID, ATR, EID, application IDs). Two dedicated **companion-app
+extraction** actions close the real gap `adb backup` can't reach at all (Contacts and Call Log are
+excluded from `adb backup` on every Android device, at the OS level; SMS often is too, depending on
+the messaging app): each installs a small relay app that reads content through Android's own normal
+runtime-permission system, then removes the app and reverses every change, with each step disclosed
+in the case record. **SMS extraction** installs a small, open-source, MIT-licensed relay app
+([adbsms.min](https://github.com/gonodono/adbsms)) with a read-only tier (inbox/sent, no disruption to
+normal messaging) or an opt-in full-access tier (every folder, at the real cost of the phone's own SMS
+app going offline for that window). **Contacts/Call Log extraction** installs a second, smaller
+companion app (hand-built for this project, mirroring the same relay-provider design) that grants
+`READ_CONTACTS` and/or `READ_CALL_LOG` — genuinely lower-risk than the SMS path, since neither
+permission requires the phone to reassign a "default app" role, so the device's own Contacts/Phone
+apps are never disrupted. These are the only Android modes that deliberately, visibly modify the
+device rather than only reading from it.
 
 ### File Explorer & analysis
 Browse local evidence and mounted network shares with inline preview (images, PDFs, and
@@ -383,7 +388,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.46.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.47.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
