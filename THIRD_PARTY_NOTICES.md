@@ -3,31 +3,34 @@
 Pi Forensics Suite's own original source code — the Flask application (`app.py`, `core/`, `routes/`),
 the frontend (`templates/`, `static/js/main.js`), the setup/deployment scripts (`install.py`,
 `uninstall.py`, `systemd/`, `nginx/`), and everything else written for this project — is licensed
-under the GNU General Public License v3.0 (or later). See [LICENSE](LICENSE) for the full text.
+under the Apache License, Version 2.0 (relicensed from GPLv3 on 2026-09-04 - see the maintainer's
+note at the top of [LICENSE](LICENSE)). See [LICENSE](LICENSE) for the full text.
 
-**None of the license grants below apply to this project's own code, and this project's GPLv3 license
-does not apply to any of the tools, libraries, or assets listed below.** To do its job, the station
-installs, imports, vendors, or loads a large number of pre-existing third-party forensic tools,
-Python libraries, and frontend assets. Each one keeps its own original license, exactly as its own
-authors published it. This project does not relicense any of it, and — with the handful of vendored
-exceptions noted below, which are bundled unmodified at a pinned version or commit — does not modify
-any of it either.
+**None of the license grants below apply to this project's own code, and this project's Apache-2.0
+license does not apply to any of the tools, libraries, or assets listed below.** To do its job, the
+station installs, imports, vendors, or loads a large number of pre-existing third-party forensic
+tools, Python libraries, and frontend assets. Each one keeps its own original license, exactly as its
+own authors published it. This project does not relicense any of it, and — with the handful of
+vendored exceptions noted below, which are bundled unmodified at a pinned version or commit — does
+not modify any of it either.
 
-## Why this doesn't affect this project's own GPLv3 license
+## Why this doesn't affect this project's own Apache-2.0 license
 
 - **System tools** (installed via `apt-get`) are launched as separate operating-system processes via
   Python's `subprocess` module — never compiled into, statically linked with, or dynamically loaded
-  by this project's own code. This is the "mere aggregation" case the GPL itself describes (see
-  section 5 of [LICENSE](LICENSE)): running a GPL-incompatible tool as a subprocess alongside GPL code
-  doesn't require the tool to become GPL-licensed, and doesn't require this project to become licensed
-  under the tool's terms either.
+  by this project's own code. Subprocess invocation isn't linking under any of these licenses (this
+  is the same "mere aggregation" case GPL itself describes in its own section 5, for the many system
+  tools below that are themselves GPL-licensed): running a separately-licensed tool as a subprocess
+  doesn't require the tool to adopt this project's license, and doesn't require this project to adopt
+  the tool's license either - regardless of which permissive or copyleft terms either side uses.
 - **Python packages** (installed via `pip install -r requirements.txt`) are mostly imported directly
   into the app's own process. Every one of them is licensed under a permissive license (MIT, BSD,
   Apache-2.0, PSF), a copyleft "library" license explicitly designed to be linked from any codebase
   regardless of that codebase's own license (LGPL-3.0), or a bespoke permissive grant (the DC3
-  SQLite Dissect license) — none of that creates a GPLv3-compatibility problem. A few Python packages
-  are wrapped as subprocesses rather than imported (`mvt`, `volatility3`, `sqlite-dissect`,
-  `wa-crypt-tools`) for exactly the same "mere aggregation" reason as the system tools above.
+  SQLite Dissect license) — every one of those terms is compatible with a permissively-licensed host
+  application. A few Python packages are wrapped as subprocesses rather than imported (`mvt`,
+  `volatility3`, `sqlite-dissect`, `wa-crypt-tools`) for exactly the same "mere aggregation" reason as
+  the system tools above.
 - **Vendored tools** are fetched at install time straight from the upstream project's own GitHub
   repository, pinned to a specific tagged release or commit, and run as a separate process — same
   reasoning as the system tools.
@@ -36,7 +39,7 @@ any of it either.
   four are permissively licensed.
 
 If you redistribute, deploy, modify, or build on this station, you're responsible for complying with
-each of the licenses below individually, in addition to this project's own GPLv3. This document is
+each of the licenses below individually, in addition to this project's own Apache-2.0 license. This document is
 maintained on a best-effort basis alongside `requirements.txt` and `install.py` — if either changes,
 this list should too (see the pointer comments near the top of each file).
 
