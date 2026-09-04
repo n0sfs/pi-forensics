@@ -67,7 +67,9 @@ _LIVE_COLLECTION_ARTIFACT_TYPES = {
 }
 # Android forensics expansion, Phase B - core/android_artifacts.py. In-image
 # only (rooted `physical` acquisitions), never a real-fs `pull` output.
-_ANDROID_ARTIFACT_TYPES = {"android_sms_message", "android_contact", "android_call_log"}
+# android_mms_message added 2026-09-04, Android pattern-of-life item 5 -
+# same mmssms.db file, same rooted-physical-image-only constraint.
+_ANDROID_ARTIFACT_TYPES = {"android_sms_message", "android_contact", "android_call_log", "android_mms_message"}
 # Installed-app inventory (routes/mobile.py, 2026-09-04) - deliberately
 # NOT in the set above: unlike those 3, this needs no root at all and is
 # captured automatically during a plain `adb pull`, recorded directly by

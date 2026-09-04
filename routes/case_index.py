@@ -219,9 +219,16 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     # never a non-rooted `pull`'s /sdcard folder (see that module's own
     # docstring for the grounded reasoning). Not yet tested against real
     # rooted-device hardware - disclosed gap, see the same docstring.
-    "android_sms_message": "Android: SMS/MMS (Rooted Physical Image Only)",
+    "android_sms_message": "Android: SMS (Rooted Physical Image Only)",
     "android_contact": "Android: Contacts (Rooted Physical Image Only)",
     "android_call_log": "Android: Call Log (Rooted Physical Image Only)",
+    # MMS (2026-09-04, Android pattern-of-life item 5) - the pdu/part/addr
+    # tables live in this exact same mmssms.db file, so it carries the
+    # identical rooted-physical-image-only constraint as the 3 above.
+    # android_sms_message's own label was corrected from "SMS/MMS" to
+    # plain "SMS" in this same pass - it never actually produced MMS
+    # records before this type existed.
+    "android_mms_message": "Android: MMS (Rooted Physical Image Only)",
     # Installed-app inventory (routes/mobile.py::_capture_android_app_
     # inventory(), 2026-09-04) - unlike the 3 rooted-physical-only types
     # right above, this needs NO root: it's a live `adb shell dumpsys
