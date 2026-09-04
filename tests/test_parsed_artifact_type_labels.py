@@ -98,6 +98,11 @@ _ANDROID_COMPANION_SMS_ARTIFACT_TYPES = {"android_companion_sms_message"}
 # android:allowBackup="false" at the application level, confirmed via
 # AOSP source in core/android_backup_utils.py's own docstring).
 _ANDROID_COMPANION_CONTACTS_CALLLOG_ARTIFACT_TYPES = {"android_companion_contact", "android_companion_call_log_entry"}
+# Companion-app Calendar extraction (routes/mobile.py + core/android_
+# companion_calendar_utils.py, 2026-09-04) - same device-modifying
+# acquisition method as SMS/Contacts/Call Log above, the 4th and last data
+# type to ship in this app's own vendored pif-companion.apk.
+_ANDROID_COMPANION_CALENDAR_ARTIFACT_TYPES = {"android_companion_calendar_event"}
 # Native WhatsApp msgstore.db/wa.db parsing (core/whatsapp_utils.py,
 # 2026-09-04) - reachable both real-fs (this app's own decrypt feature's
 # output) and in-image (a rooted physical image).
@@ -155,7 +160,7 @@ def test_parsed_artifact_type_labels_covers_every_known_producer():
                 | _NTFS_JOURNAL_ARTIFACT_TYPES | _EMAIL_ARTIFACT_TYPES | _LIVE_COLLECTION_ARTIFACT_TYPES
                 | _ANDROID_ARTIFACT_TYPES | _ANDROID_AB_ARTIFACT_TYPES | _ANDROID_APP_INVENTORY_ARTIFACT_TYPES
                 | _ANDROID_ACCOUNTS_NOTIFICATIONS_ARTIFACT_TYPES | _ANDROID_COMPANION_SMS_ARTIFACT_TYPES
-                | _ANDROID_COMPANION_CONTACTS_CALLLOG_ARTIFACT_TYPES
+                | _ANDROID_COMPANION_CONTACTS_CALLLOG_ARTIFACT_TYPES | _ANDROID_COMPANION_CALENDAR_ARTIFACT_TYPES
                 | _WHATSAPP_NATIVE_ARTIFACT_TYPES
                 | _LEAPP_TSV_ARTIFACT_TYPES | _TAKEOUT_ARTIFACT_TYPES
                 | _APPLE_EXPORT_ARTIFACT_TYPES | _WINDOWS_ACTIVITY_ARTIFACT_TYPES | _SRUM_ARTIFACT_TYPES
