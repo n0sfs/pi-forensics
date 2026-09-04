@@ -1937,6 +1937,9 @@ const FILE_VIEWS_WEB_ARTIFACT_LABELS = {
     android_sms_message: 'Android: SMS/MMS (Rooted Physical Image Only)',
     android_contact: 'Android: Contacts (Rooted Physical Image Only)',
     android_call_log: 'Android: Call Log (Rooted Physical Image Only)',
+    whatsapp_message: 'WhatsApp: Messages (Native Parse)',
+    whatsapp_call_log: 'WhatsApp: Calls (Native Parse)',
+    whatsapp_contact: 'WhatsApp: Contacts (Native Parse)',
     leapp_device_info: 'ALEAPP/iLEAPP: Device Info',
     leapp_wifi_network: 'ALEAPP/iLEAPP: WiFi Networks',
     leapp_installed_app: 'ALEAPP/iLEAPP: Installed Apps',
@@ -4602,6 +4605,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnSqliteDissect', section: 'ctxSecArtifactsGeneric', visible: item => !item.is_dir && isSqliteFile(item.name), analysisTool: 'SQLite Dissect' },
     { id: 'btnApkAnalyze', section: 'ctxSecArtifactsMobile', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.apk'), analysisTool: 'androguard APK Analysis' },
     { id: 'btnWhatsappDecrypt', section: 'ctxSecArtifactsMobile', visible: item => !item.is_dir && /\.(crypt12|crypt14|crypt15)$/i.test(item.name) },
+    { id: 'btnParseWhatsapp', section: 'ctxSecArtifactsMobile', visible: item => item.is_dir },
     { id: 'btnIpaAnalyze', section: 'ctxSecArtifactsMobile', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.ipa'), analysisTool: 'IPA Static Analysis (plist/mobileprovision/LIEF)' },
     { id: 'btnBugreportParse', section: 'ctxSecArtifactsMobile', visible: item => !item.is_dir && item.name.toLowerCase().endsWith('.zip'), analysisTool: 'Bugreport Deep Parse (dumpstate-py)' },
     // Mobile & Memory
@@ -5946,6 +5950,31 @@ async function runSelectedRegistryParse() {
         }
     } catch (err) {
         showToast('Registry hive scan failed: request error.', 'danger');
+    }
+}
+
+async function runSelectedWhatsappParse() {
+    if (!activeSelectedFile) return;
+    try {
+        const res = await fetch('/api/files/parse_whatsapp', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(`WhatsApp database scan failed: ${data.error}`, 'danger'); return; }
+        if (data.candidates_found === 0) {
+            showToast('No msgstore.db or wa.db found under this folder - decrypt a WhatsApp backup first if needed.', 'success');
+            return;
+        }
+        const summary = summarizeParsedArtifactCounts(data.counts);
+        if (!data.indexed) {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} WhatsApp database(s): ${summary}. Select an active case to save these into File Views.`, 'info');
+        } else {
+            showToast(`Found ${data.files_parsed} of ${data.candidates_found} WhatsApp database(s): ${summary}. See File Views > Parsed Artifacts.`, 'success');
+            initFileViewsTree(true);
+        }
+    } catch (err) {
+        showToast('WhatsApp database scan failed: request error.', 'danger');
     }
 }
 

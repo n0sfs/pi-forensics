@@ -222,6 +222,16 @@ PARSED_ARTIFACT_TYPE_LABELS = {
     "android_sms_message": "Android: SMS/MMS (Rooted Physical Image Only)",
     "android_contact": "Android: Contacts (Rooted Physical Image Only)",
     "android_call_log": "Android: Call Log (Rooted Physical Image Only)",
+    # Native WhatsApp msgstore.db/wa.db parsing (core/whatsapp_utils.py,
+    # 2026-09-04) - reachable either from this app's own WhatsApp-decrypt
+    # feature's output (a real file, no root needed) or a rooted physical
+    # image's /data/data/com.whatsapp/databases/ folder - see that
+    # module's own docstring for the full ALEAPP-grounded schema
+    # confirmation. Distinct from the leapp_whatsapp_* types just below,
+    # since this is a genuinely different source (native parse vs ALEAPP).
+    "whatsapp_message": "WhatsApp: Messages (Native Parse)",
+    "whatsapp_call_log": "WhatsApp: Calls (Native Parse)",
+    "whatsapp_contact": "WhatsApp: Contacts (Native Parse)",
     # ALEAPP/iLEAPP TSV-export parsing (core/leapp_tsv_utils.py) - real,
     # confirmed module names promoted to their own type, plus one shared
     # fallback bucket ("Module Finding") for any other module that finds

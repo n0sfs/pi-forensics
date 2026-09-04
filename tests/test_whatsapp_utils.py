@@ -185,3 +185,257 @@ def test_decrypt_timeout_returns_clean_error(tmp_path, monkeypatch):
     result = wa.decrypt_whatsapp_backup(str(tmp_path / 'x.crypt14'), str(tmp_path / 'key'), str(tmp_path / 'out.db'))
     assert result['success'] is False
     assert 'timed out' in result['error']
+
+
+# --- Native msgstore.db/wa.db parsing (2026-09-04) - real SQLite fixtures
+# matching the exact modern schema confirmed directly from this app's own
+# pinned ALEAPP source (leapp/ALEAPP/scripts/artifacts/WhatsApp.py), not
+# mocked/guessed. ---
+
+import sqlite3
+
+
+def _build_msgstore_db(path, messages=(), calls=(), chats=None, jids=None):
+    """messages: list of dicts with keys matching the `message` table's
+    real columns (any subset - missing keys default sensibly). chats:
+    {chat_row_id: {'jid_row_id': int, 'subject': str|None}}. jids:
+    {jid_row_id: raw_string}. calls: list of dicts matching `call_log`."""
+    conn = sqlite3.connect(str(path))
+    conn.execute('''CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT)''')
+    conn.execute('''CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER, subject TEXT)''')
+    conn.execute('''CREATE TABLE message (
+        _id INTEGER PRIMARY KEY, chat_row_id INTEGER, from_me INTEGER,
+        recipient_count INTEGER, timestamp INTEGER, received_timestamp INTEGER,
+        sender_jid_row_id INTEGER, message_type INTEGER, text_data TEXT)''')
+    conn.execute('''CREATE TABLE call_log (
+        _id INTEGER PRIMARY KEY, timestamp INTEGER, duration INTEGER,
+        from_me INTEGER, video_call INTEGER, jid_row_id INTEGER, group_jid_row_id INTEGER)''')
+    for jid_id, raw in (jids or {}).items():
+        conn.execute('INSERT INTO jid (_id, raw_string) VALUES (?, ?)', (jid_id, raw))
+    for chat_id, spec in (chats or {}).items():
+        conn.execute('INSERT INTO chat (_id, jid_row_id, subject) VALUES (?, ?, ?)',
+                     (chat_id, spec.get('jid_row_id'), spec.get('subject')))
+    for m in messages:
+        conn.execute('''INSERT INTO message
+            (chat_row_id, from_me, recipient_count, timestamp, received_timestamp,
+             sender_jid_row_id, message_type, text_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+            (m.get('chat_row_id'), m.get('from_me', 0), m.get('recipient_count', 0),
+             m.get('timestamp'), m.get('received_timestamp'), m.get('sender_jid_row_id'),
+             m.get('message_type', 0), m.get('text_data')))
+    for c in calls:
+        conn.execute('''INSERT INTO call_log
+            (timestamp, duration, from_me, video_call, jid_row_id, group_jid_row_id)
+            VALUES (?, ?, ?, ?, ?, ?)''',
+            (c.get('timestamp'), c.get('duration', 0), c.get('from_me', 0),
+             c.get('video_call', 0), c.get('jid_row_id'), c.get('group_jid_row_id')))
+    conn.commit()
+    conn.close()
+
+
+def _build_wa_db(path, contacts=()):
+    conn = sqlite3.connect(str(path))
+    conn.execute('''CREATE TABLE wa_contacts (
+        jid TEXT, wa_name TEXT, given_name TEXT, family_name TEXT,
+        display_name TEXT, number TEXT)''')
+    for c in contacts:
+        conn.execute('''INSERT INTO wa_contacts
+            (jid, wa_name, given_name, family_name, display_name, number)
+            VALUES (?, ?, ?, ?, ?, ?)''',
+            (c.get('jid'), c.get('wa_name'), c.get('given_name'), c.get('family_name'),
+             c.get('display_name'), c.get('number')))
+    conn.commit()
+    conn.close()
+
+
+def test_find_whatsapp_databases_finds_both_real_filenames(tmp_path):
+    (tmp_path / 'com.whatsapp' / 'databases').mkdir(parents=True)
+    (tmp_path / 'com.whatsapp' / 'databases' / 'msgstore.db').write_bytes(b'')
+    (tmp_path / 'com.whatsapp' / 'databases' / 'wa.db').write_bytes(b'')
+    found = wa.find_whatsapp_databases(str(tmp_path))
+    assert len(found['msgstore']) == 1 and found['msgstore'][0].endswith('msgstore.db')
+    assert len(found['wa_db']) == 1 and found['wa_db'][0].endswith('wa.db')
+
+
+def test_parse_whatsapp_messages_one_to_one_no_wa_db_falls_back_to_jid(tmp_path):
+    # No sibling wa.db at all - this app's own current WhatsApp-decrypt
+    # feature's real, common output shape.
+    msgstore = tmp_path / 'msgstore.db'
+    _build_msgstore_db(msgstore,
+        jids={1: '15551234567@s.whatsapp.net'},
+        chats={10: {'jid_row_id': 1, 'subject': None}},
+        messages=[{
+            'chat_row_id': 10, 'from_me': 0, 'recipient_count': 0,
+            'timestamp': 1788000000000, 'sender_jid_row_id': 1,
+            'message_type': 0, 'text_data': 'Real message body',
+        }])
+    records = wa.parse_whatsapp_messages(str(msgstore))
+    assert len(records) == 1
+    r = records[0]
+    assert r['artifact_type'] == 'whatsapp_message'
+    assert r['title'] == '15551234567'  # JID stripped of @s.whatsapp.net, no contact name resolved
+    assert 'Real message body' in r['value']
+    assert '[Incoming, Text]' in r['value']
+    assert r['extra']['is_group'] is False
+    assert r['extra']['contact_name_resolved'] is False
+    assert r['timestamp'] == 1788000000000 / 1000.0
+
+
+def test_parse_whatsapp_messages_with_sibling_wa_db_resolves_real_contact_name(tmp_path):
+    msgstore = tmp_path / 'msgstore.db'
+    _build_msgstore_db(msgstore,
+        jids={1: '15551234567@s.whatsapp.net'},
+        chats={10: {'jid_row_id': 1, 'subject': None}},
+        messages=[{
+            'chat_row_id': 10, 'from_me': 1, 'recipient_count': 0,
+            'timestamp': 1788000100000, 'sender_jid_row_id': 1,
+            'message_type': 0, 'text_data': 'Outgoing reply',
+        }])
+    _build_wa_db(tmp_path / 'wa.db', contacts=[
+        {'jid': '15551234567@s.whatsapp.net', 'wa_name': 'Real Verification Contact'},
+    ])
+    records = wa.parse_whatsapp_messages(str(msgstore))
+    assert len(records) == 1
+    r = records[0]
+    assert r['title'] == 'Real Verification Contact'  # resolved via the attached wa.db
+    assert r['extra']['contact_name_resolved'] is True
+    assert r['extra']['direction'] == 'Outgoing'
+    assert '[Outgoing, Text]' in r['value']
+
+
+def test_parse_whatsapp_messages_group_chat_uses_chat_subject_as_title(tmp_path):
+    msgstore = tmp_path / 'msgstore.db'
+    _build_msgstore_db(msgstore,
+        jids={1: '15551234567@s.whatsapp.net'},
+        chats={20: {'jid_row_id': None, 'subject': 'Real Verification Group'}},
+        messages=[{
+            'chat_row_id': 20, 'from_me': 0, 'recipient_count': 3,
+            'timestamp': 1788000200000, 'sender_jid_row_id': 1,
+            'message_type': 1, 'text_data': None,
+        }])
+    records = wa.parse_whatsapp_messages(str(msgstore))
+    assert len(records) == 1
+    r = records[0]
+    assert r['title'] == 'Real Verification Group'
+    assert r['extra']['is_group'] is True
+    assert r['extra']['message_type'] == 'Picture'
+    assert '(picture, no text)' in r['value']  # no text_data - falls back to a type-labeled placeholder
+    # A real, live-caught bug this test now guards against: a group
+    # message's SENDER must resolve via message.sender_jid_row_id, not
+    # chat.jid_row_id (which for a group identifies the GROUP itself, not
+    # a person) - confirmed the raw JID at least reaches extra even with
+    # no wa.db attached.
+    assert r['extra']['sender_jid'] == '15551234567@s.whatsapp.net'
+    assert r['extra']['sender_or_recipient'] == '15551234567'
+
+
+def test_parse_whatsapp_messages_group_chat_resolves_real_sender_name_via_wa_db(tmp_path):
+    # The full regression test for the exact bug found live on the
+    # deployed station: with a real wa.db attached, a group message's
+    # sender name must resolve correctly via message.sender_jid_row_id -
+    # a naive chat.jid_row_id join (the group's own identity, not a
+    # person's) would leave this permanently unresolved regardless of
+    # whether wa.db is present.
+    msgstore = tmp_path / 'msgstore.db'
+    _build_msgstore_db(msgstore,
+        jids={1: '15551234567@s.whatsapp.net', 2: '15559998888@s.whatsapp.net'},
+        chats={20: {'jid_row_id': None, 'subject': 'Real Verification Group'}},
+        messages=[{
+            'chat_row_id': 20, 'from_me': 0, 'recipient_count': 3,
+            'timestamp': 1788000250000, 'sender_jid_row_id': 2,
+            'message_type': 0, 'text_data': 'Message from a specific group member',
+        }])
+    _build_wa_db(tmp_path / 'wa.db', contacts=[
+        {'jid': '15551234567@s.whatsapp.net', 'wa_name': 'Wrong Person (would match via chat.jid_row_id)'},
+        {'jid': '15559998888@s.whatsapp.net', 'wa_name': 'Correct Group Sender'},
+    ])
+    records = wa.parse_whatsapp_messages(str(msgstore))
+    assert len(records) == 1
+    r = records[0]
+    assert r['extra']['contact_name_resolved'] is True
+    assert r['extra']['sender_or_recipient'] == 'Correct Group Sender'
+    assert r['title'] == 'Real Verification Group'  # title still the group subject, not the sender
+
+
+def test_parse_whatsapp_messages_covers_every_confirmed_message_type_label(tmp_path):
+    msgstore = tmp_path / 'msgstore.db'
+    type_map = {0: 'Text', 1: 'Picture', 2: 'Audio', 3: 'Video', 5: 'Static Location',
+                7: 'System Message', 9: 'Document', 16: 'Live Location'}
+    _build_msgstore_db(msgstore,
+        jids={1: 'x@s.whatsapp.net'},
+        chats={10: {'jid_row_id': 1, 'subject': None}},
+        messages=[{'chat_row_id': 10, 'timestamp': 1788000000000 + i, 'sender_jid_row_id': 1,
+                   'message_type': t, 'text_data': 'x'} for i, t in enumerate(type_map)])
+    records = wa.parse_whatsapp_messages(str(msgstore))
+    assert {r['extra']['message_type'] for r in records} == set(type_map.values())
+
+
+def test_parse_whatsapp_messages_unrecognized_type_falls_back_to_numeric_label(tmp_path):
+    msgstore = tmp_path / 'msgstore.db'
+    _build_msgstore_db(msgstore,
+        jids={1: 'x@s.whatsapp.net'}, chats={10: {'jid_row_id': 1, 'subject': None}},
+        messages=[{'chat_row_id': 10, 'timestamp': 1788000000000, 'sender_jid_row_id': 1,
+                   'message_type': 99, 'text_data': 'x'}])
+    records = wa.parse_whatsapp_messages(str(msgstore))
+    assert records[0]['extra']['message_type'] == 'Type 99'
+
+
+def test_parse_whatsapp_messages_missing_file_returns_empty_not_raises(tmp_path):
+    assert wa.parse_whatsapp_messages(str(tmp_path / 'does_not_exist.db')) == []
+
+
+def test_parse_whatsapp_messages_malformed_file_returns_empty_not_raises(tmp_path):
+    bad = tmp_path / 'msgstore.db'
+    bad.write_bytes(b'this is not a real sqlite database')
+    assert wa.parse_whatsapp_messages(str(bad)) == []
+
+
+def test_parse_whatsapp_call_log_real_shape_and_direction(tmp_path):
+    msgstore = tmp_path / 'msgstore.db'
+    _build_msgstore_db(msgstore,
+        jids={1: '15559998888@s.whatsapp.net'},
+        calls=[{'timestamp': 1788000300000, 'duration': 125, 'from_me': 1,
+                'video_call': 1, 'jid_row_id': 1}])
+    records = wa.parse_whatsapp_call_log(str(msgstore))
+    assert len(records) == 1
+    r = records[0]
+    assert r['artifact_type'] == 'whatsapp_call_log'
+    assert r['title'] == '15559998888'
+    assert r['extra']['direction'] == 'Outgoing'
+    assert r['extra']['call_type'] == 'Video'
+    assert r['extra']['duration_seconds'] == 125
+    assert r['timestamp'] == 1788000300000 / 1000.0
+
+
+def test_parse_whatsapp_call_log_missing_file_returns_empty(tmp_path):
+    assert wa.parse_whatsapp_call_log(str(tmp_path / 'nope.db')) == []
+
+
+def test_parse_whatsapp_contacts_real_name_fallback_chain(tmp_path):
+    wa_db = tmp_path / 'wa.db'
+    _build_wa_db(wa_db, contacts=[
+        {'jid': 'a@s.whatsapp.net', 'given_name': 'Jane', 'family_name': 'Doe'},
+        {'jid': 'b@s.whatsapp.net', 'display_name': 'Just A Display Name'},
+        {'jid': 'c@s.whatsapp.net', 'number': '+15551112222'},
+    ])
+    records = wa.parse_whatsapp_contacts(str(wa_db))
+    assert len(records) == 3
+    titles = {r['title'] for r in records}
+    assert titles == {'Jane Doe', 'Just A Display Name', 'c'}  # falls back to the JID-stripped id
+    assert all(r['artifact_type'] == 'whatsapp_contact' for r in records)
+
+
+def test_parse_whatsapp_contacts_missing_file_returns_empty(tmp_path):
+    assert wa.parse_whatsapp_contacts(str(tmp_path / 'nope.db')) == []
+
+
+def test_strip_wa_jid_suffix_handles_individual_and_group_and_none():
+    assert wa._strip_wa_jid_suffix('15551234567@s.whatsapp.net') == '15551234567'
+    assert wa._strip_wa_jid_suffix('123456-789012@g.us') == '123456-789012'
+    assert wa._strip_wa_jid_suffix(None) is None
+    assert wa._strip_wa_jid_suffix('') == ''
+
+
+def test_wa_ms_to_unix_matches_the_real_conversion_and_tolerates_bad_input():
+    assert wa._wa_ms_to_unix(1788000000000) == 1788000000.0
+    assert wa._wa_ms_to_unix(None) is None
+    assert wa._wa_ms_to_unix('not a number') is None
