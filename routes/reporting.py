@@ -971,7 +971,13 @@ CASE_TIMELINE_ACTIVITY_CATEGORY = {
     "takeout_search_history": "Web Activity", "takeout_youtube_history": "Web Activity",
     # Social Media / Messaging Apps
     "leapp_whatsapp_message": "Social Media", "leapp_whatsapp_call_log": "Social Media",
-    "leapp_whatsapp_contact": "Social Media", "leapp_instagram_message": "Social Media",
+    "leapp_whatsapp_contact": "Social Media",
+    # Native msgstore.db/wa.db parsing (core/whatsapp_utils.py) - same
+    # category as its ALEAPP-sourced siblings just above, since it's the
+    # identical real-world signal, just a different extraction path.
+    "whatsapp_message": "Social Media", "whatsapp_call_log": "Social Media",
+    "whatsapp_contact": "Social Media",
+    "leapp_instagram_message": "Social Media",
     "leapp_snapchat_message": "Social Media", "leapp_facebook_messenger_message": "Social Media",
     "leapp_telegram_message": "Social Media", "leapp_signal_message": "Social Media",
     "leapp_tiktok_message": "Social Media", "leapp_reddit_message": "Social Media",
