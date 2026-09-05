@@ -39,6 +39,104 @@ def is_valid_block_device_or_partition(path_str):
     there, now a thin alias onto this function."""
     return bool(path_str) and (bool(_DEVICE_RE.match(path_str)) or bool(_PARTITION_RE.match(path_str)))
 
+# --- USB physical port classification (Raspberry Pi 4B hardware, 2026-09-05) ---
+# Real finding: this station's write-blocker toggle and the Live Collection
+# USB build both need to know whether a whole-disk device is physically in
+# one of the station's 2 blue (USB 3.0) ports or one of the 2 black
+# (USB 2.0) ports - the design decided on is that the 2 blue ports stay
+# evidence-only, permanently write-blocked with NO software override at all
+# (not even the toggle), while the 2 black ports are the only ones this
+# app's own code is ever allowed to write-unlock (for a Live Collection USB
+# build's destination drive, or a manual "unlock this to write an image
+# out to it" use of the toggle). This does NOT change what the udev write-
+# block rule does on connect - every port still forces a freshly-connected
+# drive read-only immediately, on all 4 ports, unconditionally. This only
+# gates whether this app's own software is *permitted* to flip it back.
+#
+# The tricky part, confirmed empirically (not assumed from generic Pi
+# documentation): the Pi 4B's 4 rear USB ports all share ONE physical xHCI
+# controller chip (VL805), which Linux exposes as two SEPARATE logical
+# buses - a USB-2.0-compatible bus and a SuperSpeed bus - depending on what
+# speed the plugged-in device actually negotiates, not which physical port
+# it's in. A cheap/slow drive in a blue port still shows up on the 2.0-
+# compat bus, identically to a drive in a black port - so checking the bus
+# number alone is NOT sufficient to tell blue from black.
+#
+# What IS reliable: the SuperSpeed bus's own root hub is, by this board's
+# fixed wiring, only ever reachable from the 2 blue ports at all (the
+# black ports have no SuperSpeed wiring whatsoever) - so anything on that
+# bus is unconditionally blue. And the USB-2.0-compat bus's own internal
+# 4-port hub has a genuinely stable per-physical-port sub-port index,
+# confirmed live by moving one real drive through all 4 ports in turn and
+# reading back its sysfs path each time:
+#   top blue    -> /usb1/1-1/1-1.1/...
+#   bottom blue -> /usb1/1-1/1-1.2/...
+#   top black   -> /usb1/1-1/1-1.3/...
+#   bottom black -> /usb1/1-1/1-1.4/...
+# i.e. sub-ports 1-2 are the blue pair, 3-4 are the black pair. This is a
+# fixed hardware fact for this board model, not something that changes per
+# boot or per device - but IS specific to the Pi 4B; a different Pi model
+# would need its own empirical re-verification before trusting this.
+USB_BLACK_SUBPORTS = {'3', '4'}
+# Requires the SAME sub-port digit to reappear immediately afterward
+# followed by a colon (the real "N:1.0" interface-descriptor segment a
+# device plugged directly into that port always has, e.g.
+# ".../1-1.3/1-1.3:1.0/..."). A device behind an intermediate hub adds an
+# extra numbered segment instead (".../1-1.3/1-1.3.1/1-1.3.1:1.0/..."),
+# which fails this exact reappear-then-colon check on purpose - a plain
+# "digit followed by / or :" check would have matched that shape too
+# (a real mistake caught by this file's own test suite before it shipped),
+# since both shapes have a "/" right after the first "1-1.N".
+_USB1_SUBPORT_RE = re.compile(r'/usb1/1-1/1-1\.([1-4])/1-1\.\1:')
+
+def describe_usb_port(device_path):
+    """Richer companion to classify_usb_port() (below, now a thin wrapper
+    over this) - for the Drive Management port diagram, which wants to
+    know not just the color but the SPECIFIC one of the 4 physical ports,
+    so it can highlight the right slot rather than just the right color.
+
+    Returns None for an invalid device path (same as classify_usb_port());
+    otherwise a dict: {'color': 'blue'|'black'|'unknown',
+    'port_index': '1'|'2'|'3'|'4'|None}.
+
+    port_index is only ever populated via bus1's own sub-port number - the
+    one this file's own live testing (2026-09-05) actually confirmed for
+    all 4 physical ports. A device that happens to negotiate genuine
+    SuperSpeed shows up on bus2 instead (see classify_usb_port()'s own
+    docstring for why bus2 is unconditionally 'blue' regardless), but
+    which of bus2's own root ports corresponds to which specific physical
+    connector was never itself confirmed - no genuine SuperSpeed-capable
+    drive was available during that verification pass - so port_index
+    stays None in that case even though color is still confidently
+    'blue'. Never guess a specific slot from unconfirmed data."""
+    if not is_valid_block_device(device_path):
+        return None
+    try:
+        real_path = os.path.realpath(f"/sys/class/block/{os.path.basename(device_path)}")
+    except Exception:
+        return {"color": "unknown", "port_index": None}
+    if not real_path or real_path == f"/sys/class/block/{os.path.basename(device_path)}":
+        return {"color": "unknown", "port_index": None}  # no such device
+    if "/usb2/" in real_path:
+        return {"color": "blue", "port_index": None}
+    m = _USB1_SUBPORT_RE.search(real_path)
+    if not m:
+        return {"color": "unknown", "port_index": None}
+    digit = m.group(1)
+    color = "black" if digit in USB_BLACK_SUBPORTS else "blue"
+    return {"color": color, "port_index": digit}
+
+def classify_usb_port(device_path):
+    """'blue' | 'black' | 'unknown' for a whole-disk device path, per the
+    empirically-verified Pi 4B port mapping above. Fails closed: anything
+    that can't be confidently classified - a different Pi model, a device
+    behind an intermediate hub (an extra path segment breaks the anchored
+    regex on purpose), an unreadable sysfs symlink - returns 'unknown', and
+    every real caller of this function treats 'unknown' exactly like
+    'blue' (refuse to write-unlock), never like 'black' (permit it)."""
+    info = describe_usb_port(device_path)
+    return info["color"] if info is not None else None
+
 def log_chain_of_custody(action, details=None, source_ip=None, user=None):
     # source_ip/user let a caller running outside the original Flask request
     # context (e.g. a background daemon thread, like network config's

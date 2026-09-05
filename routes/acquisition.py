@@ -32,9 +32,13 @@ from flask import Blueprint, jsonify, request, g
 from core.auth import requires_auth, requires_permission
 from core.paths import (
     safe_path, log_chain_of_custody, is_valid_block_device,
-    is_valid_block_device_or_partition, _DEVICE_RE,
+    is_valid_block_device_or_partition, _DEVICE_RE, classify_usb_port,
+    describe_usb_port,
 )
-from core.config import EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists
+from core.config import (
+    EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists,
+    detect_pi_model, usb_port_diagram_supported,
+)
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job,
     get_active_proc, clear_active_proc,
@@ -123,13 +127,47 @@ def _relock_device_for_list_drives(device_path):
 
 
 def _unlock_device_for_write(device_path):
-    """Called by the Live Collection USB build job before it touches
-    wipefs/sfdisk/mkfs - registers the exemption and flips the device
-    writable, both under device_write_lock, so a concurrent
-    list_drives() call can never land its own --setro in between."""
+    """The one function that ever flips a whole-disk device writable -
+    shared by the Live Collection USB build job and the manual Drive
+    Management toggle (toggle_write_block(), below), so the black-port-
+    only rule and the exemption-registry update can never drift between
+    the two call sites.
+
+    Real, live-verified design decision (2026-09-05): the station's 2 blue
+    (USB 3.0) ports stay evidence-only and permanently write-blocked, with
+    NO software path to unlock them at all - not the toggle, not a Live
+    Collection build, regardless of confirmation dialogs or who asks. Only
+    the 2 black (USB 2.0) ports, reserved for utility media, are ever
+    eligible - see classify_usb_port()'s own docstring in core/paths.py for
+    exactly how that's determined and why it fails closed. This does NOT
+    touch the udev write-block rule itself - every port still forces a
+    freshly-connected drive read-only unconditionally; this only gates
+    whether this app's own code is ever permitted to reverse that.
+
+    Registers the exemption and flips the device writable, both under
+    device_write_lock, so a concurrent list_drives() call can never land
+    its own --setro in between (the same race-avoidance this dict/lock
+    already existed for). Returns (success: bool, error: str | None) -
+    a caller must check this and abort before doing anything destructive
+    if it's False, rather than assuming the unlock always succeeds the way
+    this function used to (fire-and-forget, pre-2026-09-05)."""
+    port_class = classify_usb_port(device_path)
+    if port_class != "black":
+        return False, (
+            f"Write-unlocking is only permitted for a drive in one of this station's 2 standard "
+            f"(black) USB ports - reserved for utility media like a Live Collection USB build, never "
+            f"for evidence. {device_path} is not confirmed to be in one of those ports (detected: "
+            f"{port_class or 'unrecognized'}). The 2 USB 3.0 (blue) ports always stay write-blocked "
+            f"and this app has no way to unlock them, regardless of what's clicked or confirmed."
+        )
     with device_write_lock:
         active_write_unlocked_devices[device_path] = {"unlocked_at": time.time()}
-        subprocess.run(["sudo", "/usr/sbin/blockdev", "--setrw", device_path], capture_output=True)
+        res = subprocess.run(["sudo", "/usr/sbin/blockdev", "--setrw", device_path], capture_output=True, text=True)
+    if res.returncode != 0:
+        with device_write_lock:
+            active_write_unlocked_devices.pop(device_path, None)
+        return False, res.stderr.strip() or "blockdev --setrw failed"
+    return True, None
 
 
 def _relock_device_after_write(device_path):
@@ -1949,7 +1987,11 @@ def execution_worker_build_collection_usb(device, device_info, source_ip=None, u
         fast_path = check_existing_collection_volume(device)
         partition = f"{device}1"
 
-        _unlock_device_for_write(device)
+        unlocked, unlock_error = _unlock_device_for_write(device)
+        if not unlocked:
+            update_job(status="Failed")
+            append_log(f"[-] {unlock_error}")
+            return
         try:
             append_log(f"[*] Unmounting any existing partitions on {device}...")
             unmount_all_partitions(device)
@@ -2100,6 +2142,22 @@ def start_build_collection_usb():
     if not is_valid_block_device(device):
         update_job(active=False)
         return jsonify({"success": False, "error": f"'{device}' is not a recognized whole-disk device."}), 400
+
+    # Fail fast, before ever spawning the worker thread - see
+    # _unlock_device_for_write()'s own docstring for why blue-port devices
+    # are permanently ineligible. This is a UX improvement (an instant,
+    # clear error instead of watching "Checking device..." fail moments
+    # later) - _unlock_device_for_write() itself still enforces this too,
+    # as the real, authoritative gate.
+    port_class = classify_usb_port(device)
+    if port_class != "black":
+        update_job(active=False)
+        return jsonify({"success": False, "error": (
+            f"Live Collection USB can only be built onto a drive in one of this station's 2 standard "
+            f"(black) USB ports - the 2 USB 3.0 (blue) ports are reserved for evidence and always stay "
+            f"write-blocked. {device} is not confirmed to be in one of those ports (detected: "
+            f"{port_class or 'unrecognized'}). Move the drive to a black port and try again."
+        )}), 400
 
     # Real bug found live (2026-09-03): the worker's own completion
     # log_chain_of_custody() call runs from inside this background thread,
@@ -2496,11 +2554,26 @@ def list_drives():
 
                     # Force read-only lock upon discovery - race-safe
                     # against a concurrent Live Collection USB build job
-                    # via _relock_device_for_list_drives() (skips this
-                    # exact device, under device_write_lock, while it's
-                    # legitimately unlocked for that job's own write).
+                    # (or, since 2026-09-05, a manually toggled-unlocked
+                    # drive) via _relock_device_for_list_drives() (skips
+                    # this exact device, under device_write_lock, while
+                    # it's legitimately unlocked and tracked in
+                    # active_write_unlocked_devices).
                     _relock_device_for_list_drives(dev_path)
 
+                    # read_only now reflects real, current state (a plain
+                    # dict-membership read is fine here - this is a display
+                    # field, not a security decision; the actual gate is
+                    # _unlock_device_for_write()'s own port check, done
+                    # under device_write_lock, not this) - previously
+                    # hardcoded True unconditionally, which would have
+                    # misreported a drive as locked while it was still
+                    # legitimately, deliberately unlocked via the toggle.
+                    # port_class ('blue'/'black'/'unknown') lets the
+                    # frontend show which of the 2 evidence-only vs 2
+                    # utility ports a drive is actually in - see
+                    # classify_usb_port()'s own docstring in core/paths.py.
+                    port_info = describe_usb_port(dev_path) or {"color": None, "port_index": None}
                     drives.append({
                         "name": dev['name'],
                         "device": dev_path,
@@ -2509,12 +2582,35 @@ def list_drives():
                         "bytes": bytes_size,
                         "transport": dev.get('tran') or 'usb',
                         "serial": dev.get('serial') or 'N/A',
-                        "read_only": True
+                        "read_only": dev_path not in active_write_unlocked_devices,
+                        "port_class": port_info["color"],
+                        # 1-4, or None if only the color (not the specific
+                        # physical port) could be confirmed - see
+                        # describe_usb_port()'s own docstring. Used by the
+                        # Drive Management port diagram to highlight the
+                        # exact slot a drive is in, not just its color.
+                        "port_index": port_info["port_index"],
                     })
     except Exception as e:
         print(f"Error executing lsblk: {e}")
-        
+
     return jsonify(drives)
+
+
+@acquisition_bp.route('/api/system/pi_hardware_info', methods=['GET'])
+@requires_auth
+def pi_hardware_info():
+    """The station's own detected board model, and whether this app's USB
+    port diagram/classification is confirmed to apply to it - see
+    core/config.py's detect_pi_model()/usb_port_diagram_supported() for why
+    this is a real, empirically-scoped check (Pi 4B only), not assumed for
+    any board. A separate, tiny route rather than folded into /api/drives -
+    this is a station-wide fact, not a per-drive one, and keeping it apart
+    avoids changing /api/drives' own existing response shape."""
+    return jsonify({
+        "pi_model": detect_pi_model(),
+        "usb_port_diagram_supported": usb_port_diagram_supported(),
+    })
 
 @acquisition_bp.route('/api/smart_check', methods=['POST'])
 @requires_auth
@@ -2610,19 +2706,36 @@ def toggle_write_block():
     if not is_valid_block_device(drive):
         return jsonify({"success": False, "error": f"'{drive}' is not a recognized whole-disk device."}), 400
 
-    action_flag = '--setro' if enable else '--setrw'
-
     try:
-        # Expand partitions in Python (no shell globbing) and unmount each
-        # with argv-list subprocess calls, so nothing reaches a shell.
-        for part in sorted(glob.glob(f"{drive}*")):
-            subprocess.run(['sudo', 'udevil', 'unmount', '-b', part], capture_output=True)
-            subprocess.run(['sudo', 'umount', part], capture_output=True)
+        if not enable:
+            # Real bug found live (2026-09-05): this route used to call
+            # blockdev --setrw directly with no exemption-registry update
+            # at all - the flag genuinely flipped for a moment, but
+            # list_drives()'s own periodic re-lock (every /api/drives poll,
+            # which the frontend does routinely) had no record of this
+            # unlock being legitimate and silently reverted it within
+            # seconds. Unlocking now goes through the same
+            # _unlock_device_for_write() the Live Collection USB build
+            # uses, which both registers the exemption AND enforces the
+            # black-port-only rule - see that function's own docstring.
+            # Unmount first (unchanged) so an unlock never races a
+            # still-mounted filesystem.
+            for part in sorted(glob.glob(f"{drive}*")):
+                subprocess.run(['sudo', 'udevil', 'unmount', '-b', part], capture_output=True)
+                subprocess.run(['sudo', 'umount', part], capture_output=True)
 
-        res = subprocess.run(['sudo', '/usr/sbin/blockdev', action_flag, drive], capture_output=True, text=True)
-
-        if res.returncode != 0:
-            return jsonify({"success": False, "error": res.stderr.strip() or "blockdev execution failed"}), 500
+            unlocked, unlock_error = _unlock_device_for_write(drive)
+            if not unlocked:
+                return jsonify({"success": False, "error": unlock_error}), 400
+        else:
+            # Re-locking is always safe on any port - clear the exemption
+            # (if any) under the same lock the relock/unlock paths already
+            # use, then actually flip the flag.
+            with device_write_lock:
+                active_write_unlocked_devices.pop(drive, None)
+                res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--setro', drive], capture_output=True, text=True)
+            if res.returncode != 0:
+                return jsonify({"success": False, "error": res.stderr.strip() or "blockdev execution failed"}), 500
 
         chk = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getro', drive], capture_output=True, text=True)
         is_ro = (chk.returncode == 0 and chk.stdout.strip() == '1')
