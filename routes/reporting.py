@@ -202,6 +202,11 @@ REPORTING_STAT_DEFINITIONS = [
      "description": "PDF/HTML report exports logged station-wide. Only counts exports made after this stat "
                      "shipped (2026-09-03) - report exports weren't logged to the audit trail before then, "
                      "so there's no earlier history to retroactively count."},
+    {"key": "tags_flagged", "label": "Tags/Notable Items Flagged",
+     "description": "Every item tagged 'Notable Item' (or any other tag an examiner marked Notable) across "
+                     "every case's own per-case analysis index, station-wide. Only counts cases that already "
+                     "have an index (opened the moment anything is first tagged/scanned/triage-run) - a case "
+                     "that's never had any of those actions run has no index yet and contributes 0, not an error."},
 ]
 REPORTING_STAT_KEYS = {d["key"] for d in REPORTING_STAT_DEFINITIONS}
 # Every existing station's saved config predates this feature and has no
@@ -213,14 +218,42 @@ REPORTING_STAT_KEYS = {d["key"] for d in REPORTING_STAT_DEFINITIONS}
 # geolocation key, defaulted unchecked for the identical reason).
 REPORTING_STATS_DEFAULT_ENABLED = ["total_cases"]
 
+def _count_notable_tagged_items_station_wide():
+    """Sums COUNT(*) of tagged_items joined to a notable=1 tag, across every
+    case's own per-case SQLite index - station-wide, not scoped to whichever
+    case happens to be active. Skips a case with no index yet (nothing
+    tagged/scanned there ever) via _case_index_open_readonly()'s own existing
+    None-return convention, matching every other case-index reader in this
+    file. Each connection is opened, queried, and closed per case rather than
+    held open across the whole walk - these are small per-case files, and
+    this mirrors _tags_for_paths()/_analysis_results_for_paths()'s own
+    established one-connection-per-call pattern rather than a new one."""
+    total = 0
+    for c in list_case_folders():
+        conn = _case_index_open_readonly(c.get("case_folder"))
+        if not conn:
+            continue
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM tagged_items JOIN tags ON tagged_items.tag_id = tags.id "
+                "WHERE tags.notable = 1"
+            ).fetchone()
+            total += (row[0] if row else 0)
+        finally:
+            conn.close()
+    return total
+
+
 def _compute_reporting_stats(enabled_keys):
     """Computes only the requested stat keys. total_cases/active_cases/
     evidence_items all share a single list_case_folders() walk rather than
     one directory walk per stat; reports_exported reads the chain-of-custody
-    log once, only if actually enabled. One unrecognized/removed key is
-    silently skipped, never a 500 - this stays out of the request's own
-    validation, since a stale saved key shouldn't be able to break the
-    whole row."""
+    log once, only if actually enabled; tags_flagged opens each case's own
+    per-case SQLite index only if actually enabled (a real per-case-DB cost,
+    unlike the other three station-wide stats). One unrecognized/removed key
+    is silently skipped, never a 500 - this stays out of the request's own
+    validation, since a stale saved key shouldn't be able to break the whole
+    row."""
     stats = []
     needs_cases = any(k in enabled_keys for k in ("total_cases", "active_cases", "evidence_items"))
     cases = list_case_folders() if needs_cases else []
@@ -244,6 +277,8 @@ def _compute_reporting_stats(enabled_keys):
         elif key == "reports_exported":
             coc_entries = _read_coc_entries(limit=None)
             entry["value"] = sum(1 for e in coc_entries if e.get("action") == "report_exported")
+        elif key == "tags_flagged":
+            entry["value"] = _count_notable_tagged_items_station_wide()
         stats.append(entry)
     return stats
 
