@@ -108,7 +108,10 @@ from core.whatsapp_utils import (
 )
 from core.ipa_utils import analyze_ipa
 from core.bugreport_utils import parse_bugreport
-from core.jobs import job_lock, current_job, update_job, snapshot_job, _stream_subprocess
+from core.jobs import (
+    job_lock, current_job, update_job, snapshot_job, _stream_subprocess,
+    begin_suppress_active_false, end_suppress_active_false,
+)
 
 file_explorer_bp = Blueprint('file_explorer', __name__)
 
@@ -643,6 +646,30 @@ def run_clamscan():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # --- hashdeep: Recursive Directory Hash Manifest ---
+def _hashdeep_directory_body(target_dir, dest_dir, algo='sha256'):
+    """The actual hashdeep subprocess call + manifest write + auto-tag,
+    factored out of run_hashdeep() so Auto Analyze's mobile-folder
+    orchestrator (below) can call it directly as one sequenced step -
+    same body/route split already established for _run_hash_manifest_
+    body()/_run_mvt_scan_body(). Returns a plain dict; the caller (the
+    route below, or an Auto Analyze step) does its own log_chain_of_
+    custody()/response shaping."""
+    manifest_path = os.path.join(dest_dir, f"{os.path.basename(target_dir.rstrip(os.sep))}_hashdeep_{algo}_manifest.txt")
+    try:
+        res = subprocess.run(
+            ['hashdeep', '-r', '-c', algo, target_dir],
+            capture_output=True, text=True, timeout=600
+        )
+        with open(manifest_path, 'w') as f:
+            f.write(res.stdout)
+        _auto_tag_case_artifact(dest_dir, manifest_path)
+        file_count = sum(1 for line in res.stdout.splitlines() if line and not line.startswith('%') and not line.startswith('#'))
+        return {"success": True, "manifest_path": manifest_path, "file_count": file_count}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "hashdeep timed out (large directory - consider a subdirectory instead)."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @file_explorer_bp.route('/api/files/hashdeep', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
@@ -659,23 +686,11 @@ def run_hashdeep():
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
-    manifest_path = os.path.join(dest_dir, f"{os.path.basename(target_dir.rstrip(os.sep))}_hashdeep_{algo}_manifest.txt")
-    try:
-        res = subprocess.run(
-            ['hashdeep', '-r', '-c', algo, target_dir],
-            capture_output=True, text=True, timeout=600
-        )
-        with open(manifest_path, 'w') as f:
-            f.write(res.stdout)
-        _auto_tag_case_artifact(dest_dir, manifest_path)
-
-        file_count = sum(1 for line in res.stdout.splitlines() if line and not line.startswith('%') and not line.startswith('#'))
-        log_chain_of_custody("hashdeep_manifest", {"directory": target_dir, "algorithm": algo, "file_count": file_count, "manifest_path": manifest_path})
-        return jsonify({"success": True, "manifest_path": manifest_path, "file_count": file_count})
-    except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "hashdeep timed out (large directory - consider a subdirectory instead)."}), 500
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    result = _hashdeep_directory_body(target_dir, dest_dir, algo)
+    if not result["success"]:
+        return jsonify(result), 500
+    log_chain_of_custody("hashdeep_manifest", {"directory": target_dir, "algorithm": algo, "file_count": result["file_count"], "manifest_path": result["manifest_path"]})
+    return jsonify(result)
 
 # --- Geolocation: Extract GPS EXIF Data as a KML File ---
 # GEO_IMAGE_EXTENSIONS/_kml_escape/_geo_points_from_exiftool_entries/
@@ -683,19 +698,12 @@ def run_hashdeep():
 # file) - shared with the in-image geolocation route, which still lives in
 # app.py pending its own Step 7 extraction into routes/image_browser.py.
 
-@file_explorer_bp.route('/api/files/geolocation_kml', methods=['POST'])
-@requires_auth
-@requires_permission('file_explorer')
-def extract_geolocation_kml():
-    req = request.get_json() or {}
-    target_dir = safe_path(req.get('path'))
-    if not target_dir or not os.path.isdir(target_dir):
-        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
-
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), target_dir)
-    if not dest_dir:
-        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
-
+def _geolocation_kml_directory_body(target_dir, dest_dir):
+    """The actual exiftool call + KML build/write + auto-tag, factored out
+    of extract_geolocation_kml() so Auto Analyze's mobile-folder
+    orchestrator (below) can call it directly as one sequenced step - same
+    body/route split as _hashdeep_directory_body() just above. Returns a
+    plain dict; the caller does its own log_chain_of_custody()."""
     # -n: signed decimal degrees for GPSLatitude/GPSLongitude (exiftool applies the
     # N/S/E/W hemisphere sign automatically) instead of a "39 deg 21' N" DMS string -
     # this is what makes the values directly usable as KML <coordinates>.
@@ -707,14 +715,14 @@ def extract_geolocation_kml():
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if res.returncode != 0 and not res.stdout.strip():
-            return jsonify({"success": False, "error": res.stderr.strip() or "exiftool failed with no output."}), 500
+            return {"success": False, "error": res.stderr.strip() or "exiftool failed with no output."}
         entries = json.loads(res.stdout) if res.stdout.strip() else []
     except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "exiftool timed out (large directory - consider a subdirectory instead)."}), 500
+        return {"success": False, "error": "exiftool timed out (large directory - consider a subdirectory instead)."}
     except json.JSONDecodeError:
-        return jsonify({"success": False, "error": "Could not parse exiftool output."}), 500
+        return {"success": False, "error": "Could not parse exiftool output."}
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return {"success": False, "error": str(e)}
 
     points = _geo_points_from_exiftool_entries(entries)
     kml_doc = _build_geo_kml(points, f"{os.path.basename(target_dir)} - Geolocation Export")
@@ -729,13 +737,31 @@ def extract_geolocation_kml():
             with open(kml_path, 'w', encoding='utf-8') as f:
                 f.write(kml_doc)
         except Exception as e:
-            return jsonify({"success": False, "error": f"Failed to write KML file: {e}"}), 500
+            return {"success": False, "error": f"Failed to write KML file: {e}"}
         _auto_tag_case_artifact(dest_dir, kml_path)
 
+    return {"success": True, "kml_path": kml_path, "files_scanned": len(entries), "points_found": len(points)}
+
+@file_explorer_bp.route('/api/files/geolocation_kml', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def extract_geolocation_kml():
+    req = request.get_json() or {}
+    target_dir = safe_path(req.get('path'))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": "Directory not found or outside the permitted evidence directory."}), 400
+
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), target_dir)
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    result = _geolocation_kml_directory_body(target_dir, dest_dir)
+    if not result["success"]:
+        return jsonify(result), 500
     log_chain_of_custody("geolocation_kml_export", {
-        "directory": target_dir, "files_scanned": len(entries), "points_found": len(points)
+        "directory": target_dir, "files_scanned": result["files_scanned"], "points_found": result["points_found"]
     })
-    return jsonify({"success": True, "kml_path": kml_path, "files_scanned": len(entries), "points_found": len(points)})
+    return jsonify(result)
 
 @file_explorer_bp.route('/api/files/export_leapp_geolocation', methods=['POST'])
 @requires_auth
@@ -2419,31 +2445,29 @@ def run_ipa_analyze():
     return jsonify(result)
 
 # --- dumpstate-py: Deep-Parse an adb bugreport Archive ---
-@file_explorer_bp.route('/api/files/bugreport_parse', methods=['POST'])
-@requires_auth
-@requires_permission('file_explorer')
-def run_bugreport_parse():
-    req = request.get_json() or {}
-    file_path = safe_path(req.get('path'))
-    if not file_path or not os.path.isfile(file_path):
-        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
-
+def _bugreport_parse_body(file_path, dest_dir, case_folder):
+    """The actual dumpstate-py parse + JSON write + auto-tag + analysis-
+    result/parsed-artifact recording, factored out of run_bugreport_parse()
+    so Auto Analyze's mobile-folder orchestrator (below) can call it
+    directly as one sequenced step - same body/route split as the two
+    helpers just above. case_folder here is already validated (real
+    consolidated case, or None) by the caller - unlike the other two body
+    functions, this one itself needs case_folder (not just dest_dir) since
+    2026-09-04's artifact-record indexing was written to key off it
+    directly, matching the original route's own exact behavior. Returns a
+    plain dict; the caller does its own log_chain_of_custody()."""
     result = parse_bugreport(file_path)
     if not result["success"]:
-        return jsonify(result), 500
-
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
-    if not dest_dir:
-        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+        return result
 
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     output_path = os.path.join(dest_dir, f"{base_name}_bugreport_parsed.json")
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(result["sections"], f, indent=2)
-        _auto_tag_case_artifact(req.get('case_folder') or dest_dir, output_path)
+        _auto_tag_case_artifact(case_folder or dest_dir, output_path)
     except OSError as e:
-        return jsonify({"success": False, "error": f"Parsed successfully but could not write output: {e}"}), 500
+        return {"success": False, "error": f"Parsed successfully but could not write output: {e}"}
 
     section_count = len(result["sections"])
     artifact_records = result.get("artifact_records") or []
@@ -2451,9 +2475,6 @@ def run_bugreport_parse():
     if artifact_records:
         summary += f", {len(artifact_records)} record(s) indexed"
 
-    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
-    if case_folder and not case_consolidated_path(case_folder):
-        case_folder = None
     identity = {"source_type": "real_fs", "path": file_path, "name": os.path.basename(file_path)}
     _record_analysis_result(case_folder, identity, "Bugreport Deep Parse (dumpstate-py)", summary,
                              json.dumps(result["sections"], indent=2)[:20000])
@@ -2471,8 +2492,31 @@ def run_bugreport_parse():
     if case_folder and artifact_records:
         _record_parsed_artifacts(case_folder, identity, artifact_records)
 
-    log_chain_of_custody("bugreport_parsed", {"path": file_path, "output_path": output_path, "summary": summary})
-    return jsonify({"success": True, "output_path": output_path, "sections": result["sections"], "summary": summary})
+    return {"success": True, "output_path": output_path, "sections": result["sections"], "summary": summary,
+            "artifact_record_count": len(artifact_records)}
+
+@file_explorer_bp.route('/api/files/bugreport_parse', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def run_bugreport_parse():
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    if not dest_dir:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+
+    result = _bugreport_parse_body(file_path, dest_dir, case_folder)
+    if not result["success"]:
+        return jsonify(result), 500
+    log_chain_of_custody("bugreport_parsed", {"path": file_path, "output_path": result["output_path"], "summary": result["summary"]})
+    return jsonify(result)
 
 # --- strings: Extract Printable Text From a Binary File ---
 @file_explorer_bp.route('/api/files/strings', methods=['POST'])
@@ -3137,6 +3181,447 @@ def start_leapp_scan():
 
     log_chain_of_custody("leapp_scan_start", {"tool": tool_key, "input_path": input_path, "destination": dest_dir})
     return jsonify({"success": True, "message": f"{info['label']} scan started."})
+
+# --- Auto Analyze: Mobile/Android profile (2026-09-05) ---
+# Mirrors the Windows/Linux disk-image orchestrator's own design exactly
+# (routes/image_browser.py: execution_worker_auto_analyze_image() and its
+# surrounding comment) - the same reasoning that kept Triage Scan/
+# Geolocation/Memory Forensics out of THAT orchestrator (they'd need a
+# cross-blueprint import, a pattern this app has never used) doesn't apply
+# here: every candidate step function for a Mobile Forensics acquisition
+# target (ALEAPP, Hash Manifest, MVT scan, WhatsApp decrypt+parse,
+# Geolocation Export, .ab extract/parse, bugreport parse) already lives in
+# THIS SAME FILE, so this orchestrator lives here too, not in
+# routes/auto_analyze.py (which - per its own docstring - never imports
+# this file at all).
+#
+# A real, previously-live gap found while designing this (routes/
+# auto_analyze.py's own _mobile_profile_from_case_event(), confirmed via a
+# 2026-09-05 code review): the 'mobile_android' profile gets reported for
+# ALL THREE of this app's Android acquisition modes indiscriminately - a
+# real `pull`-mode output folder, a single `.ab` file (`backup` mode), or a
+# single bugreport `.zip` (`bugreport` mode) - with no isdir/isfile branch
+# at all. Rather than make detection itself more granular (touching an
+# already-tested route, more risk for no real benefit), this orchestrator's
+# OWN steps registry route below does that isdir/extension check itself
+# and returns the RIGHT step menu for whichever of the three the resolved
+# path actually is - detection stays coarse ("this is Android"), this
+# route resolves the fine-grained "what does Android mean here" question.
+AUTO_ANALYZE_MOBILE_STEP_LABELS = {
+    "hash_manifest": "Hash Manifest (Integrity)",
+    "aleapp_scan": "ALEAPP Artifact Scan",
+    "mvt_scan": "MVT Spyware/IOC Scan",
+    "whatsapp_decrypt_parse": "WhatsApp Decrypt & Parse (opt-in, needs a previously-pulled key)",
+    "geolocation_export": "Geolocation Export (EXIF, Photos/Videos)",
+    "android_backup_extract": "Extract All Files (Android Backup)",
+    "android_backup_parse": "Parse SMS/MMS (Android Backup)",
+    "bugreport_parse": "Parse adb bugreport",
+}
+# ALEAPP is genuinely slow (LEAPP_SCAN_TIMEOUT_SECONDS = 3600, confirmed
+# live elsewhere in this file) - a real departure from the Windows/Linux
+# orchestrator's own "nothing slow/unbounded in the defaults" precedent.
+# Included as a default anyway, deliberately: unlike Triage Scan/
+# Geolocation for a disk image (secondary, opt-in-even-there tools), ALEAPP
+# is THE flagship Android artifact parser this whole feature exists to
+# stop requiring a separate manual click for - the entire point of Auto
+# Analyze is doing the rich analysis automatically, and a "curated
+# sequence" that omits the single richest source of Android artifacts by
+# default would defeat its own purpose.
+AUTO_ANALYZE_MOBILE_PULL_FOLDER_DEFAULT_STEPS = ["hash_manifest", "aleapp_scan", "mvt_scan"]
+# whatsapp_decrypt_parse stays opt-in, not because it's slow (it's fast -
+# key files and .crypt* files are both small) but because there's no
+# reliable "was a WhatsApp key already pulled for THIS case" signal at all
+# - pull_whatsapp_key() (above) only ever logs a chain-of-custody entry, it
+# never writes a case-report event the way acquisition tools do, so this
+# step's own best-effort _find_whatsapp_key_file() search (below) could
+# silently miss a real key sitting somewhere this search doesn't look, or
+# - much less likely but not impossible - find an unrelated key file
+# belonging to a different case sharing the same evidence root. Confirmed
+# with the user before building: opt-in, with the best-effort search, not
+# a hard requirement to type the key path manually every time.
+# geolocation_export stays opt-in for the identical unbounded-whole-tree-
+# walk reason Geolocation is opt-in for the Windows/Linux image
+# orchestrator too (see that orchestrator's own comment above).
+AUTO_ANALYZE_MOBILE_PULL_FOLDER_EXTRA_STEPS = ["whatsapp_decrypt_parse", "geolocation_export"]
+AUTO_ANALYZE_MOBILE_BACKUP_FILE_DEFAULT_STEPS = ["android_backup_extract", "android_backup_parse", "mvt_scan"]
+AUTO_ANALYZE_MOBILE_BUGREPORT_FILE_DEFAULT_STEPS = ["bugreport_parse"]
+AUTO_ANALYZE_MOBILE_ALL_VALID_STEPS = set(AUTO_ANALYZE_MOBILE_STEP_LABELS.keys())
+
+_WHATSAPP_CRYPT_RE = re.compile(r'\.(crypt12|crypt14|crypt15)$', re.IGNORECASE)
+
+def _find_whatsapp_crypt_file(root_dir):
+    """Best-effort walk for a real msgstore.db.crypt12/14/15 file anywhere
+    under root_dir - mirrors the client-side isWhatsappCryptFile()-style
+    extension gate already used to show the standalone WhatsApp Decrypt
+    context-menu action, capped the same way find_whatsapp_databases()
+    already is (40,000 files) so a huge pull folder can't hang this step."""
+    walked = 0
+    for root, _dirs, files in os.walk(root_dir):
+        for fname in files:
+            walked += 1
+            if walked > 40_000:
+                return None
+            if _WHATSAPP_CRYPT_RE.search(fname):
+                return os.path.join(root, fname)
+    return None
+
+def _find_whatsapp_key_file(root_dir):
+    """Best-effort search for a previously-pulled WhatsApp key file,
+    matching pull_whatsapp_key()'s own real naming convention
+    (routes/mobile.py: f"{serial}_whatsapp_key"). See the module comment
+    above AUTO_ANALYZE_MOBILE_PULL_FOLDER_EXTRA_STEPS for why this is a
+    disclosed best-effort heuristic, not a guaranteed-correct lookup - no
+    case-event or other reliable signal exists for "was a key pulled for
+    this case" since pull_whatsapp_key() only logs a chain-of-custody
+    entry, never a case-report event."""
+    if not root_dir or not os.path.isdir(root_dir):
+        return None
+    walked = 0
+    for root, _dirs, files in os.walk(root_dir):
+        for fname in files:
+            walked += 1
+            if walked > 40_000:
+                return None
+            if fname.endswith('_whatsapp_key'):
+                return os.path.join(root, fname)
+    return None
+
+def _auto_analyze_mobile_step_hash_manifest(path, dest_dir, source_ip=None, user=None):
+    if not os.path.isdir(path):
+        return {"success": True, "status": "not_applicable", "detail": "Not a folder - hashdeep needs a real directory tree to walk."}
+    result = _hashdeep_directory_body(path, dest_dir, 'sha256')
+    if result["success"]:
+        log_chain_of_custody("hashdeep_manifest", {"directory": path, "algorithm": "sha256",
+            "file_count": result["file_count"], "manifest_path": result["manifest_path"]}, source_ip=source_ip, user=user)
+    return result
+
+def _auto_analyze_mobile_step_aleapp_scan(path, dest_dir, source_ip=None, user=None):
+    if not os.path.isdir(path):
+        return {"success": True, "status": "not_applicable", "detail": "Not a folder - ALEAPP needs a real extracted pull/backup folder to scan."}
+    # execution_worker_leapp_scan() is the full, already-Stop-capable
+    # worker (via _stream_subprocess, not a plain timeout) - it manages its
+    # own current_job status/log/progress fields directly and ends with
+    # its own `finally: update_job(active=False)`, exactly the shape
+    # core/jobs.py's own begin_suppress_active_false() docstring says this
+    # mechanism was built for ("run several existing execution_worker_*
+    # functions sequentially inside ONE continuously-held job-slot claim").
+    # It has no return value, so success/failure/stopped is read back from
+    # current_job's own final status afterward - the one step here that
+    # can't return a dict the normal way, disclosed rather than forced into
+    # a shape it doesn't have.
+    execution_worker_leapp_scan('aleapp', path, dest_dir, source_ip=source_ip, user=user)
+    final_status = snapshot_job().get("status")
+    if final_status == "Completed Successfully":
+        return {"success": True, "detail": "ALEAPP scan complete - see File Views > Parsed Artifacts."}
+    if final_status == "Stopped":
+        return {"success": False, "error": "Stopped by user."}
+    return {"success": False, "error": "ALEAPP scan failed, timed out, or the tool isn't installed - see the job log for detail."}
+
+def _auto_analyze_mobile_step_mvt_scan(path, dest_dir, source_ip=None, user=None):
+    # _run_mvt_scan_body() already accepts either a folder (pull mode) or
+    # a real .ab file (platform == 'android') - no isdir branch needed
+    # here, unlike every other step, since this one function already
+    # handles both this orchestrator's pull_folder AND backup_file target
+    # kinds identically.
+    result = _run_mvt_scan_body(path, dest_dir, 'android')
+    if not result["success"]:
+        return {"success": False, "error": result.get("error")}
+    # A real, disclosed gap closed here: run_mvt_scan()'s own standalone
+    # route (above) has never indexed its result into analysis_results at
+    # all - this step is the first place MVT output becomes visible in
+    # Reporting's per-exhibit "Recently analyzed" summary.
+    identity = {"source_type": "real_fs", "path": path, "name": os.path.basename(path.rstrip(os.sep))}
+    summary = f"MVT scan complete - output at {result['output_dir']}"
+    _record_analysis_result(dest_dir, identity, "MVT (Mobile Verification Toolkit)", summary, result["output"], run_by=user)
+    log_chain_of_custody("mvt_scan", {"path": path, "platform": "android", "output_dir": result["output_dir"]}, source_ip=source_ip, user=user)
+    return {"success": True, "detail": summary}
+
+def _auto_analyze_mobile_step_whatsapp_decrypt_parse(path, dest_dir, source_ip=None, user=None):
+    if not os.path.isdir(path):
+        return {"success": True, "status": "not_applicable", "detail": "Not a folder - WhatsApp decrypt needs a real pull/backup folder to search."}
+    crypt_path = _find_whatsapp_crypt_file(path)
+    if not crypt_path:
+        return {"success": True, "status": "not_applicable", "detail": "No WhatsApp .crypt12/.crypt14/.crypt15 file found in this folder."}
+    # Search the destination (usually the active case folder) first, then
+    # the pull folder itself - a key pulled earlier for this same case is
+    # far more likely to live in the case's own folder than inside this
+    # one specific acquisition's own subfolder.
+    key_path = _find_whatsapp_key_file(dest_dir) or _find_whatsapp_key_file(path)
+    if not key_path:
+        return {"success": True, "status": "not_applicable",
+                "detail": "Found a WhatsApp backup but no previously-pulled key file - "
+                          "use Mobile Forensics' 'Pull WhatsApp Key' action first, then re-run this step."}
+
+    base_name = os.path.splitext(os.path.basename(crypt_path))[0]
+    output_path = os.path.join(dest_dir, f"{base_name}_decrypted.db")
+    if os.path.exists(output_path):
+        return {"success": True, "status": "not_applicable", "detail": f"{os.path.basename(output_path)} already exists - not re-decrypting."}
+
+    decrypt_result = decrypt_whatsapp_backup(crypt_path, key_path, output_path)
+    if not decrypt_result["success"]:
+        return {"success": False, "error": decrypt_result["error"]}
+    identity = {"source_type": "real_fs", "path": crypt_path, "name": os.path.basename(crypt_path)}
+    _record_analysis_result(dest_dir, identity, "WhatsApp Backup Decryption (wadecrypt)",
+                             f"Decrypted to {os.path.basename(output_path)}", decrypt_result["log"], run_by=user)
+    log_chain_of_custody("whatsapp_backup_decrypted",
+                          {"path": crypt_path, "key_path": key_path, "output_path": output_path}, source_ip=source_ip, user=user)
+
+    records = parse_whatsapp_messages(output_path) + parse_whatsapp_call_log(output_path)
+    if records:
+        _record_parsed_artifacts(dest_dir, {"source_type": "real_fs", "path": output_path}, records)
+    return {"success": True, "detail": f"Decrypted and parsed {len(records)} record(s)."}
+
+def _auto_analyze_mobile_step_geolocation_export(path, dest_dir, source_ip=None, user=None):
+    if not os.path.isdir(path):
+        return {"success": True, "status": "not_applicable", "detail": "Not a folder - Geolocation Export needs a real directory tree to walk."}
+    result = _geolocation_kml_directory_body(path, dest_dir)
+    if result["success"]:
+        log_chain_of_custody("geolocation_kml_export", {"directory": path, "files_scanned": result["files_scanned"],
+            "points_found": result["points_found"]}, source_ip=source_ip, user=user)
+    return result
+
+def _auto_analyze_mobile_step_android_backup_extract(path, dest_dir, source_ip=None, user=None):
+    if os.path.isdir(path) or not path.lower().endswith('.ab'):
+        return {"success": True, "status": "not_applicable", "detail": "Not a .ab (Android Backup File)."}
+    base_name = os.path.splitext(os.path.basename(path))[0]
+    output_dir = os.path.join(dest_dir, f"{base_name}_android_backup_extracted")
+    if os.path.exists(output_dir):
+        return {"success": False, "error": f"'{os.path.basename(output_dir)}' already exists at the destination - refusing to overwrite a prior extraction."}
+    try:
+        result = extract_backup_to_directory(path, output_dir, password=None)
+    except AndroidBackupPasswordError as e:
+        return {"success": False, "error": f"{e} Use File Explorer's own 'Android Backup (.ab)' action to enter a password manually."}
+    except AndroidBackupError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        return {"success": False, "error": f"Failed to extract Android backup: {e}"}
+    _auto_tag_case_artifact(dest_dir, output_dir)
+    log_chain_of_custody("android_backup_extracted", {"path": path, "output_dir": output_dir,
+        "encrypted": result["header"]["encryption"] != "none", "files_extracted": len(result["files"])}, source_ip=source_ip, user=user)
+    return {"success": True, "detail": f"Extracted {len(result['files'])} file(s) to {output_dir}"}
+
+def _auto_analyze_mobile_step_android_backup_parse(path, dest_dir, source_ip=None, user=None):
+    if os.path.isdir(path) or not path.lower().endswith('.ab'):
+        return {"success": True, "status": "not_applicable", "detail": "Not a .ab (Android Backup File)."}
+    try:
+        result = extract_parsed_artifact_records_from_backup(path, password=None)
+    except AndroidBackupPasswordError as e:
+        return {"success": False, "error": f"{e} Use File Explorer's own 'Android Backup (.ab)' action to enter a password manually."}
+    except AndroidBackupError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        return {"success": False, "error": f"Failed to parse Android backup: {e}"}
+    if result["records"]:
+        _record_parsed_artifacts(dest_dir, {"source_type": "real_fs", "path": path}, result["records"])
+    counts = {}
+    for r in result["records"]:
+        counts[r["artifact_type"]] = counts.get(r["artifact_type"], 0) + 1
+    log_chain_of_custody("android_backup_parsed", {"path": path, "encrypted": result["header"]["encryption"] != "none",
+        "total_files_in_backup": len(result["files"]), "sms_files": len(result["sms_files"]),
+        "mms_files": len(result["mms_files"]), "counts": counts}, source_ip=source_ip, user=user)
+    return {"success": True, "detail": f"Indexed {len(result['records'])} SMS/MMS record(s)."}
+
+def _auto_analyze_mobile_step_bugreport_parse(path, dest_dir, source_ip=None, user=None):
+    if os.path.isdir(path) or not path.lower().endswith('.zip'):
+        return {"success": True, "status": "not_applicable", "detail": "Not a bugreport .zip file."}
+    # dest_dir doubles as the (already-resolved) case_folder here, matching
+    # the same overloaded meaning execution_worker_auto_analyze_image()'s
+    # own step functions already give their own "case_folder" parameter -
+    # see the orchestrator's own dest_dir-resolution comment below.
+    result = _bugreport_parse_body(path, dest_dir, dest_dir if case_consolidated_path(dest_dir) else None)
+    if not result["success"]:
+        return {"success": False, "error": result.get("error")}
+    log_chain_of_custody("bugreport_parsed", {"path": path, "output_path": result["output_path"],
+        "summary": result["summary"]}, source_ip=source_ip, user=user)
+    return {"success": True, "detail": f"{result['summary']}, {result['artifact_record_count']} record(s) indexed."}
+
+_AUTO_ANALYZE_MOBILE_STEP_FUNCTIONS = {
+    "hash_manifest": _auto_analyze_mobile_step_hash_manifest,
+    "aleapp_scan": _auto_analyze_mobile_step_aleapp_scan,
+    "mvt_scan": _auto_analyze_mobile_step_mvt_scan,
+    "whatsapp_decrypt_parse": _auto_analyze_mobile_step_whatsapp_decrypt_parse,
+    "geolocation_export": _auto_analyze_mobile_step_geolocation_export,
+    "android_backup_extract": _auto_analyze_mobile_step_android_backup_extract,
+    "android_backup_parse": _auto_analyze_mobile_step_android_backup_parse,
+    "bugreport_parse": _auto_analyze_mobile_step_bugreport_parse,
+}
+
+def execution_worker_auto_analyze_mobile(path, dest_dir, steps, source_ip=None, user=None):
+    """Runs each requested step in turn against a Mobile Forensics
+    acquisition target (a pull folder, or a single .ab/.zip file), as ONE
+    continuously-held job-slot claim - mirrors execution_worker_auto_
+    analyze_image()'s exact shape (routes/image_browser.py), including its
+    own per-step try/except (never one big try/except around the whole
+    loop - a materially misleading result for a tool whose point is a
+    complete, auditable sweep) and its begin_suppress_active_false()/
+    end_suppress_active_false() wrap around the ENTIRE run (not just
+    individual step calls) - needed for the identical real reason that
+    orchestrator's own docstring documents: stop_imaging() sets active=
+    False from a different thread the instant Stop is clicked, which would
+    otherwise release the shared job slot early while a step (e.g. a
+    multi-minute ALEAPP scan) is still genuinely running.
+
+    A "not_applicable" step status (distinct from "ok"/"error"/the
+    between-steps user-Stop "skipped") is this orchestrator's own addition,
+    not present in the image orchestrator - since the SAME mobile_android
+    profile can point at a folder, a .ab file, or a .zip file, several
+    steps are only ever meaningful for one of those three shapes; a step
+    that doesn't apply to this particular target reports that honestly
+    rather than being silently omitted from the results or misreported as
+    a failure."""
+    global current_job
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-200:]))
+
+    total = len(steps)
+    step_results = []
+    begin_suppress_active_false()
+    try:
+        update_job(format="auto_analyze_mobile", status="Starting Auto Analyze...", progress_percent=0.0,
+                    transferred_bytes=0, total_bytes=total)
+        append_log(f"[*] Auto Analyze starting against {path} - {total} step(s): "
+                   + ", ".join(AUTO_ANALYZE_MOBILE_STEP_LABELS.get(s, s) for s in steps))
+
+        for i, step_key in enumerate(steps):
+            label = AUTO_ANALYZE_MOBILE_STEP_LABELS.get(step_key, step_key)
+            if snapshot_job()["status"] == "Stopped":
+                step_results.append({"step": step_key, "status": "skipped", "reason": "stopped by user"})
+                continue
+            append_log(f"=== Step {i + 1}/{total}: {label} ===")
+            update_job(status=f"Step {i + 1}/{total}: {label}...")
+            try:
+                fn = _AUTO_ANALYZE_MOBILE_STEP_FUNCTIONS[step_key]
+                result = fn(path, dest_dir, source_ip=source_ip, user=user)
+                if result.get("status") == "not_applicable":
+                    step_results.append({"step": step_key, "status": "not_applicable", "detail": result.get("detail")})
+                    append_log(f"[*] Step {i + 1}/{total} not applicable: {result.get('detail')}")
+                elif result.get("success"):
+                    step_results.append({"step": step_key, "status": "ok", "detail": result})
+                    append_log(f"[+] Step {i + 1}/{total} complete.")
+                else:
+                    step_results.append({"step": step_key, "status": "error", "detail": result.get("error")})
+                    append_log(f"[-] Step {i + 1}/{total} reported an error: {result.get('error')}")
+            except Exception as e:
+                step_results.append({"step": step_key, "status": "error", "detail": str(e)})
+                append_log(f"[-] Step {i + 1}/{total} raised an exception: {e}")
+            # A between-step (not between-step-and-step within the same
+            # index) progress update, right after the step above finishes -
+            # note aleapp_scan's own internal module-count progress will
+            # have briefly overwritten transferred_bytes/total_bytes while
+            # IT was running; this restores step-count meaning immediately
+            # afterward so the rest of the sequence displays correctly.
+            update_job(transferred_bytes=i + 1, total_bytes=total, progress_percent=round((i + 1) / total * 100, 1))
+
+        steps_ok = sum(1 for r in step_results if r["status"] == "ok")
+        steps_failed = sum(1 for r in step_results if r["status"] == "error")
+        steps_skipped = sum(1 for r in step_results if r["status"] == "skipped")
+        steps_na = sum(1 for r in step_results if r["status"] == "not_applicable")
+
+        if snapshot_job()["status"] == "Stopped":
+            append_log(f"[!] Auto Analyze stopped by user - {steps_ok} of {total} step(s) completed before stopping.")
+        else:
+            update_job(status="Completed Successfully", progress_percent=100.0)
+            append_log(f"[+] Auto Analyze complete - {steps_ok} ok, {steps_failed} failed, "
+                       f"{steps_na} not applicable, {steps_skipped} skipped, of {total} step(s).")
+
+        log_chain_of_custody("auto_analyze_mobile_complete", {
+            "path": path, "steps_requested": steps, "steps_ok": steps_ok,
+            "steps_failed": steps_failed, "steps_skipped": steps_skipped, "steps_not_applicable": steps_na,
+            "results": step_results,
+        }, source_ip=source_ip, user=user)
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        end_suppress_active_false()
+        update_job(active=False)
+
+@file_explorer_bp.route('/api/files/auto_analyze/mobile/steps', methods=['GET'])
+@requires_auth
+@requires_permission('file_explorer')
+def auto_analyze_mobile_steps():
+    """The Mobile/Android equivalent of /api/image/auto_analyze/steps -
+    single source of truth for the modal's checklist, avoiding the exact
+    class of drift bug that route's own docstring documents finding twice.
+    Unlike that route, this one also resolves target_kind from the real
+    path (see this section's own top-of-file comment for why detection
+    itself was deliberately left untouched) - the frontend needs this to
+    know which of the 3 default-step-lists to show."""
+    path = safe_path(request.args.get('path'))
+    if not path or not (os.path.isdir(path) or os.path.isfile(path)):
+        return jsonify({"success": False, "error": "Path not found or outside the permitted evidence directory."}), 400
+
+    if os.path.isdir(path):
+        target_kind = "pull_folder"
+        default_steps = AUTO_ANALYZE_MOBILE_PULL_FOLDER_DEFAULT_STEPS
+        extra_steps = AUTO_ANALYZE_MOBILE_PULL_FOLDER_EXTRA_STEPS
+    elif path.lower().endswith('.ab'):
+        target_kind = "backup_file"
+        default_steps = AUTO_ANALYZE_MOBILE_BACKUP_FILE_DEFAULT_STEPS
+        extra_steps = []
+    elif path.lower().endswith('.zip'):
+        target_kind = "bugreport_file"
+        default_steps = AUTO_ANALYZE_MOBILE_BUGREPORT_FILE_DEFAULT_STEPS
+        extra_steps = []
+    else:
+        target_kind = "unknown"
+        default_steps = []
+        extra_steps = []
+
+    return jsonify({
+        "success": True, "target_kind": target_kind, "step_labels": AUTO_ANALYZE_MOBILE_STEP_LABELS,
+        "default_steps": default_steps, "extra_steps": extra_steps,
+    })
+
+@file_explorer_bp.route('/api/files/auto_analyze/mobile/start', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def start_auto_analyze_mobile():
+    global current_job
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    path = safe_path(req.get('path'))
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    requested_steps = req.get('steps') or []
+    steps = [s for s in requested_steps if s in AUTO_ANALYZE_MOBILE_ALL_VALID_STEPS]
+
+    if not path or not (os.path.isdir(path) or os.path.isfile(path)):
+        update_job(active=False)
+        return jsonify({"success": False, "error": "Path not found or outside the permitted evidence directory."}), 400
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    if not steps:
+        update_job(active=False)
+        return jsonify({"success": False, "error": "No valid steps selected."}), 400
+
+    # dest_dir: EITHER the active case folder, or, with no case active, the
+    # target's own containing directory - identical convention to Auto
+    # Analyze's disk-image orchestrator (os.path.dirname() on a folder
+    # path gives its PARENT, matching the same "never write into the exact
+    # folder being analyzed" principle _resolve_analysis_output_dir()
+    # already enforces everywhere else in this file).
+    dest_dir = case_folder or os.path.dirname(path.rstrip(os.sep))
+
+    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_user = getattr(g, 'forensic_user', None)
+
+    thread = threading.Thread(
+        target=execution_worker_auto_analyze_mobile,
+        args=(path, dest_dir, steps, requester_ip, requester_user)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("auto_analyze_mobile_start", {"path": path, "steps": steps})
+    return jsonify({"success": True, "message": f"Auto Analyze started - {len(steps)} step(s)."})
 
 
 # mquire (Linux memory forensics, 2026-08-25) - Volatility3 above is
