@@ -21,6 +21,20 @@ file after updating to see what changed.
 
 ---
 
+## [1.51.2] - 2026-09-05
+
+### Fixed
+- **Removed emoji from the USB port labels** ("Blue Port"/"Black Port"/"Unknown Port") - they rendered
+  as blank boxes on this station's own kiosk font. The badges showing this text already carry their
+  own color, so nothing is lost.
+
+### Changed
+- **Settings > Drive Management's two panels now visually match** - the port diagram and the drive
+  controls (selector, status, buttons) each sit in their own bordered card of equal height, instead of
+  the controls floating as loose, individually-bordered rows next to one larger boxed diagram.
+
+---
+
 ## [1.51.1] - 2026-09-05
 
 ### Changed
