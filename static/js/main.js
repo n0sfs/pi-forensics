@@ -14448,6 +14448,48 @@ function stopDriveMgmtAutoRefresh() {
     }
 }
 
+// Populates Drive Management's own SMART telemetry grid for whichever drive
+// is selected in its dropdown - a real /api/smart_check call, same endpoint
+// and fields Forensic Acquisition's own telemetry grid already uses
+// (checkSmartTelemetry() above), just written into this card's own dmLbl*
+// ids instead (kept distinct from Acquisition's lbl* ids - both cards can be
+// showing telemetry for two different drives at once, and getElementById()
+// would only ever find the first of two duplicate ids).
+async function fetchDriveManagementSmartInfo(drive) {
+    const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    const healthBadge = document.getElementById('dmLblHealthBadge');
+    if (healthBadge) { healthBadge.className = 'badge bg-secondary d-inline-block mt-1'; healthBadge.textContent = 'CHECKING...'; }
+    try {
+        const res = await fetch('/api/smart_check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ drive })
+        });
+        const data = await res.json();
+        if (data.success) {
+            setTxt('dmLblMediaType', data.media_type || '--');
+            setTxt('dmLblCapacity', data.capacity || '--');
+            setTxt('dmLblModel', data.vendor_model || '--');
+            setTxt('dmLblSerial', data.serial || '--');
+            setTxt('dmLblTemp', data.temperature ? `${data.temperature} °C` : 'N/A');
+            setTxt('dmLblReallocated', data.reallocated_sectors !== undefined ? data.reallocated_sectors : '0');
+            setTxt('dmLblPending', data.pending_sectors !== undefined ? data.pending_sectors : '0');
+            setTxt('dmLblPowerHours', data.power_on_hours ? `${data.power_on_hours} hrs` : 'N/A');
+            if (healthBadge) {
+                healthBadge.className = (data.healthy ? 'badge bg-success' : 'badge bg-danger') + ' d-inline-block mt-1';
+                healthBadge.textContent = data.healthy ? 'PASSED' : 'FAILING';
+            }
+        } else {
+            ['dmLblMediaType', 'dmLblCapacity', 'dmLblModel', 'dmLblSerial'].forEach((id) => setTxt(id, '--'));
+            setTxt('dmLblTemp', 'N/A'); setTxt('dmLblPowerHours', 'N/A');
+            setTxt('dmLblReallocated', '--'); setTxt('dmLblPending', '--');
+            if (healthBadge) { healthBadge.className = 'badge bg-secondary d-inline-block mt-1'; healthBadge.textContent = 'UNKNOWN'; }
+        }
+    } catch (err) {
+        if (healthBadge) { healthBadge.className = 'badge bg-secondary d-inline-block mt-1'; healthBadge.textContent = 'UNKNOWN'; }
+    }
+}
+
 // Shows the write-block status of whichever drive is selected in Drive
 // Management's own dropdown - deliberately a fresh /api/system_info lookup
 // for that specific drive, not the global isWriteBlockActive (that reflects
@@ -14458,7 +14500,10 @@ async function refreshDriveManagementStatus() {
     const badge = document.getElementById("driveMgmtWriteBlockBadge");
     const portBadge = document.getElementById("driveMgmtPortBadge");
     const blueNote = document.getElementById("driveMgmtBluePortNote");
+    const telemetryGrid = document.getElementById("driveMgmtTelemetryGrid");
     renderUsbPortDiagram(drive || null);
+    if (telemetryGrid) telemetryGrid.style.display = drive ? '' : 'none';
+    if (drive) fetchDriveManagementSmartInfo(drive);
     if (!badge) return;
 
     const portClass = sel?.selectedOptions?.[0]?.dataset?.portClass || '';

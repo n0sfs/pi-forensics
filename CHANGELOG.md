@@ -21,6 +21,17 @@ file after updating to see what changed.
 
 ---
 
+## [1.53.0] - 2026-09-05
+
+### Added
+- **Drive Management is now a single unified card with real SMART telemetry.** The port diagram and
+  drive controls no longer sit in two separately-bordered boxes - it's one continuous panel. Selecting
+  a drive now shows the same live SMART health data Forensic Acquisition's own telemetry grid shows
+  (media type, capacity, health pass/fail, model, serial, temperature, reallocated/pending sectors,
+  power-on hours), right in Drive Management, without needing to switch tabs to check drive health.
+
+---
+
 ## [1.52.0] - 2026-09-05
 
 ### Added
