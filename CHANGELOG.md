@@ -21,6 +21,22 @@ file after updating to see what changed.
 
 ---
 
+## [1.55.0] - 2026-09-05
+
+### Added
+- **Auto Analyze now covers Android mobile evidence, not just disk images.** Right-clicking an
+  already-acquired Android pull folder, an Android Backup File (`.ab`), or an `adb bugreport` archive
+  and choosing "Auto Analyze..." now offers a curated set of analysis steps tailored to what that
+  specific item actually is - a pull folder gets Hash Manifest + ALEAPP/iLEAPP + MVT spyware scan by
+  default (with an opt-in best-effort WhatsApp decrypt-and-parse and Geolocation Export), a `.ab` file
+  gets Extract + Parse + MVT, and a bugreport archive gets its own deep-parse step. Every step runs
+  through the same shared background-job/progress system every other tool already uses, and a step
+  that genuinely doesn't apply to the selected item (e.g. Hash Manifest against a `.ab` file) is
+  clearly reported as "not applicable" rather than silently skipped or falsely marked failed.
+- MVT spyware-scan results launched from Auto Analyze are now recorded into the case's analysis index,
+  so they show up in Reporting's per-exhibit summary like every other analysis tool's output already
+  does - previously an MVT scan's results were only ever visible in the scan's own output folder.
+
 ## [1.54.0] - 2026-09-05
 
 ### Added
