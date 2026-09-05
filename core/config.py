@@ -397,6 +397,47 @@ def get_app_version():
         return "0.0.0-unknown"
 
 
+# Real board identification, Raspberry Pi's own documented mechanism (a
+# real /proc/device-tree/model file, confirmed live on the deployed
+# station - "Raspberry Pi 4 Model B Rev 1.5\x00", note the trailing NUL
+# byte the device tree convention always includes, a real gotcha this
+# function strips). Used by Settings > Drive Management's USB port
+# diagram (2026-09-05) to decide whether to show it at all - the port-
+# to-color mapping core/paths.py's classify_usb_port()/describe_usb_port()
+# use was only ever empirically verified against a real Pi 4B; a
+# different model (Pi 5, Pi 3, Zero, a plain dev machine with no device
+# tree at all) has a genuinely different physical port layout and gets an
+# honest "not verified for this board" state instead of a silently wrong
+# diagram - see USB_PORT_DIAGRAM_SUPPORTED_MODEL_SUBSTRING below.
+PI_MODEL_FILE = "/proc/device-tree/model"
+USB_PORT_DIAGRAM_SUPPORTED_MODEL_SUBSTRING = "Raspberry Pi 4"
+
+
+def detect_pi_model():
+    """The real board model string (e.g. 'Raspberry Pi 4 Model B Rev
+    1.5'), or None if this isn't a Raspberry Pi at all (no device-tree
+    model file - a plain dev machine, a different SBC) or the file
+    couldn't be read for any reason. Never raises."""
+    try:
+        with open(PI_MODEL_FILE, 'r') as f:
+            model = f.read().strip('\x00').strip()
+        return model or None
+    except Exception:
+        return None
+
+
+def usb_port_diagram_supported():
+    """True only when the detected board is confirmed to be a Raspberry
+    Pi 4 - the one model this app's own USB port classification has
+    actually been empirically verified against (see core/paths.py's
+    classify_usb_port() docstring). Fails closed: an unknown/undetected
+    board, or any other real Pi model, returns False rather than showing
+    a diagram/labels that would very possibly be wrong for that board's
+    own real physical port layout."""
+    model = detect_pi_model()
+    return bool(model) and USB_PORT_DIAGRAM_SUPPORTED_MODEL_SUBSTRING in model
+
+
 # Static, shipped-with-the-repo documentation viewable from inside the app
 # (Help > User Manual/Quick-Start, Settings > Diagnostics > Release Notes) -
 # so an examiner on an air-gapped station can read them without leaving the

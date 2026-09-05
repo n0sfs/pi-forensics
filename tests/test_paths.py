@@ -162,6 +162,101 @@ def test_is_bulk_tool_output_dir(name, expected):
     assert paths.is_bulk_tool_output_dir(name) == expected
 
 
+def _real_sda_path(subport):
+    """The exact real sysfs shape confirmed live on the deployed Pi 4B
+    (2026-09-05, one real USB drive physically moved through all 4 ports
+    in turn) for a device on bus1's own internal 4-port hub."""
+    return (f"/devices/platform/scb/fd500000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0/"
+            f"usb1/1-1/1-1.{subport}/1-1.{subport}:1.0/host0/target0:0:0/0:0:0:0/block/sda")
+
+
+@pytest.mark.parametrize("subport,expected", [
+    (1, "blue"),   # confirmed live: top blue port
+    (2, "blue"),   # confirmed live: bottom blue port
+    (3, "black"),  # confirmed live: top black port
+    (4, "black"),  # confirmed live: bottom black port
+])
+def test_classify_usb_port_matches_the_real_verified_pi4b_mapping(monkeypatch, subport, expected):
+    monkeypatch.setattr(paths.os.path, "realpath", lambda p: _real_sda_path(subport))
+    assert paths.classify_usb_port("/dev/sda") == expected
+
+
+def test_classify_usb_port_anything_on_the_superspeed_bus_is_always_blue():
+    # On this board the SuperSpeed root hub (usb2) is only ever wired to
+    # the 2 blue ports at all - a genuine SuperSpeed negotiation is
+    # unconditionally blue with no sub-port lookup needed.
+    import core.paths as _paths
+    real_path = ("/devices/platform/scb/fd500000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0/"
+                 "usb2/2-1/2-1:1.0/host0/target0:0:0/0:0:0:0/block/sda")
+    orig = _paths.os.path.realpath
+    _paths.os.path.realpath = lambda p: real_path
+    try:
+        assert _paths.classify_usb_port("/dev/sda") == "blue"
+    finally:
+        _paths.os.path.realpath = orig
+
+
+def test_classify_usb_port_fails_closed_behind_an_intermediate_hub(monkeypatch):
+    # A device plugged into a USB hub that's itself plugged into a
+    # physical port adds an extra path segment (e.g. "1-1.3.1" instead of
+    # "1-1.3") - the anchored regex must not mis-parse this as port 3,
+    # since an examiner-attached hub genuinely changes what's plugged in
+    # where; fail closed ('unknown', never 'black') rather than guess.
+    hub_path = ("/devices/platform/scb/fd500000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0/"
+                "usb1/1-1/1-1.3/1-1.3.1/1-1.3.1:1.0/host0/target0:0:0/0:0:0:0/block/sda")
+    monkeypatch.setattr(paths.os.path, "realpath", lambda p: hub_path)
+    assert paths.classify_usb_port("/dev/sda") == "unknown"
+
+
+def test_classify_usb_port_fails_closed_for_an_unrecognized_topology(monkeypatch):
+    monkeypatch.setattr(paths.os.path, "realpath", lambda p: "/some/completely/different/shape")
+    assert paths.classify_usb_port("/dev/sda") == "unknown"
+
+
+def test_classify_usb_port_fails_closed_when_the_device_does_not_exist(monkeypatch):
+    # os.path.realpath() on a nonexistent path just returns it unchanged
+    # (no symlink to resolve) - must not be mistaken for a real match.
+    monkeypatch.setattr(paths.os.path, "realpath", lambda p: p)
+    assert paths.classify_usb_port("/dev/sda") == "unknown"
+
+
+@pytest.mark.parametrize("subport,expected_color", [
+    (1, "blue"), (2, "blue"), (3, "black"), (4, "black"),
+])
+def test_describe_usb_port_returns_both_color_and_specific_port_index(monkeypatch, subport, expected_color):
+    monkeypatch.setattr(paths.os.path, "realpath", lambda p: _real_sda_path(subport))
+    info = paths.describe_usb_port("/dev/sda")
+    assert info == {"color": expected_color, "port_index": str(subport)}
+
+
+def test_describe_usb_port_leaves_port_index_none_on_the_superspeed_bus():
+    # The specific bus2-root-port-to-physical-connector correspondence was
+    # never itself empirically confirmed (no genuine SuperSpeed-capable
+    # drive was available) - color is still confidently 'blue' (bus2 is
+    # only ever reachable from a blue port at all), but a specific slot
+    # must never be guessed.
+    import core.paths as _paths
+    real_path = ("/devices/platform/scb/fd500000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0/"
+                 "usb2/2-1/2-1:1.0/host0/target0:0:0/0:0:0:0/block/sda")
+    orig = _paths.os.path.realpath
+    _paths.os.path.realpath = lambda p: real_path
+    try:
+        assert _paths.describe_usb_port("/dev/sda") == {"color": "blue", "port_index": None}
+    finally:
+        _paths.os.path.realpath = orig
+
+
+def test_describe_usb_port_returns_none_for_an_invalid_device_path():
+    assert paths.describe_usb_port("/dev/sda1") is None
+    assert paths.describe_usb_port(None) is None
+
+
+def test_classify_usb_port_returns_none_for_an_invalid_device_path():
+    assert paths.classify_usb_port("/dev/sda1") is None  # a partition, not a whole disk
+    assert paths.classify_usb_port("/dev/sda; rm -rf /") is None
+    assert paths.classify_usb_port(None) is None
+
+
 def test_is_valid_block_device_whitelist():
     assert paths.is_valid_block_device("/dev/sda")
     assert paths.is_valid_block_device("/dev/nvme0n1")

@@ -511,7 +511,11 @@ const FAQ_GROUPS = [
         items: [
             {
                 q: "What does the write-blocker do, and should I leave it on?",
-                a: "It forces the source drive into read-only mode at the kernel level, so nothing - this app or anything else - can accidentally modify the original evidence. Leave it on for any drive you're imaging from. You'd only turn it off for a destination drive you're writing an image to. Settings > Drive Management lets you check or toggle it per-drive without going through the Forensic Acquisition tab."
+                a: "It forces the source drive into read-only mode at the kernel level, so nothing - this app or anything else - can accidentally modify the original evidence. Leave it on for any drive you're imaging from. You'd only turn it off for a destination drive you're writing an image to. Settings > Drive Management lets you check or toggle it per-drive without going through the Forensic Acquisition tab - but only for a drive in one of the station's 2 standard (black) USB ports; the 2 USB 3.0 (blue) ports are permanently evidence-only and can never be unlocked by this app, on any tab, regardless of what's clicked."
+            },
+            {
+                q: "Why won't the drive I want to write to unlock?",
+                a: "It's almost certainly in one of the station's 2 blue (USB 3.0) ports - this app has no way to write-unlock a drive there at all, by design, so those 2 ports stay permanently evidence-only. Move the drive to one of the 2 black (USB 2.0) ports instead; Settings > Drive Management shows which color port a selected drive is actually in (and, on a Raspberry Pi 4, a small schematic diagram of all 4 ports with the connected/selected one highlighted)."
             },
             {
                 q: "Which format should I use - dd, E01, or AFF?",
@@ -14245,14 +14249,138 @@ document.addEventListener('click', ev => {
     resultsEl.style.display = 'none';
 });
 
+// --- Drive Management's USB port diagram (2026-09-05) ---
+// An original, schematic SVG (not a copied product photo - see
+// core/paths.py's describe_usb_port() docstring for the real, live-
+// verified Pi 4B port-to-color/index mapping this renders) showing the
+// station's 4 rear USB ports, grouped by color, with whichever port(s)
+// currently hold a connected drive labeled, and the drive selected in
+// the dropdown above highlighted with a pulsing ring.
+//
+// piHardwareInfoCache is fetched once and reused - the diagram is only
+// ever shown at all when usb_port_diagram_supported is true (a Raspberry
+// Pi 4, confirmed via /proc/device-tree/model server-side) - any other
+// board (a different real Pi model, an undetected board) gets the
+// diagram hidden entirely rather than shown with an unverified layout.
+let piHardwareInfoCache = null;
+
+async function fetchPiHardwareInfo() {
+    if (piHardwareInfoCache) return piHardwareInfoCache;
+    try {
+        const res = await fetch('/api/system/pi_hardware_info');
+        piHardwareInfoCache = await res.json();
+    } catch (err) {
+        piHardwareInfoCache = { pi_model: null, usb_port_diagram_supported: false };
+    }
+    return piHardwareInfoCache;
+}
+
+const USB_PORT_DIAGRAM_SLOTS = [
+    { index: '1', color: 'blue', x: 60 },
+    { index: '2', color: 'blue', x: 60 },
+    { index: '3', color: 'black', x: 260 },
+    { index: '4', color: 'black', x: 260 },
+];
+// Two ports per color pair, stacked - matches the real, live-confirmed
+// physical arrangement (2026-09-05: a real drive moved through all 4
+// ports in turn), even though this diagram deliberately doesn't assert
+// which side (left/right) each color pair sits on relative to the rest
+// of the board - that specific spatial fact was never itself confirmed,
+// only which sub-port index is which color/position within its own pair.
+const USB_PORT_SLOT_Y = { '1': 46, '2': 100, '3': 46, '4': 100 };
+
+function escapeXmlForSvg(str) {
+    return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function buildUsbPortDiagramSvg(drives, selectedDevicePath) {
+    const bySlot = {};
+    let ambiguousBlueDrive = null; // a connected drive confirmed 'blue' but not a specific slot (true SuperSpeed - see describe_usb_port())
+    (drives || []).forEach((d) => {
+        if (d.port_index) {
+            bySlot[d.port_index] = d;
+        } else if (d.port_class === 'blue') {
+            ambiguousBlueDrive = d;
+        }
+    });
+
+    const rects = USB_PORT_DIAGRAM_SLOTS.map((slot) => {
+        const y = USB_PORT_SLOT_Y[slot.index];
+        const drive = bySlot[slot.index];
+        const isSelected = !!(drive && selectedDevicePath && drive.device === selectedDevicePath);
+        const fill = slot.color === 'blue' ? '#2563eb' : '#475569';
+        const stroke = isSelected ? 'var(--accent-cyan, #00f2fe)' : (drive ? '#e2e8f0' : '#0f172a');
+        const rectClass = isSelected ? 'usb-port-rect-selected' : '';
+        const label = `Port ${slot.index}`;
+        let occupantLine = '';
+        if (drive) {
+            occupantLine = `<text x="${slot.x + 70}" y="${y + 28}" text-anchor="middle" font-size="10" fill="#f1f5f9">${escapeXmlForSvg(drive.name || drive.device)}</text>`;
+        } else if (ambiguousBlueDrive && slot.color === 'blue') {
+            occupantLine = `<text x="${slot.x + 70}" y="${y + 28}" text-anchor="middle" font-size="9" fill="#cbd5e1" font-style="italic">connected (exact port unconfirmed)</text>`;
+        }
+        return `
+            <rect x="${slot.x}" y="${y}" width="140" height="40" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="${isSelected ? 3 : 1.5}" class="${rectClass}"></rect>
+            <text x="${slot.x + 70}" y="${y + 15}" text-anchor="middle" font-size="11" font-weight="600" fill="#ffffff">${label}</text>
+            ${occupantLine}
+        `;
+    }).join('');
+
+    return `
+        <svg viewBox="0 0 460 190" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:460px;height:auto;">
+            <rect x="6" y="6" width="448" height="178" rx="10" fill="#0f172a" stroke="#2e364f" stroke-width="1.5"></rect>
+            <text x="20" y="26" font-size="11" fill="#94a3b8" font-weight="600">Raspberry Pi 4 - rear USB ports (schematic)</text>
+            <text x="130" y="150" text-anchor="middle" font-size="11" fill="#93c5fd" font-weight="600">USB 3.0</text>
+            <text x="130" y="164" text-anchor="middle" font-size="9" fill="#93c5fd">Evidence-Only - Always Locked</text>
+            <text x="330" y="150" text-anchor="middle" font-size="11" fill="#cbd5e1" font-weight="600">USB 2.0</text>
+            <text x="330" y="164" text-anchor="middle" font-size="9" fill="#cbd5e1">Utility - Unlockable</text>
+            ${rects}
+        </svg>
+    `;
+}
+
+async function renderUsbPortDiagram(selectedDevicePath) {
+    const wrap = document.getElementById('driveMgmtPortDiagramWrap');
+    const host = document.getElementById('driveMgmtPortDiagramSvgHost');
+    if (!wrap || !host) return;
+    const info = await fetchPiHardwareInfo();
+    if (!info.usb_port_diagram_supported) {
+        wrap.style.display = 'none';
+        return;
+    }
+    wrap.style.display = '';
+    host.innerHTML = buildUsbPortDiagramSvg(currentDrivesList, selectedDevicePath);
+}
+
 // Shows the write-block status of whichever drive is selected in Drive
 // Management's own dropdown - deliberately a fresh /api/system_info lookup
 // for that specific drive, not the global isWriteBlockActive (that reflects
 // whatever drive Acquisition has selected, which may be a different drive).
 async function refreshDriveManagementStatus() {
-    const drive = document.getElementById("ejectDriveSelect")?.value;
+    const sel = document.getElementById("ejectDriveSelect");
+    const drive = sel?.value;
     const badge = document.getElementById("driveMgmtWriteBlockBadge");
+    const portBadge = document.getElementById("driveMgmtPortBadge");
+    const blueNote = document.getElementById("driveMgmtBluePortNote");
+    renderUsbPortDiagram(drive || null);
     if (!badge) return;
+
+    const portClass = sel?.selectedOptions?.[0]?.dataset?.portClass || '';
+    if (portBadge) {
+        if (!drive) {
+            portBadge.className = 'badge bg-secondary';
+            portBadge.textContent = '-';
+        } else if (portClass === 'black') {
+            portBadge.className = 'badge bg-dark';
+            portBadge.textContent = usbPortLabel('black');
+        } else {
+            // 'blue' or 'unknown' - both are fail-closed/evidence-only,
+            // matching the backend's own posture (see classify_usb_port()).
+            portBadge.className = 'badge bg-primary';
+            portBadge.textContent = usbPortLabel(portClass);
+        }
+    }
+    if (blueNote) blueNote.style.display = (drive && portClass !== 'black') ? '' : 'none';
+
     if (!drive) {
         badge.className = 'badge bg-secondary';
         badge.textContent = 'Select a drive';
@@ -14306,22 +14434,39 @@ async function toggleWriteBlockForSelectedDrive() {
     }
 }
 
+// USB port classification (2026-09-05) - the station's 2 blue (USB 3.0)
+// ports are permanently evidence-only (this app has no way to write-
+// unlock a drive there, ever); only the 2 black (USB 2.0) ports can ever
+// be write-unlocked, e.g. for a Live Collection USB build's destination.
+// See core/paths.py's classify_usb_port() for the real, empirically-
+// verified Pi 4B port mapping this reflects - 'unknown' covers a
+// different Pi model or an unrecognized topology, and is always treated
+// like blue (never eligible for unlock), matching the backend's own
+// fail-closed posture.
+function usbPortLabel(portClass) {
+    if (portClass === 'blue') return '🔵 Blue Port (Evidence-Only)';
+    if (portClass === 'black') return '⬛ Black Port (Utility)';
+    return '❓ Unknown Port';
+}
+
 async function refreshDrives() {
     try {
         const res = await fetch('/api/drives');
         currentDrivesList = await res.json();
-        
+
         const driveSelects = document.querySelectorAll(".drive-select");
         driveSelects.forEach(selectEl => {
             selectEl.innerHTML = '<option value="">-- Choose Target Source Drive --</option>';
             currentDrivesList.forEach(dev => {
                 const opt = document.createElement("option");
                 opt.value = dev.device;
-                opt.innerText = `${dev.device} - [${(dev.transport||'usb').toUpperCase()}] ${dev.model} (${dev.size})`;
+                opt.innerText = `${dev.device} - [${(dev.transport||'usb').toUpperCase()}] ${dev.model} (${dev.size}) - ${usbPortLabel(dev.port_class)}`;
+                opt.dataset.portClass = dev.port_class || '';
                 selectEl.appendChild(opt);
             });
         });
         checkSmartTelemetry();
+        refreshDriveManagementStatus();
         populateLiveCollectionDriveSelects();
     } catch (err) {}
 }
@@ -14344,10 +14489,11 @@ function populateLiveCollectionDriveSelects() {
         candidates.forEach((dev) => {
             const opt = document.createElement('option');
             opt.value = dev.device;
-            opt.innerText = `${dev.device} - [${(dev.transport || 'usb').toUpperCase()}] ${dev.model} (${dev.size})`;
+            opt.innerText = `${dev.device} - [${(dev.transport || 'usb').toUpperCase()}] ${dev.model} (${dev.size}) - ${usbPortLabel(dev.port_class)}`;
             opt.dataset.model = dev.model;
             opt.dataset.serial = dev.serial;
             opt.dataset.size = dev.size;
+            opt.dataset.portClass = dev.port_class || '';
             sel.appendChild(opt);
         });
         if (candidates.some((d) => d.device === prevValue)) sel.value = prevValue;
@@ -14369,10 +14515,24 @@ function onLiveCollectionBuildDriveSelect() {
     if (infoEl) {
         infoEl.innerHTML = `<strong>Model:</strong> ${escapeHtmlForPopup(opt.dataset.model || 'Unknown')} &nbsp; ` +
             `<strong>Serial:</strong> ${escapeHtmlForPopup(opt.dataset.serial || 'Unknown')} &nbsp; ` +
-            `<strong>Size:</strong> ${escapeHtmlForPopup(opt.dataset.size || 'Unknown')}`;
+            `<strong>Size:</strong> ${escapeHtmlForPopup(opt.dataset.size || 'Unknown')} &nbsp; ` +
+            `<strong>Port:</strong> ${escapeHtmlForPopup(usbPortLabel(opt.dataset.portClass))}`;
     }
     const hint = document.getElementById('liveCollectionBuildConfirmHint');
-    if (hint) hint.innerText = `Type WIPE ${opt.value} below to enable Build.`;
+    if (opt.dataset.portClass !== 'black') {
+        // The station's 2 blue ports are permanently evidence-only - this
+        // app has no way to unlock/wipe a drive there at all, regardless
+        // of what's typed. Confirmed authoritatively server-side too (see
+        // core/paths.py's classify_usb_port() / _unlock_device_for_write()
+        // in routes/acquisition.py) - this is a fast, clear frontend
+        // signal, not the real security boundary.
+        if (hint) hint.innerText = `This drive is not in one of the station's 2 black (utility) USB ports - ` +
+            `move it to a black port to build a Live Collection USB on it.`;
+        if (confirmInput) confirmInput.disabled = true;
+    } else {
+        if (hint) hint.innerText = `Type WIPE ${opt.value} below to enable Build.`;
+        if (confirmInput) confirmInput.disabled = false;
+    }
 }
 
 // A materially stronger confirm gate than anything else in this app (see
@@ -14384,6 +14544,15 @@ function checkLiveCollectionBuildConfirmText() {
     const input = document.getElementById('liveCollectionBuildConfirmText');
     const btn = document.getElementById('btnLiveCollectionBuild');
     if (!sel || !input || !btn) return;
+    const opt = sel.selectedOptions[0];
+    if (opt && opt.dataset.portClass !== 'black') {
+        // Never enabled for a non-black-port drive, no matter what's
+        // typed - the real backend gate (routes/acquisition.py's
+        // start_build_collection_usb()) enforces this too; this is
+        // just the frontend not pretending it's possible.
+        btn.disabled = true;
+        return;
+    }
     const expected = `WIPE ${sel.value}`;
     btn.disabled = !sel.value || input.value !== expected;
 }

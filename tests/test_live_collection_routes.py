@@ -95,7 +95,12 @@ def test_start_build_rejects_when_a_job_is_already_active(client, no_op_thread):
     assert "already running" in res.get_json()["error"]
 
 
-def test_start_build_accepts_a_valid_device_and_claims_the_job_slot(client, no_op_thread):
+def test_start_build_accepts_a_valid_device_and_claims_the_job_slot(client, no_op_thread, monkeypatch):
+    # Live Collection can only ever build onto a confirmed black-port
+    # device (2026-09-05) - this test is about job-slot claiming, not
+    # port classification, so the port check is mocked to "black" here;
+    # test_usb_port_write_block.py covers the port-refusal path itself.
+    monkeypatch.setattr(acq, "classify_usb_port", lambda device: "black")
     res = client.post("/api/live_collection/start_build", json={
         "device": "/dev/sdb",
         "device_info": {"model": "Test USB", "serial": "ABC123", "size": "16 GB"},
@@ -108,6 +113,28 @@ def test_start_build_accepts_a_valid_device_and_claims_the_job_slot(client, no_o
 def test_start_build_rejects_missing_device(client, no_op_thread):
     res = client.post("/api/live_collection/start_build", json={})
     assert res.status_code == 400
+
+
+def test_start_build_rejects_a_confirmed_blue_port_device(client, no_op_thread, monkeypatch):
+    # The station's 2 blue (USB 3.0) ports are evidence-only and can never
+    # be used for a Live Collection USB build (2026-09-05) - refused
+    # before the job slot is even claimed for real.
+    monkeypatch.setattr(acq, "classify_usb_port", lambda device: "blue")
+    res = client.post("/api/live_collection/start_build", json={"device": "/dev/sdb"})
+    assert res.status_code == 400
+    body = res.get_json()
+    assert body["success"] is False
+    assert "black" in body["error"].lower()
+    assert jobs.current_job["active"] is False
+
+
+def test_start_build_rejects_an_unclassifiable_device(client, no_op_thread, monkeypatch):
+    # Fail closed - an unrecognized port topology is treated like blue,
+    # never like a confirmed black port.
+    monkeypatch.setattr(acq, "classify_usb_port", lambda device: "unknown")
+    res = client.post("/api/live_collection/start_build", json={"device": "/dev/sdb"})
+    assert res.status_code == 400
+    assert jobs.current_job["active"] is False
 
 
 def test_scan_rejects_invalid_device(client):
@@ -268,7 +295,7 @@ class TestBuildWorkerUnmountWarningHandling:
 
     def _run_build(self, monkeypatch, tmp_path, unmount_return):
         monkeypatch.setattr(acq, "check_existing_collection_volume", lambda device: {"already_prepared": True, "reason": "test fast-path"})
-        monkeypatch.setattr(acq, "_unlock_device_for_write", lambda device: None)
+        monkeypatch.setattr(acq, "_unlock_device_for_write", lambda device: (True, None))
         monkeypatch.setattr(acq, "_relock_device_after_write", lambda device: None)
         monkeypatch.setattr(acq, "unmount_all_partitions", lambda device: None)
         monkeypatch.setattr(acq, "mount_collection_partition", lambda *a, **k: {"success": True, "error": None})
@@ -335,7 +362,7 @@ class TestBuildWorkerChainOfCustodyLoggingFromBackgroundThread:
 
     def _run_build(self, monkeypatch, tmp_path, source_ip, user):
         monkeypatch.setattr(acq, "check_existing_collection_volume", lambda device: {"already_prepared": True, "reason": "test fast-path"})
-        monkeypatch.setattr(acq, "_unlock_device_for_write", lambda device: None)
+        monkeypatch.setattr(acq, "_unlock_device_for_write", lambda device: (True, None))
         monkeypatch.setattr(acq, "_relock_device_after_write", lambda device: None)
         monkeypatch.setattr(acq, "unmount_all_partitions", lambda device: None)
         monkeypatch.setattr(acq, "mount_collection_partition", lambda *a, **k: {"success": True, "error": None})
