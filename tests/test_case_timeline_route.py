@@ -153,6 +153,32 @@ def test_apple_export_types_get_the_same_category_as_their_native_counterpart(cl
     assert by_activity["apple_contact"] == "Communications"
 
 
+def test_android_mms_and_ab_backup_sms_mms_get_communications_category(client, evidence_root):
+    # Real bug found live (2026-09-05, a code-grounded mobile-forensics
+    # review): android_mms_message (native rooted parser) and both .ab
+    # (Android Backup File) - sourced SMS/MMS types were missing from the
+    # category dict entirely, even though their siblings android_sms_
+    # message/android_call_log were already correctly mapped - a real MMS
+    # message fell into the generic "Device & System" bucket instead of
+    # Communications, alongside its own SMS/call-log messages.
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "mmssms.db")}, [
+        {"artifact_type": "android_mms_message", "title": "Inbox - 5551234567", "url": "", "value": "hi",
+         "timestamp": 1786784100.0, "extra": {}},
+    ])
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "backup.ab")}, [
+        {"artifact_type": "android_ab_sms_message", "title": "text", "url": None, "value": "hi",
+         "timestamp": 1786784200.0, "extra": {}},
+        {"artifact_type": "android_ab_mms_message", "title": "mms", "url": None, "value": "hi",
+         "timestamp": 1786784300.0, "extra": {}},
+    ])
+    res = client.get(f"/api/cases/timeline?case_folder={case_folder}")
+    by_activity = {r["activity"]: r["category"] for r in res.get_json()["events"] if r["source"] == "parsed_artifact"}
+    assert by_activity["android_mms_message"] == "Communications"
+    assert by_activity["android_ab_sms_message"] == "Communications"
+    assert by_activity["android_ab_mms_message"] == "Communications"
+
+
 def test_missing_case_folder_returns_a_clean_error(client, evidence_root):
     res = client.get(f"/api/cases/timeline?case_folder={os.path.join(evidence_root, 'not_a_real_case')}")
     assert res.status_code == 400

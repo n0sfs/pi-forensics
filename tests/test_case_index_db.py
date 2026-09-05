@@ -608,3 +608,104 @@ def test_correlate_contacts_returns_the_empty_shape_for_a_case_never_indexed(cas
     result = case_index_db.correlate_contacts(case_folder)
     assert result == {"contacts_indexed_count": 0, "unresolved_communication_count": 0,
                        "truncated": False, "contacts": []}
+
+
+# --- 2026-09-05 fixes: companion-app + .ab-backup-sourced Android types
+# were confirmed (via a real code-grounded review) to have real, correct
+# extra_json shapes but were never wired into either correlation dict -
+# not a deliberate scope decision like the leapp_* exclusion above, an
+# unaddressed gap. ---
+
+def _companion_contact_row(display_name, mimetype, data1):
+    return {"artifact_type": "android_companion_contact", "title": display_name, "url": "",
+            "value": data1, "timestamp": None,
+            "extra": {"mimetype": mimetype, "data1": data1}}
+
+
+def test_correlate_contacts_includes_companion_sms_contact_and_call_log_types(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "companion_contacts.json"),
+        [_companion_contact_row("Jane Doe", "vnd.android.cursor.item/phone_v2", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "companion_sms.json"),
+        [_comm_record("android_companion_sms_message", "address", "(555) 123-4567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "companion_calllog.json"),
+        [_comm_record("android_companion_call_log_entry", "number", "555-123-4567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 1
+    contact = result["contacts"][0]
+    assert contact["normalized_number"] == "5551234567"
+    assert contact["contact_sources"] == ["android_companion_contact"]
+    assert contact["communication_counts"] == {"SMS": 1, "Call": 1}
+    assert contact["total_communications"] == 2
+    assert result["unresolved_communication_count"] == 0
+
+
+def test_correlate_contacts_companion_contact_only_treats_phone_mimetype_rows_as_a_number(case_folder):
+    # A companion-contact record is one row per ContactsContract.Data item -
+    # an email-type row's data1 must never be silently misread as a phone
+    # number just because it shares the single_key "data1" with a real
+    # phone-type row.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "companion_contacts.json"),
+        [_companion_contact_row("Jane Doe", "vnd.android.cursor.item/email_v2", "jane@example.com")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 0
+    assert result["contacts"] == []
+
+
+def test_correlate_contacts_includes_native_mms_and_ab_backup_sms_mms_types(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        [_comm_record("android_mms_message", "counterpart", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "backup1.ab"),
+        [_comm_record("android_ab_sms_message", "address", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "backup2.ab"),
+        [{"artifact_type": "android_ab_mms_message", "title": "mms", "url": None, "value": "hi",
+          "timestamp": 1700000000.0, "extra": {"addresses": ["+15551234567"]}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 1
+    contact = result["contacts"][0]
+    assert contact["communication_counts"] == {"MMS": 2, "SMS": 1}
+    assert contact["total_communications"] == 3
+    assert result["unresolved_communication_count"] == 0
+
+
+def test_correlate_contacts_resolves_each_participant_of_a_group_mms_separately(case_folder):
+    # A real correctness risk this fix specifically guards against: naively
+    # normalize_phone_number()-ing a comma-joined "addr1, addr2" string (or
+    # a genuine list) as one blob glues two real numbers into one bogus,
+    # coincidentally-plausible-length digit string instead of crediting
+    # each real participant.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Alice", phones=["+15551111111"]),
+         _contact_record("android_contact", "Bob", phones=["+15552222222"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        # android_mms_message's own real comma-joined convention
+        [_comm_record("android_mms_message", "counterpart", "+15551111111, +15552222222")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "backup.ab"),
+        # android_ab_mms_message's own real genuine-list shape
+        [{"artifact_type": "android_ab_mms_message", "title": "mms", "url": None, "value": "hi",
+          "timestamp": 1700000001.0, "extra": {"addresses": ["+15551111111", "+15552222222"]}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 2
+    by_number = {c["normalized_number"]: c for c in result["contacts"]}
+    assert set(by_number.keys()) == {"5551111111", "5552222222"}
+    # Each of the 2 comm rows credited BOTH real participants once each -
+    # never one glued-together bogus number, never only the first/last.
+    assert by_number["5551111111"]["total_communications"] == 2
+    assert by_number["5552222222"]["total_communications"] == 2
+    assert result["unresolved_communication_count"] == 0

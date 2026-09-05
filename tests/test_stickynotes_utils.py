@@ -7,6 +7,8 @@ import sqlite3
 import shutil
 import datetime
 
+import pytest
+
 import core.stickynotes_utils as snu
 
 _DOTNET_TICKS_EPOCH_OFFSET_SECONDS = 62_135_596_800
@@ -43,7 +45,17 @@ def test_dotnet_ticks_to_unix_is_genuinely_different_math_from_filetime():
     """Direct regression test: .NET DateTime.Ticks (epoch 0001-01-01) and
     Windows FILETIME (epoch 1601-01-01) share the same 100ns-tick UNIT but
     have a completely different offset constant - the same raw tick value
-    must produce two different real answers under the two conversions."""
+    must produce two different real answers under the two conversions.
+
+    Skip guard needed: core.registry_utils (imported here only to reuse its
+    filetime_to_unix() for the cross-check) hard-imports the `Registry`
+    package at module level. Same, previously-undetected gap already found
+    and fixed for test_recyclebin_utils.py/test_usnjrnl_utils.py/
+    test_mobile_artifacts.py/test_windows_activity_utils.py - this one is a
+    function-scoped import, not module-scoped, so it only ever broke this
+    one test (not the whole file's collection) when python-registry is
+    absent; found live during a 2026-09-05 review."""
+    pytest.importorskip("Registry.Registry", reason="python-registry not installed (needed transitively via core.registry_utils.filetime_to_unix)")
     import core.registry_utils as ru
     raw_ticks = 638_600_000_000_000_000  # an arbitrary large real-looking tick count
     dotnet_result = snu.dotnet_ticks_to_unix(raw_ticks)
