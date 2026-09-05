@@ -596,6 +596,10 @@ const FAQ_GROUPS = [
                 a: "Yes - right-click a folder (or an acquired image) in File Explorer and choose \"Parse Browser Artifacts\" to extract history, bookmarks, downloads, and cookies from a Chrome/Chromium- or Firefox-family profile. Results show up under File Views' \"Parsed Artifacts\" category, alongside anything found by the Registry hive, Event Log (.evtx), Prefetch, Recycle Bin, Linux artifact, mobile chat/app, and .lnk shortcut parsers (also reached from the right-click menu). Safari isn't supported - its data lives inside an iOS/macOS backup rather than a portable profile folder."
             },
             {
+                q: "An Android device's data partition is F2FS-formatted - can I browse that?",
+                a: "Yes, but Sleuth Kit itself has no F2FS driver at all (unlike ext4/NTFS/FAT), so right-clicking an F2FS image or partition offers a different action: \"Mount F2FS Partition & Browse...\" mounts it read-only through the station's own kernel filesystem support instead, then shows it in File Explorer as a normal folder. Enter the partition's byte offset if it's not a whole-image filesystem (0 if it is), Detect to confirm the signature, then Mount & Browse. This is read-only browse/extract/hash only - unlike ext4/NTFS/FAT, F2FS's own on-disk design doesn't let a plain mount reach deleted files, so recovery isn't possible this way."
+            },
+            {
                 q: "What's \"Auto Analyze\" and how is it different from running tools by hand?",
                 a: "Auto Analyze (the top item on File Explorer's right-click menu) detects what kind of evidence you've selected - a Windows disk image, a Linux disk image, a memory image, or a mobile backup - and runs a curated, sensible default set of analysis tools against it in one background job, instead of you running each one individually. It always shows the detected profile for confirmation (or correction) before anything runs, and every tool it runs is still available individually if you'd rather pick and choose."
             },
@@ -778,6 +782,7 @@ const TOOL_REFERENCE_GROUPS = [
         group: "File Explorer & Analysis",
         tools: [
             ["Sleuth Kit (Image Browser)", "Browses the real filesystem inside an acquired image inline, including deleted-but-listed entries, with original names/paths - plus recursive search and a MACB timeline. Right-click an image → \"Browse as Image (Sleuth Kit)\"."],
+            ["bindfs (F2FS partition mounting)", "Sleuth Kit has no F2FS driver at all (common on a rooted Android device's own data partition), so this mounts it read-only through the station's own kernel filesystem support instead and remaps ownership so the mounted files are readable, without ever writing back to the acquired image. Browse/extract/hash only - unlike ext4/NTFS/FAT, deleted-file recovery isn't possible through a plain mount for F2FS's own on-disk design. Right-click an image → \"Mount F2FS Partition & Browse...\"."],
             ["ExifTool", "Reads hidden metadata inside a file - camera info, GPS coordinates, document properties. Select a file, then use the \"Metadata\" tab next to Preview."],
             ["Binwalk", "Looks for other files or filesystems hidden inside a binary - useful for firmware/router images."],
             ["ClamAV", "Scans a file or folder against known malware signatures."],
@@ -4594,6 +4599,7 @@ const CTX_MENU_REAL_FS_ITEMS = [
     // Image & Case
     { id: 'btnBrowseImage', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnUnlockEncVolImage', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
+    { id: 'btnMountF2fs', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnVerifyHash', section: 'ctxSecImageCase', visible: item => !item.is_dir },
     { id: 'btnConvertImageFormat', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnAttachToCase', section: 'ctxSecImageCase', visible: item => !item.is_dir, disabledWhen: () => !activeCase },
@@ -7796,6 +7802,141 @@ async function unlockEncVolImageAndBrowse() {
         await enterExplorerImageFor({ path: data.source_path, name: `${originalName} (${ENC_VOL_TYPE_LABELS[type]} Decrypted)` });
     } catch (err) {
         if (status) status.textContent = "Unlock failed - see console.";
+    }
+}
+
+// --- F2FS partition mounting (2026-09-05). Sleuth Kit/pytsk3 has no F2FS
+// driver at all, so this doesn't feed enterExplorerImageFor() the way
+// BitLocker/LUKS/VeraCrypt's own unlock flow does - the backend mounts the
+// F2FS content through the station's own kernel filesystem support and
+// hands back a real, ordinary case-folder path, which is just plain real-fs
+// browsing (loadExplorer()) with zero new browsing code needed.
+let f2fsMountModalInstance = null;
+
+function openF2fsMountModal() {
+    if (!activeSelectedFile) return;
+    document.getElementById("f2fsImageFileName").textContent = activeSelectedFile.split('/').pop();
+    const offsetEl = document.getElementById("f2fsImageOffset");
+    if (offsetEl) offsetEl.value = '0';
+    const status = document.getElementById("f2fsImageStatus");
+    if (status) status.textContent = "Enter the byte offset of the F2FS partition (0 if this image has no partition table), then click Mount & Browse.";
+    refreshF2fsActiveMountsList();
+
+    if (!f2fsMountModalInstance) {
+        f2fsMountModalInstance = new bootstrap.Modal(document.getElementById('f2fsMountModal'));
+    }
+    f2fsMountModalInstance.show();
+}
+
+async function refreshF2fsActiveMountsList() {
+    const container = document.getElementById("f2fsActiveMountsContainer");
+    if (!container) return;
+    try {
+        const res = await fetch('/api/files/f2fs/status');
+        const data = await res.json();
+        const mounts = (data.mounts || []);
+        if (mounts.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+        const rows = mounts.map(m => {
+            const imgName = document.createElement('span');
+            imgName.textContent = m.image_path.split('/').pop() + (m.offset ? ` (offset ${m.offset})` : '');
+            const row = document.createElement('div');
+            row.className = 'd-flex align-items-center justify-content-between small border-bottom border-secondary py-1';
+            const label = document.createElement('span');
+            label.className = 'font-monospace text-truncate me-2';
+            label.style.maxWidth = '70%';
+            label.textContent = imgName.textContent;
+            label.title = m.mount_point;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-sm btn-outline-danger py-0';
+            btn.textContent = 'Unmount';
+            btn.onclick = () => unmountF2fsMount(m.mount_id);
+            row.appendChild(label);
+            row.appendChild(btn);
+            return row;
+        });
+        container.innerHTML = '<div class="small text-subtle fw-bold mb-1">Active F2FS Mounts:</div>';
+        rows.forEach(r => container.appendChild(r));
+    } catch (err) {
+        // Non-fatal - the mount-a-new-one form still works even if this
+        // convenience list fails to load.
+    }
+}
+
+async function detectF2fsImage() {
+    if (!activeSelectedFile) return;
+    const offset = document.getElementById("f2fsImageOffset")?.value || '0';
+    const status = document.getElementById("f2fsImageStatus");
+    if (status) status.textContent = "Checking for an F2FS signature at this offset...";
+    try {
+        const res = await fetch('/api/files/f2fs/detect_image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: activeSelectedFile, offset })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Detect failed: ${data.error}`;
+            return;
+        }
+        if (status) {
+            status.textContent = data.is_f2fs
+                ? "F2FS signature found at this offset. Click Mount & Browse."
+                : "No F2FS signature found at this offset - double-check the partition byte offset (use the whole-image \"Search Inside Image\"/mmls partition listing if unsure), or try Mount & Browse anyway if you believe this is wrong.";
+        }
+    } catch (err) {
+        if (status) status.textContent = "Detect failed - see console.";
+    }
+}
+
+async function mountF2fsAndBrowse() {
+    if (!activeSelectedFile) return;
+    const offset = document.getElementById("f2fsImageOffset")?.value || '0';
+    const status = document.getElementById("f2fsImageStatus");
+    // Same evidence-must-never-be-modified/output-goes-to-the-active-case
+    // convention as every other analysis tool in this app (runSelectedHashdeep,
+    // runSelectedGeolocationExport, etc.).
+    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile.substring(0, activeSelectedFile.lastIndexOf('/'));
+    if (status) status.textContent = "Mounting (this can take a few seconds)...";
+    try {
+        const res = await fetch('/api/files/f2fs/mount_image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: activeSelectedFile, offset, destination_dir: destinationDir })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            if (status) status.textContent = `Mount failed: ${data.error}`;
+            showToast(`F2FS mount failed: ${data.error}`, 'danger');
+            return;
+        }
+        if (f2fsMountModalInstance) f2fsMountModalInstance.hide();
+        showToast('F2FS partition mounted - browsing its content now.', 'success');
+        await loadExplorer(data.mount_point);
+    } catch (err) {
+        if (status) status.textContent = "Mount failed - see console.";
+    }
+}
+
+async function unmountF2fsMount(mountId) {
+    try {
+        const res = await fetch('/api/files/f2fs/unmount', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mount_id: mountId })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(`Unmount failed: ${data.error}`, 'danger');
+            return;
+        }
+        showToast('F2FS partition unmounted.', 'success');
+        refreshF2fsActiveMountsList();
+    } catch (err) {
+        showToast('Unmount failed - see console.', 'danger');
     }
 }
 

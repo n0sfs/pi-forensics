@@ -23,12 +23,13 @@ import shutil
 import hashlib
 import subprocess
 import threading
+import uuid
 
 from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role, format_epoch
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets, ALEAPP_DIR, ALEAPP_VENV_PYTHON, ILEAPP_DIR, ILEAPP_VENV_PYTHON
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, INSTALL_DIR, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets, ALEAPP_DIR, ALEAPP_VENV_PYTHON, ILEAPP_DIR, ILEAPP_VENV_PYTHON
 import yara
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
@@ -110,8 +111,9 @@ from core.ipa_utils import analyze_ipa
 from core.bugreport_utils import parse_bugreport
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, _stream_subprocess,
-    begin_suppress_active_false, end_suppress_active_false,
+    begin_suppress_active_false, end_suppress_active_false, _SERVICE_ACCOUNT_NAME,
 )
+from core.f2fs_utils import detect_f2fs
 
 file_explorer_bp = Blueprint('file_explorer', __name__)
 
@@ -3819,4 +3821,313 @@ def start_mquire_scan():
 
     log_chain_of_custody("mquire_scan_start", {"image_path": image_path, "tables": table_keys, "destination": dest_dir})
     return jsonify({"success": True, "message": "mquire memory forensics scan started."})
+
+# --- F2FS filesystem browsing: kernel-native read-only mount + a bindfs
+# ownership-remap layer on top, real-fs File Explorer browses the result.
+#
+# Sleuth Kit / pytsk3 has no F2FS driver at all - a real, disclosed gap
+# already flagged elsewhere in this app's own history (the multi-partition
+# tree-rendering work), and F2FS is a common on-disk filesystem for a rooted
+# "physical" Android acquisition's own data partition. Since Sleuth Kit can't
+# open it, this doesn't hand-roll an F2FS parser either - it mounts the
+# filesystem read-only through the deployed station's own kernel F2FS driver
+# (confirmed compiled directly into the kernel, not a loadable module - see
+# /proc/filesystems), producing an ordinary real directory tree that's then
+# browsed/extracted/hashed through the EXACT same real-filesystem File
+# Explorer routes every other real folder already uses - zero new browsing
+# code needed, the same "reuse everything downstream of the mount point"
+# payoff already established for BitLocker/LUKS/VeraCrypt-decrypted volumes.
+#
+# Deliberately lives here, not in routes/acquisition.py alongside BitLocker/
+# LUKS/VeraCrypt - those three ALSO serve a live-device pre-acquisition-
+# unlock role (_resolve_acquisition_source() in that file), which is why
+# their unlock logic has to live wherever acquisition's own source-
+# resolution code lives. F2FS has no equivalent acquisition-source angle at
+# all - dd/dc3dd image a raw device/partition identically regardless of
+# what filesystem sits on top of it, so there's nothing for an "unlock this
+# live F2FS device before imaging" flow to even mean. F2FS mounting exists
+# purely to make an ALREADY-ACQUIRED image's F2FS content browsable, which
+# is squarely this file's own domain (real-fs routes + their context-menu
+# wiring already live here) - scoped to an already-acquired image file only
+# in this pass, not a live-device variant (Live Device Preview's own ACL-
+# grant mechanism can't reach F2FS either, since that's also pytsk3-based;
+# a live-device F2FS preview would need its own separate mechanism, not
+# built here - disclosed as a real, deliberate scope boundary, not silently
+# left out).
+#
+# Two-layer mount, not one, because F2FS - unlike the FAT/exFAT volumes
+# BitLocker/VeraCrypt decrypt into - is a genuine Linux-native filesystem
+# with REAL per-inode Unix ownership baked into its own on-disk structure
+# (no uid=/gid=-style mount-option override exists for it, unlike FAT's own
+# driver). A rooted Android device's own userdata partition is full of files
+# owned by various Android AID_* UIDs, many mode 0700 and owned by an app's
+# own UID - genuinely unreadable to this app's own unprivileged service
+# account through a plain read-only kernel mount alone. Mounting read-write
+# to chown everything would risk the F2FS driver performing its own
+# housekeeping writes (journal replay, etc.) that alter the ALREADY-ACQUIRED
+# image file's own bytes - unacceptable for evidence integrity, and ruled
+# out for exactly that reason before this was built. bindfs (confirmed a
+# real Debian trixie/arm64 package, github.com/mpartel/bindfs, GPL-2.0)
+# solves this correctly: mounted read-only on TOP of the (also read-only)
+# kernel F2FS mount, it presents every file as owned by this app's own
+# service account with a fixed readable mode, entirely at the FUSE
+# presentation layer - it never writes anything back to the F2FS mount
+# underneath it, so the acquired image's own bytes are never touched either
+# way. -o allow_other (the same FUSE option BitLocker's dislocker mount
+# already needs and already has enabled system-wide via /etc/fuse.conf,
+# install.py's own user_allow_other setting from that earlier work) is what
+# lets this app's own unprivileged process actually read through the mount,
+# since bindfs itself runs as root via sudo.
+F2FS_MOUNT_STAGING_ROOT = os.path.join(INSTALL_DIR, ".f2fs_mounts")
+f2fs_lock = threading.Lock()
+active_f2fs_mounts = {}  # mount_id -> {raw_dir, browse_dir, loop_device, image_path, offset, mounted_at}
+
+def _f2fs_cleanup_dirs(*dirs):
+    for d in dirs:
+        try:
+            os.rmdir(d)
+        except OSError:
+            pass
+
+def _f2fs_teardown_raw(raw_dir, loop_device):
+    """Best-effort: unmount the kernel F2FS mount and detach its loop device
+    (if one was attached for a nonzero partition offset), used both by a
+    mid-setup failure's own cleanup and by a normal _f2fs_unmount()."""
+    try:
+        subprocess.run(["sudo", "/bin/umount", raw_dir], capture_output=True, timeout=15)
+    except Exception:
+        pass
+    if loop_device:
+        try:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        except Exception:
+            pass
+    _f2fs_cleanup_dirs(raw_dir)
+
+def _f2fs_mount(image_path, offset, destination_dir):
+    """Mounts an already-acquired image's F2FS partition/volume read-only via
+    the kernel's own F2FS driver, then layers a read-only bindfs mount on top
+    so this app's own unprivileged process can actually read it (see the
+    module-level comment above for why both layers are needed).
+
+    `offset` is the byte offset of the F2FS filesystem's own start within
+    `image_path` - 0 for a whole-image F2FS filesystem, or a real partition's
+    own byte offset within a larger multi-partition raw disk image (the same
+    byte-offset convention BitLocker/LUKS/VeraCrypt's own image-file unlock
+    flow already uses).
+
+    `destination_dir` is normally the active case's own folder (mirroring
+    every other job-launching route in this app) - the resulting browsable
+    directory is created as a fresh subfolder of it
+    ({destination_dir}/{image_basename}_f2fs_mounted/), refusing (not
+    silently overwriting) if that folder already exists. Since this folder
+    is a real path under EVIDENCE_ROOT from the moment it's created, the
+    existing real-fs File Explorer routes (safe_path()-sandboxed) already
+    browse it with zero code changes - no new browsing/trust-registry
+    mechanism needed, unlike BitLocker/LUKS/VeraCrypt's own decrypted-
+    sources registry (which exists specifically because THEIR decrypted
+    output lives outside EVIDENCE_ROOT and feeds pytsk3 image-mode routes
+    instead).
+
+    Returns (success, mount_id_or_None, browse_dir_or_None, error_or_None).
+    """
+    validated_image = safe_path(image_path)
+    if not validated_image or not os.path.isfile(validated_image):
+        return False, None, None, "Image file not found or outside the permitted evidence directory."
+    validated_dest = safe_path(destination_dir)
+    if not validated_dest or not os.path.isdir(validated_dest):
+        return False, None, None, "Destination directory not found or outside the permitted evidence directory."
+    try:
+        offset = int(offset or 0)
+    except (TypeError, ValueError):
+        return False, None, None, "Invalid partition offset."
+    if offset < 0:
+        return False, None, None, "Invalid partition offset."
+
+    browse_dir = os.path.join(validated_dest, f"{os.path.basename(validated_image)}_f2fs_mounted")
+    if os.path.exists(browse_dir):
+        return False, None, None, "A mount folder for this image already exists here - unmount the existing one first (see Active F2FS Mounts above), or choose a different destination."
+
+    os.makedirs(F2FS_MOUNT_STAGING_ROOT, exist_ok=True)
+    mount_id = uuid.uuid4().hex
+    raw_dir = os.path.join(F2FS_MOUNT_STAGING_ROOT, mount_id)
+    os.makedirs(raw_dir, exist_ok=False)
+
+    loop_device = None
+    if offset > 0:
+        # A plain `mount -o loop` only auto-attaches a loop device covering
+        # the WHOLE file - for a partition sitting partway through a larger
+        # multi-partition image, a loop device must be created first at the
+        # exact byte offset (mirrors _luks_unlock()'s own identical pattern
+        # for the exact same reason).
+        try:
+            res = subprocess.run(
+                ["sudo", "/sbin/losetup", "-o", str(offset), "--show", "-f", validated_image],
+                capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            _f2fs_cleanup_dirs(raw_dir)
+            return False, None, None, "losetup timed out."
+        except FileNotFoundError:
+            _f2fs_cleanup_dirs(raw_dir)
+            return False, None, None, "losetup is not available on this station."
+        if res.returncode != 0 or not res.stdout.strip():
+            _f2fs_cleanup_dirs(raw_dir)
+            err = (res.stderr or res.stdout or "Unknown losetup error.").strip()
+            return False, None, None, f"Could not create a loop device at this offset: {err[:300]}"
+        loop_device = res.stdout.strip()
+        mount_target = loop_device
+        mount_opts = "ro"
+    else:
+        mount_target = validated_image
+        mount_opts = "ro,loop"
+
+    try:
+        res = subprocess.run(
+            ["sudo", "/bin/mount", "-o", mount_opts, "-t", "f2fs", mount_target, raw_dir],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        _f2fs_cleanup_dirs(raw_dir)
+        return False, None, None, "mount timed out - the image may be very large or the device unresponsive."
+    if res.returncode != 0:
+        if loop_device:
+            subprocess.run(["sudo", "/sbin/losetup", "-d", loop_device], capture_output=True, timeout=10)
+        _f2fs_cleanup_dirs(raw_dir)
+        err = (res.stderr or res.stdout or "Unknown mount error.").strip()
+        return False, None, None, f"Mount failed - is this really an F2FS filesystem/partition at this offset? {err[:300]}"
+
+    os.makedirs(browse_dir, exist_ok=True)
+    try:
+        res = subprocess.run(
+            [
+                "sudo", "/usr/bin/bindfs",
+                f"--force-user={_SERVICE_ACCOUNT_NAME}", f"--force-group={_SERVICE_ACCOUNT_NAME}",
+                "-p", "0555", "-r", "-o", "allow_other",
+                raw_dir, browse_dir,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        _f2fs_teardown_raw(raw_dir, loop_device)
+        _f2fs_cleanup_dirs(browse_dir)
+        return False, None, None, "bindfs timed out."
+    except FileNotFoundError:
+        _f2fs_teardown_raw(raw_dir, loop_device)
+        _f2fs_cleanup_dirs(browse_dir)
+        return False, None, None, "bindfs is not installed on this station. Run 'sudo apt-get install bindfs' first."
+    if res.returncode != 0 or not os.path.ismount(browse_dir):
+        _f2fs_teardown_raw(raw_dir, loop_device)
+        _f2fs_cleanup_dirs(browse_dir)
+        err = (res.stderr or res.stdout or "Unknown bindfs error.").strip()
+        return False, None, None, f"Could not present the mounted filesystem for browsing: {err[:300]}"
+
+    with f2fs_lock:
+        active_f2fs_mounts[mount_id] = {
+            "raw_dir": raw_dir,
+            "browse_dir": browse_dir,
+            "loop_device": loop_device,
+            "image_path": validated_image,
+            "offset": offset,
+            "mounted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    return True, mount_id, browse_dir, None
+
+def _f2fs_unmount(mount_id):
+    """Unmounts and cleans up an F2FS mount (the bindfs presentation layer
+    first, then the underlying kernel F2FS mount, then any loop device).
+    Safe to call more than once for the same id - a second call just finds
+    nothing left to do, matching every other _*_lock()/_*_unmount() function
+    in this app (_dislocker_lock, _luks_lock, _veracrypt_lock)."""
+    if not mount_id:
+        return True, None
+    with f2fs_lock:
+        info = active_f2fs_mounts.pop(mount_id, None)
+    if not info:
+        return True, None
+    try:
+        subprocess.run(["sudo", "/bin/umount", info["browse_dir"]], capture_output=True, timeout=15)
+    except Exception:
+        pass
+    _f2fs_teardown_raw(info["raw_dir"], info.get("loop_device"))
+    _f2fs_cleanup_dirs(info["browse_dir"])
+    return True, None
+
+def _f2fs_startup_mount_reconciliation():
+    """One-shot check at process start, not a recurring sweep -
+    active_f2fs_mounts is always empty at a fresh process start, so any real
+    F2FS/bindfs mount already active under F2FS_MOUNT_STAGING_ROOT at this
+    exact moment can only be a leftover from a prior crashed/restarted
+    process. Never auto-unmounted here (a real, if unlikely, unrelated cause
+    could theoretically explain it) - only logged, matching this app's own
+    already-established disclose-don't-silently-act posture for exactly this
+    situation (see _luks_startup_loop_device_reconciliation())."""
+    try:
+        res = subprocess.run(["mount"], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return
+    for line in (res.stdout or "").splitlines():
+        if F2FS_MOUNT_STAGING_ROOT in line:
+            log_chain_of_custody("f2fs_mount_orphan_detected", {"mount_line": line.strip()})
+
+_f2fs_startup_mount_reconciliation()
+
+@file_explorer_bp.route('/api/files/f2fs/detect_image', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def f2fs_detect_image():
+    req = request.get_json() or {}
+    image_path = safe_path(req.get('image_path'))
+    if not image_path or not os.path.isfile(image_path):
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    try:
+        offset = int(req.get('offset') or 0)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid offset."}), 400
+    is_f2fs = detect_f2fs(image_path, offset=offset)
+    return jsonify({"success": True, "is_f2fs": is_f2fs})
+
+@file_explorer_bp.route('/api/files/f2fs/mount_image', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def f2fs_mount_image_route():
+    req = request.get_json() or {}
+    image_path = req.get('image_path')
+    offset = req.get('offset', 0)
+    destination_dir = req.get('destination_dir') or EVIDENCE_ROOT
+    success, mount_id, browse_dir, error = _f2fs_mount(image_path, offset, destination_dir)
+    if not success:
+        return jsonify({"success": False, "error": error}), 400
+    log_chain_of_custody("f2fs_mount", {"image_path": image_path, "offset": offset, "mount_id": mount_id, "mount_point": browse_dir})
+    return jsonify({"success": True, "mount_id": mount_id, "mount_point": browse_dir})
+
+@file_explorer_bp.route('/api/files/f2fs/unmount', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def f2fs_unmount_route():
+    req = request.get_json() or {}
+    mount_id = req.get('mount_id')
+    success, error = _f2fs_unmount(mount_id)
+    if not success:
+        return jsonify({"success": False, "error": error}), 500
+    log_chain_of_custody("f2fs_unmount", {"mount_id": mount_id})
+    return jsonify({"success": True})
+
+@file_explorer_bp.route('/api/files/f2fs/status', methods=['GET'])
+@requires_auth
+def f2fs_status_route():
+    with f2fs_lock:
+        mounts = [
+            {
+                "mount_id": mid,
+                "image_path": info["image_path"],
+                "offset": info["offset"],
+                "mount_point": info["browse_dir"],
+                "mounted_at": info["mounted_at"],
+            }
+            for mid, info in active_f2fs_mounts.items()
+        ]
+    return jsonify({"success": True, "mounts": mounts})
 
