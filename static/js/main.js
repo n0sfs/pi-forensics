@@ -14341,12 +14341,18 @@ function buildUsbPortDiagramSvg(drives, selectedDevicePath) {
 async function renderUsbPortDiagram(selectedDevicePath) {
     const wrap = document.getElementById('driveMgmtPortDiagramWrap');
     const host = document.getElementById('driveMgmtPortDiagramSvgHost');
+    const controlsCol = document.getElementById('driveMgmtControlsCol');
     if (!wrap || !host) return;
     const info = await fetchPiHardwareInfo();
     if (!info.usb_port_diagram_supported) {
         wrap.style.display = 'none';
+        // No diagram to share the row with (a non-Pi-4 board) - let the
+        // controls column use the full row width instead of leaving half
+        // of it empty.
+        if (controlsCol) { controlsCol.classList.remove('col-md-6'); controlsCol.classList.add('col-md-12'); }
         return;
     }
+    if (controlsCol) { controlsCol.classList.remove('col-md-12'); controlsCol.classList.add('col-md-6'); }
     wrap.style.display = '';
     host.innerHTML = buildUsbPortDiagramSvg(currentDrivesList, selectedDevicePath);
 }
