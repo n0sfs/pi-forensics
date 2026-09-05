@@ -237,16 +237,21 @@ REPORTING_STATS_DEFAULT_ENABLED = ["total_cases"]
 _TAGS_FLAGGED_CACHE_INTERVAL_SECONDS = 300
 _tags_flagged_cache = {"value": 0, "computed_at": 0.0}
 
-def _count_notable_tagged_items_station_wide():
+def _count_notable_tagged_items_station_wide(cases):
     """Sums COUNT(*) of tagged_items joined to a notable=1 tag, across every
     case's own per-case SQLite index - station-wide, not scoped to whichever
-    case happens to be active. Skips a case with no index yet (nothing
-    tagged/scanned there ever) via _case_index_open_readonly()'s own existing
-    None-return convention, matching every other case-index reader in this
-    file. Each connection is opened, queried, and closed per case rather than
-    held open across the whole walk - these are small per-case files, and
-    this mirrors _tags_for_paths()/_analysis_results_for_paths()'s own
-    established one-connection-per-call pattern rather than a new one.
+    case happens to be active. Takes the caller's own already-fetched
+    list_case_folders() result rather than calling it again itself - a real,
+    live-caught duplicate-walk bug from this stat's own first cut (confirmed
+    directly: a cold-cache call paid for TWO separate list_case_folders()
+    walks back to back, needlessly doubling an already-slow cost on this
+    station's real NFS-backed storage). Skips a case with no index yet
+    (nothing tagged/scanned there ever) via _case_index_open_readonly()'s own
+    existing None-return convention, matching every other case-index reader
+    in this file. Each connection is opened, queried, and closed per case
+    rather than held open across the whole walk - these are small per-case
+    files, and this mirrors _tags_for_paths()/_analysis_results_for_paths()'s
+    own established one-connection-per-call pattern rather than a new one.
 
     See _TAGS_FLAGGED_CACHE_INTERVAL_SECONDS above for why this is throttled -
     a plain read path, so a rare double-compute right at the throttle
@@ -256,7 +261,7 @@ def _count_notable_tagged_items_station_wide():
     if now - _tags_flagged_cache["computed_at"] < _TAGS_FLAGGED_CACHE_INTERVAL_SECONDS:
         return _tags_flagged_cache["value"]
     total = 0
-    for c in list_case_folders():
+    for c in cases:
         conn = _case_index_open_readonly(c.get("case_folder"))
         if not conn:
             continue
@@ -275,16 +280,19 @@ def _count_notable_tagged_items_station_wide():
 
 def _compute_reporting_stats(enabled_keys):
     """Computes only the requested stat keys. total_cases/active_cases/
-    evidence_items all share a single list_case_folders() walk rather than
-    one directory walk per stat; reports_exported reads the chain-of-custody
-    log once, only if actually enabled; tags_flagged opens each case's own
-    per-case SQLite index only if actually enabled (a real per-case-DB cost,
-    unlike the other three station-wide stats). One unrecognized/removed key
+    evidence_items/tags_flagged all share ONE list_case_folders() walk
+    rather than one per stat (tags_flagged included specifically to fix a
+    real, live-caught duplicate-walk bug - see that function's own
+    docstring); reports_exported reads the chain-of-custody log once, only
+    if actually enabled. tags_flagged additionally opens each case's own
+    per-case SQLite index only if actually enabled (a real per-case-DB cost
+    the other three station-wide stats don't have, throttled - see
+    _TAGS_FLAGGED_CACHE_INTERVAL_SECONDS above). One unrecognized/removed key
     is silently skipped, never a 500 - this stays out of the request's own
     validation, since a stale saved key shouldn't be able to break the whole
     row."""
     stats = []
-    needs_cases = any(k in enabled_keys for k in ("total_cases", "active_cases", "evidence_items"))
+    needs_cases = any(k in enabled_keys for k in ("total_cases", "active_cases", "evidence_items", "tags_flagged"))
     cases = list_case_folders() if needs_cases else []
 
     for key in enabled_keys:
@@ -307,7 +315,7 @@ def _compute_reporting_stats(enabled_keys):
             coc_entries = _read_coc_entries(limit=None)
             entry["value"] = sum(1 for e in coc_entries if e.get("action") == "report_exported")
         elif key == "tags_flagged":
-            entry["value"] = _count_notable_tagged_items_station_wide()
+            entry["value"] = _count_notable_tagged_items_station_wide(cases)
         stats.append(entry)
     return stats
 
