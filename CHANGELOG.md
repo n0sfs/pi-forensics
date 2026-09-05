@@ -21,6 +21,17 @@ file after updating to see what changed.
 
 ---
 
+## [1.50.2] - 2026-09-05
+
+### Fixed
+- **A second real inefficiency in yesterday's throttle fix, found while re-measuring it live.**
+  Computing "Tags/Notable Items Flagged" alongside any of the other case-based stats (Total Cases,
+  Active Cases, Evidence Items) was still walking the evidence store twice per request - once for
+  those stats, once more inside the tags computation itself - needlessly doubling an already-slow
+  cost on real network-attached storage. Now shares the one walk every other stat already does.
+
+---
+
 ## [1.50.1] - 2026-09-05
 
 ### Fixed
