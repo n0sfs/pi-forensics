@@ -21,6 +21,20 @@ file after updating to see what changed.
 
 ---
 
+## [1.52.0] - 2026-09-05
+
+### Added
+- **Drive Management: a Refresh button, live device info, and click-to-select on the port diagram.**
+  A "Refresh" button next to the Drive Management heading re-scans connected drives without reloading
+  the whole page - useful right after moving a drive to a different port. A new "Connected Drives"
+  panel beneath the port diagram lists every detected drive's model, size, port, and serial number.
+  Clicking a highlighted port in the diagram now selects that drive in the dropdown automatically
+  (and, if a drive is moved to a different port while the page stays open, an automatic 5-second
+  refresh - active only while Drive Management is the visible screen - picks up the change and
+  re-highlights the new port with no manual action needed).
+
+---
+
 ## [1.51.2] - 2026-09-05
 
 ### Fixed
