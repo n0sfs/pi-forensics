@@ -21,6 +21,19 @@ file after updating to see what changed.
 
 ---
 
+## [1.50.1] - 2026-09-05
+
+### Fixed
+- **A real performance issue with the new "Tags/Notable Items Flagged" stat, found and fixed the same
+  day it shipped.** Computing it opened a fresh database connection per case, which on the deployed
+  station's real network-attached storage measured roughly 15 extra seconds on top of an existing
+  ~24-second baseline every other header stat already shares - nearly doubling Reporting's header row
+  load time whenever this one stat was enabled. It's now cached for 5 minutes station-wide, matching
+  how this app already handles an identical class of slow-storage cost elsewhere. A newly-tagged item
+  can take up to 5 minutes to be reflected in the count - an accepted tradeoff for a header stat.
+
+---
+
 ## [1.50.0] - 2026-09-05
 
 ### Added
