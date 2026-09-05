@@ -218,6 +218,25 @@ REPORTING_STAT_KEYS = {d["key"] for d in REPORTING_STAT_DEFINITIONS}
 # geolocation key, defaulted unchecked for the identical reason).
 REPORTING_STATS_DEFAULT_ENABLED = ["total_cases"]
 
+# Throttled the same interval/reasoning as core/auth.py's LAST_LOGIN_
+# PERSIST_INTERVAL and core/case_index_db.py's own _artifact_backfill_
+# last_run - a real, live-measured cost on this station's own NFS-backed
+# evidence storage (~15s across 9 real cases, one SQLite connection opened
+# per case), confirmed directly via a standalone timing script BEFORE this
+# throttle shipped, not assumed. Without it, enabling this one stat roughly
+# doubled Reporting's own header-row load time on the deployed station (a
+# separate, real, live-measured ~24s already comes from the shared
+# list_case_folders() walk every other stat here already pays - a pre-
+# existing, already-documented cost this throttle does NOT address, since
+# it's shared by every stat, not specific to this one). A plain in-memory
+# cache, resets on restart (a restart just means the next call pays the
+# real cost once, harmless) - a newly-tagged item can take up to 5 minutes
+# to be reflected here, an accepted tradeoff for a header stat, matching
+# this app's own established eventual-consistency precedent for exactly
+# this class of problem.
+_TAGS_FLAGGED_CACHE_INTERVAL_SECONDS = 300
+_tags_flagged_cache = {"value": 0, "computed_at": 0.0}
+
 def _count_notable_tagged_items_station_wide():
     """Sums COUNT(*) of tagged_items joined to a notable=1 tag, across every
     case's own per-case SQLite index - station-wide, not scoped to whichever
@@ -227,7 +246,15 @@ def _count_notable_tagged_items_station_wide():
     file. Each connection is opened, queried, and closed per case rather than
     held open across the whole walk - these are small per-case files, and
     this mirrors _tags_for_paths()/_analysis_results_for_paths()'s own
-    established one-connection-per-call pattern rather than a new one."""
+    established one-connection-per-call pattern rather than a new one.
+
+    See _TAGS_FLAGGED_CACHE_INTERVAL_SECONDS above for why this is throttled -
+    a plain read path, so a rare double-compute right at the throttle
+    window's own boundary (two concurrent requests both seeing a stale
+    cache) is harmless, unlike a write-avoidance throttle."""
+    now = time.time()
+    if now - _tags_flagged_cache["computed_at"] < _TAGS_FLAGGED_CACHE_INTERVAL_SECONDS:
+        return _tags_flagged_cache["value"]
     total = 0
     for c in list_case_folders():
         conn = _case_index_open_readonly(c.get("case_folder"))
@@ -241,6 +268,8 @@ def _count_notable_tagged_items_station_wide():
             total += (row[0] if row else 0)
         finally:
             conn.close()
+    _tags_flagged_cache["value"] = total
+    _tags_flagged_cache["computed_at"] = now
     return total
 
 

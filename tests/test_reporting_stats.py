@@ -184,6 +184,39 @@ def test_tags_flagged_is_zero_when_no_case_has_ever_been_indexed(evidence_root, 
     assert stats[0]["value"] == 0
 
 
+def test_tags_flagged_is_throttled_a_second_call_within_the_window_never_recomputes(evidence_root, monkeypatch):
+    """The real, live-measured NFS-latency fix: a genuinely-changed case set
+    must NOT be reflected by a second call still inside the cache window -
+    proven by writing a real, different result AFTER the first call and
+    confirming the second call still returns the FIRST call's value, not a
+    fresh recompute."""
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    case_a = _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Open", 1)
+    _tag_item_notable(case_a, item_name="a1.jpg")
+
+    first = _compute_reporting_stats(["tags_flagged"])[0]["value"]
+    assert first == 1
+
+    _tag_item_notable(case_a, item_name="a2.jpg")  # a real, later change
+    second = _compute_reporting_stats(["tags_flagged"])[0]["value"]
+    assert second == 1  # still the cached value, not the now-true 2
+
+
+def test_tags_flagged_recomputes_once_the_cache_entry_is_cleared(evidence_root, monkeypatch):
+    """The other half of the throttle guarantee: once the cache is cleared
+    (matching what the autouse fixture already does between every test, and
+    what a real cache-window expiry does in production), the next call
+    genuinely recomputes and picks up the real, current data."""
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    case_a = _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Open", 1)
+    _tag_item_notable(case_a, item_name="a1.jpg")
+    assert _compute_reporting_stats(["tags_flagged"])[0]["value"] == 1
+
+    _tag_item_notable(case_a, item_name="a2.jpg")
+    reporting._tags_flagged_cache["computed_at"] = 0.0  # simulate the window expiring
+    assert _compute_reporting_stats(["tags_flagged"])[0]["value"] == 2
+
+
 def test_an_unrecognized_key_is_silently_skipped_not_fatal(evidence_root, monkeypatch):
     _redirect_evidence_root(monkeypatch, evidence_root)
     stats = _compute_reporting_stats(["total_cases", "made_up_stat"])

@@ -120,6 +120,29 @@ def _clear_case_artifact_backfill_throttle():
     case_index_db._artifact_backfill_last_run.clear()
 
 
+@pytest.fixture(autouse=True)
+def _clear_reporting_tags_flagged_cache():
+    """routes/reporting.py's _tags_flagged_cache (added 2026-09-05, a real
+    live-measured NFS-latency fix - see _count_notable_tagged_items_
+    station_wide()'s own docstring) is a single module-level dict, not
+    keyed by anything - so unlike the two throttles above it would leak
+    into EVERY later test's own result, not just ones that happen to reuse
+    the same key, if left uncleared. routes.reporting needs core.jobs
+    (POSIX-only pwd/fcntl) to import at all, so this import is wrapped the
+    same defensive way every POSIX-gated fixture/test file in this suite
+    already handles that - importorskip isn't available inside a fixture
+    body, so a plain try/except ImportError makes this a silent no-op on a
+    non-POSIX dev machine instead of an import-time collection error."""
+    try:
+        import routes.reporting as reporting
+    except ImportError:
+        yield
+        return
+    reporting._tags_flagged_cache["computed_at"] = 0.0
+    yield
+    reporting._tags_flagged_cache["computed_at"] = 0.0
+
+
 class RemoteTestClient:
     """Wraps a Flask test client so every request looks like it came from a
     real remote/LAN address (203.0.113.5, a reserved TEST-NET-3 address
