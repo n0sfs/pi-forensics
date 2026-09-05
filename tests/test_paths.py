@@ -140,6 +140,28 @@ def test_classify_case_role(name, expected_role):
     assert paths.classify_case_role(name) == expected_role
 
 
+@pytest.mark.parametrize("name,expected", [
+    ("RECOVERED_FILES", True),  # extundelete's fixed output dir name
+    ("2026-CASE-01_ITEM-01_photorec", True),
+    ("2026-CASE-01_ITEM-01_foremost", True),
+    ("2026-CASE-01_ITEM-01_scalpel", True),
+    ("2026-CASE-01_ITEM-01_triagescan", True),
+    ("#recycle", True),  # Synology's own NAS-internal trash folder
+    ("@Recycle", True),
+    ("@recycle", True),
+    (".@__thumb", True),
+    # A similarly-suffixed real case/evidence folder name must never be
+    # misclassified - only an exact/suffix match on the known patterns
+    # counts, not a loose substring anywhere in the name.
+    ("2026-CASE-photorec-review", False),
+    ("recovered_files", False),  # case-sensitive - not the exact known name
+    ("evidence_folder", False),
+    ("2026-CASE-01", False),
+])
+def test_is_bulk_tool_output_dir(name, expected):
+    assert paths.is_bulk_tool_output_dir(name) == expected
+
+
 def test_is_valid_block_device_whitelist():
     assert paths.is_valid_block_device("/dev/sda")
     assert paths.is_valid_block_device("/dev/nvme0n1")

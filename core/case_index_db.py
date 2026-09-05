@@ -16,7 +16,7 @@ import sqlite3
 import multiprocessing
 from flask import g
 
-from core.paths import safe_path, case_consolidated_path, classify_case_role
+from core.paths import safe_path, case_consolidated_path, classify_case_role, is_bulk_tool_output_dir
 from core.config import get_keyword_lists
 import core.config as config
 
@@ -847,6 +847,22 @@ def list_case_folders():
         if depth >= 6:
             dirs[:] = []
             continue
+
+        # Prune known-never-a-case directories (recovery-tool bulk output,
+        # NAS-internal trash folders) before descending into them - a real,
+        # live-measured cost on this app's own deployed station (2026-09-05):
+        # loose recovery-tool test output sitting directly under the
+        # evidence root, never itself a case and never containing one
+        # nested inside it, was still being fully walked on every single
+        # call, each directory a real round-trip over what can be slow
+        # network-attached storage. Deliberately does NOT reduce the depth-6
+        # cap above to something shallower to "fix" this the easy way -
+        # create_case() accepts an arbitrary parent_dir, so a real case can
+        # legitimately be nested deeper than 1-2 levels, and a depth cut
+        # would silently stop discovering those cases at all. This prune is
+        # safe regardless of depth, since neither of these directory kinds
+        # can ever contain a case marker.
+        dirs[:] = [d for d in dirs if not is_bulk_tool_output_dir(d)]
 
         consolidated_name = f"{os.path.basename(root)}_case.json"
         if consolidated_name in files:

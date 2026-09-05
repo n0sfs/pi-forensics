@@ -164,6 +164,39 @@ _CASE_ROLE_ANALYSIS_LOG_RE = re.compile(
     r'|^live_collection_import_\d{8}_\d{6})$')
 _CASE_ROLE_BUNDLE_RE = re.compile(r'_case_bundle_\d{8}-\d{6}\.zip$')
 
+# Directory names safe to prune out of ANY recursive walk over the evidence
+# store, station-wide - not case-scoped, since these can legitimately sit
+# loose at the evidence root too, not just inside one case folder. Never a
+# case folder (no case marker ever lives inside one) and can be large
+# enough (thousands of tiny carved files, or a NAS's own internal recycle
+# bin) that walking into one needlessly is a real, measurable cost,
+# especially over slow/network-attached storage - confirmed live
+# (2026-09-05): list_case_folders()'s own real-world slowdown on the
+# deployed station traced in part to exactly this pattern (loose recovery-
+# tool test output sitting directly under the evidence root). Originally
+# only routes/reporting.py's own _discover_case_files() had this exact
+# recovery-tool-suffix check (as ATTACHMENT_DISCOVERY_SKIP_DIRS, for a
+# narrower reason - "thousands of tiny files are impractical to list
+# individually as attachments") - consolidated here once list_case_folders()
+# needed the identical pruning logic for a different reason (avoiding
+# needless NFS round-trips), so the one real pattern isn't duplicated and
+# risking drift between two copies.
+BULK_TOOL_OUTPUT_SKIP_DIRS = {
+    'RECOVERED_FILES',  # extundelete's fixed output dir name
+    # Common NAS/filesystem-internal trash folders - never case data,
+    # never worth walking into, and can genuinely be large on a real NAS.
+    '#recycle', '@Recycle', '@recycle', '.@__thumb',
+}
+BULK_TOOL_OUTPUT_SKIP_SUFFIXES = ('_photorec', '_foremost', '_scalpel', '_triagescan')
+
+def is_bulk_tool_output_dir(name):
+    """True for a directory name matching a known recovery-tool bulk
+    carved-file output convention, or a NAS/filesystem-internal trash
+    folder - safe to prune from any walk over the evidence store, since
+    neither can ever be a real case folder (no case marker) or contain one
+    nested inside it."""
+    return name in BULK_TOOL_OUTPUT_SKIP_DIRS or name.endswith(BULK_TOOL_OUTPUT_SKIP_SUFFIXES)
+
 def classify_case_role(name):
     """Best-effort classification of a filename (or, for the folder-shaped
     kinds below, a directory name) as one of this app's own generated

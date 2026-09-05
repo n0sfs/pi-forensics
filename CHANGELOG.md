@@ -21,6 +21,18 @@ file after updating to see what changed.
 
 ---
 
+## [1.50.3] - 2026-09-05
+
+### Fixed
+- **Reduced the underlying case-list scan cost every Reporting header stat shares.** Investigating the
+  two fixes above surfaced that this scan was walking directly into recovery-tool bulk-output
+  directories (and NAS-internal trash folders) sitting loose in the evidence store - directories that
+  can never be a case and never contain one, but were still being fully explored on every single scan.
+  These are now skipped outright. This won't eliminate every source of slow-storage latency, but it
+  removes a real, unnecessary cost this app itself controlled.
+
+---
+
 ## [1.50.2] - 2026-09-05
 
 ### Fixed
