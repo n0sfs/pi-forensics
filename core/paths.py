@@ -252,6 +252,7 @@ _CASE_ROLE_ANALYSIS_LOG_RE = re.compile(
     r'|_device_timestamps\.json'
     r'|_(aleapp|ileapp)_output|_sqlite_dissect_recovery|_apk_analysis\.json|_bugreport_parsed\.json'
     r'|_ios_crash_reports|_mft_analysis\.json|_usnjrnl_parsed\.json|_thumbcache_extracted'
+    r'|_android_backup_extracted'
     # Android pull manifests (routes/mobile.py, 2026-09-04) - installed-app
     # inventory, configured accounts, and the notification-metadata snapshot
     # captured automatically alongside device_timestamps.json above.
@@ -303,7 +304,8 @@ def classify_case_role(name):
     report), 'analysis_log' (a hash-manifest report, a triage-scan report,
     a Volatility3 memory-forensics plugin result, an android_pull's
     captured-on-device-timestamps manifest, an ALEAPP/iLEAPP mobile-artifact-parser output
-    folder, a Thumbcache thumbnail-extraction output folder, or a Live
+    folder, a Thumbcache thumbnail-extraction output folder, an Android Backup
+    File (.ab) full-extraction output folder, or a Live
     Collection USB import folder - the same "derived/analysis output
     living in its own folder" shape ALEAPP/iLEAPP already established),
     'geolocation' (a

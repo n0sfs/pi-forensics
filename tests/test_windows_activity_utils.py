@@ -2,13 +2,30 @@
 databases matching the confirmed real Notification/NotificationHandler and
 Activity table schemas (2026-09-01 research, cross-validated against
 swiftforensics.com/inc0x0.com for wpndatabase.db and hermes-codex/
-istrosec.com/Velociraptor for ActivitiesCache.db) - not mocks."""
+istrosec.com/Velociraptor for ActivitiesCache.db) - not mocks.
+
+Skip guard needed even though this module's own SQLite parsing logic is
+pure stdlib - core/windows_activity_utils.py imports the shared
+filetime_to_unix() epoch helper from core/registry_utils.py, which itself
+hard-imports the `Registry` package at module level. Same, previously-
+undetected gap already found and fixed for test_recyclebin_utils.py/
+test_usnjrnl_utils.py/test_mobile_artifacts.py (2026-08-25/2026-08-31) -
+this file was built the same day (2026-09-01) as several siblings that DID
+get the guard, but this one slipped through; found live during a 2026-09-05
+review (a full pytest run hard-collection-errored here, not a graceful
+skip). Without this guard, a dev machine missing python-registry gets a
+hard COLLECTION ERROR that aborts the ENTIRE pytest run, not just this
+file, matching test_registry_utils.py's own already-correct pattern."""
 import datetime
 import json
 import os
 import shutil
 import sqlite3
 import tempfile
+
+import pytest
+
+pytest.importorskip("Registry.Registry", reason="python-registry not installed (needed transitively via core.registry_utils.filetime_to_unix)")
 
 import core.windows_activity_utils as wau
 

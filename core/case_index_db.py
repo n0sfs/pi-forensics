@@ -965,13 +965,15 @@ def cross_case_hash_search(hash_value):
 # report fresh from the existing index, don't touch original data"
 # convention already established by /api/cases/timeline.
 #
-# Scoped to the 5 contact types and 6 communication types whose real
-# extra_json shape is directly grounded in this app's own already-shipped,
-# already-tested parser code (core/android_artifacts.py, core/mobile_
-# artifacts.py, core/apple_export_utils.py/core/takeout_utils.py, core/
-# whatsapp_utils.py) - every one of them stores a real phone-number-
-# shaped string in a known extra_json key. Deliberately EXCLUDES every
-# leapp_* contact/communication type (leapp_contact, leapp_sms_message,
+# Scoped to contact types and communication types whose real extra_json
+# shape is directly grounded in this app's own already-shipped, already-
+# tested parser code (core/android_artifacts.py, core/android_companion_
+# *_utils.py, core/android_backup_utils.py, core/mobile_artifacts.py,
+# core/apple_export_utils.py/core/takeout_utils.py, core/whatsapp_utils.py)
+# - every one of them stores a real phone-number-shaped string (or, for
+# android_companion_contact, a real ContactsContract mimetype-gated value)
+# in a known extra_json key. Deliberately EXCLUDES every leapp_*
+# contact/communication type (leapp_contact, leapp_sms_message,
 # leapp_call_log, leapp_whatsapp_*, etc.): those store ALEAPP's own raw
 # TSV columns generically under extra_json["row"], and this station has
 # never once seen a real ALEAPP hit to confirm which real column name
@@ -987,14 +989,45 @@ CONTACT_CORRELATION_SOURCE_TYPES = {
     "takeout_contact": {"phones_key": "phones", "kind": "contact"},
     "mobile_contact": {"phones_key": "phones", "kind": "contact"},
     "whatsapp_contact": {"phones_key": None, "single_key": "number", "kind": "contact"},
+    # android_companion_contact is one record per ContactsContract.Data
+    # ROW, not one per contact - data1 holds whatever mimetype that row
+    # is (phone, email, ...), so a plain single_key would just as often
+    # pull a real email address into a "phone number" field. mimetype_key/
+    # mimetype_value gate extraction to only the real phone-type rows
+    # (core/android_companion_contacts_calllog_utils.py's own confirmed
+    # "vnd.android.cursor.item/phone_v2" constant) - every other mimetype
+    # (email, etc.) is correctly skipped for this source, not misread.
+    "android_companion_contact": {
+        "phones_key": None, "single_key": "data1", "kind": "contact",
+        "mimetype_key": "mimetype", "mimetype_value": "vnd.android.cursor.item/phone_v2",
+    },
 }
 CONTACT_CORRELATION_COMM_TYPES = {
     "android_sms_message": {"counterpart_key": "address", "channel": "SMS"},
     "android_call_log": {"counterpart_key": "number", "channel": "Call"},
+    # android_mms_message's own "counterpart" field is already comma-joined
+    # for a group MMS with more than one participant (core/android_
+    # artifacts.py's ", ".join(counterpart_list)) - the shared counterpart-
+    # splitting logic below (see the ", " check) resolves each real
+    # participant separately rather than gluing two numbers into one bogus
+    # digit string.
+    "android_mms_message": {"counterpart_key": "counterpart", "channel": "MMS"},
     "mobile_sms_message": {"counterpart_key": "counterpart", "channel": "SMS/iMessage"},
     "mobile_call_log": {"counterpart_key": "address", "channel": "Call"},
     "whatsapp_message": {"counterpart_key": "sender_jid", "channel": "WhatsApp Message"},
     "whatsapp_call_log": {"counterpart_key": "caller_jid", "channel": "WhatsApp Call"},
+    # Companion-app relay (adb shell content query, non-rooted) - the exact
+    # same real signal as the native rooted-parser types just above, just a
+    # different extraction path (core/android_companion_sms_utils.py,
+    # core/android_companion_contacts_calllog_utils.py).
+    "android_companion_sms_message": {"counterpart_key": "address", "channel": "SMS"},
+    "android_companion_call_log_entry": {"counterpart_key": "number", "channel": "Call"},
+    # .ab (Android Backup File) - sourced SMS/MMS (core/android_
+    # backup_utils.py). android_ab_mms_message's "addresses" field is a
+    # genuine list (one string per MMS participant, not comma-joined) -
+    # the shared list-vs-string handling below covers both shapes.
+    "android_ab_sms_message": {"counterpart_key": "address", "channel": "SMS"},
+    "android_ab_mms_message": {"counterpart_key": "addresses", "channel": "MMS"},
 }
 CONTACT_CORRELATION_MAX_ROWS_PER_TYPE = 20_000
 CONTACT_CORRELATION_MAX_CONTACTS = 2_000
@@ -1070,6 +1103,9 @@ def correlate_contacts(case_folder):
                 for raw in (extra.get(spec["phones_key"]) or []):
                     _remember(normalize_phone_number(raw), title, artifact_type)
             elif spec.get("single_key"):
+                mimetype_key = spec.get("mimetype_key")
+                if mimetype_key and extra.get(mimetype_key) != spec.get("mimetype_value"):
+                    continue
                 _remember(normalize_phone_number(extra.get(spec["single_key"])), title, artifact_type)
 
         # Pass 2: every communication row -> resolve its counterpart
@@ -1089,31 +1125,50 @@ def correlate_contacts(case_folder):
                 extra = json.loads(extra_json) if extra_json else {}
             except (TypeError, ValueError):
                 extra = {}
-            raw_counterpart = extra.get(spec["counterpart_key"])
-            normalized = normalize_phone_number(raw_counterpart)
-            if not normalized or normalized not in known:
-                unresolved += 1
-                continue
-            entry = by_contact.setdefault(normalized, {
-                "normalized_number": normalized,
-                "display_names": sorted(known[normalized]["names"]),
-                "contact_sources": sorted(known[normalized]["sources"]),
-                "communication_counts": {},
-                "first_seen": timestamp, "last_seen": timestamp,
-                "total_communications": 0, "samples": [],
-            })
-            entry["communication_counts"][spec["channel"]] = entry["communication_counts"].get(spec["channel"], 0) + 1
-            entry["total_communications"] += 1
-            if timestamp is not None:
-                if entry["last_seen"] is None or timestamp > entry["last_seen"]:
-                    entry["last_seen"] = timestamp
-                if entry["first_seen"] is None or timestamp < entry["first_seen"]:
-                    entry["first_seen"] = timestamp
-            if len(entry["samples"]) < CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT:
-                entry["samples"].append({
-                    "artifact_type": artifact_type, "title": title, "value": value,
-                    "timestamp": timestamp, "source_path": source_path,
+            raw_field = extra.get(spec["counterpart_key"])
+            # A comm row can name more than one real counterpart - a group
+            # MMS's comma-joined "addr1, addr2" string (android_mms_message/
+            # mobile_sms_message's own ", ".join() convention) or a genuine
+            # list (android_ab_mms_message's "addresses"). Resolving each
+            # candidate separately, rather than blindly normalizing the
+            # whole joined/list value as one string, avoids gluing two real
+            # numbers together into one bogus, coincidentally-plausible-
+            # length digit string that would otherwise silently misattribute
+            # a group message to a contact nobody on it actually is.
+            if isinstance(raw_field, list):
+                raw_candidates = raw_field
+            elif isinstance(raw_field, str) and ", " in raw_field:
+                raw_candidates = raw_field.split(", ")
+            else:
+                raw_candidates = [raw_field] if raw_field else []
+            resolved_any = False
+            for raw_counterpart in raw_candidates:
+                normalized = normalize_phone_number(raw_counterpart)
+                if not normalized or normalized not in known:
+                    continue
+                resolved_any = True
+                entry = by_contact.setdefault(normalized, {
+                    "normalized_number": normalized,
+                    "display_names": sorted(known[normalized]["names"]),
+                    "contact_sources": sorted(known[normalized]["sources"]),
+                    "communication_counts": {},
+                    "first_seen": timestamp, "last_seen": timestamp,
+                    "total_communications": 0, "samples": [],
                 })
+                entry["communication_counts"][spec["channel"]] = entry["communication_counts"].get(spec["channel"], 0) + 1
+                entry["total_communications"] += 1
+                if timestamp is not None:
+                    if entry["last_seen"] is None or timestamp > entry["last_seen"]:
+                        entry["last_seen"] = timestamp
+                    if entry["first_seen"] is None or timestamp < entry["first_seen"]:
+                        entry["first_seen"] = timestamp
+                if len(entry["samples"]) < CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT:
+                    entry["samples"].append({
+                        "artifact_type": artifact_type, "title": title, "value": value,
+                        "timestamp": timestamp, "source_path": source_path,
+                    })
+            if not resolved_any:
+                unresolved += 1
 
         contacts = sorted(by_contact.values(), key=lambda c: c["total_communications"], reverse=True)
         truncated = len(contacts) > CONTACT_CORRELATION_MAX_CONTACTS
