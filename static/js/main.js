@@ -13185,6 +13185,12 @@ document.addEventListener('shown.bs.modal', (ev) => {
 // the examiner opened Network to look at Drive Mounting instead).
 document.getElementById('secAuditLog')?.addEventListener('shown.bs.collapse', () => startCocAutoRefresh());
 document.getElementById('secAuditLog')?.addEventListener('hidden.bs.collapse', () => stopCocAutoRefresh());
+// Drive Management is its own top-level Settings nav item (not nested in
+// an accordion like Audit Log), so its own shown.bs.tab/hidden.bs.tab -
+// fired by Bootstrap's list-group-as-tabs component the same way any
+// other Settings category switch is - is the right event to hook here.
+document.getElementById('settingsNavEject')?.addEventListener('shown.bs.tab', () => startDriveMgmtAutoRefresh());
+document.getElementById('settingsNavEject')?.addEventListener('hidden.bs.tab', () => stopDriveMgmtAutoRefresh());
 document.getElementById('secNetConfig')?.addEventListener('shown.bs.collapse', () => loadNetworkConfig());
 document.getElementById('secManageTags')?.addEventListener('shown.bs.collapse', () => loadManageTagsSection());
 // Keyword Lists/Hash Sets/URL Lists/YARA Rulesets were merged into one
@@ -13207,9 +13213,14 @@ document.addEventListener('shown.bs.tab', (ev) => {
     if (ev.target.id === 'settings-tab' && document.getElementById('secAuditLog')?.classList.contains('show')) {
         startCocAutoRefresh();
     }
+    // Same idea for Drive Management - its own nav item keeps its 'active'
+    // class even while the whole Settings tab-pane was hidden underneath.
+    if (ev.target.id === 'settings-tab' && document.getElementById('settingsNavEject')?.classList.contains('active')) {
+        startDriveMgmtAutoRefresh();
+    }
 });
 document.addEventListener('hidden.bs.tab', (ev) => {
-    if (ev.target.id === 'settings-tab') stopCocAutoRefresh();
+    if (ev.target.id === 'settings-tab') { stopCocAutoRefresh(); stopDriveMgmtAutoRefresh(); }
 });
 
 // --- Active Case Management ---
@@ -14293,6 +14304,16 @@ function escapeXmlForSvg(str) {
     return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Selecting a device path both re-highlights its port on the diagram AND
+// picks it in the dropdown, so clicking either direction (dropdown or an
+// occupied port rectangle) keeps both in sync (2026-09-05).
+function selectDriveFromPortClick(devicePath) {
+    const sel = document.getElementById('ejectDriveSelect');
+    if (!sel) return;
+    sel.value = devicePath;
+    sel.dispatchEvent(new Event('change'));
+}
+
 function buildUsbPortDiagramSvg(drives, selectedDevicePath) {
     const bySlot = {};
     let ambiguousBlueDrive = null; // a connected drive confirmed 'blue' but not a specific slot (true SuperSpeed - see describe_usb_port())
@@ -14318,11 +14339,17 @@ function buildUsbPortDiagramSvg(drives, selectedDevicePath) {
         } else if (ambiguousBlueDrive && slot.color === 'blue') {
             occupantLine = `<text x="${slot.x + 70}" y="${y + 28}" text-anchor="middle" font-size="9" fill="#cbd5e1" font-style="italic">connected (exact port unconfirmed)</text>`;
         }
-        return `
+        const slotMarkup = `
             <rect x="${slot.x}" y="${y}" width="140" height="40" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="${isSelected ? 3 : 1.5}" class="${rectClass}"></rect>
             <text x="${slot.x + 70}" y="${y + 15}" text-anchor="middle" font-size="11" font-weight="600" fill="#ffffff">${label}</text>
             ${occupantLine}
         `;
+        // Clicking an occupied port picks its drive in the dropdown too
+        // (2026-09-05) - only wrapped in a clickable <g> when a real
+        // drive is there; an empty port has nothing to select.
+        if (!drive) return slotMarkup;
+        const escapedDevice = escapeXmlForSvg(drive.device).replace(/'/g, "&#39;");
+        return `<g style="cursor:pointer;" onclick="selectDriveFromPortClick('${escapedDevice}')">${slotMarkup}</g>`;
     }).join('');
 
     return `
@@ -14338,9 +14365,31 @@ function buildUsbPortDiagramSvg(drives, selectedDevicePath) {
     `;
 }
 
+function buildUsbDeviceInfoList(drives) {
+    // Real per-device info (model/serial/size) tied to its resolved port -
+    // the diagram itself only has room for a drive's bare device name
+    // inside its small port rectangle. The port_index/port_class filter
+    // naturally excludes this station's own non-USB1/2-port devices (the
+    // SD card, zram) with no extra exclusion list needed - describe_usb_
+    // port() already returns neither a port_index nor 'blue' for those.
+    const withPort = (drives || []).filter((d) => d.port_index || d.port_class === 'blue');
+    if (!withPort.length) {
+        return '<p class="text-subtle small mb-0">No USB drive currently detected in any port.</p>';
+    }
+    const rows = withPort.map((d) => {
+        const portText = d.port_index ? `Port ${d.port_index}` : 'Blue port (exact slot unconfirmed)';
+        return `<div class="d-flex justify-content-between align-items-center py-1 border-bottom border-secondary small">
+            <span><span class="fw-bold text-bright">${escapeHtmlForPopup(d.device)}</span> - ${escapeHtmlForPopup(d.model || 'Unknown')} (${escapeHtmlForPopup(d.size || 'N/A')})</span>
+            <span class="text-subtle text-end">${escapeHtmlForPopup(portText)}<br>S/N: ${escapeHtmlForPopup(d.serial || 'N/A')}</span>
+        </div>`;
+    }).join('');
+    return `<div class="telemetry-grid-label mb-1">Connected Drives</div>${rows}`;
+}
+
 async function renderUsbPortDiagram(selectedDevicePath) {
     const wrap = document.getElementById('driveMgmtPortDiagramWrap');
     const host = document.getElementById('driveMgmtPortDiagramSvgHost');
+    const infoList = document.getElementById('driveMgmtDeviceInfoList');
     const controlsCol = document.getElementById('driveMgmtControlsCol');
     if (!wrap || !host) return;
     const info = await fetchPiHardwareInfo();
@@ -14355,6 +14404,48 @@ async function renderUsbPortDiagram(selectedDevicePath) {
     if (controlsCol) { controlsCol.classList.remove('col-md-12'); controlsCol.classList.add('col-md-6'); }
     wrap.style.display = '';
     host.innerHTML = buildUsbPortDiagramSvg(currentDrivesList, selectedDevicePath);
+    if (infoList) infoList.innerHTML = buildUsbDeviceInfoList(currentDrivesList);
+}
+
+// Manual refresh for the port diagram/device list (2026-09-05) - there is
+// no periodic poll for /api/drives, so moving a drive to a different
+// physical port would otherwise only be reflected after navigating away
+// and back or a full page reload. refreshDrives() already re-fetches
+// /api/drives, rebuilds every .drive-select (preserving the current
+// selection - see its own updated comment), and calls
+// refreshDriveManagementStatus() -> renderUsbPortDiagram() internally, so
+// a device moved to a new port is picked up AND its highlight moves to
+// the new port rectangle with no extra logic needed here.
+async function refreshDriveManagementView() {
+    const btn = document.getElementById('driveMgmtRefreshBtn');
+    if (btn) btn.disabled = true;
+    try {
+        await refreshDrives();
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+// Automatic refresh while Drive Management is the visible Settings pane -
+// same scoping pattern already established for the Audit Log's own
+// auto-refresh (start on shown.bs.tab for this specific nav item, stop on
+// hidden.bs.tab, and resume on returning to Settings if this is still the
+// active category). A tighter cadence than Audit Log's 20s (this is a
+// cheap lsblk + sysfs read, not a full log fetch) so a drive physically
+// moved to a new port shows up promptly without needing the manual
+// Refresh button.
+let driveMgmtAutoRefreshTimer = null;
+
+function startDriveMgmtAutoRefresh() {
+    if (driveMgmtAutoRefreshTimer) return;
+    driveMgmtAutoRefreshTimer = setInterval(refreshDrives, 5000);
+}
+
+function stopDriveMgmtAutoRefresh() {
+    if (driveMgmtAutoRefreshTimer) {
+        clearInterval(driveMgmtAutoRefreshTimer);
+        driveMgmtAutoRefreshTimer = null;
+    }
 }
 
 // Shows the write-block status of whichever drive is selected in Drive
@@ -14467,6 +14558,13 @@ async function refreshDrives() {
 
         const driveSelects = document.querySelectorAll(".drive-select");
         driveSelects.forEach(selectEl => {
+            // Preserve whatever was already selected (if it's still a real
+            // candidate) across the rebuild - previously reset to blank on
+            // every refresh, which would have defeated the whole point of a
+            // manual Refresh button on Drive Management (2026-09-05): an
+            // examiner who moves a drive to a new port and clicks Refresh
+            // wants to see its updated port, not lose their selection.
+            const prevValue = selectEl.value;
             selectEl.innerHTML = '<option value="">-- Choose Target Source Drive --</option>';
             currentDrivesList.forEach(dev => {
                 const opt = document.createElement("option");
@@ -14475,6 +14573,7 @@ async function refreshDrives() {
                 opt.dataset.portClass = dev.port_class || '';
                 selectEl.appendChild(opt);
             });
+            if (currentDrivesList.some((d) => d.device === prevValue)) selectEl.value = prevValue;
         });
         checkSmartTelemetry();
         refreshDriveManagementStatus();
