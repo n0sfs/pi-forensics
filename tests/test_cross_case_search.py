@@ -72,6 +72,57 @@ def test_list_case_folders_tolerates_a_corrupt_case_json(evidence_root, monkeypa
     assert [c['case_number'] for c in cases] == ["2026-CASE-GOOD"]
 
 
+def test_list_case_folders_prunes_bulk_tool_output_dirs_without_missing_real_cases(evidence_root, monkeypatch):
+    """A real, live-caught performance bug (2026-09-05): loose recovery-
+    tool output sitting directly under the evidence root (never a case,
+    never containing one) was being fully walked on every single call, a
+    real, avoidable NFS round-trip cost on the deployed station. Proven the
+    strong way, not just "the final case list looks right": os.walk() must
+    never even be given the chance to descend into the pruned directory's
+    own subtree - confirmed here by planting a case-shaped marker file one
+    level INSIDE a bulk-tool-output-named directory and asserting it's
+    never found, which would only happen if pruning genuinely stopped
+    os.walk() before it got there."""
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    _write_consolidated_case(evidence_root, "2026-CASE-REAL", "2026-CASE-REAL", "x", "2026-01-01", [])
+
+    # A real recovery-tool output dir, with something case-shaped hidden
+    # one level inside it - if pruning didn't work, os.walk() would find
+    # and report this as a bogus extra case.
+    junk_dir = os.path.join(evidence_root, "2026-CASE-REAL_ITEM-01_photorec")
+    nested = os.path.join(junk_dir, "recup_dir.1")
+    os.makedirs(nested)
+    with open(os.path.join(nested, "recup_dir.1_case.json"), 'w') as f:
+        json.dump({"case_number": "SHOULD-NEVER-BE-FOUND", "case_folder": nested,
+                    "created_at": "2026-01-01", "events": []}, f)
+
+    # A NAS-internal recycle-bin folder, same trap.
+    recycle_dir = os.path.join(evidence_root, "#recycle")
+    os.makedirs(os.path.join(recycle_dir, "some_deleted_case"))
+    with open(os.path.join(recycle_dir, "some_deleted_case", "some_deleted_case_case.json"), 'w') as f:
+        json.dump({"case_number": "ALSO-SHOULD-NEVER-BE-FOUND", "case_folder": recycle_dir,
+                    "created_at": "2026-01-01", "events": []}, f)
+
+    cases = case_index_db.list_case_folders()
+    assert [c['case_number'] for c in cases] == ["2026-CASE-REAL"]
+
+
+def test_list_case_folders_still_finds_a_case_nested_inside_a_mounted_share(evidence_root, monkeypatch):
+    """Guards against the naive, unsafe alternative fix (reducing the
+    depth-6 cap instead of pruning by name) - create_case() accepts an
+    arbitrary parent_dir, so a real case can legitimately be nested 2+
+    levels deep (e.g. one level inside a mounted network share, exactly
+    this app's own real deployed shape). Confirms the bulk-tool-output
+    pruning above didn't come at the cost of this still-supported
+    scenario."""
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    mounted_share = os.path.join(evidence_root, "network_nfs_some_share")
+    os.makedirs(mounted_share)
+    _write_consolidated_case(mounted_share, "2026-CASE-NESTED", "2026-CASE-NESTED", "x", "2026-01-01", [])
+    cases = case_index_db.list_case_folders()
+    assert [c['case_number'] for c in cases] == ["2026-CASE-NESTED"]
+
+
 def test_cross_case_hash_search_finds_a_real_match_in_a_different_case(evidence_root, monkeypatch):
     _redirect_evidence_root(monkeypatch, evidence_root)
     _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Alice", "2026-01-01", [

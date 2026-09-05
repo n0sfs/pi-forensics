@@ -61,6 +61,7 @@ from core.auth import requires_auth, requires_permission, get_current_user_permi
 from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path,
     classify_extension, classify_case_role, sanitize_case_slug, format_epoch,
+    is_bulk_tool_output_dir,
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, ALLOWED_HASH_ALGOS,
@@ -1363,8 +1364,6 @@ ATTACHMENT_EXCLUDE_EXT = {'.dd', '.e01', '.aff', '.001', '.raw', '.img'}
 ATTACHMENT_MAX_TEXT_EMBED_BYTES = 100_000
 ATTACHMENT_MAX_IMAGE_EMBED_BYTES = 8_000_000
 ATTACHMENT_DISCOVERY_MAX_FILES = 200
-ATTACHMENT_DISCOVERY_SKIP_DIRS = {'RECOVERED_FILES'}  # extundelete's fixed output dir name
-
 def _discover_case_files(case_folder):
     """Find files physically present in a case folder that are candidates
     for attaching to a report (photos, notes, extracted emails, etc.) but
@@ -1385,8 +1384,7 @@ def _discover_case_files(case_folder):
     results = []
     truncated = False
     for root, dirs, files in os.walk(case_folder):
-        dirs[:] = [d for d in dirs if d not in ATTACHMENT_DISCOVERY_SKIP_DIRS
-                   and not d.endswith(('_photorec', '_foremost', '_scalpel', '_triagescan'))]
+        dirs[:] = [d for d in dirs if not is_bulk_tool_output_dir(d)]
         for fname in files:
             if fname in own_artifact_names or fname.endswith(('.pre_consolidation_backup', '_report.json')):
                 continue
@@ -1957,7 +1955,7 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
     (200) mid-directory (a real truncation, not just a warning), which is a
     reasonable limit for an attachment-picker UI but would silently produce
     an incomplete archival bundle for a case with more real files. It also
-    doesn't reuse that function's ATTACHMENT_DISCOVERY_SKIP_DIRS skip-list
+    doesn't reuse that function's is_bulk_tool_output_dir() pruning
     (recovery-tool output directories like RECOVERED_FILES) - that
     exclusion exists because "thousands of tiny carved files" are
     impractical to list *individually as attachments*, a reason that
