@@ -75,7 +75,8 @@ from core.linux_artifacts import (
     LINUX_ARTIFACT_DEFAULT_TYPES,
 )
 from core.android_backup_utils import (
-    extract_parsed_artifact_records_from_backup, AndroidBackupError, AndroidBackupPasswordError,
+    extract_parsed_artifact_records_from_backup, extract_backup_to_directory,
+    AndroidBackupError, AndroidBackupPasswordError,
 )
 
 # Dispatcher for the real-fs Linux-artifact route below - keeps the scan
@@ -1811,6 +1812,65 @@ def parse_android_backup():
         "success": True, "header": result["header"], "total_files_in_backup": len(result["files"]),
         "sms_files_found": len(result["sms_files"]), "mms_files_found": len(result["mms_files"]),
         "counts": counts, "indexed": bool(case_folder and result["records"]),
+    })
+
+@file_explorer_bp.route('/api/files/extract_android_backup', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def extract_android_backup():
+    """Full extraction of EVERY real file bundled inside a .ab (Android
+    Backup File) - not just the SMS/MMS records parse_android_backup()
+    above already indexes. A real .ab produced with -apk/-shared (this
+    app's own Mobile Forensics "Backup" acquisition mode always uses both)
+    can bundle installed APKs, shared-storage files, and per-app data
+    blobs that were never browsable or extractable anywhere in this app
+    before this route. core/android_backup_utils.py's own
+    extract_backup_to_directory() (tar-slip-guarded, filter='data'-
+    hardened) already existed and was already unit-tested - it just had
+    no route calling it (found during a 2026-09-05 review). Writes into a
+    real destination directory, never the source .ab's own containing
+    folder - matching every other analysis action that produces real
+    output files (Thumbcache, $MFT, hashdeep). Refuses (409) if the target
+    output folder already exists, matching this app's own "hard error over
+    silent data loss" convention (e.g. Image Format Conversion's identical
+    collision guard) rather than silently overwriting a prior extraction."""
+    req = request.get_json() or {}
+    file_path = safe_path(req.get('path'))
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
+
+    dest_parent = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    if not dest_parent:
+        return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    output_dir = os.path.join(dest_parent, f"{base_name}_android_backup_extracted")
+    if os.path.exists(output_dir):
+        return jsonify({"success": False, "error": f"'{os.path.basename(output_dir)}' already exists at the destination - refusing to overwrite a prior extraction."}), 409
+
+    password = req.get('password') or None
+    try:
+        result = extract_backup_to_directory(file_path, output_dir, password=password)
+    except AndroidBackupPasswordError as e:
+        return jsonify({"success": False, "error": str(e), "password_required": True}), 400
+    except AndroidBackupError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Failed to extract Android backup: {e}"}), 500
+
+    case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
+    if case_folder and not case_consolidated_path(case_folder):
+        case_folder = None
+    _auto_tag_case_artifact(case_folder or dest_parent, output_dir)
+
+    log_chain_of_custody("android_backup_extracted", {
+        "path": file_path, "output_dir": output_dir,
+        "encrypted": result["header"]["encryption"] != "none",
+        "files_extracted": len(result["files"]),
+    })
+    return jsonify({
+        "success": True, "output_dir": output_dir, "files_extracted": len(result["files"]),
+        "header": result["header"],
     })
 
 @file_explorer_bp.route('/api/files/analyze_mft', methods=['POST'])

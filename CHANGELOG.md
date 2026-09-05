@@ -21,6 +21,26 @@ file after updating to see what changed.
 
 ---
 
+## [1.54.0] - 2026-09-05
+
+### Added
+- **A new "Extract All Files" action for Android Backup Files (.ab).** Previously, opening a `.ab`
+  file could only pull SMS/MMS records out of it (or run an MVT spyware scan) - every other file the
+  backup bundled (installed APKs, shared-storage files, per-app data blobs) was never listed or
+  extractable anywhere in the app. This unpacks the entire backup - password-protected or not - into
+  a new, browsable folder, so those files can now be reviewed like any other evidence.
+
+### Fixed
+- **Several real Android communication/contact records were invisible to the Evidence Timeline,
+  Pattern of Life activity chart, and Contact Correlation, purely because of missing category
+  mappings** - not missing data. Native MMS messages, and both SMS and MMS pulled from a `.ab`
+  backup, now correctly show up as "Communications" instead of the generic default bucket. Contact
+  Correlation now also considers companion-app-extracted contacts/SMS/call log and `.ab`-backup
+  SMS/MMS, and correctly resolves every real participant of a group MMS separately instead of risking
+  a garbled, incorrect match.
+
+---
+
 ## [1.53.0] - 2026-09-05
 
 ### Added

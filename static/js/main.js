@@ -5763,6 +5763,33 @@ async function runAndroidBackupModalAction() {
             return;
         }
 
+        if (mode === 'extract') {
+            const res = await fetch('/api/files/extract_android_backup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: activeSelectedFile, password, destination_dir: destinationDir, case_folder: activeCase ? activeCase.case_folder : null })
+            });
+            const data = await res.json();
+            if (!data.success) {
+                if (data.password_required && badge) { badge.className = 'badge bg-warning text-dark'; badge.textContent = 'PASSWORD NEEDED'; }
+                else if (badge) { badge.className = 'badge bg-danger'; badge.textContent = 'FAILED'; }
+                if (output) output.textContent = `[ERROR] ${data.error}`;
+                return;
+            }
+            if (badge) { badge.className = 'badge bg-success'; badge.textContent = 'EXTRACTED'; }
+            if (output) output.textContent = [
+                `Encryption: ${data.header.encryption}`,
+                `Files extracted: ${data.files_extracted}`,
+                '',
+                `Written to: ${data.output_dir}`,
+                '',
+                'Browse the extracted folder in File Explorer to review APKs, shared-storage',
+                'files, and any per-app data blobs the backup bundled.',
+            ].join('\n');
+            loadExplorer(explorerPath);
+            return;
+        }
+
         const res = await fetch('/api/files/parse_android_backup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

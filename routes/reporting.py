@@ -1023,9 +1023,17 @@ CASE_TIMELINE_ACTIVITY_CATEGORY = {
     # own in-app messaging (which reads as "Social Media" below).
     "mobile_sms_message": "Communications", "mobile_call_log": "Communications", "mobile_contact": "Communications",
     "android_sms_message": "Communications", "android_call_log": "Communications", "android_contact": "Communications",
+    "android_mms_message": "Communications",
     "android_companion_sms_message": "Communications",
     "android_companion_contact": "Communications",
     "android_companion_call_log_entry": "Communications",
+    # .ab (Android Backup File) - sourced SMS/MMS (core/android_backup_
+    # utils.py) - the identical real signal as android_sms_message/
+    # android_mms_message just above, only a different acquisition path
+    # (a non-rooted `adb backup` archive instead of a rooted physical
+    # image's mmssms.db). Found missing entirely during a 2026-09-05
+    # review and fixed here.
+    "android_ab_sms_message": "Communications", "android_ab_mms_message": "Communications",
     "leapp_sms_message": "Communications", "leapp_mms_message": "Communications", "leapp_call_log": "Communications",
     "leapp_contact": "Communications", "email_message": "Communications", "apple_contact": "Communications",
     "takeout_contact": "Communications",
