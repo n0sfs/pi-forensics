@@ -14450,9 +14450,14 @@ async function toggleWriteBlockForSelectedDrive() {
 // like blue (never eligible for unlock), matching the backend's own
 // fail-closed posture.
 function usbPortLabel(portClass) {
-    if (portClass === 'blue') return '🔵 Blue Port (Evidence-Only)';
-    if (portClass === 'black') return '⬛ Black Port (Utility)';
-    return '❓ Unknown Port';
+    // Plain text, deliberately no emoji - confirmed live (2026-09-05) that
+    // this station's own kiosk/browser font renders 🔵/⬛/❓ as blank boxes.
+    // The badges that show this text already carry their own background
+    // color (bg-primary/bg-dark - see refreshDriveManagementStatus()) as
+    // the real color indicator, so nothing is lost by dropping the emoji.
+    if (portClass === 'blue') return 'Blue Port (Evidence-Only)';
+    if (portClass === 'black') return 'Black Port (Utility)';
+    return 'Unknown Port';
 }
 
 async function refreshDrives() {
