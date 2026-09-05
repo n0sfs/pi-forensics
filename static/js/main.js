@@ -12718,10 +12718,18 @@ function _resetAutoAnalyzeModal() {
     document.getElementById('autoAnalyzeImageStepsGroup').style.display = 'none';
     document.getElementById('autoAnalyzeMemoryGroup').style.display = 'none';
     document.getElementById('autoAnalyzeMobileGroup').style.display = 'none';
+    document.getElementById('autoAnalyzeMobileAndroidGroup').style.display = 'none';
     document.getElementById('autoAnalyzeStatus').textContent = '';
     document.getElementById('autoAnalyzeStartBtn').disabled = true;
     document.getElementById('autoAnalyzeProfileSelect').value = '';
+    autoAnalyzeMobileStepsRegistry = null;
 }
+// Path-specific (unlike autoAnalyzeStepsRegistry, which is a static/global
+// registry for the Windows/Linux disk-image steps) - the Mobile/Android
+// step menu depends on whether the resolved path is a real pull folder, a
+// single .ab backup file, or a single bugreport .zip, so this is fetched
+// fresh per openAutoAnalyzeModal() call rather than cached once globally.
+let autoAnalyzeMobileStepsRegistry = null;
 
 // explicitPath: optional - lets a caller other than the File Explorer context
 // menu (e.g. Guided Workflow's step 3, which resolves the active case's own
@@ -12786,6 +12794,16 @@ async function openAutoAnalyzeModal(explicitPath) {
         } else if (data.profile === 'mobile_android') {
             infoText = 'Detected: Android mobile backup (matches a case acquisition record).';
             initialValue = 'mobile_android';
+            // Path-specific - must resolve before onAutoAnalyzeProfileChange()
+            // (below) builds the checklist from it, same "await before the
+            // select's own onchange handler could possibly read it" reasoning
+            // fetchAutoAnalyzeStepsRegistry() already established for the
+            // Windows/Linux registry.
+            try {
+                const stepsRes = await fetch(`/api/files/auto_analyze/mobile/steps?path=${encodeURIComponent(path)}`);
+                const stepsData = await stepsRes.json();
+                if (stepsData.success) autoAnalyzeMobileStepsRegistry = stepsData;
+            } catch (err) { /* onAutoAnalyzeProfileChange() below tolerates a still-null registry */ }
         }
         const infoEl = document.getElementById('autoAnalyzeDetectedInfo');
         infoEl.textContent = infoText;
@@ -12803,6 +12821,7 @@ function onAutoAnalyzeProfileChange() {
     document.getElementById('autoAnalyzeImageStepsGroup').style.display = 'none';
     document.getElementById('autoAnalyzeMemoryGroup').style.display = 'none';
     document.getElementById('autoAnalyzeMobileGroup').style.display = 'none';
+    document.getElementById('autoAnalyzeMobileAndroidGroup').style.display = 'none';
     document.getElementById('autoAnalyzeStartBtn').disabled = !profile;
 
     if (profile === 'windows' || profile === 'linux') {
@@ -12842,8 +12861,57 @@ function onAutoAnalyzeProfileChange() {
         document.getElementById('autoAnalyzeImageStepsGroup').style.display = '';
     } else if (profile === 'memory') {
         document.getElementById('autoAnalyzeMemoryGroup').style.display = '';
-    } else if (profile === 'mobile_ios' || profile === 'mobile_android') {
+    } else if (profile === 'mobile_ios') {
         document.getElementById('autoAnalyzeMobileGroup').style.display = '';
+    } else if (profile === 'mobile_android') {
+        // Mobile/Android gets a real curated step checklist (mirroring the
+        // windows/linux branch above) instead of iOS's single-action static
+        // info text - the target could be a real pull folder, a single .ab
+        // backup file, or a single bugreport .zip, each with its own step
+        // menu (autoAnalyzeMobileStepsRegistry.target_kind/default_steps/
+        // extra_steps, resolved server-side in openAutoAnalyzeModal()).
+        const targetInfoEl = document.getElementById('autoAnalyzeMobileAndroidTargetInfo');
+        const list = document.getElementById('autoAnalyzeMobileAndroidStepsList');
+        list.innerHTML = '';
+        if (!autoAnalyzeMobileStepsRegistry) {
+            const warn = document.createElement('div');
+            warn.className = 'text-warning small';
+            warn.textContent = 'Could not load the available analysis steps - try reopening this dialog.';
+            list.appendChild(warn);
+            document.getElementById('autoAnalyzeMobileAndroidGroup').style.display = '';
+            return;
+        }
+        const kindLabels = {
+            pull_folder: 'a pulled/extracted evidence folder', backup_file: 'a single Android Backup (.ab) file',
+            bugreport_file: 'a single adb bugreport (.zip) file', unknown: 'an unrecognized target',
+        };
+        if (targetInfoEl) targetInfoEl.textContent = `Target: ${kindLabels[autoAnalyzeMobileStepsRegistry.target_kind] || autoAnalyzeMobileStepsRegistry.target_kind}.`;
+        const defaults = autoAnalyzeMobileStepsRegistry.default_steps || [];
+        const allSteps = [...defaults, ...(autoAnalyzeMobileStepsRegistry.extra_steps || [])];
+        allSteps.forEach(key => {
+            const row = document.createElement('div');
+            row.className = 'form-check';
+            const cb = document.createElement('input');
+            cb.className = 'form-check-input';
+            cb.type = 'checkbox';
+            cb.value = key;
+            cb.id = `autoAnalyzeMobileAndroidStep_${key}`;
+            cb.checked = defaults.includes(key);
+            const label = document.createElement('label');
+            label.className = 'form-check-label small';
+            label.htmlFor = cb.id;
+            label.textContent = autoAnalyzeMobileStepsRegistry.step_labels[key] || key;
+            row.appendChild(cb);
+            row.appendChild(label);
+            list.appendChild(row);
+        });
+        if (!allSteps.length) {
+            const warn = document.createElement('div');
+            warn.className = 'text-warning small';
+            warn.textContent = "Couldn't determine a step menu for this target - it isn't a recognizable pull folder, .ab file, or bugreport .zip.";
+            list.appendChild(warn);
+        }
+        document.getElementById('autoAnalyzeMobileAndroidGroup').style.display = '';
     }
 }
 
@@ -12866,10 +12934,33 @@ async function startAutoAnalyze() {
         });
         return;
     }
-    if (profile === 'mobile_ios' || profile === 'mobile_android') {
+    if (profile === 'mobile_ios') {
         if (autoAnalyzeModalInstance) autoAnalyzeModalInstance.hide();
         activeSelectedFile = autoAnalyzeTargetPath; // see the memory branch's comment above
-        runSelectedMvtScan(profile === 'mobile_ios' ? 'ios' : 'android');
+        runSelectedMvtScan('ios');
+        return;
+    }
+    if (profile === 'mobile_android') {
+        const steps = Array.from(document.querySelectorAll('#autoAnalyzeMobileAndroidStepsList input[type=checkbox]:checked')).map(el => el.value);
+        if (!steps.length) return showToast('Select at least one step to run.', 'warning');
+
+        statusEl.textContent = 'Starting Auto Analyze job...';
+        try {
+            const res = await fetch('/api/files/auto_analyze/mobile/start', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: autoAnalyzeTargetPath, case_folder: activeCase ? activeCase.case_folder : null, steps })
+            });
+            const data = await res.json();
+            if (!data.success) {
+                statusEl.textContent = `Failed to start: ${data.error}`;
+                showToast(`Auto Analyze failed to start: ${data.error}`, 'danger');
+                return;
+            }
+            if (autoAnalyzeModalInstance) autoAnalyzeModalInstance.hide();
+            showToast(data.message || 'Auto Analyze started.', 'success');
+        } catch (err) {
+            statusEl.textContent = 'Request failed.';
+        }
         return;
     }
 

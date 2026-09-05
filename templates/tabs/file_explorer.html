@@ -455,6 +455,12 @@
                     <div id="autoAnalyzeMobileGroup" class="small text-subtle" style="display:none;">
                         Runs a Mobile Verification Toolkit (MVT) spyware/IOC scan against this backup - the same check the standalone MVT Scan action runs. Note: this scan cannot be stopped once started; it runs to completion or its own internal timeout.
                     </div>
+                    <div id="autoAnalyzeMobileAndroidGroup" style="display:none;">
+                        <div id="autoAnalyzeMobileAndroidTargetInfo" class="small text-subtle mb-2"></div>
+                        <label class="telemetry-grid-label d-block mb-1">Steps to run (as one background job, in order):</label>
+                        <div id="autoAnalyzeMobileAndroidStepsList" class="mb-2"></div>
+                        <div class="small text-subtle">Every step also stays available individually via the right-click menu or Mobile Forensics tab, one at a time. WhatsApp Decrypt &amp; Parse only runs if a matching backup file AND a previously-pulled key are both found - it never prompts mid-run.</div>
+                    </div>
 
                     <div id="autoAnalyzeStatus" class="small text-subtle mt-2"></div>
                 </div>
