@@ -22,6 +22,7 @@ from werkzeug.security import generate_password_hash
 import core.config as config
 import routes.reporting as reporting
 from routes.reporting import reporting_bp, _compute_reporting_stats
+from core.case_index_db import case_index_db_path, _case_index_connect
 from tests.conftest import RemoteTestClient, login_user_session
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
@@ -65,6 +66,24 @@ def _write_consolidated_case(evidence_root, slug, case_number, case_status, even
             "created_at": "2026-01-01", "notes": "", "case_status": case_status, "events": events,
         }, f)
     return case_dir
+
+
+def _tag_item_notable(case_dir, tag_name="Notable Item", item_name="evidence.jpg"):
+    """Opens (creating/seeding if absent) the case's own per-case SQLite
+    index and inserts one tagged_items row against the given tag - by
+    default the schema's own always-seeded 'Notable Item' default tag, so
+    no extra tag-creation step is needed for the common case."""
+    db_path = case_index_db_path(case_dir)
+    conn = _case_index_connect(db_path)
+    try:
+        tag_id = conn.execute("SELECT id FROM tags WHERE name = ?", (tag_name,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO tagged_items (tag_id, source_type, name, tagged_at) VALUES (?, 'real_fs', ?, datetime('now'))",
+            (tag_id, item_name),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _redirect_coc_log(monkeypatch, tmp_path):
@@ -136,6 +155,35 @@ def test_reports_exported_is_zero_with_no_log_file_at_all(evidence_root, monkeyp
     assert stats[0]["value"] == 0
 
 
+def test_tags_flagged_sums_notable_tagged_items_across_every_case(evidence_root, monkeypatch):
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    case_a = _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Open", 1)
+    case_b = _write_consolidated_case(evidence_root, "2026-CASE-B", "2026-CASE-B", "Open", 1)
+    _tag_item_notable(case_a, item_name="a1.jpg")
+    _tag_item_notable(case_a, item_name="a2.jpg")
+    _tag_item_notable(case_b, item_name="b1.jpg")
+
+    stats = _compute_reporting_stats(["tags_flagged"])
+    assert stats[0]["value"] == 3
+
+
+def test_tags_flagged_excludes_non_notable_tags(evidence_root, monkeypatch):
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    case_a = _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Open", 1)
+    _tag_item_notable(case_a, tag_name="Bookmark", item_name="a1.jpg")  # not notable
+    _tag_item_notable(case_a, tag_name="Notable Item", item_name="a2.jpg")
+
+    stats = _compute_reporting_stats(["tags_flagged"])
+    assert stats[0]["value"] == 1
+
+
+def test_tags_flagged_is_zero_when_no_case_has_ever_been_indexed(evidence_root, monkeypatch):
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Open", 1)  # never tagged/indexed
+    stats = _compute_reporting_stats(["tags_flagged"])
+    assert stats[0]["value"] == 0
+
+
 def test_an_unrecognized_key_is_silently_skipped_not_fatal(evidence_root, monkeypatch):
     _redirect_evidence_root(monkeypatch, evidence_root)
     stats = _compute_reporting_stats(["total_cases", "made_up_stat"])
@@ -150,13 +198,13 @@ def test_stat_order_follows_the_requested_key_order_not_registry_order(evidence_
 
 # --- Route-level tests ---
 
-def test_registry_route_returns_all_four_definitions(client):
+def test_registry_route_returns_all_five_definitions(client):
     res = client.get("/api/reporting/stats/registry")
     assert res.status_code == 200
     data = res.get_json()
     assert data["success"] is True
     keys = {d["key"] for d in data["stats"]}
-    assert keys == {"total_cases", "active_cases", "evidence_items", "reports_exported"}
+    assert keys == {"total_cases", "active_cases", "evidence_items", "reports_exported", "tags_flagged"}
     # Every definition needs a real label an examiner-facing checkbox can
     # show, not just an internal key.
     assert all(d.get("label") for d in data["stats"])

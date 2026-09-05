@@ -21,6 +21,16 @@ file after updating to see what changed.
 
 ---
 
+## [1.50.0] - 2026-09-05
+
+### Added
+- **"Tags/Notable Items Flagged" added to Reporting's customizable header stats** (Settings > Case &
+  Reporting > Report Configuration > Reporting Header Stats). A station-wide count of every item
+  tagged "Notable Item" (or any other tag an examiner has marked Notable) across every case, summed
+  from each case's own tagging history. Off by default, alongside the other selectable stats.
+
+---
+
 ## [1.49.0] - 2026-09-04
 
 ### Added
