@@ -21,6 +21,30 @@ file after updating to see what changed.
 
 ---
 
+## [1.51.0] - 2026-09-05
+
+### Added
+- **A real, physical port restriction for write-unlocking a drive.** This station's 2 blue (USB 3.0)
+  ports are now permanently evidence-only - neither the manual write-blocker toggle (Settings > Drive
+  Management) nor a Live Collection USB build can ever unlock a drive plugged into one of them,
+  regardless of what's clicked or confirmed. Only the 2 black (USB 2.0) ports can be write-unlocked.
+  This closes a real gap found during live hardware testing: any of the 4 ports could previously be
+  unlocked by software, with nothing distinguishing an evidence port from a utility one.
+- **A schematic USB port diagram on Settings > Drive Management** (Raspberry Pi 4 stations only - the
+  one board this port detection has been verified against), showing all 4 rear ports, labeling which
+  one currently holds a connected drive, and highlighting whichever drive is selected above. This is an
+  original diagram, not a photograph.
+- **The Write Blocker Status badge on Drive Management now reflects a drive's real, current state**
+  (it previously always showed "locked" even for a drive deliberately left unlocked to write to).
+
+### Fixed
+- **The write-blocker toggle (Settings > Drive Management) is no longer silently undone within
+  seconds.** Unlocking a drive through it used to genuinely flip the flag for a moment, then get
+  reverted by this app's own routine background polling with no visible cause - the toggle was, in
+  practice, non-functional for its actual purpose (unlocking a destination drive to write an image to).
+
+---
+
 ## [1.50.3] - 2026-09-05
 
 ### Fixed

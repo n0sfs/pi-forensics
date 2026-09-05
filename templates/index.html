@@ -482,6 +482,16 @@
             100% { box-shadow: 0 0 0 14px rgba(var(--accent-cyan-rgb), 0); }
         }
 
+        /* Drive Management's USB port diagram (2026-09-05) - a continuous
+           pulse (not a one-shot flash like settingsSearchPulse above)
+           since the highlighted port should stay visibly distinguished
+           for as long as that drive is selected, not just for a moment. */
+        .usb-port-rect-selected { animation: usbPortSelectedPulse 2s ease-in-out infinite; }
+        @keyframes usbPortSelectedPulse {
+            0%, 100% { stroke-width: 3; filter: drop-shadow(0 0 4px rgba(var(--accent-cyan-rgb), 0.9)); }
+            50% { stroke-width: 4.5; filter: drop-shadow(0 0 9px rgba(var(--accent-cyan-rgb), 1)); }
+        }
+
         @media (max-width: 767.98px) {
             /* File Explorer's folder tree: hidden by default below this
                breakpoint (matches the main sidebar's own narrow-screen

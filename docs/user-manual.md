@@ -835,6 +835,22 @@ file — so you can prove later that the report itself hasn't been altered since
 Check or manually toggle the software write-blocker for a specific drive, and safely detach a drive
 before physically disconnecting it.
 
+**The 2 blue (USB 3.0) ports on the station are permanently evidence-only.** This app has no way to
+write-unlock a drive plugged into one of them, regardless of what's clicked or confirmed — only the
+2 black (USB 2.0) ports can ever be write-unlocked (for example, to write an acquired image out to a
+destination drive, or as the target for a [Live Collection USB](#4-live-collection-usb) build). This
+is enforced server-side, not just hidden in the interface. On a Raspberry Pi 4 (the only board this
+detection has been verified against — a different Pi model shows this section without the diagram or
+port labels, since its physical port layout hasn't been confirmed), the card also shows a small
+schematic diagram of the station's own rear USB ports, labeling which one currently holds a connected
+drive and highlighting whichever drive is selected above. This diagram is an original, schematic
+reference — not a photograph, and not necessarily to the exact physical scale or left-right
+orientation of your own unit — see the
+[official Raspberry Pi hardware documentation](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html)
+for the real board layout, or the
+[Getting Started guide](https://projects.raspberrypi.org/en/projects/raspberry-pi-getting-started) for
+a general orientation to the hardware.
+
 ### Service Controls & Diagnostics
 
 Restart the web service or reload the touchscreen kiosk display; update the app itself (`git pull`)

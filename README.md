@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.50.3-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.51.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -252,7 +252,9 @@ built-in Admin/Analyst groups or your own custom permission groups (checkbox-bas
 area). Session-based login with an idle timeout and brute-force lockout on every remote/LAN request,
 a software write-blocker toggle backed by `udev`, an unprivileged service account with
 narrowly-scoped `sudo` grants (no general root access), and an append-only chain-of-custody log with
-CSV export. See [Security](#-security) below for the full threat model.
+CSV export. On a Raspberry Pi 4, the 2 USB 3.0 (blue) ports are permanently evidence-only — this app
+has no way to write-unlock a drive there at all — with a schematic port diagram showing which port a
+connected drive is actually in. See [Security](#-security) below for the full threat model.
 
 ### Station management
 TLS certificate generation (with correct SANs for your LAN IP), download, and per-OS trust
@@ -388,7 +390,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.50.3 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.51.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
