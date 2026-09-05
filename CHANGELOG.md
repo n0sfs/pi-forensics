@@ -21,6 +21,15 @@ file after updating to see what changed.
 
 ---
 
+## [1.51.1] - 2026-09-05
+
+### Changed
+- **Settings > Drive Management is more condensed.** The USB port diagram now sits side by side with
+  the drive selector, write-blocker status, and buttons instead of stacked above them, cutting the
+  card's height roughly in half.
+
+---
+
 ## [1.51.0] - 2026-09-05
 
 ### Added
