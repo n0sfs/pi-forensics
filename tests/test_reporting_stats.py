@@ -217,6 +217,36 @@ def test_tags_flagged_recomputes_once_the_cache_entry_is_cleared(evidence_root, 
     assert _compute_reporting_stats(["tags_flagged"])[0]["value"] == 2
 
 
+def test_tags_flagged_shares_one_list_case_folders_walk_not_a_second_of_its_own(evidence_root, monkeypatch):
+    """A real, live-caught bug this stat's own first cut had: enabling
+    tags_flagged alongside the other station-wide stats used to pay for
+    list_case_folders() TWICE - once for total_cases/active_cases/
+    evidence_items, once more inside _count_notable_tagged_items_station_
+    wide() itself - needlessly doubling an already-slow cost on this app's
+    real NFS-backed storage. Proven here the strong way: monkeypatching
+    list_case_folders() to fail loudly on a second call, not just checking
+    the end result looks right."""
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    case_a = _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Open", 1)
+    _tag_item_notable(case_a, item_name="a1.jpg")
+
+    real_list_case_folders = reporting.list_case_folders
+    call_count = {"n": 0}
+
+    def counting_wrapper():
+        call_count["n"] += 1
+        if call_count["n"] > 1:
+            raise AssertionError("list_case_folders() was called a second time in one request")
+        return real_list_case_folders()
+
+    monkeypatch.setattr(reporting, "list_case_folders", counting_wrapper)
+    stats = _compute_reporting_stats(["total_cases", "active_cases", "evidence_items", "tags_flagged"])
+    by_key = {s["key"]: s for s in stats}
+    assert by_key["total_cases"]["value"] == 1
+    assert by_key["tags_flagged"]["value"] == 1
+    assert call_count["n"] == 1
+
+
 def test_an_unrecognized_key_is_silently_skipped_not_fatal(evidence_root, monkeypatch):
     _redirect_evidence_root(monkeypatch, evidence_root)
     stats = _compute_reporting_stats(["total_cases", "made_up_stat"])
