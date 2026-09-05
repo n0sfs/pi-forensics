@@ -197,6 +197,25 @@ apt_packages = [
                    # target filesystem (native read-write on modern Windows/macOS/Linux,
                    # unlike FAT32's 4GB file cap or NTFS's no-native-macOS-write limitation -
                    # see core/live_collection_utils.py's own docstring for the full reasoning).
+    "bindfs",  # F2FS filesystem browsing (routes/file_explorer.py) - Sleuth Kit/pytsk3 has no
+               # F2FS driver at all, so an already-acquired image's F2FS content is instead
+               # mounted read-only through the kernel's own native F2FS driver (confirmed
+               # compiled directly into this station's kernel, not a loadable module) and then
+               # presented via a read-only bindfs mount with every file remapped to appear
+               # owned by this app's own unprivileged service account - a genuine Linux-native
+               # filesystem, unlike the FAT/exFAT volumes BitLocker/VeraCrypt decrypt into, has
+               # real per-inode Unix ownership baked in with no uid=/gid=-style mount-option
+               # override, and a rooted Android device's own F2FS data partition is full of
+               # files this app's own service account otherwise couldn't read at all. bindfs
+               # never writes back to the F2FS mount underneath it, so this never risks altering
+               # the acquired image's own bytes. Confirmed present on Debian trixie/arm64
+               # (1.14.7-1.1+b2, deps: fuse/libfuse2t64/libc6 only) via apt-cache before adding.
+    "f2fs-tools",  # NOT required for the F2FS browsing feature itself (mount(8) talks to the
+                   # kernel's own compiled-in F2FS driver directly with no userspace helper
+                   # needed for a plain read-only mount) - installed purely so mkfs.f2fs/
+                   # fsck.f2fs/dump.f2fs are available for building/inspecting a real F2FS test
+                   # image on this station. Confirmed present on Debian trixie/arm64 (1.16.0-
+                   # 1.1+b1) via apt-cache before adding.
                    # Confirmed present on Debian trixie/arm64 (1.2.9-1+deb13u1) via apt-cache
                    # before adding here, per this project's own "verify package existence
                    # first" rule. Deliberately exfatprogs, not the older exfat-fuse/exfat-utils
@@ -928,6 +947,15 @@ install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in IN
 # rely on. Verified live the same mandatory way: the real generated
 # command line matches this pattern, and a deliberately malformed variant
 # is rejected.
+# F2FS filesystem browsing (2026-09-05) - bindfs's own flag shape has no
+# small fixed verb set the way cryptsetup does (luksOpen/luksClose), so this
+# anchors every fixed flag this app's own code ever passes
+# (--force-user/--force-group are always the exact running service account,
+# -p 0555/-r/-o allow_other never vary) and wildcards only the trailing
+# <source> <dest> path pair - both always server-generated, absolute paths
+# under either .f2fs_mounts/ (an install-local staging directory) or the
+# examiner's own destination folder, never attacker-controlled in a way
+# that could start with a dash and be mis-parsed as another flag.
 # Live Collection USB (2026-08-31) - this app's first-ever deliberate
 # write to a raw block device it doesn't already treat as evidence (every
 # other operation forces one read-only via the udev rule below). wipefs/
@@ -963,6 +991,7 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /usr/sbin/cryptsetup close pif_veracrypt_*, \\
 /sbin/losetup -o * --show -f *, /sbin/losetup -d /dev/loop*, /sbin/losetup -a, \\
 /sbin/wipefs -a /dev/sd[a-z], /sbin/sfdisk /dev/sd[a-z], /sbin/mkfs.exfat -n PIF_COLLECT /dev/sd[a-z]1, \\
+/usr/bin/bindfs --force-user={SERVICE_USER} --force-group={SERVICE_USER} -p 0555 -r -o allow_other *, \\
 /bin/chown -R {SERVICE_USER} *, \\
 /bin/chgrp -R {SERVICE_USER} *, \\
 /sbin/reboot, /sbin/poweroff, \\

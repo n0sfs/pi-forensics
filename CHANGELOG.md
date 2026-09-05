@@ -21,7 +21,29 @@ file after updating to see what changed.
 
 ---
 
-## [1.55.0] - 2026-09-05
+## [1.56.0] - 2026-09-05
+
+### Added
+- **F2FS filesystem browsing.** F2FS (common on a rooted Android device's own data partition) has
+  never been readable through this app's Sleuth Kit-based Image Browser at all - the underlying
+  toolkit simply has no driver for it. Right-clicking an F2FS-formatted image (or a specific
+  partition within a larger multi-partition image) now offers "Mount F2FS Partition & Browse..." -
+  it mounts the filesystem read-only through the station's own kernel filesystem support, then
+  presents it in File Explorer as an ordinary, browsable folder, with every other tool (extract,
+  hash, search, tag, attach to case) already working against it with no changes needed. This is
+  read-only browse/extract/hash only - unlike ext4/NTFS/FAT, F2FS's own on-disk design doesn't
+  support recovering deleted files through a plain mount.
+
+### Requires action on the station
+- **This release needs two things this app can't do on its own** - a station updated via git will
+  see the new "Mount F2FS Partition & Browse..." menu item, but it will fail with a clear error
+  message until both are done:
+  1. `sudo apt-get install -y bindfs f2fs-tools` (bindfs is required; f2fs-tools is optional, only
+     useful for building/inspecting a test F2FS image).
+  2. A new sudoers grant for `bindfs` needs to be added to `/etc/sudoers.d/pi-forensics` -
+     re-running `sudo python3 install.py` picks this up automatically on a station whose sudoers
+     file hasn't been manually edited since install; a station with hand-edited sudoers needs the
+     one new line added by hand (see `install.py`'s own generated content for the exact line).
 
 ### Added
 - **Auto Analyze now covers Android mobile evidence, not just disk images.** Right-clicking an
