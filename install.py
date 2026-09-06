@@ -1012,7 +1012,7 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /sbin/wipefs -a /dev/sd[a-z], /sbin/sfdisk /dev/sd[a-z], /sbin/mkfs.exfat -n PIF_COLLECT /dev/sd[a-z]1, \\
 /usr/bin/bindfs --force-user={SERVICE_USER} --force-group={SERVICE_USER} -p 0555 -r -o allow_other *, \\
 /usr/bin/jmtpfs -l, \\
-/usr/bin/jmtpfs -device=* -o ro,allow_other *, \\
+/usr/bin/jmtpfs -device=* -o ro\\,allow_other *, \\
 /bin/cp -a * *, \\
 /bin/chown -R {SERVICE_USER} *, \\
 /bin/chgrp -R {SERVICE_USER} *, \\
