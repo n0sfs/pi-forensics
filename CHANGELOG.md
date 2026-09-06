@@ -21,6 +21,19 @@ file after updating to see what changed.
 
 ---
 
+## [1.57.1] - 2026-09-05
+
+### Fixed
+- **`install.py`'s generated sudoers grant for the MTP fallback feature (v1.57.0) had an unescaped
+  comma that broke `visudo` validation outright** (`expected a fully-qualified path name`) - sudoers
+  syntax treats a bare comma as a command-list separator, and jmtpfs's own `-o ro,allow_other`
+  argument needed that comma backslash-escaped to be treated as a literal character. Never reached
+  a live station in a broken state - caught by `visudo -c -f` exactly as designed, before the file
+  was ever installed. Confirmed fixed and genuinely live-verified: real F2FS format detection, a
+  real kernel mount + bindfs ownership-remap, real content read by the unprivileged service account,
+  and read-only enforcement all confirmed working end-to-end against a real F2FS filesystem built on
+  the station itself.
+
 ## [1.57.0] - 2026-09-05
 
 ### Added
