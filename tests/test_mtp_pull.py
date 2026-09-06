@@ -105,7 +105,18 @@ class TestExecutionWorkerMtpPull:
             stack.enter_context(mock.patch("os.path.ismount", return_value=mount_ismount))
             mock_run = stack.enter_context(mock.patch("subprocess.run", return_value=_proc(mount_returncode)))
             stack.enter_context(mock.patch("os.walk", side_effect=fake_walk))
-            stack.enter_context(mock.patch("os.makedirs"))
+            # Genuinely test-isolated staging root (never the real, module-
+            # level MTP_MOUNT_STAGING_ROOT under INSTALL_DIR) - os.makedirs
+            # is deliberately left unmocked and allowed to run for real
+            # against this safe tmp_path subtree, since it's cheap, real,
+            # idempotent (exist_ok=True), and needed anyway: a bare mock of
+            # os.makedirs here would silently no-op the staging root's own
+            # creation and make the test depend on that real on-disk
+            # directory already existing from some earlier run - a real,
+            # found-live fragility (this exact scenario broke all of these
+            # tests once already, when the real directory got cleaned up
+            # during live device testing).
+            stack.enter_context(mock.patch.object(mobile, "MTP_MOUNT_STAGING_ROOT", str(tmp_path / ".mtp_mounts")))
             stack.enter_context(mock.patch("os.path.getsize", return_value=1024))
             mock_copy = stack.enter_context(mock.patch.object(mobile.shutil, "copy2", side_effect=copy_side_effect))
             if snapshot_side_effect is not None:

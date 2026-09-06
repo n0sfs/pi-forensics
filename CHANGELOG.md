@@ -21,6 +21,32 @@ file after updating to see what changed.
 
 ---
 
+## [1.57.3] - 2026-09-06
+
+### Fixed
+- **Android "Bug Report" and "Backup" acquisition modes could report a corrupted file as a genuine
+  success.** Found on a real device: `adb bugreport` reported a complete, error-free 29MB transfer,
+  but the resulting file on this station's own network-mounted evidence storage was silently
+  truncated to exactly 1MB - a transient stall on the destination storage hit the write flush *after*
+  `adb` had already exited reporting success, with no error surfaced anywhere in the process. The
+  app's own completeness check was just "does the file exist and have some bytes" - a check a
+  truncated file trivially passes. Now, before either mode is ever marked "Completed," the resulting
+  file is checked for real structural completeness: a bugreport's `.zip` is validated the way any
+  zip reader would (a truncated file lacks the trailing directory record every complete zip has,
+  confirmed against the real corrupted file from this station); a backup's `.ab` file is fully
+  decompressed and checked for its own valid end-of-stream marker when unencrypted, or accepted with
+  its header alone verified when password-protected (its payload genuinely can't be checked further
+  without the password, which isn't available at acquisition time - disclosed, not silently assumed
+  fine). A file that fails this check is now correctly reported as Failed, with a clear message to
+  retry, instead of a false "Completed Successfully."
+- **A related, more foundational bug found while building the fix above**: the shared `.ab` decoder
+  (`decrypt_and_decompress_backup()`, used both by acquisition and by every existing `.ab` analysis/
+  parsing feature) never checked whether a compressed payload's decompression actually reached a real
+  end-of-stream - confirmed directly that a raw deflate stream cut short by even a single byte still
+  "successfully" decompresses and returns without error, silently handing back partial data as if it
+  were the complete backup. Fixed at the source, so every existing caller of this function benefits,
+  not just the new check above.
+
 ## [1.57.2] - 2026-09-06
 
 ### Fixed

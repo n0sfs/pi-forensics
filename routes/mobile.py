@@ -15,6 +15,7 @@ import re
 import json
 import time
 import shutil
+import zipfile
 import subprocess
 import threading
 import tempfile
@@ -31,6 +32,9 @@ from core.jobs import (
     build_report_target, write_initial_report, _write_report, reclaim_ownership,
 )
 from core.case_index_db import _auto_tag_case_artifact, _record_parsed_artifacts
+from core.android_backup_utils import (
+    decrypt_and_decompress_backup, AndroidBackupError, AndroidBackupPasswordError,
+)
 from core.whatsapp_utils import pull_whatsapp_key_file
 from core.idevicecrashreport_utils import pull_ios_crash_reports
 from core.sim_utils import list_pcsc_readers, read_sim_card
@@ -947,6 +951,63 @@ def sim_read():
     return jsonify({"success": True, "output": result["output"], "output_path": output_path})
 
 
+def _verify_android_single_file_output(mode, output_path):
+    """A real, live-caught gap this closes (2026-09-06): the caller's own
+    success check was previously just `os.path.getsize(output_path) > 0` -
+    a truncated-but-nonzero file passes that trivially. Confirmed live
+    against a real device: `adb bugreport` reported a full, error-free
+    29MB pull, but the resulting file on this station's own NFS-backed
+    evidence storage was silently truncated to exactly 1,048,576 bytes
+    (two full NFS write-RPC chunks at this mount's wsize=524288) - a real
+    NFS server stall hit the async writeback AFTER adb's own process had
+    already exited reporting success, with no error surfaced anywhere.
+    Returns (True, None) if the file looks structurally complete, or
+    (False, "reason") if a real problem was detected - never raises.
+
+    'bugreport' output is always a real zip - zip's own trailing "end of
+    central directory" record makes truncation reliably, cheaply
+    detectable via zipfile.is_zipfile() without decompressing every
+    member (confirmed this exact truncated file fails this check).
+
+    'backup' output (.ab) has no equivalent self-verifying tail for an
+    ENCRYPTED backup - Android's own encryption wraps compression, so
+    there's no way to verify payload completeness without the backup
+    password, which isn't available at acquisition time. For an
+    unencrypted backup, decrypt_and_decompress_backup(password=None)
+    already does a full decompress with a real flush() at the end
+    (zlib reliably raises on a truncated stream) - reused here directly
+    rather than duplicating that logic. An encrypted backup only gets
+    the header-level check (already done internally before the
+    password-required point is ever reached) - a disclosed, accepted
+    limitation, not a silent gap.
+
+    'pull' output is a directory tree of arbitrarily many files, not one
+    structurally self-verifying container - no equivalent cheap check
+    exists, left out of scope here rather than half-built."""
+    if mode == 'bugreport':
+        if zipfile.is_zipfile(output_path):
+            return True, None
+        return False, ("the bugreport file exists but is not a valid, complete zip archive - "
+                        "this can happen if the destination storage had a write interruption "
+                        "during the transfer")
+    if mode == 'backup':
+        try:
+            decrypt_and_decompress_backup(output_path, password=None)
+            return True, None
+        except AndroidBackupPasswordError:
+            # Encrypted - the header itself already parsed correctly (that
+            # check runs before the password-required point), but the
+            # payload's own completeness can't be verified without the
+            # backup password. Disclosed, not silently treated as fully
+            # verified.
+            return True, None
+        except AndroidBackupError as e:
+            return False, (f"the backup file exists but failed a structural integrity check ({e}) - "
+                            "this can happen if the destination storage had a write interruption "
+                            "during the transfer")
+    return True, None
+
+
 def execution_worker_android(mode, serial, output_path, report_file_path, report_data):
     """
     mode 'backup': adb backup (deprecated/unreliable on Android 12+, requires
@@ -1029,6 +1090,16 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
         )
 
         if proc.returncode == 0 and output_exists:
+            integrity_ok, integrity_error = _verify_android_single_file_output(mode, output_path)
+            if not integrity_ok:
+                update_job(status="Failed")
+                append_log(f"[-] {mode} completed but failed a post-transfer integrity check: {integrity_error}")
+                append_log("[-] Retry the acquisition - the file on disk cannot be trusted as-is.")
+                report_data["acquisition_status"] = "FAILED"
+                report_data["acquisition_parameters"]["integrity_check_failed"] = integrity_error
+                _write_report(report_file_path, report_data, append_log)
+                return
+
             final_size = poll_directory_size(output_path)
             update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
             append_log(f"[+] Android {mode} completed successfully. Size: {final_size} bytes")
