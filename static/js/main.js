@@ -600,6 +600,10 @@ const FAQ_GROUPS = [
                 a: "Yes, but Sleuth Kit itself has no F2FS driver at all (unlike ext4/NTFS/FAT), so right-clicking an F2FS image or partition offers a different action: \"Mount F2FS Partition & Browse...\" mounts it read-only through the station's own kernel filesystem support instead, then shows it in File Explorer as a normal folder. Enter the partition's byte offset if it's not a whole-image filesystem (0 if it is), Detect to confirm the signature, then Mount & Browse. This is read-only browse/extract/hash only - unlike ext4/NTFS/FAT, F2FS's own on-disk design doesn't let a plain mount reach deleted files, so recovery isn't possible this way."
             },
             {
+                q: "adb won't connect/authorize on an Android device - is there another way to get its files?",
+                a: "Yes - on Mobile Forensics' Android controls, expand \"MTP Fallback (No ADB Access)\", click List MTP Devices, select the phone, then Start MTP Pull. This uses the phone's \"File Transfer\" USB mode instead of adb, so it works even with USB debugging disabled or unauthorized. It reaches the exact same shared storage \"Pull Accessible Storage\" already covers - never more - and since MTP has no shell access at all, none of that mode's own device-timestamp/app-inventory/accounts/notification enrichment happens here."
+            },
+            {
                 q: "What's \"Auto Analyze\" and how is it different from running tools by hand?",
                 a: "Auto Analyze (the top item on File Explorer's right-click menu) detects what kind of evidence you've selected - a Windows disk image, a Linux disk image, a memory image, or a mobile backup - and runs a curated, sensible default set of analysis tools against it in one background job, instead of you running each one individually. It always shows the detected profile for confirmation (or correction) before anything runs, and every tool it runs is still available individually if you'd rather pick and choose."
             },
@@ -815,6 +819,7 @@ const TOOL_REFERENCE_GROUPS = [
         group: "Mobile Forensics",
         tools: [
             ["adb", "Android Debug Bridge - used to pull files, back up, or capture diagnostics from a connected Android device."],
+            ["jmtpfs (MTP fallback)", "Mounts an Android device's shared storage over MTP (\"File Transfer\" USB mode) when adb/USB debugging isn't available or authorized - reaches the same content as \"Pull Accessible Storage,\" never more, and has no shell access so none of that mode's own enrichment (device timestamps, app inventory, accounts, notifications) is possible."],
             ["idevicebackup2 / idevicepair", "Used to pair with and back up a connected iPhone/iPad, the same protocol iTunes/Finder use."],
         ]
     },
@@ -16483,6 +16488,70 @@ async function cleanupCompanionUnifiedExtraction() {
     }
 }
 
+// --- MTP fallback acquisition (2026-09-05) - deliberately its own,
+// adb-independent device list/selection, not the shared #mobileAndroidSelect
+// dropdown (which is populated from `adb devices`, meaningless for a
+// device MTP is being used specifically because adb isn't available for).
+let mtpDevicesCache = [];
+
+async function listMtpDevices() {
+    const select = document.getElementById("mobileMtpDeviceSelect");
+    if (select) select.innerHTML = '<option value="">Listing...</option>';
+    try {
+        const res = await fetch('/api/mobile/android/mtp/list_devices');
+        const data = await res.json();
+        if (!data.success) {
+            showToast(`List failed: ${data.error}`, 'danger');
+            if (select) select.innerHTML = '<option value="">-- List MTP devices first --</option>';
+            return;
+        }
+        mtpDevicesCache = data.devices || [];
+        if (!select) return;
+        if (mtpDevicesCache.length === 0) {
+            select.innerHTML = '<option value="">No MTP device found - check the phone is set to "File Transfer" (MTP) USB mode</option>';
+        } else {
+            select.innerHTML = mtpDevicesCache.map((d, i) =>
+                `<option value="${i}">${d.product} (${d.vendor}) - bus ${d.bus}, dev ${d.devnum}</option>`
+            ).join('');
+        }
+        refreshMtpPullButtonState();
+    } catch (err) {
+        showToast('List failed - see console.', 'danger');
+    }
+}
+
+function refreshMtpPullButtonState() {
+    const btn = document.getElementById("btnMtpPullStart");
+    if (!btn) return;
+    const select = document.getElementById("mobileMtpDeviceSelect");
+    btn.disabled = !select || select.value === '';
+}
+
+async function startMtpPull() {
+    const select = document.getElementById("mobileMtpDeviceSelect");
+    const idx = select ? parseInt(select.value, 10) : NaN;
+    const device = mtpDevicesCache[idx];
+    if (!device) return showToast('List MTP Devices and select one first.', 'warning');
+
+    const dest = document.getElementById("mobileDest")?.value || '/mnt';
+    const metadata = {
+        case_number: document.getElementById("mobileCaseNum")?.value || "2026-UNASSIGNED",
+        evidence_id: document.getElementById("mobileEvidenceId")?.value || "ITEM-01",
+        examiner: document.getElementById("mobileExaminer")?.value || "UNSPECIFIED",
+        notes: "Android MTP fallback pull (no adb access)"
+    };
+
+    try {
+        const res = await fetch('/api/mobile/android/mtp/start_pull', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bus: device.bus, devnum: device.devnum, destination: dest, metadata })
+        });
+        const data = await res.json();
+        if (!data.success) showToast(`Start failed: ${data.error}`, 'danger');
+    } catch (err) {}
+}
+
 function toggleIosEncryptField() {
     const checked = document.getElementById("mobileIosEncryptToggle")?.checked;
     const row = document.getElementById("mobileIosEncryptRow");
@@ -18014,9 +18083,11 @@ async function fetchProgress() {
         if (data.active) {
             if (document.getElementById("btnMobileStart")) document.getElementById("btnMobileStart").disabled = true;
             if (document.getElementById("btnCompanionExtractionStart")) document.getElementById("btnCompanionExtractionStart").disabled = true;
+            if (document.getElementById("btnMtpPullStart")) document.getElementById("btnMtpPullStart").disabled = true;
         } else {
             refreshMobileStartButtonState();     // re-derives disabled state from current device trust/selection + mode
             refreshCompanionUnifiedButtonState();
+            refreshMtpPullButtonState();
         }
 
     } catch (err) {}

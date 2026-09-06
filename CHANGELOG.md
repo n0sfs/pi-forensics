@@ -21,6 +21,24 @@ file after updating to see what changed.
 
 ---
 
+## [1.57.0] - 2026-09-05
+
+### Added
+- **MTP fallback acquisition for Android devices.** "Pull Accessible Storage" (adb) remains this
+  station's default, preferred way to reach a connected Android device's shared storage, but it
+  needs USB debugging enabled and on-device authorization - not always available. Mobile Forensics'
+  Android controls now offer "MTP Fallback (No ADB Access)" - list connected MTP ("File Transfer"
+  USB mode) devices and pull the same shared storage without needing adb at all. This reaches the
+  exact same content adb pull already covers, never more - MTP has no shell access, so none of that
+  mode's own device-timestamp/app-inventory/accounts/notification enrichment happens here.
+- This completes the 3-part Android mobile-forensics gap-closing round (Auto Analyze for mobile
+  evidence, F2FS filesystem browsing, and now this) built across v1.55.0-v1.57.0.
+
+### Requires action on the station
+- `sudo apt-get install -y jmtpfs`, plus the corresponding sudoers grants - same as the
+  `bindfs`/`f2fs-tools` requirement noted in v1.56.0. Re-running `sudo python3 install.py` on a
+  station whose sudoers file hasn't been hand-edited picks up all three automatically.
+
 ## [1.56.0] - 2026-09-05
 
 ### Added

@@ -170,6 +170,42 @@
                                                 </div>
                                                 </div>
 
+                                                <!-- MTP fallback acquisition (2026-09-05) - the third and
+                                                     last of the mobile-forensics-gap-analysis
+                                                     recommendations. Genuinely NOT a 6th option in the
+                                                     "Acquisition Mode" select below, even though it looks
+                                                     related - every mode in that select (including
+                                                     Physical) still requires an adb-authorized device
+                                                     selected in #mobileAndroidSelect first, and MTP exists
+                                                     specifically for when adb/USB debugging ISN'T
+                                                     available or authorized at all. Its own device
+                                                     detection (jmtpfs's bus/dev enumeration) has nothing to
+                                                     do with adb, so it gets its own self-contained
+                                                     section instead, mirroring the Companion-App section's
+                                                     own pattern (own Start button, shares the same job
+                                                     slot/Stop button/status/log display as every other
+                                                     Android mode via fetchProgress()'s existing generic
+                                                     mirror). Collapsed by default - a fallback path, not
+                                                     the primary/first thing an examiner should reach for. -->
+                                                <button class="btn btn-sm btn-outline-secondary w-100 mb-2 d-flex align-items-center justify-content-between" type="button" data-bs-toggle="collapse" data-bs-target="#mobileMtpSection">
+                                                    <span><i class="bi bi-usb-symbol me-1"></i>MTP Fallback (No ADB Access)</span>
+                                                    <i class="bi bi-chevron-down"></i>
+                                                </button>
+                                                <div class="collapse mb-2" id="mobileMtpSection">
+                                                <div class="p-2 border border-secondary rounded-2">
+                                                    <div class="small text-subtle mb-2">Use this only when adb/USB debugging isn't available or authorized on this device. MTP ("File Transfer" USB mode) reaches the exact same shared storage "Pull Accessible Storage" above already covers - never more - and has no shell access at all, so none of that mode's own device-timestamp/app-inventory/accounts/notification enrichment is possible here.</div>
+                                                    <div class="d-flex gap-2 mb-2">
+                                                        <button type="button" class="btn btn-outline-info btn-sm" onclick="listMtpDevices()"><i class="bi bi-search me-1"></i>List MTP Devices</button>
+                                                    </div>
+                                                    <select id="mobileMtpDeviceSelect" class="form-select form-select-sm mb-2" onchange="refreshMtpPullButtonState()">
+                                                        <option value="">-- List MTP devices first --</option>
+                                                    </select>
+                                                    <div class="d-flex gap-2">
+                                                        <button id="btnMtpPullStart" type="button" class="btn btn-outline-info btn-sm fw-bold" onclick="startMtpPull()" disabled><i class="bi bi-play-fill me-1"></i>Start MTP Pull</button>
+                                                    </div>
+                                                </div>
+                                                </div>
+
                                                 <label class="telemetry-grid-label d-block mb-1">Acquisition Mode</label>
                                                 <select id="mobileAndroidMode" class="form-select form-select-sm mb-1" onchange="updateAndroidModeHelp()">
                                                     <option value="pull" selected>Pull Accessible Storage (adb pull)</option>
