@@ -216,6 +216,12 @@ apt_packages = [
                    # fsck.f2fs/dump.f2fs are available for building/inspecting a real F2FS test
                    # image on this station. Confirmed present on Debian trixie/arm64 (1.16.0-
                    # 1.1+b1) via apt-cache before adding.
+    "jmtpfs",  # MTP fallback acquisition (routes/mobile.py) - a FUSE filesystem for mounting a
+               # connected Android device's shared storage over MTP (the "File Transfer" USB
+               # mode every stock device offers with zero developer-mode setup), used only when
+               # adb/USB debugging isn't available or authorized. Confirmed present on Debian
+               # trixie/arm64 (0.5-4+b2, deps: libfuse2t64/libmtp9t64/libc6 only) via apt-cache
+               # before adding.
                    # Confirmed present on Debian trixie/arm64 (1.2.9-1+deb13u1) via apt-cache
                    # before adding here, per this project's own "verify package existence
                    # first" rule. Deliberately exfatprogs, not the older exfat-fuse/exfat-utils
@@ -947,6 +953,19 @@ install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in IN
 # rely on. Verified live the same mandatory way: the real generated
 # command line matches this pattern, and a deliberately malformed variant
 # is rejected.
+# MTP fallback acquisition (2026-09-05) - jmtpfs's device-listing invocation
+# (`-l`) takes no arguments at all, so it's granted completely unqualified
+# with no wildcard whatsoever, the narrowest possible grant. Its own mount
+# invocation is anchored the identical way bindfs's own grant already is
+# (fix every flag this app's code ever passes - -o ro,allow_other never
+# varies - wildcard only the truly variable -device=<bus>,<dev> selector and
+# the trailing, always server-generated staging mountpoint). The recursive
+# copy off that mount (`cp -a`) needed its own new grant too - anchored the
+# same "fix the one flag actually used, wildcard only the two always
+# server-generated/validated path arguments" way this app's own pre-
+# existing chown -R/chgrp -R grants already are, since cp itself has no
+# small fixed verb set the way cryptsetup does to anchor more tightly than
+# that.
 # F2FS filesystem browsing (2026-09-05) - bindfs's own flag shape has no
 # small fixed verb set the way cryptsetup does (luksOpen/luksClose), so this
 # anchors every fixed flag this app's own code ever passes
@@ -992,6 +1011,9 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /sbin/losetup -o * --show -f *, /sbin/losetup -d /dev/loop*, /sbin/losetup -a, \\
 /sbin/wipefs -a /dev/sd[a-z], /sbin/sfdisk /dev/sd[a-z], /sbin/mkfs.exfat -n PIF_COLLECT /dev/sd[a-z]1, \\
 /usr/bin/bindfs --force-user={SERVICE_USER} --force-group={SERVICE_USER} -p 0555 -r -o allow_other *, \\
+/usr/bin/jmtpfs -l, \\
+/usr/bin/jmtpfs -device=* -o ro,allow_other *, \\
+/bin/cp -a * *, \\
 /bin/chown -R {SERVICE_USER} *, \\
 /bin/chgrp -R {SERVICE_USER} *, \\
 /sbin/reboot, /sbin/poweroff, \\
