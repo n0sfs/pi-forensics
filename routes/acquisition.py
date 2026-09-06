@@ -1091,6 +1091,46 @@ def parse_ddrescue_mapfile(map_path):
             print(f"Error reading mapfile: {e}")
     return summary
 
+
+def _fsync_confirm_write(path):
+    """A real, live-caught gap this closes (2026-09-06, found via Android
+    bugreport/backup - see routes/mobile.py's _verify_android_single_file_
+    output() and its own dated CLAUDE.md entry for the full investigation):
+    the writing tool's own exit code, and even its own self-reported hash
+    (computed while streaming, before it closes its output file), do NOT
+    guarantee the resulting bytes have actually, durably landed on this
+    station's own network-mounted evidence storage. A write can go through
+    Linux's own page-cache buffering and return success from every angle
+    the writing tool can see, while a LATER asynchronous flush to the real
+    network server silently fails - with zero error surfaced anywhere in
+    that scenario. Confirmed the mechanism directly, live, on this exact
+    NFS mount: an `os.fsync()` call on a freshly-written file GENUINELY
+    raises a real OSError when the destination storage can't confirm the
+    write (reproduced live and unprompted while researching this fix, not
+    a synthetic/forced test) - fsync forces the kernel to flush any
+    pending dirty pages for this file's inode NOW and wait for a real,
+    definitive answer, rather than deferring it to whenever the kernel
+    gets around to it. Works on a read-only file descriptor (confirmed
+    directly - fsync flushes dirty pages associated with the inode itself,
+    not tied to which fd's own writes produced them), so this never needs
+    write access to the file. Returns (True, None) on a confirmed,
+    durable write, or (False, "reason") if the storage genuinely could
+    not confirm it - never raises."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError as e:
+        return False, f"could not open the output file to confirm its write: {e}"
+    try:
+        os.fsync(fd)
+        return True, None
+    except OSError as e:
+        return False, (f"the destination storage could not confirm this file's write completed ({e}) - "
+                        "this can happen under a transient stall on network-mounted evidence storage, "
+                        "even though the acquisition tool itself reported success")
+    finally:
+        os.close(fd)
+
+
 def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data, hashes=None):
     log_history = []
     hashes = hashes or []
@@ -1153,6 +1193,18 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
 
         proc = _stream_subprocess(cmd, on_line)
 
+        # Reclaim ownership of the WHOLE output directory now, right after
+        # the sudo'd tool exits - moved earlier than this same reclaim used
+        # to happen (previously only in the `finally` block at the very
+        # end) specifically so out_file and its sibling log/hash files are
+        # already readable by this unprivileged process for the hash
+        # parsing and fsync-confirmation steps immediately below. Safe and
+        # idempotent to do unconditionally (matches the finally block's own
+        # existing "reclaim regardless of success/failure/stop" reasoning),
+        # so plain_dd's own previous single-file-only reclaim call (right
+        # before its hash computation) is now redundant and removed.
+        reclaim_ownership(os.path.dirname(out_file))
+
         time.sleep(1.0)
         computed_hashes = {}
         if fmt == 'e01':
@@ -1166,12 +1218,24 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
                 if val:
                     computed_hashes[h] = val
         elif fmt == 'plain_dd':
-            reclaim_ownership(out_file)  # written by sudo'd dd - must reclaim before we can read it below
             append_log("[*] Computing hash(es) of output file (plain dd has no built-in hashing)...")
             computed_hashes = compute_file_hashes(out_file, hashes)
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["computed_verification_hashes"] = computed_hashes
+
+        # A real, live-caught gap (2026-09-06, found via Android bugreport/
+        # backup - see _fsync_confirm_write()'s own docstring): a tool's
+        # exit code and its own self-reported hash both reflect what it
+        # believed it wrote, not necessarily what has actually, durably
+        # landed on this station's own network-mounted evidence storage -
+        # an async write-back failure after the tool's own process exits
+        # can silently corrupt the file with zero error surfaced anywhere
+        # else. Checked here, for every format, before ever reporting
+        # "Completed Successfully".
+        write_confirmed, write_confirm_error = _fsync_confirm_write(out_file)
+        if not write_confirmed:
+            append_log(f"[-] Post-write integrity check failed: {write_confirm_error}")
 
         # dc3dd's own process exit code is not reliable on its own - it can
         # exit 0/2 (treated as success below) while still self-reporting a
@@ -1184,14 +1248,18 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
             fmt in ['raw', 'dd'] and 'dc3dd failed at' in "\n".join(log_history)
         )
 
-        if proc.returncode in [0, 2] and not dc3dd_self_reported_failure:
+        if proc.returncode in [0, 2] and not dc3dd_self_reported_failure and write_confirmed:
             update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
             append_log("[+] Recovery/acquisition completed successfully.")
             report_data["acquisition_status"] = "COMPLETED"
 
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
-            if dc3dd_self_reported_failure:
+            if not write_confirmed:
+                append_log("[-] The acquisition tool itself reported success, but the resulting file's write to "
+                            "the destination storage could not be confirmed (see the integrity check message "
+                            "above) - retry the acquisition rather than trust this output.")
+            elif dc3dd_self_reported_failure:
                 append_log("[-] dc3dd reported its own failure (see 'dc3dd failed at ...' above) despite exiting with a code normally treated as success - treating this run as failed.")
             else:
                 append_log(f"[-] Process exited with code {proc.returncode}")
@@ -1338,6 +1406,19 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
         # phase 1 just wrote.
         reclaim_ownership(dest_path)
 
+        # See _fsync_confirm_write()'s own docstring for the full finding -
+        # dc3dd's own exit code doesn't guarantee raw_file has actually,
+        # durably landed on network-mounted evidence storage. Checked here
+        # before phase 2 ever reads it as input.
+        write_confirmed, write_confirm_error = _fsync_confirm_write(raw_file)
+        if not write_confirmed:
+            update_job(status="Failed")
+            append_log(f"[-] Phase 1's raw image write could not be confirmed: {write_confirm_error}")
+            report_data["acquisition_status"] = "FAILED"
+            report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+            _write_report(report_file_path, report_data, append_log)
+            return
+
         raw_hashes = parse_dc3dd_hashes(dc3dd_log_file)
         append_log(f"[+] Phase 1 complete. Raw acquisition hashes: {raw_hashes}")
         report_data["computed_verification_hashes"] = raw_hashes
@@ -1360,7 +1441,13 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
 
-        if proc2.returncode == 0 and os.path.exists(aff_file):
+        aff_write_confirmed, aff_write_confirm_error = (
+            _fsync_confirm_write(aff_file) if os.path.exists(aff_file) else (False, "the .aff file was never created")
+        )
+        if not aff_write_confirmed:
+            append_log(f"[-] Post-conversion integrity check failed: {aff_write_confirm_error}")
+
+        if proc2.returncode == 0 and os.path.exists(aff_file) and aff_write_confirmed:
             update_job(status="Completed Successfully", progress_percent=100.0, speed_mbps=0.0)
             append_log("[+] AFF conversion completed successfully.")
             report_data["acquisition_status"] = "COMPLETED"
@@ -1379,7 +1466,12 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
 
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
-            append_log(f"[-] Phase 2 (AFF conversion) failed with exit code {proc2.returncode}")
+            if proc2.returncode == 0 and not aff_write_confirmed:
+                append_log("[-] affconvert itself reported success, but the resulting .aff file's write to the "
+                            "destination storage could not be confirmed (see the integrity check message above) - "
+                            "retry the acquisition rather than trust this output.")
+            else:
+                append_log(f"[-] Phase 2 (AFF conversion) failed with exit code {proc2.returncode}")
             report_data["acquisition_status"] = "FAILED"
 
         _write_report(report_file_path, report_data, append_log)
