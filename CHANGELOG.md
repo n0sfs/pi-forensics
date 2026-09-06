@@ -21,6 +21,27 @@ file after updating to see what changed.
 
 ---
 
+## [1.57.2] - 2026-09-06
+
+### Fixed
+- **MTP fallback acquisition (v1.57.0) had two real bugs, both found the first time it ran against a
+  genuine connected Android phone.** The copy step previously shelled out to a single `sudo cp -a`:
+  (1) `-a`'s ownership/mode preservation is meaningless for MTP (the mounted device presents a
+  synthesized owner that the destination filesystem won't let root chown to anyway), so it printed a
+  "failed to preserve ownership: Operation not permitted" line for every single file copied; (2)
+  `cp`'s own aggregate exit code treats any single per-file error - including a real, occasional NFS
+  write stall on this kind of evidence storage under sustained load - as total failure, which would
+  have misreported a pull that had already captured hundreds of real files as a flat FAILED with
+  nothing usable. Rewritten to walk the mounted device and copy each file itself (confirmed live that
+  the unprivileged service account can read through the mount directly, closing a previously-open
+  question), tracking real per-file success/failure counts the same way Logical Acquisition and Live
+  Collection Import already do, instead of trusting one subprocess's exit code. Confirmed live against
+  a real Pixel 8a: a run that hit genuine NFS stalls partway through correctly reported 175 files
+  captured and 27 failed, with the job honestly marked "Stopped" (not "Failed") - and, as a bonus
+  fix, the previous implementation never wrote any report update at all when a pull was manually
+  stopped, silently leaving the case record frozen at "in progress" forever; the rewrite always
+  records the final tally, even when stopped mid-copy.
+
 ## [1.57.1] - 2026-09-05
 
 ### Fixed
