@@ -93,6 +93,132 @@ def poll_directory_size(path):
     except Exception:
         return 0
 
+
+def _fsync_confirm_write(path):
+    """A real, live-caught gap this closes (2026-09-06, found via Android
+    bugreport/backup - see routes/mobile.py's _verify_android_single_file_
+    output() and its own dated CLAUDE.md entry for the full investigation):
+    the writing tool's own exit code, and even its own self-reported hash
+    (computed while streaming, before it closes its output file), do NOT
+    guarantee the resulting bytes have actually, durably landed on this
+    station's own network-mounted evidence storage. A write can go through
+    Linux's own page-cache buffering and return success from every angle
+    the writing tool can see, while a LATER asynchronous flush to the real
+    network server silently fails - with zero error surfaced anywhere in
+    that scenario. Confirmed the mechanism directly, live, on this exact
+    NFS mount: an `os.fsync()` call on a freshly-written file GENUINELY
+    raises a real OSError when the destination storage can't confirm the
+    write (reproduced live and unprompted while researching this fix, not
+    a synthetic/forced test) - fsync forces the kernel to flush any
+    pending dirty pages for this file's inode NOW and wait for a real,
+    definitive answer, rather than deferring it to whenever the kernel
+    gets around to it. Works on a read-only file descriptor (confirmed
+    directly - fsync flushes dirty pages associated with the inode itself,
+    not tied to which fd's own writes produced them), so this never needs
+    write access to the file. Returns (True, None) on a confirmed,
+    durable write, or (False, "reason") if the storage genuinely could
+    not confirm it - never raises.
+
+    Originally routes/acquisition.py-local (built for its own dc3dd/
+    dcfldd/plain-dd/E01/ddrescue/AFF path); moved here (2026-09-06) once a
+    second call site (a directory-of-many-files variant, immediately
+    below) was needed by routes/mobile.py and routes/recovery.py too -
+    the same "shared cross-routes/*.py helper lives in core/jobs.py"
+    convention poll_directory_size() above already established."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError as e:
+        return False, f"could not open the output file to confirm its write: {e}"
+    try:
+        os.fsync(fd)
+        return True, None
+    except OSError as e:
+        return False, (f"the destination storage could not confirm this file's write completed ({e}) - "
+                        "this can happen under a transient stall on network-mounted evidence storage, "
+                        "even though the acquisition tool itself reported success")
+    finally:
+        os.close(fd)
+
+
+# Same cap-then-disclose convention already used elsewhere in this app for
+# an unbounded directory walk (e.g. IMAGE_HASH_MAX_FILES, LOGICAL_ACQ_MAX_
+# FILES) - a phone's own DCIM folder or a PhotoRec/foremost/scalpel carve
+# can legitimately produce many thousands of files, and each fsync() is a
+# real syscall that can block on genuine NFS round-trip latency (confirmed
+# live on this station, real multi-second-to-minutes stalls), so this
+# can't be truly unbounded without risking a job that never finishes.
+FSYNC_CONFIRM_TREE_MAX_FILES = 20000
+
+
+def fsync_confirm_directory_tree(root_path, max_files=FSYNC_CONFIRM_TREE_MAX_FILES):
+    """The many-files counterpart to _fsync_confirm_write() above - for an
+    acquisition mode that writes a whole directory tree (Android `pull`,
+    Logical Acquisition, a bulk file-carving tool's own carved output, Live
+    Collection USB's own build/import steps) rather than one single output
+    file, so a single fsync() on 'the output' has no one obvious target.
+
+    Walks root_path and fsync-confirms every REGULAR file found (skips
+    directories/symlinks/special files - nothing to durably confirm about
+    those in this sense), capped at max_files so a legitimately huge tree
+    can't turn one acquisition job into an unbounded one - the walk itself
+    stops as soon as the cap is hit, not just the fsync loop, so this never
+    silently costs more than the cap represents even in file-COUNTING time.
+
+    Returns a dict, never raises:
+        {"files_checked": int, "files_confirmed": int, "files_failed": int,
+         "failed_examples": [relative_path, ...] (capped at 20),
+         "capped": bool, "all_confirmed": bool}
+    all_confirmed reflects only whether every file actually WALKED (up to
+    the cap) confirmed cleanly - it does NOT also require the walk to be
+    uncapped. Deliberate: a bulk file-carving tool (PhotoRec/foremost/
+    scalpel) can legitimately, correctly recover well past this cap's own
+    file count on a real, successful run, and treating "hit the cap" as
+    equivalent to "a real failure" would falsely report a perfectly good
+    large recovery as corrupted - worse than not checking completeness at
+    all, since it would actively erode trust in a check that never found
+    anything actually wrong. `capped` is exposed separately so a caller
+    that wants to disclose "not every file was checked" can do so as an
+    informational note, without it forcing a false failure on its own."""
+    files_checked = 0
+    files_confirmed = 0
+    files_failed = 0
+    failed_examples = []
+    capped = False
+
+    try:
+        for dirpath, _dirs, filenames in os.walk(root_path):
+            for name in filenames:
+                if files_checked >= max_files:
+                    capped = True
+                    break
+                full_path = os.path.join(dirpath, name)
+                if not os.path.isfile(full_path) or os.path.islink(full_path):
+                    continue
+                files_checked += 1
+                ok, _err = _fsync_confirm_write(full_path)
+                if ok:
+                    files_confirmed += 1
+                else:
+                    files_failed += 1
+                    if len(failed_examples) < 20:
+                        failed_examples.append(os.path.relpath(full_path, root_path))
+            if capped:
+                break
+    except Exception:
+        # A genuinely unreadable/vanished directory mid-walk - report what
+        # was confirmed so far rather than losing it to an uncaught raise.
+        pass
+
+    return {
+        "files_checked": files_checked,
+        "files_confirmed": files_confirmed,
+        "files_failed": files_failed,
+        "failed_examples": failed_examples,
+        "capped": capped,
+        "all_confirmed": (files_failed == 0),
+    }
+
+
 # Global State for Live Acquisition Job
 current_job = {
     "active": False,

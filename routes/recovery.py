@@ -24,6 +24,7 @@ from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
     _stream_subprocess, clear_active_proc, reclaim_ownership,
     build_report_target, write_initial_report, _write_report,
+    fsync_confirm_directory_tree,
 )
 from core.case_index_db import (
     TRIAGE_PATTERNS, TRIAGE_MAX_MATCHES_PER_CATEGORY,
@@ -31,6 +32,45 @@ from core.case_index_db import (
 )
 
 recovery_bp = Blueprint('recovery', __name__)
+
+
+def _confirm_recovery_output_or_fail(dest_dir, tool_label, append_log):
+    """Shared post-carve write-confirmation for PhotoRec/extundelete/
+    foremost/scalpel (2026-09-06). All four are external subprocess-based
+    tools writing directly to dest_dir - unlike Logical Acquisition/MTP
+    pull/Live Collection Import (which copy files through this app's own
+    Python loop, where a per-file fsync fits naturally inline), there's no
+    per-file write loop of this app's own to add fsync-confirmation into
+    here. This runs fsync_confirm_directory_tree() as a post-hoc gate
+    right before the tool's own successful exit code is trusted, closing
+    the same real NFS-async-writeback gap the rest of this app's
+    acquisition paths were fixed for the same day.
+
+    A directory hitting fsync_confirm_directory_tree()'s own safety cap is
+    logged as a disclosed limitation, not treated as a failure - a real,
+    successful PhotoRec/foremost/scalpel carve routinely recovers well
+    past that cap's file count, and reporting a job Failed purely because
+    it produced MORE recovered files than this check is willing to look
+    at would be a false negative worse than not checking at all.
+
+    Returns True if it's safe to report Completed, False if the caller
+    should report Failed instead (the reason is already logged either
+    way)."""
+    result = fsync_confirm_directory_tree(dest_dir)
+    if result["capped"]:
+        append_log(f"[!] {tool_label} recovered more than {result['files_checked']} files - this app's "
+                   f"own post-recovery write-confirmation check has a safety cap and could not verify "
+                   f"every single one, so completeness beyond that point isn't independently confirmed "
+                   f"(a disclosed limit of the check itself, not a sign anything is actually wrong).")
+    if result["files_checked"] == 0:
+        return True  # nothing recovered - no output to confirm, not a write failure
+    if result["all_confirmed"]:
+        return True
+    examples = ", ".join(result["failed_examples"][:5])
+    append_log(f"[-] {result['files_failed']} of {result['files_checked']} recovered file(s) could not "
+               f"have their write confirmed (e.g. {examples}) - this can happen if the destination "
+               f"storage had a write interruption during the recovery. Retry it.")
+    return False
 
 
 def execution_worker_photorec(source, dest_dir, report_file_path, report_data):
@@ -85,14 +125,25 @@ def execution_worker_photorec(source, dest_dir, report_file_path, report_data):
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         final_size = poll_directory_size(dest_dir)
 
-        if proc.returncode == 0:
+        # A distinct third outcome from the usual returncode==0/!=0 split:
+        # the tool itself genuinely succeeded, but the write-confirmation
+        # check found the output couldn't be trusted - tracked separately
+        # so the failure branch below logs the REAL reason (already
+        # emitted by _confirm_recovery_output_or_fail) instead of a
+        # misleading "exited with code 0" line.
+        write_confirm_failed = (
+            proc.returncode == 0 and not _confirm_recovery_output_or_fail(dest_dir, "PhotoRec", append_log)
+        )
+
+        if proc.returncode == 0 and not write_confirm_failed:
             update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
             append_log(f"[+] PhotoRec recovery completed. Recovered data size: {final_size} bytes")
             report_data["acquisition_status"] = "COMPLETED"
             report_data["output_size_bytes"] = final_size
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
-            append_log(f"[-] photorec exited with code {proc.returncode}")
+            if not write_confirm_failed:
+                append_log(f"[-] photorec exited with code {proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
 
         _write_report(report_file_path, report_data, append_log)
@@ -154,11 +205,21 @@ def execution_worker_extundelete(source, dest_dir, report_file_path, report_data
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         final_size = poll_directory_size(dest_dir)
 
-        if proc.returncode == 0:
+        # See PhotoRec's identical write_confirm_failed handling above for
+        # why this is tracked as a distinct third outcome rather than
+        # folded into the returncode<0/>=0 split below.
+        write_confirm_failed = (
+            proc.returncode == 0 and not _confirm_recovery_output_or_fail(dest_dir, "extundelete", append_log)
+        )
+
+        if proc.returncode == 0 and not write_confirm_failed:
             update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
             append_log(f"[+] extundelete completed. Recovered data in {dest_dir}/RECOVERED_FILES/")
             report_data["acquisition_status"] = "COMPLETED"
             report_data["output_size_bytes"] = final_size
+        elif snapshot_job()["status"] != "Stopped" and write_confirm_failed:
+            update_job(status="Failed")
+            report_data["acquisition_status"] = "FAILED"
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
             if proc.returncode is not None and proc.returncode < 0:
@@ -238,14 +299,20 @@ def execution_worker_foremost(source, dest_dir, report_file_path, report_data):
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         final_size = poll_directory_size(dest_dir)
 
-        if proc.returncode == 0:
+        # See PhotoRec's identical write_confirm_failed handling above.
+        write_confirm_failed = (
+            proc.returncode == 0 and not _confirm_recovery_output_or_fail(dest_dir, "foremost", append_log)
+        )
+
+        if proc.returncode == 0 and not write_confirm_failed:
             update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
             append_log(f"[+] foremost completed. Recovered data size: {final_size} bytes")
             report_data["acquisition_status"] = "COMPLETED"
             report_data["output_size_bytes"] = final_size
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
-            append_log(f"[-] foremost exited with code {proc.returncode}")
+            if not write_confirm_failed:
+                append_log(f"[-] foremost exited with code {proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
 
         _write_report(report_file_path, report_data, append_log)
@@ -299,14 +366,20 @@ def execution_worker_scalpel(source, dest_dir, report_file_path, report_data):
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         final_size = poll_directory_size(dest_dir)
 
-        if proc.returncode == 0:
+        # See PhotoRec's identical write_confirm_failed handling above.
+        write_confirm_failed = (
+            proc.returncode == 0 and not _confirm_recovery_output_or_fail(dest_dir, "scalpel", append_log)
+        )
+
+        if proc.returncode == 0 and not write_confirm_failed:
             update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
             append_log(f"[+] scalpel completed. Recovered data size: {final_size} bytes")
             report_data["acquisition_status"] = "COMPLETED"
             report_data["output_size_bytes"] = final_size
         elif snapshot_job()["status"] != "Stopped":
             update_job(status="Failed")
-            append_log(f"[-] scalpel exited with code {proc.returncode}")
+            if not write_confirm_failed:
+                append_log(f"[-] scalpel exited with code {proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
 
         _write_report(report_file_path, report_data, append_log)

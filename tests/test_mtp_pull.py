@@ -85,7 +85,8 @@ class TestParseJmtpfsDeviceList:
 
 class TestExecutionWorkerMtpPull:
     def _run(self, tmp_path, mount_returncode=0, mount_ismount=True,
-             walk_files=None, copy_side_effect=None, snapshot_side_effect=None):
+             walk_files=None, copy_side_effect=None, snapshot_side_effect=None,
+             fsync_confirm_side_effect=None):
         output_path = str(tmp_path / "case" / "ITEM-01_mtp_pull")
         report_path = str(tmp_path / "report.json")
         report_data = {"acquisition_status": "IN_PROGRESS", "acquisition_parameters": {}}
@@ -119,6 +120,16 @@ class TestExecutionWorkerMtpPull:
             stack.enter_context(mock.patch.object(mobile, "MTP_MOUNT_STAGING_ROOT", str(tmp_path / ".mtp_mounts")))
             stack.enter_context(mock.patch("os.path.getsize", return_value=1024))
             mock_copy = stack.enter_context(mock.patch.object(mobile.shutil, "copy2", side_effect=copy_side_effect))
+            # shutil.copy2 is mocked above and never creates a real
+            # destination file, so a genuine _fsync_confirm_write() call
+            # against it would always fail with "could not open" - mocked
+            # here to a real success by default (matching every existing
+            # test's own "the copy genuinely worked" assumption), with an
+            # override for the new write-confirmation-specific tests below.
+            mock_fsync_confirm = stack.enter_context(mock.patch.object(
+                mobile, "_fsync_confirm_write",
+                side_effect=fsync_confirm_side_effect if fsync_confirm_side_effect is not None else (lambda path: (True, None)),
+            ))
             if snapshot_side_effect is not None:
                 stack.enter_context(mock.patch.object(mobile, "snapshot_job", side_effect=snapshot_side_effect))
             mobile.execution_worker_mtp_pull("1", "5", output_path, report_path, report_data)
@@ -227,3 +238,46 @@ class TestExecutionWorkerMtpPull:
         # a report, even on Stop - confirmed here via the mocked
         # _write_report actually being called.
         mock_write_report.assert_called_once()
+
+
+class TestMtpPullWriteConfirmation:
+    """The follow-up fix added the same day (2026-09-06) as the app-wide
+    fsync-confirmation extension: shutil.copy2() is regular buffered I/O,
+    subject to the exact same async-writeback risk this app's main
+    dc3dd/dcfldd/AFF acquisition path and Android bugreport/backup were
+    fixed for - a "successful" MTP copy (per os.path.getsize() alone)
+    could still be silently truncated on this station's own network-
+    mounted evidence storage. Each per-file copy now also gets an
+    _fsync_confirm_write() call, folded into the SAME files_copied/
+    files_errored per-file tracking the 2026-09-05 rewrite already
+    established for a failed shutil.copy2() call."""
+
+    def test_a_file_failing_write_confirmation_is_counted_as_an_error_not_silently_included(self, tmp_path):
+        def fsync_confirm_side_effect(path):
+            if "bad" in path:
+                return False, "simulated destination storage failure"
+            return True, None
+
+        job, report_data, mock_run, mock_copy, mock_write_report = TestExecutionWorkerMtpPull()._run(
+            tmp_path, walk_files=["good1.jpg", "bad1.jpg", "good2.jpg"],
+            fsync_confirm_side_effect=fsync_confirm_side_effect,
+        )
+        assert job["status"] == "Completed Successfully"
+        assert report_data["acquisition_status"] == "COMPLETED"
+        assert report_data["acquisition_parameters"]["files_copied"] == 2
+        assert report_data["acquisition_parameters"]["files_errored"] == 1
+        # The copy itself (shutil.copy2) genuinely "succeeded" for all 3
+        # files - only the write-confirmation check caught the bad one -
+        # proving this is a real, additional gate, not just re-testing the
+        # existing copy-failure path.
+        assert mock_copy.call_count == 3
+
+    def test_every_file_failing_write_confirmation_is_reported_as_failed(self, tmp_path):
+        job, report_data, mock_run, mock_copy, mock_write_report = TestExecutionWorkerMtpPull()._run(
+            tmp_path, walk_files=["a.jpg", "b.jpg"],
+            fsync_confirm_side_effect=lambda path: (False, "simulated destination storage failure"),
+        )
+        assert job["status"] == "Failed"
+        assert report_data["acquisition_status"] == "FAILED"
+        assert report_data["acquisition_parameters"]["files_copied"] == 0
+        assert report_data["acquisition_parameters"]["files_errored"] == 2
