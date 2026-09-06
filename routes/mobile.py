@@ -30,6 +30,7 @@ from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
     _stream_subprocess, _stream_piped_subprocess, clear_active_proc, clear_upstream_proc,
     build_report_target, write_initial_report, _write_report, reclaim_ownership,
+    _fsync_confirm_write, fsync_confirm_directory_tree,
 )
 from core.case_index_db import _auto_tag_case_artifact, _record_parsed_artifacts
 from core.android_backup_utils import (
@@ -982,15 +983,36 @@ def _verify_android_single_file_output(mode, output_path):
     limitation, not a silent gap.
 
     'pull' output is a directory tree of arbitrarily many files, not one
-    structurally self-verifying container - no equivalent cheap check
-    exists, left out of scope here rather than half-built."""
+    structurally self-verifying container - checked via core/jobs.py's
+    fsync_confirm_directory_tree() instead (added 2026-09-06, once the
+    scope question this docstring originally deferred was explicitly
+    resolved): fsync-confirms every regular file the pull produced,
+    capped the same way that helper caps any directory-tree acquisition
+    (Logical Acquisition, the Live Collection USB import worker) so a
+    legitimately huge pull can't turn this into an unbounded check.
+
+    Both 'bugreport' and 'backup' also get an explicit fsync-confirm
+    FIRST, before their own structural check, added the same day for the
+    same reason: a plain re-read (zipfile.is_zipfile()/decompress) only
+    reliably catches a truncation that has ALREADY manifested in the
+    file's own on-disk size by the time it runs - it doesn't force
+    resolution of a writeback that might still be genuinely PENDING (not
+    yet succeeded or failed) at that exact instant. fsync closes that
+    narrow residual timing gap for free, at no extra cost beyond the
+    (already cheap) call itself."""
     if mode == 'bugreport':
+        write_confirmed, write_confirm_error = _fsync_confirm_write(output_path)
+        if not write_confirmed:
+            return False, write_confirm_error
         if zipfile.is_zipfile(output_path):
             return True, None
         return False, ("the bugreport file exists but is not a valid, complete zip archive - "
                         "this can happen if the destination storage had a write interruption "
                         "during the transfer")
     if mode == 'backup':
+        write_confirmed, write_confirm_error = _fsync_confirm_write(output_path)
+        if not write_confirmed:
+            return False, write_confirm_error
         try:
             decrypt_and_decompress_backup(output_path, password=None)
             return True, None
@@ -1005,6 +1027,14 @@ def _verify_android_single_file_output(mode, output_path):
             return False, (f"the backup file exists but failed a structural integrity check ({e}) - "
                             "this can happen if the destination storage had a write interruption "
                             "during the transfer")
+    if mode == 'pull':
+        result = fsync_confirm_directory_tree(output_path)
+        if result["all_confirmed"]:
+            return True, None
+        examples = ", ".join(result["failed_examples"][:5])
+        return False, (f"{result['files_failed']} of {result['files_checked']} pulled file(s) could not "
+                        f"have their write confirmed (e.g. {examples}) - this can happen if the "
+                        f"destination storage had a write interruption during the transfer")
     return True, None
 
 
@@ -1731,6 +1761,14 @@ def execution_worker_mtp_pull(bus, devnum, output_path, report_file_path, report
             try:
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                 shutil.copy2(src_path, dest_path)
+                # Same write-confirmation added to Logical Acquisition/Live
+                # Collection USB Import's identical per-file loops
+                # (2026-09-06) - shutil.copy2() is regular buffered I/O,
+                # subject to the exact same async-writeback risk this
+                # worker's own os.path.getsize() check alone can't rule out.
+                write_confirmed, write_confirm_error = _fsync_confirm_write(dest_path)
+                if not write_confirmed:
+                    raise IOError(f"post-copy write confirmation failed: {write_confirm_error}")
                 transferred_bytes += os.path.getsize(dest_path)
                 files_copied += 1
             except Exception as e:

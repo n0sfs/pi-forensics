@@ -21,6 +21,23 @@ file after updating to see what changed.
 
 ---
 
+## [1.59.0] - 2026-09-06
+
+### Added
+- **The write-confirmation protection added in the previous release now covers every acquisition and
+  recovery path that writes to network-mounted evidence storage, not just the single main disk-
+  imaging path.** Extended to: Android "Pull Accessible Storage," MTP fallback acquisition (for a
+  device that can't be reached via adb), Logical Acquisition, the Live Collection USB import step,
+  and PhotoRec/extundelete/foremost/scalpel's own recovered/carved file output. Each of these writes
+  many files rather than one, so each gets a write-confirmation pass across every file produced
+  (with a sensible cap so a legitimately huge recovery can't turn one job into an unbounded check -
+  hitting that cap is disclosed, not treated as a failure on its own, since a real, successful large
+  recovery routinely produces more files than any reasonable check can individually confirm one by
+  one). Android "Bug Report"/"Backup" also gained this same confirmation as an added safeguard,
+  layered in front of their existing structural check from the previous release. Confirmed live end
+  to end against this station's real evidence storage: a real Logical Acquisition copy, hash, and
+  independently-verified sha256 match, all passing cleanly.
+
 ## [1.58.0] - 2026-09-06
 
 ### Added

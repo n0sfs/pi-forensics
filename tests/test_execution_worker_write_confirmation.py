@@ -13,6 +13,15 @@ this app's own main disk-imaging path (dc3dd/dcfldd/dd/E01/ddrescue/
 plain_dd via execution_worker(), and the two-phase raw+AFF conversion via
 execution_worker_aff()).
 
+Extended the same day (once the "should this cover the many-files
+acquisition paths too" question was explicitly resolved) with
+TestLogicalAcquisitionWriteConfirmation and TestLiveCollectionImport
+WriteConfirmation - both add the identical per-file _fsync_confirm_write()
+call to their own already-existing shutil.copy2() copy loops, now
+exercised against real tmp_path filesystems rather than fully mocked,
+since neither worker shells out to any subprocess for its actual file
+copy.
+
 Skipped (not failed) on a non-POSIX dev machine: routes.acquisition needs
 core.jobs, which imports POSIX-only pwd/fcntl.
 """
@@ -25,6 +34,7 @@ import pytest
 pytest.importorskip("core.jobs", reason="routes.acquisition needs core.jobs, which imports POSIX-only pwd/fcntl")
 
 import routes.acquisition as acquisition
+from core.jobs import snapshot_job
 
 
 def _proc(returncode=0):
@@ -174,3 +184,144 @@ class TestExecutionWorkerAffWriteConfirmation:
         # real scenario this fix exists for at the AFF-conversion layer.
         report_data = self._run(tmp_path, phase1_write_confirmed=True, phase2_write_confirmed=False)
         assert report_data["acquisition_status"] == "FAILED"
+
+
+class TestLogicalAcquisitionWriteConfirmation:
+    """execution_worker_logical_acquisition()'s per-file copy loop
+    (2026-09-06) - unlike execution_worker()/execution_worker_aff(), this
+    never shells out to a subprocess for the actual copy (a plain
+    shutil.copy2() per selected file), so this is exercised against a
+    genuine tmp_path filesystem rather than fully mocked - only
+    _fsync_confirm_write itself is mocked, to simulate a destination-
+    storage failure for one specific file without needing a real broken
+    NFS mount to reproduce it."""
+
+    def _run(self, tmp_path, fail_on_filename=None):
+        src_dir = tmp_path / "source_folder"
+        src_dir.mkdir()
+        (src_dir / "file1.txt").write_bytes(b"real content one")
+        (src_dir / "file2.txt").write_bytes(b"real content two")
+        output_root = str(tmp_path / "logical_out")
+        report_path = str(tmp_path / "report.json")
+        report_data = {"acquisition_status": "IN_PROGRESS", "acquisition_parameters": {}}
+
+        real_fsync_confirm = acquisition._fsync_confirm_write
+
+        def fake_fsync_confirm(path):
+            if fail_on_filename and path.endswith(fail_on_filename):
+                return False, "simulated destination storage failure"
+            return real_fsync_confirm(path)
+
+        with mock.patch.object(acquisition, "_fsync_confirm_write", side_effect=fake_fsync_confirm), \
+             mock.patch.object(acquisition, "_write_report"):
+            acquisition.execution_worker_logical_acquisition(
+                [str(src_dir)], output_root, ["sha256"], make_zip=False,
+                report_file_path=report_path, report_data=report_data,
+            )
+        return report_data
+
+    def test_a_genuinely_clean_copy_of_every_file_reports_completed(self, tmp_path):
+        report_data = self._run(tmp_path, fail_on_filename=None)
+        assert report_data["acquisition_status"] == "COMPLETED"
+        assert report_data["acquisition_parameters"]["file_count"] == 2
+
+    def test_one_file_failing_write_confirmation_is_counted_as_an_error_not_silently_included(self, tmp_path):
+        # The real point: a copy that "succeeded" per shutil.copy2() but
+        # whose write couldn't be durably confirmed must be excluded from
+        # the manifest exactly like any other copy failure - proving the
+        # new fsync-confirm call is wired into the SAME error-counting
+        # path the loop's own except block already had, not a silent,
+        # separate success. files_errored isn't itself propagated into
+        # report_data["acquisition_parameters"] by this worker (only
+        # file_count/total_bytes/truncated are) - file_count staying at 1
+        # instead of 2 is the real proof the failed file was excluded.
+        report_data = self._run(tmp_path, fail_on_filename="file1.txt")
+        assert report_data["acquisition_parameters"]["file_count"] == 1
+        # Still reports overall success - one real file was genuinely,
+        # confirmedly copied, matching this worker's own pre-existing
+        # "not every file failed" tolerance.
+        assert report_data["acquisition_status"] == "COMPLETED"
+
+    def test_every_file_failing_write_confirmation_reports_failed(self, tmp_path):
+        src_dir = tmp_path / "source_folder"
+        src_dir.mkdir()
+        (src_dir / "only_file.txt").write_bytes(b"content")
+        output_root = str(tmp_path / "logical_out")
+        report_path = str(tmp_path / "report.json")
+        report_data = {"acquisition_status": "IN_PROGRESS", "acquisition_parameters": {}}
+
+        with mock.patch.object(acquisition, "_fsync_confirm_write", return_value=(False, "simulated failure")), \
+             mock.patch.object(acquisition, "_write_report"):
+            acquisition.execution_worker_logical_acquisition(
+                [str(src_dir)], output_root, ["sha256"], make_zip=False,
+                report_file_path=report_path, report_data=report_data,
+            )
+        assert report_data["acquisition_status"] == "FAILED"
+
+
+class TestLiveCollectionImportWriteConfirmation:
+    """execution_worker_import_live_collection()'s per-file copy loop
+    (2026-09-06) - the same fix as Logical Acquisition's identical loop
+    above, applied to the worker that already surfaced real NFS write
+    failures live during earlier session testing (two real autoruns.json
+    files this station's own NAS couldn't durably write during a real
+    import). Everything around the copy loop (mounting the USB, re-
+    discovering result runs, parsing/hash-list cross-referencing) is
+    mocked to isolate just the copy-loop behavior; the copy itself runs
+    against a genuine tmp_path filesystem."""
+
+    def _run(self, tmp_path, fail_on_filename=None):
+        fake_mountpoint = tmp_path / "fake_usb_mount"
+        run_src = fake_mountpoint / "windows" / "uac-20260906_120000"
+        run_src.mkdir(parents=True)
+        (run_src / "processes.json").write_bytes(b'{"real": "data"}')
+        (run_src / "network.json").write_bytes(b'{"real": "data"}')
+
+        case_folder = str(tmp_path / "case_folder")
+        os.makedirs(case_folder, exist_ok=True)
+        report_path = str(tmp_path / "report.json")
+        report_data = {"acquisition_status": "IN_PROGRESS", "acquisition_parameters": {}}
+
+        run_info = {"platform": "windows", "run_name": "uac-20260906_120000",
+                    "relative_path": "windows/uac-20260906_120000", "timestamp": "20260906_120000"}
+
+        real_fsync_confirm = acquisition._fsync_confirm_write
+
+        def fake_fsync_confirm(path):
+            if fail_on_filename and path.endswith(fail_on_filename):
+                return False, "simulated destination storage failure"
+            return real_fsync_confirm(path)
+
+        with mock.patch.object(acquisition, "LIVE_COLLECTION_IMPORT_MOUNTPOINT", str(fake_mountpoint)), \
+             mock.patch.object(acquisition, "mount_collection_partition", return_value={"success": True}), \
+             mock.patch.object(acquisition, "unmount_collection_partition", return_value={"success": True}), \
+             mock.patch.object(acquisition, "discover_collection_runs", return_value=[run_info]), \
+             mock.patch.object(acquisition, "run_timestamp_to_epoch", return_value=1799000000.0), \
+             mock.patch.object(acquisition, "parse_windows_collector_run", return_value=[]), \
+             mock.patch.object(acquisition, "get_hash_lists", return_value=[]), \
+             mock.patch.object(acquisition, "load_hash_list_sets", return_value={}), \
+             mock.patch.object(acquisition, "_record_parsed_artifacts", return_value=0), \
+             mock.patch.object(acquisition, "_fsync_confirm_write", side_effect=fake_fsync_confirm), \
+             mock.patch.object(acquisition, "_write_report"):
+            acquisition.execution_worker_import_live_collection(
+                "/dev/sdz", ["windows/uac-20260906_120000"], case_folder, ["sha256"],
+                report_file_path=report_path, report_data=report_data,
+            )
+        return report_data
+
+    def test_a_genuinely_clean_import_of_every_file_reports_completed(self, tmp_path):
+        report_data = self._run(tmp_path, fail_on_filename=None)
+        assert report_data["acquisition_status"] == "COMPLETED"
+        assert report_data["acquisition_parameters"]["file_count"] == 2
+
+    def test_one_file_failing_write_confirmation_is_counted_as_an_error(self, tmp_path):
+        # Mirrors the real, already-observed live failure mode exactly
+        # (autoruns.json specifically, though the mechanism applies to any
+        # file in the run). files_errored isn't itself propagated into
+        # report_data["acquisition_parameters"] by this worker (only
+        # file_count/total_bytes are) - checked via the completion log
+        # line instead, which does report both counts.
+        report_data = self._run(tmp_path, fail_on_filename="processes.json")
+        assert report_data["acquisition_parameters"]["file_count"] == 1
+        assert report_data["acquisition_status"] == "COMPLETED"
+        assert "1 file(s) captured, 1 error(s)" in snapshot_job()["log"]

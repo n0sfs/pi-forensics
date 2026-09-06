@@ -47,6 +47,7 @@ from core.jobs import (
     build_report_target, write_initial_report, _write_report,
     _SERVICE_ACCOUNT_NAME,
     begin_suppress_active_false, end_suppress_active_false,
+    _fsync_confirm_write, fsync_confirm_directory_tree,
 )
 from core.decrypted_sources import register_decrypted_source, unregister_decrypted_source
 from core.tsk_utils import classify_image_profile
@@ -1092,45 +1093,6 @@ def parse_ddrescue_mapfile(map_path):
     return summary
 
 
-def _fsync_confirm_write(path):
-    """A real, live-caught gap this closes (2026-09-06, found via Android
-    bugreport/backup - see routes/mobile.py's _verify_android_single_file_
-    output() and its own dated CLAUDE.md entry for the full investigation):
-    the writing tool's own exit code, and even its own self-reported hash
-    (computed while streaming, before it closes its output file), do NOT
-    guarantee the resulting bytes have actually, durably landed on this
-    station's own network-mounted evidence storage. A write can go through
-    Linux's own page-cache buffering and return success from every angle
-    the writing tool can see, while a LATER asynchronous flush to the real
-    network server silently fails - with zero error surfaced anywhere in
-    that scenario. Confirmed the mechanism directly, live, on this exact
-    NFS mount: an `os.fsync()` call on a freshly-written file GENUINELY
-    raises a real OSError when the destination storage can't confirm the
-    write (reproduced live and unprompted while researching this fix, not
-    a synthetic/forced test) - fsync forces the kernel to flush any
-    pending dirty pages for this file's inode NOW and wait for a real,
-    definitive answer, rather than deferring it to whenever the kernel
-    gets around to it. Works on a read-only file descriptor (confirmed
-    directly - fsync flushes dirty pages associated with the inode itself,
-    not tied to which fd's own writes produced them), so this never needs
-    write access to the file. Returns (True, None) on a confirmed,
-    durable write, or (False, "reason") if the storage genuinely could
-    not confirm it - never raises."""
-    try:
-        fd = os.open(path, os.O_RDONLY)
-    except OSError as e:
-        return False, f"could not open the output file to confirm its write: {e}"
-    try:
-        os.fsync(fd)
-        return True, None
-    except OSError as e:
-        return False, (f"the destination storage could not confirm this file's write completed ({e}) - "
-                        "this can happen under a transient stall on network-mounted evidence storage, "
-                        "even though the acquisition tool itself reported success")
-    finally:
-        os.close(fd)
-
-
 def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data, hashes=None):
     log_history = []
     hashes = hashes or []
@@ -1861,6 +1823,17 @@ def execution_worker_logical_acquisition(selected_folders, output_root, requeste
             try:
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                 shutil.copy2(abs_path, dest_path)
+                # Confirm this copy is genuinely, durably written before
+                # trusting its hash - a plain hash read-back has the exact
+                # same page-cache-staleness risk _fsync_confirm_write()'s
+                # own docstring describes (2026-09-06). Raise on failure
+                # (caught by this loop's own except below) rather than a
+                # silent (ok, error) tuple check, so it folds into the
+                # existing files_errored/append_log path with zero new
+                # branching here.
+                write_confirmed, write_confirm_error = _fsync_confirm_write(dest_path)
+                if not write_confirmed:
+                    raise IOError(f"post-copy write confirmation failed: {write_confirm_error}")
                 file_hashes = compute_file_hashes(dest_path, requested_hashes)
                 size = os.path.getsize(dest_path)
                 manifest_entries.append({
@@ -2383,6 +2356,15 @@ def execution_worker_import_live_collection(device, selected_relative_paths, cas
                 try:
                     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                     shutil.copy2(abs_path, dest_path)
+                    # Same write-confirmation as Logical Acquisition's own
+                    # identical loop (2026-09-06) - this is the exact
+                    # worker that already surfaced real NFS write failures
+                    # live (two autoruns.json files this station's own NAS
+                    # couldn't write during an earlier real import), so
+                    # this isn't a speculative addition.
+                    write_confirmed, write_confirm_error = _fsync_confirm_write(dest_path)
+                    if not write_confirmed:
+                        raise IOError(f"post-copy write confirmation failed: {write_confirm_error}")
                     file_hashes = compute_file_hashes(dest_path, requested_hashes)
                     size = os.path.getsize(dest_path)
                     manifest_entries.append({
