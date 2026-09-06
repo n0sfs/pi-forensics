@@ -16,6 +16,7 @@ import json
 import time
 import subprocess
 import threading
+import tempfile
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, g
@@ -1486,6 +1487,262 @@ def start_android_acquisition():
 
     log_chain_of_custody("android_acquisition_start", {"mode": mode, "serial": serial, "destination": output_path})
     return jsonify({"success": True, "message": f"Android {mode} started."})
+
+
+# --- MTP fallback acquisition (2026-09-05) - the third and last of the
+# mobile-forensics-gap-analysis recommendations, per the user's own
+# explicit "do them in the order you recommend, continue with all 3"
+# instruction. adb pull ("Pull Accessible Storage") is this app's own
+# default, preferred way to reach a connected Android device's shared
+# storage - but adb needs USB debugging enabled and the device's own
+# on-screen debugging authorization, which isn't always available (a
+# locked-down device, USB debugging inaccessible, adbd not running/
+# authorized). MTP (the "File Transfer" USB mode) is the one fallback
+# every stock Android device still offers with zero developer-mode
+# configuration - genuinely useful ONLY as a fallback, since it reaches
+# the exact same shared-storage content adb pull already covers, never
+# MORE than that (no shell access at all via MTP, so none of adb pull's
+# own post-copy enrichment - device timestamps, installed apps, accounts,
+# notification snapshot - is possible here; disclosed directly in the UI,
+# not silently omitted).
+#
+# jmtpfs (confirmed a real Debian trixie/arm64 package, 0.5-4+b2, via
+# apt-cache, github.com/JasonFerrara/jmtpfs, GPL-3.0) mounts an MTP
+# device as a real FUSE filesystem - reused here for the SAME "mount,
+# then let already-proven machinery handle the rest" payoff already
+# established for BitLocker/LUKS/VeraCrypt/F2FS, though the shape is
+# simpler: unlike those, the mount here is a purely transient, internal
+# staging step for ONE recursive copy (this app never exposes a live MTP
+# mount for direct browsing - a phone must stay connected/awake for MTP
+# to keep working at all, the opposite of what a PERMANENT evidence copy
+# should depend on), never a persistent browsable path.
+#
+# Device-listing output format and the -device= argument's own comma
+# separator both confirmed directly against jmtpfs's real upstream source
+# (src/jmtpfs.cpp) before writing any parsing code, not guessed: each
+# listed device prints as "bus_location, devnum, 0xproduct_id,
+# 0xvendor_id, product, vendor", and -device=<busnum>,<devnum> selects a
+# specific one when more than one is connected.
+#
+# jmtpfs's own source shows no read-only mount option implemented at all
+# - -o ro is still passed as a best-effort defense-in-depth measure (FUSE
+# itself may or may not enforce it generically for a filesystem that
+# doesn't explicitly check for it - genuinely unconfirmed without live
+# testing), but the REAL safety guarantee here is procedural: this app's
+# own code never issues a write against the mount either way, only ever
+# reads from it during the one recursive copy below.
+#
+# The copy itself runs via sudo (root), then hands ownership back via the
+# already-existing reclaim_ownership() - the exact same "privileged tool,
+# output lands root-owned, reclaim afterward" pattern every other
+# sudo-invoked acquisition tool in this app already follows (dc3dd/
+# dcfldd/ewfacquire/ddrescue/PhotoRec/...), chosen deliberately over
+# trying to make jmtpfs's own allow_other-mounted files directly readable
+# by the unprivileged service account - MTP has no native Unix permission
+# concept at all (a completely different, object-based protocol), so
+# whether jmtpfs's own presented permission bits would even allow that is
+# a second genuine unknown this design sidesteps entirely by never
+# depending on it.
+MTP_MOUNT_STAGING_ROOT = os.path.join(INSTALL_DIR, ".mtp_mounts")
+_MTP_BUS_DEV_RE = re.compile(r'^[0-9]{1,3}$')
+
+
+def _parse_jmtpfs_device_list(stdout):
+    """Parses `jmtpfs -l`'s real output format, confirmed directly against
+    jmtpfs's own upstream source before this was written: one line per
+    device, "bus_location, devnum, 0xproduct_id, 0xvendor_id, product,
+    vendor" - never raises on a malformed/unexpected line, just skips it."""
+    devices = []
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 6:
+            continue
+        bus, devnum = parts[0], parts[1]
+        if not (_MTP_BUS_DEV_RE.match(bus) and _MTP_BUS_DEV_RE.match(devnum)):
+            continue
+        devices.append({
+            "bus": bus,
+            "devnum": devnum,
+            "product_id": parts[2],
+            "vendor_id": parts[3],
+            "product": parts[4],
+            "vendor": parts[5],
+        })
+    return devices
+
+
+def execution_worker_mtp_pull(bus, devnum, output_path, report_file_path, report_data):
+    """Mounts the selected MTP device read-only via jmtpfs at a fresh,
+    internal staging directory, recursively copies everything into
+    output_path (as root, then reclaim_ownership()'d back), then always
+    unmounts and removes the staging directory - success, failure, or a
+    Stop request partway through."""
+    log_history = []
+
+    def append_log(msg):
+        if msg:
+            log_history.append(msg)
+            update_job(log="\n".join(log_history[-100:]))
+
+    start_time = time.time()
+    os.makedirs(MTP_MOUNT_STAGING_ROOT, exist_ok=True)
+    staging_dir = tempfile.mkdtemp(dir=MTP_MOUNT_STAGING_ROOT)
+    mounted = False
+
+    try:
+        update_job(format="mtp_pull", status="Mounting MTP device...", progress_percent=0.0,
+                   speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
+        append_log(f"[*] Mounting MTP device (bus {bus}, dev {devnum})...")
+
+        mount_cmd = ["sudo", "/usr/bin/jmtpfs", f"-device={bus},{devnum}", "-o", "ro,allow_other", staging_dir]
+        try:
+            res = subprocess.run(mount_cmd, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            append_log("[-] jmtpfs timed out mounting the device - it may have disconnected or gone to sleep.")
+            update_job(status="Failed")
+            report_data["acquisition_status"] = "FAILED"
+            _write_report(report_file_path, report_data, append_log)
+            return
+
+        if res.returncode != 0 or not os.path.ismount(staging_dir):
+            err = (res.stderr or res.stdout or "Unknown jmtpfs error.").strip()
+            append_log(f"[-] Mount failed: {err[:300]}")
+            update_job(status="Failed")
+            report_data["acquisition_status"] = "FAILED"
+            _write_report(report_file_path, report_data, append_log)
+            return
+        mounted = True
+        append_log("[+] MTP device mounted - starting copy.")
+
+        if snapshot_job()["status"] == "Stopped":
+            append_log("[*] Stopped before the copy started.")
+            return
+
+        update_job(status="Copying Files (MTP)...")
+        os.makedirs(output_path, exist_ok=True)
+        copy_cmd = ["sudo", "/bin/cp", "-a", os.path.join(staging_dir, "."), output_path]
+        append_log(f"[*] Command: {' '.join(copy_cmd)}")
+
+        def on_line(clean_line):
+            append_log(clean_line)
+
+        def on_poll():
+            update_job(transferred_bytes=poll_directory_size(output_path))
+
+        proc = _stream_subprocess(copy_cmd, on_line, on_poll=on_poll, poll_interval=2.0)
+
+        report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+
+        if proc.returncode == 0 and snapshot_job()["status"] != "Stopped":
+            reclaim_ownership(output_path)
+            final_size = poll_directory_size(output_path)
+            update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
+            append_log(f"[+] MTP pull completed successfully. Size: {final_size} bytes")
+            report_data["acquisition_status"] = "COMPLETED"
+            report_data["output_size_bytes"] = final_size
+        elif snapshot_job()["status"] != "Stopped":
+            update_job(status="Failed")
+            append_log(f"[-] cp exited with code {proc.returncode}")
+            report_data["acquisition_status"] = "FAILED"
+
+        _write_report(report_file_path, report_data, append_log)
+
+    except Exception as e:
+        update_job(status="Failed")
+        append_log(f"[-] Execution Exception: {str(e)}")
+    finally:
+        if mounted:
+            try:
+                subprocess.run(["sudo", "/bin/umount", staging_dir], capture_output=True, timeout=15)
+            except Exception:
+                pass
+        try:
+            os.rmdir(staging_dir)
+        except OSError:
+            pass
+
+
+@mobile_bp.route('/api/mobile/android/mtp/list_devices', methods=['GET'])
+@requires_auth
+@requires_permission('mobile')
+def mtp_list_devices():
+    try:
+        res = subprocess.run(["sudo", "/usr/bin/jmtpfs", "-l"], capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "jmtpfs timed out listing devices."}), 500
+    except FileNotFoundError:
+        return jsonify({"success": False, "error": "jmtpfs is not installed on this station. Run 'sudo apt-get install jmtpfs' first."}), 500
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout or "Unknown jmtpfs error.").strip()
+        return jsonify({"success": False, "error": err[:300]}), 500
+    return jsonify({"success": True, "devices": _parse_jmtpfs_device_list(res.stdout)})
+
+
+@mobile_bp.route('/api/mobile/android/mtp/start_pull', methods=['POST'])
+@requires_auth
+@requires_permission('mobile')
+def start_mtp_pull():
+    with job_lock:
+        if current_job["active"]:
+            return jsonify({"error": "An acquisition job is already running."}), 400
+        current_job["active"] = True
+
+    req = request.get_json() or {}
+    bus = str(req.get('bus', '')).strip()
+    devnum = str(req.get('devnum', '')).strip()
+    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    metadata = req.get('metadata', {})
+
+    if not (_MTP_BUS_DEV_RE.match(bus) and _MTP_BUS_DEV_RE.match(devnum)):
+        update_job(active=False)
+        return jsonify({"error": "Invalid or missing MTP device - click List MTP Devices and select one."}), 400
+    if not dest_path:
+        update_job(active=False)
+        return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+
+    case_num = metadata.get('case_number', 'UNASSIGNED')
+    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    base_name = f"{case_num}_{evidence_id}_mtp_pull"
+    output_path = os.path.join(dest_path, base_name)
+    try:
+        os.makedirs(output_path, exist_ok=True)
+    except Exception as e:
+        update_job(active=False)
+        return jsonify({"error": f"Destination path {output_path} is inaccessible: {str(e)}"}), 400
+
+    update_job(
+        format="mtp_pull", progress_percent=0.0, speed_mbps=0.0,
+        transferred_bytes=0, total_bytes=0, status="Initializing...",
+        log=f"[*] Initializing MTP pull (bus {bus}, dev {devnum}) -> {output_path}..."
+    )
+
+    report_data = {
+        "tool": "mtp_pull",
+        "case_metadata": metadata,
+        "acquisition_parameters": {
+            "platform": "Android",
+            "method": "MTP (jmtpfs) - fallback, no adb/USB debugging access",
+            "output_destination": output_path,
+        },
+        "attachments": {"files": [], "reference_urls": []},
+        "acquisition_status": "IN_PROGRESS",
+        "timestamp_start": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    report_target = build_report_target(dest_path, dest_path, base_name)
+    write_initial_report(report_target, report_data)
+
+    thread = threading.Thread(
+        target=execution_worker_mtp_pull,
+        args=(bus, devnum, output_path, report_target, report_data)
+    )
+    thread.daemon = True
+    thread.start()
+
+    log_chain_of_custody("mtp_pull_start", {"bus": bus, "devnum": devnum, "destination": output_path})
+    return jsonify({"success": True, "message": "MTP pull started."})
 
 
 # --- Companion-app unified extraction (non-rooted), 2026-09-04 ---
