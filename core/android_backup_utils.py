@@ -272,6 +272,24 @@ def decrypt_and_decompress_backup(path, password=None):
                 if len(out) > AB_MAX_DECODED_BYTES:
                     raise AndroidBackupError("Decompressed .ab payload exceeds the size cap - refusing to continue.")
             out.extend(decompressor.flush())
+            # A real, previously-latent gap found 2026-09-06 while building a
+            # post-transfer integrity check elsewhere (routes/mobile.py):
+            # zlib.decompressobj().flush() does NOT reliably raise for a
+            # stream that's simply cut short - confirmed directly, a raw
+            # zlib (not gzip) stream truncated by even a single byte still
+            # decompresses and flushes without error, silently returning
+            # less output than the real complete payload. decompressor.eof
+            # is the actual reliable signal (confirmed via the same direct
+            # test: True only for a genuinely complete stream, False for
+            # any truncation down to 1 byte) - checked here so every caller
+            # of this function (not just the new integrity check) gets a
+            # real completeness guarantee instead of silently trusting
+            # truncated data as if it were the full backup.
+            if not decompressor.eof:
+                raise AndroidBackupError(
+                    "The compressed .ab payload ends before a valid end-of-stream marker was reached - "
+                    "the file is truncated or corrupted, not a genuine parsing/password problem."
+                )
             return header, bytes(out)
 
         raw = payload.read()

@@ -150,6 +150,51 @@ def test_decrypt_and_decompress_unencrypted_uncompressed_round_trip(tmp_path):
     assert decoded == tar_bytes
 
 
+# --- Truncated-payload detection (2026-09-06) -------------------------------
+# A real, live-caught gap: zlib.decompressobj().flush() does NOT reliably
+# raise for a raw zlib stream that's simply cut short (confirmed directly
+# against a real truncated Android backup file - a genuine NFS write
+# truncation that "successfully" decompressed a partial result with zero
+# error). decompressor.eof is the real, reliable completeness signal;
+# these tests lock in that the fix actually rejects a truncated stream
+# instead of silently returning partial data as if it were complete.
+
+def test_decrypt_and_decompress_rejects_a_truncated_compressed_payload(tmp_path):
+    # A large, low-entropy (highly compressible) payload so the resulting
+    # compressed stream is comfortably bigger than the 200-byte cut below -
+    # the cut needs to land inside the payload itself, not eat into the
+    # 4-line plaintext .ab header that precedes it.
+    tar_bytes = _build_tar_bytes({"apps/com.example/f/hello.txt": b"hello world" * 50000})
+    ab_path = tmp_path / "backup.ab"
+    _write_plain_ab(str(ab_path), tar_bytes, compressed=True)
+
+    # Cut the last 200 bytes off an otherwise-genuine, complete file -
+    # mirrors the real NFS-write-truncation scenario this fix exists for.
+    with open(ab_path, "rb") as f:
+        full_bytes = f.read()
+    with open(ab_path, "wb") as f:
+        f.write(full_bytes[:-200])
+
+    with pytest.raises(ab_utils.AndroidBackupError, match="truncated or corrupted"):
+        ab_utils.decrypt_and_decompress_backup(str(ab_path))
+
+
+def test_decrypt_and_decompress_rejects_a_payload_truncated_by_exactly_one_byte(tmp_path):
+    # The most sensitive possible case - proves this isn't just catching
+    # gross truncation, it's a real completeness check.
+    tar_bytes = _build_tar_bytes({"f": b"some real content here" * 200})
+    ab_path = tmp_path / "backup.ab"
+    _write_plain_ab(str(ab_path), tar_bytes, compressed=True)
+
+    with open(ab_path, "rb") as f:
+        full_bytes = f.read()
+    with open(ab_path, "wb") as f:
+        f.write(full_bytes[:-1])
+
+    with pytest.raises(ab_utils.AndroidBackupError, match="truncated or corrupted"):
+        ab_utils.decrypt_and_decompress_backup(str(ab_path))
+
+
 # --- Encrypted decode -------------------------------------------------------
 
 def test_decrypt_and_decompress_encrypted_correct_password_round_trip(tmp_path):
