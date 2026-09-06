@@ -21,6 +21,23 @@ file after updating to see what changed.
 
 ---
 
+## [1.58.0] - 2026-09-06
+
+### Added
+- **A real, durable-write confirmation before the app's main acquisition path (dc3dd, dcfldd, plain
+  dd, E01, ddrescue, and raw-to-AFF conversion) ever reports "Completed Successfully."** Direct
+  continuation of the previous release's finding: a writing tool's own exit code, and even its own
+  self-reported hash (computed while streaming, before it closes its output file), don't guarantee
+  the resulting bytes have actually, durably landed on network-mounted evidence storage under this
+  station's own occasional NFS instability. Before any acquisition is reported complete, the
+  destination file's write is now confirmed with a real filesystem `fsync` - forcing the kernel to
+  flush and wait for a definitive answer from the storage itself, rather than trusting a tool that
+  may have already exited believing everything succeeded. If the storage can't confirm the write,
+  the job is now correctly reported as Failed, with a clear explanation, instead of a false success.
+  Confirmed live, unprompted, during this same session's own testing: a real acquisition test hit a
+  genuine, concurrent storage stall and the resulting file came back short of what was requested -
+  correctly caught and reported as a failure rather than silently accepted.
+
 ## [1.57.3] - 2026-09-06
 
 ### Fixed
