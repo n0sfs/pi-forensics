@@ -14,6 +14,7 @@ import os
 import re
 import json
 import time
+import shutil
 import subprocess
 import threading
 import tempfile
@@ -1532,17 +1533,30 @@ def start_android_acquisition():
 # own code never issues a write against the mount either way, only ever
 # reads from it during the one recursive copy below.
 #
-# The copy itself runs via sudo (root), then hands ownership back via the
-# already-existing reclaim_ownership() - the exact same "privileged tool,
-# output lands root-owned, reclaim afterward" pattern every other
-# sudo-invoked acquisition tool in this app already follows (dc3dd/
-# dcfldd/ewfacquire/ddrescue/PhotoRec/...), chosen deliberately over
-# trying to make jmtpfs's own allow_other-mounted files directly readable
-# by the unprivileged service account - MTP has no native Unix permission
-# concept at all (a completely different, object-based protocol), so
-# whether jmtpfs's own presented permission bits would even allow that is
-# a second genuine unknown this design sidesteps entirely by never
-# depending on it.
+# Confirmed live against a real connected phone (2026-09-06), closing the
+# "genuine unknown" this design originally sidestepped: the unprivileged
+# service account CAN list and read file content through the
+# allow_other-mounted jmtpfs directory directly (jmtpfs presents every
+# entry as root:root, but with allow_other set, FUSE's own access check
+# still lets any local user read it - verified directly, not assumed).
+# This is why the copy below walks the mount and copies each file itself
+# (as the unprivileged worker, no sudo, matching Logical Acquisition's/
+# Live Collection Import's own established per-file walk-and-track
+# pattern) instead of shelling out to one monolithic `sudo cp -a`. That
+# original approach had two real, live-caught problems: `-a`'s ownership/
+# mode preservation is meaningless for MTP (jmtpfs synthesizes its own
+# root-owned presentation, and NFS won't let root chown to it anyway),
+# so it printed a "failed to preserve ownership: Operation not permitted"
+# line for every single file copied; and `cp`'s own aggregate exit code
+# treats ANY single per-file I/O hiccup (a real, observed risk on this
+# station's own NFS-backed evidence store under load) as total failure,
+# which would misreport a pull that captured 99% of a device's data as a
+# flat FAILED with nothing usable. A per-file walk with its own
+# files_copied/files_errored counters (below) fixes both: no spurious
+# ownership errors since nothing tries to preserve source ownership, and
+# an honest "completed, N file(s) failed" outcome instead of an
+# all-or-nothing one - the same disclosure-over-silent-loss posture this
+# app already uses everywhere else this exact tradeoff comes up.
 MTP_MOUNT_STAGING_ROOT = os.path.join(INSTALL_DIR, ".mtp_mounts")
 _MTP_BUS_DEV_RE = re.compile(r'^[0-9]{1,3}$')
 
@@ -1576,10 +1590,13 @@ def _parse_jmtpfs_device_list(stdout):
 
 def execution_worker_mtp_pull(bus, devnum, output_path, report_file_path, report_data):
     """Mounts the selected MTP device read-only via jmtpfs at a fresh,
-    internal staging directory, recursively copies everything into
-    output_path (as root, then reclaim_ownership()'d back), then always
-    unmounts and removes the staging directory - success, failure, or a
-    Stop request partway through."""
+    internal staging directory, then walks it and copies each file itself
+    (unprivileged, no sudo - confirmed this works directly against real
+    hardware, see the module comment above `_MTP_BUS_DEV_RE`) into
+    output_path, tracking files_copied/files_errored per file rather than
+    trusting one subprocess's aggregate exit code, then always unmounts
+    and removes the staging directory - success, failure, or a Stop
+    request partway through."""
     log_history = []
 
     def append_log(msg):
@@ -1621,32 +1638,54 @@ def execution_worker_mtp_pull(bus, devnum, output_path, report_file_path, report
             append_log("[*] Stopped before the copy started.")
             return
 
-        update_job(status="Copying Files (MTP)...")
+        update_job(status="Enumerating files on device...")
         os.makedirs(output_path, exist_ok=True)
-        copy_cmd = ["sudo", "/bin/cp", "-a", os.path.join(staging_dir, "."), output_path]
-        append_log(f"[*] Command: {' '.join(copy_cmd)}")
 
-        def on_line(clean_line):
-            append_log(clean_line)
+        all_files = []
+        for root, _dirs, names in os.walk(staging_dir):
+            for name in names:
+                all_files.append(os.path.join(root, name))
+        append_log(f"[*] Found {len(all_files)} file(s) on the device. Beginning copy...")
+        update_job(status="Copying files (MTP)...")
 
-        def on_poll():
-            update_job(transferred_bytes=poll_directory_size(output_path))
+        files_copied = 0
+        files_errored = 0
+        transferred_bytes = 0
+        for i, src_path in enumerate(all_files):
+            if snapshot_job()["status"] == "Stopped":
+                append_log("[-] Stopped by examiner.")
+                break
+            rel_path = os.path.relpath(src_path, staging_dir)
+            dest_path = os.path.join(output_path, rel_path)
+            try:
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy2(src_path, dest_path)
+                transferred_bytes += os.path.getsize(dest_path)
+                files_copied += 1
+            except Exception as e:
+                files_errored += 1
+                append_log(f"[-] Failed to copy {rel_path}: {e}")
+                continue
 
-        proc = _stream_subprocess(copy_cmd, on_line, on_poll=on_poll, poll_interval=2.0)
+            if i % 25 == 0 or i == len(all_files) - 1:
+                update_job(transferred_bytes=transferred_bytes)
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
+        report_data["acquisition_parameters"]["files_copied"] = files_copied
+        report_data["acquisition_parameters"]["files_errored"] = files_errored
 
-        if proc.returncode == 0 and snapshot_job()["status"] != "Stopped":
-            reclaim_ownership(output_path)
-            final_size = poll_directory_size(output_path)
-            update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=final_size)
-            append_log(f"[+] MTP pull completed successfully. Size: {final_size} bytes")
-            report_data["acquisition_status"] = "COMPLETED"
-            report_data["output_size_bytes"] = final_size
-        elif snapshot_job()["status"] != "Stopped":
+        if snapshot_job()["status"] == "Stopped":
+            report_data["acquisition_status"] = "STOPPED"
+            append_log(f"[+] Stopped - {files_copied} file(s) were copied ({transferred_bytes} bytes) before stopping.")
+        elif files_errored and not files_copied:
             update_job(status="Failed")
-            append_log(f"[-] cp exited with code {proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
+            append_log("[-] Every file failed to copy - nothing was captured.")
+        else:
+            update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=transferred_bytes)
+            report_data["acquisition_status"] = "COMPLETED"
+            report_data["output_size_bytes"] = transferred_bytes
+            append_log(f"[+] MTP pull completed. {files_copied} file(s) captured ({transferred_bytes} bytes), {files_errored} error(s).")
 
         _write_report(report_file_path, report_data, append_log)
 
