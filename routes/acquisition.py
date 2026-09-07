@@ -39,6 +39,7 @@ from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists,
     detect_pi_model, usb_port_diagram_supported,
 )
+from core.usb_port_health import diagnose_usb_port_health
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job,
     get_active_proc, clear_active_proc,
@@ -2685,6 +2686,18 @@ def pi_hardware_info():
         "pi_model": detect_pi_model(),
         "usb_port_diagram_supported": usb_port_diagram_supported(),
     })
+
+@acquisition_bp.route('/api/system/usb_port_health', methods=['GET'])
+@requires_auth
+def usb_port_health():
+    """Proactive per-port USB health diagnostics (2026-09-06) - see core/
+    usb_port_health.py's own docstring for the real, live incident this
+    was built from. Read-only, no side effects, same @requires_auth-only
+    gating as pi_hardware_info() right above it (informational telemetry,
+    not a control action) - the frontend calls this alongside /api/drives
+    whenever Drive Management loads, so a port's own failure history is
+    visible even with nothing currently connected there at all."""
+    return jsonify(diagnose_usb_port_health())
 
 @acquisition_bp.route('/api/smart_check', methods=['POST'])
 @requires_auth

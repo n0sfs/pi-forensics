@@ -21,6 +21,24 @@ file after updating to see what changed.
 
 ---
 
+## [1.60.0] - 2026-09-06
+
+### Added
+- **Drive Management now proactively surfaces a USB port's own known enumeration-failure history,
+  before an examiner ever tries plugging anything into it.** Built directly from a real investigation
+  on this station's own hardware: one specific physical USB port showed a real, repeated
+  enumeration-failure pattern (a device taking an unusually long time to connect, or failing
+  outright) across two completely different devices. The rear-port diagram in Settings > Drive
+  Management now checks this station's own system log for that exact pattern on each of the 4 ports,
+  independent of whether anything is currently connected - a port with a real history shows a small
+  warning badge directly on the diagram plus a plain-language summary underneath ("Port 1: N
+  enumeration failure(s), most recently at [time]"), so the information is visible the moment the
+  page loads rather than only discovered by sitting through a slow, confusing connection attempt. A
+  clean port, or a station where nothing has ever gone wrong, shows a simple confirmation instead.
+  Reads existing system logs only - no new privilege or configuration needed. Confirmed live end to
+  end: real login through the actual station, real historical failure data correctly detected and
+  displayed exactly where expected.
+
 ## [1.59.0] - 2026-09-06
 
 ### Added
