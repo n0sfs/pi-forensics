@@ -683,6 +683,14 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/vendor/leaflet/leaflet.js"></script>
+    <!-- vis-network (MIT/Apache-2.0, Almende B.V. + visjs contributors) - the
+         Pattern of Life relationship graph. Vendored locally, same reasoning
+         as Leaflet above: this station may run on an isolated LAN with no
+         guaranteed internet at kiosk runtime, and a CDN-only dependency
+         already broke once for exactly that reason (see the dated Leaflet-
+         vendoring CLAUDE.md entry). The "standalone" UMD build bundles its
+         own CSS injection - no separate stylesheet <link> needed. -->
+    <script src="/static/vendor/vis-network/vis-network.min.js"></script>
     <script>
         // Set server-side (see is_local_kiosk_request() in app.py) - true only
         // for the Pi's own local kiosk session, never for remote LAN/WiFi

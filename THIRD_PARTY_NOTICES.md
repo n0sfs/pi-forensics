@@ -35,9 +35,9 @@ not modify any of it either.
 - **Vendored tools** are fetched at install time straight from the upstream project's own GitHub
   repository, pinned to a specific tagged release or commit, and run as a separate process — same
   reasoning as the system tools.
-- **Frontend libraries** are loaded from a public CDN at page-load time, or (Leaflet only) vendored as
-  an unmodified local copy under `static/vendor/leaflet/` for stations without internet access. All
-  four are permissively licensed.
+- **Frontend libraries** are loaded from a public CDN at page-load time, or (Leaflet and vis-network)
+  vendored as an unmodified local copy under `static/vendor/` for stations without internet access. All
+  five are permissively licensed.
 
 If you redistribute, deploy, modify, or build on this station, you're responsible for complying with
 each of the licenses below individually, in addition to this project's own MIT license. This document is
@@ -134,6 +134,7 @@ this list should too (see the pointer comments near the top of each file).
 | Bootstrap Icons (`v1.10.0`) | MIT | loaded from a jsdelivr CDN |
 | Chart.js | MIT | loaded from a jsdelivr CDN |
 | Leaflet (`v1.9.4`) | BSD-2-Clause | vendored locally under `static/vendor/leaflet/` so the map viewer still works on a station with no internet access |
+| vis-network (`v10.1.2`) | Apache-2.0 OR MIT (dual-licensed) | vendored locally under `static/vendor/vis-network/` so the Pattern of Life relationship graph still works on a station with no internet access; copyright Almende B.V. (2011-2017) and visjs contributors (2017-2019) |
 
 ## Licenses worth reading closely
 
