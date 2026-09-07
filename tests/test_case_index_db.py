@@ -606,7 +606,8 @@ def test_correlate_contacts_returns_the_empty_shape_for_a_case_never_indexed(cas
     # artifacts() was never called, so no analysis-index DB file exists
     # yet - must return the correctly-shaped empty result, not raise.
     result = case_index_db.correlate_contacts(case_folder)
-    assert result == {"contacts_indexed_count": 0, "unresolved_communication_count": 0,
+    assert result == {"contacts_indexed_count": 0, "email_identities_indexed_count": 0,
+                       "unresolved_communication_count": 0,
                        "truncated": False, "contacts": [], "frequent_contact_count": 0,
                        "frequent_cumulative_share_threshold": case_index_db.CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE}
 
@@ -875,3 +876,211 @@ def test_correlate_contacts_tiers_a_moderate_repeat_contact_as_regular_not_frequ
     result = case_index_db.correlate_contacts(case_folder)
     assert result["contacts"][0]["tier"] == "regular"
     assert result["frequent_contact_count"] == 0
+
+
+# --- 2026-09-07: email-address correlation (Calendar/Email sources) +
+# phone/email entity linking - see correlate_contacts()'s own docstring in
+# core/case_index_db.py for the full design. Every value below was
+# confirmed against the real parser that writes it before being trusted,
+# same discipline as the phone-based tests above. ---
+
+def test_normalize_email_strips_mailto_prefix_and_lowercases():
+    assert case_index_db.normalize_email("mailto:Jane.Doe@Example.COM") == "jane.doe@example.com"
+
+
+def test_normalize_email_accepts_a_plain_bare_address():
+    assert case_index_db.normalize_email("jane@example.com") == "jane@example.com"
+
+
+@pytest.mark.parametrize("raw", [None, "", "not-an-email", "jane@", "@example.com", "jane example.com"])
+def test_normalize_email_returns_none_for_implausible_values(raw):
+    assert case_index_db.normalize_email(raw) is None
+
+
+def test_extract_raw_counterpart_candidates_handles_a_genuine_list():
+    assert case_index_db._extract_raw_counterpart_candidates(["+15551111111", "+15552222222"]) == \
+        ["+15551111111", "+15552222222"]
+
+
+def test_extract_raw_counterpart_candidates_splits_a_comma_joined_string():
+    assert case_index_db._extract_raw_counterpart_candidates("+15551111111, +15552222222") == \
+        ["+15551111111", "+15552222222"]
+
+
+def test_extract_raw_counterpart_candidates_wraps_a_single_value():
+    assert case_index_db._extract_raw_counterpart_candidates("+15551234567") == ["+15551234567"]
+
+
+@pytest.mark.parametrize("raw_field", [None, "", []])
+def test_extract_raw_counterpart_candidates_returns_empty_for_falsy_input(raw_field):
+    assert case_index_db._extract_raw_counterpart_candidates(raw_field) == []
+
+
+def test_extract_email_counterparts_parses_email_message_from_to_cc_via_rfc2822_headers():
+    # A naive comma-split on a real "Display Name, Inc. <addr@example.com>"
+    # header would wrongly split on the comma INSIDE the display name -
+    # email.utils.getaddresses() is what correctly avoids that (this app
+    # was already bitten once this session by an analogous naive-split
+    # bug, MediaStore's bucket_display_name/_display_name collision).
+    candidates = case_index_db._extract_email_counterparts(
+        "email_message", '"Doe, Jane" <jane@example.com>',
+        {"to": "Bob Smith <bob@example.com>, carol@example.com", "cc": "dave@example.com"})
+    assert set(candidates) == {"jane@example.com", "bob@example.com", "carol@example.com", "dave@example.com"}
+
+
+def test_extract_email_counterparts_email_message_tolerates_missing_to_cc():
+    # A PST/OST-sourced email_message row has no to/cc at all (core/
+    # email_utils.py never queries pypff for recipients) - must still
+    # yield the From address alone, not crash on the missing keys.
+    candidates = case_index_db._extract_email_counterparts("email_message", "jane@example.com", {})
+    assert candidates == ["jane@example.com"]
+
+
+def test_extract_email_counterparts_calendar_event_reads_attendees_and_organizer():
+    candidates = case_index_db._extract_email_counterparts(
+        "android_companion_calendar_event", "Team Sync",
+        {"attendees": [{"email": "alice@example.com"}, {"email": "bob@example.com"}, {"no_email": True}],
+         "organizer": "organizer@example.com"})
+    assert set(candidates) == {"alice@example.com", "bob@example.com", "organizer@example.com"}
+
+
+def test_extract_email_counterparts_calendar_event_tolerates_no_attendees_or_organizer():
+    assert case_index_db._extract_email_counterparts("android_companion_calendar_event", "Solo Reminder", {}) == []
+
+
+def test_extract_email_counterparts_returns_empty_for_an_unrecognized_artifact_type():
+    assert case_index_db._extract_email_counterparts("android_contact", "x", {"to": "jane@example.com"}) == []
+
+
+def _contact_record_with_email(artifact_type, title, phones=None, emails=None):
+    extra = {}
+    if phones is not None:
+        extra["phones"] = phones
+    if emails is not None:
+        extra["emails"] = emails
+    return {"artifact_type": artifact_type, "title": title, "url": "",
+            "value": title, "timestamp": None, "extra": extra}
+
+
+def _email_message_record(from_addr, to=None, cc=None, timestamp=1700000000.0):
+    extra = {}
+    if to is not None:
+        extra["to"] = to
+    if cc is not None:
+        extra["cc"] = cc
+    return {"artifact_type": "email_message", "title": from_addr, "url": "",
+            "value": from_addr, "timestamp": timestamp, "extra": extra}
+
+
+def test_correlate_contacts_resolves_an_email_only_contact_with_no_linked_phone(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record_with_email("android_contact", "Email Only Contact", emails=["email.only@example.com"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "emails.mbox"),
+        [_email_message_record("email.only@example.com")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["email_identities_indexed_count"] == 1
+    assert result["contacts_indexed_count"] == 0  # no phone identity discovered at all
+    assert len(result["contacts"]) == 1
+    contact = result["contacts"][0]
+    assert contact["normalized_number"] is None
+    assert contact["normalized_email"] == "email.only@example.com"
+    assert contact["display_names"] == ["Email Only Contact"]
+    assert contact["communication_counts"] == {"Email": 1}
+    assert contact["total_communications"] == 1
+
+
+def test_correlate_contacts_merges_phone_and_email_identity_when_the_same_contact_row_links_them(case_folder):
+    # The core entity-linking guarantee: one real android_contact row
+    # naming BOTH a phone and an email must collapse an SMS-side view and
+    # an email-side view of that same person into ONE contact entry, not
+    # two unrelated-looking ones.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record_with_email("android_contact", "Jane Doe",
+                                     phones=["+15551234567"], emails=["jane@example.com"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "emails.mbox"),
+        [_email_message_record("jane@example.com", timestamp=1700000001.0)])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 1
+    assert result["email_identities_indexed_count"] == 1
+    assert len(result["contacts"]) == 1  # merged into ONE entry, not two
+    contact = result["contacts"][0]
+    assert contact["normalized_number"] == "5551234567"
+    assert contact["normalized_email"] == "jane@example.com"
+    assert contact["display_names"] == ["Jane Doe"]
+    assert contact["communication_counts"] == {"SMS": 1, "Email": 1}
+    assert contact["total_communications"] == 2
+
+
+def test_correlate_contacts_does_not_cross_link_an_email_to_an_unrelated_phone_from_a_different_row(case_folder):
+    # Two SEPARATE contact-source rows: one names a phone with no email,
+    # the other names an email with no phone. They must never merge just
+    # because both happen to exist somewhere in the same case - only a
+    # genuine SAME-ROW co-occurrence (phone_email_links) is a real link.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record_with_email("android_contact", "Phone Only", phones=["+15551111111"]),
+         _contact_record_with_email("android_contact", "Email Only", emails=["separate@example.com"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        [_comm_record("android_sms_message", "address", "+15551111111")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "emails.mbox"),
+        [_email_message_record("separate@example.com")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert len(result["contacts"]) == 2  # stayed separate
+    identities = {(c["normalized_number"], c["normalized_email"]) for c in result["contacts"]}
+    assert identities == {("5551111111", None), (None, "separate@example.com")}
+
+
+def test_correlate_contacts_resolves_calendar_attendees_and_organizer_as_emails(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record_with_email("takeout_contact", "Calendar Buddy", emails=["buddy@example.com"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "calendar.json"),
+        [{"artifact_type": "android_companion_calendar_event", "title": "Team Sync", "url": "",
+          "value": "Team Sync", "timestamp": 1700000000.0,
+          "extra": {"attendees": [{"email": "buddy@example.com"}], "organizer": "someone-else@example.com"}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["email_identities_indexed_count"] == 1
+    assert len(result["contacts"]) == 1
+    contact = result["contacts"][0]
+    assert contact["normalized_email"] == "buddy@example.com"
+    assert contact["communication_counts"] == {"Calendar Invite": 1}
+    # someone-else@example.com is a real candidate this row names, but it
+    # was never seen in any known contact source - correctly unresolved,
+    # not a ghost contact, matching the phone-side unresolved convention.
+    assert result["unresolved_communication_count"] == 0  # buddy@ DID resolve on this row
+
+
+def test_correlate_contacts_deliberately_never_reads_email_from_whatsapp_or_companion_contact_rows(case_folder):
+    # whatsapp_contact genuinely has no email concept; android_companion_
+    # contact needs a harder cross-row contact_id join not built yet - see
+    # CONTACT_CORRELATION_SOURCE_TYPES's own comment. Confirm a stray
+    # "emails" key present in either type's own extra_json (which neither
+    # real parser would ever actually produce) is still never read,
+    # proving the exclusion is structural (no emails_key in the spec),
+    # not just a coincidence of what real data happens to contain.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "wa.db"),
+        [{"artifact_type": "whatsapp_contact", "title": "x", "url": "", "value": "x",
+          "timestamp": None, "extra": {"number": "+15551234567", "emails": ["should-not-count@example.com"]}}])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "companion_contacts.json"),
+        [{"artifact_type": "android_companion_contact", "title": "y", "url": "", "value": "y",
+          "timestamp": None, "extra": {"mimetype": "vnd.android.cursor.item/phone_v2", "data1": "+15559999999",
+                                        "emails": ["also-should-not-count@example.com"]}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["email_identities_indexed_count"] == 0

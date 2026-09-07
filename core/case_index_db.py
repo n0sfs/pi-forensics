@@ -14,6 +14,7 @@ import json
 import time
 import sqlite3
 import multiprocessing
+import email.utils
 from flask import g
 
 from core.paths import safe_path, case_consolidated_path, classify_case_role, is_bulk_tool_output_dir
@@ -983,11 +984,28 @@ def cross_case_hash_search(hash_value):
 # which this app's own established discipline treats as worse than not
 # covering it yet. A future session with real ALEAPP hit data to check
 # against should extend this, not guess now.
+# emails_key (2026-09-07) - confirmed directly by reading each parser's own
+# extra_json construction, not assumed uniform: android_contact/apple_
+# contact/takeout_contact/mobile_contact all already store a real "emails"
+# list right alongside "phones" in the exact same record (core/android_
+# artifacts.py, core/apple_export_utils.py's parse_vcard_file(), core/
+# mobile_artifacts.py) - a phone-known and email-known identity for the
+# same real person are very often literally the same row, which is what
+# makes phone/email entity-linking below possible with no new join at all
+# for these four. whatsapp_contact genuinely has no email concept in its
+# own source table (extra is only {"jid", "number"}) - correctly given no
+# emails_key, not an oversight. android_companion_contact is deliberately
+# NOT extended here either, on purpose: a phone-type row and an email-type
+# row for the same ContactsContract.Data-backed contact are two SEPARATE
+# android_companion_contact records (one per row per mimetype), joinable
+# only via a cross-row extra["contact_id"] match - real, disclosed future
+# work, not attempted this pass to avoid guessing at a join that's never
+# been tested against real companion-app data.
 CONTACT_CORRELATION_SOURCE_TYPES = {
-    "android_contact": {"phones_key": "phones", "kind": "contact"},
-    "apple_contact": {"phones_key": "phones", "kind": "contact"},
-    "takeout_contact": {"phones_key": "phones", "kind": "contact"},
-    "mobile_contact": {"phones_key": "phones", "kind": "contact"},
+    "android_contact": {"phones_key": "phones", "emails_key": "emails", "kind": "contact"},
+    "apple_contact": {"phones_key": "phones", "emails_key": "emails", "kind": "contact"},
+    "takeout_contact": {"phones_key": "phones", "emails_key": "emails", "kind": "contact"},
+    "mobile_contact": {"phones_key": "phones", "emails_key": "emails", "kind": "contact"},
     "whatsapp_contact": {"phones_key": None, "single_key": "number", "kind": "contact"},
     # android_companion_contact is one record per ContactsContract.Data
     # ROW, not one per contact - data1 holds whatever mimetype that row
@@ -1092,6 +1110,32 @@ CONTACT_CORRELATION_COMM_TYPES = {
         "direction_field": "msg_box", "incoming_values": {1}, "outgoing_values": {2, 4},
     },
 }
+# Email-address-keyed communication sources (2026-09-07) - a genuinely
+# different identity space from the phone-keyed dict above (see
+# CONTACT_CORRELATION_SOURCE_TYPES's own comment on emails_key for how the
+# two get linked when the same contact-source row names both). Deliberately
+# NOT the same spec shape as CONTACT_CORRELATION_COMM_TYPES - a phone-based
+# comm row always has exactly one counterpart_key to read, but email_
+# message's own From/To/Cc are raw RFC 2822 header strings needing real
+# address parsing (email.utils.getaddresses(), not a naive split - see
+# _extract_email_counterparts()'s own docstring for why), and android_
+# companion_calendar_event's attendees are an already-structured list, not
+# a header string at all - genuinely different extraction logic per type,
+# dispatched by artifact_type inside that one function rather than forced
+# into a shared spec shape that would fit neither well.
+#
+# Direction and duration are both deliberately NOT tracked for either type
+# this pass, disclosed rather than guessed: an email_message row has no
+# reliable way to know which of From/To/Cc is the device owner's OWN
+# address (nothing in this app's data model records that), so "incoming
+# vs outgoing" can't be inferred at all; a calendar event's own start/end
+# time could in principle be summed as "time spent," but doing that
+# correctly needs its own verified epoch/unit confirmation this pass
+# didn't do - real, disclosed future work, not attempted here.
+CONTACT_CORRELATION_EMAIL_COMM_TYPES = {
+    "email_message": "Email",
+    "android_companion_calendar_event": "Calendar Invite",
+}
 CONTACT_CORRELATION_MAX_ROWS_PER_TYPE = 20_000
 CONTACT_CORRELATION_MAX_CONTACTS = 2_000
 CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT = 8
@@ -1136,6 +1180,55 @@ def normalize_phone_number(raw):
     return None
 
 
+_EMAIL_PLAUSIBLE_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+
+
+def normalize_email(raw):
+    """The email-address counterpart to normalize_phone_number() above
+    (2026-09-07, built to extend contact correlation to email/calendar
+    sources) - lowercases and strips whitespace, strips a leading
+    'mailto:' prefix (case-insensitive; a real iCalendar ATTENDEE/
+    ORGANIZER value is a mailto: URI, not a bare address, per RFC 5545),
+    then a plausibility check (exactly the shape local@domain.tld, no
+    embedded whitespace) rather than a full RFC 5322 validator - this
+    app only needs "is this worth treating as an identity key," not "is
+    this a deliverable address." Returns None for anything implausible,
+    matching normalize_phone_number()'s own "never silently produce a
+    false-positive match" contract. Deliberately an EXACT-match key only
+    (no alias/plus-addressing collapsing, e.g. treating jane+test@x.com
+    the same as jane@x.com) - a real, disclosed scope boundary, matching
+    normalize_phone_number()'s own identical stance on fuzzy matching."""
+    if not raw:
+        return None
+    value = str(raw).strip()
+    if value.lower().startswith('mailto:'):
+        value = value[len('mailto:'):]
+    value = value.strip().lower()
+    if _EMAIL_PLAUSIBLE_RE.match(value):
+        return value
+    return None
+
+
+def _extract_raw_counterpart_candidates(raw_field):
+    """A comm row can name more than one real counterpart - a group MMS's
+    comma-joined "addr1, addr2" string (android_mms_message/mobile_sms_
+    message's own ", ".join() convention) or a genuine list (android_ab_
+    mms_message's "addresses"). Returns each real candidate separately,
+    never the whole joined/list value as one string - gluing two real
+    numbers/addresses together into one bogus, coincidentally-plausible
+    value would otherwise silently misattribute a group message to a
+    party nobody on it actually is. Factored out (2026-09-07) from
+    correlate_contacts()'s own Pass 2 so /api/cases/timeline's per-row
+    counterpart enrichment (for the Evidence Timeline's own entity filter)
+    uses the exact same splitting rule, not a second copy that could
+    silently drift from this one."""
+    if isinstance(raw_field, list):
+        return raw_field
+    if isinstance(raw_field, str) and ", " in raw_field:
+        return raw_field.split(", ")
+    return [raw_field] if raw_field else []
+
+
 def _classify_comm_direction(spec, extra):
     """Returns 'incoming', 'outgoing', or None (unclassified - a Draft/
     Failed/Queued SMS, a Missed/Voicemail/Rejected/Blocked call, a
@@ -1177,27 +1270,93 @@ def _extract_comm_duration_seconds(spec, extra):
         return 0.0
 
 
+def _extract_email_counterparts(artifact_type, value, extra):
+    """Returns a list of normalized email addresses this row names as a
+    counterpart to the device owner - the email-side equivalent of
+    _extract_raw_counterpart_candidates() + normalize_phone_number() for
+    the phone-based comm types above, but genuinely different extraction
+    per type rather than one shared spec shape (see CONTACT_CORRELATION_
+    EMAIL_COMM_TYPES's own comment for why).
+
+    email_message: "From" lives in the row's own `value` column (not
+    extra - a real, confirmed difference from every phone-based comm
+    type, all of which keep their counterpart in extra_json), and extra's
+    "to"/"cc" are each a single raw, possibly multi-address, comma-joined
+    RFC 2822 header string. Parsed via the stdlib email.utils.
+    getaddresses() rather than a naive comma-split - this app has already
+    been bitten once this session by a naive-split bug (MediaStore's
+    bucket_display_name/_display_name column collision), and a display
+    name containing a literal comma ("Doe, Jane <jane@x.com>") is a real,
+    valid RFC 2822 construct getaddresses() already handles correctly,
+    unlike a bare split(','). PST/OST-sourced email_message rows have no
+    to/cc at all (core/email_utils.py never queries pypff for
+    recipients) - those rows correctly contribute zero candidates here,
+    not a guessed empty match.
+
+    android_companion_calendar_event: attendees is already a list of
+    {"email": ...} dicts (core/android_companion_calendar_utils.py) - no
+    header parsing needed, just a direct extraction - plus the event's
+    own separate "organizer" field."""
+    candidates_raw = []
+    if artifact_type == "email_message":
+        header_values = [v for v in (value, extra.get("to"), extra.get("cc")) if v]
+        if header_values:
+            candidates_raw = [addr for _display_name, addr in email.utils.getaddresses(header_values) if addr]
+    elif artifact_type == "android_companion_calendar_event":
+        for attendee in (extra.get("attendees") or []):
+            if isinstance(attendee, dict) and attendee.get("email"):
+                candidates_raw.append(attendee["email"])
+        if extra.get("organizer"):
+            candidates_raw.append(extra["organizer"])
+    return [e for e in (normalize_email(c) for c in candidates_raw) if e]
+
+
 def correlate_contacts(case_folder):
-    """Builds a case-wide {normalized_number: {...}} correlation report -
-    see the module comment above for scope. Returns a dict with
-    contacts_indexed_count, unresolved_communication_count, truncated
-    (hit CONTACT_CORRELATION_MAX_CONTACTS), frequent_contact_count and
+    """Builds a case-wide contact correlation report, now spanning TWO
+    identity spaces (2026-09-07) - phone numbers (the original scope) and
+    email addresses (WhatsApp was already phone-based and needed no
+    extension; Calendar and Email genuinely need a second identity key,
+    since a calendar attendee or email correspondent is identified by
+    address, not phone number). The two are linked, not just concatenated:
+    when a single already-known contact-source row names BOTH a phone and
+    an email (android_contact/apple_contact/takeout_contact/mobile_contact
+    all already store "phones" and "emails" side by side in the same
+    record), that real person's phone-side and email-side activity is
+    merged into ONE contact entry rather than shown twice under two
+    unrelated-looking keys - see the Pass 3 merge step below for exactly
+    how. An email-only contact (only ever emailed or calendar-invited,
+    never texted or called, or simply not linked to a known phone) still
+    gets its own entry, keyed by its own email address instead of a
+    phone number - a normalized phone is always all-digits and a
+    normalized email always contains "@", so the two key spaces can never
+    collide in the same `contacts` list.
+
+    Returns a dict with contacts_indexed_count (known phone numbers),
+    email_identities_indexed_count (known email addresses - a person
+    linking both counts once in each, by design, not double-counted into
+    one combined number), unresolved_communication_count, truncated (hit
+    CONTACT_CORRELATION_MAX_CONTACTS), frequent_contact_count and
     frequent_cumulative_share_threshold (the tiering rule's own actual
     inputs for this case, so a caller can state the exact rule that
     produced the tiers rather than a canned/static description), and a
     'contacts' list sorted by total communication count descending (the
     most-contacted people surface first - the highest pattern-of-life
-    signal). Each contact also carries direction_counts ({"incoming":
-    N, "outgoing": M} - a comm row this app can't classify either way is
-    counted in total_communications but not toward either direction),
+    signal). Each contact carries normalized_number AND normalized_email
+    (either may be None depending on which identity space it was found
+    in), direction_counts ({"incoming": N, "outgoing": M} - a comm row
+    this app can't classify either way, or has no direction concept at
+    all for - every email/calendar row, disclosed rather than guessed -
+    is counted in total_communications but not toward either direction),
     total_duration_seconds (0.0 for a contact with no call-type
     communications at all - never inferred/estimated), and tier
     ("frequent"/"regular"/"one_off" - see CONTACT_CORRELATION_FREQUENT_*
-    above for the exact rule). Returns a correctly-shaped all-empty
-    result (never None/raises) for a case that's never been indexed,
-    matching this module's own established "nothing to show yet, not an
-    error" convention."""
-    result = {"contacts_indexed_count": 0, "unresolved_communication_count": 0,
+    above for the exact rule, applied uniformly regardless of which
+    identity space a contact was found in). Returns a correctly-shaped
+    all-empty result (never None/raises) for a case that's never been
+    indexed, matching this module's own established "nothing to show
+    yet, not an error" convention."""
+    result = {"contacts_indexed_count": 0, "email_identities_indexed_count": 0,
+              "unresolved_communication_count": 0,
               "truncated": False, "contacts": [],
               "frequent_contact_count": 0,
               "frequent_cumulative_share_threshold": CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE}
@@ -1205,16 +1364,23 @@ def correlate_contacts(case_folder):
     if not conn:
         return result
     try:
-        # Pass 1: every known contact source -> {normalized: {names: set,
-        # sources: set}}. A number seen under more than one contact
-        # source (e.g. both android_contact and whatsapp_contact) is a
-        # real corroboration signal, kept as multiple entries in "sources".
+        # Pass 1: every known contact source -> known[normalized_phone] /
+        # known_emails[normalized_email], each {names: set, sources: set}.
+        # A number/address seen under more than one contact source (e.g.
+        # both android_contact and whatsapp_contact) is a real
+        # corroboration signal, kept as multiple entries in "sources".
+        # phone_email_links[normalized_email] = {normalized_phone, ...}
+        # records every phone this exact email was seen alongside on the
+        # SAME contact-source row - the one real "these belong to the same
+        # person" signal this app can actually observe, used by Pass 3.
         known = {}
+        known_emails = {}
+        phone_email_links = {}
 
-        def _remember(normalized, name, source_type):
+        def _remember(store, normalized, name, source_type):
             if not normalized:
                 return
-            entry = known.setdefault(normalized, {"names": set(), "sources": set()})
+            entry = store.setdefault(normalized, {"names": set(), "sources": set()})
             if name:
                 entry["names"].add(name)
             entry["sources"].add(source_type)
@@ -1231,17 +1397,34 @@ def correlate_contacts(case_folder):
                 extra = json.loads(extra_json) if extra_json else {}
             except (TypeError, ValueError):
                 extra = {}
+            row_phones = []
+            row_emails = []
             if spec.get("phones_key"):
                 for raw in (extra.get(spec["phones_key"]) or []):
-                    _remember(normalize_phone_number(raw), title, artifact_type)
+                    normalized = normalize_phone_number(raw)
+                    if normalized:
+                        row_phones.append(normalized)
+                        _remember(known, normalized, title, artifact_type)
             elif spec.get("single_key"):
                 mimetype_key = spec.get("mimetype_key")
                 if mimetype_key and extra.get(mimetype_key) != spec.get("mimetype_value"):
                     continue
-                _remember(normalize_phone_number(extra.get(spec["single_key"])), title, artifact_type)
+                normalized = normalize_phone_number(extra.get(spec["single_key"]))
+                if normalized:
+                    row_phones.append(normalized)
+                    _remember(known, normalized, title, artifact_type)
+            if spec.get("emails_key"):
+                for raw in (extra.get(spec["emails_key"]) or []):
+                    normalized_email = normalize_email(raw)
+                    if normalized_email:
+                        row_emails.append(normalized_email)
+                        _remember(known_emails, normalized_email, title, artifact_type)
+            for normalized_email in row_emails:
+                phone_email_links.setdefault(normalized_email, set()).update(row_phones)
 
-        # Pass 2: every communication row -> resolve its counterpart
-        # against `known`, aggregate per-contact counts/timestamps/samples.
+        # Pass 2a: every phone-keyed communication row -> resolve its
+        # counterpart against `known`, aggregate per-contact counts/
+        # timestamps/samples. Unchanged logic from before email support.
         by_contact = {}
         unresolved = 0
         comm_types = tuple(CONTACT_CORRELATION_COMM_TYPES.keys())
@@ -1258,21 +1441,7 @@ def correlate_contacts(case_folder):
             except (TypeError, ValueError):
                 extra = {}
             raw_field = extra.get(spec["counterpart_key"])
-            # A comm row can name more than one real counterpart - a group
-            # MMS's comma-joined "addr1, addr2" string (android_mms_message/
-            # mobile_sms_message's own ", ".join() convention) or a genuine
-            # list (android_ab_mms_message's "addresses"). Resolving each
-            # candidate separately, rather than blindly normalizing the
-            # whole joined/list value as one string, avoids gluing two real
-            # numbers together into one bogus, coincidentally-plausible-
-            # length digit string that would otherwise silently misattribute
-            # a group message to a contact nobody on it actually is.
-            if isinstance(raw_field, list):
-                raw_candidates = raw_field
-            elif isinstance(raw_field, str) and ", " in raw_field:
-                raw_candidates = raw_field.split(", ")
-            else:
-                raw_candidates = [raw_field] if raw_field else []
+            raw_candidates = _extract_raw_counterpart_candidates(raw_field)
             resolved_any = False
             for raw_counterpart in raw_candidates:
                 normalized = normalize_phone_number(raw_counterpart)
@@ -1280,7 +1449,7 @@ def correlate_contacts(case_folder):
                     continue
                 resolved_any = True
                 entry = by_contact.setdefault(normalized, {
-                    "normalized_number": normalized,
+                    "normalized_number": normalized, "normalized_email": None,
                     "display_names": sorted(known[normalized]["names"]),
                     "contact_sources": sorted(known[normalized]["sources"]),
                     "communication_counts": {},
@@ -1308,6 +1477,94 @@ def correlate_contacts(case_folder):
             if not resolved_any:
                 unresolved += 1
 
+        # Pass 2b: every email-keyed communication row (email_message's
+        # From/To/Cc, android_companion_calendar_event's attendees/
+        # organizer) -> resolve against `known_emails`, aggregate into a
+        # SEPARATE by_email_contact dict with the identical entry shape -
+        # merged into by_contact in Pass 3 below, rather than during this
+        # loop, so the merge logic can be reasoned about and tested
+        # completely independently of this extraction.
+        by_email_contact = {}
+        email_comm_types = tuple(CONTACT_CORRELATION_EMAIL_COMM_TYPES.keys())
+        placeholders = ",".join("?" * len(email_comm_types))
+        cur = conn.execute(
+            f"SELECT artifact_type, title, value, timestamp, source_path, extra_json "
+            f"FROM parsed_artifacts WHERE artifact_type IN ({placeholders}) "
+            f"ORDER BY timestamp DESC LIMIT ?",
+            email_comm_types + (CONTACT_CORRELATION_MAX_ROWS_PER_TYPE * len(email_comm_types),))
+        for artifact_type, title, value, timestamp, source_path, extra_json in cur:
+            channel = CONTACT_CORRELATION_EMAIL_COMM_TYPES[artifact_type]
+            try:
+                extra = json.loads(extra_json) if extra_json else {}
+            except (TypeError, ValueError):
+                extra = {}
+            candidates = _extract_email_counterparts(artifact_type, value, extra)
+            resolved_any = False
+            for normalized_email in candidates:
+                if normalized_email not in known_emails:
+                    continue
+                resolved_any = True
+                entry = by_email_contact.setdefault(normalized_email, {
+                    "normalized_number": None, "normalized_email": normalized_email,
+                    "display_names": sorted(known_emails[normalized_email]["names"]),
+                    "contact_sources": sorted(known_emails[normalized_email]["sources"]),
+                    "communication_counts": {},
+                    "direction_counts": {"incoming": 0, "outgoing": 0},
+                    "total_duration_seconds": 0.0,
+                    "first_seen": timestamp, "last_seen": timestamp,
+                    "total_communications": 0, "samples": [],
+                })
+                entry["communication_counts"][channel] = entry["communication_counts"].get(channel, 0) + 1
+                entry["total_communications"] += 1
+                if timestamp is not None:
+                    if entry["last_seen"] is None or timestamp > entry["last_seen"]:
+                        entry["last_seen"] = timestamp
+                    if entry["first_seen"] is None or timestamp < entry["first_seen"]:
+                        entry["first_seen"] = timestamp
+                if len(entry["samples"]) < CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT:
+                    entry["samples"].append({
+                        "artifact_type": artifact_type, "title": title, "value": value,
+                        "timestamp": timestamp, "source_path": source_path,
+                    })
+            if not resolved_any:
+                unresolved += 1
+
+        # Pass 3 (merge): fold each email-keyed contact into its linked
+        # phone-keyed entry when one exists (the two identities came from
+        # the SAME real contact-source row, per phone_email_links) - this
+        # is what makes a phone-only view and an email-only view of the
+        # same real person collapse into one node instead of two, the
+        # actual "entity linking" this extension exists for. An email
+        # contact with no linked phone (only ever emailed/invited, never
+        # texted or called) stays its own entry, keyed by the email
+        # address itself.
+        for email_key, email_entry in by_email_contact.items():
+            linked_phone = None
+            for phone in sorted(phone_email_links.get(email_key, ())):
+                if phone in by_contact:
+                    linked_phone = phone
+                    break
+            if linked_phone:
+                target = by_contact[linked_phone]
+                target["normalized_email"] = target["normalized_email"] or email_key
+                target["display_names"] = sorted(set(target["display_names"]) | set(email_entry["display_names"]))
+                target["contact_sources"] = sorted(set(target["contact_sources"]) | set(email_entry["contact_sources"]))
+                for channel, count in email_entry["communication_counts"].items():
+                    target["communication_counts"][channel] = target["communication_counts"].get(channel, 0) + count
+                target["total_communications"] += email_entry["total_communications"]
+                target["direction_counts"]["incoming"] += email_entry["direction_counts"]["incoming"]
+                target["direction_counts"]["outgoing"] += email_entry["direction_counts"]["outgoing"]
+                target["total_duration_seconds"] += email_entry["total_duration_seconds"]
+                if email_entry["first_seen"] is not None and (target["first_seen"] is None or email_entry["first_seen"] < target["first_seen"]):
+                    target["first_seen"] = email_entry["first_seen"]
+                if email_entry["last_seen"] is not None and (target["last_seen"] is None or email_entry["last_seen"] > target["last_seen"]):
+                    target["last_seen"] = email_entry["last_seen"]
+                remaining = CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT - len(target["samples"])
+                if remaining > 0:
+                    target["samples"].extend(email_entry["samples"][:remaining])
+            else:
+                by_contact[email_key] = email_entry
+
         contacts = sorted(by_contact.values(), key=lambda c: c["total_communications"], reverse=True)
         truncated = len(contacts) > CONTACT_CORRELATION_MAX_CONTACTS
         contacts = contacts[:CONTACT_CORRELATION_MAX_CONTACTS]
@@ -1316,6 +1573,10 @@ def correlate_contacts(case_folder):
         # for the exact rule. Only ever run over already-sorted `contacts`
         # (descending by total_communications), so the cumulative-share
         # walk below always finds the smallest possible high-volume prefix.
+        # Applies uniformly regardless of which identity space (phone,
+        # email, or a merged both) a contact was ultimately keyed under -
+        # tiering only ever looks at total_communications, which is
+        # already correctly combined by the Pass 3 merge above.
         grand_total = sum(c["total_communications"] for c in contacts)
         frequent_cutoff_index = 0
         if grand_total > 0:
@@ -1339,6 +1600,7 @@ def correlate_contacts(case_folder):
 
         result["contacts"] = contacts
         result["contacts_indexed_count"] = len(known)
+        result["email_identities_indexed_count"] = len(known_emails)
         result["unresolved_communication_count"] = unresolved
         result["truncated"] = truncated
         result["frequent_contact_count"] = actual_frequent_count
