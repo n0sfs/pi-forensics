@@ -330,9 +330,17 @@
                                                         </div>
                                                         <label class="small text-subtle mb-0" title="Off by default - a web page visit isn't a two-way communication the way a text/call/app message is, so it's kept out of this chart's default view. Turn on to fold browser history/downloads/bookmarks/cookies into the same hour/day breakdown alongside communications."><input type="checkbox" class="form-check-input me-1" id="polIncludeWebActivityCheck" onchange="onPatternOfLifeIncludeWebToggle(this.checked)">+ Web Browsing</label>
                                                         <label class="small text-subtle mb-0" title="Off by default - a calendar entry's own timestamp can be a future-scheduled event, not evidence the device was actually in use at that moment, so it's kept out of this chart's default view. Turn on to fold parsed calendar events/reminders into the same hour/day breakdown."><input type="checkbox" class="form-check-input me-1" id="polIncludeCalendarCheck" onchange="onPatternOfLifeIncludeCalendarToggle(this.checked)">+ Calendar</label>
+                                                    </div>
+                                                    <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
+                                                        <label class="small text-subtle mb-0" for="polActivityDateFrom">From</label>
+                                                        <input type="date" class="form-control form-control-sm" id="polActivityDateFrom" style="width:auto;" onchange="onPatternOfLifeActivityDateRangeChange()">
+                                                        <label class="small text-subtle mb-0" for="polActivityDateTo">To</label>
+                                                        <input type="date" class="form-control form-control-sm" id="polActivityDateTo" style="width:auto;" onchange="onPatternOfLifeActivityDateRangeChange()">
+                                                        <button type="button" class="btn btn-outline-secondary btn-xs" id="polActivityDateClearBtn" onclick="clearPatternOfLifeActivityDateRange()" style="display:none;" title="Chart every event again, regardless of date.">Clear Date Filter</button>
                                                         <span id="patternOfLifeActivitySummary" class="small text-subtle"></span>
                                                     </div>
-                                                    <div class="border border-secondary rounded-2 mb-3 p-2" style="height: 180px; background-color:#090b10;"><canvas id="patternOfLifeActivityChart"></canvas></div>
+                                                    <div class="text-subtle small mb-1" style="display:none;" id="polActivityBarClickHint"><i class="bi bi-hand-index-thumb me-1"></i>Tap a bar to see which events it's made of.</div>
+                                                    <div class="border border-secondary rounded-2 mb-3 p-2" id="patternOfLifeActivityChartWrap" style="height: 180px; background-color:#090b10; position:relative;"><canvas id="patternOfLifeActivityChart"></canvas></div>
                                                     <div id="patternOfLifeActivityEmpty" class="text-subtle small mb-3" style="display:none;">No timestamped communications (SMS, calls, WhatsApp, or similar) parsed for this case yet.</div>
 
                                                     <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-person-lines-fill me-1"></i>Contact Correlation &amp; Relationship Graph</h6>

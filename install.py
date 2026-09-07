@@ -1537,6 +1537,20 @@ done &
 # tight crash loop if something (e.g. a GPU driver issue) makes chromium
 # fail immediately every time.
 while true; do
+    # Settings > Service Controls & Diagnostics > "Touchscreen Kiosk Mode"
+    # (routes/settings.py's set_kiosk_mode()) creates/removes this exact
+    # marker file - never touches this script itself, see restart_touch_
+    # kiosk()'s own comment for why a route must never re-launch the whole
+    # autostart script (a real, previously-shipped bug: two independent
+    # respawn loops racing each other, killing/relaunching chromium
+    # against one another forever, which looked like a rapid white-flash
+    # flicker on the touchscreen). Checked once per loop iteration (every
+    # 3s) so a live toggle takes effect quickly without needing a reboot.
+    if [ -f "{INSTALL_DIR}/.kiosk_disabled" ]; then
+        sleep 3
+        continue
+    fi
+
     # Clean up any stale lock/singleton files a crashed chromium left behind
     # - without this, a respawn after a crash can fail to start at all.
     killall -9 chromium chromium-browser 2>/dev/null || true

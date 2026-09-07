@@ -44,6 +44,10 @@
                                         <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartForensicService()"><i class="bi bi-arrow-repeat me-1"></i>Restart Service</button>
                                         <button class="btn btn-sm btn-outline-info fw-bold text-start" onclick="restartKioskDisplay()"><i class="bi bi-display me-1"></i>Reload Touch Kiosk</button>
                                     </div>
+                                    <div class="form-check form-switch mb-3" title="Turns the physical touchscreen's own kiosk browser on or off. Disabling closes it immediately (freeing the RAM/CPU it was using on this board) - this station's own web UI stays fully reachable over the network either way, and re-enabling relaunches the touchscreen automatically within a few seconds, no reboot needed.">
+                                        <input class="form-check-input" type="checkbox" id="kioskModeToggle" checked onchange="setKioskModeEnabled(this.checked)">
+                                        <label class="form-check-label small fw-bold" for="kioskModeToggle">Touchscreen Kiosk Mode <span id="kioskModeStatusBadge" class="badge bg-success ms-1">On</span></label>
+                                    </div>
                                     </div>
 
                                     <div id="diagGroupUpdates">
