@@ -21,7 +21,38 @@ file after updating to see what changed.
 
 ---
 
-## [1.64.0] - 2026-09-07
+## [1.65.0] - 2026-09-07
+
+### Added
+- **A Settings toggle to turn the physical touchscreen's kiosk display on or off, without a reboot.**
+  Settings > Service Controls & Diagnostics gained a "Touchscreen Kiosk Mode" switch, next to the
+  existing "Reload Touch Kiosk" button. Turning it off closes the on-screen browser immediately -
+  freeing the RAM/CPU it was using on the board - while this station's own web UI stays fully
+  reachable over the network either way. Turning it back on relaunches the touchscreen automatically
+  within a few seconds. Useful for a station that's mostly administered remotely, or whenever the
+  local display isn't needed and the extra RAM/CPU headroom is worth having back.
+- **Click a bar on the Communication Activity Pattern chart to see exactly what it's made of.**
+  Clicking any bar now shows a small popup listing the individual events in that time bucket -
+  message/call type, resolved contact name where known, and a short detail line - instead of only
+  ever seeing the bar's own total count.
+- **A date range filter for the Communication Activity Pattern chart.** For a case spanning months
+  or years of activity, the chart can now be narrowed to a specific window (e.g. "just this week" or
+  "just last spring") entirely client-side, with no re-fetch - useful once a case has real long-term
+  history rather than the short test windows this feature was originally built and shown against.
+
+### Fixed
+- **A real bug: the Location Activity map on Pattern of Life could fail with "Map could not be
+  rendered."** Reopening or refreshing the map a second time (switching tabs and back, reloading the
+  section) hit a real Leaflet limitation - trying to initialize a second map instance on a container
+  that still remembered its first one - and threw instead of rendering. Fixed by properly disposing
+  of the previous map instance before creating a new one.
+- **The Relationship Graph (Contact Correlation's graph view) is visually cleaner and stops jittering
+  once it settles.** The force-directed layout used to keep drifting slightly forever; it now freezes
+  in place once it's visually stable (nodes can still be dragged by hand). Node/edge styling was also
+  tightened up - shadows, outlined labels for readability against busy backgrounds, smoother curved
+  edges - for a more professional look overall.
+
+
 
 ### Added
 - **Live Collection USB now collects real browser history, cookies, and bookmarks - not just
