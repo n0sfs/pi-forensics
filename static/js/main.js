@@ -14550,6 +14550,30 @@ async function fetchPiHardwareInfo() {
     return piHardwareInfoCache;
 }
 
+// Proactive per-port health diagnostics (2026-09-06) - built directly
+// from a real incident on this exact station: a physical fault isolated
+// to one specific port (1,750 kernel enumeration failures across a
+// 38-minute retry storm, confirmed twice with two different real
+// devices, zero failures on the other 3 ports). Surfaced on the port
+// diagram itself so a known-bad port is visible BEFORE an examiner ever
+// tries plugging something into it, not only discoverable by sitting
+// through a slow, confusing retry storm. Cached like piHardwareInfoCache
+// (a port's own failure history doesn't meaningfully change within the
+// diagram's own 5s auto-refresh window) - forceRefresh lets the manual
+// Refresh button pull a genuinely fresh read.
+let usbPortHealthCache = null;
+
+async function fetchUsbPortHealth(forceRefresh) {
+    if (usbPortHealthCache && !forceRefresh) return usbPortHealthCache;
+    try {
+        const res = await fetch('/api/system/usb_port_health');
+        usbPortHealthCache = await res.json();
+    } catch (err) {
+        usbPortHealthCache = { available: false, error: 'Could not reach the station.', ports: {} };
+    }
+    return usbPortHealthCache;
+}
+
 const USB_PORT_DIAGRAM_SLOTS = [
     { index: '1', color: 'blue', x: 60 },
     { index: '2', color: 'blue', x: 60 },
@@ -14578,7 +14602,7 @@ function selectDriveFromPortClick(devicePath) {
     sel.dispatchEvent(new Event('change'));
 }
 
-function buildUsbPortDiagramSvg(drives, selectedDevicePath) {
+function buildUsbPortDiagramSvg(drives, selectedDevicePath, portHealth) {
     const bySlot = {};
     let ambiguousBlueDrive = null; // a connected drive confirmed 'blue' but not a specific slot (true SuperSpeed - see describe_usb_port())
     (drives || []).forEach((d) => {
@@ -14588,6 +14612,7 @@ function buildUsbPortDiagramSvg(drives, selectedDevicePath) {
             ambiguousBlueDrive = d;
         }
     });
+    const healthPorts = (portHealth && portHealth.available) ? (portHealth.ports || {}) : {};
 
     const rects = USB_PORT_DIAGRAM_SLOTS.map((slot) => {
         const y = USB_PORT_SLOT_Y[slot.index];
@@ -14603,10 +14628,29 @@ function buildUsbPortDiagramSvg(drives, selectedDevicePath) {
         } else if (ambiguousBlueDrive && slot.color === 'blue') {
             occupantLine = `<text x="${slot.x + 70}" y="${y + 28}" text-anchor="middle" font-size="9" fill="#cbd5e1" font-style="italic">connected (exact port unconfirmed)</text>`;
         }
+        // Proactive health warning (2026-09-06) - a real, disclosed
+        // history of enumeration failures on this exact physical port,
+        // shown regardless of whether anything is currently connected
+        // there at all (the whole point - see fetchUsbPortHealth()'s own
+        // comment). A <title> tooltip carries the precise counts/
+        // timestamps; the small warning glyph itself is what's visible at
+        // a glance without needing to hover.
+        const health = healthPorts[slot.index];
+        let warningMarkup = '';
+        if (health && health.failure_count > 0) {
+            const tooltipText = `${health.failure_count} USB enumeration failure(s) detected on this port ` +
+                `(last at ${health.last_failure_at || 'unknown time'})` +
+                (health.success_count > 0 ? ` - a device has also connected successfully here since (last at ${health.last_success_at}).` : ' - no successful connection recorded here yet.') +
+                ` Consider using a different port if you can.`;
+            warningMarkup = `<g><title>${escapeXmlForSvg(tooltipText)}</title>` +
+                `<circle cx="${slot.x + 132}" cy="${y + 8}" r="8" fill="#f59e0b" stroke="#0f172a" stroke-width="1"></circle>` +
+                `<text x="${slot.x + 132}" y="${y + 12}" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">!</text></g>`;
+        }
         const slotMarkup = `
             <rect x="${slot.x}" y="${y}" width="140" height="40" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="${isSelected ? 3 : 1.5}" class="${rectClass}"></rect>
             <text x="${slot.x + 70}" y="${y + 15}" text-anchor="middle" font-size="11" font-weight="600" fill="#ffffff">${label}</text>
             ${occupantLine}
+            ${warningMarkup}
         `;
         // Clicking an occupied port picks its drive in the dropdown too
         // (2026-09-05) - only wrapped in a clickable <g> when a real
@@ -14627,6 +14671,30 @@ function buildUsbPortDiagramSvg(drives, selectedDevicePath) {
             ${rects}
         </svg>
     `;
+}
+
+function buildUsbPortHealthSummary(portHealth) {
+    // A real, visible-without-hovering text summary alongside the SVG
+    // diagram's own small warning glyph/tooltip - matches this app's own
+    // established preference for real visible text over icon-only-plus-
+    // tooltip wherever it's cheap to provide both (2026-09-06).
+    if (!portHealth || !portHealth.available) {
+        const reason = portHealth && portHealth.error ? escapeHtmlForPopup(portHealth.error) : 'unknown reason';
+        return `<p class="text-subtle small mb-0"><i class="bi bi-question-circle me-1"></i>Port health history unavailable (${reason}).</p>`;
+    }
+    const flagged = Object.entries(portHealth.ports || {}).filter(([, p]) => p.failure_count > 0);
+    if (!flagged.length) {
+        return '<p class="text-subtle small mb-0"><i class="bi bi-check-circle text-success me-1"></i>No USB enumeration issues detected on any port.</p>';
+    }
+    const rows = flagged.map(([idx, p]) => {
+        const recovered = p.success_count > 0
+            ? `a device has connected successfully since (last at ${escapeHtmlForPopup(p.last_success_at)})`
+            : 'no successful connection has been recorded here yet';
+        return `<div class="small"><i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>` +
+            `<span class="fw-bold">Port ${idx}</span>: ${p.failure_count} enumeration failure(s), ` +
+            `most recently at ${escapeHtmlForPopup(p.last_failure_at || 'an unknown time')} - ${recovered}.</div>`;
+    }).join('');
+    return `<div class="mb-0">${rows}</div>`;
 }
 
 function buildUsbDeviceInfoList(drives) {
@@ -14654,6 +14722,7 @@ async function renderUsbPortDiagram(selectedDevicePath) {
     const wrap = document.getElementById('driveMgmtPortDiagramWrap');
     const host = document.getElementById('driveMgmtPortDiagramSvgHost');
     const infoList = document.getElementById('driveMgmtDeviceInfoList');
+    const healthSummary = document.getElementById('driveMgmtPortHealthSummary');
     const controlsCol = document.getElementById('driveMgmtControlsCol');
     if (!wrap || !host) return;
     const info = await fetchPiHardwareInfo();
@@ -14667,8 +14736,14 @@ async function renderUsbPortDiagram(selectedDevicePath) {
     }
     if (controlsCol) { controlsCol.classList.remove('col-md-12'); controlsCol.classList.add('col-md-6'); }
     wrap.style.display = '';
-    host.innerHTML = buildUsbPortDiagramSvg(currentDrivesList, selectedDevicePath);
+    // Fetched alongside the diagram itself, before an examiner has tried
+    // (or even selected) any drive at all - the whole point of this
+    // proactive diagnostic (2026-09-06, see fetchUsbPortHealth()'s own
+    // comment).
+    const portHealth = await fetchUsbPortHealth();
+    host.innerHTML = buildUsbPortDiagramSvg(currentDrivesList, selectedDevicePath, portHealth);
     if (infoList) infoList.innerHTML = buildUsbDeviceInfoList(currentDrivesList);
+    if (healthSummary) healthSummary.innerHTML = buildUsbPortHealthSummary(portHealth);
 }
 
 // Manual refresh for the port diagram/device list (2026-09-05) - there is
@@ -14679,11 +14754,15 @@ async function renderUsbPortDiagram(selectedDevicePath) {
 // selection - see its own updated comment), and calls
 // refreshDriveManagementStatus() -> renderUsbPortDiagram() internally, so
 // a device moved to a new port is picked up AND its highlight moves to
-// the new port rectangle with no extra logic needed here.
+// the new port rectangle with no extra logic needed here. Also force-
+// refreshes the USB port health cache (2026-09-06) - an examiner
+// explicitly clicking Refresh should see genuinely current diagnostic
+// data, not whatever was cached on the first page load.
 async function refreshDriveManagementView() {
     const btn = document.getElementById('driveMgmtRefreshBtn');
     if (btn) btn.disabled = true;
     try {
+        usbPortHealthCache = null;
         await refreshDrives();
     } finally {
         if (btn) btn.disabled = false;
