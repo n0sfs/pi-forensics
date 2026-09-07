@@ -21,6 +21,32 @@ file after updating to see what changed.
 
 ---
 
+## [1.67.0] - 2026-09-08
+
+### Added
+- **Contact Correlation, the Relationship Graph, and Device Profile now include ALEAPP/iLEAPP-sourced
+  data.** Previously, correlation only ever read directly-parsed Android/iOS contacts, SMS/MMS, call
+  logs, and WhatsApp data - it never read anything ALEAPP or iLEAPP itself extracted, which is the tool
+  this app runs for a non-rooted Android pull or any iOS extraction (the most common real-world
+  acquisition scenarios). Contacts, SMS, MMS, call logs, and WhatsApp messages/contacts/call logs from
+  a real ALEAPP/iLEAPP scan now correlate correctly - resolved against each other's real, confirmed
+  column names (more than one ALEAPP module can report the same kind of data under a different column
+  name; both are now recognized) - and show up on the Relationship Graph and Contact Correlation table
+  exactly like directly-parsed data does. Device Profile's Apps & Accounts lists now also merge in
+  ALEAPP's own installed-app and configured-account findings (tagged "ALEAPP" so the source is clear).
+
+### Fixed
+- **Auto Analyze's Hash Manifest step never actually checked Hash Sets.** The manual "Hash Manifest"
+  action in File Explorer already cross-referenced every hash it computed against your configured
+  Hash Sets - the same step run automatically as part of Auto Analyze silently never did, always
+  reporting zero matches regardless of what was actually configured. Auto Analyze's Hash Manifest step
+  now checks every currently-configured SHA-256 hash set automatically, the same as running it manually.
+- **Evidence Timeline never showed the message/email preview text it already had.** A recovered
+  message/email body was already being computed for each timeline row but never displayed. Each row
+  with recoverable content now has a small preview button; the text is also included in CSV exports.
+
+---
+
 ## [1.66.0] - 2026-09-08
 
 ### Added
