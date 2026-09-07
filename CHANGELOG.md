@@ -21,6 +21,27 @@ file after updating to see what changed.
 
 ---
 
+## [1.62.0] - 2026-09-07
+
+### Added
+- **Contact Correlation now understands email addresses, not just phone numbers - so Calendar events
+  and Email messages are correlated too, alongside SMS/calls/WhatsApp.** Previously, a contact only
+  ever matched by phone number; a person who never texted or called but did show up as a calendar
+  attendee or an email correspondent was invisible to this feature entirely. Now, whenever one of
+  this app's own already-parsed contact sources records both a phone number and an email address for
+  the same real person (e.g. a phone's own address book entry), that person's texts, calls, calendar
+  invites, and emails are all merged into ONE entry in the Relationship Graph/Contact Correlation
+  table - not shown as two unrelated-looking people. Someone who's only ever emailed (never texted or
+  called) still gets their own entry, correctly shown with just an email address and no phone number.
+- **The Evidence Timeline now shows, for every row it can, exactly which correlated contact was
+  involved - and lets you filter the whole timeline down to just one person.** A new "Contact" column
+  and a "Filter by Contact" dropdown (populated from the same Contact Correlation this case has
+  already built) mean an examiner can pick a specific person from the list and immediately see every
+  text, call, email, and calendar invite involving them, in chronological order, interleaved with
+  everything else the timeline already tracks. A new button on each row of the Pattern of Life tab's
+  Contact Correlation table jumps straight there, pre-filtered to that exact person. CSV export
+  includes the resolved contact name(s) too.
+
 ## [1.61.0] - 2026-09-07
 
 ### Added

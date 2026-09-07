@@ -69,7 +69,12 @@ from core.config import (
     get_report_defaults, get_custom_case_fields,
 )
 from core.jobs import _read_case_file, _write_case_file, current_job, job_lock, update_job, snapshot_job
-from core.case_index_db import _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact, _case_index_open_readonly, list_case_folders
+from core.case_index_db import (
+    _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact,
+    _case_index_open_readonly, list_case_folders, correlate_contacts,
+    CONTACT_CORRELATION_COMM_TYPES, CONTACT_CORRELATION_EMAIL_COMM_TYPES,
+    _extract_raw_counterpart_candidates, _extract_email_counterparts, normalize_phone_number,
+)
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
 reporting_bp = Blueprint('reporting', __name__)
@@ -1093,7 +1098,20 @@ def case_timeline():
     them in here diluted what this view is actually for (confirmed with the
     user, 2026-08-25 - see the dated CLAUDE.md entry). Every row gets a
     "source" tag for client-side filtering, since a busy case's MACB
-    contribution alone can run to thousands of rows."""
+    contribution alone can run to thousands of rows.
+
+    Every row also carries "counterparts" (2026-09-07, entity-linking pass) -
+    the resolved contact-correlation key(s), if any, that row's own raw
+    counterpart field(s) matched against correlate_contacts()'s already-
+    built contact directory (the same directory the Pattern of Life
+    Relationship Graph renders from, and the same canonical key its own
+    graph node ids use - normalized_number when present, else
+    normalized_email) - never a raw, unresolved phone number/address, so
+    a click on a Relationship Graph node can filter this timeline down to
+    exactly that person's own activity. A row this app can't attribute to
+    any known contact (an unmatched number, or simply not a communication
+    row at all - the vast majority of MACB/registry/browser rows) always
+    gets an empty list, never a guessed one."""
     case_folder = safe_path(request.args.get('case_folder'))
     if not case_folder or not case_consolidated_path(case_folder):
         return jsonify({"success": False, "error": "Not a valid consolidated case folder."}), 400
@@ -1101,6 +1119,22 @@ def case_timeline():
     case_file = case_consolidated_path(case_folder)
     data = _read_case_file(case_file)
     events = data.get('events', [])
+
+    # Real contact-key lookups, built once from correlate_contacts()'s own
+    # already-resolved contact directory - never a second, independent
+    # phone/email normalization+matching pass that could silently drift
+    # from what the Relationship Graph itself actually shows.
+    correlation = correlate_contacts(case_folder)
+    contact_key_by_phone = {}
+    contact_key_by_email = {}
+    for contact in correlation.get("contacts", []):
+        key = contact.get("normalized_number") or contact.get("normalized_email")
+        if not key:
+            continue
+        if contact.get("normalized_number"):
+            contact_key_by_phone[contact["normalized_number"]] = key
+        if contact.get("normalized_email"):
+            contact_key_by_email[contact["normalized_email"]] = key
 
     macb = _collect_case_timeline(events)
     combined = []
@@ -1117,6 +1151,7 @@ def case_timeline():
             # on-device value matters to the interactive table, so that's
             # reduced to a single bool here rather than exposing the raw label.
             "real_device_timestamp": "real device timestamp" in row.get("filesystem", ""),
+            "counterparts": [],  # a filesystem MACB event is never a communication
         })
 
     # Resolves a parsed_artifacts row's own image_path column back to the
@@ -1144,6 +1179,10 @@ def case_timeline():
             for row in conn.execute(
                     "SELECT artifact_type, title, value, timestamp, image_path, extra_json FROM parsed_artifacts WHERE timestamp IS NOT NULL"):
                 artifact_type, title, value, ts, image_path, extra_json = row
+                try:
+                    extra = json.loads(extra_json) if extra_json else {}
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    extra = {}
                 # Most parsed_artifact types have no meaningful per-row
                 # "deleted" concept at all (a Registry entry, a browser
                 # history row, ...) - a plain False was correct-by-omission
@@ -1153,12 +1192,25 @@ def case_timeline():
                 # read it from extra_json when present rather than
                 # hardcoding False, so this genuinely varies now instead of
                 # silently misrepresenting a deleted note as not deleted.
-                is_deleted = False
-                if extra_json:
-                    try:
-                        is_deleted = bool(json.loads(extra_json).get('deleted', False))
-                    except (json.JSONDecodeError, AttributeError):
-                        is_deleted = False
+                is_deleted = bool(extra.get('deleted', False))
+                # Entity-linking enrichment: resolve this row's own raw
+                # counterpart field(s) against the SAME contact directory
+                # correlate_contacts() already built above - exactly one of
+                # the two branches ever fires (a row's artifact_type is
+                # never both a phone-based AND an email-based comm type),
+                # everything else correctly gets no counterparts at all.
+                counterparts = set()
+                if artifact_type in CONTACT_CORRELATION_COMM_TYPES:
+                    spec = CONTACT_CORRELATION_COMM_TYPES[artifact_type]
+                    raw_field = extra.get(spec["counterpart_key"])
+                    for raw_candidate in _extract_raw_counterpart_candidates(raw_field):
+                        normalized = normalize_phone_number(raw_candidate)
+                        if normalized and normalized in contact_key_by_phone:
+                            counterparts.add(contact_key_by_phone[normalized])
+                elif artifact_type in CONTACT_CORRELATION_EMAIL_COMM_TYPES:
+                    for normalized_email in _extract_email_counterparts(artifact_type, value, extra):
+                        if normalized_email in contact_key_by_email:
+                            counterparts.add(contact_key_by_email[normalized_email])
                 combined.append({
                     "timestamp": ts, "source": "parsed_artifact",
                     "activity": artifact_type, "detail": title or value or '',
@@ -1166,12 +1218,29 @@ def case_timeline():
                     "deleted": is_deleted,
                     "suspicious": artifact_type in CASE_TIMELINE_SUSPICIOUS_ARTIFACT_TYPES,
                     "category": _timeline_row_category("parsed_artifact", artifact_type),
+                    "counterparts": sorted(counterparts),
                 })
         finally:
             conn.close()
 
     combined.sort(key=lambda r: r["timestamp"], reverse=True)
     truncated = macb["truncated"] or len(combined) > CASE_TIMELINE_MAX_TOTAL_ENTRIES
+    # A trimmed contact directory for the frontend's own "Filter by contact"
+    # dropdown - deliberately NOT the full correlate_contacts() payload
+    # (samples/communication_counts/direction_counts, up to
+    # CONTACT_CORRELATION_MAX_CONTACTS entries) piggybacked onto an already
+    # potentially-large timeline response; just enough to label and rank
+    # each contact key that could appear in a row's own "counterparts".
+    # Already sorted by total_communications descending (correlate_
+    # contacts()'s own ordering), so the dropdown's most-relevant entries
+    # come first with no extra client-side sort needed.
+    contacts_summary = [
+        {"key": c.get("normalized_number") or c.get("normalized_email"),
+         "display_names": c.get("display_names", []),
+         "total_communications": c.get("total_communications", 0),
+         "tier": c.get("tier")}
+        for c in correlation.get("contacts", [])
+    ]
     return jsonify({
         "success": True, "events": combined[:CASE_TIMELINE_MAX_TOTAL_ENTRIES],
         "notes": macb["notes"], "truncated": truncated,
@@ -1180,6 +1249,7 @@ def case_timeline():
         # matching the "single source of truth" pattern already used for
         # Auto Analyze's own /api/image/auto_analyze/steps route.
         "categories": CASE_TIMELINE_CATEGORIES,
+        "contacts": contacts_summary,
     })
 
 
