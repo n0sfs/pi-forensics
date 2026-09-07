@@ -37,8 +37,10 @@ import os
 import re
 import json
 import struct
+import shutil
 import sqlite3
 import plistlib
+import tempfile
 import datetime
 
 # --- Chromium's own timestamp epoch ---
@@ -212,13 +214,79 @@ def find_browser_artifact_files(root_dir):
     return found, False
 
 
+_SQLITE_WAL_SIDECAR_SUFFIXES = ('-wal', '-shm')
+
+
 def _open_sqlite_readonly(path):
-    """Opens a SQLite file strictly read-only and 'immutable' (tells SQLite
-    the file won't change and to skip its own locking entirely) - this is
-    always a static evidence copy (a real file, or something just extracted
-    from an unmounted image to a short-lived temp path), never a live
-    database something else might be writing to."""
-    return sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    """Copies path (and its -wal/-shm sidecars, if present) into a fresh
+    scratch temp directory, then opens a plain, non-immutable connection
+    there so SQLite performs its own standard WAL checkpoint before the
+    caller queries it - the exact technique already proven in core/
+    stickynotes_utils.py (and core/windows_activity_utils.py), applied
+    here (2026-09-07) after a real, empirically-confirmed bug in this
+    function's original design (a strict file:...?mode=ro&immutable=1
+    connection): immutable mode doesn't just miss the MOST RECENT rows
+    sitting in an uncommitted-to-main-file WAL sidecar, it can miss an
+    ENTIRE TABLE's worth of already-committed data - confirmed live via a
+    real WAL-mode SQLite database held open with an uncommitted
+    checkpoint: immutable mode raised "no such table" for a table that a
+    plain mode=ro (no immutable) connection correctly read. A browser's
+    own History/Cookies/places.sqlite file is routinely collected while
+    genuinely open - real-fs scan (a case folder someone might still be
+    actively using), in-image scan (the source drive's own browser was
+    open when it was imaged), and Live Collection USB (deliberately run
+    before shutting a live machine down) all hit this.
+
+    Copying to a scratch dir first - rather than the simpler fix of just
+    dropping immutable=1 in place - is deliberate: even a read-only
+    (non-immutable) connection needs write access in the SAME directory
+    as the main file (to negotiate its own -shm), which the file's real
+    source directory can't always guarantee (a read-only BitLocker/LUKS/
+    VeraCrypt mount, for one) - a fresh scratch temp dir always has it,
+    matching stickynotes_utils.py's own identical "defense in depth,
+    never touch the source" reasoning.
+
+    The scratch copy is opened via mode=ro (WITHOUT immutable=1), not a
+    fully-writable connection - empirically confirmed (2026-09-07) this
+    still correctly recovers WAL-stranded data (only immutable=1 skips
+    the WAL check; plain mode=ro does not) while genuinely refusing any
+    write attempt on the returned connection, preserving the exact
+    write-refusal safety property core/file_explorer.py's/routes/
+    image_browser.py's generic SQLite viewer (Part D1) and its own test
+    suite (tests/test_sqlite_viewer.py) depend on - the real evidence
+    file was never at risk either way (only ever copied FROM, never
+    written TO), but this closes what would otherwise have been a
+    regression in a documented defense-in-depth guarantee.
+
+    Returns (conn, cleanup) - cleanup() removes the scratch directory and
+    must be called once the caller is done with conn (every call site
+    does conn.close(); cleanup() in its own finally block, mirroring the
+    plain conn.close() every caller already had). Falls back to the
+    original strict-immutable connection (with a no-op cleanup) if the
+    copy step itself fails for any reason (a locked/permission-denied
+    source file) - never worse than the pre-fix behavior in that case,
+    just not improved."""
+    tmp_dir = tempfile.mkdtemp(prefix='pif_browserdb_')
+    cleanup = lambda: shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_main = os.path.join(tmp_dir, os.path.basename(path))
+    try:
+        shutil.copy2(path, tmp_main)
+    except OSError:
+        cleanup()
+        return sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True), (lambda: None)
+    for suffix in _SQLITE_WAL_SIDECAR_SUFFIXES:
+        sidecar_src = path + suffix
+        if os.path.isfile(sidecar_src):
+            try:
+                shutil.copy2(sidecar_src, tmp_main + suffix)
+            except OSError:
+                pass
+    try:
+        conn = sqlite3.connect(f"file:{tmp_main}?mode=ro", uri=True)
+    except sqlite3.Error:
+        cleanup()
+        return sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True), (lambda: None)
+    return conn, cleanup
 
 
 def _evidence_path_basename(path_str):
@@ -245,7 +313,7 @@ def parse_chrome_history_db(path):
     a version mismatch degrades to an empty downloads list rather than
     failing the whole parse."""
     history, downloads = [], []
-    conn = _open_sqlite_readonly(path)
+    conn, _sqlite_cleanup = _open_sqlite_readonly(path)
     try:
         try:
             cur = conn.execute(
@@ -286,6 +354,7 @@ def parse_chrome_history_db(path):
             })
     finally:
         conn.close()
+        _sqlite_cleanup()
     return {"history": history, "downloads": downloads}
 
 
@@ -301,7 +370,7 @@ def parse_chrome_cookies_db(path):
     (which sites set cookies, when, for how long) is still real forensic
     signal even without the value."""
     cookies = []
-    conn = _open_sqlite_readonly(path)
+    conn, _sqlite_cleanup = _open_sqlite_readonly(path)
     try:
         try:
             cur = conn.execute(
@@ -326,6 +395,7 @@ def parse_chrome_cookies_db(path):
             })
     finally:
         conn.close()
+        _sqlite_cleanup()
     return cookies
 
 
@@ -396,7 +466,7 @@ def parse_firefox_places_db(path):
     is PRTime (Firefox's own microseconds-since-Unix-epoch), never the
     WebKit epoch - see firefox_time_to_unix()."""
     history, bookmarks, downloads = [], [], []
-    conn = _open_sqlite_readonly(path)
+    conn, _sqlite_cleanup = _open_sqlite_readonly(path)
     try:
         try:
             cur = conn.execute(
@@ -480,6 +550,7 @@ def parse_firefox_places_db(path):
             pass  # older/newer Firefox schema this query doesn't match - skip rather than guess
     finally:
         conn.close()
+        _sqlite_cleanup()
     return {"history": history, "bookmarks": bookmarks, "downloads": downloads}
 
 
@@ -493,7 +564,7 @@ def parse_firefox_cookies_db(path):
     PRTime microseconds like every other Firefox timestamp - never routed
     through firefox_time_to_unix()."""
     cookies = []
-    conn = _open_sqlite_readonly(path)
+    conn, _sqlite_cleanup = _open_sqlite_readonly(path)
     try:
         try:
             cur = conn.execute(
@@ -516,6 +587,7 @@ def parse_firefox_cookies_db(path):
             })
     finally:
         conn.close()
+        _sqlite_cleanup()
     return cookies
 
 
@@ -531,7 +603,7 @@ def parse_safari_history_db(path):
     fraction since 2001-01-01) joined against history_items for the URL -
     see safari_time_to_unix()."""
     history = []
-    conn = _open_sqlite_readonly(path)
+    conn, _sqlite_cleanup = _open_sqlite_readonly(path)
     try:
         try:
             cur = conn.execute(
@@ -552,6 +624,7 @@ def parse_safari_history_db(path):
             pass  # not a real/recognizable history_visits/history_items schema
     finally:
         conn.close()
+        _sqlite_cleanup()
     return history
 
 

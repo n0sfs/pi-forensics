@@ -4,8 +4,9 @@ PI FORENSICS SUITE - LIVE COLLECTION USB
 This drive was prepared by Pi Forensics Suite's "Build Live Collection USB"
 feature. It is NOT an evidence drive and holds no case data of its own -
 it is a tool for collecting VOLATILE, live artifacts (running processes,
-network connections, logged-on users, and similar) from a separate,
-RUNNING machine you plug it into.
+network connections, DNS cache, browser history/cookies/bookmarks,
+logged-on users, and similar) from a separate, RUNNING machine you plug
+it into.
 
 Nothing on this drive ever sends anything over a network. Everything it
 collects is written back onto this same drive, in the two folders below.

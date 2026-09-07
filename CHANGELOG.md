@@ -21,6 +21,35 @@ file after updating to see what changed.
 
 ---
 
+## [1.64.0] - 2026-09-07
+
+### Added
+- **Live Collection USB now collects real browser history, cookies, and bookmarks - not just
+  processes/network/DNS/logged-on users.** Chrome, Edge, and Firefox profile files (History/Cookies/
+  Bookmarks, or places.sqlite/cookies.sqlite for Firefox) are copied from every user account it can
+  reach on the target machine - on Linux/macOS/*BSD via the same trusted collector (UAC) already
+  used for the rest of the collection, and on Windows via a new section in the hand-written
+  PowerShell collector that walks every real user profile it's permitted to (any account when run
+  elevated, just the current one otherwise). Once imported into a case, these are read automatically
+  by this app's own already-existing "Parse Browser Artifacts" action in File Explorer - no new
+  parsing step to run separately.
+- Windows' DNS resolver cache (`Get-DnsClientCache`) was already collected by an earlier release;
+  Unix-family targets get their static `/etc/resolv.conf`/`/etc/hosts` configuration as part of the
+  same collection, since Unix systems don't typically keep a queryable DNS cache the way Windows
+  does.
+
+### Fixed
+- **A real bug in this app's own browser-artifact parser could silently miss an entire table's worth
+  of already-recovered browsing history** - not just the very latest, not-yet-saved activity, but
+  potentially everything, for any Chrome/Edge/Firefox profile collected while the browser was still
+  genuinely open (a case folder someone's still actively using, a source drive imaged mid-session, or
+  - as of this release - a Live Collection USB pull deliberately run before shutting a live machine
+  down). Confirmed and fixed: the parser now correctly recovers this data regardless, while still
+  refusing to ever write anything back to the copy it reads from. This also affects Android SMS/MMS/
+  contacts/call-log parsing, WhatsApp message/contact parsing, iOS SMS/contacts/call-history parsing,
+  and the generic SQLite table viewer in File Explorer - all of which share the same underlying
+  reader.
+
 ## [1.63.0] - 2026-09-07
 
 ### Added

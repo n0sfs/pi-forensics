@@ -768,6 +768,123 @@ try {
     Write-CollectionLog -Category 'clipboard' -Status 'failed' -Detail $_.Exception.Message
 }
 
+# --- 17. Browser history/cookies/bookmarks (Chrome, Edge, Firefox) - real
+#      profile files copied by exact filename, WAL/SHM sidecars included
+#      when present, so this app's own already-built browser-artifact
+#      parser (core/browser_artifacts.py) reads them completely unchanged
+#      at import/analysis time - the identical "collect the real file,
+#      reuse the already-built parser" pattern as the registry pull above.
+#      Deliberately a plain file copy, never a live query - unlike the
+#      registry hives, none of these files are backed by a documented
+#      "backup API" a script can ask Windows to safely export from; a
+#      raw NTFS-level copy is the standard, accepted live-triage approach
+#      (real forensic tools take the identical approach) and works even
+#      while the browser holds the file open, though the copy can fail
+#      or land in a transiently inconsistent state if a write is
+#      genuinely in progress at that exact instant - a real, disclosed
+#      limitation of live collection generally, not specific to this
+#      script. The WAL/SHM sidecars are collected specifically because
+#      this app's own parser (fixed 2026-09-07, the same day this
+#      section was added) now genuinely uses them to recover data still
+#      sitting uncommitted in the sidecar rather than checkpointed into
+#      the main file - collecting the main file without them would
+#      silently discard the browser's own most recent activity in
+#      exactly the scenario (an actively-running browser) live
+#      collection is built for.
+#
+#      Own account's profiles are always attempted (no elevation
+#      needed - these are the collecting account's own files). Every
+#      OTHER real user's profile needs administrator rights to even read
+#      (standard NTFS per-user-profile ACLs, not just a file lock), so
+#      that part is honestly skipped entirely rather than attempted and
+#      silently failing file-by-file when not elevated - matching the
+#      registry pull's own identical elevation boundary above, just for
+#      a genuinely different underlying reason (ACLs here, not locking). ---
+$BrowserSidecarSuffixes = @('-wal', '-shm')
+$browsersOutDir = Join-Path $RunDir 'browsers'
+$browserFilesCopied = 0
+$browserFilesFailed = 0
+
+function Copy-BrowserProfileFiles {
+    param([string]$ProfileDir, [string]$DestDir, [string[]]$FileNames)
+    if (-not (Test-Path $ProfileDir)) { return }
+    foreach ($name in $FileNames) {
+        $src = Join-Path $ProfileDir $name
+        if (-not (Test-Path $src -PathType Leaf)) { continue }
+        New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+        try {
+            Copy-Item -Path $src -Destination (Join-Path $DestDir $name) -ErrorAction Stop
+            $script:browserFilesCopied++
+        } catch {
+            $script:browserFilesFailed++
+            continue
+        }
+        foreach ($suffix in $BrowserSidecarSuffixes) {
+            $sidecarSrc = "$src$suffix"
+            if (Test-Path $sidecarSrc -PathType Leaf) {
+                try {
+                    Copy-Item -Path $sidecarSrc -Destination (Join-Path $DestDir "$name$suffix") -ErrorAction Stop
+                } catch {
+                    # sidecar-only failure isn't counted against the main file's own success
+                }
+            }
+        }
+    }
+}
+
+function Copy-ChromiumFamilyProfiles {
+    param([string]$UserHome, [string]$DestUserDir, [string]$BrowserName, [string]$UserDataRelativePath)
+    $userDataDir = Join-Path $UserHome $UserDataRelativePath
+    if (-not (Test-Path $userDataDir)) { return }
+    Get-ChildItem $userDataDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin @('Crashpad', 'GrShaderCache', 'GraphiteDawnCache', 'ShaderCache') } |
+        ForEach-Object {
+            $destDir = Join-Path (Join-Path $DestUserDir $BrowserName) $_.Name
+            Copy-BrowserProfileFiles -ProfileDir $_.FullName -DestDir $destDir -FileNames @('History', 'Cookies', 'Bookmarks')
+        }
+}
+
+function Copy-FirefoxProfiles {
+    param([string]$UserHome, [string]$DestUserDir)
+    $profilesDir = Join-Path $UserHome 'AppData\Roaming\Mozilla\Firefox\Profiles'
+    if (-not (Test-Path $profilesDir)) { return }
+    Get-ChildItem $profilesDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $destDir = Join-Path (Join-Path $DestUserDir 'Firefox') $_.Name
+        Copy-BrowserProfileFiles -ProfileDir $_.FullName -DestDir $destDir -FileNames @('places.sqlite', 'cookies.sqlite')
+    }
+}
+
+# Own account - always attempted.
+$ownBrowserDir = Join-Path $browsersOutDir $env:USERNAME
+Copy-ChromiumFamilyProfiles -UserHome $env:USERPROFILE -DestUserDir $ownBrowserDir -BrowserName 'Chrome' -UserDataRelativePath 'AppData\Local\Google\Chrome\User Data'
+Copy-ChromiumFamilyProfiles -UserHome $env:USERPROFILE -DestUserDir $ownBrowserDir -BrowserName 'Edge' -UserDataRelativePath 'AppData\Local\Microsoft\Edge\User Data'
+Copy-FirefoxProfiles -UserHome $env:USERPROFILE -DestUserDir $ownBrowserDir
+
+# Every other real user's profile - needs administrator (real NTFS
+# per-user-profile ACLs restrict this regardless of who's logged in),
+# so this whole block is skipped, not attempted-and-silently-failed,
+# when not elevated.
+if ($IsElevated) {
+    Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin @('Public', 'Default', 'Default User', 'All Users') -and $_.Name -ne $env:USERNAME } |
+        ForEach-Object {
+            $otherUserDir = Join-Path $browsersOutDir $_.Name
+            Copy-ChromiumFamilyProfiles -UserHome $_.FullName -DestUserDir $otherUserDir -BrowserName 'Chrome' -UserDataRelativePath 'AppData\Local\Google\Chrome\User Data'
+            Copy-ChromiumFamilyProfiles -UserHome $_.FullName -DestUserDir $otherUserDir -BrowserName 'Edge' -UserDataRelativePath 'AppData\Local\Microsoft\Edge\User Data'
+            Copy-FirefoxProfiles -UserHome $_.FullName -DestUserDir $otherUserDir
+        }
+}
+
+if ($browserFilesCopied -gt 0) {
+    $failDetail = if ($browserFilesFailed -gt 0) { ", $browserFilesFailed file(s) failed/locked/absent" } else { "" }
+    $scopeDetail = if ($IsElevated) { "all users" } else { "own account only - not elevated" }
+    Write-CollectionLog -Category 'browsers' -Status 'ok' -Detail "$browserFilesCopied file(s) copied ($scopeDetail)$failDetail"
+} elseif ($browserFilesFailed -gt 0) {
+    Write-CollectionLog -Category 'browsers' -Status 'failed' -Detail "$browserFilesFailed file(s) failed, none succeeded"
+} else {
+    Write-CollectionLog -Category 'browsers' -Status 'skipped' -Detail 'no recognized Chrome/Edge/Firefox profile found'
+}
+
 # --- Final collection log, written last so it reflects every category
 #      above (including any that failed/were skipped) ---
 Write-ArtifactJson -Name '_collection_log' -Data $CollectionLog | Out-Null

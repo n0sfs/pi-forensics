@@ -33,7 +33,7 @@ OUT="./output"
 mkdir -p "$OUT"
 
 echo "Pi Forensics Suite - Live Collection (Unix/Linux/macOS)"
-echo "UAC profile: ir_triage (a curated incident-response triage set)"
+echo "UAC profile: ir_triage (a curated incident-response triage set) + browser artifacts"
 echo ""
 
 # --- Determine privilege once, reused by both memory capture and UAC ---
@@ -122,9 +122,43 @@ else
 fi
 
 # --- UAC itself ---
-echo ""
-UAC_ARGS="-p ir_triage -f none -H -o uac-%hostname%-%os%-%timestamp%"
+# -a files/browsers/* is appended alongside the ir_triage profile
+# (2026-09-07) - UAC's own -p and -a arguments both append into the SAME
+# combined artifact list (confirmed directly from UAC's real source,
+# lib/parse_command_line_arguments.sh: both branches do __UAC_ARTIFACT_
+# LIST="${__UAC_ARTIFACT_LIST}${__UAC_ARTIFACT_LIST:+,}${new_artifacts}"),
+# not two separate, mutually-exclusive collections - so this is ONE UAC
+# invocation collecting everything ir_triage already did PLUS every real
+# Chrome/Chromium/Firefox/Safari/Brave/Opera/Vivaldi/Edge profile file
+# UAC's own files/browsers/*.yaml artifacts already know how to find
+# (confirmed present in the pinned UAC tag, just never previously
+# selected by ir_triage). The collected History/Cookies/Bookmarks/places.
+# sqlite files land under the exact same real filenames this app's own
+# core/browser_artifacts.py already recognizes by basename anywhere in a
+# directory tree - no new parsing code needed, an examiner just runs the
+# existing "Parse Browser Artifacts" File Explorer action against the
+# imported run folder afterward, same as any other real evidence folder.
+#
+# The asterisk is deliberately UNESCAPED here, and `set -f` (disable this
+# shell's own pathname expansion) brackets the actual invocation below -
+# a real, live-tested correction of an earlier draft that backslash-
+# escaped it instead (files/browsers/\*), matching UAC's own --help text
+# literally. That draft was wrong: UAC's own artifact-matching wants the
+# BARE character `*` in its argv (confirmed live: `uac -a
+# 'files/browsers/*'` succeeds; the backslash-escaped form fails with
+# "Artifact 'files/browsers/\*' does not exist" the moment it reaches
+# UAC, backslash included) - the --help text's escaping guidance is about
+# protecting the argument from THIS shell's OWN pathname expansion when
+# typed bare and unquoted at an interactive prompt, not about what UAC
+# itself expects to receive. `set -f` solves the same shell-protection
+# problem without leaving a literal backslash in the string UAC actually
+# sees - confirmed live: with set -f active, an unquoted expansion of a
+# variable holding a real, matching `*` glob does NOT expand against real
+# files in the current directory, so the bare asterisk reaches UAC intact
+# either way.
+UAC_ARGS="-p ir_triage -a files/browsers/* -f none -H -o uac-%hostname%-%os%-%timestamp%"
 BEFORE_LISTING="$(ls "$OUT" 2>/dev/null)"
+set -f
 if [ "$PRIVILEGED" -eq 1 ]; then
   # shellcheck disable=SC2086
   $SUDO_PREFIX ./uac $UAC_ARGS "$OUT"
@@ -142,6 +176,7 @@ else
   ./uac $UAC_ARGS -u "$OUT"
   STATUS=$?
 fi
+set +f
 
 # --- Identify UAC's own new run directory (its real name, expanded from
 #     %hostname%-%os%-%timestamp% by UAC itself, is never known ahead of

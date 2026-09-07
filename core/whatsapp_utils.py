@@ -165,10 +165,18 @@ def _open_msgstore_with_optional_wa_db(msgstore_path):
     """Opens msgstore.db read-only; if a real wa.db file sits in the SAME
     directory, attaches it (read-only) as "wadb" for contact-name
     resolution - mirrors ALEAPP's own _open_msgstore() exactly. Returns
-    (conn, wa_attached: bool). A failed attach (a genuinely corrupt
-    sibling file) is swallowed - msgstore.db still parses on its own,
-    the identical tolerance ALEAPP's own real source applies."""
-    conn = _open_sqlite_readonly(msgstore_path)
+    (conn, wa_attached: bool, cleanup: callable). A failed attach (a
+    genuinely corrupt sibling file) is swallowed - msgstore.db still
+    parses on its own, the identical tolerance ALEAPP's own real source
+    applies. The attached wa.db is opened via a plain ATTACH DATABASE
+    against msgstore.db's own already-recovered connection - it does
+    NOT go through _open_sqlite_readonly()'s own WAL-recovery copy step
+    a second time, so a wa.db with data stranded only in its own -wal
+    sidecar could still be missed here even though msgstore.db's own
+    WAL is fully recovered. A real, disclosed, narrow gap - contact-name
+    enrichment is best-effort by design already (this function's own
+    docstring already covers a corrupt/missing wa.db the same way)."""
+    conn, cleanup = _open_sqlite_readonly(msgstore_path)
     wa_candidate = os.path.join(os.path.dirname(msgstore_path), 'wa.db')
     wa_attached = False
     if os.path.isfile(wa_candidate):
@@ -177,7 +185,7 @@ def _open_msgstore_with_optional_wa_db(msgstore_path):
             wa_attached = True
         except sqlite3.Error:
             pass
-    return conn, wa_attached
+    return conn, wa_attached, cleanup
 
 
 def parse_whatsapp_messages(msgstore_path):
@@ -189,7 +197,7 @@ def parse_whatsapp_messages(msgstore_path):
     rather than getting a wholly separate type."""
     records = []
     try:
-        conn, wa_attached = _open_msgstore_with_optional_wa_db(msgstore_path)
+        conn, wa_attached, _sqlite_cleanup = _open_msgstore_with_optional_wa_db(msgstore_path)
     except sqlite3.Error:
         return records
     try:
@@ -233,8 +241,10 @@ def parse_whatsapp_messages(msgstore_path):
         ''', (WHATSAPP_MSG_MAX_ROWS,)).fetchall()
     except sqlite3.Error:
         conn.close()
+        _sqlite_cleanup()
         return records
     conn.close()
+    _sqlite_cleanup()
 
     for row in rows:
         (ts_raw, received_raw, from_me, recipient_count, chat_jid_raw, sender_jid_raw,
@@ -269,7 +279,7 @@ def parse_whatsapp_call_log(msgstore_path):
     same optional wa.db attach for caller-name resolution."""
     records = []
     try:
-        conn, wa_attached = _open_msgstore_with_optional_wa_db(msgstore_path)
+        conn, wa_attached, _sqlite_cleanup = _open_msgstore_with_optional_wa_db(msgstore_path)
     except sqlite3.Error:
         return records
     try:
@@ -290,8 +300,10 @@ def parse_whatsapp_call_log(msgstore_path):
         ''', (WHATSAPP_CALL_LOG_MAX_ROWS,)).fetchall()
     except sqlite3.Error:
         conn.close()
+        _sqlite_cleanup()
         return records
     conn.close()
+    _sqlite_cleanup()
 
     for row in rows:
         ts_raw, duration, from_me, video_call, jid_raw, caller_name, group_subject = row
@@ -328,7 +340,7 @@ def parse_whatsapp_contacts(wa_db_path):
     edge case that would look inconsistent against every other row."""
     records = []
     try:
-        conn = _open_sqlite_readonly(wa_db_path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(wa_db_path)
     except sqlite3.Error:
         return records
     try:
@@ -348,8 +360,10 @@ def parse_whatsapp_contacts(wa_db_path):
         ''', (WHATSAPP_CONTACTS_MAX_ROWS,)).fetchall()
     except sqlite3.Error:
         conn.close()
+        _sqlite_cleanup()
         return records
     conn.close()
+    _sqlite_cleanup()
 
     for name, jid_raw, number in rows:
         title = name or _strip_wa_jid_suffix(jid_raw) or "(unnamed contact)"
