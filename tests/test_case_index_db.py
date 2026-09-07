@@ -618,10 +618,16 @@ def test_correlate_contacts_returns_the_empty_shape_for_a_case_never_indexed(cas
 # not a deliberate scope decision like the leapp_* exclusion above, an
 # unaddressed gap. ---
 
-def _companion_contact_row(display_name, mimetype, data1):
+def _companion_contact_row(display_name, mimetype, data1, contact_id="1"):
+    # contact_id defaults to a fixed value since every pre-existing caller
+    # only ever seeds ONE companion contact per test - real android_
+    # companion_contact rows always carry a genuine contact_id (2026-09-08's
+    # own cross-row grouping pass requires it; a row with none is correctly
+    # skipped, see test_correlate_contacts_companion_contact_rows_with_no_
+    # contact_id_are_skipped_not_crashed below).
     return {"artifact_type": "android_companion_contact", "title": display_name, "url": "",
             "value": data1, "timestamp": None,
-            "extra": {"mimetype": mimetype, "data1": data1}}
+            "extra": {"mimetype": mimetype, "data1": data1, "contact_id": contact_id}}
 
 
 def test_correlate_contacts_includes_companion_sms_contact_and_call_log_types(case_folder):
@@ -1064,14 +1070,15 @@ def test_correlate_contacts_resolves_calendar_attendees_and_organizer_as_emails(
     assert result["unresolved_communication_count"] == 0  # buddy@ DID resolve on this row
 
 
-def test_correlate_contacts_deliberately_never_reads_email_from_whatsapp_or_companion_contact_rows(case_folder):
-    # whatsapp_contact genuinely has no email concept; android_companion_
-    # contact needs a harder cross-row contact_id join not built yet - see
-    # CONTACT_CORRELATION_SOURCE_TYPES's own comment. Confirm a stray
-    # "emails" key present in either type's own extra_json (which neither
-    # real parser would ever actually produce) is still never read,
-    # proving the exclusion is structural (no emails_key in the spec),
-    # not just a coincidence of what real data happens to contain.
+def test_correlate_contacts_deliberately_never_reads_email_from_whatsapp_or_a_stray_emails_key(case_folder):
+    # whatsapp_contact genuinely has no email concept at all - no emails_key
+    # in its own CONTACT_CORRELATION_SOURCE_TYPES spec. A companion-contact
+    # phone_v2 row is grouped/read via its own dedicated mimetype-driven
+    # logic (2026-09-08), which never looks at a generic "emails" key
+    # either - confirm a stray "emails" key present in either row's real
+    # extra_json (which neither real parser would ever actually produce) is
+    # still never read, proving both exclusions are structural, not just a
+    # coincidence of what real data happens to contain.
     case_index_db._record_parsed_artifacts(
         case_folder, _identity(case_folder, "wa.db"),
         [{"artifact_type": "whatsapp_contact", "title": "x", "url": "", "value": "x",
@@ -1080,7 +1087,185 @@ def test_correlate_contacts_deliberately_never_reads_email_from_whatsapp_or_comp
         case_folder, _identity(case_folder, "companion_contacts.json"),
         [{"artifact_type": "android_companion_contact", "title": "y", "url": "", "value": "y",
           "timestamp": None, "extra": {"mimetype": "vnd.android.cursor.item/phone_v2", "data1": "+15559999999",
-                                        "emails": ["also-should-not-count@example.com"]}}])
+                                        "contact_id": "1", "emails": ["also-should-not-count@example.com"]}}])
 
     result = case_index_db.correlate_contacts(case_folder)
     assert result["email_identities_indexed_count"] == 0
+    assert result["contacts_indexed_count"] == 2  # both phones DID get read correctly
+
+
+# --- 2026-09-08: android_companion_contact cross-row contact_id linking,
+# unconfirmed name-match suggestions, and message/content preview - closing
+# real, previously-disclosed gaps from the entity-linking work above. ---
+
+def test_correlate_contacts_links_a_companion_contacts_phone_and_email_via_shared_contact_id(case_folder):
+    # The core new guarantee: two SEPARATE android_companion_contact rows
+    # (one phone_v2, one email_v2) sharing the same real contact_id must
+    # merge into ONE contact entry, exactly like a same-row phone+email
+    # pair from android_contact/apple_contact/etc. already does.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "companion_contacts.json"),
+        [_companion_contact_row("Jane Doe", "vnd.android.cursor.item/phone_v2", "+15551234567", contact_id="42"),
+         _companion_contact_row("Jane Doe", "vnd.android.cursor.item/email_v2", "jane@example.com", contact_id="42")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "companion_sms.json"),
+        [_comm_record("android_companion_sms_message", "address", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "emails.mbox"),
+        [_email_message_record("jane@example.com")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 1
+    assert result["email_identities_indexed_count"] == 1
+    assert len(result["contacts"]) == 1  # merged into ONE entry
+    contact = result["contacts"][0]
+    assert contact["normalized_number"] == "5551234567"
+    assert contact["normalized_email"] == "jane@example.com"
+    assert contact["communication_counts"] == {"SMS": 1, "Email": 1}
+
+
+def test_correlate_contacts_does_not_cross_link_two_different_companion_contact_ids(case_folder):
+    # Two DIFFERENT contact_id groups, each with their own phone+email,
+    # must stay fully separate - the linking is per-contact_id, never
+    # global across every companion-contact row in the case.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "companion_contacts.json"),
+        [_companion_contact_row("Jane Doe", "vnd.android.cursor.item/phone_v2", "+15551111111", contact_id="1"),
+         _companion_contact_row("Jane Doe", "vnd.android.cursor.item/email_v2", "jane@example.com", contact_id="1"),
+         _companion_contact_row("Bob Smith", "vnd.android.cursor.item/phone_v2", "+15552222222", contact_id="2"),
+         _companion_contact_row("Bob Smith", "vnd.android.cursor.item/email_v2", "bob@example.com", contact_id="2")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 2
+    assert result["email_identities_indexed_count"] == 2
+    # No communications seeded, so nothing appears in "contacts" (which
+    # only lists contacts matched to at least one communication) - this
+    # test only proves the contact-side indexing kept the two groups apart.
+
+
+def test_correlate_contacts_skips_a_companion_contact_row_with_no_contact_id_rather_than_crashing(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "companion_contacts.json"),
+        [{"artifact_type": "android_companion_contact", "title": "No ID", "url": "", "value": "x",
+          "timestamp": None, "extra": {"mimetype": "vnd.android.cursor.item/phone_v2", "data1": "+15551234567"}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 0
+    assert result["contacts"] == []
+
+
+def test_correlate_contacts_flags_unconfirmed_possible_duplicates_by_matching_name(case_folder):
+    # Two genuinely DIFFERENT, un-linked identities (a phone-only contact
+    # and a separate email-only contact) that happen to share the exact
+    # same display name - never auto-merged, but each gets the other's key
+    # in its own possible_duplicate_keys as a disclosed, reviewable hint.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "takeout_contacts.json"),
+        [_contact_record_with_email("takeout_contact", "Jane Doe", emails=["jane.unlinked@example.com"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "emails.mbox"),
+        [_email_message_record("jane.unlinked@example.com")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert len(result["contacts"]) == 2  # never auto-merged
+    by_key = {c["normalized_number"] or c["normalized_email"]: c for c in result["contacts"]}
+    assert by_key["5551234567"]["possible_duplicate_keys"] == ["jane.unlinked@example.com"]
+    assert by_key["jane.unlinked@example.com"]["possible_duplicate_keys"] == ["5551234567"]
+
+
+def test_correlate_contacts_never_flags_a_possible_duplicate_for_a_unique_name(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Unique Name", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts"][0]["possible_duplicate_keys"] == []
+
+
+def test_correlate_contacts_name_match_is_case_and_whitespace_insensitive(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "  jane   DOE  ", phones=["+15551111111"]),
+         _contact_record("android_contact", "Jane Doe", phones=["+15552222222"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551111111"),
+         _comm_record("android_sms_message", "address", "+15552222222")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    by_key = {c["normalized_number"]: c for c in result["contacts"]}
+    assert by_key["5551111111"]["possible_duplicate_keys"] == ["5552222222"]
+    assert by_key["5552222222"]["possible_duplicate_keys"] == ["5551111111"]
+
+
+def test_correlate_contacts_a_pass3_merged_contact_never_flags_itself_as_a_duplicate(case_folder):
+    # A phone+email pair that's ALREADY correctly merged via Pass 3 (same
+    # contact-source row) must not also show up in its own possible_
+    # duplicate_keys just because both its own display names match.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record_with_email("android_contact", "Jane Doe",
+                                     phones=["+15551234567"], emails=["jane@example.com"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert len(result["contacts"]) == 1
+    assert result["contacts"][0]["possible_duplicate_keys"] == []
+
+
+def test_comm_content_preview_reads_value_for_ordinary_message_types():
+    assert case_index_db._comm_content_preview("android_sms_message", "See you at 5", {}) == "See you at 5"
+    assert case_index_db._comm_content_preview("whatsapp_message", "[Incoming, Text] hey there", {}) == \
+        "[Incoming, Text] hey there"
+
+
+def test_comm_content_preview_reads_body_preview_for_email_message():
+    assert case_index_db._comm_content_preview("email_message", "jane@example.com",
+                                                 {"body_preview": "The real email body text."}) == \
+        "The real email body text."
+
+
+def test_comm_content_preview_returns_none_for_call_log_types_never_a_fabricated_preview():
+    for artifact_type in ("android_call_log", "mobile_call_log", "whatsapp_call_log",
+                           "android_companion_call_log_entry"):
+        assert case_index_db._comm_content_preview(artifact_type, "45s", {}) is None
+
+
+def test_comm_content_preview_returns_none_for_falsy_or_missing_content():
+    assert case_index_db._comm_content_preview("android_sms_message", "", {}) is None
+    assert case_index_db._comm_content_preview("android_sms_message", None, {}) is None
+    assert case_index_db._comm_content_preview("email_message", "jane@example.com", {}) is None
+
+
+def test_comm_content_preview_truncates_at_the_max_char_cap():
+    long_text = "x" * 900
+    result = case_index_db._comm_content_preview("android_sms_message", long_text, {})
+    assert len(result) == case_index_db.COMM_CONTENT_PREVIEW_MAX_CHARS
+
+
+def test_correlate_contacts_samples_carry_a_real_content_preview(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "calls.db"),
+        [_comm_row("android_call_log", "number", "+15551234567", {"duration_seconds": 30}, timestamp=1700000001.0)])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    samples_by_type = {s["artifact_type"]: s for s in result["contacts"][0]["samples"]}
+    assert samples_by_type["android_sms_message"]["content_preview"] == "hello"  # _comm_record's own fixed body text
+    assert samples_by_type["android_call_log"]["content_preview"] is None  # a call has no message content

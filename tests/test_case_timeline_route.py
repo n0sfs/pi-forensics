@@ -273,3 +273,161 @@ def test_a_row_naming_a_phone_and_a_row_naming_its_linked_email_resolve_to_the_s
     assert sms_row["counterparts"] == ["5551234567"]
     assert calendar_row["counterparts"] == ["5551234567"]  # the merged contact's canonical key, not "jane@example.com"
     assert len(data["contacts"]) == 1  # one merged person, not two
+
+
+# --- content_preview (2026-09-07) ---
+
+def test_sms_row_carries_its_own_message_text_as_content_preview(client, evidence_root):
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "mmssms.db")}, [
+        {"artifact_type": "android_sms_message", "title": "msg", "url": "", "value": "call me when you land",
+         "timestamp": 1786784100.0, "extra": {"address": "+15551234567"}},
+    ])
+    res = client.get(f"/api/cases/timeline?case_folder={case_folder}")
+    data = res.get_json()
+    sms_row = next(r for r in data["events"] if r["activity"] == "android_sms_message")
+    assert sms_row["content_preview"] == "call me when you land"
+
+
+def test_email_row_carries_body_preview_not_the_sender_address(client, evidence_root):
+    # email_message's own "value" column is the SENDER address, not the
+    # message body - the one real exception _comm_content_preview() has
+    # to special-case, confirmed against core/email_utils.py's own real
+    # record-construction code before this was built.
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "emails.mbox")}, [
+        {"artifact_type": "email_message", "title": "Re: budget", "url": "", "value": "jane@example.com",
+         "timestamp": 1786784100.0, "extra": {"body_preview": "attached is the revised Q3 numbers"}},
+    ])
+    res = client.get(f"/api/cases/timeline?case_folder={case_folder}")
+    data = res.get_json()
+    email_row = next(r for r in data["events"] if r["activity"] == "email_message")
+    assert email_row["content_preview"] == "attached is the revised Q3 numbers"
+
+
+def test_call_log_row_and_macb_row_carry_no_content_preview(client, evidence_root):
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "calllog.db")}, [
+        {"artifact_type": "android_call_log", "title": "call", "url": "", "value": "5551234567",
+         "timestamp": 1786784100.0, "extra": {}},
+    ])
+    res = client.get(f"/api/cases/timeline?case_folder={case_folder}")
+    data = res.get_json()
+    call_row = next(r for r in data["events"] if r["activity"] == "android_call_log")
+    assert call_row["content_preview"] is None
+    macb_rows = [r for r in data["events"] if r["source"] == "macb"]
+    assert all(r["content_preview"] is None for r in macb_rows)
+
+
+# --- /api/cases/geo_activity (2026-09-07) ---
+
+def test_geo_activity_missing_case_folder_returns_a_clean_error(client, evidence_root):
+    res = client.get("/api/cases/geo_activity?case_folder=/nonexistent")
+    assert res.status_code == 400
+    assert res.get_json()["success"] is False
+
+
+def test_geo_activity_returns_real_takeout_location_history_points(client, evidence_root):
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "Takeout", "Records.json")}, [
+        {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": "San Francisco",
+         "timestamp": 1786784100.0, "extra": {"lat": 37.7749, "lon": -122.4194, "source_format": "records_json"}},
+        {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": "Oakland",
+         "timestamp": 1786784200.0, "extra": {"lat": 37.8044, "lon": -122.2712, "source_format": "records_json"}},
+    ])
+    res = client.get(f"/api/cases/geo_activity?case_folder={case_folder}")
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert len(data["points"]) == 2
+    names = {p["name"] for p in data["points"]}
+    assert names == {"San Francisco", "Oakland"}
+    assert all(p["source"] == "Google Takeout Location History" for p in data["points"])
+    assert data["truncated"] is False
+
+
+def test_geo_activity_skips_a_row_with_no_real_lat_lon(client, evidence_root):
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "Takeout", "Records.json")}, [
+        {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": "Bad Row",
+         "timestamp": 1786784100.0, "extra": {"lat": None, "lon": None}},
+    ])
+    res = client.get(f"/api/cases/geo_activity?case_folder={case_folder}")
+    data = res.get_json()
+    assert data["points"] == []
+    assert data["frequent_locations"] == []
+
+
+def test_geo_activity_clusters_nearby_points_into_a_frequent_location(client, evidence_root):
+    # Three real, distinct timestamps at effectively the same real-world
+    # spot (well within the ~111m grid cell) must collapse into ONE
+    # frequent_locations entry, ranked by visit_count, with a correctly
+    # computed first_seen/last_seen span - not three separate points each
+    # counted once.
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "Takeout", "Records.json")}, [
+        {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": "Home",
+         "timestamp": 1786784100.0, "extra": {"lat": 37.77490, "lon": -122.41940}},
+        {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": "Home",
+         "timestamp": 1786784200.0, "extra": {"lat": 37.77491, "lon": -122.41941}},
+        {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": "Home",
+         "timestamp": 1786784300.0, "extra": {"lat": 37.77492, "lon": -122.41942}},
+    ])
+    res = client.get(f"/api/cases/geo_activity?case_folder={case_folder}")
+    data = res.get_json()
+    assert len(data["points"]) == 3
+    assert len(data["frequent_locations"]) == 1
+    cluster = data["frequent_locations"][0]
+    assert cluster["visit_count"] == 3
+    assert cluster["first_seen"] == 1786784100.0
+    assert cluster["last_seen"] == 1786784300.0
+
+
+def test_geo_activity_excludes_single_visit_points_from_frequent_locations(client, evidence_root):
+    # A place seen exactly once is real, meaningful data - it must still
+    # appear in "points" - but it isn't a "frequent" location by any
+    # reasonable definition, and cluttering frequent_locations with every
+    # single-visit point would defeat the whole point of the list. Found
+    # live, 2026-09-07, while verifying the real seeded API response: the
+    # first cut included every 1-visit cluster too, directly contradicting
+    # the frontend's own "visited more than once" label.
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "Takeout", "Records.json")}, [
+        {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": "Home",
+         "timestamp": 1786784100.0, "extra": {"lat": 37.77490, "lon": -122.41940}},
+        {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": "Home",
+         "timestamp": 1786784200.0, "extra": {"lat": 37.77491, "lon": -122.41941}},
+        {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": "Somewhere Once",
+         "timestamp": 1786784300.0, "extra": {"lat": 40.7128, "lon": -74.0060}},
+    ])
+    res = client.get(f"/api/cases/geo_activity?case_folder={case_folder}")
+    data = res.get_json()
+    assert len(data["points"]) == 3  # the single-visit point is still a real point
+    assert len(data["frequent_locations"]) == 1  # but not a "frequent location"
+    assert data["frequent_locations"][0]["visit_count"] == 2
+
+
+def test_geo_activity_includes_kml_derived_points_alongside_takeout(client, evidence_root):
+    # A KML placemark has no reliable structured timestamp - confirmed
+    # via _parse_kml_placemarks()'s own real shape - so it must always
+    # come through with timestamp=None, never a guessed one.
+    case_folder = _make_real_case(evidence_root)
+    kml_path = os.path.join(case_folder, "photo_locations.kml")
+    with open(kml_path, "w", encoding="utf-8") as f:
+        f.write(
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+            '<Placemark><name>IMG_0001.jpg</name>'
+            '<Point><coordinates>-122.4194,37.7749,0</coordinates></Point>'
+            '</Placemark>'
+            '</Document></kml>'
+        )
+    res = client.get(f"/api/cases/geo_activity?case_folder={case_folder}")
+    data = res.get_json()
+    assert len(data["points"]) == 1
+    kml_point = data["points"][0]
+    assert kml_point["name"] == "IMG_0001.jpg"
+    assert kml_point["timestamp"] is None
+    assert kml_point["source"] == "photo_locations.kml"
+    assert abs(kml_point["lat"] - 37.7749) < 0.0001
+    assert abs(kml_point["lon"] - (-122.4194)) < 0.0001
