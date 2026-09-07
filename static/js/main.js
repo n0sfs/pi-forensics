@@ -9528,10 +9528,23 @@ const RELATIONSHIP_GRAPH_MAX_NODES = 40;   // caps the graph specifically, never
 const RELATIONSHIP_TIER_COLORS = { frequent: '#f87171', regular: '#60a5fa', one_off: '#9ca3af' };
 const RELATIONSHIP_TIER_LABELS = { frequent: 'Frequent Contact', regular: 'Regular Contact', one_off: 'One-off Contact' };
 
+// The two identity spaces (phone/email, 2026-09-07 - see correlate_
+// contacts()'s own docstring in core/case_index_db.py) can never collide
+// (a normalized phone is all-digits, a normalized email always contains
+// "@"), so a contact's own normalized_number when present, else its
+// normalized_email, is a safe, stable, unique key for both the graph's
+// node id and the table row's own lookup key - a contact merged from
+// both spaces (Pass 3) always has normalized_number set, so it's keyed
+// by phone even though it also carries an email.
+function _contactCorrelationKey(contact) {
+    return contact.normalized_number || contact.normalized_email;
+}
+
 function _relationshipGraphNodeTooltip(contact) {
+    const identityLines = [contact.normalized_number, contact.normalized_email].filter(Boolean);
     const lines = [
         contact.display_names.length ? contact.display_names.join(' / ') : '(unnamed)',
-        contact.normalized_number,
+        identityLines.join(' / '),
         `Sources: ${contact.contact_sources.join(', ') || '(seen only in communications, no address-book entry)'}`,
         `Tier: ${RELATIONSHIP_TIER_LABELS[contact.tier] || contact.tier}`,
         `Total communications: ${contact.total_communications}`,
@@ -9617,16 +9630,17 @@ function renderRelationshipGraph(data) {
     const edges = [];
     graphContacts.forEach((c) => {
         const color = RELATIONSHIP_TIER_COLORS[c.tier] || RELATIONSHIP_TIER_COLORS.regular;
+        const key = _contactCorrelationKey(c);
         nodes.push({
-            id: c.normalized_number,
-            label: c.display_names.length ? c.display_names[0] : c.normalized_number,
+            id: key,
+            label: c.display_names.length ? c.display_names[0] : key,
             shape: 'dot', size: nodeSizeByTier[c.tier] || 16,
             color: { background: color, border: color, highlight: { background: color, border: '#ffffff' } },
             font: { color: '#e2e8f0', size: 12 },
             title: _relationshipGraphNodeTooltip(c),
         });
         edges.push({
-            from: '__device__', to: c.normalized_number,
+            from: '__device__', to: key,
             width: 1 + (metricValue(c) / maxMetric) * 9,
             color: { color, opacity: 0.55, highlight: color },
             smooth: { type: 'continuous' },
@@ -9650,6 +9664,7 @@ function renderRelationshipGraph(data) {
         }
     });
 }
+
 
 function togglePatternOfLifeGraphMetric() {
     relationshipGraphMetric = relationshipGraphMetric === 'duration' ? 'count' : 'duration';
@@ -9695,10 +9710,36 @@ function setPatternOfLifeContactView(view) {
     }
 }
 
-function highlightContactInTable(normalizedNumber) {
+async function viewContactInTimeline(contactKey) {
+    // The concrete link between Pattern of Life ("who did this device talk
+    // to") and Evidence Timeline ("when, exactly, interleaved with
+    // everything else on the device") - switches tab, then filters the
+    // Timeline down to just this one correlated contact's own activity.
+    // Uses a real .click() (not new bootstrap.Tab(tab).show()) so the tab
+    // button's own onclick - loadCaseTimeline() - actually fires, matching
+    // this app's own established .click()-vs-Tab.show() distinction
+    // elsewhere in this file; a second, explicit await here (redundant
+    // with, but harmless alongside, that onclick's own fire-and-forget
+    // call) is what guarantees caseTimelineCache/the contact <select> are
+    // genuinely populated before this function tries to set a value on it.
+    const tab = document.getElementById('repTimelineTab');
+    if (tab) tab.click();
+    await loadCaseTimeline();
+    const sel = document.getElementById('caseTimelineContactSelect');
+    if (sel && [...sel.options].some((o) => o.value === contactKey)) {
+        sel.value = contactKey;
+        renderCaseTimeline();
+    }
+}
+
+function highlightContactInTable(contactKey) {
+    // contactKey is whatever _contactCorrelationKey() produced for this
+    // contact (a phone number, or an email address for an email-only
+    // contact with no linked phone) - the graph node's own id, matched
+    // against the identical key the table row below was given.
     setPatternOfLifeContactView('table');
     requestAnimationFrame(() => {
-        const row = document.querySelector(`#reportContactsContainer tr[data-number="${CSS.escape(normalizedNumber)}"]`);
+        const row = document.querySelector(`#reportContactsContainer tr[data-number="${CSS.escape(contactKey)}"]`);
         if (!row) return;
         row.scrollIntoView({ behavior: 'smooth', block: 'center' });
         row.classList.add('table-active');
@@ -9760,9 +9801,11 @@ function renderContactCorrelationTable(data) {
 
     const summary = document.createElement('div');
     summary.className = 'small text-subtle mb-2';
-    summary.textContent = `${data.contacts_indexed_count} known contact number(s) indexed - `
-        + `${data.contacts.length} matched to at least one communication, `
-        + `${data.unresolved_communication_count} communication(s) with an unmatched number`
+    const emailCount = data.email_identities_indexed_count || 0;
+    summary.textContent = `${data.contacts_indexed_count} known contact number(s)`
+        + (emailCount > 0 ? ` and ${emailCount} known email address(es)` : '')
+        + ` indexed - ${data.contacts.length} matched to at least one communication, `
+        + `${data.unresolved_communication_count} communication(s) with an unmatched counterpart`
         + (data.truncated ? ' (list truncated - too many contacts to show all).' : '.');
     container.appendChild(summary);
 
@@ -9779,13 +9822,13 @@ function renderContactCorrelationTable(data) {
     const table = document.createElement('table');
     table.className = 'table table-sm table-dark table-hover small mb-0';
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th>Contact</th><th>Number</th><th>Tier</th><th>Source(s)</th><th>Communications</th><th>Direction</th><th>Talk Time</th><th>First Seen</th><th>Last Seen</th></tr>';
+    thead.innerHTML = '<tr><th>Contact</th><th>Number</th><th>Email</th><th>Tier</th><th>Source(s)</th><th>Communications</th><th>Direction</th><th>Talk Time</th><th>First Seen</th><th>Last Seen</th><th></th></tr>';
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
 
     data.contacts.forEach(contact => {
         const row = document.createElement('tr');
-        row.dataset.number = contact.normalized_number;
+        row.dataset.number = _contactCorrelationKey(contact);
 
         const nameCell = document.createElement('td');
         nameCell.textContent = contact.display_names.length ? contact.display_names.join(' / ') : '(unnamed)';
@@ -9793,8 +9836,13 @@ function renderContactCorrelationTable(data) {
 
         const numCell = document.createElement('td');
         numCell.className = 'font-monospace';
-        numCell.textContent = contact.normalized_number;
+        numCell.textContent = contact.normalized_number || '--';
         row.appendChild(numCell);
+
+        const emailCell = document.createElement('td');
+        emailCell.className = 'font-monospace';
+        emailCell.textContent = contact.normalized_email || '--';
+        row.appendChild(emailCell);
 
         const tierCell = document.createElement('td');
         const tierBadge = document.createElement('span');
@@ -9831,6 +9879,17 @@ function renderContactCorrelationTable(data) {
         const lastCell = document.createElement('td');
         lastCell.textContent = _formatContactCorrelationTimestamp(contact.last_seen);
         row.appendChild(lastCell);
+
+        const actionCell = document.createElement('td');
+        const timelineBtn = document.createElement('button');
+        timelineBtn.type = 'button';
+        timelineBtn.className = 'btn btn-xs btn-outline-info py-0 px-2';
+        timelineBtn.title = 'Jump to the Evidence Timeline, filtered to just this contact\'s own activity';
+        timelineBtn.innerHTML = '<i class="bi bi-clock-history"></i>';
+        const key = _contactCorrelationKey(contact);
+        timelineBtn.onclick = () => viewContactInTimeline(key);
+        actionCell.appendChild(timelineBtn);
+        row.appendChild(actionCell);
 
         tbody.appendChild(row);
     });
@@ -11303,32 +11362,64 @@ const MACB_ACTIVITY_LABEL = { M: 'Modified', A: 'Accessed', C: 'Changed', B: 'Cr
 let caseTimelineEvidenceFilter = '__all__'; // '__all__' | a real evidence_id string
 let caseTimelineYearFilter = '__all__';     // '__all__' | a year as a string, e.g. "2026"
 let caseTimelineMonthFilter = '__all__';    // '__all__' | "0"-"11" (Date.getMonth() indexing) - only meaningful once a specific year is picked
+let caseTimelineContactFilter = '__all__';  // '__all__' | a correlate_contacts() key (a phone number or, for an email-only contact, an email address) - see routes/reporting.py's own "counterparts" enrichment
 let caseTimelineFilteredRows = [];          // the table's currently-visible rows, stashed for CSV export
+// key -> display name(s), built once per case load from the response's own
+// trimmed "contacts" directory (routes/reporting.py's case_timeline()) -
+// used both to populate the filter dropdown and to show a resolved name
+// (not a bare phone/email key) in the table's own Contact column.
+let caseTimelineContactLabel = {};
 const CASE_TIMELINE_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'];
 
 async function loadCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
     if (!body || !activeCase) return;
-    body.innerHTML = '<tr><td colspan="5" class="text-subtle p-2">Building timeline...</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="text-subtle p-2">Building timeline...</td></tr>';
     caseTimelineBucketFilter = null;   // a fresh case load shouldn't carry over a stale drill-down from a previous case
     caseTimelineEvidenceFilter = '__all__';
     caseTimelineYearFilter = '__all__';
     caseTimelineMonthFilter = '__all__';
+    caseTimelineContactFilter = '__all__';
     try {
         const res = await fetch(`/api/cases/timeline?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
         const data = await res.json();
         if (!data.success) {
-            body.innerHTML = `<tr><td colspan="5" class="text-danger p-2">${data.error || 'Request failed.'}</td></tr>`;
+            body.innerHTML = `<tr><td colspan="6" class="text-danger p-2">${data.error || 'Request failed.'}</td></tr>`;
             return;
         }
         caseTimelineCache = data;
         populateCaseTimelineEvidenceFilter(data.events);
         populateCaseTimelineYearFilter(data.events);
+        populateCaseTimelineContactFilter(data.contacts || []);
         renderCaseTimeline();
     } catch (err) {
-        body.innerHTML = '<tr><td colspan="5" class="text-danger p-2">Request failed.</td></tr>';
+        body.innerHTML = '<tr><td colspan="6" class="text-danger p-2">Request failed.</td></tr>';
     }
+}
+
+function populateCaseTimelineContactFilter(contacts) {
+    const sel = document.getElementById('caseTimelineContactSelect');
+    caseTimelineContactLabel = {};
+    contacts.forEach((c) => {
+        caseTimelineContactLabel[c.key] = c.display_names && c.display_names.length ? c.display_names.join(' / ') : c.key;
+    });
+    if (!sel) return;
+    sel.innerHTML = '';
+    const allOpt = document.createElement('option');
+    allOpt.value = '__all__';
+    allOpt.textContent = 'All Contacts';
+    sel.appendChild(allOpt);
+    // Already sorted by total_communications descending (correlate_
+    // contacts()'s own ordering) - the dropdown's most-relevant entries
+    // come first with no extra client-side sort needed.
+    contacts.forEach((c) => {
+        const opt = document.createElement('option');
+        opt.value = c.key;
+        opt.textContent = `${caseTimelineContactLabel[c.key]} (${c.total_communications})`;
+        sel.appendChild(opt);
+    });
+    sel.value = '__all__';
 }
 
 function populateCaseTimelineEvidenceFilter(events) {
@@ -11593,10 +11684,15 @@ function renderCaseTimeline() {
     caseTimelineYearFilter = yearSel ? yearSel.value : '__all__';
     const monthSel = document.getElementById('caseTimelineMonthSelect');
     caseTimelineMonthFilter = (monthSel && !monthSel.disabled) ? monthSel.value : '__all__';
+    const contactSel = document.getElementById('caseTimelineContactSelect');
+    caseTimelineContactFilter = contactSel ? contactSel.value : '__all__';
 
     let rows = caseTimelineCache.events.filter((e) => enabledSources.has(e.source) && enabledCategories.has(e.category));
     if (caseTimelineEvidenceFilter !== '__all__') {
         rows = rows.filter((e) => e.evidence_id === caseTimelineEvidenceFilter);
+    }
+    if (caseTimelineContactFilter !== '__all__') {
+        rows = rows.filter((e) => (e.counterparts || []).includes(caseTimelineContactFilter));
     }
     if (caseTimelineYearFilter !== '__all__') {
         const y = Number(caseTimelineYearFilter);
@@ -11633,7 +11729,7 @@ function renderCaseTimeline() {
     }
 
     if (rows.length === 0) {
-        body.innerHTML = '<tr><td colspan="5" class="text-subtle p-2">No timeline entries match the current filters.</td></tr>';
+        body.innerHTML = '<tr><td colspan="6" class="text-subtle p-2">No timeline entries match the current filters.</td></tr>';
         return;
     }
 
@@ -11694,11 +11790,17 @@ function renderCaseTimeline() {
         const detailTd = document.createElement('td');
         detailTd.textContent = e.evidence_id ? `[${e.evidence_id}] ${e.detail || ''}` : (e.detail || '');
 
+        const contactTd = document.createElement('td');
+        contactTd.textContent = (e.counterparts && e.counterparts.length)
+            ? e.counterparts.map((k) => caseTimelineContactLabel[k] || k).join(', ')
+            : '--';
+
         tr.appendChild(tsTd);
         tr.appendChild(srcTd);
         tr.appendChild(catTd);
         tr.appendChild(actTd);
         tr.appendChild(detailTd);
+        tr.appendChild(contactTd);
         body.appendChild(tr);
     });
 }
@@ -11712,16 +11814,18 @@ function exportCaseTimelineCsv() {
         const s = (val === null || val === undefined) ? '' : String(val);
         return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ['Timestamp', 'Source', 'Category', 'Activity', 'Detail', 'Evidence ID', 'Deleted', 'Suspicious', 'Device Time'];
+    const header = ['Timestamp', 'Source', 'Category', 'Activity', 'Detail', 'Contact(s)', 'Evidence ID', 'Deleted', 'Suspicious', 'Device Time'];
     const lines = [header];
     caseTimelineFilteredRows.forEach((e) => {
         const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
                                                     : (FILE_VIEWS_WEB_ARTIFACT_LABELS[e.activity] || e.activity);
+        const contactLabel = (e.counterparts && e.counterparts.length)
+            ? e.counterparts.map((k) => caseTimelineContactLabel[k] || k).join(' / ') : '';
         lines.push([
             new Date(e.timestamp * 1000).toLocaleString(),
             CASE_TIMELINE_SOURCE_LABEL[e.source] || e.source,
             e.category || '',
-            activityLabel || '', e.detail || '', e.evidence_id || '',
+            activityLabel || '', e.detail || '', contactLabel, e.evidence_id || '',
             e.deleted ? 'Yes' : 'No', e.suspicious ? 'Yes' : 'No',
             e.real_device_timestamp ? 'Yes' : 'No',
         ]);

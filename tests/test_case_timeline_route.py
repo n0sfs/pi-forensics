@@ -183,3 +183,93 @@ def test_missing_case_folder_returns_a_clean_error(client, evidence_root):
     res = client.get(f"/api/cases/timeline?case_folder={os.path.join(evidence_root, 'not_a_real_case')}")
     assert res.status_code == 400
     assert res.get_json()["success"] is False
+
+
+# --- 2026-09-07: entity-linking enrichment - every timeline row now carries
+# "counterparts" (correlate_contacts()'s own resolved contact key(s), never
+# a raw unmatched phone/email), and the response carries a trimmed
+# "contacts" directory the frontend uses for a "Filter by contact"
+# dropdown/the Relationship Graph's click-to-filter. ---
+
+def test_a_resolved_phone_comm_row_carries_the_correlated_contact_key(client, evidence_root):
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "contacts2.db")}, [
+        {"artifact_type": "android_contact", "title": "Jane Doe", "url": "", "value": "Jane Doe",
+         "timestamp": None, "extra": {"phones": ["+15551234567"]}},
+    ])
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "mmssms.db")}, [
+        {"artifact_type": "android_sms_message", "title": "msg", "url": "", "value": "hello",
+         "timestamp": 1786784100.0, "extra": {"address": "(555) 123-4567"}},
+    ])
+
+    res = client.get(f"/api/cases/timeline?case_folder={case_folder}")
+    data = res.get_json()
+    sms_row = next(r for r in data["events"] if r["activity"] == "android_sms_message")
+    assert sms_row["counterparts"] == ["5551234567"]
+    assert len(data["contacts"]) == 1
+    assert data["contacts"][0]["key"] == "5551234567"
+    assert data["contacts"][0]["display_names"] == ["Jane Doe"]
+
+
+def test_an_unresolved_comm_row_carries_no_counterparts_and_does_not_crash(client, evidence_root):
+    # No contact source seeded at all - a real, unmatched number must
+    # never be silently exposed as a "resolved" counterpart.
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "mmssms.db")}, [
+        {"artifact_type": "android_sms_message", "title": "msg", "url": "", "value": "hello",
+         "timestamp": 1786784100.0, "extra": {"address": "+15559999999"}},
+    ])
+
+    res = client.get(f"/api/cases/timeline?case_folder={case_folder}")
+    data = res.get_json()
+    sms_row = next(r for r in data["events"] if r["activity"] == "android_sms_message")
+    assert sms_row["counterparts"] == []
+    assert data["contacts"] == []
+
+
+def test_a_resolved_email_comm_row_carries_the_correlated_contact_key(client, evidence_root):
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "contacts2.db")}, [
+        {"artifact_type": "android_contact", "title": "Email Only Contact", "url": "", "value": "Email Only Contact",
+         "timestamp": None, "extra": {"emails": ["jane@example.com"]}},
+    ])
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "emails.mbox")}, [
+        {"artifact_type": "email_message", "title": "jane@example.com", "url": "", "value": "jane@example.com",
+         "timestamp": 1786784100.0, "extra": {}},
+    ])
+
+    res = client.get(f"/api/cases/timeline?case_folder={case_folder}")
+    data = res.get_json()
+    email_row = next(r for r in data["events"] if r["activity"] == "email_message")
+    assert email_row["counterparts"] == ["jane@example.com"]
+    assert data["contacts"][0]["key"] == "jane@example.com"
+
+
+def test_a_row_naming_a_phone_and_a_row_naming_its_linked_email_resolve_to_the_same_key(client, evidence_root):
+    # The real entity-linking guarantee, proven at the Timeline layer, not
+    # just correlate_contacts() in isolation - the SAME android_contact row
+    # named both a phone and an email, so an SMS (phone-based) and a
+    # calendar invite (email-based) for that one real person must resolve
+    # to the exact same counterpart key, letting a click on that person's
+    # single Relationship Graph node filter both kinds of activity at once.
+    case_folder = _make_real_case(evidence_root)
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "contacts2.db")}, [
+        {"artifact_type": "android_contact", "title": "Jane Doe", "url": "", "value": "Jane Doe",
+         "timestamp": None, "extra": {"phones": ["+15551234567"], "emails": ["jane@example.com"]}},
+    ])
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "mmssms.db")}, [
+        {"artifact_type": "android_sms_message", "title": "msg", "url": "", "value": "hello",
+         "timestamp": 1786784100.0, "extra": {"address": "+15551234567"}},
+    ])
+    _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "calendar.json")}, [
+        {"artifact_type": "android_companion_calendar_event", "title": "Meeting", "url": "", "value": "Meeting",
+         "timestamp": 1786784200.0, "extra": {"attendees": [{"email": "jane@example.com"}]}},
+    ])
+
+    res = client.get(f"/api/cases/timeline?case_folder={case_folder}")
+    data = res.get_json()
+    sms_row = next(r for r in data["events"] if r["activity"] == "android_sms_message")
+    calendar_row = next(r for r in data["events"] if r["activity"] == "android_companion_calendar_event")
+    assert sms_row["counterparts"] == ["5551234567"]
+    assert calendar_row["counterparts"] == ["5551234567"]  # the merged contact's canonical key, not "jane@example.com"
+    assert len(data["contacts"]) == 1  # one merged person, not two
