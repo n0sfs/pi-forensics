@@ -351,6 +351,9 @@
                                                             <button type="button" class="btn btn-outline-info" id="polContactViewTableBtn" onclick="setPatternOfLifeContactView('table')"><i class="bi bi-table me-1"></i>Table View</button>
                                                         </div>
                                                         <button type="button" class="btn btn-outline-secondary btn-xs" id="polContactMetricBtn" onclick="togglePatternOfLifeGraphMetric()" title="Switch the graph's line thickness between raw communication count and total call duration (only meaningful where call duration was captured)." style="display:none;">Weighted by: Frequency</button>
+                                                        <div id="relationshipGraphSearchWrap" style="display:none;">
+                                                            <input type="text" class="form-control form-control-sm" id="relationshipGraphSearchInput" placeholder="Find a contact..." oninput="filterRelationshipGraph(this.value)" style="width: 180px;">
+                                                        </div>
                                                     </div>
                                                     <div id="relationshipGraphLegend" class="small text-subtle mb-2" style="display:none;"></div>
                                                     <div id="relationshipGraphContainer" class="border border-secondary rounded-2 mb-2" style="height: 480px; background-color:#090b10; position:relative;"></div>

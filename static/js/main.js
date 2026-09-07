@@ -9526,6 +9526,18 @@ let relationshipGraphNetwork = null;
 let relationshipGraphMetric = 'count';     // 'count' | 'duration' - which value drives edge thickness
 const RELATIONSHIP_GRAPH_MAX_NODES = 40;   // caps the graph specifically, never the underlying table/CSV - a busy device's full contact list would render as unreadable noise
 const RELATIONSHIP_TIER_COLORS = { frequent: '#f87171', regular: '#60a5fa', one_off: '#9ca3af' };
+// Search/isolate (2026-09-08) - the two live vis.DataSet instances behind
+// the currently-rendered graph, kept in module scope so filterRelationship
+// Graph() can dim/restore nodes+edges via .update() without a full re-
+// render (avoids the physics solver re-settling on every keystroke).
+// relationshipGraphNodeSearchText mirrors each rendered contact node's own
+// searchable text (name(s)/number/email, lowercased) - built once alongside
+// the nodes themselves so search never has to re-derive it from
+// patternOfLifeContactData on every keystroke.
+let relationshipGraphNodesDataSet = null;
+let relationshipGraphEdgesDataSet = null;
+let relationshipGraphNodeSearchText = {};
+const RELATIONSHIP_CO_OCCURRENCE_COLOR = '#6b7280'; // a deliberately muted gray, distinct from every tier color - these edges are a different KIND of signal (two contacts seen together), not a device<->contact relationship
 // vis-network draws labels on an HTML5 canvas, not real DOM text, so it
 // needs an actual font-family string (no "inherit") - a real system-font
 // stack instead of vis-network's own "arial" default, so node labels
@@ -9584,6 +9596,18 @@ function renderRelationshipGraphLegend(data) {
         span.appendChild(document.createTextNode(label));
         legendEl.appendChild(span);
     });
+    // Only shown when this case actually has at least one co-occurrence
+    // pair - no point cluttering the legend with an entry for a line style
+    // that never appears anywhere in this particular graph.
+    if (data.co_occurrences && data.co_occurrences.length > 0) {
+        const span = document.createElement('span');
+        span.className = 'me-3 d-inline-block';
+        const line = document.createElement('span');
+        line.style.cssText = `display:inline-block;width:16px;height:0;border-top:2px dashed ${RELATIONSHIP_CO_OCCURRENCE_COLOR};margin-right:5px;vertical-align:middle;`;
+        span.appendChild(line);
+        span.appendChild(document.createTextNode('Seen together (same group text, meeting, or email thread) - not a confirmed relationship, only a disclosed co-occurrence'));
+        legendEl.appendChild(span);
+    }
 }
 
 function renderRelationshipGraph(data) {
@@ -9591,9 +9615,14 @@ function renderRelationshipGraph(data) {
     const emptyEl = document.getElementById('relationshipGraphEmpty');
     const truncNote = document.getElementById('relationshipGraphTruncatedNote');
     const metricBtn = document.getElementById('polContactMetricBtn');
+    const searchInput = document.getElementById('relationshipGraphSearchInput');
     if (!container) return;
 
     if (relationshipGraphNetwork) { relationshipGraphNetwork.destroy(); relationshipGraphNetwork = null; }
+    relationshipGraphNodesDataSet = null;
+    relationshipGraphEdgesDataSet = null;
+    relationshipGraphNodeSearchText = {};
+    if (searchInput) searchInput.value = '';  // a stale search term filtering a freshly-rebuilt graph would be confusing, not just cosmetic
     container.innerHTML = '';
 
     if (!data || !data.contacts || data.contacts.length === 0) {
@@ -9643,9 +9672,13 @@ function renderRelationshipGraph(data) {
         physics: false,
     }];
     const edges = [];
+    const graphContactKeys = new Set();
     graphContacts.forEach((c) => {
         const color = RELATIONSHIP_TIER_COLORS[c.tier] || RELATIONSHIP_TIER_COLORS.regular;
         const key = _contactCorrelationKey(c);
+        graphContactKeys.add(key);
+        relationshipGraphNodeSearchText[key] = [...c.display_names, c.normalized_number, c.normalized_email]
+            .filter(Boolean).join(' ').toLowerCase();
         nodes.push({
             id: key,
             label: c.display_names.length ? c.display_names[0] : key,
@@ -9663,9 +9696,35 @@ function renderRelationshipGraph(data) {
         });
     });
 
+    // Contact-to-contact co-occurrence edges (2026-09-08) - a SEPARATE
+    // signal from the device-spoke edges above: two contacts BOTH named on
+    // the same group MMS/calendar event/email thread, not each individually
+    // in contact with the device owner. Filtered to pairs where BOTH ends
+    // are actually among the (possibly truncated to RELATIONSHIP_GRAPH_MAX_
+    // NODES) nodes rendered above - never references a contact that got cut
+    // from the graph view, even if the underlying data has more. Styled
+    // distinctly (dashed, a muted gray never used for a tier) so these read
+    // as a genuinely different kind of line, not just another relationship
+    // to the device.
+    (data.co_occurrences || []).forEach((pair) => {
+        const [a, b] = pair.contacts;
+        if (!graphContactKeys.has(a) || !graphContactKeys.has(b)) return;
+        const channelText = pair.channels.join(', ');
+        edges.push({
+            from: a, to: b,
+            dashes: true,
+            width: 1 + Math.min(pair.count, 10) * 0.4,
+            color: { color: RELATIONSHIP_CO_OCCURRENCE_COLOR, opacity: 0.6, highlight: RELATIONSHIP_CO_OCCURRENCE_COLOR },
+            smooth: { type: 'continuous', roundness: 0.35 },
+            title: `Seen together ${pair.count} time(s) (${channelText}) - not a confirmed relationship, only a disclosed co-occurrence in the same thread/meeting.`,
+        });
+    });
+
+    relationshipGraphNodesDataSet = new vis.DataSet(nodes);
+    relationshipGraphEdgesDataSet = new vis.DataSet(edges);
     relationshipGraphNetwork = new vis.Network(
         container,
-        { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) },
+        { nodes: relationshipGraphNodesDataSet, edges: relationshipGraphEdgesDataSet },
         {
             autoResize: true,
             physics: { solver: 'forceAtlas2Based', stabilization: { iterations: 200, fit: true },
@@ -9691,6 +9750,39 @@ function renderRelationshipGraph(data) {
     });
 }
 
+// Search/isolate (2026-09-08) - dims (never hides/removes) non-matching
+// nodes+edges via a plain vis.DataSet.update(), so the force-directed
+// layout never has to re-settle on every keystroke the way tearing down
+// and rebuilding the graph would. An empty query is treated as "everyone
+// matches", which is what correctly restores full opacity on clear -
+// no separate reset branch needed.
+function filterRelationshipGraph(query) {
+    if (!relationshipGraphNodesDataSet || !relationshipGraphEdgesDataSet) return;
+    const q = (query || '').trim().toLowerCase();
+    const contactMatches = (id) => !q || (relationshipGraphNodeSearchText[id] || '').includes(q);
+
+    relationshipGraphNodesDataSet.update(
+        relationshipGraphNodesDataSet.getIds().map((id) => ({
+            id, opacity: (id === '__device__' || contactMatches(id)) ? 1 : 0.12,
+        }))
+    );
+    relationshipGraphEdgesDataSet.update(
+        relationshipGraphEdgesDataSet.get().map((edge) => {
+            // A device-spoke edge's own "from" is always the literal
+            // device node, which trivially isn't a real contact search
+            // target - relevance for that kind of edge depends only on
+            // its contact end. A co-occurrence edge has no device end at
+            // all, so either endpoint matching keeps it visible (shows
+            // who a matched contact was grouped with, even if that other
+            // person's own name doesn't match the query).
+            const isDeviceSpoke = edge.from === '__device__';
+            const fullOpacity = edge.dashes ? 0.6 : 0.55;
+            const relevant = isDeviceSpoke ? contactMatches(edge.to) : (contactMatches(edge.from) || contactMatches(edge.to));
+            return { id: edge.id, color: { ...edge.color, opacity: relevant ? fullOpacity : 0.04 } };
+        })
+    );
+}
+
 
 function togglePatternOfLifeGraphMetric() {
     relationshipGraphMetric = relationshipGraphMetric === 'duration' ? 'count' : 'duration';
@@ -9708,6 +9800,7 @@ function setPatternOfLifeContactView(view) {
     const legend = document.getElementById('relationshipGraphLegend');
     const truncNote = document.getElementById('relationshipGraphTruncatedNote');
     const metricBtn = document.getElementById('polContactMetricBtn');
+    const searchWrap = document.getElementById('relationshipGraphSearchWrap');
     const tableContainer = document.getElementById('reportContactsContainer');
     const showGraph = view === 'graph';
     const hasContacts = !!(patternOfLifeContactData && patternOfLifeContactData.contacts && patternOfLifeContactData.contacts.length > 0);
@@ -9727,6 +9820,7 @@ function setPatternOfLifeContactView(view) {
         const hasAnyDuration = hasContacts && patternOfLifeContactData.contacts.some(c => (c.total_duration_seconds || 0) > 0);
         metricBtn.style.display = (showGraph && hasAnyDuration) ? '' : 'none';
     }
+    if (searchWrap) searchWrap.style.display = (showGraph && hasContacts) ? '' : 'none';
     if (showGraph && relationshipGraphNetwork) {
         // vis-network can mis-measure a container that was display:none at
         // the moment it last rendered - redraw + fit once genuinely visible
@@ -10043,6 +10137,92 @@ function loadPatternOfLife() {
 // renderRelationshipGraph() already uses for its own vis-network instance.
 let patternOfLifeGeoMapInstance = null;
 
+// Home/Work inference (2026-09-08) - a real, standard pattern-of-life
+// technique: the location most-visited during overnight hours is likely
+// Home; the location most-visited during weekday working hours (excluding
+// whichever cluster was already called Home) is likely Work. Deliberately
+// computed CLIENT-SIDE using each timestamped point's LOCAL browser hour/
+// day-of-week - the exact same disclosed tradeoff already established for
+// the Communication Activity Pattern chart's own hour-of-day bucketing
+// elsewhere in this file: this app has no reliable way to know the
+// SUBJECT DEVICE's own timezone, only the analyst's own browser's, and
+// silently guessing at one would risk a materially wrong "10pm-6am" window
+// - so this stays consistent with that same established, disclosed
+// approach rather than introducing a second, different assumption.
+// KML-sourced points always carry timestamp: null (see the geo_activity
+// route's own docstring) and are structurally excluded here - there is no
+// honest way to time-of-day-classify a point with no timestamp at all.
+const GEO_HOME_WORK_OVERNIGHT_START_HOUR = 22;  // 10pm
+const GEO_HOME_WORK_OVERNIGHT_END_HOUR = 6;     // 6am (exclusive)
+const GEO_HOME_WORK_WORKDAY_START_HOUR = 9;
+const GEO_HOME_WORK_WORKDAY_END_HOUR = 17;
+const GEO_HOME_WORK_MIN_VISITS = 2;  // never assert Home/Work from a single data point
+
+function _geoLocationKey(lat, lon) {
+    return `${lat.toFixed(3)},${lon.toFixed(3)}`;
+}
+
+function classifyHomeWorkLocations(points, frequentLocations) {
+    const byKey = {};
+    (points || []).forEach((p) => {
+        if (typeof p.timestamp !== 'number') return;
+        const key = _geoLocationKey(p.lat, p.lon);
+        (byKey[key] = byKey[key] || []).push(new Date(p.timestamp * 1000));
+    });
+
+    const stats = {};
+    (frequentLocations || []).forEach((loc) => {
+        const key = _geoLocationKey(loc.lat, loc.lon);
+        const dates = byKey[key] || [];
+        let overnight = 0, weekdayDaytime = 0;
+        dates.forEach((d) => {
+            const hour = d.getHours();
+            const day = d.getDay();  // 0=Sun..6=Sat
+            if (hour >= GEO_HOME_WORK_OVERNIGHT_START_HOUR || hour < GEO_HOME_WORK_OVERNIGHT_END_HOUR) overnight++;
+            if (day >= 1 && day <= 5 && hour >= GEO_HOME_WORK_WORKDAY_START_HOUR && hour < GEO_HOME_WORK_WORKDAY_END_HOUR) weekdayDaytime++;
+        });
+        stats[key] = { timestamped: dates.length, overnight, weekdayDaytime };
+    });
+
+    // Home: the single cluster with the most overnight visits, requiring
+    // both a real minimum sample size AND no tie with another cluster -
+    // never guessed when the signal is ambiguous.
+    let homeKey = null, homeBest = 0, homeTie = false;
+    Object.entries(stats).forEach(([key, s]) => {
+        if (s.overnight < GEO_HOME_WORK_MIN_VISITS) return;
+        if (s.overnight > homeBest) { homeKey = key; homeBest = s.overnight; homeTie = false; }
+        else if (s.overnight === homeBest) { homeTie = true; }
+    });
+    if (homeTie) homeKey = null;
+
+    // Work: the same idea over weekday-daytime visits, among the REMAINING
+    // clusters (a location can't be both).
+    let workKey = null, workBest = 0, workTie = false;
+    Object.entries(stats).forEach(([key, s]) => {
+        if (key === homeKey || s.weekdayDaytime < GEO_HOME_WORK_MIN_VISITS) return;
+        if (s.weekdayDaytime > workBest) { workKey = key; workBest = s.weekdayDaytime; workTie = false; }
+        else if (s.weekdayDaytime === workBest) { workTie = true; }
+    });
+    if (workTie) workKey = null;
+
+    const result = {};
+    if (homeKey) {
+        const pct = Math.round((homeBest / stats[homeKey].timestamped) * 100);
+        result[homeKey] = {
+            type: 'home', label: 'Likely Home',
+            detail: `${homeBest} of ${stats[homeKey].timestamped} timestamped visit(s) (${pct}%) occurred between 10 PM and 6 AM, local time to this browser.`,
+        };
+    }
+    if (workKey) {
+        const pct = Math.round((workBest / stats[workKey].timestamped) * 100);
+        result[workKey] = {
+            type: 'work', label: 'Likely Work',
+            detail: `${workBest} of ${stats[workKey].timestamped} timestamped visit(s) (${pct}%) occurred on a weekday between 9 AM and 5 PM, local time to this browser.`,
+        };
+    }
+    return result;
+}
+
 async function loadPatternOfLifeGeoActivity() {
     const summaryEl = document.getElementById('patternOfLifeGeoSummary');
     const mapEl = document.getElementById('patternOfLifeGeoMap');
@@ -10080,29 +10260,46 @@ async function loadPatternOfLifeGeoActivity() {
             + (data.truncated ? ' (list truncated - too many points to show all).' : '.');
     }
 
-    renderGeoActivityMap(mapEl, data.points, data.frequent_locations);
+    const homeWorkByKey = classifyHomeWorkLocations(data.points, data.frequent_locations);
+    renderGeoActivityMap(mapEl, data.points, data.frequent_locations, homeWorkByKey);
 
     if (listEl && data.frequent_locations.length) {
         const label = document.createElement('div');
         label.className = 'small fw-bold text-subtle mb-1';
         label.textContent = 'Frequent Locations (visited more than once)';
         listEl.appendChild(label);
+        if (Object.keys(homeWorkByKey).length > 0) {
+            const disclosure = document.createElement('div');
+            disclosure.className = 'small text-subtle mb-1';
+            disclosure.textContent = 'Home/Work labels are a heuristic (most-visited location overnight / on a weekday during work hours) based on this browser\'s own local time zone, not necessarily the device\'s - shown only when the pattern is clear, from timestamped data only (never from a KML-only point, which has no timestamp).';
+            listEl.appendChild(disclosure);
+        }
         const table = document.createElement('table');
         table.className = 'table table-sm table-dark table-hover small mb-0';
-        table.innerHTML = '<thead><tr><th>Coordinates</th><th>Visits</th><th>First Seen</th><th>Last Seen</th></tr></thead>';
+        table.innerHTML = '<thead><tr><th>Coordinates</th><th>Type</th><th>Visits</th><th>First Seen</th><th>Last Seen</th></tr></thead>';
         const tbody = document.createElement('tbody');
         data.frequent_locations.forEach(loc => {
+            const key = _geoLocationKey(loc.lat, loc.lon);
+            const homeWork = homeWorkByKey[key];
             const row = document.createElement('tr');
             const coordCell = document.createElement('td');
             coordCell.className = 'font-monospace';
             coordCell.textContent = `${loc.lat.toFixed(3)}, ${loc.lon.toFixed(3)}`;
+            const typeCell = document.createElement('td');
+            if (homeWork) {
+                const badge = document.createElement('span');
+                badge.className = `badge ${homeWork.type === 'home' ? 'bg-success' : 'bg-warning text-dark'}`;
+                badge.title = homeWork.detail;
+                badge.textContent = homeWork.label;
+                typeCell.appendChild(badge);
+            }
             const visitCell = document.createElement('td');
             visitCell.textContent = loc.visit_count;
             const firstCell = document.createElement('td');
             firstCell.textContent = _formatContactCorrelationTimestamp(loc.first_seen);
             const lastCell = document.createElement('td');
             lastCell.textContent = _formatContactCorrelationTimestamp(loc.last_seen);
-            row.appendChild(coordCell); row.appendChild(visitCell); row.appendChild(firstCell); row.appendChild(lastCell);
+            row.appendChild(coordCell); row.appendChild(typeCell); row.appendChild(visitCell); row.appendChild(firstCell); row.appendChild(lastCell);
             tbody.appendChild(row);
         });
         table.appendChild(tbody);
@@ -10114,7 +10311,7 @@ async function loadPatternOfLifeGeoActivity() {
     }
 }
 
-function renderGeoActivityMap(container, points, frequentLocations) {
+function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKey) {
     if (patternOfLifeGeoMapInstance) { patternOfLifeGeoMapInstance.remove(); patternOfLifeGeoMapInstance = null; }
     if (typeof L === 'undefined') {
         const noLeaflet = document.createElement('div');
@@ -10136,9 +10333,20 @@ function renderGeoActivityMap(container, points, frequentLocations) {
             bounds.push([p.lat, p.lon]);
         });
         (frequentLocations || []).forEach(loc => {
+            const homeWork = (homeWorkByKey || {})[_geoLocationKey(loc.lat, loc.lon)];
             const radius = 8 + Math.min(loc.visit_count, 20);
-            const marker = L.circleMarker([loc.lat, loc.lon], { radius, color: '#ff4d4f', weight: 2, fillOpacity: 0.2 }).addTo(map);
-            const parts = ['<b>Frequent location</b>', `Visited ${loc.visit_count} time(s)`];
+            // Home/Work get a visually distinct marker style (a different
+            // color, never the same red used for a plain frequent location)
+            // so the two special-cased locations stand out on the map, not
+            // just in the table below it.
+            const style = homeWork
+                ? (homeWork.type === 'home'
+                    ? { color: '#22c55e', weight: 2, fillOpacity: 0.35 }
+                    : { color: '#f59e0b', weight: 2, fillOpacity: 0.35 })
+                : { color: '#ff4d4f', weight: 2, fillOpacity: 0.2 };
+            const marker = L.circleMarker([loc.lat, loc.lon], { radius, ...style }).addTo(map);
+            const parts = [homeWork ? `<b>${escapeHtmlForPopup(homeWork.label)}</b>` : '<b>Frequent location</b>', `Visited ${loc.visit_count} time(s)`];
+            if (homeWork) parts.push(escapeHtmlForPopup(homeWork.detail));
             if (loc.first_seen) parts.push(`First: ${_formatContactCorrelationTimestamp(loc.first_seen)}`);
             if (loc.last_seen) parts.push(`Last: ${_formatContactCorrelationTimestamp(loc.last_seen)}`);
             marker.bindPopup(parts.join('<br>'));
