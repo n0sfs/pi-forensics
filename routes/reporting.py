@@ -74,6 +74,7 @@ from core.case_index_db import (
     _case_index_open_readonly, list_case_folders, correlate_contacts,
     CONTACT_CORRELATION_COMM_TYPES, CONTACT_CORRELATION_EMAIL_COMM_TYPES,
     _extract_raw_counterpart_candidates, _extract_email_counterparts, normalize_phone_number,
+    _comm_content_preview,
 )
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
@@ -1111,7 +1112,13 @@ def case_timeline():
     exactly that person's own activity. A row this app can't attribute to
     any known contact (an unmatched number, or simply not a communication
     row at all - the vast majority of MACB/registry/browser rows) always
-    gets an empty list, never a guessed one."""
+    gets an empty list, never a guessed one.
+
+    Every row also carries "content_preview" (2026-09-07) - the real
+    message/email/note text for a comm-type row, via _comm_content_
+    preview() (core/case_index_db.py, the same function correlate_
+    contacts()'s own samples[] already use), capped and always None for
+    every non-content-bearing row (MACB, call logs, anything else)."""
     case_folder = safe_path(request.args.get('case_folder'))
     if not case_folder or not case_consolidated_path(case_folder):
         return jsonify({"success": False, "error": "Not a valid consolidated case folder."}), 400
@@ -1152,6 +1159,7 @@ def case_timeline():
             # reduced to a single bool here rather than exposing the raw label.
             "real_device_timestamp": "real device timestamp" in row.get("filesystem", ""),
             "counterparts": [],  # a filesystem MACB event is never a communication
+            "content_preview": None,  # a filesystem MACB event has no message text
         })
 
     # Resolves a parsed_artifacts row's own image_path column back to the
@@ -1219,6 +1227,7 @@ def case_timeline():
                     "suspicious": artifact_type in CASE_TIMELINE_SUSPICIOUS_ARTIFACT_TYPES,
                     "category": _timeline_row_category("parsed_artifact", artifact_type),
                     "counterparts": sorted(counterparts),
+                    "content_preview": _comm_content_preview(artifact_type, value, extra),
                 })
         finally:
             conn.close()
@@ -1580,6 +1589,97 @@ def _collect_case_geolocation(case_folder, attachment_files):
             continue
         results.append({"name": os.path.basename(real_path), "path": real_path, "placemarks": placemarks})
     return results
+
+
+GEO_ACTIVITY_MAX_POINTS = 5000            # a bit above CASE_TIMELINE_MAX_TOTAL_ENTRIES's own scale for the same reason - cap, never silently truncate without disclosure
+GEO_ACTIVITY_CLUSTER_PRECISION = 3        # lat/lon rounded to 3 decimal places - roughly a 111m grid cell at the equator, a "same neighborhood" granularity
+GEO_ACTIVITY_MAX_FREQUENT_LOCATIONS = 20  # matches RELATIONSHIP_GRAPH_MAX_NODES's own "cap the ranked list, not the underlying data" precedent
+GEO_ACTIVITY_MIN_FREQUENT_VISITS = 2      # a single-visit point isn't a "frequent" location by any reasonable definition - excluded from frequent_locations entirely, still present in points
+
+
+@reporting_bp.route('/api/cases/geo_activity', methods=['GET'])
+@requires_auth
+@requires_permission('reporting')
+def case_geo_activity():
+    """Pattern of Life's own "Location Activity" section (2026-09-08) - ties
+    real GPS data into the same pattern-of-life view Contact Correlation
+    already lives in, answering "where was this device, and how often was
+    it at the same place" alongside "who did it talk to." Two sources, both
+    already-established, no new parsing added here:
+    takeout_location_history (parsed_artifacts rows this app already
+    indexes from a Google Takeout import - real lat/lon/timestamp, read
+    directly, no KML export needed first) and every .kml file already
+    sitting in or attached to this case (the exact same
+    _collect_case_geolocation() the PDF/HTML report's own Geolocation
+    section already reuses - covers EXIF-tagged photos, an ALEAPP location
+    export, or any KML an examiner has manually added). A KML placemark
+    has no reliable structured timestamp (confirmed via _parse_kml_
+    placemarks()'s own shape - {name, description, lat, lon}, nothing
+    else), so those points always carry timestamp=None here rather than
+    a guessed one.
+
+    Clustered into "frequent_locations" (grid-rounded to ~111m cells,
+    ranked by visit count, capped at GEO_ACTIVITY_MAX_FREQUENT_LOCATIONS,
+    excludes any cluster with fewer than GEO_ACTIVITY_MIN_FREQUENT_VISITS
+    visits - a place seen exactly once isn't "frequent" by any reasonable
+    definition, and is already fully represented in the raw points list)
+    - the same "most-X-first" ranking idea Contact Correlation's own
+    tiering already established, applied to place instead of person; a
+    deliberately plain, explainable grid rounding, not real geospatial
+    clustering, matching this app's own established preference for a
+    disclosed, simple rule over an opaque one."""
+    case_folder = safe_path(request.args.get('case_folder'))
+    if not case_folder or not case_consolidated_path(case_folder):
+        return jsonify({"success": False, "error": "Not a valid consolidated case folder."}), 400
+
+    case_file = case_consolidated_path(case_folder)
+    data = _read_case_file(case_file)
+    attachment_files = data.get('attachments', {}).get('files', [])
+
+    points = []
+    conn = _case_index_open_readonly(case_folder)
+    if conn:
+        try:
+            for value, timestamp, extra_json in conn.execute(
+                    "SELECT value, timestamp, extra_json FROM parsed_artifacts "
+                    "WHERE artifact_type = 'takeout_location_history' LIMIT ?",
+                    (GEO_ACTIVITY_MAX_POINTS,)):
+                try:
+                    extra = json.loads(extra_json) if extra_json else {}
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    extra = {}
+                lat, lon = extra.get('lat'), extra.get('lon')
+                if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                    continue
+                points.append({"lat": lat, "lon": lon, "timestamp": timestamp,
+                                "name": value or '(unnamed location)', "source": "Google Takeout Location History"})
+        finally:
+            conn.close()
+
+    for kml_entry in _collect_case_geolocation(case_folder, attachment_files):
+        for placemark in kml_entry["placemarks"]:
+            points.append({"lat": placemark["lat"], "lon": placemark["lon"], "timestamp": None,
+                            "name": placemark["name"] or kml_entry["name"], "source": kml_entry["name"]})
+
+    truncated = len(points) > GEO_ACTIVITY_MAX_POINTS
+    points = points[:GEO_ACTIVITY_MAX_POINTS]
+
+    clusters = {}
+    for point in points:
+        key = (round(point["lat"], GEO_ACTIVITY_CLUSTER_PRECISION), round(point["lon"], GEO_ACTIVITY_CLUSTER_PRECISION))
+        cluster = clusters.setdefault(key, {"lat": key[0], "lon": key[1], "visit_count": 0,
+                                             "first_seen": None, "last_seen": None})
+        cluster["visit_count"] += 1
+        if point["timestamp"] is not None:
+            if cluster["first_seen"] is None or point["timestamp"] < cluster["first_seen"]:
+                cluster["first_seen"] = point["timestamp"]
+            if cluster["last_seen"] is None or point["timestamp"] > cluster["last_seen"]:
+                cluster["last_seen"] = point["timestamp"]
+    frequent_locations = [c for c in clusters.values() if c["visit_count"] >= GEO_ACTIVITY_MIN_FREQUENT_VISITS]
+    frequent_locations.sort(key=lambda c: c["visit_count"], reverse=True)
+    frequent_locations = frequent_locations[:GEO_ACTIVITY_MAX_FREQUENT_LOCATIONS]
+
+    return jsonify({"success": True, "points": points, "frequent_locations": frequent_locations, "truncated": truncated})
 
 
 @reporting_bp.route('/api/cases/discover_files', methods=['GET'])
