@@ -9497,14 +9497,226 @@ function _formatContactCorrelationTimestamp(ts) {
     try { return new Date(ts * 1000).toLocaleString(); } catch (err) { return "--"; }
 }
 
+function _formatDurationShort(totalSeconds) {
+    if (!totalSeconds) return null;
+    const mins = Math.round(totalSeconds / 60);
+    if (mins < 1) return "<1m";
+    if (mins < 60) return `${mins}m`;
+    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+// --- Relationship Graph (2026-09-07) - a node-edge visualization built
+// entirely on top of correlate_contacts()'s own already-frequency-ranked
+// output (core/case_index_db.py), the same one fetch loadContactCorrelation()
+// already made - deliberately not a second backend endpoint. Tiers/colors
+// intentionally never use the word "outlier" anywhere in this UI - see
+// core/case_index_db.py's own CONTACT_CORRELATION_FREQUENT_* comment for why
+// ("low-frequency"/"one-off" states the fact without implying significance
+// this app has no basis to assert). Node/edge title strings are plain
+// strings, not HTML - confirmed directly against vis-network's own real
+// minified source (Popup.setText(): a non-Element value is assigned via
+// `.innerText`, never `.innerHTML`) before relying on this, matching this
+// app's own established "verify before trusting a new dependency with
+// evidence-derived text" discipline - a malicious contact display name
+// pulled from a phone's own address book can never inject HTML/script via
+// this tooltip.
+let patternOfLifeContactData = null;       // the one correlate_contacts() response both the table and the graph render from
+let patternOfLifeContactView = 'graph';    // 'graph' | 'table'
+let relationshipGraphNetwork = null;
+let relationshipGraphMetric = 'count';     // 'count' | 'duration' - which value drives edge thickness
+const RELATIONSHIP_GRAPH_MAX_NODES = 40;   // caps the graph specifically, never the underlying table/CSV - a busy device's full contact list would render as unreadable noise
+const RELATIONSHIP_TIER_COLORS = { frequent: '#f87171', regular: '#60a5fa', one_off: '#9ca3af' };
+const RELATIONSHIP_TIER_LABELS = { frequent: 'Frequent Contact', regular: 'Regular Contact', one_off: 'One-off Contact' };
+
+function _relationshipGraphNodeTooltip(contact) {
+    const lines = [
+        contact.display_names.length ? contact.display_names.join(' / ') : '(unnamed)',
+        contact.normalized_number,
+        `Sources: ${contact.contact_sources.join(', ') || '(seen only in communications, no address-book entry)'}`,
+        `Tier: ${RELATIONSHIP_TIER_LABELS[contact.tier] || contact.tier}`,
+        `Total communications: ${contact.total_communications}`,
+        Object.entries(contact.communication_counts).map(([ch, c]) => `${ch}: ${c}`).join(', '),
+    ];
+    const dc = contact.direction_counts || {};
+    if ((dc.incoming || 0) + (dc.outgoing || 0) > 0) lines.push(`Direction: ${dc.incoming || 0} incoming / ${dc.outgoing || 0} outgoing`);
+    const dur = _formatDurationShort(contact.total_duration_seconds);
+    if (dur) lines.push(`Total call time: ${dur}`);
+    lines.push(`First seen: ${_formatContactCorrelationTimestamp(contact.first_seen)}`);
+    lines.push(`Last seen: ${_formatContactCorrelationTimestamp(contact.last_seen)}`);
+    return lines.join('\n');
+}
+
+function renderRelationshipGraphLegend(data) {
+    const legendEl = document.getElementById('relationshipGraphLegend');
+    if (!legendEl) return;
+    if (!data || !data.contacts || data.contacts.length === 0) { legendEl.style.display = 'none'; return; }
+    const sharePct = Math.round((data.frequent_cumulative_share_threshold || 0.8) * 100);
+    legendEl.innerHTML = '';
+    [
+        [RELATIONSHIP_TIER_COLORS.frequent, `Frequent Contact (${data.frequent_contact_count} of ${data.contacts.length} - together account for ~${sharePct}% of this device's total communication volume)`],
+        [RELATIONSHIP_TIER_COLORS.regular, 'Regular Contact (2+ communications, not in the frequent group above)'],
+        [RELATIONSHIP_TIER_COLORS.one_off, 'One-off Contact (exactly 1 recorded communication)'],
+    ].forEach(([color, label]) => {
+        const span = document.createElement('span');
+        span.className = 'me-3 d-inline-block';
+        const dot = document.createElement('span');
+        dot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background-color:${color};margin-right:5px;`;
+        span.appendChild(dot);
+        span.appendChild(document.createTextNode(label));
+        legendEl.appendChild(span);
+    });
+}
+
+function renderRelationshipGraph(data) {
+    const container = document.getElementById('relationshipGraphContainer');
+    const emptyEl = document.getElementById('relationshipGraphEmpty');
+    const truncNote = document.getElementById('relationshipGraphTruncatedNote');
+    const metricBtn = document.getElementById('polContactMetricBtn');
+    if (!container) return;
+
+    if (relationshipGraphNetwork) { relationshipGraphNetwork.destroy(); relationshipGraphNetwork = null; }
+    container.innerHTML = '';
+
+    if (!data || !data.contacts || data.contacts.length === 0) {
+        if (emptyEl) emptyEl.style.display = '';
+        if (truncNote) truncNote.style.display = 'none';
+        if (metricBtn) metricBtn.style.display = 'none';
+        return;
+    }
+    if (emptyEl) emptyEl.style.display = 'none';
+
+    const allContacts = data.contacts;
+    const graphContacts = allContacts.slice(0, RELATIONSHIP_GRAPH_MAX_NODES);
+    if (truncNote) {
+        if (allContacts.length > graphContacts.length) {
+            truncNote.textContent = `Showing the top ${graphContacts.length} of ${allContacts.length} contacts by communication volume - see Table View for the complete list.`;
+            truncNote.style.display = '';
+        } else {
+            truncNote.style.display = 'none';
+        }
+    }
+
+    const hasAnyDuration = allContacts.some(c => (c.total_duration_seconds || 0) > 0);
+    if (!hasAnyDuration) relationshipGraphMetric = 'count';
+    if (metricBtn) {
+        metricBtn.style.display = hasAnyDuration ? '' : 'none';
+        metricBtn.textContent = `Weighted by: ${relationshipGraphMetric === 'duration' ? 'Call Duration' : 'Frequency'}`;
+    }
+
+    const metricValue = (c) => relationshipGraphMetric === 'duration'
+        ? (c.total_duration_seconds || 0.01)  // a real relationship still exists even where duration isn't tracked for this contact's own comm types - never a literal 0-width/invisible edge
+        : c.total_communications;
+    const maxMetric = Math.max(...graphContacts.map(metricValue), 1);
+    const nodeSizeByTier = { frequent: 34, regular: 22, one_off: 13 };
+
+    const nodes = [{
+        id: '__device__', label: 'This Device', shape: 'star', size: 40,
+        color: { background: '#22d3ee', border: '#0e7490' },
+        font: { color: '#0b1220', size: 14, bold: 'bold' }, physics: false,
+    }];
+    const edges = [];
+    graphContacts.forEach((c) => {
+        const color = RELATIONSHIP_TIER_COLORS[c.tier] || RELATIONSHIP_TIER_COLORS.regular;
+        nodes.push({
+            id: c.normalized_number,
+            label: c.display_names.length ? c.display_names[0] : c.normalized_number,
+            shape: 'dot', size: nodeSizeByTier[c.tier] || 16,
+            color: { background: color, border: color, highlight: { background: color, border: '#ffffff' } },
+            font: { color: '#e2e8f0', size: 12 },
+            title: _relationshipGraphNodeTooltip(c),
+        });
+        edges.push({
+            from: '__device__', to: c.normalized_number,
+            width: 1 + (metricValue(c) / maxMetric) * 9,
+            color: { color, opacity: 0.55, highlight: color },
+            smooth: { type: 'continuous' },
+        });
+    });
+
+    relationshipGraphNetwork = new vis.Network(
+        container,
+        { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) },
+        {
+            autoResize: true,
+            physics: { solver: 'forceAtlas2Based', stabilization: { iterations: 150 },
+                       forceAtlas2Based: { gravitationalConstant: -60, springLength: 120 } },
+            interaction: { hover: true, tooltipDelay: 120 },
+            nodes: { borderWidth: 2 },
+        }
+    );
+    relationshipGraphNetwork.on('click', (params) => {
+        if (params.nodes && params.nodes.length && params.nodes[0] !== '__device__') {
+            highlightContactInTable(params.nodes[0]);
+        }
+    });
+}
+
+function togglePatternOfLifeGraphMetric() {
+    relationshipGraphMetric = relationshipGraphMetric === 'duration' ? 'count' : 'duration';
+    renderRelationshipGraph(patternOfLifeContactData);
+}
+
+function setPatternOfLifeContactView(view) {
+    patternOfLifeContactView = view;
+    const graphBtn = document.getElementById('polContactViewGraphBtn');
+    const tableBtn = document.getElementById('polContactViewTableBtn');
+    if (graphBtn) graphBtn.classList.toggle('active', view === 'graph');
+    if (tableBtn) tableBtn.classList.toggle('active', view === 'table');
+
+    const graphContainer = document.getElementById('relationshipGraphContainer');
+    const legend = document.getElementById('relationshipGraphLegend');
+    const truncNote = document.getElementById('relationshipGraphTruncatedNote');
+    const metricBtn = document.getElementById('polContactMetricBtn');
+    const tableContainer = document.getElementById('reportContactsContainer');
+    const showGraph = view === 'graph';
+    const hasContacts = !!(patternOfLifeContactData && patternOfLifeContactData.contacts && patternOfLifeContactData.contacts.length > 0);
+
+    // setProperty(..., 'important') on the way OUT of graph view - the same
+    // established Bootstrap-.d-flex-vs-plain-style.display gotcha this app
+    // has already hit twice elsewhere (see File Explorer's Preview/Metadata
+    // pane fix) - reportContactsContainer never actually carries a .d-flex
+    // family class today, but matching the safer convention here costs
+    // nothing and avoids ever needing to rediscover the same bug a third
+    // time if that ever changes.
+    if (graphContainer) graphContainer.style.setProperty('display', showGraph ? '' : 'none', showGraph ? '' : 'important');
+    if (tableContainer) tableContainer.style.setProperty('display', showGraph ? 'none' : '', showGraph ? 'important' : '');
+    if (legend) legend.style.display = (showGraph && hasContacts) ? '' : 'none';
+    if (truncNote && !showGraph) truncNote.style.display = 'none';
+    if (metricBtn) {
+        const hasAnyDuration = hasContacts && patternOfLifeContactData.contacts.some(c => (c.total_duration_seconds || 0) > 0);
+        metricBtn.style.display = (showGraph && hasAnyDuration) ? '' : 'none';
+    }
+    if (showGraph && relationshipGraphNetwork) {
+        // vis-network can mis-measure a container that was display:none at
+        // the moment it last rendered - redraw + fit once genuinely visible
+        // again, the same class of fix Leaflet's own invalidateSize() call
+        // exists for elsewhere in this app.
+        requestAnimationFrame(() => { relationshipGraphNetwork.redraw(); relationshipGraphNetwork.fit(); });
+    }
+}
+
+function highlightContactInTable(normalizedNumber) {
+    setPatternOfLifeContactView('table');
+    requestAnimationFrame(() => {
+        const row = document.querySelector(`#reportContactsContainer tr[data-number="${CSS.escape(normalizedNumber)}"]`);
+        if (!row) return;
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        row.classList.add('table-active');
+        setTimeout(() => row.classList.remove('table-active'), 2000);
+    });
+}
+
 async function loadContactCorrelation() {
     const container = document.getElementById("reportContactsContainer");
+    const graphContainer = document.getElementById('relationshipGraphContainer');
     if (!container) return;
     container.innerHTML = '<span class="text-subtle small italic">Loading...</span>';
+    if (graphContainer) graphContainer.innerHTML = '<div class="p-3 text-subtle small italic">Loading...</div>';
 
     const caseFolder = activeCase ? activeCase.case_folder : "";
     if (!caseFolder) {
         container.innerHTML = '<span class="text-subtle small">Select a case first.</span>';
+        if (graphContainer) graphContainer.innerHTML = '<div class="p-3 text-subtle small">Select a case first.</div>';
         return;
     }
 
@@ -9521,6 +9733,7 @@ async function loadContactCorrelation() {
         errEl.className = 'text-danger small';
         errEl.textContent = 'Request failed.';
         container.appendChild(errEl);
+        if (graphContainer) graphContainer.innerHTML = '';
         return;
     }
     if (!data || !data.success) {
@@ -9529,9 +9742,20 @@ async function loadContactCorrelation() {
         errEl.className = 'text-danger small';
         errEl.textContent = (data && data.error) || 'Failed to load contact correlation.';
         container.appendChild(errEl);
+        if (graphContainer) graphContainer.innerHTML = '';
         return;
     }
 
+    patternOfLifeContactData = data;
+    renderContactCorrelationTable(data);
+    renderRelationshipGraphLegend(data);
+    renderRelationshipGraph(data);
+    setPatternOfLifeContactView(patternOfLifeContactView);
+}
+
+function renderContactCorrelationTable(data) {
+    const container = document.getElementById("reportContactsContainer");
+    if (!container) return;
     container.innerHTML = '';
 
     const summary = document.createElement('div');
@@ -9555,12 +9779,13 @@ async function loadContactCorrelation() {
     const table = document.createElement('table');
     table.className = 'table table-sm table-dark table-hover small mb-0';
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th>Contact</th><th>Number</th><th>Source(s)</th><th>Communications</th><th>First Seen</th><th>Last Seen</th></tr>';
+    thead.innerHTML = '<tr><th>Contact</th><th>Number</th><th>Tier</th><th>Source(s)</th><th>Communications</th><th>Direction</th><th>Talk Time</th><th>First Seen</th><th>Last Seen</th></tr>';
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
 
     data.contacts.forEach(contact => {
         const row = document.createElement('tr');
+        row.dataset.number = contact.normalized_number;
 
         const nameCell = document.createElement('td');
         nameCell.textContent = contact.display_names.length ? contact.display_names.join(' / ') : '(unnamed)';
@@ -9571,6 +9796,14 @@ async function loadContactCorrelation() {
         numCell.textContent = contact.normalized_number;
         row.appendChild(numCell);
 
+        const tierCell = document.createElement('td');
+        const tierBadge = document.createElement('span');
+        const tierColorClass = contact.tier === 'frequent' ? 'bg-danger' : (contact.tier === 'one_off' ? 'bg-secondary' : 'bg-primary');
+        tierBadge.className = `badge ${tierColorClass}`;
+        tierBadge.textContent = RELATIONSHIP_TIER_LABELS[contact.tier] || contact.tier || '--';
+        tierCell.appendChild(tierBadge);
+        row.appendChild(tierCell);
+
         const sourcesCell = document.createElement('td');
         sourcesCell.textContent = contact.contact_sources.join(', ');
         row.appendChild(sourcesCell);
@@ -9580,6 +9813,16 @@ async function loadContactCorrelation() {
             .map(([channel, count]) => `${channel}: ${count}`).join(', ')
             + ` (total ${contact.total_communications})`;
         row.appendChild(countsCell);
+
+        const dirCell = document.createElement('td');
+        const dc = contact.direction_counts || {};
+        dirCell.textContent = ((dc.incoming || 0) + (dc.outgoing || 0) > 0)
+            ? `${dc.incoming || 0} in / ${dc.outgoing || 0} out` : '--';
+        row.appendChild(dirCell);
+
+        const durCell = document.createElement('td');
+        durCell.textContent = _formatDurationShort(contact.total_duration_seconds) || '--';
+        row.appendChild(durCell);
 
         const firstCell = document.createElement('td');
         firstCell.textContent = _formatContactCorrelationTimestamp(contact.first_seen);

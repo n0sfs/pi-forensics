@@ -607,7 +607,8 @@ def test_correlate_contacts_returns_the_empty_shape_for_a_case_never_indexed(cas
     # yet - must return the correctly-shaped empty result, not raise.
     result = case_index_db.correlate_contacts(case_folder)
     assert result == {"contacts_indexed_count": 0, "unresolved_communication_count": 0,
-                       "truncated": False, "contacts": []}
+                       "truncated": False, "contacts": [], "frequent_contact_count": 0,
+                       "frequent_cumulative_share_threshold": case_index_db.CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE}
 
 
 # --- 2026-09-05 fixes: companion-app + .ab-backup-sourced Android types
@@ -709,3 +710,168 @@ def test_correlate_contacts_resolves_each_participant_of_a_group_mms_separately(
     assert by_number["5551111111"]["total_communications"] == 2
     assert by_number["5552222222"]["total_communications"] == 2
     assert result["unresolved_communication_count"] == 0
+
+
+# --- 2026-09-07: direction/duration extraction + relationship tiering,
+# built for the new Pattern of Life relationship graph. Every value used
+# below (which extra_json key, which raw values mean incoming/outgoing)
+# was individually confirmed against the real parser source that writes
+# it - see CONTACT_CORRELATION_COMM_TYPES's own comments in
+# core/case_index_db.py for exactly where each came from. ---
+
+def _comm_row(artifact_type, counterpart_key, counterpart_value, extra_extra=None, timestamp=1700000000.0):
+    """Like _comm_record() above, but lets a test also set direction/
+    duration/etc. fields in extra - _comm_record() itself only ever sets
+    the one counterpart key, too narrow for these tests."""
+    extra = {counterpart_key: counterpart_value}
+    extra.update(extra_extra or {})
+    return {"artifact_type": artifact_type, "title": "msg", "url": "",
+            "value": "hello", "timestamp": timestamp, "extra": extra}
+
+
+def test_classify_comm_direction_reads_the_already_resolved_string_label_for_native_types():
+    spec = case_index_db.CONTACT_CORRELATION_COMM_TYPES["android_call_log"]
+    assert case_index_db._classify_comm_direction(spec, {"direction": "Incoming"}) == "incoming"
+    assert case_index_db._classify_comm_direction(spec, {"direction": "Outgoing"}) == "outgoing"
+
+
+def test_classify_comm_direction_leaves_missed_voicemail_rejected_blocked_unclassified():
+    # A call this app can't honestly call "incoming" or "outgoing" - it
+    # still counts toward total_communications elsewhere, just not toward
+    # direction_counts.
+    spec = case_index_db.CONTACT_CORRELATION_COMM_TYPES["android_call_log"]
+    for value in ("Missed", "Voicemail", "Rejected", "Blocked", "Type 99", None):
+        assert case_index_db._classify_comm_direction(spec, {"direction": value}) is None
+
+
+def test_classify_comm_direction_reads_the_raw_numeric_message_box_code_for_ab_backup_types():
+    # android_ab_sms_message/android_ab_mms_message store the RAW int, not
+    # a resolved string, under "type"/"msg_box" - confirmed the numeric
+    # convention (1=incoming, {2,4}=outgoing) holds for both despite each
+    # module's own differing string label at value 1 ("Received" vs
+    # "Inbox") - see the module comment this test is grounded in.
+    sms_spec = case_index_db.CONTACT_CORRELATION_COMM_TYPES["android_ab_sms_message"]
+    assert case_index_db._classify_comm_direction(sms_spec, {"type": 1}) == "incoming"
+    assert case_index_db._classify_comm_direction(sms_spec, {"type": 2}) == "outgoing"
+    assert case_index_db._classify_comm_direction(sms_spec, {"type": 4}) == "outgoing"
+    assert case_index_db._classify_comm_direction(sms_spec, {"type": 3}) is None  # Draft
+    mms_spec = case_index_db.CONTACT_CORRELATION_COMM_TYPES["android_ab_mms_message"]
+    assert case_index_db._classify_comm_direction(mms_spec, {"msg_box": 1}) == "incoming"
+    assert case_index_db._classify_comm_direction(mms_spec, {"msg_box": 2}) == "outgoing"
+
+
+def test_classify_comm_direction_returns_none_for_a_comm_type_with_no_direction_concept():
+    # A hypothetical spec with no direction_field at all (matches how a
+    # future comm type could be added without direction support yet).
+    assert case_index_db._classify_comm_direction({}, {"direction": "Incoming"}) is None
+
+
+def test_extract_comm_duration_seconds_reads_the_real_field_when_present():
+    spec = case_index_db.CONTACT_CORRELATION_COMM_TYPES["android_call_log"]
+    assert case_index_db._extract_comm_duration_seconds(spec, {"duration_seconds": 42}) == 42.0
+    assert case_index_db._extract_comm_duration_seconds(spec, {"duration_seconds": "37.5"}) == 37.5
+
+
+def test_extract_comm_duration_seconds_is_zero_for_a_type_with_no_duration_concept():
+    # android_sms_message's own spec has no duration_field at all.
+    spec = case_index_db.CONTACT_CORRELATION_COMM_TYPES["android_sms_message"]
+    assert case_index_db._extract_comm_duration_seconds(spec, {"duration_seconds": 999}) == 0.0
+
+
+def test_extract_comm_duration_seconds_never_raises_or_goes_negative_on_garbage():
+    spec = case_index_db.CONTACT_CORRELATION_COMM_TYPES["android_call_log"]
+    assert case_index_db._extract_comm_duration_seconds(spec, {"duration_seconds": None}) == 0.0
+    assert case_index_db._extract_comm_duration_seconds(spec, {"duration_seconds": "not a number"}) == 0.0
+    assert case_index_db._extract_comm_duration_seconds(spec, {}) == 0.0
+    assert case_index_db._extract_comm_duration_seconds(spec, {"duration_seconds": -50}) == 0.0
+
+
+def test_correlate_contacts_aggregates_direction_and_duration_per_contact(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "calls.db"),
+        [_comm_row("android_call_log", "number", "+15551234567",
+                   {"direction": "Incoming", "duration_seconds": 60}, timestamp=1700000001.0),
+         _comm_row("android_call_log", "number", "+15551234567",
+                   {"direction": "Outgoing", "duration_seconds": 120}, timestamp=1700000002.0),
+         _comm_row("android_call_log", "number", "+15551234567",
+                   {"direction": "Missed", "duration_seconds": 0}, timestamp=1700000003.0)])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    contact = result["contacts"][0]
+    assert contact["total_communications"] == 3
+    # 2 classified (1 incoming, 1 outgoing) - the Missed call counts
+    # toward the total above but not toward either direction bucket.
+    assert contact["direction_counts"] == {"incoming": 1, "outgoing": 1}
+    assert contact["total_duration_seconds"] == 180.0
+
+
+def test_correlate_contacts_total_duration_is_zero_for_a_contact_with_only_non_call_communications(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts"][0]["total_duration_seconds"] == 0.0
+
+
+def test_correlate_contacts_tiers_a_frequent_contact_covering_the_cumulative_share(case_folder):
+    # 3 contacts: 50, 30, and 5 communications (grand_total=85). The 80%
+    # cumulative cut is reached at 50+30=80 (94% >= 80%), so both the
+    # top-2 contacts are "frequent" (each well above the min-count floor)
+    # and the 3rd, lower-volume contact is "regular" (5 > 1, not one-off).
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Alice", phones=["+15551111111"]),
+         _contact_record("android_contact", "Bob", phones=["+15552222222"]),
+         _contact_record("android_contact", "Carol", phones=["+15553333333"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551111111", t) for t in range(50)] +
+        [_comm_record("android_sms_message", "address", "+15552222222", t) for t in range(30)] +
+        [_comm_record("android_sms_message", "address", "+15553333333", t) for t in range(5)])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    tiers_by_name = {c["display_names"][0]: c["tier"] for c in result["contacts"]}
+    assert tiers_by_name == {"Alice": "frequent", "Bob": "frequent", "Carol": "regular"}
+    assert result["frequent_contact_count"] == 2
+    assert result["frequent_cumulative_share_threshold"] == 0.80
+
+
+def test_correlate_contacts_tiers_exactly_one_communication_as_one_off(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Solo Contact", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts"][0]["tier"] == "one_off"
+    # The min-count floor (3) must keep a single, tiny dataset's only
+    # contact from being mislabeled "frequent" purely from being
+    # mathematically 100% of a trivial total - see CONTACT_CORRELATION_
+    # FREQUENT_MIN_COUNT's own comment in core/case_index_db.py.
+    assert result["frequent_contact_count"] == 0
+
+
+def test_correlate_contacts_tiers_a_moderate_repeat_contact_as_regular_not_frequent_or_one_off(case_folder):
+    # 2 communications, below the min-count-3 floor for "frequent" even
+    # though it could mathematically clear the 80% cumulative share on
+    # its own in a tiny dataset, and more than the single "one_off" case.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Twice Contact", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567", 1700000001.0),
+         _comm_record("android_sms_message", "address", "+15551234567", 1700000002.0)])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts"][0]["tier"] == "regular"
+    assert result["frequent_contact_count"] == 0

@@ -333,9 +333,20 @@
                                                     <div class="border border-secondary rounded-2 mb-3 p-2" style="height: 180px; background-color:#090b10;"><canvas id="patternOfLifeActivityChart"></canvas></div>
                                                     <div id="patternOfLifeActivityEmpty" class="text-subtle small mb-3" style="display:none;">No timestamped communications (SMS, calls, WhatsApp, or similar) parsed for this case yet.</div>
 
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-person-lines-fill me-1"></i>Contact Correlation</h6>
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-person-lines-fill me-1"></i>Contact Correlation &amp; Relationship Graph</h6>
                                                     <div class="small text-subtle mb-2">Cross-references every parsed contact (phone, iOS backup, Google Takeout, or WhatsApp) against every parsed SMS/call/WhatsApp message in this case, resolving a raw number to a real name wherever the two agree - the most-contacted people surface first. A number independently named by more than one contact source is stronger corroboration.</div>
-                                                    <div id="reportContactsContainer" class="mb-3">
+                                                    <div class="d-flex align-items-center gap-2 mb-2">
+                                                        <div class="btn-group btn-group-sm" role="group">
+                                                            <button type="button" class="btn btn-outline-info active" id="polContactViewGraphBtn" onclick="setPatternOfLifeContactView('graph')"><i class="bi bi-diagram-3 me-1"></i>Graph View</button>
+                                                            <button type="button" class="btn btn-outline-info" id="polContactViewTableBtn" onclick="setPatternOfLifeContactView('table')"><i class="bi bi-table me-1"></i>Table View</button>
+                                                        </div>
+                                                        <button type="button" class="btn btn-outline-secondary btn-xs" id="polContactMetricBtn" onclick="togglePatternOfLifeGraphMetric()" title="Switch the graph's line thickness between raw communication count and total call duration (only meaningful where call duration was captured)." style="display:none;">Weighted by: Frequency</button>
+                                                    </div>
+                                                    <div id="relationshipGraphLegend" class="small text-subtle mb-2" style="display:none;"></div>
+                                                    <div id="relationshipGraphContainer" class="border border-secondary rounded-2 mb-2" style="height: 480px; background-color:#090b10; position:relative;"></div>
+                                                    <div id="relationshipGraphEmpty" class="text-subtle small mb-3" style="display:none;">No correlated contacts to graph yet - parse contacts and SMS/call/WhatsApp records first, or switch to Table View for the full unfiltered list.</div>
+                                                    <div id="relationshipGraphTruncatedNote" class="text-subtle small mb-2" style="display:none;"></div>
+                                                    <div id="reportContactsContainer" class="mb-3" style="display:none;">
                                                         <span class="text-subtle small italic">Loading...</span>
                                                     </div>
 

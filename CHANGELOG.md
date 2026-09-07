@@ -21,6 +21,29 @@ file after updating to see what changed.
 
 ---
 
+## [1.61.0] - 2026-09-07
+
+### Added
+- **A new Relationship Graph on the Pattern of Life tab shows, at a glance, who a phone's owner mostly
+  talked to versus who they only contacted once or twice.** Previously, Contact Correlation was a
+  plain table of every matched contact - useful, but not something you could read in a few seconds.
+  It now has two views: a **Graph View** (the new default) drawing every contact as a node connected
+  to a central "This Device" node, with thicker lines and larger, red-colored dots for the small
+  handful of contacts who account for the large majority of this device's communication - versus
+  smaller, gray dots for someone contacted only once. A plain-language legend states the exact rule
+  used ("these N contacts account for ~80% of total communication volume"), and clicking any contact
+  jumps straight to its row in the existing **Table View** for full detail. The word "outlier" is
+  deliberately never used anywhere in this feature - a low-frequency contact is stated as a fact, not
+  framed as suspicious.
+- **Contact Correlation now also tracks call direction and total call duration, where the underlying
+  data supports it.** The table gained two new columns - "Direction" (how many incoming vs. outgoing
+  communications) and "Talk Time" (total call duration, summed across every matched call) - both
+  already present in several already-parsed data sources but never previously surfaced. Where the
+  underlying comm type has no duration/direction data (SMS, most messaging platforms), these columns
+  correctly show "--" rather than a fabricated number; the graph's line-thickness metric can be
+  switched between "Frequency" and "Call Duration" whenever real call-duration data exists for the
+  case.
+
 ## [1.60.0] - 2026-09-06
 
 ### Added
