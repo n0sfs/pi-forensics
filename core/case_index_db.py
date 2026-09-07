@@ -973,17 +973,22 @@ def cross_case_hash_search(hash_value):
 # core/apple_export_utils.py/core/takeout_utils.py, core/whatsapp_utils.py)
 # - every one of them stores a real phone-number-shaped string (or, for
 # android_companion_contact, a real ContactsContract mimetype-gated value)
-# in a known extra_json key. Deliberately EXCLUDES every leapp_*
-# contact/communication type (leapp_contact, leapp_sms_message,
-# leapp_call_log, leapp_whatsapp_*, etc.): those store ALEAPP's own raw
-# TSV columns generically under extra_json["row"], and this station has
-# never once seen a real ALEAPP hit to confirm which real column name
-# actually holds a phone number for any of them (see core/leapp_tsv_
-# utils.py's own docstring) - guessing a column name here risks silently
-# matching the wrong field and producing a confidently wrong correlation,
-# which this app's own established discipline treats as worse than not
-# covering it yet. A future session with real ALEAPP hit data to check
-# against should extend this, not guess now.
+# in a known extra_json key. Still deliberately EXCLUDES every leapp_*
+# contact/communication type NOT individually curated below (chiefly the
+# generic leapp_module_finding fallback bucket, and any curated module
+# whose own real column names were never individually confirmed) - those
+# store ALEAPP's own raw TSV columns generically under extra_json["row"]
+# with no way to know in advance which real column holds a phone number,
+# so guessing here risks silently matching the wrong field. The curated
+# leapp_contact/leapp_whatsapp_contact/leapp_sms_message/leapp_mms_
+# message/leapp_call_log/leapp_whatsapp_message/leapp_whatsapp_call_log
+# types ARE now correlated (2026-09-08, closing a real, previously-
+# disclosed gap - see LEAPP_CONTACT_TYPES/LEAPP_COMM_TYPES further down
+# this file), via their own dedicated extraction shape rather than being
+# forced into this dict, since every real column name they read was
+# individually confirmed against this app's own pinned ALEAPP source
+# first, the same discipline core/leapp_tsv_utils.py's own LEAPP_
+# TIMESTAMP_COLUMNS already established.
 # emails_key (2026-09-07) - confirmed directly by reading each parser's own
 # extra_json construction, not assumed uniform: android_contact/apple_
 # contact/takeout_contact/mobile_contact all already store a real "emails"
@@ -1133,6 +1138,166 @@ CONTACT_CORRELATION_EMAIL_COMM_TYPES = {
     "email_message": "Email",
     "android_companion_calendar_event": "Calendar Invite",
 }
+# --- ALEAPP/iLEAPP contact + communication correlation (2026-09-08) ---
+# Closes this app's own single biggest previously-disclosed Pattern-of-
+# Life gap (see the "Deliberately EXCLUDES every leapp_*" comment above,
+# and core/leapp_tsv_utils.py's own docstring) - ALEAPP is what handles a
+# non-rooted Android pull AND every iOS extraction, so excluding it meant
+# Contact Correlation/the Relationship Graph showed close to nothing for
+# the most common real-world phone acquisition path. Real column names
+# below were confirmed the SAME way core/leapp_tsv_utils.py's own
+# LEAPP_TIMESTAMP_COLUMNS dict already was - by reading each real, pinned-
+# commit ALEAPP module's own source directly off the deployed station
+# (smsmms.py, calllog.py/calllogs.py, contacts.py, WhatsApp.py), never
+# guessed. Every leapp_* record stores its columns generically under
+# extra["row"] (a {real TSV column name: value} dict - core/leapp_tsv_
+# utils.py's own design), so this needs its own extraction shape entirely
+# separate from CONTACT_CORRELATION_SOURCE_TYPES/CONTACT_CORRELATION_
+# COMM_TYPES above (which assume a fixed, semantic extra_json key name
+# every native parser already agrees on) - values are looked up by real
+# column name, and more than one real module can feed the SAME
+# artifact_type under a DIFFERENT column name for the same concept (e.g.
+# two independently-authored real "Call Logs" modules), so counterpart_
+# keys/direction_field below are tuples tried in order, first one
+# actually PRESENT in that specific row wins - mirroring LEAPP_TIMESTAMP_
+# COLUMNS's own established multi-candidate design exactly.
+LEAPP_CONTACT_TYPES = {
+    # contacts.py's own real query has NO contact-grouping id anywhere in
+    # its TSV output (confirmed directly - its data_headers is Mimetype/
+    # Data 1/Display Name/Phone Number/Email Address/Source File, nothing
+    # else): one ROW per phone-OR-email ContactsContract.Data item, never
+    # both on the same row, with no reliable way to link a phone-row to an
+    # email-row for the same real contact the way android_companion_
+    # contact's own extra["contact_id"] already lets it. Each row is
+    # therefore indexed independently here (a phone-only OR email-only
+    # entry per row, keyed off Display Name for the name) - two rows
+    # coincidentally sharing the same real name still get the existing
+    # possible_duplicate_keys hint for free below, just never a verified
+    # Pass-3-style merge, which would be an unearned guess for this
+    # specific source.
+    "leapp_contact": {"row_phone_key": "Phone Number", "row_email_key": "Email Address", "row_name_key": "Display Name"},
+    # get_whatsapp_contacts()'s own SQL already resolves to one clean value
+    # per row (a real phone number, or the bare JID as a fallback when no
+    # number is known) - single_key, no grouping needed, mirroring the
+    # native whatsapp_contact spec above exactly.
+    "leapp_whatsapp_contact": {"single_key": "Number", "row_name_key": "Name"},
+}
+LEAPP_COMM_TYPES = {
+    "leapp_sms_message": {
+        "counterpart_keys": ("Address",), "channel": "SMS",
+        # smsmms.py's own get_sms_mms() writes the RAW Telephony.Sms.
+        # MESSAGE_TYPE_* int straight from SQLite into 'Type' with zero
+        # resolution (confirmed directly - no lookup dict wraps r['type']
+        # the way MMS's own 'direction' does a few lines below it in the
+        # same file) - the same raw-int convention this app's own
+        # android_ab_sms_message already handles, just arriving here as a
+        # STRING (every TSV cell is str()'d by ilapfuncs.py's own writer),
+        # so the comparison sets below are strings, not ints.
+        "direction_field": "Type", "incoming_values": {"1"}, "outgoing_values": {"2"},
+    },
+    # From/To/Cc/Bcc are 4 DIFFERENT real participants on the same row,
+    # not 4 alternative names for one field - handled by a dedicated
+    # branch in _extract_leapp_counterparts() below, not the shared
+    # first-candidate-wins path every other entry here uses.
+    "leapp_mms_message": {
+        "counterpart_keys": ("From Address", "To Address", "Cc", "Bcc"), "channel": "MMS",
+        "direction_field": "Direction", "incoming_values": {"Inbox"}, "outgoing_values": {"Sent", "Outbox"},
+    },
+    "leapp_call_log": {
+        "counterpart_keys": ("Partner", "number"), "channel": "Call",
+        # Only calllogs.py's own 'direction' column is used - a clean,
+        # already-resolved "Incoming"/"Outgoing"/"" string (confirmed
+        # directly). calllog.py's sibling 'Type' column also carries a
+        # real resolved label but with an HTML <i data-feather=...> icon
+        # tag string appended to it (confirmed directly in its own
+        # source, e.g. "Incoming <i data-feather=\"phone-incoming\" ...")
+        # - not a clean exact-match value, and deliberately not used here
+        # rather than guess at parsing it out; a calllog.py-sourced row's
+        # direction stays correctly unclassified (None) rather than risk
+        # a wrong match. Counterpart resolution is unaffected either way,
+        # since 'Partner'/'number' are both clean phone-number values.
+        "direction_field": "direction", "incoming_values": {"Incoming"}, "outgoing_values": {"Outgoing"},
+    },
+    "leapp_whatsapp_message": {
+        # 'Recipients' (get_whatsapp_messages(), comma-joined via that
+        # module's own SQL group_concat - the existing comma-splitter
+        # already handles this shape) vs 'Sending Party JID'
+        # (get_whatsapp_one_to_one_messages()/get_whatsapp_group_
+        # messages()) - all 3 real modules confirmed directly, all 3 feed
+        # this one artifact_type per CURATED_LEAPP_MODULES.
+        "counterpart_keys": ("Sending Party JID", "Recipients"), "channel": "WhatsApp Message",
+        "direction_field": ("Message Direction", "Direction"),
+        "incoming_values": {"Incoming"}, "outgoing_values": {"Outgoing"},
+    },
+    "leapp_whatsapp_call_log": {
+        "counterpart_keys": ("Caller JID",), "channel": "WhatsApp Call",
+        "direction_field": "Call Direction", "incoming_values": {"Incoming"}, "outgoing_values": {"Outgoing"},
+        # Call Duration is a real value here (get_whatsapp_call_logs()'s
+        # own 'Call Duration' column) but stored as an HH:MM:SS string
+        # (strftime('%H:%M:%S', duration, 'unixepoch'), confirmed
+        # directly) - a genuinely different format from every other
+        # duration_field in this app (always raw integer seconds), not
+        # parsed this pass - disclosed, not silently guessed at.
+        # Counterpart/direction resolution (the higher-value signal) is
+        # unaffected either way.
+    },
+}
+
+
+def _leapp_row_value(row, keys):
+    """Tries each candidate real TSV column name in `keys` (a single
+    string or tuple of strings) against one leapp_*-sourced row's own
+    extra["row"] dict, in order - the first one actually present with a
+    real non-empty value wins. More than one real ALEAPP/iLEAPP module
+    can feed the same artifact_type under a different literal column name
+    for the same concept (see LEAPP_COMM_TYPES's own comments for
+    confirmed examples), mirroring core/leapp_tsv_utils.py's own
+    LEAPP_TIMESTAMP_COLUMNS multi-candidate design exactly. Returns None,
+    never a guessed/fabricated value, when none of the candidates are
+    present or all are empty."""
+    if isinstance(keys, str):
+        keys = (keys,)
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return value
+    return None
+
+
+def _extract_leapp_counterparts(artifact_type, spec, row):
+    """Returns every raw counterpart candidate string for one leapp_*
+    comm row. leapp_mms_message is a real, disclosed exception to the
+    usual "first candidate column present wins" rule: its 4 candidate
+    columns (From/To/Cc/Bcc Address) are 4 DIFFERENT real participants on
+    the same row, not 4 alternative names for one field - every one of
+    them that's actually populated contributes its own separate
+    candidate, the same "union every real participant, never glue two
+    into one bogus string" principle _extract_raw_counterpart_
+    candidates() already established for a comma-joined field. Every
+    other type here uses that shared splitter against whichever single
+    candidate column _leapp_row_value() found present (which itself
+    already handles a comma-joined value, e.g. leapp_whatsapp_message's
+    own 'Recipients')."""
+    if artifact_type == "leapp_mms_message":
+        return [row[k] for k in spec["counterpart_keys"] if row.get(k) and str(row[k]).strip()]
+    return _extract_raw_counterpart_candidates(_leapp_row_value(row, spec["counterpart_keys"]))
+
+
+def _classify_leapp_comm_direction(spec, row):
+    """The leapp_* row-dict equivalent of _classify_comm_direction()
+    above - kept as its own small function rather than reusing that one
+    directly, since a leapp_* spec's direction_field can be a tuple of
+    column-name candidates (LEAPP_COMM_TYPES's own real multi-module
+    reality), not the single fixed extra_json key every native comm
+    type's spec already is."""
+    raw_value = _leapp_row_value(row, spec.get("direction_field", ()))
+    if raw_value in spec.get("incoming_values", ()):
+        return "incoming"
+    if raw_value in spec.get("outgoing_values", ()):
+        return "outgoing"
+    return None
+
+
 CONTACT_CORRELATION_MAX_ROWS_PER_TYPE = 20_000
 CONTACT_CORRELATION_MAX_CONTACTS = 2_000
 CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT = 8
@@ -1491,7 +1656,8 @@ def correlate_contacts(case_folder):
         # does, just linked via a shared contact_id instead of a shared row.
         companion_groups = {}
 
-        contact_types = tuple(CONTACT_CORRELATION_SOURCE_TYPES.keys()) + ("android_companion_contact",)
+        contact_types = (tuple(CONTACT_CORRELATION_SOURCE_TYPES.keys()) + ("android_companion_contact",)
+                         + tuple(LEAPP_CONTACT_TYPES.keys()))
         placeholders = ",".join("?" * len(contact_types))
         cur = conn.execute(
             f"SELECT artifact_type, title, extra_json FROM parsed_artifacts "
@@ -1502,6 +1668,27 @@ def correlate_contacts(case_folder):
                 extra = json.loads(extra_json) if extra_json else {}
             except (TypeError, ValueError):
                 extra = {}
+            if artifact_type in LEAPP_CONTACT_TYPES:
+                leapp_spec = LEAPP_CONTACT_TYPES[artifact_type]
+                row = extra.get("row") or {}
+                name = row.get(leapp_spec.get("row_name_key")) or title
+                if leapp_spec.get("single_key"):
+                    normalized = normalize_phone_number(row.get(leapp_spec["single_key"]))
+                    if normalized:
+                        _remember(known, normalized, name, artifact_type)
+                else:
+                    normalized_phone = normalize_phone_number(row.get(leapp_spec.get("row_phone_key")))
+                    if normalized_phone:
+                        _remember(known, normalized_phone, name, artifact_type)
+                    normalized_email = normalize_email(row.get(leapp_spec.get("row_email_key")))
+                    if normalized_email:
+                        _remember(known_emails, normalized_email, name, artifact_type)
+                    # leapp_contact's own per-row shape has no reliable
+                    # same-row phone+email link at all (see LEAPP_CONTACT_
+                    # TYPES's own comment) - correctly never populates
+                    # phone_email_links here, unlike every native contact
+                    # source above.
+                continue
             if artifact_type == "android_companion_contact":
                 contact_id = extra.get("contact_id")
                 if contact_id is None:
@@ -1560,7 +1747,7 @@ def correlate_contacts(case_folder):
         # and the remap step right after Pass 3 below for how these end up
         # attached to the final, post-merge identities in the response.
         co_occurrence_counts = {}
-        comm_types = tuple(CONTACT_CORRELATION_COMM_TYPES.keys())
+        comm_types = tuple(CONTACT_CORRELATION_COMM_TYPES.keys()) + tuple(LEAPP_COMM_TYPES.keys())
         placeholders = ",".join("?" * len(comm_types))
         cur = conn.execute(
             f"SELECT artifact_type, title, value, timestamp, source_path, extra_json "
@@ -1568,13 +1755,17 @@ def correlate_contacts(case_folder):
             f"ORDER BY timestamp DESC LIMIT ?",
             comm_types + (CONTACT_CORRELATION_MAX_ROWS_PER_TYPE * len(comm_types),))
         for artifact_type, title, value, timestamp, source_path, extra_json in cur:
-            spec = CONTACT_CORRELATION_COMM_TYPES[artifact_type]
+            is_leapp = artifact_type in LEAPP_COMM_TYPES
+            spec = LEAPP_COMM_TYPES[artifact_type] if is_leapp else CONTACT_CORRELATION_COMM_TYPES[artifact_type]
             try:
                 extra = json.loads(extra_json) if extra_json else {}
             except (TypeError, ValueError):
                 extra = {}
-            raw_field = extra.get(spec["counterpart_key"])
-            raw_candidates = _extract_raw_counterpart_candidates(raw_field)
+            if is_leapp:
+                row = extra.get("row") or {}
+                raw_candidates = _extract_leapp_counterparts(artifact_type, spec, row)
+            else:
+                raw_candidates = _extract_raw_counterpart_candidates(extra.get(spec["counterpart_key"]))
             resolved_any = False
             resolved_keys_this_row = set()
             for raw_counterpart in raw_candidates:
@@ -1595,10 +1786,11 @@ def correlate_contacts(case_folder):
                 })
                 entry["communication_counts"][spec["channel"]] = entry["communication_counts"].get(spec["channel"], 0) + 1
                 entry["total_communications"] += 1
-                direction = _classify_comm_direction(spec, extra)
+                direction = _classify_leapp_comm_direction(spec, row) if is_leapp else _classify_comm_direction(spec, extra)
                 if direction:
                     entry["direction_counts"][direction] += 1
-                entry["total_duration_seconds"] += _extract_comm_duration_seconds(spec, extra)
+                if not is_leapp:
+                    entry["total_duration_seconds"] += _extract_comm_duration_seconds(spec, extra)
                 if timestamp is not None:
                     if entry["last_seen"] is None or timestamp > entry["last_seen"]:
                         entry["last_seen"] = timestamp

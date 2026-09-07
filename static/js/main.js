@@ -10689,10 +10689,21 @@ function showPatternOfLifeActivityBarPopup(bucketLabel, rows) {
 
 // Device Profile: Apps & Accounts - both lists reuse the already-existing,
 // already-tested /api/case_index/parsed_artifacts row-fetch route (File
-// Views' own "Parsed Artifacts" backend) rather than a new endpoint. Both
-// artifact types are captured automatically during a plain `adb pull` - see
-// routes/mobile.py's _capture_android_app_inventory()/_capture_android_
-// accounts() - so both should already be populated after any real pull.
+// Views' own "Parsed Artifacts" backend) rather than a new endpoint. The
+// native android_installed_app/android_configured_account types are
+// captured automatically during a plain `adb pull` - see routes/mobile.py's
+// _capture_android_app_inventory()/_capture_android_accounts(). leapp_
+// installed_app/leapp_account (2026-09-08) additionally merge in whatever
+// ALEAPP/iLEAPP found - the same real, confirmed ALEAPP module names
+// already curated in core/leapp_tsv_utils.py's own CURATED_LEAPP_MODULES,
+// closing this app's previously-disclosed gap where Device Profile only
+// ever reflected a rooted-physical-style adb pull, never an ALEAPP-parsed
+// iOS extraction or non-rooted Android pull. leapp_* rows are visually
+// tagged "(ALEAPP)" since their own title column isn't always the same
+// clean package/app-name field the native type's title already is
+// (confirmed directly - the 3 real installedapps* modules feeding leapp_
+// installed_app don't all share one column layout), so a less-polished
+// title still reads as clearly sourced rather than looking broken.
 async function loadPatternOfLifeAppsAccounts() {
     const appsEl = document.getElementById('patternOfLifeAppsContainer');
     const acctEl = document.getElementById('patternOfLifeAccountsContainer');
@@ -10711,26 +10722,43 @@ async function loadPatternOfLifeAppsAccounts() {
         }
     }
 
-    const [appRows, acctRows] = await Promise.all([
+    const [nativeAppRows, leappAppRows, nativeAcctRows, leappAcctRows] = await Promise.all([
         fetchCategory('android_installed_app'),
+        fetchCategory('leapp_installed_app'),
         fetchCategory('android_configured_account'),
+        fetchCategory('leapp_account'),
     ]);
+    // null (a real fetch failure) on EITHER half is reported as a failure -
+    // an empty array on one half while the other has real rows is a
+    // perfectly normal, valid state (e.g. a rooted pull with no ALEAPP run
+    // yet, or vice versa), never conflated with a request error.
+    const appRows = (nativeAppRows === null || leappAppRows === null) ? null
+        : [...nativeAppRows, ...(leappAppRows || []).map((r) => ({ ...r, _isLeapp: true }))];
+    const acctRows = (nativeAcctRows === null || leappAcctRows === null) ? null
+        : [...nativeAcctRows, ...(leappAcctRows || []).map((r) => ({ ...r, _isLeapp: true }))];
 
     appsEl.innerHTML = '';
     if (appRows === null) {
         appsEl.appendChild(Object.assign(document.createElement('span'), { className: 'text-danger', textContent: 'Request failed.' }));
     } else if (appRows.length === 0) {
-        appsEl.appendChild(Object.assign(document.createElement('span'), { className: 'text-subtle', textContent: 'No app inventory captured for this case yet - captured automatically on the next Android adb pull acquisition.' }));
+        appsEl.appendChild(Object.assign(document.createElement('span'), { className: 'text-subtle', textContent: 'No app inventory captured for this case yet - captured automatically on the next Android adb pull acquisition, or via ALEAPP/iLEAPP.' }));
     } else {
-        // Already ordered by timestamp DESC (most recently installed/updated
-        // first) by the backend route itself - that's exactly "recently
-        // installed/updated" framing, no client-side re-sort needed.
-        appRows.forEach((row) => {
+        // Each source query already comes back timestamp DESC; re-sorting
+        // the two merged lists together (a null/missing timestamp sorts
+        // last, never crashing the comparator) keeps "most recently
+        // installed/updated first" true across the combined set too.
+        [...appRows].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).forEach((row) => {
             const line = document.createElement('div');
             line.className = 'mb-1';
             const pkg = document.createElement('div');
             pkg.className = 'fw-bold text-subtle';
-            pkg.textContent = row.title;
+            pkg.textContent = row.title + (row._isLeapp ? ' ' : '');
+            if (row._isLeapp) {
+                const badge = document.createElement('span');
+                badge.className = 'badge bg-secondary ms-1';
+                badge.textContent = 'ALEAPP';
+                pkg.appendChild(badge);
+            }
             const detail = document.createElement('div');
             detail.className = 'text-subtle';
             detail.style.opacity = '0.8';
@@ -10745,7 +10773,7 @@ async function loadPatternOfLifeAppsAccounts() {
     if (acctRows === null) {
         acctEl.appendChild(Object.assign(document.createElement('span'), { className: 'text-danger', textContent: 'Request failed.' }));
     } else if (acctRows.length === 0) {
-        acctEl.appendChild(Object.assign(document.createElement('span'), { className: 'text-subtle', textContent: 'No configured accounts captured for this case yet - captured automatically on the next Android adb pull acquisition.' }));
+        acctEl.appendChild(Object.assign(document.createElement('span'), { className: 'text-subtle', textContent: 'No configured accounts captured for this case yet - captured automatically on the next Android adb pull acquisition, or via ALEAPP/iLEAPP.' }));
     } else {
         [...acctRows].sort((a, b) => (a.title || '').localeCompare(b.title || '')).forEach((row) => {
             const line = document.createElement('div');
@@ -10759,6 +10787,12 @@ async function loadPatternOfLifeAppsAccounts() {
             type.textContent = `(${(row.extra && row.extra.type) || 'unknown type'})`;
             line.appendChild(name);
             line.appendChild(type);
+            if (row._isLeapp) {
+                const badge = document.createElement('span');
+                badge.className = 'badge bg-secondary ms-1';
+                badge.textContent = 'ALEAPP';
+                line.appendChild(badge);
+            }
             acctEl.appendChild(line);
         });
     }
@@ -12391,7 +12425,7 @@ function renderCaseTimeline() {
     }
 
     if (rows.length === 0) {
-        body.innerHTML = '<tr><td colspan="6" class="text-subtle p-2">No timeline entries match the current filters.</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" class="text-subtle p-2">No timeline entries match the current filters.</td></tr>';
         return;
     }
 
@@ -12457,13 +12491,45 @@ function renderCaseTimeline() {
             ? e.counterparts.map((k) => caseTimelineContactLabel[k] || k).join(', ')
             : '--';
 
+        // e.content_preview (2026-09-07) is real message/email/note text the
+        // backend already computed via _comm_content_preview() but this table
+        // never rendered - a MACB/registry/browser row (the vast majority)
+        // always carries null here and gets a plain "--", never a phantom
+        // toggle button. Mirrors _buildContactCorrelationPreviewRow()'s own
+        // established collapsed-detail-row pattern on Pattern of Life exactly
+        // - a separate hidden <tr> toggled by a small icon button, never a
+        // second column crammed with the raw text itself.
+        const previewTd = document.createElement('td');
+        let previewRow = null;
+        if (e.content_preview) {
+            previewRow = document.createElement('tr');
+            previewRow.style.display = 'none';
+            const previewDetailTd = document.createElement('td');
+            previewDetailTd.colSpan = 7;
+            previewDetailTd.className = 'bg-app-dark small text-light';
+            previewDetailTd.textContent = e.content_preview; // untrusted evidence content - text node only
+            previewRow.appendChild(previewDetailTd);
+
+            const previewBtn = document.createElement('button');
+            previewBtn.type = 'button';
+            previewBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
+            previewBtn.title = 'Show this event\'s recovered message/email/note text';
+            previewBtn.innerHTML = '<i class="bi bi-chat-left-text"></i>';
+            previewBtn.onclick = () => { previewRow.style.display = previewRow.style.display === 'none' ? 'table-row' : 'none'; };
+            previewTd.appendChild(previewBtn);
+        } else {
+            previewTd.textContent = '--';
+        }
+
         tr.appendChild(tsTd);
         tr.appendChild(srcTd);
         tr.appendChild(catTd);
         tr.appendChild(actTd);
         tr.appendChild(detailTd);
         tr.appendChild(contactTd);
+        tr.appendChild(previewTd);
         body.appendChild(tr);
+        if (previewRow) body.appendChild(previewRow);
     });
 }
 
@@ -12476,7 +12542,7 @@ function exportCaseTimelineCsv() {
         const s = (val === null || val === undefined) ? '' : String(val);
         return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ['Timestamp', 'Source', 'Category', 'Activity', 'Detail', 'Contact(s)', 'Evidence ID', 'Deleted', 'Suspicious', 'Device Time'];
+    const header = ['Timestamp', 'Source', 'Category', 'Activity', 'Detail', 'Contact(s)', 'Content Preview', 'Evidence ID', 'Deleted', 'Suspicious', 'Device Time'];
     const lines = [header];
     caseTimelineFilteredRows.forEach((e) => {
         const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
@@ -12487,7 +12553,7 @@ function exportCaseTimelineCsv() {
             new Date(e.timestamp * 1000).toLocaleString(),
             CASE_TIMELINE_SOURCE_LABEL[e.source] || e.source,
             e.category || '',
-            activityLabel || '', e.detail || '', contactLabel, e.evidence_id || '',
+            activityLabel || '', e.detail || '', contactLabel, e.content_preview || '', e.evidence_id || '',
             e.deleted ? 'Yes' : 'No', e.suspicious ? 'Yes' : 'No',
             e.real_device_timestamp ? 'Yes' : 'No',
         ]);

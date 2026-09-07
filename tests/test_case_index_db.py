@@ -578,27 +578,176 @@ def test_correlate_contacts_sorts_by_total_communication_count_descending(case_f
     assert result["contacts"][1]["total_communications"] == 1
 
 
-def test_correlate_contacts_deliberately_excludes_leapp_sourced_types(case_folder):
-    # See core/case_index_db.py's own module comment: leapp_contact/
-    # leapp_sms_message store ALEAPP's raw TSV columns generically under
-    # extra["row"], with no confirmed real column name for a phone number
-    # - correlating them would mean guessing, which this app's own
-    # established discipline treats as worse than not covering it. Seed
-    # rows that WOULD match if these types were (wrongly) included, and
-    # confirm they are not.
+def _leapp_row(**cols):
+    """Real leapp_*-sourced parsed_artifacts extra_json shape - a plain
+    {real TSV column name: value} dict under extra["row"], exactly how
+    core/leapp_tsv_utils.py's own _parse_one_tsv() actually writes it (see
+    that module's docstring) - never the flat extra_json[key] shape every
+    native parser uses."""
+    return {"leapp_tool": "aleapp", "leapp_module": "Test Module", "row": dict(cols)}
+
+
+def test_correlate_contacts_still_excludes_the_generic_leapp_module_finding_fallback_type(case_folder):
+    # leapp_module_finding (the uncurated fallback bucket for any ALEAPP/
+    # iLEAPP module this app hasn't individually confirmed a real phone-
+    # number column for) stays genuinely excluded - only the specific,
+    # individually-confirmed types in LEAPP_CONTACT_TYPES/LEAPP_COMM_TYPES
+    # below are correlated now (2026-09-08), closing what was a real,
+    # previously-disclosed, broader exclusion.
     case_index_db._record_parsed_artifacts(
-        case_folder, _identity(case_folder, "leapp_contacts.tsv"),
-        [{"artifact_type": "leapp_contact", "title": "Should Not Correlate", "url": "",
-          "value": "x", "timestamp": None, "extra": {"phones": ["+15551234567"]}}])
-    case_index_db._record_parsed_artifacts(
-        case_folder, _identity(case_folder, "leapp_sms.tsv"),
-        [{"artifact_type": "leapp_sms_message", "title": "x", "url": "", "value": "x",
-          "timestamp": 1700000000.0, "extra": {"address": "+15551234567"}}])
+        case_folder, _identity(case_folder, "leapp_unknown.tsv"),
+        [{"artifact_type": "leapp_module_finding", "title": "[Unknown Module] x", "url": "",
+          "value": "x", "timestamp": None, "extra": _leapp_row(**{"Some Column": "+15551234567"})}])
 
     result = case_index_db.correlate_contacts(case_folder)
     assert result["contacts_indexed_count"] == 0
     assert result["contacts"] == []
-    assert result["unresolved_communication_count"] == 0  # leapp_sms_message isn't a scanned comm type at all
+
+
+def test_correlate_contacts_leapp_sms_resolves_against_leapp_contact_with_real_confirmed_columns(case_folder):
+    # Real, confirmed ALEAPP column names (contacts.py's own 'Phone
+    # Number'/'Display Name'; smsmms.py's own 'Address'/'Type', where
+    # 'Type' is the RAW Telephony.Sms.MESSAGE_TYPE_* int as a string, "1"
+    # = incoming) - the actual regression this whole feature exists to
+    # fix: an ALEAPP-only extraction (a non-rooted pull, or any iOS
+    # extraction) must now correlate.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "Contacts.tsv"),
+        [{"artifact_type": "leapp_contact", "title": "vnd.android.cursor.item/phone_v2", "url": "",
+          "value": "x", "timestamp": None,
+          "extra": _leapp_row(**{"Mimetype": "vnd.android.cursor.item/phone_v2", "Data 1": "+15551234567",
+                                  "Display Name": "Jane Doe", "Phone Number": "+15551234567", "Email Address": ""})}])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "SMS Messages.tsv"),
+        [{"artifact_type": "leapp_sms_message", "title": "2024-01-01 12:00:00+00:00", "url": "",
+          "value": "Date: 2024-01-01 | Address: +15551234567", "timestamp": 1704110400.0,
+          "extra": _leapp_row(**{"Date": "2024-01-01 12:00:00+00:00", "Type": "1", "Address": "+15551234567", "Body": "hey"})}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 1
+    assert len(result["contacts"]) == 1
+    c = result["contacts"][0]
+    assert c["display_names"] == ["Jane Doe"]
+    assert c["contact_sources"] == ["leapp_contact"]
+    assert c["communication_counts"] == {"SMS": 1}
+    assert c["direction_counts"] == {"incoming": 1, "outgoing": 0}
+
+
+def test_correlate_contacts_leapp_call_log_resolves_via_either_confirmed_module_column_name(case_folder):
+    # calllog.py's own real column is 'Partner'; calllogs.py's (an
+    # entirely separate, independently-authored module also mapped to
+    # leapp_call_log) is 'number' - both must resolve, and calllogs.py's
+    # own clean 'direction' string must classify correctly.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "leapp_whatsapp_contact.tsv"),
+        [{"artifact_type": "leapp_whatsapp_contact", "title": "Bob", "url": "", "value": "x",
+          "timestamp": None, "extra": _leapp_row(**{"Name": "Bob", "JID": "15559876543@s.whatsapp.net", "Number": "+15559876543"})}])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "Call Logs.tsv"),
+        [{"artifact_type": "leapp_call_log", "title": "x", "url": "", "value": "x", "timestamp": 1704110400.0,
+          "extra": _leapp_row(**{"from_id": "", "to_id": "", "direction": "Outgoing", "call_type": "Outgoing",
+                                  "number": "+15559876543", "name": "Bob"})}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 1
+    c = result["contacts"][0]
+    assert c["communication_counts"] == {"Call": 1}
+    assert c["direction_counts"] == {"incoming": 0, "outgoing": 1}
+
+
+def test_correlate_contacts_leapp_calllog_html_suffixed_type_column_never_misclassifies_direction(case_folder):
+    # calllog.py's own 'Type' column real value is "Incoming <i data-
+    # feather=...></i>" (an HTML icon tag appended, confirmed directly
+    # against the real module source) - LEAPP_COMM_TYPES deliberately
+    # never uses this column for direction at all, so a row that ONLY
+    # carries it (no 'direction' column present) must stay unclassified
+    # rather than a wrong/lucky prefix match.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "leapp_contacts2.tsv"),
+        [{"artifact_type": "leapp_contact", "title": "x", "url": "", "value": "x", "timestamp": None,
+          "extra": _leapp_row(**{"Phone Number": "+15551112222", "Display Name": "Sam"})}])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "Call logs .tsv"),
+        [{"artifact_type": "leapp_call_log", "title": "x", "url": "", "value": "x", "timestamp": 1704110400.0,
+          "extra": _leapp_row(**{"Partner": "+15551112222", "Type": 'Incoming <i data-feather="phone-incoming"></i>'})}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    c = result["contacts"][0]
+    assert c["communication_counts"] == {"Call": 1}  # counterpart resolution still works
+    assert c["direction_counts"] == {"incoming": 0, "outgoing": 0}  # but direction correctly stays unclassified
+
+
+def test_correlate_contacts_leapp_mms_unions_distinct_participants_from_from_to_cc_bcc(case_folder):
+    # A real, disclosed design fork from every other leapp_* comm type:
+    # From/To/Cc/Bcc Address are 4 DIFFERENT real participants on one row,
+    # not 4 alternative column names for the same field - all populated
+    # ones must each resolve as their own separate counterpart.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "leapp_contacts3.tsv"),
+        [{"artifact_type": "leapp_contact", "title": "x1", "url": "", "value": "x", "timestamp": None,
+          "extra": _leapp_row(**{"Phone Number": "+15551110001", "Display Name": "Alice"})},
+         {"artifact_type": "leapp_contact", "title": "x2", "url": "", "value": "x", "timestamp": None,
+          "extra": _leapp_row(**{"Phone Number": "+15551110002", "Display Name": "Bob"})}])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "MMS Messages.tsv"),
+        [{"artifact_type": "leapp_mms_message", "title": "x", "url": "", "value": "x", "timestamp": 1704110400.0,
+          "extra": _leapp_row(**{"From Address": "+15551110001", "To Address": "+15551110002",
+                                  "Direction": "Inbox", "Cc": "", "Bcc": ""})}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    by_name = {c["display_names"][0]: c for c in result["contacts"]}
+    assert set(by_name.keys()) == {"Alice", "Bob"}
+    assert by_name["Alice"]["communication_counts"] == {"MMS": 1}
+    assert by_name["Bob"]["communication_counts"] == {"MMS": 1}
+    # Both were resolved on the SAME row - a real co-occurrence.
+    assert len(result["co_occurrences"]) == 1
+    assert result["co_occurrences"][0]["channels"] == ["MMS"]
+
+
+def test_correlate_contacts_leapp_whatsapp_message_resolves_via_either_confirmed_column_name(case_folder):
+    # get_whatsapp_messages() names its counterpart column 'Recipients'
+    # and direction 'Direction'; get_whatsapp_one_to_one_messages()/
+    # get_whatsapp_group_messages() instead use 'Sending Party JID'/
+    # 'Message Direction' - both real, independently-authored shapes must
+    # resolve to the same artifact_type correctly.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "leapp_whatsapp_contact2.tsv"),
+        [{"artifact_type": "leapp_whatsapp_contact", "title": "Carl", "url": "", "value": "x", "timestamp": None,
+          "extra": _leapp_row(**{"Name": "Carl", "JID": "15553334444@s.whatsapp.net", "Number": "+15553334444"})}])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "whatsapp one to one messages.tsv"),
+        [{"artifact_type": "leapp_whatsapp_message", "title": "x", "url": "", "value": "x", "timestamp": 1704110400.0,
+          "extra": _leapp_row(**{"Sending Party JID": "15553334444@s.whatsapp.net", "Message Direction": "Incoming"})}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 1
+    c = result["contacts"][0]
+    assert c["communication_counts"] == {"WhatsApp Message": 1}
+    assert c["direction_counts"] == {"incoming": 1, "outgoing": 0}
+
+
+def test_correlate_contacts_leapp_contact_never_links_a_phone_row_to_an_email_row(case_folder):
+    # contacts.py's own real TSV has no contact-grouping id at all - a
+    # phone-only row and an email-only row, even sharing the same Display
+    # Name, must NEVER be Pass-3-merged into one contact (that would be an
+    # unearned guess this source can't actually verify) - each stays its
+    # own independent entry.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "leapp_contacts4.tsv"),
+        [{"artifact_type": "leapp_contact", "title": "x1", "url": "", "value": "x", "timestamp": None,
+          "extra": _leapp_row(**{"Phone Number": "+15551119999", "Display Name": "Dana"})},
+         {"artifact_type": "leapp_contact", "title": "x2", "url": "", "value": "x", "timestamp": None,
+          "extra": _leapp_row(**{"Email Address": "dana@example.com", "Display Name": "Dana"})}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts_indexed_count"] == 1
+    assert result["email_identities_indexed_count"] == 1
+    # No comm rows were seeded, so neither contact ever enters by_contact/
+    # by_email_contact at all (only known/known_emails, the Pass-1 pools) -
+    # confirmed indirectly via a zero contacts list, still proving no
+    # merge machinery fired (a real merge would require both to at least
+    # be resolved against a communication first, which never happened).
+    assert result["contacts"] == []
 
 
 def test_correlate_contacts_returns_the_empty_shape_for_a_case_never_indexed(case_folder):

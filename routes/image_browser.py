@@ -37,7 +37,7 @@ from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path, classify_extension,
     is_valid_block_device_or_partition,
 )
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists, load_yara_ruleset_sources, get_url_lists, load_url_list_sets
 import yara
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME,
@@ -4176,7 +4176,22 @@ def _auto_analyze_step_linux_artifacts(image_path, case_folder, source_ip=None, 
 
 
 def _auto_analyze_step_hash_manifest(image_path, case_folder, source_ip=None, user=None):
-    result = _run_hash_manifest_body(image_path, case_folder, 'sha256', {})
+    # Real bug fixed 2026-09-07: this used to pass a hardcoded {} for
+    # hash_sets, so an Auto Analyze run's own hash manifest never actually
+    # cross-referenced anything - the standalone /api/image/hash_manifest
+    # route (image_hash_manifest() below) already does this correctly via
+    # whatever hash_list_ids the examiner explicitly picks, but Auto Analyze
+    # has no per-run selection UI at all, so the only sensible automatic
+    # behavior is to check every hash set the station currently has
+    # configured - the same "check every configured list automatically, no
+    # examiner selection" precedent already established for URL Lists'
+    # own cross-referencing (routes/file_explorer.py). Filtered to sha256
+    # only, matching this exact algorithm's own already-hashed digests -
+    # a station's md5/sha1-only hash set is silently skipped here rather
+    # than forcing a second, unrequested hash pass just to check it.
+    all_ids = [hl["id"] for hl in get_hash_lists()]
+    hash_sets = {lid: s for lid, s in load_hash_list_sets(all_ids).items() if s["algorithm"] == "sha256"}
+    result = _run_hash_manifest_body(image_path, case_folder, 'sha256', hash_sets)
     if result["success"]:
         log_chain_of_custody("hash_manifest_export_image", {
             "image_path": image_path, "algorithm": "sha256", "files_hashed": result["files_hashed"],
