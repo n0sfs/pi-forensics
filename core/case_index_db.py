@@ -1002,36 +1002,115 @@ CONTACT_CORRELATION_SOURCE_TYPES = {
         "mimetype_key": "mimetype", "mimetype_value": "vnd.android.cursor.item/phone_v2",
     },
 }
+# direction_field/incoming_values/outgoing_values and duration_field below
+# (2026-09-07) were each individually confirmed against the real parser
+# source that writes extra_json for that exact artifact_type - not
+# guessed from the artifact_type's name - since two genuinely different
+# storage conventions are in play: android_sms_message/android_call_log/
+# android_mms_message/mobile_*/whatsapp_* all store an ALREADY-RESOLVED
+# string label under "direction" (e.g. "Incoming"/"Sent"), while the two
+# .ab-backup-sourced types store the RAW numeric Telephony.*.MESSAGE_BOX_*
+# code under "type"/"msg_box" instead (core/android_backup_utils.py never
+# resolves it to a string before writing extra_json) - hence the mixed
+# string/int value sets below. A row whose direction value isn't in
+# either set (a Draft/Failed/Queued SMS, a Missed/Voicemail/Rejected/
+# Blocked call) is correctly left unclassified rather than forced into
+# incoming/outgoing - see _classify_comm_direction(). duration_field is
+# only present on the 4 call-log-shaped types that actually carry a real
+# per-row call duration in seconds; every other type has none to read.
 CONTACT_CORRELATION_COMM_TYPES = {
-    "android_sms_message": {"counterpart_key": "address", "channel": "SMS"},
-    "android_call_log": {"counterpart_key": "number", "channel": "Call"},
+    "android_sms_message": {
+        "counterpart_key": "address", "channel": "SMS",
+        "direction_field": "direction", "incoming_values": {"Inbox"}, "outgoing_values": {"Sent", "Outbox"},
+    },
+    "android_call_log": {
+        "counterpart_key": "number", "channel": "Call",
+        "direction_field": "direction", "incoming_values": {"Incoming"}, "outgoing_values": {"Outgoing"},
+        "duration_field": "duration_seconds",
+    },
     # android_mms_message's own "counterpart" field is already comma-joined
     # for a group MMS with more than one participant (core/android_
     # artifacts.py's ", ".join(counterpart_list)) - the shared counterpart-
     # splitting logic below (see the ", " check) resolves each real
     # participant separately rather than gluing two numbers into one bogus
     # digit string.
-    "android_mms_message": {"counterpart_key": "counterpart", "channel": "MMS"},
-    "mobile_sms_message": {"counterpart_key": "counterpart", "channel": "SMS/iMessage"},
-    "mobile_call_log": {"counterpart_key": "address", "channel": "Call"},
-    "whatsapp_message": {"counterpart_key": "sender_jid", "channel": "WhatsApp Message"},
-    "whatsapp_call_log": {"counterpart_key": "caller_jid", "channel": "WhatsApp Call"},
+    "android_mms_message": {
+        "counterpart_key": "counterpart", "channel": "MMS",
+        "direction_field": "direction", "incoming_values": {"Inbox"}, "outgoing_values": {"Sent", "Outbox"},
+    },
+    "mobile_sms_message": {
+        "counterpart_key": "counterpart", "channel": "SMS/iMessage",
+        "direction_field": "direction", "incoming_values": {"Received"}, "outgoing_values": {"Sent"},
+    },
+    "mobile_call_log": {
+        "counterpart_key": "address", "channel": "Call",
+        "direction_field": "direction", "incoming_values": {"Incoming"}, "outgoing_values": {"Outgoing"},
+        "duration_field": "duration_seconds",
+    },
+    "whatsapp_message": {
+        "counterpart_key": "sender_jid", "channel": "WhatsApp Message",
+        "direction_field": "direction", "incoming_values": {"Incoming"}, "outgoing_values": {"Outgoing"},
+    },
+    "whatsapp_call_log": {
+        "counterpart_key": "caller_jid", "channel": "WhatsApp Call",
+        "direction_field": "direction", "incoming_values": {"Incoming"}, "outgoing_values": {"Outgoing"},
+        "duration_field": "duration_seconds",
+    },
     # Companion-app relay (adb shell content query, non-rooted) - the exact
     # same real signal as the native rooted-parser types just above, just a
     # different extraction path (core/android_companion_sms_utils.py,
-    # core/android_companion_contacts_calllog_utils.py).
-    "android_companion_sms_message": {"counterpart_key": "address", "channel": "SMS"},
-    "android_companion_call_log_entry": {"counterpart_key": "number", "channel": "Call"},
+    # core/android_companion_contacts_calllog_utils.py). These two store the
+    # resolved label under "type_label", not "direction".
+    "android_companion_sms_message": {
+        "counterpart_key": "address", "channel": "SMS",
+        "direction_field": "type_label", "incoming_values": {"Inbox"}, "outgoing_values": {"Sent", "Outbox"},
+    },
+    "android_companion_call_log_entry": {
+        "counterpart_key": "number", "channel": "Call",
+        "direction_field": "type_label", "incoming_values": {"Incoming"}, "outgoing_values": {"Outgoing"},
+        "duration_field": "duration_seconds",
+    },
     # .ab (Android Backup File) - sourced SMS/MMS (core/android_
     # backup_utils.py). android_ab_mms_message's "addresses" field is a
     # genuine list (one string per MMS participant, not comma-joined) -
-    # the shared list-vs-string handling below covers both shapes.
-    "android_ab_sms_message": {"counterpart_key": "address", "channel": "SMS"},
-    "android_ab_mms_message": {"counterpart_key": "addresses", "channel": "MMS"},
+    # the shared list-vs-string handling below covers both shapes. Both
+    # store the RAW numeric MESSAGE_BOX_* code under "type"/"msg_box",
+    # never a resolved string label - confirmed directly against core/
+    # android_backup_utils.py's own two separate label dicts (its
+    # _SMS_TYPE_LABELS reads 1="Received"/2="Sent"/4="Outbox"; its
+    # _MMS_MSG_BOX_LABELS reads 1="Inbox"/2="Sent"/4="Outbox" - a
+    # genuinely different string at value 1 between the two, both
+    # confirmed against real AOSP source in that module's own docstring -
+    # but semantically identical for incoming/outgoing purposes, which is
+    # why 1 maps to "incoming" for both despite the differing label text).
+    "android_ab_sms_message": {
+        "counterpart_key": "address", "channel": "SMS",
+        "direction_field": "type", "incoming_values": {1}, "outgoing_values": {2, 4},
+    },
+    "android_ab_mms_message": {
+        "counterpart_key": "addresses", "channel": "MMS",
+        "direction_field": "msg_box", "incoming_values": {1}, "outgoing_values": {2, 4},
+    },
 }
 CONTACT_CORRELATION_MAX_ROWS_PER_TYPE = 20_000
 CONTACT_CORRELATION_MAX_CONTACTS = 2_000
 CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT = 8
+# Relationship-tier thresholds for the Pattern of Life relationship graph
+# (2026-09-07) - deliberately a plain, explainable rule rather than a
+# statistical anomaly score: "Frequent Contact" is the smallest, highest-
+# volume prefix of a case's contacts (in descending communication-count
+# order) whose combined volume reaches this share of the device's total
+# communications - the exact sentence an examiner can state in a report
+# ("these N contacts account for 80% of this device's total communication
+# volume"), not a hidden/black-box cutoff. FREQUENT_MIN_COUNT is a floor
+# guarding the degenerate small-dataset case (e.g. a single contact with
+# only 1 real communication would otherwise be "100% of total volume" and
+# get mislabeled frequent purely from having almost no data at all).
+# "Outlier" is deliberately never used as a tier name or label anywhere -
+# it can read as an accusation of significance this app has no basis to
+# assert; "one-off"/"low-frequency" states the fact without the framing.
+CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE = 0.80
+CONTACT_CORRELATION_FREQUENT_MIN_COUNT = 3
 
 
 def normalize_phone_number(raw):
@@ -1057,18 +1136,71 @@ def normalize_phone_number(raw):
     return None
 
 
+def _classify_comm_direction(spec, extra):
+    """Returns 'incoming', 'outgoing', or None (unclassified - a Draft/
+    Failed/Queued SMS, a Missed/Voicemail/Rejected/Blocked call, a
+    malformed/unrecognized value, or a comm type with no direction concept
+    at all) for one already-parsed communication row, using the per-
+    artifact_type direction_field/incoming_values/outgoing_values already
+    confirmed against each parser's own real extra_json shape - see
+    CONTACT_CORRELATION_COMM_TYPES's own comments for how each was
+    sourced. Never raises - an unhashable/list-shaped raw_value (should
+    never happen for a real direction field, but this reads untrusted
+    evidence-derived JSON) just falls through to None."""
+    field = spec.get("direction_field")
+    if not field:
+        return None
+    raw_value = extra.get(field)
+    try:
+        if raw_value in spec.get("incoming_values", ()):
+            return "incoming"
+        if raw_value in spec.get("outgoing_values", ()):
+            return "outgoing"
+    except TypeError:
+        pass
+    return None
+
+
+def _extract_comm_duration_seconds(spec, extra):
+    """Returns a non-negative float duration in seconds for one comm row,
+    or 0.0 if this comm type has no duration concept (spec has no
+    duration_field) or the stored value isn't a real number. Never
+    raises, never returns a negative value (a corrupted/garbage source
+    value shouldn't be able to silently subtract from a contact's own
+    running total)."""
+    field = spec.get("duration_field")
+    if not field:
+        return 0.0
+    try:
+        return max(0.0, float(extra.get(field)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def correlate_contacts(case_folder):
     """Builds a case-wide {normalized_number: {...}} correlation report -
     see the module comment above for scope. Returns a dict with
     contacts_indexed_count, unresolved_communication_count, truncated
-    (hit CONTACT_CORRELATION_MAX_CONTACTS), and a 'contacts' list sorted
-    by total communication count descending (the most-contacted people
-    surface first - the highest pattern-of-life signal). Returns a
-    correctly-shaped all-empty result (never None/raises) for a case
-    that's never been indexed, matching this module's own established
-    "nothing to show yet, not an error" convention."""
+    (hit CONTACT_CORRELATION_MAX_CONTACTS), frequent_contact_count and
+    frequent_cumulative_share_threshold (the tiering rule's own actual
+    inputs for this case, so a caller can state the exact rule that
+    produced the tiers rather than a canned/static description), and a
+    'contacts' list sorted by total communication count descending (the
+    most-contacted people surface first - the highest pattern-of-life
+    signal). Each contact also carries direction_counts ({"incoming":
+    N, "outgoing": M} - a comm row this app can't classify either way is
+    counted in total_communications but not toward either direction),
+    total_duration_seconds (0.0 for a contact with no call-type
+    communications at all - never inferred/estimated), and tier
+    ("frequent"/"regular"/"one_off" - see CONTACT_CORRELATION_FREQUENT_*
+    above for the exact rule). Returns a correctly-shaped all-empty
+    result (never None/raises) for a case that's never been indexed,
+    matching this module's own established "nothing to show yet, not an
+    error" convention."""
     result = {"contacts_indexed_count": 0, "unresolved_communication_count": 0,
-              "truncated": False, "contacts": []}
+              "truncated": False, "contacts": [],
+              "frequent_contact_count": 0,
+              "frequent_cumulative_share_threshold": CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE}
     conn = _case_index_open_readonly(case_folder)
     if not conn:
         return result
@@ -1152,11 +1284,17 @@ def correlate_contacts(case_folder):
                     "display_names": sorted(known[normalized]["names"]),
                     "contact_sources": sorted(known[normalized]["sources"]),
                     "communication_counts": {},
+                    "direction_counts": {"incoming": 0, "outgoing": 0},
+                    "total_duration_seconds": 0.0,
                     "first_seen": timestamp, "last_seen": timestamp,
                     "total_communications": 0, "samples": [],
                 })
                 entry["communication_counts"][spec["channel"]] = entry["communication_counts"].get(spec["channel"], 0) + 1
                 entry["total_communications"] += 1
+                direction = _classify_comm_direction(spec, extra)
+                if direction:
+                    entry["direction_counts"][direction] += 1
+                entry["total_duration_seconds"] += _extract_comm_duration_seconds(spec, extra)
                 if timestamp is not None:
                     if entry["last_seen"] is None or timestamp > entry["last_seen"]:
                         entry["last_seen"] = timestamp
@@ -1172,10 +1310,38 @@ def correlate_contacts(case_folder):
 
         contacts = sorted(by_contact.values(), key=lambda c: c["total_communications"], reverse=True)
         truncated = len(contacts) > CONTACT_CORRELATION_MAX_CONTACTS
-        result["contacts"] = contacts[:CONTACT_CORRELATION_MAX_CONTACTS]
+        contacts = contacts[:CONTACT_CORRELATION_MAX_CONTACTS]
+
+        # Tiering (2026-09-07) - see CONTACT_CORRELATION_FREQUENT_* above
+        # for the exact rule. Only ever run over already-sorted `contacts`
+        # (descending by total_communications), so the cumulative-share
+        # walk below always finds the smallest possible high-volume prefix.
+        grand_total = sum(c["total_communications"] for c in contacts)
+        frequent_cutoff_index = 0
+        if grand_total > 0:
+            cumulative = 0
+            for i, c in enumerate(contacts):
+                cumulative += c["total_communications"]
+                if cumulative >= grand_total * CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE:
+                    frequent_cutoff_index = i + 1
+                    break
+            else:
+                frequent_cutoff_index = len(contacts)
+        actual_frequent_count = 0
+        for i, c in enumerate(contacts):
+            if i < frequent_cutoff_index and c["total_communications"] >= CONTACT_CORRELATION_FREQUENT_MIN_COUNT:
+                c["tier"] = "frequent"
+                actual_frequent_count += 1
+            elif c["total_communications"] == 1:
+                c["tier"] = "one_off"
+            else:
+                c["tier"] = "regular"
+
+        result["contacts"] = contacts
         result["contacts_indexed_count"] = len(known)
         result["unresolved_communication_count"] = unresolved
         result["truncated"] = truncated
+        result["frequent_contact_count"] = actual_frequent_count
         return result
     finally:
         conn.close()
