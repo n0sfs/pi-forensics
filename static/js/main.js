@@ -9794,10 +9794,58 @@ async function loadContactCorrelation() {
     setPatternOfLifeContactView(patternOfLifeContactView);
 }
 
+const CONTACT_CORRELATION_TABLE_COLSPAN = 11; // Contact/Number/Email/Tier/Source(s)/Communications/Direction/Talk Time/First Seen/Last Seen/(actions) - keep in sync with the <thead> below
+
+// A collapsed detail row under one contact's own table row, showing the
+// real message/email text CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT
+// already capped samples[] carry (correlate_contacts()'s own field, via
+// _comm_content_preview() - core/case_index_db.py). Returns null (no
+// button rendered at all) when every sample for this contact is
+// content-less (call-log entries, or a comm type with an empty body) -
+// there's nothing real to preview, so no button pretending otherwise.
+function _buildContactCorrelationPreviewRow(contact) {
+    const withText = (contact.samples || []).filter(s => s.content_preview);
+    if (withText.length === 0) return null;
+
+    const tr = document.createElement('tr');
+    tr.style.display = 'none';
+    const td = document.createElement('td');
+    td.colSpan = CONTACT_CORRELATION_TABLE_COLSPAN;
+    td.className = 'bg-app-dark';
+
+    const heading = document.createElement('div');
+    heading.className = 'small fw-bold text-subtle mt-1 mb-1';
+    heading.textContent = `Message/email preview (${withText.length} of ${contact.samples.length} recovered sample(s) shown - see the Evidence Timeline for the full list)`;
+    td.appendChild(heading);
+
+    withText.forEach(s => {
+        const line = document.createElement('div');
+        line.className = 'small mb-1 pb-1 border-bottom border-secondary';
+        const meta = document.createElement('div');
+        meta.className = 'text-info';
+        meta.textContent = `${s.artifact_type} - ${_formatContactCorrelationTimestamp(s.timestamp)}`;
+        const text = document.createElement('div');
+        text.className = 'text-light';
+        text.textContent = s.content_preview; // untrusted evidence content - text node only
+        line.appendChild(meta);
+        line.appendChild(text);
+        td.appendChild(line);
+    });
+
+    tr.appendChild(td);
+    return tr;
+}
+
 function renderContactCorrelationTable(data) {
     const container = document.getElementById("reportContactsContainer");
     if (!container) return;
     container.innerHTML = '';
+
+    // Keyed lookup for resolving a possible_duplicate_keys entry back to a
+    // display name without a second fetch - correlate_contacts() already
+    // hands back every contact in one response.
+    const contactsByKey = {};
+    (data.contacts || []).forEach(c => { contactsByKey[_contactCorrelationKey(c)] = c; });
 
     const summary = document.createElement('div');
     summary.className = 'small text-subtle mb-2';
@@ -9831,7 +9879,17 @@ function renderContactCorrelationTable(data) {
         row.dataset.number = _contactCorrelationKey(contact);
 
         const nameCell = document.createElement('td');
-        nameCell.textContent = contact.display_names.length ? contact.display_names.join(' / ') : '(unnamed)';
+        nameCell.appendChild(document.createTextNode(contact.display_names.length ? contact.display_names.join(' / ') : '(unnamed)'));
+        const dupKeys = (contact.possible_duplicate_keys || []).filter(k => contactsByKey[k]);
+        if (dupKeys.length > 0) {
+            const dupIcon = document.createElement('i');
+            dupIcon.className = 'bi bi-exclamation-triangle-fill text-warning ms-1';
+            dupIcon.style.cursor = 'pointer';
+            const dupNames = dupKeys.map(k => (contactsByKey[k].display_names || []).join(' / ') || k).join(', ');
+            dupIcon.title = `Possible duplicate (unconfirmed) - shares this exact display name with ${dupKeys.length} other contact entry/entries below (${dupNames}), but no shared phone number or email links them. Could be the same real person using an unlinked identity, or two different people who happen to share a name - not merged automatically. Click to jump to the first one.`;
+            dupIcon.onclick = (ev) => { ev.stopPropagation(); highlightContactInTable(dupKeys[0]); };
+            nameCell.appendChild(dupIcon);
+        }
         row.appendChild(nameCell);
 
         const numCell = document.createElement('td');
@@ -9881,17 +9939,29 @@ function renderContactCorrelationTable(data) {
         row.appendChild(lastCell);
 
         const actionCell = document.createElement('td');
+        const key = _contactCorrelationKey(contact);
         const timelineBtn = document.createElement('button');
         timelineBtn.type = 'button';
-        timelineBtn.className = 'btn btn-xs btn-outline-info py-0 px-2';
+        timelineBtn.className = 'btn btn-xs btn-outline-info py-0 px-2 me-1';
         timelineBtn.title = 'Jump to the Evidence Timeline, filtered to just this contact\'s own activity';
         timelineBtn.innerHTML = '<i class="bi bi-clock-history"></i>';
-        const key = _contactCorrelationKey(contact);
         timelineBtn.onclick = () => viewContactInTimeline(key);
         actionCell.appendChild(timelineBtn);
+
+        const previewRow = _buildContactCorrelationPreviewRow(contact);
+        if (previewRow) {
+            const previewBtn = document.createElement('button');
+            previewBtn.type = 'button';
+            previewBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
+            previewBtn.title = 'Show a preview of this contact\'s own message/email content, where this app was able to recover it (call log entries have no text content and never show one)';
+            previewBtn.innerHTML = '<i class="bi bi-chat-left-text"></i>';
+            previewBtn.onclick = () => { previewRow.style.display = previewRow.style.display === 'none' ? 'table-row' : 'none'; };
+            actionCell.appendChild(previewBtn);
+        }
         row.appendChild(actionCell);
 
         tbody.appendChild(row);
+        if (previewRow) tbody.appendChild(previewRow);
     });
 
     table.appendChild(tbody);
@@ -9914,22 +9984,163 @@ function renderContactCorrelationTable(data) {
 function loadPatternOfLife() {
     loadContactCorrelation();
     loadPatternOfLifeActivityChart();
+    loadPatternOfLifeGeoActivity();
     loadPatternOfLifeAppsAccounts();
+}
+
+// --- Location Activity (2026-09-07) - ties real GPS data into Pattern of
+// Life, built entirely from /api/cases/geo_activity (Google Takeout
+// location-history rows already indexed for this case, plus every KML
+// file already attached to/found in the case folder - the same
+// _collect_case_geolocation() the standalone Geolocation report tab
+// already reuses). Deliberately NOT a call into renderKmlViewer() - that
+// function parses raw KML *text* into points; this route already hands
+// back structured JSON merged from two different sources, so there's no
+// single KML string to hand it - a small, adjacent Leaflet-setup
+// function instead, mirroring renderKmlViewer()'s own proven try/catch/
+// invalidateSize pattern rather than refactoring an already-shipped one.
+async function loadPatternOfLifeGeoActivity() {
+    const summaryEl = document.getElementById('patternOfLifeGeoSummary');
+    const mapEl = document.getElementById('patternOfLifeGeoMap');
+    const emptyEl = document.getElementById('patternOfLifeGeoEmpty');
+    const listEl = document.getElementById('patternOfLifeGeoFrequentList');
+    if (!mapEl || !activeCase) return;
+    if (summaryEl) summaryEl.textContent = 'Loading...';
+    if (emptyEl) emptyEl.style.display = 'none';
+    if (listEl) listEl.innerHTML = '';
+    mapEl.innerHTML = '';
+
+    let data;
+    try {
+        const res = await fetch(`/api/cases/geo_activity?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
+        data = await res.json();
+    } catch (err) {
+        if (summaryEl) summaryEl.textContent = 'Request failed.';
+        return;
+    }
+    if (!data || !data.success) {
+        if (summaryEl) summaryEl.textContent = (data && data.error) || 'Failed to load location activity.';
+        return;
+    }
+
+    if (data.points.length === 0) {
+        if (summaryEl) summaryEl.textContent = '';
+        if (emptyEl) emptyEl.style.display = 'block';
+        return;
+    }
+
+    const sourceCount = new Set(data.points.map(p => p.source)).size;
+    if (summaryEl) {
+        summaryEl.textContent = `${data.points.length} location point(s) across ${sourceCount} source(s)`
+            + (data.frequent_locations.length ? `, ${data.frequent_locations.length} frequent location(s)` : '')
+            + (data.truncated ? ' (list truncated - too many points to show all).' : '.');
+    }
+
+    renderGeoActivityMap(mapEl, data.points, data.frequent_locations);
+
+    if (listEl && data.frequent_locations.length) {
+        const label = document.createElement('div');
+        label.className = 'small fw-bold text-subtle mb-1';
+        label.textContent = 'Frequent Locations (visited more than once)';
+        listEl.appendChild(label);
+        const table = document.createElement('table');
+        table.className = 'table table-sm table-dark table-hover small mb-0';
+        table.innerHTML = '<thead><tr><th>Coordinates</th><th>Visits</th><th>First Seen</th><th>Last Seen</th></tr></thead>';
+        const tbody = document.createElement('tbody');
+        data.frequent_locations.forEach(loc => {
+            const row = document.createElement('tr');
+            const coordCell = document.createElement('td');
+            coordCell.className = 'font-monospace';
+            coordCell.textContent = `${loc.lat.toFixed(3)}, ${loc.lon.toFixed(3)}`;
+            const visitCell = document.createElement('td');
+            visitCell.textContent = loc.visit_count;
+            const firstCell = document.createElement('td');
+            firstCell.textContent = _formatContactCorrelationTimestamp(loc.first_seen);
+            const lastCell = document.createElement('td');
+            lastCell.textContent = _formatContactCorrelationTimestamp(loc.last_seen);
+            row.appendChild(coordCell); row.appendChild(visitCell); row.appendChild(firstCell); row.appendChild(lastCell);
+            tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        const wrapper = document.createElement('div');
+        wrapper.className = 'bg-app-dark rounded p-2';
+        wrapper.style.overflowX = 'auto';
+        wrapper.appendChild(table);
+        listEl.appendChild(wrapper);
+    }
+}
+
+function renderGeoActivityMap(container, points, frequentLocations) {
+    if (typeof L === 'undefined') {
+        const noLeaflet = document.createElement('div');
+        noLeaflet.className = 'text-subtle small p-2';
+        noLeaflet.textContent = 'Map library unavailable (no internet connection?) - see the summary/table above for the underlying data.';
+        container.appendChild(noLeaflet);
+        return;
+    }
+    try {
+        const map = L.map(container);
+        _createGeoTileLayer().addTo(map);
+        const bounds = [];
+        points.forEach(p => {
+            const marker = L.circleMarker([p.lat, p.lon], { radius: 4, color: '#38bdf8', weight: 1, fillOpacity: 0.6 }).addTo(map);
+            const parts = [`<b>${escapeHtmlForPopup(p.name || '(unnamed)')}</b>`, escapeHtmlForPopup(p.source)];
+            if (p.timestamp) parts.push(_formatContactCorrelationTimestamp(p.timestamp));
+            marker.bindPopup(parts.join('<br>'));
+            bounds.push([p.lat, p.lon]);
+        });
+        (frequentLocations || []).forEach(loc => {
+            const radius = 8 + Math.min(loc.visit_count, 20);
+            const marker = L.circleMarker([loc.lat, loc.lon], { radius, color: '#ff4d4f', weight: 2, fillOpacity: 0.2 }).addTo(map);
+            const parts = ['<b>Frequent location</b>', `Visited ${loc.visit_count} time(s)`];
+            if (loc.first_seen) parts.push(`First: ${_formatContactCorrelationTimestamp(loc.first_seen)}`);
+            if (loc.last_seen) parts.push(`Last: ${_formatContactCorrelationTimestamp(loc.last_seen)}`);
+            marker.bindPopup(parts.join('<br>'));
+        });
+        if (bounds.length === 1) {
+            map.setView(bounds[0], 14);
+        } else if (bounds.length > 1) {
+            map.fitBounds(bounds, { padding: [20, 20] });
+        }
+        // Same mid-transition-container fix renderKmlViewer() already uses -
+        // a map created before its container has settled its real layout
+        // size can compute the wrong dimensions and render blank/broken.
+        requestAnimationFrame(() => setTimeout(() => map.invalidateSize(), 50));
+    } catch (err) {
+        container.innerHTML = '';
+        const failMsg = document.createElement('div');
+        failMsg.className = 'text-subtle small p-2';
+        failMsg.textContent = 'Map could not be rendered.';
+        container.appendChild(failMsg);
+    }
 }
 
 // Activity-by-hour-of-day / activity-by-day-of-week chart - built entirely
 // from /api/cases/timeline (already fully tested, already flowing through
-// this same page for the Evidence Timeline tab), filtered client-side to
-// just the "Communications"/"Social Media" categories that same route's own
-// server-side classification already computes (routes/reporting.py's
-// CASE_TIMELINE_ACTIVITY_CATEGORY) - deliberately NOT a new backend route or
-// SQL query, since this is a pure re-aggregation of data this app already
-// trusts. Excludes "Filesystem"/"Web Activity"/"Device & System" on purpose
-// - this chart answers "when is this person actively texting/calling/
-// messaging," not "when did anything happen on this device at all" (that's
-// what the fuller Evidence Timeline tab is already for).
-let patternOfLifeActivityRows = null;      // cached filtered rows, so the granularity toggle never re-fetches
+// this same page for the Evidence Timeline tab), filtered client-side by
+// the same server-side category classification that route already computes
+// (routes/reporting.py's CASE_TIMELINE_ACTIVITY_CATEGORY) - deliberately NOT
+// a new backend route or SQL query, since this is a pure re-aggregation of
+// data this app already trusts. Defaults to just "Communications"/"Social
+// Media" - this chart's core question is "when is this person actively
+// texting/calling/messaging," not "when did anything happen on this device
+// at all" (that's what the fuller Evidence Timeline tab is already for) -
+// but "Web Activity" (browser history/downloads/bookmarks/cookies) is a
+// real, closely-related pattern-of-life signal too (2026-09-07, asked for
+// directly), so it's offered as an explicit, DEFAULT-OFF opt-in checkbox
+// rather than folded into the default set - a browsing session isn't a
+// two-way communication the way a text/call/DM is, so silently blending it
+// into "Communication Activity" by default would blur what the chart's own
+// default view actually means. "Device & System" (calendar/reminders/
+// installed-app/account records, etc.) and "Filesystem" stay excluded even
+// as an opt-in - too broad/noisy to ever read as a coherent activity
+// pattern on this chart; the Evidence Timeline's own category filters are
+// the right tool for those.
+let patternOfLifeActivityAllRows = null;   // cached UNFILTERED rows, so neither the granularity nor the category toggle ever re-fetches
+let patternOfLifeActivityRows = null;      // the currently-filtered subset actually charted
 let patternOfLifeActivityGranularity = 'hour'; // 'hour' | 'dow'
+let patternOfLifeActivityIncludeWeb = false;
+let patternOfLifeActivityIncludeCalendar = false;
 let patternOfLifeActivityChart = null;
 
 async function loadPatternOfLifeActivityChart() {
@@ -9947,16 +10158,40 @@ async function loadPatternOfLifeActivityChart() {
             if (summaryEl) summaryEl.textContent = data.error || 'Request failed.';
             return;
         }
-        const COMM_CATEGORIES = ['Communications', 'Social Media'];
-        patternOfLifeActivityRows = (data.events || []).filter((e) => COMM_CATEGORIES.includes(e.category));
+        patternOfLifeActivityAllRows = data.events || [];
     } catch (err) {
         if (summaryEl) summaryEl.textContent = 'Request failed.';
         return;
     }
 
+    _recomputePatternOfLifeActivityRows();
+}
+
+// Calendar/reminder artifact_types share the generic "Device & System"
+// timeline category alongside a lot of unrelated data (installed apps,
+// accounts, notifications, registry entries, ...) - matched by activity
+// (artifact_type) directly here rather than category, so opting this in
+// doesn't drag in everything else "Device & System" also covers.
+const PATTERN_OF_LIFE_CALENDAR_ACTIVITY_TYPES = [
+    'android_companion_calendar_event', 'takeout_calendar_event', 'apple_calendar_event',
+    'takeout_reminder', 'apple_reminder',
+];
+
+function _recomputePatternOfLifeActivityRows() {
+    const summaryEl = document.getElementById('patternOfLifeActivitySummary');
+    const categories = ['Communications', 'Social Media'];
+    if (patternOfLifeActivityIncludeWeb) categories.push('Web Activity');
+    patternOfLifeActivityRows = (patternOfLifeActivityAllRows || []).filter((e) =>
+        categories.includes(e.category)
+        || (patternOfLifeActivityIncludeCalendar && PATTERN_OF_LIFE_CALENDAR_ACTIVITY_TYPES.includes(e.activity)));
+
     if (summaryEl) {
+        const extras = [];
+        if (patternOfLifeActivityIncludeWeb) extras.push('web browsing');
+        if (patternOfLifeActivityIncludeCalendar) extras.push('calendar/reminders');
         summaryEl.textContent = patternOfLifeActivityRows.length
-            ? `${patternOfLifeActivityRows.length} communication event(s) analyzed`
+            ? `${patternOfLifeActivityRows.length} event(s) analyzed`
+                + (extras.length ? ` (communications + ${extras.join(' + ')})` : ' (communications)')
             : '';
     }
     renderPatternOfLifeActivityChart();
@@ -9969,6 +10204,16 @@ function setPatternOfLifeActivityGranularity(mode) {
     if (hourBtn) hourBtn.classList.toggle('active', mode === 'hour');
     if (dowBtn) dowBtn.classList.toggle('active', mode === 'dow');
     renderPatternOfLifeActivityChart();
+}
+
+function onPatternOfLifeIncludeWebToggle(checked) {
+    patternOfLifeActivityIncludeWeb = checked;
+    _recomputePatternOfLifeActivityRows();
+}
+
+function onPatternOfLifeIncludeCalendarToggle(checked) {
+    patternOfLifeActivityIncludeCalendar = checked;
+    _recomputePatternOfLifeActivityRows();
 }
 
 const PATTERN_OF_LIFE_DOW_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];

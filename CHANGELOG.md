@@ -21,6 +21,37 @@ file after updating to see what changed.
 
 ---
 
+## [1.63.0] - 2026-09-07
+
+### Added
+- **Geolocation is now part of Pattern of Life, with a live map you can see immediately.** A new
+  "Location Activity" section on the Pattern of Life tab shows every GPS point already available for
+  the case - a Google Takeout location-history import, or any KML file already attached to/found in
+  the case folder - on an interactive map, with no separate export step needed first. Places visited
+  more than once are grouped into "frequent locations" and ranked by visit count, the same idea
+  Contact Correlation already applies to people, applied here to place instead.
+- **A real preview of message and email content, right in Contact Correlation.** Each contact's row
+  now has a "Preview" button showing the actual recovered text of their SMS/email content (where this
+  app was able to recover it) - not just a count of how many messages exist. Call log entries
+  correctly show no preview, since a call has no text content to show.
+- **A disclosed "possible duplicate" warning when two contacts share an exact name but nothing else.**
+  If two different contact entries have the identical display name but no shared phone number or
+  email linking them, each now shows a warning icon explaining this plainly - it might be the same
+  real person using two different, unlinked identities, or it might be two different people who
+  happen to share a name. This app never merges them automatically; the icon links straight to the
+  other entry so you can look and decide for yourself.
+- **Android's own companion-app-extracted contacts can now be correlated too**, matching every other
+  contact source this app already understands. Previously this specific source could only ever
+  contribute a phone number to Contact Correlation, even when the same contact record also had an
+  email address - now both are recognized from the same real per-contact record, closing a real gap
+  in how thoroughly this app cross-references identities.
+- **The Communication Activity Pattern chart can now optionally include web browsing and/or calendar
+  activity.** Two new checkboxes let an examiner fold browser history/downloads/bookmarks/cookies
+  and/or parsed calendar events/reminders into the same hour-of-day/day-of-week breakdown alongside
+  texts, calls, and app messages - both are already parsed and already on the Evidence Timeline, just
+  kept out of this chart's *default* view since neither is a two-way communication the way a text or
+  call is.
+
 ## [1.62.0] - 2026-09-07
 
 ### Added
