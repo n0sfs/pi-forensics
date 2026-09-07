@@ -173,12 +173,13 @@ def _resolve_manifest_files_query_only(manifest_dir, domain, relative_path):
     string, or None."""
     manifest_db = os.path.join(manifest_dir, 'Manifest.db')
     try:
-        conn = _open_sqlite_readonly(manifest_db)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(manifest_db)
         cur = conn.execute(
             "SELECT fileID FROM Files WHERE domain=? AND relativePath=? LIMIT 1",
             (domain, relative_path))
         row = cur.fetchone()
         conn.close()
+        _sqlite_cleanup()
     except sqlite3.Error as e:
         print(f"Warning: could not query Manifest.db at {manifest_db}: {e}")
         return None
@@ -213,7 +214,7 @@ def parse_mobile_sms(manifest_dir):
         return [], False
     records = []
     try:
-        conn = _open_sqlite_readonly(content_path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(content_path)
         cur = conn.execute(
             "SELECT message.ROWID, message.text, message.date, message.is_from_me, "
             "handle.id AS handle_address "
@@ -230,6 +231,7 @@ def parse_mobile_sms(manifest_dir):
                 "extra": {"row_id": row_id, "direction": direction, "counterpart": counterpart},
             })
         conn.close()
+        _sqlite_cleanup()
     except sqlite3.Error as e:
         print(f"Warning: could not parse sms.db at {content_path}: {e}")
         return [], True
@@ -264,7 +266,7 @@ def parse_mobile_contacts(manifest_dir):
         return [], False
     records = []
     try:
-        conn = _open_sqlite_readonly(content_path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(content_path)
         phones_by_person, emails_by_person = {}, {}
         try:
             cur = conn.execute("SELECT record_id, property, value FROM ABMultiValue WHERE property IN (3, 4)")
@@ -286,6 +288,7 @@ def parse_mobile_contacts(manifest_dir):
                 "extra": {"row_id": row_id, "organization": org, "phones": phones, "emails": emails},
             })
         conn.close()
+        _sqlite_cleanup()
     except sqlite3.Error as e:
         print(f"Warning: could not parse AddressBook.sqlitedb at {content_path}: {e}")
         return [], True
@@ -306,7 +309,7 @@ def parse_mobile_call_history(manifest_dir):
         return [], False
     records = []
     try:
-        conn = _open_sqlite_readonly(content_path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(content_path)
         cur = conn.execute(
             "SELECT Z_PK, ZADDRESS, ZDATE, ZDURATION, ZORIGINATED, ZANSWERED "
             "FROM ZCALLRECORD ORDER BY ZDATE DESC LIMIT 20000")
@@ -322,6 +325,7 @@ def parse_mobile_call_history(manifest_dir):
                           "duration_seconds": duration, "answered": bool(answered)},
             })
         conn.close()
+        _sqlite_cleanup()
     except sqlite3.Error as e:
         print(f"Warning: could not parse CallHistory.storedata at {content_path}: {e}")
         return [], True

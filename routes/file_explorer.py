@@ -2163,11 +2163,12 @@ def sqlite_list_tables():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
     try:
-        conn = _open_sqlite_readonly(file_path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(file_path)
         try:
             tables = _sqlite_list_tables(conn)
         finally:
             conn.close()
+            _sqlite_cleanup()
     except sqlite3.DatabaseError as e:
         return jsonify({"success": False, "error": f"Not a readable SQLite database: {e}"}), 400
     return jsonify({"success": True, "tables": tables})
@@ -2195,7 +2196,7 @@ def sqlite_query_table():
         return jsonify({"success": False, "error": "No table specified."}), 400
 
     try:
-        conn = _open_sqlite_readonly(file_path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(file_path)
         try:
             real_tables = {t["name"] for t in _sqlite_list_tables(conn)}
             if table not in real_tables:
@@ -2206,6 +2207,7 @@ def sqlite_query_table():
             total_rows = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
         finally:
             conn.close()
+            _sqlite_cleanup()
     except sqlite3.DatabaseError as e:
         return jsonify({"success": False, "error": f"Query failed: {e}"}), 400
 

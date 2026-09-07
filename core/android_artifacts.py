@@ -123,7 +123,7 @@ def _parse_sms(path):
     app (e.g. core/mobile_artifacts.py's iOS SMS parser, also 20,000)."""
     records = []
     try:
-        conn = _open_sqlite_readonly(path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(path)
         try:
             cur = conn.execute(
                 "SELECT _id, address, date, type, body FROM sms "
@@ -142,6 +142,7 @@ def _parse_sms(path):
                 })
         finally:
             conn.close()
+            _sqlite_cleanup()
     except sqlite3.Error:
         pass
     return records
@@ -166,7 +167,7 @@ _MIME_EMAIL = 'vnd.android.cursor.item/email_v2'
 def _parse_contacts(path):
     records = []
     try:
-        conn = _open_sqlite_readonly(path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(path)
         try:
             # One row per (raw_contact_id, mimetype) hit - aggregated below
             # into one record per contact, since a contact can have several
@@ -205,6 +206,7 @@ def _parse_contacts(path):
                 })
         finally:
             conn.close()
+            _sqlite_cleanup()
     except sqlite3.Error:
         pass
     return records
@@ -213,7 +215,7 @@ def _parse_contacts(path):
 def _parse_call_log(path):
     records = []
     try:
-        conn = _open_sqlite_readonly(path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(path)
         try:
             cur = conn.execute(
                 "SELECT _id, number, date, duration, type, name FROM calls "
@@ -231,6 +233,7 @@ def _parse_call_log(path):
                 })
         finally:
             conn.close()
+            _sqlite_cleanup()
     except sqlite3.Error:
         # A `calls` table missing entirely (a contacts2.db from a build/
         # config with call logging split into a separate provider) is a
@@ -263,7 +266,7 @@ def _parse_mms(path):
     convention right above."""
     records = []
     try:
-        conn = _open_sqlite_readonly(path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(path)
         try:
             text_by_mid = {}
             try:
@@ -335,6 +338,7 @@ def _parse_mms(path):
                 })
         finally:
             conn.close()
+            _sqlite_cleanup()
     except sqlite3.Error:
         # A `pdu`/`part`/`addr` table missing entirely (a device/build
         # with no MMS ever sent/received might genuinely lack these) is a

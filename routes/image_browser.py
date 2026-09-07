@@ -2897,11 +2897,12 @@ def image_sqlite_list_tables():
     try:
         fs = _tsk_open_fs(image_path, offset)
         tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix='.db')
-        conn = _open_sqlite_readonly(tmp_path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(tmp_path)
         try:
             tables = _sqlite_list_tables(conn)
         finally:
             conn.close()
+            _sqlite_cleanup()
     except sqlite3.DatabaseError as e:
         return jsonify({"success": False, "error": f"Not a readable SQLite database: {e}"}), 400
     except Exception as e:
@@ -2946,7 +2947,7 @@ def image_sqlite_query_table():
     try:
         fs = _tsk_open_fs(image_path, offset)
         tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix='.db')
-        conn = _open_sqlite_readonly(tmp_path)
+        conn, _sqlite_cleanup = _open_sqlite_readonly(tmp_path)
         try:
             real_tables = {t["name"] for t in _sqlite_list_tables(conn)}
             if table not in real_tables:
@@ -2957,6 +2958,7 @@ def image_sqlite_query_table():
             total_rows = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
         finally:
             conn.close()
+            _sqlite_cleanup()
     except sqlite3.DatabaseError as e:
         return jsonify({"success": False, "error": f"Query failed: {e}"}), 400
     except Exception as e:
