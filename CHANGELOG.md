@@ -21,7 +21,26 @@ file after updating to see what changed.
 
 ---
 
-## [1.65.0] - 2026-09-07
+## [1.66.0] - 2026-09-08
+
+### Added
+- **"Likely Home"/"Likely Work" labels on Pattern of Life's Location Activity map and table.**
+  Frequent locations are now automatically checked against a standard pattern-of-life technique:
+  the place most-visited overnight is likely Home, the place most-visited during weekday working
+  hours is likely Work. Shown only when the signal is clear from real timestamped location data
+  (never guessed from a KML point, which has no timestamp, and never asserted when there's a tie
+  or too little data) - with the exact reasoning ("8 of 10 timestamped visits (80%) occurred
+  between 10pm-6am") always disclosed in a tooltip, not just asserted as fact.
+- **The Relationship Graph can now show people who were seen together, not just who talked to the
+  device owner.** A group text, a shared calendar invite, or a multi-recipient email thread naming
+  two known contacts on the same message now draws a distinct dashed connector directly between
+  those two people - a real, disclosed "seen together" signal (never a confirmed relationship
+  claim) that a pure hub-and-spoke graph couldn't show before.
+- **A search box on the Relationship Graph** to quickly find one contact among many - matching
+  names/numbers/emails stay fully visible while everything else dims, without losing the overall
+  layout.
+
+
 
 ### Added
 - **A Settings toggle to turn the physical touchscreen's kiosk display on or off, without a reboot.**

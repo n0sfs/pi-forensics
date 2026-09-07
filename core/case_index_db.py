@@ -1136,6 +1136,15 @@ CONTACT_CORRELATION_EMAIL_COMM_TYPES = {
 CONTACT_CORRELATION_MAX_ROWS_PER_TYPE = 20_000
 CONTACT_CORRELATION_MAX_CONTACTS = 2_000
 CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT = 8
+# Co-occurrence (2026-09-08) - a communication ROW naming 2+ resolved
+# participants (a group MMS, a multi-attendee calendar event, a multi-
+# recipient email) is real, observable evidence those people were in the
+# same conversation/meeting/thread together, not just each individually in
+# contact with the device owner. Every unique pair on such a row counts
+# once per occurrence - capped so a single very-large group thread can't
+# produce an unbounded pair list (a real risk: an N-person group produces
+# N*(N-1)/2 pairs per single message).
+CONTACT_CORRELATION_MAX_CO_OCCURRENCE_PAIRS = 500
 # Relationship-tier thresholds for the Pattern of Life relationship graph
 # (2026-09-07) - deliberately a plain, explainable rule rather than a
 # statistical anomaly score: "Frequent Contact" is the smallest, highest-
@@ -1353,6 +1362,25 @@ def _comm_content_preview(artifact_type, value, extra):
     return text[:COMM_CONTENT_PREVIEW_MAX_CHARS]
 
 
+def _record_row_co_occurrences(store, resolved_keys, channel):
+    """Given the set of contact keys resolved for ONE communication row,
+    records one co-occurrence increment for every unique pair among them -
+    an ordinary 1:1 row's single resolved key produces zero pairs; only a
+    row naming 2+ resolved participants (a group MMS, a multi-attendee
+    calendar event, a multi-recipient email) ever contributes anything.
+    `store` keys are a plain sorted 2-tuple of the raw (pre-Pass-3-merge)
+    contact keys - correlate_contacts() remaps these through the same
+    email->phone merge every node/edge in the final output goes through,
+    after both resolution passes finish, so a pair recorded here can still
+    correctly end up referencing a merged (post-Pass-3) identity."""
+    keys = sorted(resolved_keys)
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            entry = store.setdefault((keys[i], keys[j]), {"count": 0, "channels": set()})
+            entry["count"] += 1
+            entry["channels"].add(channel)
+
+
 def correlate_contacts(case_folder):
     """Builds a case-wide contact correlation report, now spanning TWO
     identity spaces (2026-09-07) - phone numbers (the original scope) and
@@ -1410,12 +1438,26 @@ def correlate_contacts(case_folder):
     text-content concept, e.g. a call log entry). Returns a correctly-
     shaped all-empty result (never None/raises) for a case that's never
     been indexed, matching this module's own established "nothing to
-    show yet, not an error" convention."""
+    show yet, not an error" convention.
+
+    Also returns co_occurrences (2026-09-08) - a list of {contacts:
+    [key_a, key_b], count, channels}, sorted by count descending, capped
+    at CONTACT_CORRELATION_MAX_CO_OCCURRENCE_PAIRS (co_occurrences_
+    truncated discloses if more existed) - every unique pair of contacts
+    that were BOTH named on the same communication row at least once (a
+    group MMS thread, a multi-attendee calendar event, a multi-recipient
+    email) - real, observable evidence those two people were in contact
+    with EACH OTHER, not just each individually with the device owner.
+    An ordinary 1:1 row contributes nothing here; only a row naming 2+
+    resolved participants does. Never a confirmed relationship claim, only
+    a disclosed "seen together in the same thread/meeting" signal - the
+    Relationship Graph's own UI is responsible for labeling it as such."""
     result = {"contacts_indexed_count": 0, "email_identities_indexed_count": 0,
               "unresolved_communication_count": 0,
               "truncated": False, "contacts": [],
               "frequent_contact_count": 0,
-              "frequent_cumulative_share_threshold": CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE}
+              "frequent_cumulative_share_threshold": CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE,
+              "co_occurrences": [], "co_occurrences_truncated": False}
     conn = _case_index_open_readonly(case_folder)
     if not conn:
         return result
@@ -1513,6 +1555,11 @@ def correlate_contacts(case_folder):
         # timestamps/samples. Unchanged logic from before email support.
         by_contact = {}
         unresolved = 0
+        # Raw (pre-Pass-3-merge) co-occurrence pair counts, keyed by a
+        # sorted 2-tuple of contact keys - see _record_row_co_occurrences()
+        # and the remap step right after Pass 3 below for how these end up
+        # attached to the final, post-merge identities in the response.
+        co_occurrence_counts = {}
         comm_types = tuple(CONTACT_CORRELATION_COMM_TYPES.keys())
         placeholders = ",".join("?" * len(comm_types))
         cur = conn.execute(
@@ -1529,11 +1576,13 @@ def correlate_contacts(case_folder):
             raw_field = extra.get(spec["counterpart_key"])
             raw_candidates = _extract_raw_counterpart_candidates(raw_field)
             resolved_any = False
+            resolved_keys_this_row = set()
             for raw_counterpart in raw_candidates:
                 normalized = normalize_phone_number(raw_counterpart)
                 if not normalized or normalized not in known:
                     continue
                 resolved_any = True
+                resolved_keys_this_row.add(normalized)
                 entry = by_contact.setdefault(normalized, {
                     "normalized_number": normalized, "normalized_email": None,
                     "display_names": sorted(known[normalized]["names"]),
@@ -1563,6 +1612,8 @@ def correlate_contacts(case_folder):
                     })
             if not resolved_any:
                 unresolved += 1
+            elif len(resolved_keys_this_row) >= 2:
+                _record_row_co_occurrences(co_occurrence_counts, resolved_keys_this_row, spec["channel"])
 
         # Pass 2b: every email-keyed communication row (email_message's
         # From/To/Cc, android_companion_calendar_event's attendees/
@@ -1587,10 +1638,12 @@ def correlate_contacts(case_folder):
                 extra = {}
             candidates = _extract_email_counterparts(artifact_type, value, extra)
             resolved_any = False
+            resolved_keys_this_row = set()
             for normalized_email in candidates:
                 if normalized_email not in known_emails:
                     continue
                 resolved_any = True
+                resolved_keys_this_row.add(normalized_email)
                 entry = by_email_contact.setdefault(normalized_email, {
                     "normalized_number": None, "normalized_email": normalized_email,
                     "display_names": sorted(known_emails[normalized_email]["names"]),
@@ -1616,6 +1669,8 @@ def correlate_contacts(case_folder):
                     })
             if not resolved_any:
                 unresolved += 1
+            elif len(resolved_keys_this_row) >= 2:
+                _record_row_co_occurrences(co_occurrence_counts, resolved_keys_this_row, channel)
 
         # Pass 3 (merge): fold each email-keyed contact into its linked
         # phone-keyed entry when one exists (the two identities came from
@@ -1626,12 +1681,20 @@ def correlate_contacts(case_folder):
         # contact with no linked phone (only ever emailed/invited, never
         # texted or called) stays its own entry, keyed by the email
         # address itself.
+        # email_key -> the final by_contact key it ended up under (itself,
+        # if it never merged) - used right below to remap co_occurrence_
+        # counts' pair keys through the same merge, so a co-occurrence
+        # recorded against a since-merged email identity still correctly
+        # points at the final, merged phone entry rather than a key that
+        # no longer exists in by_contact.
+        email_key_remap = {}
         for email_key, email_entry in by_email_contact.items():
             linked_phone = None
             for phone in sorted(phone_email_links.get(email_key, ())):
                 if phone in by_contact:
                     linked_phone = phone
                     break
+            email_key_remap[email_key] = linked_phone or email_key
             if linked_phone:
                 target = by_contact[linked_phone]
                 target["normalized_email"] = target["normalized_email"] or email_key
@@ -1652,6 +1715,29 @@ def correlate_contacts(case_folder):
                     target["samples"].extend(email_entry["samples"][:remaining])
             else:
                 by_contact[email_key] = email_entry
+
+        # Remap co_occurrence_counts' raw (Pass 2a/2b) pair keys through the
+        # Pass 3 merge - a phone key is already final and passes through
+        # unchanged (email_key_remap only ever maps email keys); an email
+        # key that merged into a phone entry is remapped to that phone's
+        # key so the pair correctly references the one final, merged
+        # identity every contact/node in the response uses.
+        final_co_occurrences = {}
+        for (key_a, key_b), info in co_occurrence_counts.items():
+            final_a = email_key_remap.get(key_a, key_a)
+            final_b = email_key_remap.get(key_b, key_b)
+            if final_a == final_b or final_a not in by_contact or final_b not in by_contact:
+                continue  # a self-pair or a reference to an identity that never made it into by_contact - shouldn't happen structurally, but never surface a broken edge
+            pair_key = tuple(sorted((final_a, final_b)))
+            entry = final_co_occurrences.setdefault(pair_key, {"count": 0, "channels": set()})
+            entry["count"] += info["count"]
+            entry["channels"] |= info["channels"]
+        co_occurrences = sorted(
+            ({"contacts": list(pair), "count": info["count"], "channels": sorted(info["channels"])}
+             for pair, info in final_co_occurrences.items()),
+            key=lambda e: e["count"], reverse=True)
+        co_occurrences_truncated = len(co_occurrences) > CONTACT_CORRELATION_MAX_CO_OCCURRENCE_PAIRS
+        co_occurrences = co_occurrences[:CONTACT_CORRELATION_MAX_CO_OCCURRENCE_PAIRS]
 
         # Unconfirmed name-match suggestions (2026-09-08) - a deliberately
         # WEAKER, separate signal from the Pass-3 same-row/same-contact_id
@@ -1724,6 +1810,14 @@ def correlate_contacts(case_folder):
         result["unresolved_communication_count"] = unresolved
         result["truncated"] = truncated
         result["frequent_contact_count"] = actual_frequent_count
+        # A pair referencing a contact that got cut off by the (very high,
+        # 2_000-contact) CONTACT_CORRELATION_MAX_CONTACTS cap above would
+        # otherwise dangle - filtered out rather than left for the frontend
+        # to defensively skip, so co_occurrences always only references
+        # keys genuinely present in the returned contacts list.
+        final_contact_keys = {(c["normalized_number"] or c["normalized_email"]) for c in contacts}
+        result["co_occurrences"] = [e for e in co_occurrences if e["contacts"][0] in final_contact_keys and e["contacts"][1] in final_contact_keys]
+        result["co_occurrences_truncated"] = co_occurrences_truncated
         return result
     finally:
         conn.close()

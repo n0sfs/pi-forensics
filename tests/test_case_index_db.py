@@ -609,7 +609,8 @@ def test_correlate_contacts_returns_the_empty_shape_for_a_case_never_indexed(cas
     assert result == {"contacts_indexed_count": 0, "email_identities_indexed_count": 0,
                        "unresolved_communication_count": 0,
                        "truncated": False, "contacts": [], "frequent_contact_count": 0,
-                       "frequent_cumulative_share_threshold": case_index_db.CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE}
+                       "frequent_cumulative_share_threshold": case_index_db.CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE,
+                       "co_occurrences": [], "co_occurrences_truncated": False}
 
 
 # --- 2026-09-05 fixes: companion-app + .ab-backup-sourced Android types
@@ -717,6 +718,103 @@ def test_correlate_contacts_resolves_each_participant_of_a_group_mms_separately(
     assert by_number["5551111111"]["total_communications"] == 2
     assert by_number["5552222222"]["total_communications"] == 2
     assert result["unresolved_communication_count"] == 0
+
+
+# --- 2026-09-08: co-occurrence pairs (Relationship Graph contact-to-contact
+# edges) - two contacts named on the SAME communication row (a group MMS, a
+# multi-attendee calendar event) is real evidence they were in contact with
+# EACH OTHER, not just individually with the device owner. ---
+
+def test_correlate_contacts_records_co_occurrence_for_a_group_mms_row(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Alice", phones=["+15551111111"]),
+         _contact_record("android_contact", "Bob", phones=["+15552222222"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        [_comm_record("android_mms_message", "counterpart", "+15551111111, +15552222222")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["co_occurrences_truncated"] is False
+    assert len(result["co_occurrences"]) == 1
+    pair = result["co_occurrences"][0]
+    assert sorted(pair["contacts"]) == ["5551111111", "5552222222"]
+    assert pair["count"] == 1
+    assert pair["channels"] == ["MMS"]
+
+
+def test_correlate_contacts_never_records_co_occurrence_for_an_ordinary_one_to_one_row(case_folder):
+    # The actual correctness guarantee this feature depends on: a ROW naming
+    # only one resolved participant contributes zero pairs, regardless of
+    # how many OTHER known contacts exist in the case - two people each
+    # separately texting the device owner is not evidence they know each
+    # other.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Alice", phones=["+15551111111"]),
+         _contact_record("android_contact", "Bob", phones=["+15552222222"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551111111"),
+         _comm_record("android_sms_message", "address", "+15552222222")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["co_occurrences"] == []
+
+
+def test_correlate_contacts_co_occurrence_count_accumulates_across_multiple_group_rows(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Alice", phones=["+15551111111"]),
+         _contact_record("android_contact", "Bob", phones=["+15552222222"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        [_comm_record("android_mms_message", "counterpart", "+15551111111, +15552222222", timestamp=1700000000.0),
+         _comm_record("android_mms_message", "counterpart", "+15551111111, +15552222222", timestamp=1700000001.0),
+         _comm_record("android_mms_message", "counterpart", "+15551111111, +15552222222", timestamp=1700000002.0)])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert len(result["co_occurrences"]) == 1
+    assert result["co_occurrences"][0]["count"] == 3
+
+
+def test_correlate_contacts_co_occurrence_remaps_through_the_phone_email_merge(case_folder):
+    # Jane is known via a SAME-ROW phone+email contact source (triggering
+    # the Pass 3 merge - her email identity folds into her phone identity).
+    # A calendar event naming Jane (by email, the only identity a calendar
+    # attendee is ever recorded under) and Bob (email-only, never merges)
+    # as co-attendees must produce a co-occurrence pair referencing Jane's
+    # FINAL phone key, not her raw, since-merged-away email key - proving
+    # the remap step actually runs, not just that co-occurrence works for
+    # the simpler all-phone or all-email cases above.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record_with_email("android_contact", "Jane Doe", phones=["+15551111111"], emails=["jane@example.com"]),
+         _contact_record_with_email("takeout_contact", "Bob", emails=["bob@example.com"])])
+    # The merge only ever happens for a phone that shows up in by_contact -
+    # which only ever gets an entry once some REAL communication row
+    # resolves to it (Pass 2a), not merely from being a known address-book
+    # entry (Pass 1) - matching the exact fixture shape the pre-existing
+    # phone/email merge test above already establishes. An ordinary,
+    # unrelated 1:1 SMS row supplies that.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        [_comm_record("android_sms_message", "address", "+15551111111")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "calendar.json"),
+        [{"artifact_type": "android_companion_calendar_event", "title": "Team Sync", "url": "",
+          "value": "Team Sync", "timestamp": 1700000000.0,
+          "extra": {"attendees": [{"email": "jane@example.com"}, {"email": "bob@example.com"}]}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    by_key = {(c["normalized_number"] or c["normalized_email"]): c for c in result["contacts"]}
+    assert set(by_key.keys()) == {"5551111111", "bob@example.com"}  # Jane's merged, keyed by phone - not "jane@example.com"
+    assert by_key["5551111111"]["normalized_email"] == "jane@example.com"  # still carries her email, just not as the top-level key
+
+    assert len(result["co_occurrences"]) == 1
+    pair = result["co_occurrences"][0]
+    assert sorted(pair["contacts"]) == ["5551111111", "bob@example.com"]
+    assert pair["channels"] == ["Calendar Invite"]
 
 
 # --- 2026-09-07: direction/duration extraction + relationship tiering,
