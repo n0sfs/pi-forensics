@@ -1000,3 +1000,62 @@ def test_dispatch_swallows_a_safari_parse_exception_and_returns_empty(tmp_path):
     bad_path.write_bytes(b"not a real binarycookies file at all, no magic")
     result = ba.parse_browser_profile_file(str(bad_path), "Cookies.binarycookies")
     assert result == []
+
+
+# --- _open_sqlite_readonly()'s WAL-recovery fix (2026-09-07) ---
+# Real, empirically-confirmed bug: the original strict mode=ro&immutable=1
+# connection doesn't just miss the newest rows sitting in an uncommitted-to-
+# main-file WAL sidecar - it can miss an ENTIRE TABLE's worth of already-
+# committed data. Proven directly (not assumed) by holding a SECOND
+# connection open on the same path so SQLite's own automatic checkpoint-on-
+# close never fires, mirroring core/stickynotes_utils.py's own already-
+# proven "hold a second connection open" verification technique for this
+# exact class of bug.
+
+def test_open_sqlite_readonly_recovers_data_stranded_only_in_the_wal_sidecar(tmp_path):
+    db_path = str(tmp_path / "History")
+    holder = sqlite3.connect(db_path)
+    holder.execute("PRAGMA journal_mode=WAL")
+    holder.execute("CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT, title TEXT, visit_count INTEGER, last_visit_time INTEGER)")
+    holder.execute("INSERT INTO urls (url, title, visit_count, last_visit_time) VALUES (?,?,?,?)",
+                    ("https://wal-only.example/page", "WAL-Only Page", 1, 0))
+    holder.commit()
+    assert os.path.exists(db_path + "-wal"), "the fixture itself must genuinely be in WAL mode with an unwritten-back sidecar"
+
+    try:
+        # A real Chrome parse against the exact same file - holder is
+        # still open, so the WAL data was never checkpointed into the
+        # base History file.
+        result = ba.parse_chrome_history_db(db_path)
+    finally:
+        holder.close()
+
+    urls = {h["url"] for h in result["history"]}
+    assert urls == {"https://wal-only.example/page"}
+
+
+def test_open_sqlite_readonly_still_works_correctly_with_no_wal_sidecar_present(tmp_path):
+    # The overwhelmingly common case (an already-checkpointed/closed
+    # database, e.g. every pre-existing test fixture in this file) - the
+    # fix must be a complete no-op here, not a regression.
+    db_path = str(tmp_path / "History")
+    _build_chrome_history_db(db_path, [("https://plain.example/page", "Plain Page", 1, 0)])
+    assert not os.path.exists(db_path + "-wal")
+    result = ba.parse_chrome_history_db(db_path)
+    urls = {h["url"] for h in result["history"]}
+    assert urls == {"https://plain.example/page"}
+
+
+def test_open_sqlite_readonly_missing_source_file_raises_same_as_before_the_fix(tmp_path):
+    # A genuinely absent file always raised immediately even in the
+    # ORIGINAL pre-fix implementation (a bare mode=ro URI connect refuses
+    # to create a new file) - this fix's own copy-first fallback path
+    # (triggered here since shutil.copy2() can't copy a file that isn't
+    # there) preserves that exact behavior rather than changing it; no
+    # real caller ever reaches this function with a path it hasn't
+    # already confirmed exists (find_browser_artifact_files()'s own walk
+    # only returns real, existing files), so this is a defensive-
+    # equivalence check, not a live scenario.
+    missing_path = str(tmp_path / "History")
+    with pytest.raises(sqlite3.OperationalError):
+        ba._open_sqlite_readonly(missing_path)

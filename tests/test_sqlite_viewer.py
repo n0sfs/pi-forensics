@@ -29,12 +29,13 @@ def test_open_sqlite_readonly_genuinely_rejects_a_write(tmp_path):
     db_path = tmp_path / "evidence.db"
     _build_real_db(db_path)
 
-    conn = ba._open_sqlite_readonly(str(db_path))
+    conn, cleanup = ba._open_sqlite_readonly(str(db_path))
     try:
         with pytest.raises(sqlite3.OperationalError):
             conn.execute("INSERT INTO messages (body) VALUES ('should not be allowed')")
     finally:
         conn.close()
+        cleanup()
 
     # Confirm the file itself is genuinely untouched - not just that the
     # write raised, but that nothing was silently committed anyway.
@@ -47,11 +48,12 @@ def test_open_sqlite_readonly_genuinely_rejects_a_write(tmp_path):
 def test_open_sqlite_readonly_still_allows_real_reads(tmp_path):
     db_path = tmp_path / "evidence.db"
     _build_real_db(db_path)
-    conn = ba._open_sqlite_readonly(str(db_path))
+    conn, cleanup = ba._open_sqlite_readonly(str(db_path))
     try:
         rows = conn.execute("SELECT body FROM messages ORDER BY id").fetchall()
     finally:
         conn.close()
+        cleanup()
     assert rows == [("hello",), ("world",)]
 
 
@@ -70,11 +72,12 @@ def _list_tables_with_counts(conn):
 def test_table_listing_reflects_real_tables_and_counts(tmp_path):
     db_path = tmp_path / "evidence.db"
     _build_real_db(db_path)
-    conn = ba._open_sqlite_readonly(str(db_path))
+    conn, cleanup = ba._open_sqlite_readonly(str(db_path))
     try:
         tables = _list_tables_with_counts(conn)
     finally:
         conn.close()
+        cleanup()
     assert tables == [{"name": "messages", "row_count": 2}]
 
 
@@ -85,10 +88,11 @@ def test_a_table_name_not_in_the_live_listing_is_rejected(tmp_path):
     # accepted as arbitrary client input.
     db_path = tmp_path / "evidence.db"
     _build_real_db(db_path)
-    conn = ba._open_sqlite_readonly(str(db_path))
+    conn, cleanup = ba._open_sqlite_readonly(str(db_path))
     try:
         real_tables = {t["name"] for t in _list_tables_with_counts(conn)}
     finally:
         conn.close()
+        cleanup()
     assert "sqlite_master; DROP TABLE messages; --" not in real_tables
     assert "messages" in real_tables
