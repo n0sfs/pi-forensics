@@ -2197,6 +2197,83 @@ def restart_touch_kiosk():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+# A plain marker file (present = disabled), NOT a value inside runtime_
+# config.json alone - install.py's own labwc autostart script (a bash
+# script, no reliable JSON parser guaranteed present) needs to cheaply
+# check this on every iteration of its already-running "while true;
+# relaunch chromium" respawn loop (see restart_touch_kiosk()'s own comment
+# above for why that loop is never itself re-launched from a route - the
+# same reasoning applies here: this route only ever creates/removes the
+# marker and kills the CURRENT chromium process, it never touches or
+# restarts the autostart script itself). runtime_config.json's own
+# kiosk_mode_enabled key stays the single source of truth the Settings UI
+# reads/writes; this file is a mechanical signal DERIVED from it, written
+# by this route alone, always in lockstep - never a second independent
+# state to drift out of sync.
+#
+# A FUNCTION, not a module-level constant computed once at import time -
+# this app has already been bitten 4 times (active_proc, RUNTIME_CONFIG_
+# FILE, EVIDENCE_ROOT) by a bare `from core.config import INSTALL_DIR`-
+# style import creating an independent binding that a test's own
+# monkeypatch.setattr(config, "INSTALL_DIR", tmp_path) can never reach,
+# since the module-level expression already evaluated against the real
+# INSTALL_DIR the moment this file was first imported. Reading
+# config.INSTALL_DIR (module-qualified) fresh on every call avoids that
+# entirely.
+def _kiosk_disabled_marker_path():
+    return os.path.join(config.INSTALL_DIR, '.kiosk_disabled')
+
+@settings_bp.route('/api/system/kiosk_mode', methods=['GET'])
+@requires_auth
+def get_kiosk_mode():
+    # Read-only state, ungated beyond a valid login - matching this app's
+    # own established convention for exposing a station default's current
+    # value to any logged-in account (e.g. GET .../case_reporting), with
+    # only the write below requiring the 'settings' permission.
+    cfg = load_runtime_config()
+    return jsonify({"success": True, "enabled": cfg.get('kiosk_mode_enabled', True)})
+
+@settings_bp.route('/api/system/kiosk_mode', methods=['POST'])
+@requires_auth
+@requires_permission('settings')
+def set_kiosk_mode():
+    req = request.get_json() or {}
+    enabled = bool(req.get('enabled', True))
+
+    cfg = load_runtime_config()
+    cfg['kiosk_mode_enabled'] = enabled
+    save_runtime_config(cfg)
+
+    try:
+        marker_path = _kiosk_disabled_marker_path()
+        if enabled:
+            # Clearing the marker is enough on its own - the already-
+            # running respawn loop checks for it right before each
+            # relaunch attempt and picks this up within a few seconds,
+            # the identical recovery path a real chromium crash already
+            # goes through. Nothing here spawns chromium directly (wrong
+            # DISPLAY/WAYLAND_DISPLAY/user-session context from inside a
+            # Flask request anyway) - the loop does that, on its own.
+            if os.path.exists(marker_path):
+                os.remove(marker_path)
+            message = "Kiosk mode enabled - the touchscreen display will relaunch automatically within a few seconds."
+        else:
+            # Marker written FIRST, chromium killed second - so the
+            # respawn loop's own very next iteration (which checks the
+            # marker before attempting to relaunch) already sees it
+            # disabled, rather than racing to relaunch chromium in the
+            # brief gap between the kill and the marker actually landing
+            # on disk.
+            with open(marker_path, 'w') as f:
+                f.write('')
+            subprocess.run(['pkill', '-9', '-f', 'chromium'], capture_output=True, timeout=10)
+            message = "Kiosk mode disabled - the touchscreen display has been closed."
+    except OSError as e:
+        return jsonify({"success": False, "error": f"Setting saved, but the kiosk marker file could not be updated: {e}"}), 500
+
+    log_chain_of_custody("kiosk_mode_changed", {"enabled": enabled})
+    return jsonify({"success": True, "enabled": enabled, "message": message})
+
 @settings_bp.route('/api/system/check_update', methods=['GET'])
 @requires_auth
 @requires_permission('settings')

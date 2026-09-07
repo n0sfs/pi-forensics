@@ -9526,6 +9526,12 @@ let relationshipGraphNetwork = null;
 let relationshipGraphMetric = 'count';     // 'count' | 'duration' - which value drives edge thickness
 const RELATIONSHIP_GRAPH_MAX_NODES = 40;   // caps the graph specifically, never the underlying table/CSV - a busy device's full contact list would render as unreadable noise
 const RELATIONSHIP_TIER_COLORS = { frequent: '#f87171', regular: '#60a5fa', one_off: '#9ca3af' };
+// vis-network draws labels on an HTML5 canvas, not real DOM text, so it
+// needs an actual font-family string (no "inherit") - a real system-font
+// stack instead of vis-network's own "arial" default, so node labels
+// visually match the rest of this app's own system-ui body font more
+// closely.
+const RELATIONSHIP_GRAPH_FONT = '-apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 const RELATIONSHIP_TIER_LABELS = { frequent: 'Frequent Contact', regular: 'Regular Contact', one_off: 'One-off Contact' };
 
 // The two identity spaces (phone/email, 2026-09-07 - see correlate_
@@ -9622,10 +9628,19 @@ function renderRelationshipGraph(data) {
     const maxMetric = Math.max(...graphContacts.map(metricValue), 1);
     const nodeSizeByTier = { frequent: 34, regular: 22, one_off: 13 };
 
+    // A shared label-outline color (matching the container's own #090b10
+    // background - see relationshipGraphContainer's inline style in
+    // templates/tabs/reporting.html) is drawn as a text stroke behind
+    // every label, so a name stays legible over an edge or another node
+    // regardless of what's directly behind it - a standard vis-network
+    // technique, not custom canvas code.
+    const LABEL_OUTLINE = '#090b10';
     const nodes = [{
         id: '__device__', label: 'This Device', shape: 'star', size: 40,
-        color: { background: '#22d3ee', border: '#0e7490' },
-        font: { color: '#0b1220', size: 14, bold: 'bold' }, physics: false,
+        color: { background: '#22d3ee', border: '#0e7490', highlight: { background: '#22d3ee', border: '#ffffff' } },
+        font: { color: '#0b1220', size: 14, bold: 'bold', face: RELATIONSHIP_GRAPH_FONT },
+        shadow: { enabled: true, color: 'rgba(34,211,238,0.35)', size: 14, x: 0, y: 0 },
+        physics: false,
     }];
     const edges = [];
     graphContacts.forEach((c) => {
@@ -9636,14 +9651,15 @@ function renderRelationshipGraph(data) {
             label: c.display_names.length ? c.display_names[0] : key,
             shape: 'dot', size: nodeSizeByTier[c.tier] || 16,
             color: { background: color, border: color, highlight: { background: color, border: '#ffffff' } },
-            font: { color: '#e2e8f0', size: 12 },
+            font: { color: '#e2e8f0', size: 12, face: RELATIONSHIP_GRAPH_FONT, strokeWidth: 3, strokeColor: LABEL_OUTLINE },
+            shadow: { enabled: true, color: 'rgba(0,0,0,0.45)', size: 6, x: 2, y: 2 },
             title: _relationshipGraphNodeTooltip(c),
         });
         edges.push({
             from: '__device__', to: key,
             width: 1 + (metricValue(c) / maxMetric) * 9,
             color: { color, opacity: 0.55, highlight: color },
-            smooth: { type: 'continuous' },
+            smooth: { type: 'continuous', roundness: 0.35 },
         });
     });
 
@@ -9652,9 +9668,9 @@ function renderRelationshipGraph(data) {
         { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) },
         {
             autoResize: true,
-            physics: { solver: 'forceAtlas2Based', stabilization: { iterations: 150 },
-                       forceAtlas2Based: { gravitationalConstant: -60, springLength: 120 } },
-            interaction: { hover: true, tooltipDelay: 120 },
+            physics: { solver: 'forceAtlas2Based', stabilization: { iterations: 200, fit: true },
+                       forceAtlas2Based: { gravitationalConstant: -80, springLength: 160, avoidOverlap: 0.6 } },
+            interaction: { hover: true, tooltipDelay: 120, hideEdgesOnDrag: true, dragNodes: true },
             nodes: { borderWidth: 2 },
         }
     );
@@ -9662,6 +9678,16 @@ function renderRelationshipGraph(data) {
         if (params.nodes && params.nodes.length && params.nodes[0] !== '__device__') {
             highlightContactInTable(params.nodes[0]);
         }
+    });
+    // Freezes the layout the instant it settles - a force-directed solver
+    // like forceAtlas2Based otherwise keeps making tiny continuous
+    // adjustments indefinitely even on an already-visually-stable graph,
+    // which reads as unpolished/twitchy rather than a finished layout.
+    // Dragging a node still works fine with physics off (drag sets
+    // position directly, independent of the physics engine's own state) -
+    // confirmed against vis-network's own real API before relying on it.
+    relationshipGraphNetwork.once('stabilizationIterationsDone', () => {
+        if (relationshipGraphNetwork) relationshipGraphNetwork.setOptions({ physics: false });
     });
 }
 
@@ -9999,6 +10025,24 @@ function loadPatternOfLife() {
 // single KML string to hand it - a small, adjacent Leaflet-setup
 // function instead, mirroring renderKmlViewer()'s own proven try/catch/
 // invalidateSize pattern rather than refactoring an already-shipped one.
+//
+// Real bug found and fixed (2026-09-08): unlike renderKmlViewer(), which
+// creates a brand-new <div> on every call (so L.map() always runs against
+// a genuinely fresh, never-before-initialized element), this function
+// calls L.map() directly on the page's own static #patternOfLifeGeoMap
+// container, reused across every call. mapEl.innerHTML = '' (in
+// loadPatternOfLifeGeoActivity() below) clears the container's visible
+// children but does NOT clear Leaflet's own internal _leaflet_id marker
+// it stamps onto the container element itself - so the SECOND time this
+// ran against the same reused container (e.g. leaving Pattern of Life and
+// coming back without a full page reload), L.map(container) threw
+// Leaflet's real "Map container is already initialized" error, caught by
+// the try/catch below and surfaced as the unhelpful "Map could not be
+// rendered." - confirmed live as the actual root cause. Fixed by properly
+// disposing of the prior map instance first, the identical pattern
+// renderRelationshipGraph() already uses for its own vis-network instance.
+let patternOfLifeGeoMapInstance = null;
+
 async function loadPatternOfLifeGeoActivity() {
     const summaryEl = document.getElementById('patternOfLifeGeoSummary');
     const mapEl = document.getElementById('patternOfLifeGeoMap');
@@ -10071,6 +10115,7 @@ async function loadPatternOfLifeGeoActivity() {
 }
 
 function renderGeoActivityMap(container, points, frequentLocations) {
+    if (patternOfLifeGeoMapInstance) { patternOfLifeGeoMapInstance.remove(); patternOfLifeGeoMapInstance = null; }
     if (typeof L === 'undefined') {
         const noLeaflet = document.createElement('div');
         noLeaflet.className = 'text-subtle small p-2';
@@ -10080,6 +10125,7 @@ function renderGeoActivityMap(container, points, frequentLocations) {
     }
     try {
         const map = L.map(container);
+        patternOfLifeGeoMapInstance = map;
         _createGeoTileLayer().addTo(map);
         const bounds = [];
         points.forEach(p => {
@@ -10107,6 +10153,13 @@ function renderGeoActivityMap(container, points, frequentLocations) {
         // size can compute the wrong dimensions and render blank/broken.
         requestAnimationFrame(() => setTimeout(() => map.invalidateSize(), 50));
     } catch (err) {
+        // A failure PART-WAY through (a marker call throwing after L.map()
+        // itself already succeeded) still leaves the container's own
+        // _leaflet_id marker set - properly .remove() the partial instance
+        // here too, not just on the next call's own entry-point disposal
+        // above, so a single failed render can never permanently poison
+        // this container for every future attempt.
+        if (patternOfLifeGeoMapInstance) { patternOfLifeGeoMapInstance.remove(); patternOfLifeGeoMapInstance = null; }
         container.innerHTML = '';
         const failMsg = document.createElement('div');
         failMsg.className = 'text-subtle small p-2';
@@ -10142,6 +10195,20 @@ let patternOfLifeActivityGranularity = 'hour'; // 'hour' | 'dow'
 let patternOfLifeActivityIncludeWeb = false;
 let patternOfLifeActivityIncludeCalendar = false;
 let patternOfLifeActivityChart = null;
+let patternOfLifeActivityDateFrom = null;  // 'YYYY-MM-DD' or null - client-side only, no re-fetch (2026-09-08, for a case spanning years of activity)
+let patternOfLifeActivityDateTo = null;
+// key -> display name(s), built once per load from the SAME /api/cases/
+// timeline response's own trimmed "contacts" directory routes/reporting.py
+// already returns - mirrors caseTimelineContactLabel's identical pattern
+// (Evidence Timeline tab), but kept as its own separate map/self-contained
+// fetch rather than depending on that tab having been visited first.
+let patternOfLifeActivityContactLabel = {};
+// Per-bucket-index -> the exact event rows that landed in that bar, filled
+// in by renderPatternOfLifeActivityChart() on every render (both the
+// fresh-Chart-creation path and the fast .update() path) - what the bar
+// click handler below reads to build its drill-down popup, so it always
+// reflects whatever's currently actually charted.
+let patternOfLifeActivityBucketRows = [];
 
 async function loadPatternOfLifeActivityChart() {
     const summaryEl = document.getElementById('patternOfLifeActivitySummary');
@@ -10150,6 +10217,7 @@ async function loadPatternOfLifeActivityChart() {
     if (!canvas || !activeCase) return;
     if (summaryEl) summaryEl.textContent = 'Loading...';
     if (emptyEl) emptyEl.style.display = 'none';
+    hidePatternOfLifeActivityPopup();
 
     try {
         const res = await fetch(`/api/cases/timeline?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
@@ -10159,11 +10227,37 @@ async function loadPatternOfLifeActivityChart() {
             return;
         }
         patternOfLifeActivityAllRows = data.events || [];
+        patternOfLifeActivityContactLabel = {};
+        (data.contacts || []).forEach((c) => {
+            patternOfLifeActivityContactLabel[c.key] = c.display_names && c.display_names.length ? c.display_names.join(' / ') : c.key;
+        });
     } catch (err) {
         if (summaryEl) summaryEl.textContent = 'Request failed.';
         return;
     }
 
+    _recomputePatternOfLifeActivityRows();
+}
+
+function onPatternOfLifeActivityDateRangeChange() {
+    const fromEl = document.getElementById('polActivityDateFrom');
+    const toEl = document.getElementById('polActivityDateTo');
+    patternOfLifeActivityDateFrom = (fromEl && fromEl.value) || null;
+    patternOfLifeActivityDateTo = (toEl && toEl.value) || null;
+    const clearBtn = document.getElementById('polActivityDateClearBtn');
+    if (clearBtn) clearBtn.style.display = (patternOfLifeActivityDateFrom || patternOfLifeActivityDateTo) ? '' : 'none';
+    _recomputePatternOfLifeActivityRows();
+}
+
+function clearPatternOfLifeActivityDateRange() {
+    patternOfLifeActivityDateFrom = null;
+    patternOfLifeActivityDateTo = null;
+    const fromEl = document.getElementById('polActivityDateFrom');
+    const toEl = document.getElementById('polActivityDateTo');
+    if (fromEl) fromEl.value = '';
+    if (toEl) toEl.value = '';
+    const clearBtn = document.getElementById('polActivityDateClearBtn');
+    if (clearBtn) clearBtn.style.display = 'none';
     _recomputePatternOfLifeActivityRows();
 }
 
@@ -10181,17 +10275,34 @@ function _recomputePatternOfLifeActivityRows() {
     const summaryEl = document.getElementById('patternOfLifeActivitySummary');
     const categories = ['Communications', 'Social Media'];
     if (patternOfLifeActivityIncludeWeb) categories.push('Web Activity');
-    patternOfLifeActivityRows = (patternOfLifeActivityAllRows || []).filter((e) =>
-        categories.includes(e.category)
-        || (patternOfLifeActivityIncludeCalendar && PATTERN_OF_LIFE_CALENDAR_ACTIVITY_TYPES.includes(e.activity)));
+
+    // Local calendar-day boundaries (midnight to end-of-day, browser's own
+    // local time zone) - matching the same local-timezone convention this
+    // chart's own hour-of-day/day-of-week bucketing already uses
+    // (new Date(e.timestamp*1000).getHours()/.getDay() are both local-tz
+    // by default), so "From 2026-01-01" means the same midnight the bars
+    // themselves are drawn relative to, not a UTC boundary that could
+    // silently exclude/include the wrong events near a day edge.
+    const fromMs = patternOfLifeActivityDateFrom ? new Date(patternOfLifeActivityDateFrom + 'T00:00:00').getTime() : null;
+    const toMs = patternOfLifeActivityDateTo ? new Date(patternOfLifeActivityDateTo + 'T23:59:59.999').getTime() : null;
+
+    patternOfLifeActivityRows = (patternOfLifeActivityAllRows || []).filter((e) => {
+        if (!(categories.includes(e.category)
+            || (patternOfLifeActivityIncludeCalendar && PATTERN_OF_LIFE_CALENDAR_ACTIVITY_TYPES.includes(e.activity)))) return false;
+        const ms = e.timestamp * 1000;
+        if (fromMs !== null && ms < fromMs) return false;
+        if (toMs !== null && ms > toMs) return false;
+        return true;
+    });
 
     if (summaryEl) {
         const extras = [];
         if (patternOfLifeActivityIncludeWeb) extras.push('web browsing');
         if (patternOfLifeActivityIncludeCalendar) extras.push('calendar/reminders');
+        const dateNote = (patternOfLifeActivityDateFrom || patternOfLifeActivityDateTo) ? ', date-filtered' : '';
         summaryEl.textContent = patternOfLifeActivityRows.length
             ? `${patternOfLifeActivityRows.length} event(s) analyzed`
-                + (extras.length ? ` (communications + ${extras.join(' + ')})` : ' (communications)')
+                + (extras.length ? ` (communications + ${extras.join(' + ')})` : ' (communications)') + dateNote
             : '';
     }
     renderPatternOfLifeActivityChart();
@@ -10203,6 +10314,7 @@ function setPatternOfLifeActivityGranularity(mode) {
     const dowBtn = document.getElementById('polGranDowBtn');
     if (hourBtn) hourBtn.classList.toggle('active', mode === 'hour');
     if (dowBtn) dowBtn.classList.toggle('active', mode === 'dow');
+    hidePatternOfLifeActivityPopup();  // a stale popup's bucket index means something different once granularity changes
     renderPatternOfLifeActivityChart();
 }
 
@@ -10221,31 +10333,38 @@ const PATTERN_OF_LIFE_DOW_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 
 function renderPatternOfLifeActivityChart() {
     const canvas = document.getElementById('patternOfLifeActivityChart');
     const emptyEl = document.getElementById('patternOfLifeActivityEmpty');
+    const hintEl = document.getElementById('polActivityBarClickHint');
     if (!canvas) return;
     const rows = patternOfLifeActivityRows || [];
+    hidePatternOfLifeActivityPopup();  // any prior drill-down no longer matches the data about to be charted
 
     if (rows.length === 0) {
         if (patternOfLifeActivityChart) { patternOfLifeActivityChart.destroy(); patternOfLifeActivityChart = null; }
         canvas.style.display = 'none';
         if (emptyEl) emptyEl.style.display = '';
+        if (hintEl) hintEl.style.display = 'none';
         return;
     }
     canvas.style.display = '';
     if (emptyEl) emptyEl.style.display = 'none';
+    if (hintEl) hintEl.style.display = '';
 
-    let labels, counts;
-    if (patternOfLifeActivityGranularity === 'dow') {
-        counts = new Array(7).fill(0);
-        rows.forEach((e) => { counts[new Date(e.timestamp * 1000).getDay()] += 1; });
-        labels = PATTERN_OF_LIFE_DOW_LABELS;
-    } else {
-        counts = new Array(24).fill(0);
-        rows.forEach((e) => { counts[new Date(e.timestamp * 1000).getHours()] += 1; });
-        labels = counts.map((_, h) => {
+    const bucketCount = patternOfLifeActivityGranularity === 'dow' ? 7 : 24;
+    const counts = new Array(bucketCount).fill(0);
+    patternOfLifeActivityBucketRows = Array.from({ length: bucketCount }, () => []);
+    const bucketOf = (e) => patternOfLifeActivityGranularity === 'dow'
+        ? new Date(e.timestamp * 1000).getDay()
+        : new Date(e.timestamp * 1000).getHours();
+    rows.forEach((e) => {
+        const b = bucketOf(e);
+        counts[b] += 1;
+        patternOfLifeActivityBucketRows[b].push(e);
+    });
+    const labels = patternOfLifeActivityGranularity === 'dow' ? PATTERN_OF_LIFE_DOW_LABELS
+        : counts.map((_, h) => {
             const d = new Date(); d.setHours(h, 0, 0, 0);
             return d.toLocaleTimeString(undefined, { hour: 'numeric' });
         });
-    }
 
     if (patternOfLifeActivityChart) {
         patternOfLifeActivityChart.data.labels = labels;
@@ -10256,7 +10375,7 @@ function renderPatternOfLifeActivityChart() {
 
     patternOfLifeActivityChart = new Chart(canvas.getContext('2d'), {
         type: 'bar',
-        data: { labels, datasets: [{ label: 'Communications', data: counts, backgroundColor: '#a78bfa' }] },
+        data: { labels, datasets: [{ label: 'Communications', data: counts, backgroundColor: '#a78bfa', hoverBackgroundColor: '#c4b5fd' }] },
         options: {
             responsive: true,
             maintainAspectRatio: false,
@@ -10266,8 +10385,98 @@ function renderPatternOfLifeActivityChart() {
                 y: { beginAtZero: true, ticks: { color: '#94a3b8', precision: 0 }, grid: { color: 'rgba(255,255,255,0.06)' } },
             },
             plugins: { legend: { display: false } },
+            onClick: (evt, elements) => {
+                if (!elements.length) return;
+                const idx = elements[0].index;
+                const label = patternOfLifeActivityChart.data.labels[idx];
+                showPatternOfLifeActivityBarPopup(label, patternOfLifeActivityBucketRows[idx] || []);
+            },
+            onHover: (evt, elements) => {
+                evt.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+            },
         },
     });
+}
+
+// Click-to-drill-down popup (2026-09-08) - a small, self-contained card
+// overlaid onto the chart's own bordered container (kept as a plain
+// programmatically-built DOM node, never innerHTML, since it renders real
+// evidence-derived text - resolved activity labels, contact names, and
+// content_preview strings, all already established elsewhere in this app
+// as needing text-node-only rendering). Deliberately anchored to the
+// chart's own container rather than floating at the exact click/touch
+// coordinate - simpler and far more robust on a touchscreen kiosk, where
+// a coordinate-anchored popup risks landing partly off-screen or under
+// the examiner's own finger.
+const PATTERN_OF_LIFE_ACTIVITY_POPUP_MAX_ROWS = 8;
+
+function hidePatternOfLifeActivityPopup() {
+    const existing = document.getElementById('patternOfLifeActivityPopup');
+    if (existing) existing.remove();
+}
+
+function showPatternOfLifeActivityBarPopup(bucketLabel, rows) {
+    hidePatternOfLifeActivityPopup();
+    if (!rows.length) return;
+    const wrap = document.getElementById('patternOfLifeActivityChartWrap');
+    if (!wrap) return;
+
+    const popup = document.createElement('div');
+    popup.id = 'patternOfLifeActivityPopup';
+    popup.className = 'shadow-lg';
+    popup.style.cssText = 'position:absolute; top:6px; right:6px; width:min(340px, calc(100% - 12px)); '
+        + 'max-height:calc(100% - 12px); overflow-y:auto; background-color:#0f172a; border:1px solid #334155; '
+        + 'border-radius:6px; padding:8px; z-index:5; font-size:0.8rem;';
+
+    const header = document.createElement('div');
+    header.className = 'd-flex justify-content-between align-items-center mb-1';
+    const title = document.createElement('span');
+    title.className = 'fw-bold text-info';
+    title.textContent = `${bucketLabel} - ${rows.length} event(s)`;
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'btn-close btn-close-white btn-sm';
+    closeBtn.setAttribute('aria-label', 'Close');
+    closeBtn.onclick = hidePatternOfLifeActivityPopup;
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    popup.appendChild(header);
+
+    const shown = rows.slice(0, PATTERN_OF_LIFE_ACTIVITY_POPUP_MAX_ROWS);
+    shown.forEach((e) => {
+        const row = document.createElement('div');
+        row.className = 'border-top border-secondary pt-1 mt-1';
+        const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
+                                                    : (FILE_VIEWS_WEB_ARTIFACT_LABELS[e.activity] || e.activity);
+        const line1 = document.createElement('div');
+        line1.className = 'text-subtle';
+        line1.textContent = `${new Date(e.timestamp * 1000).toLocaleString()} - ${activityLabel || ''}`;
+        row.appendChild(line1);
+        if (e.counterparts && e.counterparts.length) {
+            const line2 = document.createElement('div');
+            line2.className = 'text-subtle';
+            line2.style.opacity = '0.85';
+            line2.textContent = e.counterparts.map((k) => patternOfLifeActivityContactLabel[k] || k).join(', ');
+            row.appendChild(line2);
+        }
+        if (e.detail) {
+            const line3 = document.createElement('div');
+            line3.className = 'text-subtle';
+            line3.style.opacity = '0.7';
+            line3.textContent = e.detail;
+            row.appendChild(line3);
+        }
+        popup.appendChild(row);
+    });
+    if (rows.length > shown.length) {
+        const more = document.createElement('div');
+        more.className = 'text-subtle small pt-1 mt-1 border-top border-secondary';
+        more.style.opacity = '0.7';
+        more.textContent = `+ ${rows.length - shown.length} more - see Evidence Timeline for the full list.`;
+        popup.appendChild(more);
+    }
+
+    wrap.appendChild(popup);
 }
 
 // Device Profile: Apps & Accounts - both lists reuse the already-existing,
@@ -18316,6 +18525,54 @@ async function restartKioskDisplay() {
     }
 }
 
+function _setKioskModeToggleUi(enabled) {
+    const toggle = document.getElementById('kioskModeToggle');
+    const badge = document.getElementById('kioskModeStatusBadge');
+    if (toggle) toggle.checked = enabled;
+    if (badge) {
+        badge.textContent = enabled ? 'On' : 'Off';
+        badge.className = `badge ms-1 ${enabled ? 'bg-success' : 'bg-secondary'}`;
+    }
+}
+
+async function loadKioskModeState() {
+    try {
+        const res = await fetch('/api/system/kiosk_mode');
+        const data = await res.json();
+        if (data && data.success) _setKioskModeToggleUi(data.enabled);
+    } catch (err) { /* leave the toggle at its default (On) - a failed read here isn't worth surfacing an error for */ }
+}
+
+async function setKioskModeEnabled(checked) {
+    // Only disabling gets a confirm() gate - a real, immediate, physically
+    // observable action (the touchscreen goes dark) on top of a station's
+    // own hardware, matching this app's established pattern of confirm-
+    // gating a consequential-but-reversible action (e.g. TLS cert
+    // generation). Re-enabling is benign - no gate.
+    if (!checked && !confirm("Turn off the touchscreen kiosk display now? The physical screen will close immediately. This station's own web UI stays fully reachable over the network - turn it back on here anytime, no reboot needed.")) {
+        _setKioskModeToggleUi(true);  // revert the checkbox - the change was declined
+        return;
+    }
+    diagRunning(checked ? "Enable Touchscreen Kiosk Mode" : "Disable Touchscreen Kiosk Mode");
+    try {
+        const res = await fetch('/api/system/kiosk_mode', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: checked }),
+        });
+        const data = await res.json();
+        if (data && data.success) {
+            _setKioskModeToggleUi(data.enabled);
+            diagResult(checked ? "Enable Touchscreen Kiosk Mode" : "Disable Touchscreen Kiosk Mode", data.message);
+        } else {
+            _setKioskModeToggleUi(!checked);  // the write failed - revert to the prior known-good state, never let the switch lie about what's actually true
+            diagResult(checked ? "Enable Touchscreen Kiosk Mode" : "Disable Touchscreen Kiosk Mode", data.error || "[REQUEST FAILED]");
+        }
+    } catch (err) {
+        _setKioskModeToggleUi(!checked);
+        diagResult(checked ? "Enable Touchscreen Kiosk Mode" : "Disable Touchscreen Kiosk Mode", "[REQUEST FAILED]");
+    }
+}
+
 async function gitUpdateApp() {
     if (!confirm("Pull the latest code from the configured git remote and restart the service? Only do this if you trust that remote.")) return;
     switchToTab('settings-tab'); // so the Diagnostics output console below is visible if this was triggered from the update-available toast on a different tab
@@ -18782,6 +19039,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadReportingStats();
     updateAndroidModeHelp();
     initHelpTooltips();
+    loadKioskModeState();
     // Awaited before initActiveCaseBar() - that call can synchronously chain into
     // loadCaseForEditing() -> renderCustomFieldsForCase(), which reads this cache. A bare
     // fire-and-forget fetchCustomFieldDefs() here raced /api/report/load and regularly lost,
