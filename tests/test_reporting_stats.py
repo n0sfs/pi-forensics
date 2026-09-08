@@ -121,7 +121,16 @@ def test_total_cases_active_cases_and_evidence_items_share_one_case_list(evidenc
     assert by_key["evidence_items"]["value"] == 6  # 2 + 3 + 1
 
 
-def test_a_legacy_schema_case_is_normalized_to_open_and_excluded_from_evidence_items(evidence_root, monkeypatch):
+def test_a_legacy_schema_case_is_bucketed_as_legacy_not_its_normalized_open_status(evidence_root, monkeypatch):
+    """Real bug, fixed 2026-09-09: list_case_folders() already normalizes a
+    missing case_status to 'Open' for BOTH schemas (confirmed by reading
+    its own source), so `c.get("case_status") or "Legacy"` in the old
+    _compute_reporting_stats() could never actually fire its own "Legacy"
+    fallback - a not-yet-migrated case just silently got bucketed under
+    "Open" instead. Fixed to key off schema (matching the evidence_items
+    stat's own identical schema == "consolidated" check, and the
+    frontend's own established c.schema === 'legacy' convention) - a
+    legacy case's real, distinct status is what this test now asserts."""
     _redirect_evidence_root(monkeypatch, evidence_root)
     case_dir = os.path.join(evidence_root, "2026-CASE-LEGACY")
     os.makedirs(case_dir)
@@ -130,12 +139,11 @@ def test_a_legacy_schema_case_is_normalized_to_open_and_excluded_from_evidence_i
 
     stats = _compute_reporting_stats(["total_cases", "active_cases", "evidence_items"])
     by_key = {s["key"]: s for s in stats}
-    # list_case_folders() itself already normalizes a missing case_status to
-    # 'Open' for both schemas (confirmed by reading its own source, not
-    # assumed) - so a legacy case never actually shows up as a distinct
-    # "Legacy" breakdown bucket in practice, only ever as "Open".
     assert by_key["total_cases"]["value"] == 1
-    assert by_key["total_cases"]["breakdown"] == {"Open": 1}
+    assert by_key["total_cases"]["breakdown"] == {"Legacy (Not Yet Migrated)": 1}
+    # active_cases still correctly counts it (a legacy case is active by
+    # default, matching list_case_folders()'s own normalization) - only the
+    # total_cases breakdown's own bucket LABEL changed, nothing else.
     assert by_key["active_cases"]["value"] == 1
     assert by_key["evidence_items"]["value"] == 0  # legacy schema has no events[] to count
 
