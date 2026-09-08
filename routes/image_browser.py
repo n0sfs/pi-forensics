@@ -37,7 +37,7 @@ from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path, classify_extension,
     is_valid_block_device_or_partition,
 )
-from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists, load_yara_ruleset_sources, get_url_lists, load_url_list_sets
+from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists, load_yara_ruleset_sources, get_yara_rulesets, get_url_lists, load_url_list_sets
 import yara
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME,
@@ -1006,6 +1006,340 @@ def image_hash_manifest():
         "hash_list_matches": result["hash_list_match_count"],
     })
     return jsonify(result)
+
+# --- Recursive YARA rule sweep, computed directly inside an acquired image ---
+# The whole-image counterpart to routes/file_explorer.py's/this file's own
+# image_yara_scan() (single-file only) - mirrors _run_hash_manifest_body()'s
+# exact shape immediately above (synchronous, no current_job/job_lock
+# involvement, callable both from its own standalone route and as one Auto
+# Analyze step) rather than the heavier async-job pattern the whole-image
+# Triage Scan uses, since per-file YARA matching against a compiled ruleset
+# is the same rough cost order as per-file hashing, not a genuinely
+# open-ended text search over potentially huge amounts of raw data.
+IMAGE_YARA_MAX_FILES = 5000
+IMAGE_YARA_MAX_SECONDS = 300
+IMAGE_YARA_MAX_FILE_BYTES = 64 * 1024 * 1024  # a file larger than this is skipped, not truncated-and-scanned - a partial scan of a huge file risks a false sense of "checked" for content past the cut point
+
+def _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=None):
+    """The actual walk-and-scan work for a whole-image YARA sweep. Returns
+    a plain dict; the route builds its jsonify() response from it, Auto
+    Analyze's own step function reads the same dict directly - the exact
+    same split _run_hash_manifest_body()/image_hash_manifest() already
+    establish. case_folder (optional) is only used to record each matched
+    file's own per-file analysis-result entry via _record_analysis_result(),
+    mirroring image_yara_scan()'s identical single-file "YARA" tool tag -
+    so a file already flagged by this sweep shows the same already-run
+    indicator File Explorer's context menu gives any other analysis tool."""
+    sources = load_yara_ruleset_sources(ruleset_ids)
+    if not sources:
+        return {"success": False, "error": "No YARA rulesets selected, or none of the selected rulesets could be loaded."}
+    try:
+        compiled = yara.compile(sources={rid: s['rule_text'] for rid, s in sources.items()})
+    except yara.Error as e:
+        return {"success": False, "error": f"Failed to compile the selected YARA ruleset(s): {e}"}
+
+    filesystems = _tsk_resolve_filesystems(image_path)
+    if not filesystems:
+        return {"success": False, "error": "No recognized filesystem found in this image."}
+
+    start_time = time.time()
+    files_scanned = 0
+    files_skipped_too_large = 0
+    files_errored = 0
+    truncated = False
+    match_rows = []  # (path, [{"ruleset_name", "rule", "tags"}, ...])
+    for fsinfo in filesystems:
+        try:
+            fs = _tsk_open_fs(image_path, fsinfo['offset'])
+        except Exception:
+            continue
+        for entry, path in _tsk_walk(fs):
+            if entry['is_dir'] or entry['deleted'] or entry['is_virtual']:
+                continue
+            if files_scanned >= IMAGE_YARA_MAX_FILES or (time.time() - start_time) > IMAGE_YARA_MAX_SECONDS:
+                truncated = True
+                break
+            if entry['size'] and entry['size'] > IMAGE_YARA_MAX_FILE_BYTES:
+                files_skipped_too_large += 1
+                continue
+            tmp_path = None
+            try:
+                tmp_path = _tsk_extract_to_temp(fs, _tsk_parse_inode(entry['inode']), suffix=os.path.splitext(entry['name'])[1])
+                raw_matches = compiled.match(filepath=tmp_path, timeout=30)
+                files_scanned += 1
+                if raw_matches:
+                    matches = [{"ruleset_name": sources[m.namespace]["name"], "rule": m.rule, "tags": list(m.tags)} for m in raw_matches]
+                    match_rows.append((path, matches))
+                    summary = f"{len(matches)} match(es)"
+                    output = "\n".join(f"[{m['ruleset_name']}] {m['rule']}" + (f" (tags: {', '.join(m['tags'])})" if m['tags'] else "") for m in matches)
+                    _record_analysis_result(case_folder, {"source_type": "image", "image_path": image_path, "fs_offset": fsinfo['offset'],
+                                                           "inode": entry['inode'], "path": path, "name": entry['name']},
+                                             "YARA", summary, output)
+            except Exception:
+                files_errored += 1
+            finally:
+                if tmp_path:
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+        if truncated:
+            break
+
+    image_base = os.path.splitext(os.path.basename(image_path))[0]
+    report_path = os.path.join(dest_dir, f"{image_base}_yara_sweep.txt")
+    ruleset_names = ', '.join(s["name"] for s in sources.values())
+    lines = [
+        "# Pi Forensics Suite - In-Image YARA Rule Sweep",
+        f"# Image: {image_path}",
+        f"# Ruleset(s) checked: {ruleset_names}",
+        f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"# Files scanned: {files_scanned}" + (" (capped - more files remained unscanned)" if truncated else ""),
+        f"# Files skipped (too large, over {IMAGE_YARA_MAX_FILE_BYTES // (1024*1024)}MB): {files_skipped_too_large}",
+        f"# Files skipped (unreadable/errored): {files_errored}",
+        f"# Total matches: {len(match_rows)} file(s)",
+        "# Deleted files are excluded - their data may already be partially overwritten on a live evidence filesystem.",
+        "#",
+    ]
+    for path, matches in match_rows:
+        for m in matches:
+            tag_text = f" (tags: {', '.join(m['tags'])})" if m['tags'] else ""
+            lines.append(f"MATCH  {path}  <- [{m['ruleset_name']}] {m['rule']}{tag_text}")
+    if not match_rows:
+        lines.append("# No matches found.")
+    try:
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception as e:
+        return {"success": False, "error": f"Failed to write report file: {e}"}
+    _auto_tag_case_artifact(dest_dir, report_path)
+
+    return {
+        "success": True, "report_path": report_path, "files_scanned": files_scanned,
+        "files_skipped_too_large": files_skipped_too_large, "files_errored": files_errored,
+        "truncated": truncated, "matched_file_count": len(match_rows),
+        "matches": [{"path": p, "rules": m} for p, m in match_rows[:50]],
+    }
+
+@image_browser_bp.route('/api/image/yara_sweep', methods=['POST'])
+@requires_auth
+@requires_permission('file_explorer')
+def image_yara_sweep():
+    """Recursively scans every real, non-deleted file inside an acquired
+    image against the selected YARA ruleset(s), without extracting
+    anything to disk permanently (each file is extracted to a short-lived
+    temp file just long enough to scan, then removed). Closes the gap
+    where YARA scanning only ever worked one file at a time - the exact
+    same whole-image treatment Hash Manifest already has. Request-parsing
+    here, real work in _run_yara_sweep_body() above."""
+    req = request.get_json() or {}
+    image_path = _resolve_browsable_source(req.get('image_path'))
+    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    ruleset_ids = req.get('ruleset_ids') or []
+    case_folder = req.get('case_folder')
+
+    if not image_path:
+        return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    if not ruleset_ids:
+        return jsonify({"success": False, "error": "No YARA rulesets selected."}), 400
+
+    result = _run_yara_sweep_body(image_path, dest_dir, ruleset_ids, case_folder=case_folder)
+    if not result["success"]:
+        return jsonify(result), 500
+
+    log_chain_of_custody("yara_sweep_image", {
+        "image_path": image_path, "files_scanned": result["files_scanned"],
+        "files_errored": result["files_errored"], "truncated": result["truncated"],
+        "matched_file_count": result["matched_file_count"],
+    })
+    return jsonify(result)
+
+# --- Lightweight keyword/structured-data screening, built specifically for
+# Auto Analyze - NOT a third scanning implementation. Reuses the exact same
+# build_scan_patterns()/per-file-read-then-regex technique execution_worker_
+# image_triage_scan() (the async, Stop-button-driven whole-image Triage Scan
+# job just above) already uses, and populates the same indexed_files/
+# triage_hits tables so a hit found this way is just as File-Views-browsable
+# as one found through a manual Triage Scan run. Deliberately NOT a refactor
+# of that existing async worker into a shared body function the way Hash
+# Manifest's was - that worker is tightly coupled to current_job/update_job()
+# for its own live per-file progress and Stop button; calling it directly
+# from inside an Auto Analyze step would fight the orchestrator's own
+# "Step N/M" progress reporting over the same current_job state. This is a
+# genuinely separate, simpler entry point into the same underlying
+# regex-matching technique - time-capped instead of Stop-button-
+# interruptible, since it runs synchronously inside the orchestrator's own
+# already-async job (Stop still works at the NEXT step boundary, the same
+# latency every other Auto Analyze step already has).
+#
+# Deliberately NEVER exposed as its own standalone whole-image button/route
+# the way Hash Manifest/YARA sweep are - Triage Scan's own existing
+# "Whole-Image Analysis" toolbar entry already covers this exact capability
+# more capably (higher caps, real live progress, a real Stop button); adding
+# a second, more limited "run a structured-data scan" button here would be
+# confusing, redundant UI, not a genuinely new capability.
+IMAGE_AUTOANALYZE_KEYWORD_MAX_FILES = 5000  # matches IMAGE_TRIAGE_MAX_FILES's precedent
+IMAGE_AUTOANALYZE_KEYWORD_MAX_FILE_BYTES = 4 * 1024 * 1024  # matches IMAGE_TRIAGE_MAX_FILE_BYTES
+IMAGE_AUTOANALYZE_KEYWORD_MAX_MATCHES_PER_CATEGORY = 2000  # matches IMAGE_TRIAGE_MAX_MATCHES_PER_CATEGORY
+IMAGE_AUTOANALYZE_KEYWORD_MAX_SECONDS = 300  # a real time cap - this step has no live Stop button of its own
+
+def _run_keyword_scan_body(image_path, dest_dir, case_folder=None):
+    """Scans against the 5 built-in TRIAGE_PATTERNS categories only
+    (build_scan_patterns(None)) - deliberately NEVER auto-includes a
+    station's own custom keyword lists the way Hash Sets/YARA rulesets are
+    auto-selected for their own Auto Analyze steps. That auto-select-
+    everything-configured precedent doesn't apply here: build_scan_
+    patterns()'s own docstring already states its established, existing
+    principle plainly - "a keyword list is never force-included just
+    because it exists" (it's opt-in per scan, chosen by an examiner for a
+    specific reason that may not apply to every image) - so this step
+    respects that existing rule rather than introducing a new exception to
+    it. The 5 built-ins (emails/URLs/IPs/card-like numbers/phone numbers)
+    are always safe to run against anything, which is exactly why they're
+    the ones with no selection step at all anywhere else in this app."""
+    patterns = build_scan_patterns(None)
+    filesystems = _tsk_resolve_filesystems(image_path)
+    if not filesystems:
+        return {"success": False, "error": "No recognized filesystem found in this image."}
+
+    results = {name: [] for name in patterns}
+    seen = {name: set() for name in patterns}
+    cat_truncated = {name: False for name in patterns}
+    files_scanned = 0
+    files_errored = 0
+    walk_truncated = False
+    start_time = time.time()
+
+    index_conn = None
+    index_rows_buf = []
+    hit_rows_buf = []
+    indexed_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    if case_consolidated_path(dest_dir):
+        index_db_path = case_index_db_path(dest_dir)
+        if index_db_path:
+            index_conn = _case_index_connect(index_db_path)
+            # Re-scan safety, matching execution_worker_image_triage_scan()'s
+            # own identical convention - replaces this image's prior rows
+            # rather than duplicating them.
+            index_conn.execute("DELETE FROM indexed_files WHERE image_path=?", (image_path,))
+            index_conn.execute("DELETE FROM triage_hits WHERE image_path=?", (image_path,))
+            index_conn.commit()
+
+    try:
+        for fsinfo in filesystems:
+            try:
+                fs = _tsk_open_fs(image_path, fsinfo['offset'])
+            except Exception:
+                continue
+            for entry, path in _tsk_walk(fs):
+                if entry['is_dir'] or entry['is_virtual']:
+                    continue
+                if files_scanned >= IMAGE_AUTOANALYZE_KEYWORD_MAX_FILES or (time.time() - start_time) > IMAGE_AUTOANALYZE_KEYWORD_MAX_SECONDS:
+                    walk_truncated = True
+                    break
+                if index_conn is not None:
+                    category, ext = classify_extension(entry['name'])
+                    index_rows_buf.append((
+                        image_path, fsinfo['offset'], entry['inode'], path, entry['name'],
+                        ext, category, entry['size'], int(entry['deleted']), int(entry['is_virtual']),
+                        entry['mtime'], entry['atime'], entry['ctime'], entry['crtime'], indexed_at,
+                    ))
+                if entry['deleted']:
+                    files_scanned += 1
+                else:
+                    try:
+                        tsk_file = fs.open_meta(inode=_tsk_parse_inode(entry['inode']))
+                        buf = io.BytesIO()
+                        _tsk_stream_file(tsk_file, buf.write, max_bytes=IMAGE_AUTOANALYZE_KEYWORD_MAX_FILE_BYTES)
+                        data = buf.getvalue()
+                        for name, pattern in patterns.items():
+                            if cat_truncated[name]:
+                                continue
+                            for m in pattern.finditer(data):
+                                val = m.group(0)
+                                if len(val) <= 4:  # skip trivial/near-empty matches, matching Triage Scan's own identical rule
+                                    continue
+                                key = (path, val)
+                                if key in seen[name]:
+                                    continue
+                                seen[name].add(key)
+                                results[name].append((path, val))
+                                if index_conn is not None:
+                                    hit_rows_buf.append((
+                                        'image', image_path, fsinfo['offset'], entry['inode'], path,
+                                        name, val.decode('utf-8', errors='replace'), indexed_at,
+                                    ))
+                                if len(results[name]) >= IMAGE_AUTOANALYZE_KEYWORD_MAX_MATCHES_PER_CATEGORY:
+                                    cat_truncated[name] = True
+                                    break
+                        files_scanned += 1
+                    except Exception:
+                        files_errored += 1
+                if index_conn is not None and (len(index_rows_buf) >= 200 or len(hit_rows_buf) >= 200):
+                    if index_rows_buf:
+                        index_conn.executemany(
+                            "INSERT INTO indexed_files (image_path, fs_offset, inode, path, name, extension, category, size, deleted, is_virtual, mtime, atime, ctime, crtime, indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            index_rows_buf)
+                        index_rows_buf = []
+                    if hit_rows_buf:
+                        index_conn.executemany(
+                            "INSERT INTO triage_hits (source_type, image_path, fs_offset, inode, path, category, value, found_at) VALUES (?,?,?,?,?,?,?,?)",
+                            hit_rows_buf)
+                        hit_rows_buf = []
+                    index_conn.commit()
+            if walk_truncated:
+                break
+
+        if index_conn is not None:
+            if index_rows_buf:
+                index_conn.executemany(
+                    "INSERT INTO indexed_files (image_path, fs_offset, inode, path, name, extension, category, size, deleted, is_virtual, mtime, atime, ctime, crtime, indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    index_rows_buf)
+            if hit_rows_buf:
+                index_conn.executemany(
+                    "INSERT INTO triage_hits (source_type, image_path, fs_offset, inode, path, category, value, found_at) VALUES (?,?,?,?,?,?,?,?)",
+                    hit_rows_buf)
+            index_conn.commit()
+    finally:
+        if index_conn is not None:
+            index_conn.close()
+
+    image_base = os.path.splitext(os.path.basename(image_path))[0]
+    report_path = os.path.join(dest_dir, f"{image_base}_autoanalyze_keyword_scan.txt")
+    total_hits = sum(len(v) for v in results.values())
+    lines = [
+        "# Pi Forensics Suite - Auto Analyze Keyword/Structured-Data Scan",
+        f"# Image: {image_path}",
+        f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"# Files scanned: {files_scanned}" + (" (capped - more files remained unscanned)" if walk_truncated else ""),
+        f"# Files skipped (unreadable): {files_errored}",
+        f"# Total hits: {total_hits}",
+        "# Built-in categories only (emails/URLs/IPs/card-like numbers/phone numbers) - custom",
+        "# keyword lists are never auto-included here; run Triage Scan manually to include one.",
+        "#",
+    ]
+    for name, rows in results.items():
+        if not rows:
+            continue
+        label = resolve_scan_category_label(name)
+        lines.append(f"# --- {label} ({len(rows)}{'+' if cat_truncated[name] else ''}) ---")
+        for path, val in rows:
+            lines.append(f"{path}\t{val.decode('utf-8', errors='replace')}")
+    if total_hits == 0:
+        lines.append("# No matches found.")
+    try:
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception as e:
+        return {"success": False, "error": f"Failed to write report file: {e}"}
+    _auto_tag_case_artifact(dest_dir, report_path)
+
+    return {
+        "success": True, "report_path": report_path, "files_scanned": files_scanned,
+        "files_errored": files_errored, "truncated": walk_truncated, "total_hits": total_hits,
+    }
 
 @image_browser_bp.route('/api/image/check_hash_lists', methods=['POST'])
 @requires_auth
@@ -3934,9 +4268,24 @@ AUTO_ANALYZE_STEP_LABELS = {
     "webcache": "Legacy IE/Edge WebCache (WebCacheV01/V24.dat)",
     "bits": "BITS Job Queue (qmgr.db)",
     "rdp_bitmap_cache": "RDP Bitmap Cache (metadata only, off by default)",
+    "yara_sweep": "YARA Rule Sweep (Whole Image)",
+    "keyword_scan": "Structured-Data Keyword Scan (emails/URLs/IPs/card numbers/phone numbers)",
 }
-AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts", "jumplists"]
-AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts"]
+# yara_sweep/keyword_scan (2026-09-08) are defaults on BOTH profiles, unlike
+# every other step here, since malware/known-file/keyword screening is
+# genuinely platform-agnostic - closes a real, previously-flagged gap where
+# running "just Auto Analyze" gave zero malware/keyword/known-file screening
+# at all unless an examiner remembered to run those tools separately.
+# yara_sweep is safe as a default even for a station with ZERO YARA rulesets
+# configured, since _auto_analyze_step_yara_sweep() below gracefully reports
+# a real success (0 files scanned, a clear reason why) rather than an
+# alarming "error" step for a station that's simply never set one up -
+# see that function's own comment. keyword_scan needs no configuration at
+# all - it always runs the 5 built-in TRIAGE_PATTERNS categories (never a
+# station's own custom keyword lists, which stay opt-in-only via a manual
+# Triage Scan - see _run_keyword_scan_body()'s own comment for why).
+AUTO_ANALYZE_WINDOWS_DEFAULT_STEPS = ["hash_manifest", "registry", "evtx", "prefetch", "recyclebin", "browser_artifacts", "jumplists", "yara_sweep", "keyword_scan"]
+AUTO_ANALYZE_LINUX_DEFAULT_STEPS = ["hash_manifest", "linux_artifacts", "yara_sweep", "keyword_scan"]
 # Opt-in, either profile - recover_deleted for cost/risk reasons (a bulk
 # write action, not just read-only parsing); android_artifacts because it's
 # never auto-detectable (an Android userdata partition is plain ext4,
@@ -4209,6 +4558,42 @@ def _auto_analyze_step_android_artifacts(image_path, case_folder, source_ip=None
         source_ip=source_ip, user=user)
 
 
+def _auto_analyze_step_yara_sweep(image_path, case_folder, source_ip=None, user=None):
+    # Auto Analyze has no per-run ruleset-selection UI (matching hash_
+    # manifest's own identical precedent) - auto-selects every ruleset
+    # currently configured on the station. A station with ZERO configured
+    # rulesets is a genuinely common, expected state (this feature is
+    # opt-in station configuration, not installed with anything by
+    # default) - reported here as a real success with an explicit reason,
+    # not a scary "error" step, since there's nothing wrong, just nothing
+    # to check against yet. This is also why yara_sweep can safely default
+    # ON for every Auto Analyze run regardless of whether a given station
+    # has ever set up a ruleset.
+    all_ids = [rs["id"] for rs in get_yara_rulesets()]
+    if not all_ids:
+        return {"success": True, "files_scanned": 0, "matched_file_count": 0,
+                "skipped_reason": "No YARA rulesets are configured on this station (Settings > Case & Reporting > Analysis & IOC Lists)."}
+    result = _run_yara_sweep_body(image_path, case_folder, all_ids, case_folder=case_folder)
+    if result["success"]:
+        log_chain_of_custody("yara_sweep_image", {
+            "image_path": image_path, "files_scanned": result["files_scanned"],
+            "files_errored": result["files_errored"], "truncated": result["truncated"],
+            "matched_file_count": result["matched_file_count"],
+        }, source_ip=source_ip, user=user)
+    return result
+
+
+def _auto_analyze_step_keyword_scan(image_path, case_folder, source_ip=None, user=None):
+    result = _run_keyword_scan_body(image_path, case_folder, case_folder=case_folder)
+    if result["success"]:
+        log_chain_of_custody("keyword_scan_auto_analyze_image", {
+            "image_path": image_path, "files_scanned": result["files_scanned"],
+            "files_errored": result["files_errored"], "truncated": result["truncated"],
+            "total_hits": result["total_hits"],
+        }, source_ip=source_ip, user=user)
+    return result
+
+
 def _auto_analyze_step_recover_deleted(image_path, case_folder, source_ip=None, user=None):
     result = _run_recover_deleted_body(image_path, case_folder)
     if result["success"]:
@@ -4239,6 +4624,8 @@ _AUTO_ANALYZE_STEP_FUNCTIONS = {
     "webcache": _auto_analyze_step_webcache,
     "bits": _auto_analyze_step_bits,
     "rdp_bitmap_cache": _auto_analyze_step_rdp_bitmap_cache,
+    "yara_sweep": _auto_analyze_step_yara_sweep,
+    "keyword_scan": _auto_analyze_step_keyword_scan,
 }
 
 

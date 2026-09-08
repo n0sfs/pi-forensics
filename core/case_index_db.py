@@ -393,6 +393,34 @@ CREATE TABLE IF NOT EXISTS parsed_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_parsed_artifacts_type ON parsed_artifacts(artifact_type);
 CREATE INDEX IF NOT EXISTS idx_parsed_artifacts_source ON parsed_artifacts(source_path);
+
+-- Examiner-reviewed manual contact merges (2026-09-08) - the actionable
+-- follow-up to correlate_contacts()'s own passive "possible_duplicate_keys"
+-- hint. NEVER auto-populated - every row here was created by a real click
+-- through /api/case_index/contacts/merge, with a required justification
+-- note. primary_key/merged_key are whatever key space correlate_contacts()
+-- itself uses (a normalized phone number, or a normalized email for an
+-- email-only contact) - not a foreign key into any other table, since
+-- "contacts" here are a computed, in-memory concept, not a real row
+-- anywhere. UNIQUE(merged_key) is what keeps every merge a simple depth-1
+-- pair rather than a chain - a contact can only ever be someone's "merged
+-- child" once; the write-side route additionally refuses to let a key that's
+-- already a merged_key become a primary_key (or vice versa) for exactly the
+-- same reason - see case_index_merge_contacts()'s own comment for why a
+-- chain would break correlate_contacts()'s one-hop remap-through logic. A
+-- single primary_key CAN have multiple merged children (multiple rows
+-- sharing one primary_key is fine and expected - e.g. one real person's
+-- phone-only, WhatsApp-only, and email-only identities all folded into one
+-- canonical entry).
+CREATE TABLE IF NOT EXISTS contact_merges (
+    id INTEGER PRIMARY KEY,
+    primary_key TEXT NOT NULL,
+    merged_key TEXT NOT NULL UNIQUE,
+    justification TEXT NOT NULL,
+    merged_by TEXT,
+    merged_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_contact_merges_primary ON contact_merges(primary_key);
 """
 
 def _case_index_connect(db_path):
@@ -1604,7 +1632,13 @@ def correlate_contacts(case_folder):
     flag - of OTHER contacts' own keys sharing this contact's exact
     normalized display name with no verified same-row/same-contact_id
     link; a disclosed hint only, NEVER auto-merged, since merging on a
-    shared name alone risks conflating two genuinely different people).
+    shared name alone risks conflating two genuinely different people),
+    and merged_from (2026-09-08 - a list, always present, empty unless an
+    examiner has actually merged another contact into this one via /api/
+    case_index/contacts/merge; each entry is {key, display_names,
+    justification, merged_by, merged_at} for one folded-in contact - the
+    permanent, disclosed record of a real manual merge decision, distinct
+    from possible_duplicate_keys' own passive, unconfirmed hint).
     Each contact's `samples` entries (up to CONTACT_CORRELATION_MAX_
     SAMPLES_PER_CONTACT) also carry `content_preview` (2026-09-08 - the
     real message/body text for that one communication where this app can
@@ -1941,6 +1975,59 @@ def correlate_contacts(case_folder):
             else:
                 by_contact[email_key] = email_entry
 
+        # Pass 3.5 (manual merge, 2026-09-08): applies any real, examiner-
+        # created merges from contact_merges - a deliberate, disclosed,
+        # EXAMINER-REVIEWED action (never automatic - see possible_
+        # duplicate_keys' own docstring above for why this app never
+        # auto-merges on a shared name alone), each one carrying a REQUIRED
+        # justification note recorded permanently with the case. Runs AFTER
+        # the automatic same-row Pass 3 merge above (so a merged_key/
+        # primary_key that was itself an email already auto-merged into its
+        # own linked phone resolves correctly through the same
+        # email_key_remap dict, one hop) and BEFORE the possible-duplicate-
+        # name-match pass below (so a contact just merged away correctly
+        # stops being flagged as its own separate "possible duplicate" of
+        # the contact it was just folded into). The write-side route
+        # (case_index_merge_contacts()) refuses to let a merged_key also
+        # become a primary_key (or vice versa) specifically so this loop
+        # never needs to resolve more than one hop through email_key_remap -
+        # a real chain (A absorbs B, B absorbs C) would need transitive
+        # resolution this single .get(key, key) lookup doesn't do.
+        cur = conn.execute("SELECT primary_key, merged_key, justification, merged_by, merged_at FROM contact_merges")
+        for m_primary, m_merged, m_justification, m_merged_by, m_merged_at in cur:
+            resolved_primary = email_key_remap.get(m_primary, m_primary)
+            resolved_merged = email_key_remap.get(m_merged, m_merged)
+            if resolved_primary == resolved_merged:
+                continue  # already the same entity (e.g. both auto-merged into one phone via Pass 3) - nothing to do
+            if resolved_merged not in by_contact or resolved_primary not in by_contact:
+                continue  # the underlying data has shifted since this merge was created - skip gracefully, never crash
+            merged_entry = by_contact.pop(resolved_merged)
+            target = by_contact[resolved_primary]
+            target["display_names"] = sorted(set(target["display_names"]) | set(merged_entry["display_names"]))
+            target["contact_sources"] = sorted(set(target["contact_sources"]) | set(merged_entry["contact_sources"]))
+            for channel, count in merged_entry["communication_counts"].items():
+                target["communication_counts"][channel] = target["communication_counts"].get(channel, 0) + count
+            target["total_communications"] += merged_entry["total_communications"]
+            target["direction_counts"]["incoming"] += merged_entry["direction_counts"]["incoming"]
+            target["direction_counts"]["outgoing"] += merged_entry["direction_counts"]["outgoing"]
+            target["total_duration_seconds"] += merged_entry["total_duration_seconds"]
+            if merged_entry["first_seen"] is not None and (target["first_seen"] is None or merged_entry["first_seen"] < target["first_seen"]):
+                target["first_seen"] = merged_entry["first_seen"]
+            if merged_entry["last_seen"] is not None and (target["last_seen"] is None or merged_entry["last_seen"] > target["last_seen"]):
+                target["last_seen"] = merged_entry["last_seen"]
+            remaining = CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT - len(target["samples"])
+            if remaining > 0:
+                target["samples"].extend(merged_entry["samples"][:remaining])
+            target.setdefault("merged_from", []).append({
+                "key": resolved_merged,
+                "display_names": merged_entry["display_names"],
+                "justification": m_justification,
+                "merged_by": m_merged_by,
+                "merged_at": m_merged_at,
+            })
+            email_key_remap[m_merged] = resolved_primary
+            email_key_remap[resolved_merged] = resolved_primary
+
         # Remap co_occurrence_counts' raw (Pass 2a/2b) pair keys through the
         # Pass 3 merge - a phone key is already final and passes through
         # unchanged (email_key_remap only ever maps email keys); an email
@@ -1982,6 +2069,7 @@ def correlate_contacts(case_folder):
         # absence of the key means "checked, none found" vs "not computed".
         for c in by_contact.values():
             c["possible_duplicate_keys"] = []
+            c.setdefault("merged_from", [])
         by_normalized_name = {}
         for c in by_contact.values():
             for name in c["display_names"]:
