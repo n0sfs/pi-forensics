@@ -327,6 +327,7 @@
                                                         <div class="btn-group btn-group-sm" role="group">
                                                             <button type="button" class="btn btn-outline-info active" id="polGranHourBtn" onclick="setPatternOfLifeActivityGranularity('hour')">By Hour of Day</button>
                                                             <button type="button" class="btn btn-outline-info" id="polGranDowBtn" onclick="setPatternOfLifeActivityGranularity('dow')">By Day of Week</button>
+                                                            <button type="button" class="btn btn-outline-info" id="polGranHeatmapBtn" onclick="setPatternOfLifeActivityGranularity('heatmap')" title="A 2D hour-of-day x day-of-week grid - reveals a pattern neither 1D view shows alone, e.g. 'active every Tuesday night' rather than just 'active at night' overall."><i class="bi bi-grid-3x3-gap-fill me-1"></i>Heatmap</button>
                                                         </div>
                                                         <label class="small text-subtle mb-0" title="Off by default - a web page visit isn't a two-way communication the way a text/call/app message is, so it's kept out of this chart's default view. Turn on to fold browser history/downloads/bookmarks/cookies into the same hour/day breakdown alongside communications."><input type="checkbox" class="form-check-input me-1" id="polIncludeWebActivityCheck" onchange="onPatternOfLifeIncludeWebToggle(this.checked)">+ Web Browsing</label>
                                                         <label class="small text-subtle mb-0" title="Off by default - a calendar entry's own timestamp can be a future-scheduled event, not evidence the device was actually in use at that moment, so it's kept out of this chart's default view. Turn on to fold parsed calendar events/reminders into the same hour/day breakdown."><input type="checkbox" class="form-check-input me-1" id="polIncludeCalendarCheck" onchange="onPatternOfLifeIncludeCalendarToggle(this.checked)">+ Calendar</label>
@@ -340,7 +341,7 @@
                                                         <span id="patternOfLifeActivitySummary" class="small text-subtle"></span>
                                                     </div>
                                                     <div class="text-subtle small mb-1" style="display:none;" id="polActivityBarClickHint"><i class="bi bi-hand-index-thumb me-1"></i>Tap a bar to see which events it's made of.</div>
-                                                    <div class="border border-secondary rounded-2 mb-3 p-2" id="patternOfLifeActivityChartWrap" style="height: 180px; background-color:#090b10; position:relative;"><canvas id="patternOfLifeActivityChart"></canvas></div>
+                                                    <div class="border border-secondary rounded-2 mb-3 p-2" id="patternOfLifeActivityChartWrap" style="height: 180px; background-color:#090b10; position:relative;"><canvas id="patternOfLifeActivityChart"></canvas><div id="patternOfLifeActivityHeatmap" style="display:none; overflow:auto; height:100%;"></div></div>
                                                     <div id="patternOfLifeActivityEmpty" class="text-subtle small mb-3" style="display:none;">No timestamped communications (SMS, calls, WhatsApp, or similar) parsed for this case yet.</div>
 
                                                     <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-person-lines-fill me-1"></i>Contact Correlation &amp; Relationship Graph</h6>
@@ -354,6 +355,11 @@
                                                         <div id="relationshipGraphSearchWrap" style="display:none;">
                                                             <input type="text" class="form-control form-control-sm" id="relationshipGraphSearchInput" placeholder="Find a contact..." oninput="filterRelationshipGraph(this.value)" style="width: 180px;">
                                                         </div>
+                                                    </div>
+                                                    <div class="d-flex align-items-center gap-2 mb-2" id="relationshipGraphVolumeWrap" style="display:none;">
+                                                        <label class="small text-subtle mb-0" for="relationshipGraphVolumeSlider" title="Hides a contact from the graph below this many total communications - a quick way to declutter down to just the people this device talked to the most. Doesn't remove anyone from Table View or anywhere else in the app, only from this one graph's own display.">Min. communications:</label>
+                                                        <input type="range" class="form-range" id="relationshipGraphVolumeSlider" min="0" max="1" step="1" value="0" style="width:160px;" oninput="onRelationshipGraphVolumeThresholdChange(this.value)">
+                                                        <span class="small text-info fw-bold" id="relationshipGraphVolumeLabel">Show all</span>
                                                     </div>
                                                     <div id="relationshipGraphLegend" class="small text-subtle mb-2" style="display:none;"></div>
                                                     <div id="relationshipGraphContainer" class="border border-secondary rounded-2 mb-2" style="height: 480px; background-color:#090b10; position:relative;"></div>

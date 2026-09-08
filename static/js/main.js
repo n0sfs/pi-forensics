@@ -9537,6 +9537,17 @@ const RELATIONSHIP_TIER_COLORS = { frequent: '#f87171', regular: '#60a5fa', one_
 let relationshipGraphNodesDataSet = null;
 let relationshipGraphEdgesDataSet = null;
 let relationshipGraphNodeSearchText = {};
+// key -> contact.total_communications, for the volume-threshold slider
+// (onRelationshipGraphVolumeThresholdChange()/applyRelationshipGraphVolume
+// Filter()) - a genuine hide (vis-network's own `hidden` node/edge option),
+// deliberately distinct from filterRelationshipGraph()'s own dim-via-
+// opacity search filter above, so the two compose correctly: search dims
+// (still visible, just deemphasized, since the surrounding context still
+// matters), volume threshold hides outright (the stated goal is decluttering
+// away low-volume noise entirely). A node/edge hidden by one filter stays
+// hidden regardless of the other filter's own opacity value.
+let relationshipGraphNodeVolume = {};
+let relationshipGraphVolumeThreshold = 0;
 const RELATIONSHIP_CO_OCCURRENCE_COLOR = '#6b7280'; // a deliberately muted gray, distinct from every tier color - these edges are a different KIND of signal (two contacts seen together), not a device<->contact relationship
 // vis-network draws labels on an HTML5 canvas, not real DOM text, so it
 // needs an actual font-family string (no "inherit") - a real system-font
@@ -9622,7 +9633,13 @@ function renderRelationshipGraph(data) {
     relationshipGraphNodesDataSet = null;
     relationshipGraphEdgesDataSet = null;
     relationshipGraphNodeSearchText = {};
+    relationshipGraphNodeVolume = {};
+    relationshipGraphVolumeThreshold = 0;
     if (searchInput) searchInput.value = '';  // a stale search term filtering a freshly-rebuilt graph would be confusing, not just cosmetic
+    const volumeSlider = document.getElementById('relationshipGraphVolumeSlider');
+    const volumeLabel = document.getElementById('relationshipGraphVolumeLabel');
+    if (volumeSlider) volumeSlider.value = '0';  // same reasoning - a stale threshold from a previously-loaded case must never silently carry over
+    if (volumeLabel) volumeLabel.textContent = 'Show all';
     container.innerHTML = '';
 
     if (!data || !data.contacts || data.contacts.length === 0) {
@@ -9673,12 +9690,14 @@ function renderRelationshipGraph(data) {
     }];
     const edges = [];
     const graphContactKeys = new Set();
+    if (volumeSlider) volumeSlider.max = String(Math.max(...graphContacts.map((c) => c.total_communications), 1));
     graphContacts.forEach((c) => {
         const color = RELATIONSHIP_TIER_COLORS[c.tier] || RELATIONSHIP_TIER_COLORS.regular;
         const key = _contactCorrelationKey(c);
         graphContactKeys.add(key);
         relationshipGraphNodeSearchText[key] = [...c.display_names, c.normalized_number, c.normalized_email]
             .filter(Boolean).join(' ').toLowerCase();
+        relationshipGraphNodeVolume[key] = c.total_communications;
         nodes.push({
             id: key,
             label: c.display_names.length ? c.display_names[0] : key,
@@ -9784,6 +9803,34 @@ function filterRelationshipGraph(query) {
 }
 
 
+// Communication-volume threshold slider (2026-09-09) - genuinely HIDES a
+// low-volume contact (vis-network's own `hidden` node/edge option), rather
+// than dimming it the way the search filter above does - "declutter down
+// to just the people this device talked to the most" is the stated goal,
+// and a hidden node is also excluded from vis-network's own rendering pass
+// entirely, which composes cleanly alongside the search filter's separate
+// opacity property (neither filter has to know about the other).
+function onRelationshipGraphVolumeThresholdChange(value) {
+    relationshipGraphVolumeThreshold = parseInt(value, 10) || 0;
+    const label = document.getElementById('relationshipGraphVolumeLabel');
+    if (label) label.textContent = relationshipGraphVolumeThreshold === 0 ? 'Show all' : `>= ${relationshipGraphVolumeThreshold}`;
+    applyRelationshipGraphVolumeFilter();
+}
+
+function applyRelationshipGraphVolumeFilter() {
+    if (!relationshipGraphNodesDataSet || !relationshipGraphEdgesDataSet) return;
+    const passes = (id) => id === '__device__' || (relationshipGraphNodeVolume[id] || 0) >= relationshipGraphVolumeThreshold;
+    relationshipGraphNodesDataSet.update(
+        relationshipGraphNodesDataSet.getIds().map((id) => ({ id, hidden: !passes(id) }))
+    );
+    relationshipGraphEdgesDataSet.update(
+        relationshipGraphEdgesDataSet.get().map((edge) => ({
+            id: edge.id,
+            hidden: edge.from === '__device__' ? !passes(edge.to) : !(passes(edge.from) && passes(edge.to)),
+        }))
+    );
+}
+
 function togglePatternOfLifeGraphMetric() {
     relationshipGraphMetric = relationshipGraphMetric === 'duration' ? 'count' : 'duration';
     renderRelationshipGraph(patternOfLifeContactData);
@@ -9821,6 +9868,8 @@ function setPatternOfLifeContactView(view) {
         metricBtn.style.display = (showGraph && hasAnyDuration) ? '' : 'none';
     }
     if (searchWrap) searchWrap.style.display = (showGraph && hasContacts) ? '' : 'none';
+    const volumeWrap = document.getElementById('relationshipGraphVolumeWrap');
+    if (volumeWrap) volumeWrap.style.display = (showGraph && hasContacts) ? '' : 'none';
     if (showGraph && relationshipGraphNetwork) {
         // vis-network can mis-measure a container that was display:none at
         // the moment it last rendered - redraw + fit once genuinely visible
@@ -10593,7 +10642,7 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
 // the right tool for those.
 let patternOfLifeActivityAllRows = null;   // cached UNFILTERED rows, so neither the granularity nor the category toggle ever re-fetches
 let patternOfLifeActivityRows = null;      // the currently-filtered subset actually charted
-let patternOfLifeActivityGranularity = 'hour'; // 'hour' | 'dow'
+let patternOfLifeActivityGranularity = 'hour'; // 'hour' | 'dow' | 'heatmap'
 let patternOfLifeActivityIncludeWeb = false;
 let patternOfLifeActivityIncludeCalendar = false;
 let patternOfLifeActivityChart = null;
@@ -10714,8 +10763,10 @@ function setPatternOfLifeActivityGranularity(mode) {
     patternOfLifeActivityGranularity = mode;
     const hourBtn = document.getElementById('polGranHourBtn');
     const dowBtn = document.getElementById('polGranDowBtn');
+    const heatmapBtn = document.getElementById('polGranHeatmapBtn');
     if (hourBtn) hourBtn.classList.toggle('active', mode === 'hour');
     if (dowBtn) dowBtn.classList.toggle('active', mode === 'dow');
+    if (heatmapBtn) heatmapBtn.classList.toggle('active', mode === 'heatmap');
     hidePatternOfLifeActivityPopup();  // a stale popup's bucket index means something different once granularity changes
     renderPatternOfLifeActivityChart();
 }
@@ -10731,25 +10782,124 @@ function onPatternOfLifeIncludeCalendarToggle(checked) {
 }
 
 const PATTERN_OF_LIFE_DOW_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const PATTERN_OF_LIFE_DOW_LABELS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// Same locale-hour-label formatting the 1D "By Hour" chart already uses,
+// just computed once here since the heatmap needs it per-column rather
+// than per-render (24 real DOM header cells, not Chart.js tick labels).
+const PATTERN_OF_LIFE_HEATMAP_HOUR_LABELS = Array.from({ length: 24 }, (_, h) => {
+    const d = new Date(); d.setHours(h, 0, 0, 0);
+    return d.toLocaleTimeString(undefined, { hour: 'numeric' });
+});
+// [day][hour] -> the exact event rows in that cell, filled in by
+// renderPatternOfLifeActivityHeatmap() on every render - what a cell's own
+// click handler reads, mirroring patternOfLifeActivityBucketRows' identical
+// role for the 1D bar charts (kept separate since the indexing is 2D here).
+let patternOfLifeHeatmapBucketRows = [];
+
+// Lerps from the chart container's own dark background up to the same
+// purple the 1D bar chart already uses for its bars - so a zero-count cell
+// still reads as a real, present cell (not invisible) and the two chart
+// types read as one visual family rather than two unrelated color schemes.
+function _patternOfLifeHeatmapCellColor(intensity) {
+    const from = [30, 41, 59];    // a quiet, visible "zero" tone
+    const to = [167, 139, 250];   // #a78bfa - matches the bar chart's own bar color
+    const rgb = from.map((f, i) => Math.round(f + (to[i] - f) * Math.max(0, Math.min(1, intensity))));
+    return `rgb(${rgb.join(',')})`;
+}
+
+function renderPatternOfLifeActivityHeatmap(rows, container) {
+    const counts = Array.from({ length: 7 }, () => new Array(24).fill(0));
+    patternOfLifeHeatmapBucketRows = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => []));
+    rows.forEach((e) => {
+        const d = new Date(e.timestamp * 1000);
+        const day = d.getDay(), hour = d.getHours();
+        counts[day][hour] += 1;
+        patternOfLifeHeatmapBucketRows[day][hour].push(e);
+    });
+    const maxCount = Math.max(...counts.flat(), 1);
+
+    container.innerHTML = '';
+    const table = document.createElement('table');
+    table.style.cssText = 'width:100%; height:100%; border-collapse:collapse; font-size:0.62rem; table-layout:fixed;';
+
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    const corner = document.createElement('th');
+    corner.style.width = '32px';
+    headRow.appendChild(corner);
+    PATTERN_OF_LIFE_HEATMAP_HOUR_LABELS.forEach((label) => {
+        const th = document.createElement('th');
+        th.className = 'text-subtle';
+        th.style.cssText = 'text-align:center; padding:1px 0; font-weight:normal;';
+        th.textContent = label.replace(' ', '').toLowerCase();
+        headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    PATTERN_OF_LIFE_DOW_LABELS_SHORT.forEach((shortLabel, day) => {
+        const tr = document.createElement('tr');
+        const th = document.createElement('th');
+        th.className = 'text-subtle';
+        th.style.cssText = 'text-align:right; padding-right:4px; font-weight:normal; white-space:nowrap;';
+        th.textContent = shortLabel;
+        tr.appendChild(th);
+        for (let hour = 0; hour < 24; hour++) {
+            const count = counts[day][hour];
+            const td = document.createElement('td');
+            td.style.cssText = `background-color:${_patternOfLifeHeatmapCellColor(count / maxCount)}; `
+                + `border:1px solid #090b10; cursor:${count ? 'pointer' : 'default'};`;
+            td.title = `${PATTERN_OF_LIFE_DOW_LABELS[day]}, ${PATTERN_OF_LIFE_HEATMAP_HOUR_LABELS[hour]}: ${count} event(s)`
+                + (count ? ' - click for detail' : '');
+            if (count) {
+                td.onclick = () => showPatternOfLifeActivityBarPopup(
+                    `${PATTERN_OF_LIFE_DOW_LABELS[day]}, ${PATTERN_OF_LIFE_HEATMAP_HOUR_LABELS[hour]}`,
+                    patternOfLifeHeatmapBucketRows[day][hour]
+                );
+            }
+            tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    container.appendChild(table);
+}
 
 function renderPatternOfLifeActivityChart() {
     const canvas = document.getElementById('patternOfLifeActivityChart');
+    const heatmapEl = document.getElementById('patternOfLifeActivityHeatmap');
     const emptyEl = document.getElementById('patternOfLifeActivityEmpty');
     const hintEl = document.getElementById('polActivityBarClickHint');
+    const wrapEl = document.getElementById('patternOfLifeActivityChartWrap');
     if (!canvas) return;
     const rows = patternOfLifeActivityRows || [];
     hidePatternOfLifeActivityPopup();  // any prior drill-down no longer matches the data about to be charted
 
+    // The heatmap needs more vertical room than the 1D bar charts (a header
+    // row of 24 hour labels + 7 day rows) - resized here, the one place that
+    // runs on every mode switch and every data recompute, rather than only
+    // on the button click, so it's never left mismatched after a re-filter.
+    if (wrapEl) wrapEl.style.height = patternOfLifeActivityGranularity === 'heatmap' ? '260px' : '180px';
+
     if (rows.length === 0) {
         if (patternOfLifeActivityChart) { patternOfLifeActivityChart.destroy(); patternOfLifeActivityChart = null; }
         canvas.style.display = 'none';
+        if (heatmapEl) { heatmapEl.style.display = 'none'; heatmapEl.innerHTML = ''; }
         if (emptyEl) emptyEl.style.display = '';
         if (hintEl) hintEl.style.display = 'none';
         return;
     }
-    canvas.style.display = '';
     if (emptyEl) emptyEl.style.display = 'none';
     if (hintEl) hintEl.style.display = '';
+
+    if (patternOfLifeActivityGranularity === 'heatmap') {
+        canvas.style.display = 'none';
+        if (heatmapEl) { heatmapEl.style.display = ''; renderPatternOfLifeActivityHeatmap(rows, heatmapEl); }
+        return;
+    }
+    canvas.style.display = '';
+    if (heatmapEl) { heatmapEl.style.display = 'none'; heatmapEl.innerHTML = ''; }
 
     const bucketCount = patternOfLifeActivityGranularity === 'dow' ? 7 : 24;
     const counts = new Array(bucketCount).fill(0);
