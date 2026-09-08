@@ -1410,6 +1410,10 @@ TOOL_VERSION_COMMANDS = [
     # CLI tools invoked directly via subprocess (no pip wrapper needed).
     {"tool": "tesseract", "cmd": ["tesseract", "--version"], "package": "tesseract-ocr"},
     {"tool": "ffmpeg", "cmd": ["ffmpeg", "-version"], "package": "ffmpeg"},
+    # macOS APFS disk-image browsing, 2026-09-08 - core/apfs_utils.py.
+    # package: None since this one builds from source (no apt fallback
+    # to offer, and none needed - see requirements.txt's own comment).
+    {"tool": "libfsapfs-python", "cmd": [VOL3_PIP_BIN, "show", "libfsapfs-python"], "package": None},
 ]
 # Every installable package this endpoint will ever run apt-get for - the
 # same allowlist install.py's sudoers file grants exact NOPASSWD entries

@@ -21,6 +21,24 @@ file after updating to see what changed.
 
 ---
 
+## [1.76.0] - 2026-09-09
+
+### Added
+- **macOS APFS disk-image browsing.** File Explorer's "Browse as Image" flow could never open an
+  APFS-formatted image before this - APFS is the only filesystem virtually every Mac sold since
+  ~2017-2018 uses, and the underlying Sleuth Kit library this app has always relied on has never had
+  the extension needed to open one at all. A new library closes that gap: an APFS image now opens,
+  browses, extracts, and hashes exactly like any other image already supported, with zero change to
+  any of File Explorer's existing tools. A container holding multiple logical volumes (a real Mac
+  disk commonly has several - Data, Preboot, Recovery, VM) auto-selects the largest one to browse,
+  since that's reliably the actual user-data volume in practice; switching to a different volume in
+  the same container isn't supported yet. FileVault-encrypted APFS volumes and deleted-file recovery
+  are both explicitly out of scope for this pass - see the internal engineering log for why.
+  **Not yet tested against a genuine Mac-formatted drive or image** (no such test file could be
+  constructed without real Apple hardware/tooling) - every underlying mechanism was independently
+  confirmed against the real library, matching how this project already shipped similarly-unverified
+  support for a few other formats (Windows Prefetch, SRUM) before real samples became available.
+
 ## [1.75.0] - 2026-09-09
 
 ### Added
