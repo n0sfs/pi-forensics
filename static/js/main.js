@@ -9912,6 +9912,15 @@ async function loadContactCorrelation() {
     renderRelationshipGraphLegend(data);
     renderRelationshipGraph(data);
     setPatternOfLifeContactView(patternOfLifeContactView);
+    // Location<->Contact cross-linking (2026-09-08): both this function and
+    // loadPatternOfLifeGeoActivity() are fired together, concurrently, from
+    // the same Pattern of Life orchestrator - whichever resolves FIRST
+    // renders its own table before the other's data exists yet, so its own
+    // cross-linking buttons would be silently missing from that first
+    // render. If geo data already loaded before this did, re-run the geo
+    // loader (cheap - a plain GET against an already-fast local backend)
+    // so its own "Nearby Contacts" buttons pick up this contact data too.
+    if (patternOfLifeGeoActivityData) loadPatternOfLifeGeoActivity();
 }
 
 const CONTACT_CORRELATION_TABLE_COLSPAN = 11; // Contact/Number/Email/Tier/Source(s)/Communications/Direction/Talk Time/First Seen/Last Seen/(actions) - keep in sync with the <thead> below
@@ -9947,6 +9956,62 @@ function _buildContactCorrelationPreviewRow(contact) {
         const text = document.createElement('div');
         text.className = 'text-light';
         text.textContent = s.content_preview; // untrusted evidence content - text node only
+        line.appendChild(meta);
+        line.appendChild(text);
+        td.appendChild(line);
+    });
+
+    tr.appendChild(td);
+    return tr;
+}
+
+// Contact -> nearby locations (the first half of the 2026-09-08 Location
+// <-> Contact cross-linking feature - see _pointsNearTimestamp()'s own
+// comment for the disclosed time-proximity-only heuristic this is built
+// on). Returns null (no button at all) when there's genuinely nothing to
+// show - either this contact has no timestamped sample at all, or the
+// case has no location data loaded yet - rather than a button that always
+// opens to an empty "no matches" row.
+function _buildContactNearbyLocationsRow(contact) {
+    const geoPoints = (patternOfLifeGeoActivityData && patternOfLifeGeoActivityData.points) || [];
+    if (geoPoints.length === 0) return null;
+    const timedSamples = (contact.samples || []).filter(s => s.timestamp !== null && s.timestamp !== undefined);
+    if (timedSamples.length === 0) return null;
+
+    // One nearby-points lookup per distinct sample timestamp (a contact
+    // can have several samples sharing the same moment - e.g. an SMS and
+    // its own delivery receipt - no need to repeat the same lookup twice).
+    const seenTimestamps = new Set();
+    const matches = [];
+    timedSamples.forEach(s => {
+        if (seenTimestamps.has(s.timestamp)) return;
+        seenTimestamps.add(s.timestamp);
+        const nearby = _pointsNearTimestamp(geoPoints, s.timestamp, LOCATION_CONTACT_LINK_WINDOW_SECONDS);
+        nearby.forEach(p => matches.push({ sample: s, point: p }));
+    });
+    if (matches.length === 0) return null;
+
+    const tr = document.createElement('tr');
+    tr.style.display = 'none';
+    const td = document.createElement('td');
+    td.colSpan = CONTACT_CORRELATION_TABLE_COLSPAN;
+    td.className = 'bg-app-dark';
+
+    const heading = document.createElement('div');
+    heading.className = 'small fw-bold text-subtle mt-1 mb-1';
+    heading.textContent = `Location(s) recorded within ${Math.round(LOCATION_CONTACT_LINK_WINDOW_SECONDS / 60)} minutes of a communication with this contact (time proximity only - not a confirmed link)`;
+    td.appendChild(heading);
+
+    matches.slice(0, 10).forEach(({ sample, point }) => {
+        const line = document.createElement('div');
+        line.className = 'small mb-1 pb-1 border-bottom border-secondary';
+        const deltaMin = Math.round(Math.abs(point.timestamp - sample.timestamp) / 60);
+        const meta = document.createElement('div');
+        meta.className = 'text-info';
+        meta.textContent = `${sample.artifact_type} at ${_formatContactCorrelationTimestamp(sample.timestamp)} - ${deltaMin} min from a location fix`;
+        const text = document.createElement('div');
+        text.className = 'text-light';
+        text.textContent = `${point.name} (${point.lat.toFixed(3)}, ${point.lon.toFixed(3)}) - ${point.source}`;
         line.appendChild(meta);
         line.appendChild(text);
         td.appendChild(line);
@@ -10078,10 +10143,22 @@ function renderContactCorrelationTable(data) {
             previewBtn.onclick = () => { previewRow.style.display = previewRow.style.display === 'none' ? 'table-row' : 'none'; };
             actionCell.appendChild(previewBtn);
         }
+
+        const nearbyLocationsRow = _buildContactNearbyLocationsRow(contact);
+        if (nearbyLocationsRow) {
+            const nearbyBtn = document.createElement('button');
+            nearbyBtn.type = 'button';
+            nearbyBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2 ms-1';
+            nearbyBtn.title = 'Show location(s) recorded around the same time as a communication with this contact (time proximity only, not a confirmed link)';
+            nearbyBtn.innerHTML = '<i class="bi bi-geo-alt"></i>';
+            nearbyBtn.onclick = () => { nearbyLocationsRow.style.display = nearbyLocationsRow.style.display === 'none' ? 'table-row' : 'none'; };
+            actionCell.appendChild(nearbyBtn);
+        }
         row.appendChild(actionCell);
 
         tbody.appendChild(row);
         if (previewRow) tbody.appendChild(previewRow);
+        if (nearbyLocationsRow) tbody.appendChild(nearbyLocationsRow);
     });
 
     table.appendChild(tbody);
@@ -10136,6 +10213,8 @@ function loadPatternOfLife() {
 // disposing of the prior map instance first, the identical pattern
 // renderRelationshipGraph() already uses for its own vis-network instance.
 let patternOfLifeGeoMapInstance = null;
+let patternOfLifeGeoActivityData = null;   // the one geo_activity response both the map and the contact<->location cross-linking below read from
+const LOCATION_CONTACT_LINK_WINDOW_SECONDS = 7200; // 2 hours - a disclosed, deliberately generous "around the same time" heuristic, never a verified link (see _pointsNearTimestamp()'s own comment)
 
 // Home/Work inference (2026-09-08) - a real, standard pattern-of-life
 // technique: the location most-visited during overnight hours is likely
@@ -10246,6 +10325,7 @@ async function loadPatternOfLifeGeoActivity() {
         if (summaryEl) summaryEl.textContent = (data && data.error) || 'Failed to load location activity.';
         return;
     }
+    patternOfLifeGeoActivityData = data; // cached for the contact<->location cross-linking below, no re-fetch
 
     if (data.points.length === 0) {
         if (summaryEl) summaryEl.textContent = '';
@@ -10261,7 +10341,20 @@ async function loadPatternOfLifeGeoActivity() {
     }
 
     const homeWorkByKey = classifyHomeWorkLocations(data.points, data.frequent_locations);
-    renderGeoActivityMap(mapEl, data.points, data.frequent_locations, homeWorkByKey);
+    const showPathCb = document.getElementById('patternOfLifeGeoShowPath');
+    renderGeoActivityMap(mapEl, data.points, data.frequent_locations, homeWorkByKey, showPathCb && showPathCb.checked);
+    // Location<->Contact cross-linking (2026-09-08): if contact data
+    // already finished loading BEFORE this function's own frequent-
+    // locations table is about to be built below, that table already
+    // correctly picks up the "Nearby Contacts" buttons (it reads
+    // patternOfLifeContactData live, right when it builds). What it
+    // canNOT fix on its own is the REVERSE case - the Contact Correlation
+    // table may have ALREADY rendered (without "Nearby Locations" buttons,
+    // since this geo data didn't exist yet at that point) before this
+    // function ever got here - so re-render it now from cache (no
+    // re-fetch needed) if it's already loaded, mirroring loadContact
+    // Correlation()'s own end-of-function hook for the opposite ordering.
+    if (patternOfLifeContactData) renderContactCorrelationTable(patternOfLifeContactData);
 
     if (listEl && data.frequent_locations.length) {
         const label = document.createElement('div');
@@ -10276,7 +10369,7 @@ async function loadPatternOfLifeGeoActivity() {
         }
         const table = document.createElement('table');
         table.className = 'table table-sm table-dark table-hover small mb-0';
-        table.innerHTML = '<thead><tr><th>Coordinates</th><th>Type</th><th>Visits</th><th>First Seen</th><th>Last Seen</th></tr></thead>';
+        table.innerHTML = '<thead><tr><th>Coordinates</th><th>Type</th><th>Visits</th><th>First Seen</th><th>Last Seen</th><th></th></tr></thead>';
         const tbody = document.createElement('tbody');
         data.frequent_locations.forEach(loc => {
             const key = _geoLocationKey(loc.lat, loc.lon);
@@ -10299,8 +10392,20 @@ async function loadPatternOfLifeGeoActivity() {
             firstCell.textContent = _formatContactCorrelationTimestamp(loc.first_seen);
             const lastCell = document.createElement('td');
             lastCell.textContent = _formatContactCorrelationTimestamp(loc.last_seen);
-            row.appendChild(coordCell); row.appendChild(typeCell); row.appendChild(visitCell); row.appendChild(firstCell); row.appendChild(lastCell);
+            const actionCell = document.createElement('td');
+            const nearbyContactsRow = _buildLocationNearbyContactsRow(loc);
+            if (nearbyContactsRow) {
+                const nearbyBtn = document.createElement('button');
+                nearbyBtn.type = 'button';
+                nearbyBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
+                nearbyBtn.title = 'Show contact(s) with a communication recorded around the same time as a visit here (time proximity only, not a confirmed link)';
+                nearbyBtn.innerHTML = '<i class="bi bi-person-lines-fill"></i>';
+                nearbyBtn.onclick = () => { nearbyContactsRow.style.display = nearbyContactsRow.style.display === 'none' ? 'table-row' : 'none'; };
+                actionCell.appendChild(nearbyBtn);
+            }
+            row.appendChild(coordCell); row.appendChild(typeCell); row.appendChild(visitCell); row.appendChild(firstCell); row.appendChild(lastCell); row.appendChild(actionCell);
             tbody.appendChild(row);
+            if (nearbyContactsRow) tbody.appendChild(nearbyContactsRow);
         });
         table.appendChild(tbody);
         const wrapper = document.createElement('div');
@@ -10311,7 +10416,79 @@ async function loadPatternOfLifeGeoActivity() {
     }
 }
 
-function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKey) {
+// Location<->Contact cross-linking (2026-09-08) - "click a contact, see
+// where the device was around the same time as talking to them, or vice
+// versa." There is no direct per-row link anywhere in this app's data
+// model between a location point and a specific communication (unlike,
+// say, a photo's own embedded GPS tied to its own capture time) - the
+// ONLY real, available correlation signal is TIME PROXIMITY between a
+// comm's own timestamp and a location point's own timestamp, both already
+// independently indexed. This is deliberately disclosed as a heuristic
+// window, never presented as a confirmed link - matching this app's own
+// established "plain, explainable, disclosed" preference already applied
+// to the grid-based location clustering above (a real, simple rule over
+// an opaque one). A location point with no timestamp (KML-only) can never
+// participate in this - there's nothing to compare it against.
+function _pointsNearTimestamp(points, targetTs, windowSeconds) {
+    if (targetTs === null || targetTs === undefined) return [];
+    return (points || []).filter(p => p.timestamp !== null && p.timestamp !== undefined
+        && Math.abs(p.timestamp - targetTs) <= windowSeconds);
+}
+
+// The reverse direction of _buildContactNearbyLocationsRow() below - "who
+// was this device talking to around the time it was at this frequent
+// location." Same disclosed time-proximity-only heuristic, same window.
+// Returns null when contact data hasn't loaded yet or nothing matches.
+function _buildLocationNearbyContactsRow(loc) {
+    const contacts = (patternOfLifeContactData && patternOfLifeContactData.contacts) || [];
+    if (contacts.length === 0) return null;
+    const geoPoints = (patternOfLifeGeoActivityData && patternOfLifeGeoActivityData.points) || [];
+    // Every raw point belonging to this exact cluster cell (grid-rounded
+    // to the same precision the backend already used to build `loc`) -
+    // a cluster can be fed by more than one real visit's own timestamp.
+    const clusterKey = _geoLocationKey(loc.lat, loc.lon);
+    const clusterPoints = geoPoints.filter(p => _geoLocationKey(p.lat, p.lon) === clusterKey
+        && p.timestamp !== null && p.timestamp !== undefined);
+    if (clusterPoints.length === 0) return null;
+
+    const matchesByContact = new Map(); // key -> {contact, sample, point} (first match only, per contact)
+    contacts.forEach(contact => {
+        for (const sample of (contact.samples || [])) {
+            if (sample.timestamp === null || sample.timestamp === undefined) continue;
+            const nearPoint = clusterPoints.find(p => Math.abs(p.timestamp - sample.timestamp) <= LOCATION_CONTACT_LINK_WINDOW_SECONDS);
+            if (nearPoint) {
+                matchesByContact.set(_contactCorrelationKey(contact), { contact, sample, point: nearPoint });
+                break; // one match is enough to list this contact once
+            }
+        }
+    });
+    if (matchesByContact.size === 0) return null;
+
+    const tr = document.createElement('tr');
+    tr.style.display = 'none';
+    const td = document.createElement('td');
+    td.colSpan = 6; // matches the Frequent Locations table's own 6-column <thead>
+    td.className = 'bg-app-dark';
+
+    const heading = document.createElement('div');
+    heading.className = 'small fw-bold text-subtle mt-1 mb-1';
+    heading.textContent = `Contact(s) with a communication within ${Math.round(LOCATION_CONTACT_LINK_WINDOW_SECONDS / 60)} minutes of a visit here (time proximity only - not a confirmed link)`;
+    td.appendChild(heading);
+
+    [...matchesByContact.values()].forEach(({ contact, sample, point }) => {
+        const line = document.createElement('div');
+        line.className = 'small mb-1 pb-1 border-bottom border-secondary';
+        const deltaMin = Math.round(Math.abs(point.timestamp - sample.timestamp) / 60);
+        line.textContent = `${(contact.display_names || []).join(', ') || _contactCorrelationKey(contact)} - `
+            + `${sample.artifact_type} at ${_formatContactCorrelationTimestamp(sample.timestamp)} (${deltaMin} min from this location)`;
+        td.appendChild(line);
+    });
+
+    tr.appendChild(td);
+    return tr;
+}
+
+function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKey, showPath) {
     if (patternOfLifeGeoMapInstance) { patternOfLifeGeoMapInstance.remove(); patternOfLifeGeoMapInstance = null; }
     if (typeof L === 'undefined') {
         const noLeaflet = document.createElement('div');
@@ -10325,6 +10502,23 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
         patternOfLifeGeoMapInstance = map;
         _createGeoTileLayer().addTo(map);
         const bounds = [];
+        if (showPath) {
+            // A rough, disclosed "time-ordered path," not a real route -
+            // this app only knows where the device was at each recorded
+            // moment, never what path it actually took between two points
+            // (no road/trail data involved at all) - the checkbox's own
+            // title attribute already states this, the line itself is
+            // deliberately styled dashed/thin to read as an inference, not
+            // a confirmed track. Untimestamped points (KML-only, no
+            // reliable timestamp) are excluded - there's no way to order
+            // them relative to anything else.
+            const timedPoints = points.filter(p => p.timestamp !== null && p.timestamp !== undefined)
+                .slice().sort((a, b) => a.timestamp - b.timestamp);
+            if (timedPoints.length >= 2) {
+                L.polyline(timedPoints.map(p => [p.lat, p.lon]),
+                    { color: '#38bdf8', weight: 2, opacity: 0.6, dashArray: '4 4' }).addTo(map);
+            }
+        }
         points.forEach(p => {
             const marker = L.circleMarker([p.lat, p.lon], { radius: 4, color: '#38bdf8', weight: 1, fillOpacity: 0.6 }).addTo(map);
             const parts = [`<b>${escapeHtmlForPopup(p.name || '(unnamed)')}</b>`, escapeHtmlForPopup(p.source)];
