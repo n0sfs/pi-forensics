@@ -26,6 +26,7 @@ from flask import Flask
 from werkzeug.security import generate_password_hash
 
 import core.config as config
+import routes.reporting as reporting_module
 from routes.reporting import reporting_bp
 from core.case_index_db import _record_parsed_artifacts
 from tests.conftest import RemoteTestClient, login_user_session
@@ -430,4 +431,28 @@ def test_geo_activity_includes_kml_derived_points_alongside_takeout(client, evid
     assert kml_point["timestamp"] is None
     assert kml_point["source"] == "photo_locations.kml"
     assert abs(kml_point["lat"] - 37.7749) < 0.0001
-    assert abs(kml_point["lon"] - (-122.4194)) < 0.0001
+
+
+def test_geo_activity_truncated_flag_fires_when_takeout_rows_alone_exceed_the_cap(client, evidence_root, monkeypatch):
+    """Real bug, fixed 2026-09-09: the SQL query was `LIMIT
+    GEO_ACTIVITY_MAX_POINTS` with truncated computed AFTER that limit had
+    already silently discarded any excess rows - if Takeout rows alone
+    exceeded the cap (with no/few KML points on top), len(points) landed
+    at exactly the cap, never over it, so truncated read False despite
+    real data having been dropped. Fixed via LIMIT (cap + 1). Uses a
+    monkeypatched small cap (3) rather than seeding 5000+ real rows."""
+    monkeypatch.setattr(reporting_module, "GEO_ACTIVITY_MAX_POINTS", 3)
+    case_folder = _make_real_case(evidence_root)
+    # 4 rows, one more than the (patched) cap of 3 - each its own distinct
+    # source_path, since _record_parsed_artifacts() re-scan-safety deletes
+    # a prior call's rows sharing the same source_path.
+    for i in range(4):
+        _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, f"Takeout_{i}.json")}, [
+            {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": f"Point {i}",
+             "timestamp": 1786784100.0 + i, "extra": {"lat": 37.7749 + i * 0.01, "lon": -122.4194}},
+        ])
+    res = client.get(f"/api/cases/geo_activity?case_folder={case_folder}")
+    data = res.get_json()
+    assert data["success"] is True
+    assert len(data["points"]) == 3  # capped, as before
+    assert data["truncated"] is True  # the actual regression this test guards

@@ -113,3 +113,37 @@ def test_migrate_apply_allowed_with_reporting_permission(client, runtime_config_
     res = client.post("/api/cases/migrate_apply", json={"case_folder": case_dir})
     assert res.status_code == 200
     assert res.get_json()["success"] is True
+
+
+def test_migrate_apply_preserves_case_status_and_seeds_custom_field_defaults(client, runtime_config_file, evidence_root):
+    """Real bug, fixed 2026-09-09: migrate_case_apply() is the OTHER place
+    (besides create_case()) that produces a brand-new {slug}_case.json for
+    the first time, but it previously omitted case_status/custom_fields
+    entirely - a legacy case's own already-recorded status silently fell
+    back to list_case_folders()'s generic 'Open' default (rather than
+    being preserved), and a configured custom field's station-wide
+    default_value never got seeded the way a freshly-created case already
+    does. Matches create_case()'s own identical seeding, applied here."""
+    import os
+    cfg = config.load_runtime_config()
+    cfg["custom_case_fields"] = [{"key": "agency", "label": "Agency", "default_value": "Regional Crime Lab"}]
+    config.save_runtime_config(cfg)
+
+    slug = "2026-LEGACY-STATUS-TEST"
+    case_dir = os.path.join(evidence_root, slug)
+    os.makedirs(case_dir)
+    with open(os.path.join(case_dir, "case_info.json"), "w") as f:
+        json.dump({"case_number": slug, "examiner": "x", "case_status": "Closed"}, f)
+
+    _save_group("reporting_group2", reporting=True)
+    _save_user("rep_user2", "pw", "reporting_group2")
+    _login(client, "rep_user2")
+    res = client.post("/api/cases/migrate_apply", json={"case_folder": case_dir})
+    assert res.status_code == 200
+    assert res.get_json()["success"] is True
+
+    with open(os.path.join(case_dir, f"{slug}_case.json")) as f:
+        migrated = json.load(f)
+    # The actual regressions this test guards.
+    assert migrated["case_status"] == "Closed"  # preserved, not reset to "Open"
+    assert migrated["custom_fields"] == {"agency": "Regional Crime Lab"}

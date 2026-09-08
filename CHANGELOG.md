@@ -21,6 +21,20 @@ file after updating to see what changed.
 
 ---
 
+## [1.76.1] - 2026-09-09
+
+### Fixed
+- **Reporting: 4 real bugs found during a review pass, all fixed.** Pattern of Life's Location
+  Activity map could silently drop location points past its own display cap without ever flagging
+  that it had done so, if a case's Google Takeout location history alone exceeded the cap - fixed so
+  the "list truncated" notice always fires when it should. The Total Cases stat's status breakdown
+  never actually distinguished a not-yet-migrated (legacy) case from a normal "Open" one, despite the
+  code clearly intending to - fixed so a legacy case now shows up correctly as its own bucket.
+  "Save Report Changes" never updated the case's own last-modified timestamp on save, unlike every
+  other case-editing action in the app - fixed to match. Migrating an older case to the newer report
+  format didn't preserve that case's existing status (Closed/Archived, etc.) or seed any station-wide
+  custom case fields, unlike creating a brand-new case - fixed to match.
+
 ## [1.76.0] - 2026-09-09
 
 ### Added
