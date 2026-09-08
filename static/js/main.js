@@ -2081,10 +2081,17 @@ function buildFileViewsHierarchy(summary) {
     // examiner-flagged evidence of interest) - simple text, not a real icon,
     // so this doesn't need any change to the generic tree renderer's
     // kind-based icon logic.
-    const tagChildren = (summary.tags || []).map(t => ({
-        id: `fv-tag-${t.id}`, name: `${t.notable ? '★ ' : ''}${t.name} (${t.count})`,
-        kind: 'file', queryType: 'tags', tagId: t.id, tagColor: t.color, tagNotable: t.notable,
-    }));
+    const tagChildren = (summary.tags || []).map(t => {
+        // High/Critical severity gets the same plain-text-prefix treatment
+        // the notable star already established - the tree has no room for
+        // a real colored badge, but a high-priority tag category should
+        // still read as such at a glance, not just once you click into it.
+        const sevPrefix = (t.severity === 'critical' || t.severity === 'high') ? `[${t.severity.toUpperCase()}] ` : '';
+        return {
+            id: `fv-tag-${t.id}`, name: `${sevPrefix}${t.notable ? '★ ' : ''}${t.name} (${t.count})`,
+            kind: 'file', queryType: 'tags', tagId: t.id, tagColor: t.color, tagNotable: t.notable,
+        };
+    });
     const children = [
         {
             id: 'fv-file-types', name: 'File Types', kind: 'dir',
@@ -2551,6 +2558,33 @@ async function refreshTagItemModalList() {
 // fixed palette ALLOWED_TAG_COLORS (app.py) validates against.
 const TAG_LIGHT_TEXT_COLORS = new Set(['warning', 'info', 'success']);
 
+// Tag severity (2026-09-09) - a property of the tag DEFINITION, not the
+// individual tagging event (mirrors `notable`'s own existing precedent
+// exactly, see ALLOWED_TAG_SEVERITIES's own docstring in routes/case_
+// index.py for why). Deliberately its own fixed color scale, independent
+// of the tag's own examiner-chosen display `color` - a tag colored gray
+// can still be Critical severity, and the severity badge needs to read
+// consistently (red always means Critical) regardless of what color an
+// examiner happened to pick for the tag itself.
+const TAG_SEVERITY_BADGE = {
+    low: { cls: 'bg-secondary', label: 'Low' },
+    medium: { cls: 'bg-info text-dark', label: 'Medium' },
+    high: { cls: 'bg-warning text-dark', label: 'High' },
+    critical: { cls: 'bg-danger', label: 'Critical' },
+};
+// Returns a real <span> badge for low/medium/high/critical, or null for
+// 'none'/unset - callers append it only when non-null, so a tag with no
+// severity assigned renders exactly as it did before this feature existed.
+function _tagSeverityBadgeEl(severity) {
+    const spec = TAG_SEVERITY_BADGE[severity];
+    if (!spec) return null;
+    const el = document.createElement('span');
+    el.className = `badge ${spec.cls} ms-1`;
+    el.textContent = spec.label;
+    el.title = `Severity: ${spec.label} (a property of this tag itself)`;
+    return el;
+}
+
 function renderTagItemModalList(allTags, appliedIds, appliedTags) {
     const listEl = document.getElementById('tagItemExistingList');
     listEl.innerHTML = '';
@@ -2569,6 +2603,8 @@ function renderTagItemModalList(allTags, appliedIds, appliedTags) {
         badge.textContent = tag.notable ? '★' : '•'; // star for notable, bullet otherwise
         left.appendChild(badge);
         left.appendChild(document.createTextNode(tag.name)); // tag names are examiner-entered, text node only
+        const sevBadge = _tagSeverityBadgeEl(tag.severity);
+        if (sevBadge) left.appendChild(sevBadge);
         const countSpan = document.createElement('span');
         countSpan.className = 'text-subtle small ms-2';
         countSpan.textContent = `(${tag.count})`;
@@ -2645,6 +2681,7 @@ async function createAndApplyNewTag() {
     if (!name) { showToast('Enter a tag name first.', 'warning'); return; }
     const color = document.getElementById('newTagColor').value;
     const notable = document.getElementById('newTagNotable').checked;
+    const severity = document.getElementById('newTagSeverity').value;
     const comment = document.getElementById('tagItemComment').value.trim();
     const statusEl = document.getElementById('tagItemModalStatus');
     statusEl.textContent = 'Creating tag...';
@@ -2653,7 +2690,7 @@ async function createAndApplyNewTag() {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 case_folder: activeCase.case_folder, new_tag_name: name, new_tag_color: color,
-                new_tag_notable: notable, comment, ...currentTagTargetItem
+                new_tag_notable: notable, new_tag_severity: severity, comment, ...currentTagTargetItem
             })
         });
         const data = await res.json();
@@ -2661,6 +2698,7 @@ async function createAndApplyNewTag() {
             statusEl.textContent = `Created and applied "${data.tag.name}".`;
             nameEl.value = '';
             document.getElementById('newTagNotable').checked = false;
+            document.getElementById('newTagSeverity').value = 'none';
             document.getElementById('tagItemComment').value = '';
             await refreshTagItemModalList();
             initFileViewsTree(true);
@@ -2714,7 +2752,7 @@ function renderManageTagsList(tags) {
     const table = document.createElement('table');
     table.className = 'table table-dark table-sm mb-0';
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th>Tag</th><th>Notable</th><th>Used</th><th></th></tr>'; // static/trusted markup
+    thead.innerHTML = '<tr><th>Tag</th><th>Notable</th><th>Severity</th><th>Used</th><th></th></tr>'; // static/trusted markup
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
     tags.forEach(tag => {
@@ -2731,6 +2769,11 @@ function renderManageTagsList(tags) {
         const notableTd = document.createElement('td');
         notableTd.textContent = tag.notable ? '★' : '';
         tr.appendChild(notableTd);
+
+        const severityTd = document.createElement('td');
+        const sevBadge = _tagSeverityBadgeEl(tag.severity);
+        if (sevBadge) { sevBadge.classList.remove('ms-1'); severityTd.appendChild(sevBadge); }
+        tr.appendChild(severityTd);
 
         const countTd = document.createElement('td');
         countTd.className = 'text-subtle';
@@ -2775,6 +2818,7 @@ function openCreateTagModal() {
     document.getElementById('manageTagName').value = '';
     document.getElementById('manageTagColor').value = 'secondary';
     document.getElementById('manageTagNotable').checked = false;
+    document.getElementById('manageTagSeverity').value = 'none';
     document.getElementById('manageTagModalStatus').textContent = '';
     if (!manageTagModalInstance) {
         manageTagModalInstance = new bootstrap.Modal(document.getElementById('manageTagModal'));
@@ -2789,6 +2833,7 @@ function openEditTagModal(tag) {
     document.getElementById('manageTagName').value = tag.name;
     document.getElementById('manageTagColor').value = tag.color;
     document.getElementById('manageTagNotable').checked = tag.notable;
+    document.getElementById('manageTagSeverity').value = tag.severity || 'none';
     document.getElementById('manageTagModalStatus').textContent = '';
     if (!manageTagModalInstance) {
         manageTagModalInstance = new bootstrap.Modal(document.getElementById('manageTagModal'));
@@ -2800,11 +2845,12 @@ async function saveManageTagModal() {
     const name = document.getElementById('manageTagName').value.trim();
     const color = document.getElementById('manageTagColor').value;
     const notable = document.getElementById('manageTagNotable').checked;
+    const severity = document.getElementById('manageTagSeverity').value;
     const statusEl = document.getElementById('manageTagModalStatus');
     if (!name) { statusEl.textContent = 'Tag name is required.'; return; }
     statusEl.textContent = 'Saving...';
     const endpoint = manageTagModalMode === 'edit' ? '/api/case_index/tags/update' : '/api/case_index/tags/create';
-    const body = { case_folder: activeCase.case_folder, name, color, notable };
+    const body = { case_folder: activeCase.case_folder, name, color, notable, severity };
     if (manageTagModalMode === 'edit') body.tag_id = manageTagModalTagId;
     try {
         const res = await fetch(endpoint, {
@@ -9234,6 +9280,12 @@ async function renderReportFilesGallery() {
                 pill.textContent = (t.notable ? '★ ' : '') + t.name; // untrusted (tag name) - text node only
                 if (t.comment) pill.title = t.comment; // untrusted (comment) - tooltip attribute, not markup
                 tagLine.appendChild(pill);
+                // Severity rides alongside the tag pill itself, not folded
+                // into its text - the exact "linked-finding record" this
+                // field exists to give an exhibit (see ALLOWED_TAG_
+                // SEVERITIES's own docstring, routes/case_index.py).
+                const sevBadge = _tagSeverityBadgeEl(t.severity);
+                if (sevBadge) tagLine.appendChild(sevBadge);
             });
             textWrap.appendChild(tagLine);
         }
