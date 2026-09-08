@@ -10813,6 +10813,64 @@ function classifyHomeWorkLocations(points, frequentLocations) {
     return result;
 }
 
+// Grid-rounded location clustering, re-implemented client-side so a date
+// range can be applied with zero re-fetch (2026-09-08, mirroring the
+// Communication Activity Pattern chart's own "cache the full dataset once,
+// recompute on every filter change" pattern right above). Deliberately
+// kept in exact lockstep with routes/reporting.py's own case_geo_activity()
+// - same 3-decimal rounding (~111m cells), same 2-visit minimum, same
+// 20-location cap, same sort order - so "All Time" here always matches
+// what a fresh, unfiltered fetch of the same case would show; only the
+// underlying point set (full vs. date-filtered) ever differs.
+const GEO_ACTIVITY_CLIENT_CLUSTER_PRECISION = 3;
+const GEO_ACTIVITY_CLIENT_MIN_FREQUENT_VISITS = 2;
+const GEO_ACTIVITY_CLIENT_MAX_FREQUENT_LOCATIONS = 20;
+function _clusterGeoPoints(points) {
+    const clusters = {};
+    (points || []).forEach((p) => {
+        const key = `${p.lat.toFixed(GEO_ACTIVITY_CLIENT_CLUSTER_PRECISION)},${p.lon.toFixed(GEO_ACTIVITY_CLIENT_CLUSTER_PRECISION)}`;
+        const c = clusters[key] || (clusters[key] = {
+            lat: parseFloat(p.lat.toFixed(GEO_ACTIVITY_CLIENT_CLUSTER_PRECISION)),
+            lon: parseFloat(p.lon.toFixed(GEO_ACTIVITY_CLIENT_CLUSTER_PRECISION)),
+            visit_count: 0, first_seen: null, last_seen: null,
+        });
+        c.visit_count++;
+        if (typeof p.timestamp === 'number') {
+            if (c.first_seen === null || p.timestamp < c.first_seen) c.first_seen = p.timestamp;
+            if (c.last_seen === null || p.timestamp > c.last_seen) c.last_seen = p.timestamp;
+        }
+    });
+    return Object.values(clusters)
+        .filter(c => c.visit_count >= GEO_ACTIVITY_CLIENT_MIN_FREQUENT_VISITS)
+        .sort((a, b) => b.visit_count - a.visit_count)
+        .slice(0, GEO_ACTIVITY_CLIENT_MAX_FREQUENT_LOCATIONS);
+}
+
+let patternOfLifeGeoDateFrom = null;  // 'YYYY-MM-DD' or null - client-side only, no re-fetch
+let patternOfLifeGeoDateTo = null;
+
+function onPatternOfLifeGeoDateRangeChange() {
+    const fromEl = document.getElementById('polGeoDateFrom');
+    const toEl = document.getElementById('polGeoDateTo');
+    patternOfLifeGeoDateFrom = (fromEl && fromEl.value) || null;
+    patternOfLifeGeoDateTo = (toEl && toEl.value) || null;
+    const clearBtn = document.getElementById('polGeoDateClearBtn');
+    if (clearBtn) clearBtn.style.display = (patternOfLifeGeoDateFrom || patternOfLifeGeoDateTo) ? '' : 'none';
+    _recomputeAndRenderGeoActivity();
+}
+
+function clearPatternOfLifeGeoDateRange() {
+    patternOfLifeGeoDateFrom = null;
+    patternOfLifeGeoDateTo = null;
+    const fromEl = document.getElementById('polGeoDateFrom');
+    const toEl = document.getElementById('polGeoDateTo');
+    if (fromEl) fromEl.value = '';
+    if (toEl) toEl.value = '';
+    const clearBtn = document.getElementById('polGeoDateClearBtn');
+    if (clearBtn) clearBtn.style.display = 'none';
+    _recomputeAndRenderGeoActivity();
+}
+
 async function loadPatternOfLifeGeoActivity() {
     const summaryEl = document.getElementById('patternOfLifeGeoSummary');
     const mapEl = document.getElementById('patternOfLifeGeoMap');
@@ -10836,24 +10894,67 @@ async function loadPatternOfLifeGeoActivity() {
         if (summaryEl) summaryEl.textContent = (data && data.error) || 'Failed to load location activity.';
         return;
     }
-    patternOfLifeGeoActivityData = data; // cached for the contact<->location cross-linking below, no re-fetch
+    patternOfLifeGeoActivityData = data; // cached for the contact<->location cross-linking below AND every date-range recompute, no re-fetch
 
     if (data.points.length === 0) {
         if (summaryEl) summaryEl.textContent = '';
         if (emptyEl) emptyEl.style.display = 'block';
         return;
     }
+    _recomputeAndRenderGeoActivity();
+}
 
-    const sourceCount = new Set(data.points.map(p => p.source)).size;
-    if (summaryEl) {
-        summaryEl.textContent = `${data.points.length} location point(s) across ${sourceCount} source(s)`
-            + (data.frequent_locations.length ? `, ${data.frequent_locations.length} frequent location(s)` : '')
-            + (data.truncated ? ' (list truncated - too many points to show all).' : '.');
+// Re-derives frequent locations (via _clusterGeoPoints, same rule as the
+// backend), re-renders the map, and rebuilds the table - purely from the
+// already-cached patternOfLifeGeoActivityData.points, filtered to the
+// current From/To range (both null = "All Time", every point included).
+// Called on every date-range/travel-path-checkbox change with zero
+// re-fetch, mirroring _recomputePatternOfLifeActivityRows()'s identical
+// cache-once-recompute-many-times pattern.
+function _recomputeAndRenderGeoActivity() {
+    const summaryEl = document.getElementById('patternOfLifeGeoSummary');
+    const mapEl = document.getElementById('patternOfLifeGeoMap');
+    const listEl = document.getElementById('patternOfLifeGeoFrequentList');
+    const allData = patternOfLifeGeoActivityData;
+    if (!mapEl || !allData) return;
+
+    const fromMs = patternOfLifeGeoDateFrom ? new Date(patternOfLifeGeoDateFrom + 'T00:00:00').getTime() : null;
+    const toMs = patternOfLifeGeoDateTo ? new Date(patternOfLifeGeoDateTo + 'T23:59:59.999').getTime() : null;
+    const isFiltered = fromMs !== null || toMs !== null;
+    // A KML-sourced point has no timestamp at all (see loadPatternOfLifeGeoActivity's
+    // own docstring elsewhere in this file) - it can never be placed inside
+    // a specific date range, so it's only ever shown under "All Time." This
+    // is disclosed in the summary line below, not silently dropped without
+    // explanation.
+    const points = isFiltered
+        ? allData.points.filter((p) => {
+            if (typeof p.timestamp !== 'number') return false;
+            const ms = p.timestamp * 1000;
+            return (fromMs === null || ms >= fromMs) && (toMs === null || ms <= toMs);
+        })
+        : allData.points;
+    const frequentLocations = _clusterGeoPoints(points);
+
+    if (points.length === 0) {
+        if (summaryEl) summaryEl.textContent = isFiltered
+            ? 'No location points fall within the selected date range (KML-sourced points have no timestamp and are only ever shown under "All Time").'
+            : '';
+        if (mapEl) mapEl.innerHTML = '';
+        if (listEl) listEl.innerHTML = '';
+        return;
     }
 
-    const homeWorkByKey = classifyHomeWorkLocations(data.points, data.frequent_locations);
+    const sourceCount = new Set(points.map(p => p.source)).size;
+    if (summaryEl) {
+        summaryEl.textContent = `${points.length} location point(s) across ${sourceCount} source(s)`
+            + (frequentLocations.length ? `, ${frequentLocations.length} frequent location(s)` : '')
+            + (isFiltered ? ', date-filtered (KML-sourced points excluded - no timestamp to filter on)' : '')
+            + (allData.truncated ? ' (list truncated - too many points to show all).' : '.');
+    }
+
+    const homeWorkByKey = classifyHomeWorkLocations(points, frequentLocations);
     const showPathCb = document.getElementById('patternOfLifeGeoShowPath');
-    renderGeoActivityMap(mapEl, data.points, data.frequent_locations, homeWorkByKey, showPathCb && showPathCb.checked);
+    renderGeoActivityMap(mapEl, points, frequentLocations, homeWorkByKey, showPathCb && showPathCb.checked);
     // Location<->Contact cross-linking (2026-09-08): if contact data
     // already finished loading BEFORE this function's own frequent-
     // locations table is about to be built below, that table already
@@ -10867,7 +10968,8 @@ async function loadPatternOfLifeGeoActivity() {
     // Correlation()'s own end-of-function hook for the opposite ordering.
     if (patternOfLifeContactData) renderContactCorrelationTable(patternOfLifeContactData);
 
-    if (listEl && data.frequent_locations.length) {
+    if (listEl) listEl.innerHTML = '';
+    if (listEl && frequentLocations.length) {
         const label = document.createElement('div');
         label.className = 'small fw-bold text-subtle mb-1';
         label.textContent = 'Frequent Locations (visited more than once)';
@@ -10875,14 +10977,14 @@ async function loadPatternOfLifeGeoActivity() {
         if (Object.keys(homeWorkByKey).length > 0) {
             const disclosure = document.createElement('div');
             disclosure.className = 'small text-subtle mb-1';
-            disclosure.textContent = 'Home/Work labels are a heuristic (most-visited location overnight / on a weekday during work hours) based on this browser\'s own local time zone, not necessarily the device\'s - shown only when the pattern is clear, from timestamped data only (never from a KML-only point, which has no timestamp).';
+            disclosure.textContent = 'Home/Work labels are a heuristic (most-visited location overnight / on a weekday during work hours) based on this browser\'s own local time zone, not necessarily the device\'s - shown only when the pattern is clear, from timestamped data only (never from a KML-only point, which has no timestamp). Narrowing the date range above re-evaluates this heuristic against just that window, and may drop a label a wider range would have shown.';
             listEl.appendChild(disclosure);
         }
         const table = document.createElement('table');
         table.className = 'table table-sm table-dark table-hover small mb-0';
         table.innerHTML = '<thead><tr><th>Coordinates</th><th>Type</th><th>Visits</th><th>First Seen</th><th>Last Seen</th><th></th></tr></thead>';
         const tbody = document.createElement('tbody');
-        data.frequent_locations.forEach(loc => {
+        frequentLocations.forEach(loc => {
             const key = _geoLocationKey(loc.lat, loc.lon);
             const homeWork = homeWorkByKey[key];
             const row = document.createElement('tr');
@@ -11026,8 +11128,23 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
             const timedPoints = points.filter(p => p.timestamp !== null && p.timestamp !== undefined)
                 .slice().sort((a, b) => a.timestamp - b.timestamp);
             if (timedPoints.length >= 2) {
+                // A bright, saturated magenta at a heavier weight/opacity -
+                // the original pale blue (#38bdf8) was the exact same color
+                // as the regular point markers drawn right after it, AND
+                // close enough to typical OSM water/highway-shield colors
+                // that the line was effectively invisible against a busy
+                // basemap (real user report, 2026-09-08). Magenta doesn't
+                // occur anywhere in OSM's default tile palette, so it reads
+                // as a deliberate overlay at any zoom level.
                 L.polyline(timedPoints.map(p => [p.lat, p.lon]),
-                    { color: '#38bdf8', weight: 2, opacity: 0.6, dashArray: '4 4' }).addTo(map);
+                    { color: '#e91e9e', weight: 3.5, opacity: 0.9, dashArray: '8 5' }).addTo(map);
+                // Start/end markers so the direction of travel is legible
+                // at a glance, not just implied by the line itself.
+                const first = timedPoints[0], last = timedPoints[timedPoints.length - 1];
+                L.circleMarker([first.lat, first.lon], { radius: 6, color: '#22c55e', weight: 2, fillColor: '#22c55e', fillOpacity: 0.9 })
+                    .bindPopup(`<b>Path start</b><br>${_formatContactCorrelationTimestamp(first.timestamp)}`).addTo(map);
+                L.circleMarker([last.lat, last.lon], { radius: 6, color: '#e91e9e', weight: 2, fillColor: '#e91e9e', fillOpacity: 0.9 })
+                    .bindPopup(`<b>Path end</b><br>${_formatContactCorrelationTimestamp(last.timestamp)}`).addTo(map);
             }
         }
         points.forEach(p => {
