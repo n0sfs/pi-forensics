@@ -24,6 +24,7 @@ from core.case_index_db import (
     _tags_for_paths, _analysis_results_for_paths, TRIAGE_PATTERNS,
     _backfill_case_artifact_tags, KEYWORD_CATEGORY_PREFIX, resolve_scan_category_label,
     has_case_analysis_activity, cross_case_hash_search, correlate_contacts,
+    compute_case_analysis_coverage,
 )
 
 case_index_bp = Blueprint('case_index', __name__)
@@ -494,6 +495,29 @@ def case_index_contact_correlation():
     fresh on every request, same as /api/cases/timeline, no new schema."""
     req = request.get_json() or {}
     result = correlate_contacts(req.get('case_folder'))
+    return jsonify({"success": True, **result})
+
+@case_index_bp.route('/api/case_index/analysis_coverage', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def case_index_analysis_coverage():
+    """Case-wide 'what's been run against each evidence item, what hasn't'
+    dashboard (core/case_index_db.py::compute_case_analysis_coverage()) -
+    item 6 of the 2026-09-08 DFIR-comparison backlog. Returns, per
+    COMPLETED acquisition event with a walkable output path, which Auto
+    Analyze steps have real, confirmed-successful chain-of-custody log
+    coverage against it (raw step-key strings only - the frontend already
+    has both the Windows/Linux and mobile step-label registries cached for
+    the Auto Analyze modal itself and does the labeling/outstanding-diff
+    there, so this stays free of a second Python-side copy of either
+    dict), a hash-verification status, and a tag count. Purely read-only,
+    same "runs fresh on every request, no new schema" shape as /api/
+    cases/timeline and contact_correlation above."""
+    req = request.get_json() or {}
+    case_folder = safe_path(req.get('case_folder'))
+    if not case_folder or not os.path.isdir(case_folder):
+        return jsonify({"success": False, "error": "Case folder not found."}), 400
+    result = compute_case_analysis_coverage(case_folder)
     return jsonify({"success": True, **result})
 
 @case_index_bp.route('/api/case_index/contacts/merge', methods=['POST'])

@@ -49,6 +49,7 @@
                                                 <button class="list-group-item list-group-item-action" id="repGeoTab" data-bs-toggle="list" data-bs-target="#repGeoPane" type="button" role="tab" onclick="renderReportGeolocationList()"><i class="bi bi-geo-alt"></i>Geolocation</button>
                                                 <button class="list-group-item list-group-item-action" id="repContactsTab" data-bs-toggle="list" data-bs-target="#repContactsPane" type="button" role="tab" onclick="loadPatternOfLife()"><i class="bi bi-activity"></i>Pattern of Life</button>
                                                 <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
+                                                <button class="list-group-item list-group-item-action" id="repCoverageTab" data-bs-toggle="list" data-bs-target="#repCoveragePane" type="button" role="tab" onclick="loadAnalysisCoverage()"><i class="bi bi-check2-square"></i>Coverage</button>
                                                 <button class="list-group-item list-group-item-action" id="repTimelineTab" data-bs-toggle="list" data-bs-target="#repTimelinePane" type="button" role="tab" onclick="loadCaseTimeline()"><i class="bi bi-clock-history"></i>Evidence Timeline</button>
                                                 <button class="list-group-item list-group-item-action" id="repHistoryTab" data-bs-toggle="list" data-bs-target="#repHistoryPane" type="button" role="tab" onclick="loadCaseHistory()"><i class="bi bi-clock-history"></i>Audit Trail</button>
                                                 <button class="list-group-item list-group-item-action" id="repSearchTab" data-bs-toggle="list" data-bs-target="#repSearchPane" type="button" role="tab"><i class="bi bi-search"></i>Search</button>
@@ -417,6 +418,13 @@
                                                     <div class="small text-subtle mb-2">Every acquisition/recovery job recorded against this case, most recent first. Click a row to see its full telemetry, parameters and hashes.</div>
                                                     <div id="jobsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
                                                         <span class="text-subtle">Open this tab to see this case's jobs.</span>
+                                                    </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repCoveragePane" role="tabpanel">
+                                                    <div class="small text-subtle mb-2">Which analysis tools have actually been run against each completed evidence item, and which haven't yet - a case-wide view of the same "already run" checkmark File Explorer's own right-click menu shows one file at a time. A gray "Not yet run" badge doesn't mean a tool found nothing; it means it's never been tried against this item at all.</div>
+                                                    <div id="analysisCoverageStatus" class="small text-subtle mb-2"></div>
+                                                    <div id="analysisCoverageContainer" class="border border-secondary rounded-2 p-2" style="max-height: 500px; overflow-y: auto; background-color:#090b10;">
+                                                        <span class="text-subtle small">Open this tab to see this case's analysis coverage.</span>
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repTimelinePane" role="tabpanel">
