@@ -559,6 +559,56 @@ def test_correlate_contacts_counts_an_unmatched_counterpart_as_unresolved_not_a_
     result = case_index_db.correlate_contacts(case_folder)
     assert result["unresolved_communication_count"] == 1
     assert result["contacts"] == []
+    # 2026-09-07: an unresolved communication is no longer JUST a bare
+    # count - real detail (which number, when, via which channel) is now
+    # surfaced too, found missing during a live crime-scenario test where
+    # an unidentified caller right before an incident was completely
+    # invisible beyond this one aggregate number.
+    assert len(result["unresolved_communications"]) == 1
+    lead = result["unresolved_communications"][0]
+    assert lead["counterpart"] == "5559999999"
+    assert lead["artifact_type"] == "android_sms_message"
+    assert lead["channel"] == "SMS"
+    assert lead["timestamp"] == 1700000000.0
+    assert result["unresolved_communications_truncated"] is False
+
+
+def test_correlate_contacts_unresolved_communications_sorted_most_recent_first(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mmssms.db"),
+        [_comm_record("android_sms_message", "address", "+15551110001", timestamp=1000.0),
+         _comm_record("android_sms_message", "address", "+15551110002", timestamp=3000.0),
+         _comm_record("android_sms_message", "address", "+15551110003", timestamp=2000.0)])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert [r["counterpart"] for r in result["unresolved_communications"]] == \
+        ["5551110002", "5551110003", "5551110001"]
+
+
+def test_correlate_contacts_unresolved_communications_truncated_flag(case_folder):
+    records = [_comm_record("android_sms_message", "address", f"+1555111{i:04d}", timestamp=float(i))
+               for i in range(case_index_db.UNRESOLVED_COMM_MAX_RECORDS + 5)]
+    case_index_db._record_parsed_artifacts(case_folder, _identity(case_folder, "mmssms.db"), records)
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["unresolved_communication_count"] == case_index_db.UNRESOLVED_COMM_MAX_RECORDS + 5
+    assert len(result["unresolved_communications"]) == case_index_db.UNRESOLVED_COMM_MAX_RECORDS
+    assert result["unresolved_communications_truncated"] is True
+
+
+def test_correlate_contacts_unresolved_email_communication_has_no_direction(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mail.pst"),
+        [{"artifact_type": "email_message", "title": "Subject line", "url": "",
+          "value": "unknown.sender@nowhere.example", "timestamp": 1700000000.0, "extra": {}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["unresolved_communication_count"] == 1
+    lead = result["unresolved_communications"][0]
+    assert lead["counterpart"] == "unknown.sender@nowhere.example"
+    assert lead["artifact_type"] == "email_message"
+    assert lead["channel"] == "Email"
+    assert lead["direction"] is None
 
 
 def test_correlate_contacts_sorts_by_total_communication_count_descending(case_folder):

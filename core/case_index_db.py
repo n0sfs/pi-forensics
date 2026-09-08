@@ -1301,6 +1301,15 @@ def _classify_leapp_comm_direction(spec, row):
 CONTACT_CORRELATION_MAX_ROWS_PER_TYPE = 20_000
 CONTACT_CORRELATION_MAX_CONTACTS = 2_000
 CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT = 8
+# Unresolved-communication detail (2026-09-07) - a communication whose own
+# counterpart never resolves to any known contact was previously visible
+# ONLY as a bare aggregate count (unresolved_communication_count), with zero
+# detail about which number/address, when, or via which channel - a real
+# investigative blind spot found via a live crime-scenario test: an
+# unidentified caller/sender right before an incident is exactly the kind of
+# lead an examiner most needs to see, not the least. Capped the same way
+# every other unbounded-list field in this module already is.
+UNRESOLVED_COMM_MAX_RECORDS = 50
 # Co-occurrence (2026-09-08) - a communication ROW naming 2+ resolved
 # participants (a group MMS, a multi-attendee calendar event, a multi-
 # recipient email) is real, observable evidence those people were in the
@@ -1742,6 +1751,7 @@ def correlate_contacts(case_folder):
         # timestamps/samples. Unchanged logic from before email support.
         by_contact = {}
         unresolved = 0
+        unresolved_communications = []
         # Raw (pre-Pass-3-merge) co-occurrence pair counts, keyed by a
         # sorted 2-tuple of contact keys - see _record_row_co_occurrences()
         # and the remap step right after Pass 3 below for how these end up
@@ -1804,6 +1814,22 @@ def correlate_contacts(case_folder):
                     })
             if not resolved_any:
                 unresolved += 1
+                if len(unresolved_communications) < UNRESOLVED_COMM_MAX_RECORDS * 4:
+                    # A generous over-collection cap (4x the final display
+                    # cap) so the later sort-by-timestamp-then-truncate step
+                    # below can still surface the MOST RECENT unresolved
+                    # leads even when there are far more than the display
+                    # cap - collecting only up to the final cap here would
+                    # silently keep whichever rows happened to be scanned
+                    # first, not the most recent ones.
+                    raw_counterpart = raw_candidates[0] if raw_candidates else None
+                    unresolved_communications.append({
+                        "counterpart": normalize_phone_number(raw_counterpart) or raw_counterpart,
+                        "artifact_type": artifact_type, "channel": spec["channel"],
+                        "timestamp": timestamp,
+                        "direction": _classify_leapp_comm_direction(spec, row) if is_leapp else _classify_comm_direction(spec, extra),
+                        "content_preview": _comm_content_preview(artifact_type, value, extra),
+                    })
             elif len(resolved_keys_this_row) >= 2:
                 _record_row_co_occurrences(co_occurrence_counts, resolved_keys_this_row, spec["channel"])
 
@@ -1861,6 +1887,13 @@ def correlate_contacts(case_folder):
                     })
             if not resolved_any:
                 unresolved += 1
+                if len(unresolved_communications) < UNRESOLVED_COMM_MAX_RECORDS * 4:
+                    raw_counterpart = candidates[0] if candidates else None
+                    unresolved_communications.append({
+                        "counterpart": raw_counterpart, "artifact_type": artifact_type, "channel": channel,
+                        "timestamp": timestamp, "direction": None,  # email/calendar rows have no direction concept
+                        "content_preview": _comm_content_preview(artifact_type, value, extra),
+                    })
             elif len(resolved_keys_this_row) >= 2:
                 _record_row_co_occurrences(co_occurrence_counts, resolved_keys_this_row, channel)
 
@@ -2000,6 +2033,14 @@ def correlate_contacts(case_folder):
         result["contacts_indexed_count"] = len(known)
         result["email_identities_indexed_count"] = len(known_emails)
         result["unresolved_communication_count"] = unresolved
+        # Most-recent-first, matching every other "what should I look at
+        # first" ordering already used throughout this module (contacts,
+        # samples, Evidence Timeline). A missing timestamp sorts last, not
+        # first, so a genuinely dated (and therefore more actionable) lead
+        # is never buried behind an undated one.
+        unresolved_communications.sort(key=lambda r: (r["timestamp"] is None, -(r["timestamp"] or 0)))
+        result["unresolved_communications"] = unresolved_communications[:UNRESOLVED_COMM_MAX_RECORDS]
+        result["unresolved_communications_truncated"] = len(unresolved_communications) > UNRESOLVED_COMM_MAX_RECORDS
         result["truncated"] = truncated
         result["frequent_contact_count"] = actual_frequent_count
         # A pair referencing a contact that got cut off by the (very high,

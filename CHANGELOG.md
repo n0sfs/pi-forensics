@@ -21,6 +21,30 @@ file after updating to see what changed.
 
 ---
 
+## [1.70.0] - 2026-09-08
+
+### Added
+- **Unresolved Leads in Contact Correlation.** Previously, a communication (a text, call, email, or
+  WhatsApp message) with no matching saved contact only ever showed up as a bare "N unresolved" count
+  - the actual number, who it was with, and when, were invisible. A new "Unresolved Leads" section
+  lists up to 50 of these directly - counterpart, channel, direction, timestamp, and a content preview
+  where available - specifically so an unrecognized number or address that keeps recurring (e.g. a
+  burner phone with no saved contact) is something you can actually see and investigate, not just a
+  number in a summary line. Each lead also gets its own "Nearby Locations" button, using the same
+  time-proximity location cross-linking Contact Correlation's known contacts already have.
+
+### Fixed
+- **Nearby Locations/Nearby Contacts no longer lists near-duplicate rows for repeated GPS pings at the
+  same spot.** A modern phone can log several location fixes within minutes of each other at the same
+  place (e.g. GPS refreshing every few minutes while stationary) - previously, each individual ping
+  showed up as its own separate row, cluttering the list and risking crowding out genuinely distinct
+  nearby locations under the existing per-row display cap. Pings at the same clustered location are
+  now grouped into one row showing how many fixes were recorded there and the time range they span.
+- **The Case Overview dashboard no longer briefly shows the previous case's tag/analysis counts when
+  switching cases.** Switching to a new case while the dashboard's summary data was still loading could
+  momentarily display the old case's numbers before the real ones arrived. The relevant fields now
+  reset to a loading state immediately on switch, before the new data is fetched.
+
 ## [1.69.0] - 2026-09-09
 
 ### Added
