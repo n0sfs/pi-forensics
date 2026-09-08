@@ -1521,6 +1521,186 @@ def test_correlate_contacts_a_pass3_merged_contact_never_flags_itself_as_a_dupli
     assert result["contacts"][0]["possible_duplicate_keys"] == []
 
 
+def test_correlate_contacts_never_flags_a_possible_duplicate_for_a_contact_with_no_merged_from_field(case_folder):
+    # merged_from is a required-always-present field (2026-09-08) -
+    # regression guard against it being omitted entirely for a contact
+    # that's never been part of any manual merge, mirroring the same
+    # always-present convention possible_duplicate_keys already has.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Solo Contact", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts"][0]["merged_from"] == []
+
+
+def _insert_contact_merge(case_folder, primary_key, merged_key, justification="Same person, different device", merged_by="tester", merged_at="2026-09-08 12:00:00"):
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    conn.execute(
+        "INSERT INTO contact_merges (primary_key, merged_key, justification, merged_by, merged_at) VALUES (?,?,?,?,?)",
+        (primary_key, merged_key, justification, merged_by, merged_at))
+    conn.commit()
+    conn.close()
+
+
+def test_correlate_contacts_manual_merge_combines_two_separate_identities_into_one(case_folder):
+    # A phone-only contact and a genuinely separate email-only contact,
+    # never linked by any same-row/same-contact_id signal - a real
+    # examiner merge is the only way these ever become one entry.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "takeout_contacts.json"),
+        [_contact_record_with_email("takeout_contact", "J. Doe (Work)", emails=["jane.unlinked@example.com"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "emails.mbox"),
+        [_email_message_record("jane.unlinked@example.com")])
+
+    _insert_contact_merge(case_folder, "5551234567", "jane.unlinked@example.com",
+                           justification="Same handwriting on both the phone contact card and the email signature.",
+                           merged_by="examiner_smith")
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert len(result["contacts"]) == 1
+    merged = result["contacts"][0]
+    assert merged["normalized_number"] == "5551234567"
+    assert set(merged["display_names"]) == {"Jane Doe", "J. Doe (Work)"}
+    assert set(merged["contact_sources"]) == {"android_contact", "takeout_contact"}
+    assert merged["communication_counts"] == {"SMS": 1, "Email": 1}
+    assert merged["total_communications"] == 2
+    assert merged["merged_from"] == [{
+        "key": "jane.unlinked@example.com",
+        "display_names": ["J. Doe (Work)"],
+        "justification": "Same handwriting on both the phone contact card and the email signature.",
+        "merged_by": "examiner_smith",
+        "merged_at": "2026-09-08 12:00:00",
+    }]
+
+
+def test_correlate_contacts_manual_merge_clears_the_possible_duplicate_flag_for_the_merged_pair(case_folder):
+    # The exact scenario from test_correlate_contacts_flags_unconfirmed_
+    # possible_duplicates_by_matching_name above, but with the manual merge
+    # this feature adds actually applied - a merged-away contact must never
+    # still show up flagging itself as a "possible duplicate" of the entry
+    # it was just folded into.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "takeout_contacts.json"),
+        [_contact_record_with_email("takeout_contact", "Jane Doe", emails=["jane.unlinked@example.com"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "emails.mbox"),
+        [_email_message_record("jane.unlinked@example.com")])
+
+    _insert_contact_merge(case_folder, "5551234567", "jane.unlinked@example.com")
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert len(result["contacts"]) == 1
+    assert result["contacts"][0]["possible_duplicate_keys"] == []
+
+
+def test_correlate_contacts_manual_merge_resolves_through_an_already_pass3_auto_merged_email_key(case_folder):
+    # primary_key in the merge row is an EMAIL address that Pass 3 already
+    # auto-merged into its own linked phone (same contact-source row) -
+    # the manual merge must resolve THROUGH that one-hop remap to the real,
+    # final phone-keyed entry, not silently no-op because the literal email
+    # string is no longer a top-level by_contact key.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record_with_email("android_contact", "Jane Doe",
+                                     phones=["+15551111111"], emails=["jane@example.com"]),
+         _contact_record("android_contact", "Unrelated Guy", phones=["+15552222222"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551111111"),
+         _comm_record("android_sms_message", "address", "+15552222222")])
+    # Pass 3's own same-row auto-merge only fires for an email that has a
+    # REAL resolved communication of its own (by_email_contact is built
+    # from comm rows, not from the contact index alone) - without this, the
+    # email would never become a top-level by_contact/by_email_contact key
+    # for email_key_remap to map anywhere, and this test would be exercising
+    # nothing.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "emails.mbox"),
+        [_email_message_record("jane@example.com")])
+
+    # primary_key is the EMAIL (already resolved to the phone via Pass 3's
+    # own same-row auto-merge), merged_key is a genuinely different contact.
+    _insert_contact_merge(case_folder, "jane@example.com", "5552222222")
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert len(result["contacts"]) == 1
+    merged = result["contacts"][0]
+    assert merged["normalized_number"] == "5551111111"
+    assert set(merged["display_names"]) == {"Jane Doe", "Unrelated Guy"}
+    assert merged["total_communications"] == 3  # Jane's SMS + Email (Pass 3 auto-merge) + the manually merged Unrelated Guy's SMS
+    assert merged["merged_from"] == [{
+        "key": "5552222222", "display_names": ["Unrelated Guy"],
+        "justification": "Same person, different device", "merged_by": "tester",
+        "merged_at": "2026-09-08 12:00:00",
+    }]
+
+
+def test_correlate_contacts_manual_merge_of_an_already_pass3_linked_pair_is_a_harmless_noop(case_folder):
+    # primary_key = the phone, merged_key = its OWN already-linked email
+    # (same contact-source row - Pass 3 already unified them, and the email
+    # has a real communication of its own so it genuinely becomes a
+    # by_email_contact entry Pass 3 actually resolves, not just an unused
+    # contact-record field). Both resolve to the identical final entity via
+    # email_key_remap, so the manual-merge loop must correctly recognize
+    # there's nothing left to do (resolved_primary == resolved_merged)
+    # rather than try to pop an entry that's already gone.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record_with_email("android_contact", "Jane Doe",
+                                     phones=["+15551234567"], emails=["jane@example.com"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "emails.mbox"),
+        [_email_message_record("jane@example.com")])
+
+    _insert_contact_merge(case_folder, "5551234567", "jane@example.com")
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert len(result["contacts"]) == 1
+    assert result["contacts"][0]["total_communications"] == 2  # 1 SMS + 1 Email, unified by Pass 3 alone
+    assert result["contacts"][0]["merged_from"] == []  # nothing genuinely folded in by the MANUAL merge - Pass 3 had already unified this pair on its own
+
+
+def test_correlate_contacts_manual_merge_referencing_a_key_that_no_longer_exists_is_gracefully_skipped(case_folder):
+    # A contact_merges row referencing a merged_key/primary_key that isn't
+    # (or is no longer) a real by_contact entry - e.g. that contact's own
+    # source data was later removed - must never crash correlate_contacts(),
+    # it should simply have nothing to apply.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Real Contact", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+
+    _insert_contact_merge(case_folder, "5551234567", "9999999999")  # 9999999999 was never indexed
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert len(result["contacts"]) == 1
+    assert result["contacts"][0]["total_communications"] == 1
+    assert result["contacts"][0]["merged_from"] == []
+
+
 def test_comm_content_preview_reads_value_for_ordinary_message_types():
     assert case_index_db._comm_content_preview("android_sms_message", "See you at 5", {}) == "See you at 5"
     assert case_index_db._comm_content_preview("whatsapp_message", "[Incoming, Text] hey there", {}) == \

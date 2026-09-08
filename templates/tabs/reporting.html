@@ -351,20 +351,29 @@
                                                             <button type="button" class="btn btn-outline-info active" id="polContactViewGraphBtn" onclick="setPatternOfLifeContactView('graph')"><i class="bi bi-diagram-3 me-1"></i>Graph View</button>
                                                             <button type="button" class="btn btn-outline-info" id="polContactViewTableBtn" onclick="setPatternOfLifeContactView('table')"><i class="bi bi-table me-1"></i>Table View</button>
                                                         </div>
-                                                        <button type="button" class="btn btn-outline-secondary btn-xs" id="polContactMetricBtn" onclick="togglePatternOfLifeGraphMetric()" title="Switch the graph's line thickness between raw communication count and total call duration (only meaningful where call duration was captured)." style="display:none;">Weighted by: Frequency</button>
-                                                        <div id="relationshipGraphSearchWrap" style="display:none;">
-                                                            <input type="text" class="form-control form-control-sm" id="relationshipGraphSearchInput" placeholder="Find a contact..." oninput="filterRelationshipGraph(this.value)" style="width: 180px;">
+                                                    </div>
+                                                    <div class="row g-2 mb-2" id="relationshipGraphRow">
+                                                        <div class="col-lg-3" id="relationshipGraphSidebar">
+                                                            <div class="bg-app-dark border border-secondary rounded-2 p-2 h-100">
+                                                                <div id="relationshipGraphSearchWrap" class="mb-2" style="display:none;">
+                                                                    <input type="text" class="form-control form-control-sm" id="relationshipGraphSearchInput" placeholder="Find a contact..." oninput="filterRelationshipGraph(this.value)">
+                                                                </div>
+                                                                <button type="button" class="btn btn-outline-secondary btn-xs w-100 mb-2" id="polContactMetricBtn" onclick="togglePatternOfLifeGraphMetric()" title="Switch the graph's line thickness between raw communication count and total call duration (only meaningful where call duration was captured)." style="display:none;">Weighted by: Frequency</button>
+                                                                <div class="mb-2" id="relationshipGraphVolumeWrap" style="display:none;">
+                                                                    <label class="small text-subtle mb-1 d-block" for="relationshipGraphVolumeSlider" title="Hides a contact from the graph below this many total communications - a quick way to declutter down to just the people this device talked to the most. Doesn't remove anyone from Table View or anywhere else in the app, only from this one graph's own display.">Min. communications: <span class="text-info fw-bold" id="relationshipGraphVolumeLabel">Show all</span></label>
+                                                                    <input type="range" class="form-range" id="relationshipGraphVolumeSlider" min="0" max="1" step="1" value="0" oninput="onRelationshipGraphVolumeThresholdChange(this.value)">
+                                                                </div>
+                                                                <hr class="border-secondary my-2" id="relationshipGraphLegendDivider" style="display:none;">
+                                                                <div class="small text-info fw-bold mb-1" id="relationshipGraphLegendHeading" style="display:none;">Legend</div>
+                                                                <div id="relationshipGraphLegend" class="small text-subtle" style="display:none;"></div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-lg-9">
+                                                            <div id="relationshipGraphContainer" class="border border-secondary rounded-2" style="height: 480px; background-color:#090b10; position:relative;"></div>
+                                                            <div id="relationshipGraphEmpty" class="text-subtle small mt-2" style="display:none;">No correlated contacts to graph yet - parse contacts and SMS/call/WhatsApp records first, or switch to Table View for the full unfiltered list.</div>
+                                                            <div id="relationshipGraphTruncatedNote" class="text-subtle small mt-2" style="display:none;"></div>
                                                         </div>
                                                     </div>
-                                                    <div class="d-flex align-items-center gap-2 mb-2" id="relationshipGraphVolumeWrap" style="display:none;">
-                                                        <label class="small text-subtle mb-0" for="relationshipGraphVolumeSlider" title="Hides a contact from the graph below this many total communications - a quick way to declutter down to just the people this device talked to the most. Doesn't remove anyone from Table View or anywhere else in the app, only from this one graph's own display.">Min. communications:</label>
-                                                        <input type="range" class="form-range" id="relationshipGraphVolumeSlider" min="0" max="1" step="1" value="0" style="width:160px;" oninput="onRelationshipGraphVolumeThresholdChange(this.value)">
-                                                        <span class="small text-info fw-bold" id="relationshipGraphVolumeLabel">Show all</span>
-                                                    </div>
-                                                    <div id="relationshipGraphLegend" class="small text-subtle mb-2" style="display:none;"></div>
-                                                    <div id="relationshipGraphContainer" class="border border-secondary rounded-2 mb-2" style="height: 480px; background-color:#090b10; position:relative;"></div>
-                                                    <div id="relationshipGraphEmpty" class="text-subtle small mb-3" style="display:none;">No correlated contacts to graph yet - parse contacts and SMS/call/WhatsApp records first, or switch to Table View for the full unfiltered list.</div>
-                                                    <div id="relationshipGraphTruncatedNote" class="text-subtle small mb-2" style="display:none;"></div>
                                                     <div id="reportContactsContainer" class="mb-3" style="display:none;">
                                                         <span class="text-subtle small italic">Loading...</span>
                                                     </div>
@@ -684,6 +693,32 @@
                 </div>
                 <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="contactMergeModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-people me-2"></i>Manage Identity: <span id="contactMergeModalName"></span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <p class="small text-subtle mb-2">
+                        Merging combines two Contact Correlation entries into one, permanently, with a
+                        required justification note recorded for this case. This is an examiner
+                        decision - the app never merges automatically on a shared name alone, since
+                        that risks conflating two genuinely different people.
+                    </p>
+                    <h6 class="small fw-bold text-warning mb-2">Possible Duplicates (Unconfirmed)</h6>
+                    <div id="contactMergeDupSection" class="mb-3"><span class="text-subtle small">Loading...</span></div>
+                    <h6 class="small fw-bold text-info mb-2">Already Merged Into This Contact</h6>
+                    <div id="contactMergeHistorySection"><span class="text-subtle small">Loading...</span></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>

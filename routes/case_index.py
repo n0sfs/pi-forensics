@@ -479,6 +479,83 @@ def case_index_contact_correlation():
     result = correlate_contacts(req.get('case_folder'))
     return jsonify({"success": True, **result})
 
+@case_index_bp.route('/api/case_index/contacts/merge', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def case_index_merge_contacts():
+    """Manually merges two Contact Correlation entries - the actionable
+    follow-up to correlate_contacts()'s own passive possible_duplicate_keys
+    hint (see that function's docstring: a shared display name is NEVER
+    auto-merged, since that risks conflating two real, different people
+    into one). Requires a non-empty justification note, permanently
+    recorded with the merge - modeled on Autopsy's Personas "link accounts"
+    workflow, which similarly requires an examiner-entered basis for the
+    link rather than accepting a bare click.
+
+    Deliberately non-transitive: a key that's already part of an existing
+    merge, on either side, can't be reused until unmerged first - see the
+    contact_merges schema comment and correlate_contacts()'s own Pass 3.5
+    for why a real chain (A absorbs B, B absorbs C) would break its
+    one-hop remap-through logic. A single primary_key CAN have multiple
+    merged children (one real person's phone/WhatsApp/email identities all
+    folded into one canonical entry is the normal, expected shape)."""
+    req = request.get_json() or {}
+    primary_key = (req.get('primary_key') or '').strip()
+    merged_key = (req.get('merged_key') or '').strip()
+    justification = (req.get('justification') or '').strip()
+    if not primary_key or not merged_key or primary_key == merged_key:
+        return jsonify({"success": False, "error": "A primary contact and a different contact to merge into it are both required."}), 400
+    if not justification:
+        return jsonify({"success": False, "error": "A justification note is required to merge two contacts."}), 400
+    conn = _case_index_open_write(req.get('case_folder'))
+    if not conn:
+        return jsonify({"success": False, "error": "No active, consolidated case selected."}), 400
+    try:
+        conflict = conn.execute(
+            "SELECT 1 FROM contact_merges WHERE merged_key=? OR merged_key=? OR primary_key=?",
+            (merged_key, primary_key, merged_key)).fetchone()
+        if conflict:
+            return jsonify({"success": False, "error": "One of these contacts is already part of an existing merge - unmerge it first if you want to change the grouping."}), 409
+        try:
+            conn.execute(
+                "INSERT INTO contact_merges (primary_key, merged_key, justification, merged_by, merged_at) VALUES (?,?,?,?,?)",
+                (primary_key, merged_key, justification[:2000], getattr(g, 'forensic_user', None), time.strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            return jsonify({"success": False, "error": "This contact has already been merged."}), 409
+        log_chain_of_custody("contact_merge_created", {"primary_key": primary_key, "merged_key": merged_key, "justification": justification[:200]})
+    finally:
+        conn.close()
+    return jsonify({"success": True})
+
+@case_index_bp.route('/api/case_index/contacts/unmerge', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def case_index_unmerge_contact():
+    """Undoes one manual merge - removes exactly the one contact_merges row
+    for merged_key, restoring that contact as its own separate entry on the
+    next correlate_contacts() call. Doesn't touch anything else the merged
+    contact might have accumulated in the meantime (it was always the same
+    underlying communications, just displayed as one combined entry -
+    unmerging simply stops combining them)."""
+    req = request.get_json() or {}
+    merged_key = (req.get('merged_key') or '').strip()
+    if not merged_key:
+        return jsonify({"success": False, "error": "merged_key is required."}), 400
+    conn = _case_index_open_readonly(req.get('case_folder'))
+    if not conn:
+        return jsonify({"success": False, "error": "No case index found."}), 400
+    try:
+        row = conn.execute("SELECT primary_key FROM contact_merges WHERE merged_key=?", (merged_key,)).fetchone()
+        if not row:
+            return jsonify({"success": False, "error": "No merge found for this contact."}), 404
+        conn.execute("DELETE FROM contact_merges WHERE merged_key=?", (merged_key,))
+        conn.commit()
+        log_chain_of_custody("contact_merge_removed", {"primary_key": row[0], "merged_key": merged_key})
+    finally:
+        conn.close()
+    return jsonify({"success": True})
+
 @case_index_bp.route('/api/case_index/files', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
