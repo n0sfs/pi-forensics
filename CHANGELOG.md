@@ -21,6 +21,45 @@ file after updating to see what changed.
 
 ---
 
+## [1.71.0] - 2026-09-08
+
+### Added
+- **Manual contact merge, with a required justification note.** The Relationship Graph and Contact
+  Correlation table already flagged two entries sharing an exact name as "possible duplicates" -
+  now that flag can actually be acted on. A warning icon next to a flagged contact's name opens a
+  "Manage Identity" dialog listing every possible duplicate; merging one into another requires typing
+  a short note explaining why (an examiner decision, never automatic just because two names match -
+  a phone-only entry and an email-only entry sharing a common name are never silently assumed to be
+  the same person). The merged record shows who merged it, when, and the note itself, and can be
+  undone at any time from the same dialog. This mirrors Autopsy's own "Personas" approach to the same
+  problem.
+- **Jump from a Relationship Graph contact straight to their Evidence Timeline.** Clicking a contact
+  node in the graph now opens a small menu with "View in Table" (jumps to the same person's row in
+  Table View) and "View in Evidence Timeline" (switches tabs and filters the timeline down to just
+  that person's activity) - the graph, the table, and the timeline were three separate views before;
+  now any of them leads directly to the others for the same person.
+- **Whole-image YARA rule sweep.** YARA scanning previously only worked one file at a time. A new
+  "YARA Rule Sweep" action (File Explorer's image toolbar, right next to Hash Manifest) scans every
+  file in an acquired image against your configured rule sets in one pass, records each match in the
+  case's analysis history, and writes a plain-text report - closing the same gap Hash Manifest already
+  closed for hashing.
+- **Auto Analyze now includes malware/keyword screening by default.** Running "Auto Analyze" on a
+  Windows or Linux disk image now automatically runs a whole-image YARA sweep (using every rule set
+  you've configured) and a structured-data keyword scan (emails, URLs, IPs, card numbers, phone
+  numbers) as part of its default step sequence - previously, Auto Analyze covered artifacts and
+  hashing, but an examiner had to remember to separately run YARA/keyword screening if they wanted it.
+
+### Changed
+- **Relationship Graph reorganized and polished.** The search box, minimum-communications slider, and
+  legend moved into a dedicated left-hand sidebar (previously stacked above/below the graph itself),
+  freeing up more room for the graph. The legend now lists each tier as a proper row with a colored
+  marker instead of wrapping inline text. Fixed the "This Device" star's own label rendering in dark,
+  illegible text against the dark background - it's now light and outlined for contrast against any
+  node color. Stress-tested against a 25-contact case to confirm the layout, colors, and labels all
+  stay legible at a realistic larger scale, not just a handful of test contacts.
+
+---
+
 ## [1.70.0] - 2026-09-08
 
 ### Added

@@ -8801,6 +8801,40 @@ async function runImageHashManifest() {
     } catch (err) {}
 }
 
+async function runImageYaraSweep() {
+    // Mirrors runImageHashManifest()'s exact fire-and-forget shape
+    // immediately above - no options modal, auto-selects every ruleset
+    // currently configured on the station (the same "opt-out, not opt-in"
+    // reasoning that button's own comment already gives for hash lists).
+    if (!explorerImagePath) return;
+    const rulesets = await fetchYaraRulesets();
+    if (rulesets.length === 0) {
+        showToast('No saved YARA rulesets yet - create one in Settings > Case & Reporting > YARA Rulesets.', 'warning');
+        return;
+    }
+    const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    const rulesetIds = rulesets.map(rs => rs.id);
+    try {
+        const res = await fetch('/api/image/yara_sweep', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir, ruleset_ids: rulesetIds, case_folder: activeCase ? activeCase.case_folder : null })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(`YARA sweep failed: ${data.error}`, 'danger');
+            return;
+        }
+        let msg = `Scanned ${data.files_scanned} file(s) inside the image against ${rulesetIds.length} ruleset(s).\nReport written to:\n${data.report_path}`;
+        if (data.files_errored > 0) msg += `\n\n${data.files_errored} file(s) could not be read and were skipped.`;
+        if (data.truncated) msg += `\n\nNote: this image has more files than could be scanned in one pass - results are partial.`;
+        msg += data.matched_file_count > 0
+            ? `\n\n${data.matched_file_count} file(s) matched a rule - see the report for details.`
+            : `\n\nNo matches.`;
+        showToast(msg, data.matched_file_count > 0 ? 'warning' : 'success');
+    } catch (err) {}
+}
+
 async function runImageBrowserArtifactsParse() {
     if (!explorerImagePath) return;
     try {
@@ -9588,37 +9622,60 @@ function _relationshipGraphNodeTooltip(contact) {
     return lines.join('\n');
 }
 
+function _setRelationshipGraphLegendHeadingVisible(visible) {
+    const heading = document.getElementById('relationshipGraphLegendHeading');
+    const divider = document.getElementById('relationshipGraphLegendDivider');
+    if (heading) heading.style.display = visible ? '' : 'none';
+    if (divider) divider.style.display = visible ? '' : 'none';
+}
+
+// Rewritten as a compact vertical list (2026-09-08), matching the graph's
+// own new sidebar layout - each entry is its own row (a dot/line marker +
+// a short label, with the fuller explanation moved into a title tooltip
+// rather than inline text) instead of the original wrapped inline-span
+// paragraph, which read fine full-width above the graph but wrapped
+// awkwardly once the graph moved to share a row with a narrower sidebar.
 function renderRelationshipGraphLegend(data) {
     const legendEl = document.getElementById('relationshipGraphLegend');
     if (!legendEl) return;
-    if (!data || !data.contacts || data.contacts.length === 0) { legendEl.style.display = 'none'; return; }
+    if (!data || !data.contacts || data.contacts.length === 0) {
+        legendEl.style.display = 'none';
+        _setRelationshipGraphLegendHeadingVisible(false);
+        return;
+    }
     const sharePct = Math.round((data.frequent_cumulative_share_threshold || 0.8) * 100);
     legendEl.innerHTML = '';
-    [
-        [RELATIONSHIP_TIER_COLORS.frequent, `Frequent Contact (${data.frequent_contact_count} of ${data.contacts.length} - together account for ~${sharePct}% of this device's total communication volume)`],
-        [RELATIONSHIP_TIER_COLORS.regular, 'Regular Contact (2+ communications, not in the frequent group above)'],
-        [RELATIONSHIP_TIER_COLORS.one_off, 'One-off Contact (exactly 1 recorded communication)'],
-    ].forEach(([color, label]) => {
-        const span = document.createElement('span');
-        span.className = 'me-3 d-inline-block';
-        const dot = document.createElement('span');
-        dot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background-color:${color};margin-right:5px;`;
-        span.appendChild(dot);
-        span.appendChild(document.createTextNode(label));
-        legendEl.appendChild(span);
-    });
+
+    const addRow = (markerHtml, shortLabel, fullTitle) => {
+        const row = document.createElement('div');
+        row.className = 'd-flex align-items-center mb-1';
+        row.title = fullTitle;
+        const marker = document.createElement('span');
+        marker.className = 'flex-shrink-0 me-2';
+        marker.innerHTML = markerHtml; // static, trusted markup built below, never examiner-entered text
+        row.appendChild(marker);
+        const text = document.createElement('span');
+        text.textContent = shortLabel;
+        row.appendChild(text);
+        legendEl.appendChild(row);
+    };
+    const dotHtml = (color) => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background-color:${color};"></span>`;
+
+    addRow(dotHtml(RELATIONSHIP_TIER_COLORS.frequent), 'Frequent Contact',
+        `${data.frequent_contact_count} of ${data.contacts.length} contact(s) - together account for ~${sharePct}% of this device's total communication volume`);
+    addRow(dotHtml(RELATIONSHIP_TIER_COLORS.regular), 'Regular Contact',
+        '2+ communications, not in the frequent group above');
+    addRow(dotHtml(RELATIONSHIP_TIER_COLORS.one_off), 'One-off Contact',
+        'Exactly 1 recorded communication');
     // Only shown when this case actually has at least one co-occurrence
     // pair - no point cluttering the legend with an entry for a line style
     // that never appears anywhere in this particular graph.
     if (data.co_occurrences && data.co_occurrences.length > 0) {
-        const span = document.createElement('span');
-        span.className = 'me-3 d-inline-block';
-        const line = document.createElement('span');
-        line.style.cssText = `display:inline-block;width:16px;height:0;border-top:2px dashed ${RELATIONSHIP_CO_OCCURRENCE_COLOR};margin-right:5px;vertical-align:middle;`;
-        span.appendChild(line);
-        span.appendChild(document.createTextNode('Seen together (same group text, meeting, or email thread) - not a confirmed relationship, only a disclosed co-occurrence'));
-        legendEl.appendChild(span);
+        addRow(`<span style="display:inline-block;width:14px;height:0;border-top:2px dashed ${RELATIONSHIP_CO_OCCURRENCE_COLOR};"></span>`,
+            'Seen Together',
+            'Same group text, meeting, or email thread - not a confirmed relationship, only a disclosed co-occurrence');
     }
+    _setRelationshipGraphLegendHeadingVisible(true);
 }
 
 function renderRelationshipGraph(data) {
@@ -9681,10 +9738,18 @@ function renderRelationshipGraph(data) {
     // regardless of what's directly behind it - a standard vis-network
     // technique, not custom canvas code.
     const LABEL_OUTLINE = '#090b10';
+    // font.color was previously '#0b1220' (near-black) - correct ONLY if
+    // vis-network drew the label ON TOP of the star's own cyan fill, but a
+    // 'star' shape (like every non-"inside-label" vis-network shape - dot,
+    // diamond, triangle, etc.) renders its label BELOW the shape by
+    // default, on the graph's own #090b10 canvas background - meaning the
+    // label was genuinely near-invisible (near-black text on a near-black
+    // background), not just hard to read. Fixed to match every other
+    // node's own light-gray-with-a-dark-stroke-outline label styling.
     const nodes = [{
         id: '__device__', label: 'This Device', shape: 'star', size: 40,
         color: { background: '#22d3ee', border: '#0e7490', highlight: { background: '#22d3ee', border: '#ffffff' } },
-        font: { color: '#0b1220', size: 14, bold: 'bold', face: RELATIONSHIP_GRAPH_FONT },
+        font: { color: '#e2e8f0', size: 14, bold: 'bold', face: RELATIONSHIP_GRAPH_FONT, strokeWidth: 3, strokeColor: LABEL_OUTLINE },
         shadow: { enabled: true, color: 'rgba(34,211,238,0.35)', size: 14, x: 0, y: 0 },
         physics: false,
     }];
@@ -9754,7 +9819,9 @@ function renderRelationshipGraph(data) {
     );
     relationshipGraphNetwork.on('click', (params) => {
         if (params.nodes && params.nodes.length && params.nodes[0] !== '__device__') {
-            highlightContactInTable(params.nodes[0]);
+            showRelationshipGraphNodeActionsPopup(params.nodes[0]);
+        } else {
+            hideRelationshipGraphNodeActionsPopup();
         }
     });
     // Freezes the layout the instant it settles - a force-directed solver
@@ -9767,6 +9834,77 @@ function renderRelationshipGraph(data) {
     relationshipGraphNetwork.once('stabilizationIterationsDone', () => {
         if (relationshipGraphNetwork) relationshipGraphNetwork.setOptions({ physics: false });
     });
+}
+
+// A small fixed-corner action popup (2026-09-08), mirroring show
+// PatternOfLifeActivityBarPopup()'s already-proven technique exactly
+// (fixed top-right of the graph's own container, not positioned near the
+// click point - deliberately avoids depending on vis-network's own click-
+// event pointer-coordinate shape, which was never independently confirmed
+// the way vis-network's node/edge/title API surfaces already were before
+// use elsewhere in this file). Offers the one real jump Table View's own
+// rows already have (viewContactInTimeline) that a bare node click never
+// did before this - a graph node click alone previously only ever went to
+// Table View (highlightContactInTable), with no way to reach the Timeline
+// without switching views first.
+function hideRelationshipGraphNodeActionsPopup() {
+    const existing = document.getElementById('relationshipGraphNodePopup');
+    if (existing) existing.remove();
+}
+
+function showRelationshipGraphNodeActionsPopup(contactKey) {
+    hideRelationshipGraphNodeActionsPopup();
+    const wrap = document.getElementById('relationshipGraphContainer');
+    if (!wrap) return;
+    const contact = patternOfLifeContactData &&
+        (patternOfLifeContactData.contacts || []).find(c => _contactCorrelationKey(c) === contactKey);
+    const displayName = contact && contact.display_names.length ? contact.display_names.join(' / ') : contactKey;
+
+    const popup = document.createElement('div');
+    popup.id = 'relationshipGraphNodePopup';
+    popup.className = 'shadow-lg';
+    popup.style.cssText = 'position:absolute; top:6px; right:6px; width:min(260px, calc(100% - 12px)); '
+        + 'background-color:#0f172a; border:1px solid #334155; border-radius:6px; padding:8px; z-index:5; font-size:0.8rem;';
+
+    const header = document.createElement('div');
+    header.className = 'd-flex justify-content-between align-items-center mb-2';
+    const title = document.createElement('span');
+    title.className = 'fw-bold text-info text-truncate';
+    title.textContent = displayName;
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'btn-close btn-close-white btn-sm';
+    closeBtn.setAttribute('aria-label', 'Close');
+    closeBtn.onclick = hideRelationshipGraphNodeActionsPopup;
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    popup.appendChild(header);
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'd-flex flex-column gap-1';
+    const tableBtn = document.createElement('button');
+    tableBtn.type = 'button';
+    tableBtn.className = 'btn btn-xs btn-outline-secondary text-start';
+    tableBtn.innerHTML = '<i class="bi bi-table me-1"></i>View in Table';
+    tableBtn.onclick = () => { hideRelationshipGraphNodeActionsPopup(); highlightContactInTable(contactKey); };
+    btnRow.appendChild(tableBtn);
+    const timelineBtn = document.createElement('button');
+    timelineBtn.type = 'button';
+    timelineBtn.className = 'btn btn-xs btn-outline-info text-start';
+    timelineBtn.innerHTML = '<i class="bi bi-clock-history me-1"></i>View in Evidence Timeline';
+    timelineBtn.onclick = () => { hideRelationshipGraphNodeActionsPopup(); viewContactInTimeline(contactKey); };
+    btnRow.appendChild(timelineBtn);
+    if (contact && ((contact.possible_duplicate_keys || []).length > 0 || (contact.merged_from || []).length > 0)) {
+        const mergeBtn = document.createElement('button');
+        mergeBtn.type = 'button';
+        mergeBtn.className = 'btn btn-xs btn-outline-warning text-start';
+        mergeBtn.innerHTML = '<i class="bi bi-people me-1"></i>Manage Identity / Merge';
+        mergeBtn.onclick = () => { hideRelationshipGraphNodeActionsPopup(); openContactMergeModal(contactKey); };
+        btnRow.appendChild(mergeBtn);
+    }
+    popup.appendChild(btnRow);
+
+    wrap.appendChild(popup);
 }
 
 // Search/isolate (2026-09-08) - dims (never hides/removes) non-matching
@@ -9862,6 +10000,7 @@ function setPatternOfLifeContactView(view) {
     if (graphContainer) graphContainer.style.setProperty('display', showGraph ? '' : 'none', showGraph ? '' : 'important');
     if (tableContainer) tableContainer.style.setProperty('display', showGraph ? 'none' : '', showGraph ? 'important' : '');
     if (legend) legend.style.display = (showGraph && hasContacts) ? '' : 'none';
+    _setRelationshipGraphLegendHeadingVisible(showGraph && hasContacts);
     if (truncNote && !showGraph) truncNote.style.display = 'none';
     if (metricBtn) {
         const hasAnyDuration = hasContacts && patternOfLifeContactData.contacts.some(c => (c.total_duration_seconds || 0) > 0);
@@ -9914,6 +10053,166 @@ function highlightContactInTable(contactKey) {
         row.classList.add('table-active');
         setTimeout(() => row.classList.remove('table-active'), 2000);
     });
+}
+
+// --- Contact merge (2026-09-08): the actionable follow-up to
+// possible_duplicate_keys' own passive warning icon - lets an examiner
+// actually merge two flagged entries, with a required justification note,
+// or undo a previous merge. One shared modal handles both directions
+// (flagging new candidates to merge, and reviewing/undoing past merges),
+// since both are "manage this contact's own identity" concerns and a
+// contact can legitimately have BOTH at once (still-flagged duplicates
+// alongside already-merged history). ---
+let contactMergeModalInstance = null;
+let contactMergeModalContactKey = null;
+
+function openContactMergeModal(contactKey) {
+    const contact = patternOfLifeContactData &&
+        (patternOfLifeContactData.contacts || []).find(c => _contactCorrelationKey(c) === contactKey);
+    if (!contact) return;
+    contactMergeModalContactKey = contactKey;
+    const nameEl = document.getElementById('contactMergeModalName');
+    if (nameEl) nameEl.textContent = contact.display_names.length ? contact.display_names.join(' / ') : contactKey;
+    renderContactMergeModalBody(contact);
+    if (!contactMergeModalInstance) contactMergeModalInstance = new bootstrap.Modal(document.getElementById('contactMergeModal'));
+    contactMergeModalInstance.show();
+}
+
+function renderContactMergeModalBody(contact) {
+    const contactsByKey = {};
+    (patternOfLifeContactData.contacts || []).forEach(c => { contactsByKey[_contactCorrelationKey(c)] = c; });
+
+    const dupSection = document.getElementById('contactMergeDupSection');
+    if (dupSection) {
+        dupSection.innerHTML = '';
+        const dupKeys = (contact.possible_duplicate_keys || []).filter(k => contactsByKey[k]);
+        if (dupKeys.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'text-subtle small';
+            empty.textContent = 'No unconfirmed possible duplicates flagged for this contact right now.';
+            dupSection.appendChild(empty);
+        } else {
+            dupKeys.forEach(k => dupSection.appendChild(_buildContactMergeDupCandidateRow(contactsByKey[k], k)));
+        }
+    }
+
+    const histSection = document.getElementById('contactMergeHistorySection');
+    if (histSection) {
+        histSection.innerHTML = '';
+        const mergedFrom = contact.merged_from || [];
+        if (mergedFrom.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'text-subtle small';
+            empty.textContent = 'No contacts have been merged into this one.';
+            histSection.appendChild(empty);
+        } else {
+            mergedFrom.forEach(entry => histSection.appendChild(_buildContactMergeHistoryRow(entry)));
+        }
+    }
+}
+
+function _buildContactMergeDupCandidateRow(candidate, candidateKey) {
+    const row = document.createElement('div');
+    row.className = 'border border-secondary rounded p-2 mb-2';
+    const label = document.createElement('div');
+    label.className = 'small mb-1';
+    label.textContent = `${candidate.display_names.join(' / ') || candidateKey} (${candidateKey})`;
+    row.appendChild(label);
+    const btnRow = document.createElement('div');
+    btnRow.className = 'd-flex gap-1';
+    const viewBtn = document.createElement('button');
+    viewBtn.type = 'button';
+    viewBtn.className = 'btn btn-xs btn-outline-secondary';
+    viewBtn.textContent = 'View';
+    viewBtn.onclick = () => { if (contactMergeModalInstance) contactMergeModalInstance.hide(); highlightContactInTable(candidateKey); };
+    btnRow.appendChild(viewBtn);
+    const mergeBtn = document.createElement('button');
+    mergeBtn.type = 'button';
+    mergeBtn.className = 'btn btn-xs btn-outline-warning';
+    mergeBtn.textContent = 'Merge into this contact...';
+    mergeBtn.onclick = () => _showContactMergeJustificationForm(row, contactMergeModalContactKey, candidateKey);
+    btnRow.appendChild(mergeBtn);
+    row.appendChild(btnRow);
+    return row;
+}
+
+function _showContactMergeJustificationForm(rowEl, primaryKey, mergedKey) {
+    // Toggle: a second click on the same row's Merge button removes the
+    // form instead of stacking a second one.
+    const existing = rowEl.querySelector('.contact-merge-justification-form');
+    if (existing) { existing.remove(); return; }
+    const form = document.createElement('div');
+    form.className = 'contact-merge-justification-form mt-2';
+    const textarea = document.createElement('textarea');
+    textarea.className = 'form-control form-control-sm mb-1';
+    textarea.rows = 2;
+    textarea.placeholder = 'Why do you believe this is the same person? (required)';
+    form.appendChild(textarea);
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'btn btn-xs btn-warning';
+    confirmBtn.textContent = 'Confirm Merge';
+    confirmBtn.disabled = true;
+    textarea.addEventListener('input', () => { confirmBtn.disabled = textarea.value.trim().length === 0; });
+    confirmBtn.onclick = () => mergeContacts(primaryKey, mergedKey, textarea.value.trim());
+    form.appendChild(confirmBtn);
+    rowEl.appendChild(form);
+    textarea.focus();
+}
+
+function _buildContactMergeHistoryRow(entry) {
+    const row = document.createElement('div');
+    row.className = 'border border-secondary rounded p-2 mb-2';
+    const label = document.createElement('div');
+    label.className = 'small';
+    label.textContent = `${(entry.display_names || []).join(' / ') || entry.key} (${entry.key})`;
+    row.appendChild(label);
+    const meta = document.createElement('div');
+    meta.className = 'text-subtle small mb-1';
+    meta.textContent = `Merged by ${entry.merged_by || 'unknown'} on ${entry.merged_at || '--'} - "${entry.justification || ''}"`;
+    row.appendChild(meta);
+    const undoBtn = document.createElement('button');
+    undoBtn.type = 'button';
+    undoBtn.className = 'btn btn-xs btn-outline-danger';
+    undoBtn.textContent = 'Undo This Merge';
+    undoBtn.onclick = () => unmergeContact(entry.key);
+    row.appendChild(undoBtn);
+    return row;
+}
+
+async function mergeContacts(primaryKey, mergedKey, justification) {
+    try {
+        const res = await fetch('/api/case_index/contacts/merge', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                case_folder: activeCase ? activeCase.case_folder : null,
+                primary_key: primaryKey, merged_key: mergedKey, justification
+            })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(data.error || 'Merge failed.', 'danger'); return; }
+        showToast('Contacts merged.', 'success');
+        if (contactMergeModalInstance) contactMergeModalInstance.hide();
+        await loadContactCorrelation();
+    } catch (err) {
+        showToast('Merge failed: ' + err, 'danger');
+    }
+}
+
+async function unmergeContact(mergedKey) {
+    try {
+        const res = await fetch('/api/case_index/contacts/unmerge', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase ? activeCase.case_folder : null, merged_key: mergedKey })
+        });
+        const data = await res.json();
+        if (!data.success) { showToast(data.error || 'Unmerge failed.', 'danger'); return; }
+        showToast('Merge undone.', 'success');
+        if (contactMergeModalInstance) contactMergeModalInstance.hide();
+        await loadContactCorrelation();
+    } catch (err) {
+        showToast('Unmerge failed: ' + err, 'danger');
+    }
 }
 
 async function loadContactCorrelation() {
@@ -10267,6 +10566,7 @@ function renderContactCorrelationTable(data) {
         row.dataset.number = _contactCorrelationKey(contact);
 
         const nameCell = document.createElement('td');
+        const contactKeyForCell = _contactCorrelationKey(contact);
         nameCell.appendChild(document.createTextNode(contact.display_names.length ? contact.display_names.join(' / ') : '(unnamed)'));
         const dupKeys = (contact.possible_duplicate_keys || []).filter(k => contactsByKey[k]);
         if (dupKeys.length > 0) {
@@ -10274,9 +10574,17 @@ function renderContactCorrelationTable(data) {
             dupIcon.className = 'bi bi-exclamation-triangle-fill text-warning ms-1';
             dupIcon.style.cursor = 'pointer';
             const dupNames = dupKeys.map(k => (contactsByKey[k].display_names || []).join(' / ') || k).join(', ');
-            dupIcon.title = `Possible duplicate (unconfirmed) - shares this exact display name with ${dupKeys.length} other contact entry/entries below (${dupNames}), but no shared phone number or email links them. Could be the same real person using an unlinked identity, or two different people who happen to share a name - not merged automatically. Click to jump to the first one.`;
-            dupIcon.onclick = (ev) => { ev.stopPropagation(); highlightContactInTable(dupKeys[0]); };
+            dupIcon.title = `Possible duplicate (unconfirmed) - shares this exact display name with ${dupKeys.length} other contact entry/entries below (${dupNames}), but no shared phone number or email links them. Could be the same real person using an unlinked identity, or two different people who happen to share a name - not merged automatically. Click to view or merge.`;
+            dupIcon.onclick = (ev) => { ev.stopPropagation(); openContactMergeModal(contactKeyForCell); };
             nameCell.appendChild(dupIcon);
+        }
+        if ((contact.merged_from || []).length > 0) {
+            const mergeIcon = document.createElement('i');
+            mergeIcon.className = 'bi bi-people-fill text-info ms-1';
+            mergeIcon.style.cursor = 'pointer';
+            mergeIcon.title = `${contact.merged_from.length} contact(s) have been manually merged into this one - click to review or undo.`;
+            mergeIcon.onclick = (ev) => { ev.stopPropagation(); openContactMergeModal(contactKeyForCell); };
+            nameCell.appendChild(mergeIcon);
         }
         row.appendChild(nameCell);
 
