@@ -30,8 +30,25 @@ def _tsk_parse_inode(raw):
     return int(str(raw).split('-')[0])
 
 def _tsk_open_fs(image_path, offset_sectors):
+    """Opens the filesystem at offset_sectors within image_path. pytsk3 is
+    tried first (the fast path, and everything it's ever supported keeps
+    working exactly as before) - only on failure does this fall back to
+    checking whether the bytes at that same offset are a real APFS
+    container (core/apfs_utils.py, 2026-09-08), since pytsk3 itself has no
+    way to open one at all (a real, confirmed upstream limitation, not a
+    bug in this app). If neither succeeds, the ORIGINAL pytsk3 exception is
+    re-raised (not the APFS one) so every existing caller's error handling
+    for a genuinely unsupported/corrupt filesystem is completely
+    unaffected by this fallback ever having been attempted."""
+    offset_bytes = int(offset_sectors) * TSK_DEFAULT_SECTOR_SIZE
     img = pytsk3.Img_Info(image_path)
-    return pytsk3.FS_Info(img, offset=int(offset_sectors) * TSK_DEFAULT_SECTOR_SIZE)
+    try:
+        return pytsk3.FS_Info(img, offset=offset_bytes)
+    except Exception as tsk_error:
+        from core.apfs_utils import detect_apfs_container, ApfsFsAdapter
+        if detect_apfs_container(image_path, offset_bytes):
+            return ApfsFsAdapter(image_path, offset_bytes)
+        raise tsk_error
 
 def _tsk_entry_dict(entry):
     name = entry.info.name.name.decode('utf-8', errors='replace')
