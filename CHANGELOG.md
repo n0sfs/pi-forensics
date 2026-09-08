@@ -21,6 +21,17 @@ file after updating to see what changed.
 
 ---
 
+## [1.75.0] - 2026-09-09
+
+### Added
+- **Archive/Re-open button for cases.** Previously, marking a case Archived meant opening Reporting
+  for that exact case, finding Report Narrative > Case Details, changing the Status dropdown, and
+  clicking "Save Report Changes" - real friction just to hide an old case from the default list. The
+  Case Manager's own case list now has a one-click Archive button on every row (and a matching
+  Re-open button once a case is archived), writing directly to that case's own status with no need
+  to load the full report first. Nothing is ever deleted - an archived case is only hidden from the
+  default "Active" filter, and switching the filter to "Archived" finds it again any time.
+
 ## [1.74.0] - 2026-09-09
 
 ### Added

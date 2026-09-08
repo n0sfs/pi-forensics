@@ -28,10 +28,18 @@ from flask import Blueprint, jsonify, request
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, sanitize_case_slug
 from core.config import EVIDENCE_ROOT, get_custom_case_fields
-from core.jobs import job_lock, current_job, _write_case_file
+from core.jobs import job_lock, current_job, _write_case_file, _read_case_file
 from core.case_index_db import list_case_folders
 
 case_management_bp = Blueprint('case_management', __name__)
+
+# The same 5 values Reporting's own Case Details Status <select> (templates/
+# tabs/reporting.html) and its client-side CASE_STATUS_BADGE_CLASS/
+# CASE_STATUS_BAR_COLOR mirrors (static/js/main.js) already use - no prior
+# backend-side constant existed before /api/cases/set_status needed one to
+# validate against (create_case() below just hardcodes the single "Open"
+# starting value, never needed the full enum).
+CASE_STATUS_VALUES = ('Open', 'In Review', 'On Hold', 'Closed', 'Archived')
 
 
 @case_management_bp.route('/api/cases/create', methods=['POST'])
@@ -130,6 +138,64 @@ def log_case_select():
         "case_folder": req.get('case_folder', ''),
     })
     return jsonify({"success": True})
+
+
+@case_management_bp.route('/api/cases/set_status', methods=['POST'])
+@requires_auth
+# Same broad OR as create_case() above - archiving/reopening a case is a
+# quick lifecycle action, not a reporting-specific one; any operational
+# account should be able to do it from the Case Manager list.
+@requires_permission('acquisition', 'mobile', 'recovery', 'reporting')
+def set_case_status():
+    """A fast, single-field way to change a case's status (most commonly:
+    archive it) directly from the Case Manager list - previously the ONLY
+    way was open Reporting for that exact case, find Report Narrative >
+    Case Details, change the Status dropdown, then click "Save Report
+    Changes" at the top of the page, which round-trips the ENTIRE report
+    JSON through saveReportMetadata()/currentLoadedReportData. That's the
+    right flow for editing a case's own narrative while you're already
+    working it; it's real friction for "I'm looking at a list of 20 old
+    cases and want to archive a few" - genuinely different actions.
+
+    Writes directly to the case's own MARKER file ({slug}_case.json, or
+    the legacy case_info.json for a not-yet-migrated case) - both already
+    store case_status as a plain top-level key, confirmed via list_case_
+    folders()'s own identical read pattern for both schemas (the nested
+    case_metadata shape only exists in legacy per-job _report.json files,
+    never the case-level marker itself, so there's no dual-schema branch
+    needed here the way saveReportMetadata()'s full-report save has)."""
+    req = request.get_json() or {}
+    case_folder = safe_path(req.get('case_folder'))
+    status = req.get('status')
+    if not case_folder or not os.path.isdir(case_folder):
+        return jsonify({"success": False, "error": "Case folder not found."}), 400
+    if status not in CASE_STATUS_VALUES:
+        return jsonify({"success": False, "error": f"Invalid status - must be one of: {', '.join(CASE_STATUS_VALUES)}"}), 400
+
+    slug = os.path.basename(case_folder.rstrip('/'))
+    consolidated_path = os.path.join(case_folder, f"{slug}_case.json")
+    legacy_path = os.path.join(case_folder, "case_info.json")
+    if os.path.exists(consolidated_path):
+        marker_path = consolidated_path
+    elif os.path.exists(legacy_path):
+        marker_path = legacy_path
+    else:
+        return jsonify({"success": False, "error": "No case marker file found in this folder."}), 400
+
+    try:
+        data = _read_case_file(marker_path)
+        old_status = data.get('case_status') or 'Open'
+        data['case_status'] = status
+        data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _write_case_file(marker_path, data)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not update case status: {e}"}), 500
+
+    log_chain_of_custody("case_status_changed", {
+        "case_folder": case_folder, "case_number": data.get('case_number', ''),
+        "old_status": old_status, "new_status": status,
+    })
+    return jsonify({"success": True, "case_status": status})
 
 
 # --- Legacy Case Migration: fold scattered case_info.json + *_report.json
