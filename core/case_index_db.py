@@ -293,7 +293,8 @@ CREATE TABLE IF NOT EXISTS tags (
     color TEXT NOT NULL,
     notable INTEGER NOT NULL DEFAULT 0,
     is_default INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'none'
 );
 -- Seeded every time this schema runs (idempotent via INSERT OR IGNORE on the
 -- UNIQUE name) - mirrors Autopsy's default tag set: Bookmark/Follow Up are
@@ -423,6 +424,21 @@ CREATE TABLE IF NOT EXISTS contact_merges (
 CREATE INDEX IF NOT EXISTS idx_contact_merges_primary ON contact_merges(primary_key);
 """
 
+def _ensure_tags_severity_column(conn):
+    """Adds `tags.severity` to a case index built before this feature
+    shipped (2026-09-09) - `CREATE TABLE IF NOT EXISTS` in _CASE_INDEX_SCHEMA
+    is a silent no-op against a table that already exists, so re-running the
+    schema script alone never retrofits a new column onto an existing
+    per-case tags table (any case that's ever been tagged before now).
+    `PRAGMA table_info` is a cheap, in-memory metadata read (not a data
+    scan), safe to call on every connect - the ALTER itself only actually
+    runs once per case, the first time its DB is opened under this
+    version."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(tags)").fetchall()}
+    if 'severity' not in cols:
+        conn.execute("ALTER TABLE tags ADD COLUMN severity TEXT NOT NULL DEFAULT 'none'")
+        conn.commit()
+
 def _case_index_connect(db_path):
     """Opens (creating if absent) the per-case analysis index, in WAL mode
     so a running scan job's writes and a concurrent File Explorer read don't
@@ -430,6 +446,7 @@ def _case_index_connect(db_path):
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_CASE_INDEX_SCHEMA)
+    _ensure_tags_severity_column(conn)
     return conn
 
 # --- Case analysis index queries (read-only, File Explorer's File Views tree) ---
@@ -477,9 +494,15 @@ def _case_index_open_write(case_folder):
 # has to handle for File Explorer's own per-item lookups. ---
 
 def _tags_for_paths(case_folder, paths):
-    """Returns {path: [{id, name, color, notable, comment}, ...]} for every
-    real-fs path in `paths` that has at least one tag. Empty dict if the
-    case isn't indexed/consolidated, or paths is empty - never an error."""
+    """Returns {path: [{id, name, color, notable, severity, comment}, ...]}
+    for every real-fs path in `paths` that has at least one tag. Empty dict
+    if the case isn't indexed/consolidated, or paths is empty - never an
+    error. `severity` rides along here specifically so Reporting's Exhibits
+    list (the one real "linked-finding record" a report actually exports)
+    can surface a Critical/High-flagged tag on the exhibit itself, not just
+    in the in-app File Views tree - the concrete gap this field exists to
+    close (see ALLOWED_TAG_SEVERITIES's own docstring in routes/case_
+    index.py)."""
     result = {}
     if not paths:
         return result
@@ -489,13 +512,14 @@ def _tags_for_paths(case_folder, paths):
     try:
         placeholders = ",".join("?" * len(paths))
         cur = conn.execute(
-            f"SELECT ti.path, t.id, t.name, t.color, t.notable, ti.comment "
+            f"SELECT ti.path, t.id, t.name, t.color, t.notable, t.severity, ti.comment "
             f"FROM tagged_items ti JOIN tags t ON ti.tag_id=t.id "
             f"WHERE ti.source_type='real_fs' AND ti.path IN ({placeholders})",
             paths)
         for row in cur:
             result.setdefault(row[0], []).append(
-                {"id": row[1], "name": row[2], "color": row[3], "notable": bool(row[4]), "comment": row[5]})
+                {"id": row[1], "name": row[2], "color": row[3], "notable": bool(row[4]),
+                 "severity": row[5], "comment": row[6]})
     finally:
         conn.close()
     return result

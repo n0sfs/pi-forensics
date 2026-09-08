@@ -52,6 +52,87 @@ def test_schema_seeds_exactly_eight_default_tags_and_is_idempotent(case_folder):
     assert count == 8
 
 
+def test_schema_seeds_default_tags_with_none_severity(case_folder):
+    """Every default tag gets severity='none' out of the box (2026-09-09) -
+    an examiner assigns a real severity deliberately, this app never
+    guesses one on its own behalf."""
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    severities = {r[0] for r in conn.execute("SELECT severity FROM tags").fetchall()}
+    conn.close()
+    assert severities == {"none"}
+
+
+def test_tags_severity_column_is_added_to_a_pre_existing_case_index(case_folder):
+    """A case index built BEFORE this feature shipped has a `tags` table with
+    no `severity` column at all - CREATE TABLE IF NOT EXISTS is a silent
+    no-op against a table that already exists, so the schema script alone
+    can never retrofit the column. Confirms _ensure_tags_severity_column()
+    (wired into every _case_index_connect() call) genuinely adds it without
+    losing any pre-existing row's data."""
+    db_path = case_index_db.case_index_db_path(case_folder)
+    # Build the OLD (pre-severity) tags table directly, bypassing the real
+    # schema, then seed one real custom tag with real data to prove nothing
+    # gets lost across the migration.
+    raw = sqlite3.connect(db_path)
+    raw.execute("""CREATE TABLE tags (
+        id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL,
+        notable INTEGER NOT NULL DEFAULT 0, is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL)""")
+    raw.execute("INSERT INTO tags (name, color, notable, is_default, created_at) VALUES (?,?,?,?,?)",
+                ("Pre-Existing Custom Tag", "danger", 1, 0, "2026-01-01 00:00:00"))
+    raw.commit()
+    raw.close()
+
+    conn = case_index_db._case_index_connect(db_path)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(tags)").fetchall()}
+    assert "severity" in cols
+    row = conn.execute("SELECT name, color, notable, severity FROM tags WHERE name=?",
+                        ("Pre-Existing Custom Tag",)).fetchone()
+    conn.close()
+    # The pre-existing row survived the migration untouched, AND correctly
+    # picked up the new column's own default value (never NULL, never an
+    # error) rather than requiring the migration to guess a real severity
+    # for data that predates the concept entirely.
+    assert row == ("Pre-Existing Custom Tag", "danger", 1, "none")
+
+
+def test_tags_severity_migration_is_idempotent(case_folder):
+    """Connecting twice against an already-migrated (or freshly-created,
+    already-current) case index never re-runs the ALTER TABLE - confirms
+    _ensure_tags_severity_column()'s own PRAGMA table_info guard actually
+    prevents a real "duplicate column name" sqlite3.OperationalError on the
+    second connect, not just that it happens to work once."""
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn1 = case_index_db._case_index_connect(db_path)
+    conn1.close()
+    conn2 = case_index_db._case_index_connect(db_path)  # would raise on a naive unconditional ALTER
+    count = conn2.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+    conn2.close()
+    assert count == 8  # unchanged - no duplicate rows, no error
+
+
+def test_tags_for_paths_includes_severity(case_folder):
+    """_tags_for_paths() (Reporting's own exhibit-tag-pill data source) rides
+    the new column through end to end - a tag applied with a real severity
+    is visible on the exhibit, not just in Manage Tags."""
+    db_path = case_index_db.case_index_db_path(case_folder)
+    conn = case_index_db._case_index_connect(db_path)
+    conn.execute(
+        "INSERT INTO tags (name, color, notable, is_default, created_at, severity) VALUES (?,?,?,?,?,?)",
+        ("Confirmed Malware", "danger", 1, 0, "2026-01-01 00:00:00", "critical"))
+    tag_id = conn.execute("SELECT id FROM tags WHERE name=?", ("Confirmed Malware",)).fetchone()[0]
+    conn.execute(
+        "INSERT INTO tagged_items (tag_id, source_type, path, name, tagged_at) VALUES (?,?,?,?,?)",
+        (tag_id, "real_fs", "/mnt/evidence/malware.exe", "malware.exe", "2026-01-01 00:00:00"))
+    conn.commit()
+    conn.close()
+
+    result = case_index_db._tags_for_paths(case_folder, ["/mnt/evidence/malware.exe"])
+    assert result["/mnt/evidence/malware.exe"][0]["severity"] == "critical"
+    assert result["/mnt/evidence/malware.exe"][0]["name"] == "Confirmed Malware"
+
+
 def test_auto_tag_case_artifact_creates_a_real_row(case_folder):
     target = os.path.join(case_folder, "2026-CASE-TEST_case.pdf")
     case_index_db._auto_tag_case_artifact(case_folder, target)

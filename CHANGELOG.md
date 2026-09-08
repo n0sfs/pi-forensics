@@ -21,6 +21,21 @@ file after updating to see what changed.
 
 ---
 
+## [1.73.0] - 2026-09-08
+
+### Added
+- **Severity / priority field on tags.** Every tag (Bookmark, Notable Item, or a custom tag) can now
+  carry a severity - None, Low, Medium, High, or Critical - set once on the tag itself rather than
+  re-picked every time it's applied to a file. A colored badge shows the severity everywhere a tag
+  already appears: Settings > Case & Reporting > Manage Tags, File Explorer's "Tag..." action (both
+  the existing-tag list and the quick "+ Create New Tag" form), the File Views tree (a `[HIGH]`/
+  `[CRITICAL]` prefix on high-severity tag categories, next to the existing notable star), and
+  Reporting's Files & Artifacts exhibit list. Existing tags on every case (including ones created
+  before this update) automatically migrate to "None" with zero data loss - confirmed live against a
+  real, previously-populated case index. A genuine differentiator over comparable commercial DFIR
+  tools, which were confirmed via research to lack a real structured severity field on evidence tags
+  (only simple color labels).
+
 ## [1.72.0] - 2026-09-08
 
 ### Added
