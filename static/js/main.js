@@ -10021,6 +10021,35 @@ function _buildContactCorrelationPreviewRow(contact) {
 // show - either this contact has no timestamped sample at all, or the
 // case has no location data loaded yet - rather than a button that always
 // opens to an empty "no matches" row.
+// Groups a flat list of {sample, point} time-proximity matches by
+// (sample timestamp, location CLUSTER) rather than leaving one entry per
+// raw GPS ping - found live during a real crime-scenario test: a device
+// that lingers at one place for a while naturally produces many separate
+// pings there, and without this grouping a single communication near an
+// extended visit produced a wall of near-duplicate rows (the same place,
+// repeated once per ping) that could also silently push a genuinely
+// distinct match past the 10-row display cap. Reuses the exact same
+// _geoLocationKey() grid-rounding the Frequent Locations table itself
+// already clusters by, so "one place" means the same thing everywhere in
+// this feature.
+function _groupNearbyMatchesByCluster(matches) {
+    const groups = new Map(); // "sampleTimestamp|clusterKey" -> {sample, point, count, minDeltaMin, maxDeltaMin}
+    matches.forEach(({ sample, point }) => {
+        const clusterKey = _geoLocationKey(point.lat, point.lon);
+        const groupKey = `${sample.timestamp}|${clusterKey}`;
+        const deltaMin = Math.round(Math.abs(point.timestamp - sample.timestamp) / 60);
+        const existing = groups.get(groupKey);
+        if (existing) {
+            existing.count += 1;
+            existing.minDeltaMin = Math.min(existing.minDeltaMin, deltaMin);
+            existing.maxDeltaMin = Math.max(existing.maxDeltaMin, deltaMin);
+        } else {
+            groups.set(groupKey, { sample, point, count: 1, minDeltaMin: deltaMin, maxDeltaMin: deltaMin });
+        }
+    });
+    return [...groups.values()];
+}
+
 function _buildContactNearbyLocationsRow(contact) {
     const geoPoints = (patternOfLifeGeoActivityData && patternOfLifeGeoActivityData.points) || [];
     if (geoPoints.length === 0) return null;
@@ -10031,14 +10060,15 @@ function _buildContactNearbyLocationsRow(contact) {
     // can have several samples sharing the same moment - e.g. an SMS and
     // its own delivery receipt - no need to repeat the same lookup twice).
     const seenTimestamps = new Set();
-    const matches = [];
+    const rawMatches = [];
     timedSamples.forEach(s => {
         if (seenTimestamps.has(s.timestamp)) return;
         seenTimestamps.add(s.timestamp);
         const nearby = _pointsNearTimestamp(geoPoints, s.timestamp, LOCATION_CONTACT_LINK_WINDOW_SECONDS);
-        nearby.forEach(p => matches.push({ sample: s, point: p }));
+        nearby.forEach(p => rawMatches.push({ sample: s, point: p }));
     });
-    if (matches.length === 0) return null;
+    if (rawMatches.length === 0) return null;
+    const matches = _groupNearbyMatchesByCluster(rawMatches);
 
     const tr = document.createElement('tr');
     tr.style.display = 'none';
@@ -10051,13 +10081,14 @@ function _buildContactNearbyLocationsRow(contact) {
     heading.textContent = `Location(s) recorded within ${Math.round(LOCATION_CONTACT_LINK_WINDOW_SECONDS / 60)} minutes of a communication with this contact (time proximity only - not a confirmed link)`;
     td.appendChild(heading);
 
-    matches.slice(0, 10).forEach(({ sample, point }) => {
+    matches.slice(0, 10).forEach(({ sample, point, count, minDeltaMin, maxDeltaMin }) => {
         const line = document.createElement('div');
         line.className = 'small mb-1 pb-1 border-bottom border-secondary';
-        const deltaMin = Math.round(Math.abs(point.timestamp - sample.timestamp) / 60);
+        const deltaText = minDeltaMin === maxDeltaMin ? `${minDeltaMin} min` : `${minDeltaMin}-${maxDeltaMin} min`;
+        const countText = count > 1 ? ` (${count} fixes recorded here in that window)` : '';
         const meta = document.createElement('div');
         meta.className = 'text-info';
-        meta.textContent = `${sample.artifact_type} at ${_formatContactCorrelationTimestamp(sample.timestamp)} - ${deltaMin} min from a location fix`;
+        meta.textContent = `${sample.artifact_type} at ${_formatContactCorrelationTimestamp(sample.timestamp)} - ${deltaText} from a location fix${countText}`;
         const text = document.createElement('div');
         text.className = 'text-light';
         text.textContent = `${point.name} (${point.lat.toFixed(3)}, ${point.lon.toFixed(3)}) - ${point.source}`;
@@ -10068,6 +10099,126 @@ function _buildContactNearbyLocationsRow(contact) {
 
     tr.appendChild(td);
     return tr;
+}
+
+// Same cross-linking idea as _buildContactNearbyLocationsRow(), applied to
+// a single UNRESOLVED communication instead of a known contact's full
+// sample list - a real unidentified number/address that pinged right
+// before/during/after a location visit is exactly the kind of lead this
+// whole feature exists to surface, and it was previously invisible here
+// entirely (see UNRESOLVED_COMM_MAX_RECORDS's own comment in core/
+// case_index_db.py for how this was found, during a live crime-scenario
+// test). Returns null when there's nothing to show.
+function _buildUnresolvedLeadNearbyLocationsRow(lead) {
+    const geoPoints = (patternOfLifeGeoActivityData && patternOfLifeGeoActivityData.points) || [];
+    if (geoPoints.length === 0 || lead.timestamp === null || lead.timestamp === undefined) return null;
+    const nearby = _pointsNearTimestamp(geoPoints, lead.timestamp, LOCATION_CONTACT_LINK_WINDOW_SECONDS);
+    if (nearby.length === 0) return null;
+    const matches = _groupNearbyMatchesByCluster(nearby.map(point => ({ sample: lead, point })));
+
+    const tr = document.createElement('tr');
+    tr.style.display = 'none';
+    const td = document.createElement('td');
+    td.colSpan = 6; // matches the Unresolved Leads table's own <thead> below
+    td.className = 'bg-app-dark';
+
+    const heading = document.createElement('div');
+    heading.className = 'small fw-bold text-subtle mt-1 mb-1';
+    heading.textContent = `Location(s) recorded within ${Math.round(LOCATION_CONTACT_LINK_WINDOW_SECONDS / 60)} minutes of this communication (time proximity only - not a confirmed link)`;
+    td.appendChild(heading);
+
+    matches.forEach(({ point, count, minDeltaMin, maxDeltaMin }) => {
+        const line = document.createElement('div');
+        line.className = 'small mb-1 pb-1 border-bottom border-secondary';
+        const deltaText = minDeltaMin === maxDeltaMin ? `${minDeltaMin} min` : `${minDeltaMin}-${maxDeltaMin} min`;
+        const countText = count > 1 ? ` (${count} fixes recorded here in that window)` : '';
+        line.textContent = `${point.name} (${point.lat.toFixed(3)}, ${point.lon.toFixed(3)}) - ${point.source} - ${deltaText} away${countText}`;
+        td.appendChild(line);
+    });
+
+    tr.appendChild(td);
+    return tr;
+}
+
+// Unresolved-leads table (2026-09-07) - previously ONLY a bare count in the
+// summary sentence below, with zero way to see which number/address it
+// was, when, or via which channel. Collapsed by default (matching this
+// app's established report-file-group-toggle pattern) since most cases
+// have few or none; each row can expand its own nearby-locations cross-
+// link exactly like a resolved contact's row already can.
+function renderUnresolvedLeadsSection(data) {
+    const leads = data.unresolved_communications || [];
+    if (leads.length === 0) return null;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'mb-2';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'btn btn-outline-warning btn-xs mb-1';
+    let expanded = false;
+    const setLabel = () => {
+        toggle.innerHTML = '';
+        const icon = document.createElement('i');
+        icon.className = expanded ? 'bi bi-chevron-down me-1' : 'bi bi-chevron-right me-1';
+        toggle.appendChild(icon);
+        toggle.appendChild(document.createTextNode(
+            `Unresolved Lead${leads.length === 1 ? '' : 's'} (${data.unresolved_communication_count})`
+            + (data.unresolved_communications_truncated ? ` - showing the ${leads.length} most recent` : '')
+        ));
+    };
+    setLabel();
+
+    const tableWrap = document.createElement('div');
+    tableWrap.style.display = 'none';
+    tableWrap.className = 'table-responsive';
+    const table = document.createElement('table');
+    table.className = 'table table-sm table-dark table-bordered mb-2';
+    table.innerHTML = '<thead><tr><th>Counterpart</th><th>Channel</th><th>Direction</th>'
+        + '<th>Timestamp</th><th>Preview</th><th></th></tr></thead>';
+    const tbody = document.createElement('tbody');
+    leads.forEach((lead) => {
+        const tr = document.createElement('tr');
+        const counterpartTd = document.createElement('td');
+        counterpartTd.textContent = lead.counterpart || '(no address captured)';
+        const channelTd = document.createElement('td');
+        channelTd.textContent = lead.channel || '';
+        const directionTd = document.createElement('td');
+        directionTd.textContent = lead.direction || '--';
+        const tsTd = document.createElement('td');
+        tsTd.textContent = _formatContactCorrelationTimestamp(lead.timestamp);
+        const previewTd = document.createElement('td');
+        previewTd.textContent = lead.content_preview || '';
+        const actionTd = document.createElement('td');
+
+        const nearbyLocationsRow = _buildUnresolvedLeadNearbyLocationsRow(lead);
+        if (nearbyLocationsRow) {
+            const geoBtn = document.createElement('button');
+            geoBtn.type = 'button';
+            geoBtn.className = 'btn btn-outline-secondary btn-xs';
+            geoBtn.title = 'Show location(s) recorded near this communication';
+            geoBtn.innerHTML = '<i class="bi bi-geo-alt"></i>';
+            geoBtn.onclick = () => { nearbyLocationsRow.style.display = nearbyLocationsRow.style.display === 'none' ? '' : 'none'; };
+            actionTd.appendChild(geoBtn);
+        }
+
+        tr.appendChild(counterpartTd); tr.appendChild(channelTd); tr.appendChild(directionTd);
+        tr.appendChild(tsTd); tr.appendChild(previewTd); tr.appendChild(actionTd);
+        tbody.appendChild(tr);
+        if (nearbyLocationsRow) tbody.appendChild(nearbyLocationsRow);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+
+    toggle.onclick = () => {
+        expanded = !expanded;
+        tableWrap.style.display = expanded ? '' : 'none';
+        setLabel();
+    };
+
+    wrap.appendChild(toggle);
+    wrap.appendChild(tableWrap);
+    return wrap;
 }
 
 function renderContactCorrelationTable(data) {
@@ -10090,6 +10241,9 @@ function renderContactCorrelationTable(data) {
         + `${data.unresolved_communication_count} communication(s) with an unmatched counterpart`
         + (data.truncated ? ' (list truncated - too many contacts to show all).' : '.');
     container.appendChild(summary);
+
+    const unresolvedSection = renderUnresolvedLeadsSection(data);
+    if (unresolvedSection) container.appendChild(unresolvedSection);
 
     if (data.contacts.length === 0) {
         const empty = document.createElement('div');
@@ -12216,6 +12370,23 @@ async function renderCaseDashboard() {
     if (!currentLoadedReportData || !activeCase) return;
 
     renderVerifyAllEvidenceLastResult();
+
+    // Reset the two /api/case_index/summary-backed cards to a neutral
+    // "loading" state BEFORE that fetch below is even issued - found live
+    // during a crime-scenario test on this station's own slow NFS storage:
+    // switching cases could leave the PREVIOUS case's real Tagged Items/
+    // Analysis Activity numbers visible for several seconds (sometimes
+    // much longer here) while the fresh fetch for the newly-selected case
+    // was still in flight, since nothing cleared them first - a real,
+    // if brief, chance of misreading one case's data as another's.
+    const staleTagEl = document.getElementById('dashTagCount');
+    const staleAnalysisEl = document.getElementById('dashAnalysisCount');
+    const staleTagDetailEl = document.getElementById('dashTagDetail');
+    const staleAnalysisDetailEl = document.getElementById('dashAnalysisDetail');
+    if (staleTagEl) staleTagEl.textContent = '--';
+    if (staleAnalysisEl) staleAnalysisEl.textContent = '--';
+    if (staleTagDetailEl) { staleTagDetailEl.textContent = 'Loading...'; staleTagDetailEl.className = 'small mt-1 text-subtle'; }
+    if (staleAnalysisDetailEl) staleAnalysisDetailEl.textContent = 'Loading...';
 
     const isConsolidated = Array.isArray(currentLoadedReportData.events);
     const events = isConsolidated ? currentLoadedReportData.events : [];
