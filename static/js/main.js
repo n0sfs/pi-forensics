@@ -15927,15 +15927,37 @@ function renderCaseList() {
         btn.appendChild(subRow);
         btn.onclick = () => selectCase(c);
 
+        const actionsRow = document.createElement('div');
+        actionsRow.className = 'mt-2';
+
         if (c.schema === 'legacy') {
             const migrateBtn = document.createElement('button');
             migrateBtn.type = 'button';
-            migrateBtn.className = 'btn btn-xs btn-outline-warning py-0 px-2 mt-2';
+            migrateBtn.className = 'btn btn-xs btn-outline-warning py-0 px-2 me-2';
             migrateBtn.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>Migrate to Consolidated Format';
             migrateBtn.onclick = (ev) => { ev.stopPropagation(); migrateCase(c); };
-            btn.appendChild(migrateBtn);
+            actionsRow.appendChild(migrateBtn);
         }
 
+        // Archive/Re-open - a fast, single-field status flip reachable
+        // right from this list row (setCaseStatus()), instead of needing
+        // to open Reporting for this exact case, find Case Details, change
+        // the Status dropdown, and Save just to hide an old case from the
+        // default view.
+        const archiveBtn = document.createElement('button');
+        archiveBtn.type = 'button';
+        if ((c.case_status || 'Open') === 'Archived') {
+            archiveBtn.className = 'btn btn-xs btn-outline-info py-0 px-2';
+            archiveBtn.innerHTML = '<i class="bi bi-box-arrow-up me-1"></i>Re-open';
+            archiveBtn.onclick = (ev) => { ev.stopPropagation(); setCaseStatus(c, 'Open'); };
+        } else {
+            archiveBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
+            archiveBtn.innerHTML = '<i class="bi bi-archive me-1"></i>Archive';
+            archiveBtn.onclick = (ev) => { ev.stopPropagation(); setCaseStatus(c, 'Archived'); };
+        }
+        actionsRow.appendChild(archiveBtn);
+
+        btn.appendChild(actionsRow);
         listEl.appendChild(btn);
     });
 }
@@ -15978,6 +16000,49 @@ async function migrateCase(c) {
         loadExistingCases();
     } catch (err) {
         showToast(`Migration request failed: ${err.message}`, 'danger');
+    }
+}
+
+// Writes directly to the case's own marker file (routes/case_management.py
+// - a single-field update, not the full report load/save round trip
+// saveReportMetadata() otherwise requires) - reachable straight from the
+// Case Manager list row instead of needing to open Reporting for this
+// exact case first.
+async function setCaseStatus(c, newStatus) {
+    const archiving = newStatus === 'Archived';
+    const confirmMsg = archiving
+        ? `Archive case "${c.case_number}"?\n\nIt will be hidden from the default "Active" list but never deleted or otherwise touched - switch the status filter to "Archived" here any time to find and re-open it.`
+        : `Re-open case "${c.case_number}"?`;
+    if (!confirm(confirmMsg)) return;
+
+    try {
+        const res = await fetch('/api/cases/set_status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: c.case_folder, status: newStatus })
+        });
+        const data = await res.json();
+        if (!data.success) return showToast(`Could not update case status: ${data.error}`, 'danger');
+
+        showToast(`"${c.case_number}" ${archiving ? 'archived' : 're-opened'}.`, 'success');
+
+        // If this exact case is the one currently loaded in Reporting,
+        // keep it in sync too - only for the consolidated schema, whose
+        // top-level case_status is exactly the same field this route just
+        // wrote; a legacy case's currently-loaded report is a genuinely
+        // different file (its own per-job _report.json) from the case-
+        // level marker this route targets, so there's nothing to reconcile
+        // there.
+        if (activeCase && activeCase.case_folder === c.case_folder
+                && currentLoadedReportData && Array.isArray(currentLoadedReportData.events)) {
+            currentLoadedReportData.case_status = newStatus;
+            const caseStatusEl = document.getElementById('editCaseStatus');
+            if (caseStatusEl) caseStatusEl.value = newStatus;
+        }
+
+        loadExistingCases();
+    } catch (err) {
+        showToast(`Request failed: ${err.message}`, 'danger');
     }
 }
 
