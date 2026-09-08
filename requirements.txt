@@ -182,3 +182,14 @@ libvshadow-python>=20260714
 # the Pi's real ARM64/Debian-trixie venv as a genuine prebuilt
 # manylinux2014_aarch64 wheel - zero compile step.
 libesedb-python>=20260704
+
+# libfsapfs-python (2026-09-08) - macOS APFS disk-image browsing
+# (core/apfs_utils.py), closing pytsk3's own confirmed inability to open
+# an APFS container at all. Unlike every other libyal package pinned
+# above, this one has NO prebuilt aarch64 wheel on PyPI/piwheels -
+# confirmed live it installs via a genuine SOURCE BUILD on the Pi's real
+# ARM64/Debian-trixie venv, but needs NO corresponding install.py
+# apt_packages addition either: the sdist bundles its own vendored C
+# source, so the build succeeds with zero libfsapfs-dev system package
+# installed first (confirmed live).
+libfsapfs-python>=20240429
