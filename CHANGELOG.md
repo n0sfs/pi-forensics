@@ -21,6 +21,28 @@ file after updating to see what changed.
 
 ---
 
+## [1.72.0] - 2026-09-08
+
+### Added
+- **Date-range filter for Location Activity.** Pattern of Life's "Location Activity" map/table can
+  now be narrowed to a specific window - a single day, a few days, a week, a month, or any custom
+  range - using new From/To date fields, exactly like the existing Communication Activity Pattern
+  chart's own filter. This recomputes which locations count as "frequent" for just that window (no
+  re-fetch needed), so you can answer "where was this device active during this specific day or
+  range" instead of only ever seeing the case's full history at once. A KML-sourced point has no
+  timestamp and can only ever appear under the default "All Time" view - narrowing to a specific
+  range only shows timestamped points, and the summary line says so.
+
+### Fixed
+- **The travel-path line was effectively invisible.** "Show travel path (time-ordered)" drew a real
+  line, but at the same pale blue as the individual location markers and a low opacity, it was
+  routinely lost against a busy map (real roads, water, highway shields in similar colors). The line
+  is now a bright, saturated magenta at a heavier weight, with a green "path start" marker and a
+  matching magenta "path end" marker so the direction of travel is clear at a glance, not just
+  implied by a barely-visible line.
+
+---
+
 ## [1.71.0] - 2026-09-08
 
 ### Added
