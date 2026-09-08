@@ -310,7 +310,20 @@ def _compute_reporting_stats(enabled_keys):
         if key == "total_cases":
             counts = {}
             for c in cases:
-                status = c.get("case_status") or "Legacy"
+                # Real bug, fixed 2026-09-09: list_case_folders() always
+                # normalizes case_status to a truthy value (`or 'Open'`) for
+                # BOTH schemas, so `c.get("case_status") or "Legacy"` could
+                # never actually fire its own "Legacy" fallback - a
+                # not-yet-migrated case just silently got bucketed under
+                # "Open" instead. schema (not case_status) is the real
+                # signal for "hasn't been migrated yet" - matches the
+                # evidence_items stat's own identical schema == "consolidated"
+                # check a few lines below, and the frontend's own established
+                # c.schema === 'legacy' convention (main.js:15904).
+                if c.get("schema") != "consolidated":
+                    status = "Legacy (Not Yet Migrated)"
+                else:
+                    status = c.get("case_status") or "Open"
                 counts[status] = counts.get(status, 0) + 1
             entry["value"] = len(cases)
             entry["breakdown"] = counts
@@ -353,12 +366,14 @@ def _custom_report_template_from_payload(req):
 
     Unknown section keys are rejected outright (400) rather than silently
     dropped, since accepting them would let stale/malformed client state
-    corrupt storage. Any of the 13 known blocks missing from the payload is
+    corrupt storage. Any known block missing from the payload is
     defensively auto-filled (default title, enabled) rather than rejected -
-    every stored record is expected to always cover all 13 keys (what the
-    builder UI edits, and what _resolve_section_order() reads), so this is
-    a self-healing default a slightly-out-of-date client shouldn't be
-    punished for."""
+    every stored record is expected to always cover every key in
+    REPORT_SECTION_BLOCKS (currently 16 - what the builder UI edits, and
+    what _resolve_section_order() reads; deliberately not hardcoded here a
+    second time, since this exact count has already drifted stale twice
+    before as new report sections were added), so this is a self-healing
+    default a slightly-out-of-date client shouldn't be punished for."""
     name = (req.get('name') or '').strip()[:CUSTOM_REPORT_TEMPLATE_NAME_MAX]
     if not name:
         return None, "Template name is required."
@@ -385,8 +400,7 @@ def _custom_report_template_from_payload(req):
             row["source_field"] = requested if requested in NARRATIVE_BLOCK_FIELD_MAP.values() else NARRATIVE_BLOCK_FIELD_MAP[key]
         by_key[key] = row
     # Preserve the payload's own order for keys it included, then append
-    # any of the 15 registry blocks it left out, in the registry's own
-    # default order.
+    # any registry blocks it left out, in the registry's own default order.
     sections = list(by_key.values())
     for block in REPORT_SECTION_BLOCKS:
         if block['key'] not in by_key:
@@ -572,6 +586,17 @@ def save_report_json():
 
     if not report_file or not os.path.exists(report_file):
         return jsonify({"success": False, "error": "Report target file not found or outside the permitted evidence directory."}), 404
+
+    # Real bug, fixed 2026-09-09: this is the main "Save Report Changes"
+    # round trip (Report Narrative/Case Details/exhibit captions/reference
+    # URLs), yet it was the ONE case-mutating route in this file that never
+    # refreshed updated_at - every sibling route (add_case_note/
+    # edit_case_note/add_custody_entry/attach_file_to_case/set_case_status)
+    # already does. Matches those routes' exact "if 'updated_at' in data"
+    # guard, since the incoming payload could in principle be a legacy
+    # report shape with no such key at all.
+    if isinstance(data, dict) and 'updated_at' in data:
+        data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     try:
         with open(report_file, 'w') as f:
@@ -1640,10 +1665,18 @@ def case_geo_activity():
     conn = _case_index_open_readonly(case_folder)
     if conn:
         try:
+            # LIMIT is deliberately one MORE than the real cap - this is what
+            # lets the truncated check below correctly fire even when the
+            # Takeout rows alone already exceed the cap (a real, live-caught
+            # bug: with a plain LIMIT GEO_ACTIVITY_MAX_POINTS, a case with
+            # >=5000 Takeout rows and few/no KML points would end up with
+            # len(points) landing at exactly the cap, never over it, so
+            # truncated would silently read False despite real data having
+            # been dropped by the SQL LIMIT itself).
             for value, timestamp, extra_json in conn.execute(
                     "SELECT value, timestamp, extra_json FROM parsed_artifacts "
                     "WHERE artifact_type = 'takeout_location_history' LIMIT ?",
-                    (GEO_ACTIVITY_MAX_POINTS,)):
+                    (GEO_ACTIVITY_MAX_POINTS + 1,)):
                 try:
                     extra = json.loads(extra_json) if extra_json else {}
                 except (json.JSONDecodeError, TypeError, AttributeError):

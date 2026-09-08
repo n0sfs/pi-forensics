@@ -300,9 +300,21 @@ def migrate_case_apply():
         "case_folder": case_dir,
         "examiner": (case_info or {}).get("examiner", ""),
         "notes": (case_info or {}).get("notes", ""),
+        # Real bug, fixed 2026-09-09: this is the OTHER place (besides
+        # create_case() above) that produces a brand-new {slug}_case.json
+        # for the first time, but it previously omitted both of these keys
+        # entirely - a migrated case never got a configured custom field's
+        # station-wide default_value seeded the way a freshly-created case
+        # already does, and case_status silently fell back to list_case_
+        # folders()'s own generic "or 'Open'" default rather than preserving
+        # whatever status a legacy case_info.json happened to already record
+        # (a legacy case could genuinely have been marked Closed/Archived
+        # before consolidation ever existed).
+        "case_status": (case_info or {}).get("case_status") or "Open",
         "created_at": (case_info or {}).get("created_at") or (events[0]["timestamp_start"] if events else now),
         "updated_at": now,
         "attachments": {"files": [], "reference_urls": []},
+        "custom_fields": {f["key"]: f.get("default_value", "") for f in get_custom_case_fields()},
         "events": events,
     }
 
