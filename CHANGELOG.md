@@ -21,6 +21,21 @@ file after updating to see what changed.
 
 ---
 
+## [1.68.0] - 2026-09-09
+
+### Added
+- **Pattern of Life: Location Activity and Contact Correlation are now cross-linked.** A new "Nearby
+  Locations" button on each Contact Correlation row shows every GPS/location point recorded within 2
+  hours of a real communication with that contact - and, the other direction, a new "Nearby Contacts"
+  button on each Frequent Location row shows every contact you communicated with within 2 hours of a
+  visit there. Both are explicitly disclosed as time-proximity matches only, never a confirmed link -
+  useful for spotting a plausible "were they together" moment worth a closer look, not asserted as
+  fact.
+- **A travel-path line on the Location Activity map.** A new "Show travel path (time-ordered)"
+  checkbox draws a line connecting every timestamped location point in chronological order - a rough
+  visual sense of where the device moved over time, not a real routed path (it's a straight line
+  between fixes, not a road-following route).
+
 ## [1.67.0] - 2026-09-08
 
 ### Added
