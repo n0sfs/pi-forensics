@@ -21,6 +21,19 @@ file after updating to see what changed.
 
 ---
 
+## [1.69.0] - 2026-09-09
+
+### Added
+- **A 2D hour-of-day x day-of-week heatmap for Communication Activity Pattern.** The existing "By
+  Hour of Day" and "By Day of Week" bar charts each show one dimension at a time - a new "Heatmap"
+  view shows both together, revealing a pattern neither view alone can (e.g. "active every Tuesday
+  night," not just "active at night in general"). Tap a cell for the same drill-down detail the bar
+  charts already offer.
+- **A communication-volume threshold slider on the Relationship Graph.** "Min. communications" lets
+  you declutter the graph down to just the people this device talked to the most, hiding low-volume
+  contacts on demand (default: show everyone). Doesn't remove anyone from Table View or anywhere else
+  - it only changes what this one graph displays.
+
 ## [1.68.0] - 2026-09-09
 
 ### Added
