@@ -32,6 +32,23 @@ case_index_bp = Blueprint('case_index', __name__)
 # stays a local constant rather than moving into core/.
 ALLOWED_TAG_COLORS = ('primary', 'secondary', 'success', 'danger', 'warning', 'info')
 
+# A structured severity/priority field on a tag (2026-09-09) - a genuine
+# capability gap confirmed against three real competitor tools during this
+# session's own DFIR-tool comparison research: Oxygen Forensic Detective has
+# no evidence of one at all ("appears to be simple label/flag/note"),
+# Belkasoft X has "no documented severity/priority/status field... tag-based
+# grouping, not a dedicated linked-finding record", and MSAB XAMN only ships
+# two built-in tags (Important/Unimportant) with no real scale. Deliberately
+# a property of the TAG DEFINITION itself, not something picked per-
+# application - mirrors this table's own existing `notable` boolean's
+# precedent exactly, and means every item tagged "Confirmed Malware" (say)
+# automatically inherits that tag's own severity, rather than an examiner
+# re-picking a severity every single time the same tag is applied. A plain,
+# widely-understood 5-point scale (matches common incident-severity/CVSS-
+# style conventions), never asserted by this app itself - always an
+# examiner's own deliberate choice when defining or editing a tag.
+ALLOWED_TAG_SEVERITIES = ('none', 'low', 'medium', 'high', 'critical')
+
 # _case_index_open_readonly/_case_index_open_write/_tags_for_paths/
 # _analysis_results_for_paths/_record_analysis_result (and
 # ANALYSIS_RESULT_MAX_PER_PATH/ANALYSIS_RESULT_MAX_OUTPUT_CHARS) now live in
@@ -116,11 +133,11 @@ def case_index_summary():
             for row in conn.execute("SELECT artifact_type, COUNT(*) FROM parsed_artifacts GROUP BY artifact_type"):
                 parsed_artifact_counts[row[0]] = row[1]
             for row in conn.execute(
-                    "SELECT t.id, t.name, t.color, t.notable, t.is_default, "
+                    "SELECT t.id, t.name, t.color, t.notable, t.is_default, t.severity, "
                     "(SELECT COUNT(*) FROM tagged_items WHERE tag_id=t.id) "
                     "FROM tags t ORDER BY t.is_default DESC, t.name"):
                 tags.append({"id": row[0], "name": row[1], "color": row[2], "notable": bool(row[3]),
-                             "is_default": bool(row[4]), "count": row[5]})
+                             "is_default": bool(row[4]), "severity": row[5], "count": row[6]})
             # Binwalk/ClamAV/Strings/Memory Forensics/Hash-Directory-Tree all
             # write here via core.case_index_db._record_analysis_result() -
             # the one signal below (has_analysis_activity) that isn't already
@@ -686,7 +703,7 @@ def case_index_tag_item():
     try:
         tag_id = req.get('tag_id')
         if tag_id:
-            row = conn.execute("SELECT id, name, color, notable FROM tags WHERE id=?", (tag_id,)).fetchone()
+            row = conn.execute("SELECT id, name, color, notable, severity FROM tags WHERE id=?", (tag_id,)).fetchone()
             if not row:
                 return jsonify({"success": False, "error": "Tag not found."}), 404
         else:
@@ -695,17 +712,18 @@ def case_index_tag_item():
                 return jsonify({"success": False, "error": "Provide either tag_id or new_tag_name."}), 400
             color = req.get('new_tag_color') if req.get('new_tag_color') in ALLOWED_TAG_COLORS else 'secondary'
             notable = 1 if req.get('new_tag_notable') else 0
+            severity = req.get('new_tag_severity') if req.get('new_tag_severity') in ALLOWED_TAG_SEVERITIES else 'none'
             # Soft-dedupe by name (INSERT OR IGNORE against the UNIQUE
             # constraint), matching this app's existing precedent for
             # custom report templates/case fields - "creating" a tag whose
             # name already exists just resolves to the existing one rather
             # than erroring or silently making a second copy.
             conn.execute(
-                "INSERT OR IGNORE INTO tags (name, color, notable, is_default, created_at) VALUES (?,?,?,0,?)",
-                (new_name, color, notable, time.strftime("%Y-%m-%d %H:%M:%S")))
+                "INSERT OR IGNORE INTO tags (name, color, notable, is_default, created_at, severity) VALUES (?,?,?,0,?,?)",
+                (new_name, color, notable, time.strftime("%Y-%m-%d %H:%M:%S"), severity))
             conn.commit()
-            row = conn.execute("SELECT id, name, color, notable FROM tags WHERE name=?", (new_name,)).fetchone()
-        tag_id, tag_name, tag_color, tag_notable = row[0], row[1], row[2], bool(row[3])
+            row = conn.execute("SELECT id, name, color, notable, severity FROM tags WHERE name=?", (new_name,)).fetchone()
+        tag_id, tag_name, tag_color, tag_notable, tag_severity = row[0], row[1], row[2], bool(row[3]), row[4]
 
         if identity["source_type"] == "real_fs":
             existing = conn.execute(
@@ -736,7 +754,7 @@ def case_index_tag_item():
         conn.close()
 
     return jsonify({"success": True, "already_tagged": already_tagged,
-                     "tag": {"id": tag_id, "name": tag_name, "color": tag_color, "notable": tag_notable}})
+                     "tag": {"id": tag_id, "name": tag_name, "color": tag_color, "notable": tag_notable, "severity": tag_severity}})
 
 @case_index_bp.route('/api/case_index/untag_item', methods=['POST'])
 @requires_auth
@@ -785,16 +803,17 @@ def case_index_item_tags():
         try:
             if identity["source_type"] == "real_fs":
                 cur = conn.execute(
-                    "SELECT t.id, t.name, t.color, t.notable, ti.comment FROM tagged_items ti "
+                    "SELECT t.id, t.name, t.color, t.notable, t.severity, ti.comment FROM tagged_items ti "
                     "JOIN tags t ON ti.tag_id=t.id WHERE ti.source_type='real_fs' AND ti.path=?",
                     (identity["path"],))
             else:
                 cur = conn.execute(
-                    "SELECT t.id, t.name, t.color, t.notable, ti.comment FROM tagged_items ti "
+                    "SELECT t.id, t.name, t.color, t.notable, t.severity, ti.comment FROM tagged_items ti "
                     "JOIN tags t ON ti.tag_id=t.id WHERE ti.source_type='image' AND ti.image_path=? AND ti.fs_offset=? AND ti.inode=?",
                     (identity["image_path"], identity["fs_offset"], identity["inode"]))
             for row in cur:
-                tags.append({"id": row[0], "name": row[1], "color": row[2], "notable": bool(row[3]), "comment": row[4]})
+                tags.append({"id": row[0], "name": row[1], "color": row[2], "notable": bool(row[3]),
+                             "severity": row[4], "comment": row[5]})
         finally:
             conn.close()
     return jsonify({"success": True, "tags": tags})
@@ -878,18 +897,19 @@ def case_index_create_tag():
             return jsonify({"success": False, "error": "Tag name can't be empty."}), 400
         color = req.get('color') if req.get('color') in ALLOWED_TAG_COLORS else 'secondary'
         notable = 1 if req.get('notable') else 0
+        severity = req.get('severity') if req.get('severity') in ALLOWED_TAG_SEVERITIES else 'none'
         try:
             conn.execute(
-                "INSERT INTO tags (name, color, notable, is_default, created_at) VALUES (?,?,?,0,?)",
-                (name, color, notable, time.strftime("%Y-%m-%d %H:%M:%S")))
+                "INSERT INTO tags (name, color, notable, is_default, created_at, severity) VALUES (?,?,?,0,?,?)",
+                (name, color, notable, time.strftime("%Y-%m-%d %H:%M:%S"), severity))
             conn.commit()
         except sqlite3.IntegrityError:
             return jsonify({"success": False, "error": f'A tag named "{name}" already exists.'}), 409
-        row = conn.execute("SELECT id, name, color, notable FROM tags WHERE name=?", (name,)).fetchone()
+        row = conn.execute("SELECT id, name, color, notable, severity FROM tags WHERE name=?", (name,)).fetchone()
         log_chain_of_custody("tag_created", {"tag_id": row[0], "name": name})
     finally:
         conn.close()
-    return jsonify({"success": True, "tag": {"id": row[0], "name": row[1], "color": row[2], "notable": bool(row[3])}})
+    return jsonify({"success": True, "tag": {"id": row[0], "name": row[1], "color": row[2], "notable": bool(row[3]), "severity": row[4]}})
 
 @case_index_bp.route('/api/case_index/tags/update', methods=['POST'])
 @requires_auth
@@ -909,8 +929,10 @@ def case_index_update_tag():
             return jsonify({"success": False, "error": "Tag name can't be empty."}), 400
         color = req.get('color') if req.get('color') in ALLOWED_TAG_COLORS else 'secondary'
         notable = 1 if req.get('notable') else 0
+        severity = req.get('severity') if req.get('severity') in ALLOWED_TAG_SEVERITIES else 'none'
         try:
-            conn.execute("UPDATE tags SET name=?, color=?, notable=? WHERE id=?", (new_name, color, notable, tag_id))
+            conn.execute("UPDATE tags SET name=?, color=?, notable=?, severity=? WHERE id=?",
+                         (new_name, color, notable, severity, tag_id))
             conn.commit()
         except sqlite3.IntegrityError:
             return jsonify({"success": False, "error": f'A tag named "{new_name}" already exists.'}), 409
