@@ -12778,6 +12778,138 @@ async function loadCaseForEditing() {
 // loadCaseForEditing(), no extra fetch. A legacy single-job report has no
 // "events" array at all, so that case is called out distinctly rather than
 // just showing an empty list.
+// Case-wide analysis-coverage dashboard (2026-09-09, item 6 of the DFIR-
+// comparison backlog) - "what's been run against each evidence item, what
+// hasn't." Fetches raw completed-step keys per evidence item from /api/
+// case_index/analysis_coverage (routes/case_index.py/core/case_index_db.py
+// - never a full label/catalog itself, that dict lives here on purpose,
+// see that route's own docstring for why) and does the outstanding-diff
+// against the SAME two step-label registries the Auto Analyze modal
+// already fetches - fetchAutoAnalyzeStepsRegistry() (cached once, global,
+// covers every disk-image step regardless of Windows/Linux) plus a
+// one-time path-specific mobile-steps fetch (its own step_labels response
+// is always the full mobile catalog regardless of that one item's
+// resolved target_kind, confirmed directly from that route's own code
+// before relying on it here).
+async function loadAnalysisCoverage() {
+    const statusEl = document.getElementById('analysisCoverageStatus');
+    const container = document.getElementById('analysisCoverageContainer');
+    if (!container) return;
+    if (!activeCase) {
+        container.innerHTML = '<span class="text-subtle small">Select or create a case above to see its analysis coverage.</span>';
+        if (statusEl) statusEl.textContent = '';
+        return;
+    }
+    container.innerHTML = '<span class="text-subtle small">Loading...</span>';
+    if (statusEl) statusEl.textContent = '';
+
+    try {
+        const [coverageData, stepsRegistry] = await Promise.all([
+            fetch('/api/case_index/analysis_coverage', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ case_folder: activeCase.case_folder })
+            }).then(r => r.json()),
+            fetchAutoAnalyzeStepsRegistry(),
+        ]);
+        if (!coverageData.success) {
+            container.innerHTML = `<span class="text-danger small">${escapeHtmlForPopup(coverageData.error || 'Failed to load coverage.')}</span>`;
+            return;
+        }
+        const items = coverageData.items || [];
+        if (items.length === 0) {
+            container.innerHTML = '<span class="text-subtle small">No completed evidence items with a walkable output path yet - run an acquisition first.</span>';
+            return;
+        }
+
+        let mobileLabels = {};
+        const firstMobile = items.find(i => i.kind === 'mobile_or_folder');
+        if (firstMobile) {
+            try {
+                const mres = await fetch(`/api/files/auto_analyze/mobile/steps?path=${encodeURIComponent(firstMobile.target_path)}`);
+                const mdata = await mres.json();
+                if (mdata.success) mobileLabels = mdata.step_labels || {};
+            } catch (err) { /* falls back to raw step-key text for mobile items below */ }
+        }
+
+        const imageLabels = (stepsRegistry && stepsRegistry.step_labels) || {};
+        const imageAllSteps = stepsRegistry
+            ? [...new Set([...(stepsRegistry.windows_default_steps || []), ...(stepsRegistry.linux_default_steps || []), ...(stepsRegistry.extra_steps || [])])]
+            : [];
+        const mobileAllSteps = Object.keys(mobileLabels);
+
+        if (statusEl) statusEl.textContent = `${items.length} completed evidence item(s).`;
+        container.innerHTML = '';
+        const HASH_STATUS_META = {
+            match: ['bg-success', 'Hash Verified'],
+            mismatch: ['bg-danger', 'HASH MISMATCH'],
+            unverifiable: ['bg-secondary', 'Unverifiable'],
+            missing_file: ['bg-danger', 'File Missing'],
+            not_yet_reverified: ['bg-warning text-dark', 'Not Yet Re-Verified'],
+            no_hash_recorded: ['bg-secondary', 'No Hash Recorded'],
+        };
+
+        items.forEach(item => {
+            const labels = item.kind === 'disk_image' ? imageLabels : mobileLabels;
+            const allSteps = item.kind === 'disk_image' ? imageAllSteps : mobileAllSteps;
+            const completed = new Set(item.steps_completed || []);
+            const outstanding = allSteps.filter(s => !completed.has(s));
+
+            const card = document.createElement('div');
+            card.className = 'mb-2 pb-2 border-bottom border-secondary';
+
+            const header = document.createElement('div');
+            header.className = 'd-flex justify-content-between align-items-center flex-wrap gap-2';
+            const left = document.createElement('span');
+            const toolSpan = document.createElement('span');
+            toolSpan.className = 'text-info fw-bold';
+            toolSpan.textContent = (item.tool || '--').toUpperCase() + '  ';
+            left.appendChild(toolSpan);
+            left.appendChild(document.createTextNode(item.evidence_id || '--'));
+            header.appendChild(left);
+
+            const right = document.createElement('span');
+            const hashMeta = HASH_STATUS_META[item.hash_status] || ['bg-secondary', item.hash_status || '--'];
+            const hashBadge = document.createElement('span');
+            hashBadge.className = 'badge ' + hashMeta[0] + ' me-1';
+            hashBadge.textContent = hashMeta[1];
+            right.appendChild(hashBadge);
+            if (item.tag_count > 0) {
+                const tagBadge = document.createElement('span');
+                tagBadge.className = 'badge bg-info text-dark';
+                tagBadge.textContent = `${item.tag_count} tag(s)`;
+                right.appendChild(tagBadge);
+            }
+            header.appendChild(right);
+            card.appendChild(header);
+
+            const stepsRow = document.createElement('div');
+            stepsRow.className = 'small mt-1';
+            (item.steps_completed || []).forEach(s => {
+                const b = document.createElement('span');
+                b.className = 'badge bg-success bg-opacity-25 text-success border border-success me-1 mb-1';
+                b.textContent = labels[s] || s;
+                stepsRow.appendChild(b);
+            });
+            outstanding.forEach(s => {
+                const b = document.createElement('span');
+                b.className = 'badge bg-secondary bg-opacity-25 text-subtle border border-secondary me-1 mb-1';
+                b.textContent = 'Not yet run: ' + (labels[s] || s);
+                stepsRow.appendChild(b);
+            });
+            if (!(item.steps_completed || []).length && !outstanding.length) {
+                const none = document.createElement('span');
+                none.className = 'text-subtle';
+                none.textContent = 'No known steps for this item type.';
+                stepsRow.appendChild(none);
+            }
+            card.appendChild(stepsRow);
+            container.appendChild(card);
+        });
+    } catch (err) {
+        container.innerHTML = '<span class="text-danger small">Failed to load analysis coverage.</span>';
+    }
+}
+
 function renderCaseJobs() {
     const container = document.getElementById("jobsContainer");
     if (!container) return;
