@@ -1827,3 +1827,230 @@ def test_correlate_contacts_samples_carry_a_real_content_preview(case_folder):
     samples_by_type = {s["artifact_type"]: s for s in result["contacts"][0]["samples"]}
     assert samples_by_type["android_sms_message"]["content_preview"] == "hello"  # _comm_record's own fixed body text
     assert samples_by_type["android_call_log"]["content_preview"] is None  # a call has no message content
+
+
+# --- compute_case_analysis_coverage (2026-09-09, item 6 of the DFIR-
+# comparison backlog - "what's been run against each evidence item, what
+# hasn't") ---
+
+def _write_case_events(case_folder, events, last_verification=None):
+    """Overwrites the fixture's {slug}_case.json events[] with the given
+    list, and optionally a last_verification block - the real shape
+    execution_worker_verify_all_evidence() itself writes."""
+    case_file = os.path.join(case_folder, os.path.basename(case_folder) + "_case.json")
+    with open(case_file, "r") as f:
+        data = json.load(f)
+    data["events"] = events
+    if last_verification is not None:
+        data["last_verification"] = last_verification
+    with open(case_file, "w") as f:
+        json.dump(data, f)
+
+
+def _append_coc_entry(coc_log_file, action, details):
+    with open(coc_log_file, "a") as f:
+        f.write(json.dumps({"action": action, "details": details, "timestamp": "2026-09-09T00:00:00"}) + "\n")
+
+
+@pytest.fixture
+def coc_log_file(tmp_path, monkeypatch):
+    log_file = str(tmp_path / "chain_of_custody.log")
+    monkeypatch.setattr(case_index_db.config, "COC_LOG_FILE", log_file)
+    return log_file
+
+
+def test_analysis_coverage_returns_empty_items_for_a_case_with_no_events(case_folder, coc_log_file):
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert result == {"items": []}
+
+
+def test_analysis_coverage_returns_empty_for_a_non_consolidated_case(evidence_root, coc_log_file):
+    import pathlib
+    folder = pathlib.Path(evidence_root) / "2026-CASE-LEGACY"
+    folder.mkdir()
+    (folder / "case_info.json").write_text(json.dumps({"case_number": "2026-CASE-LEGACY"}))
+    result = case_index_db.compute_case_analysis_coverage(str(folder))
+    assert result == {"items": []}
+
+
+def test_analysis_coverage_excludes_non_completed_events(case_folder, coc_log_file):
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "IN_PROGRESS",
+         "acquisition_parameters": {"output_image_path": "/mnt/x.dd"}},
+    ])
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert result["items"] == []
+
+
+def test_analysis_coverage_excludes_events_with_no_walkable_output_path(case_folder, coc_log_file):
+    """A real, completed event (e.g. a companion-app extraction) can have
+    nothing on disk this dashboard can meaningfully report coverage for."""
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_companion_extraction",
+         "acquisition_parameters": {}},
+    ])
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert result["items"] == []
+
+
+def test_analysis_coverage_disk_image_steps_completed_from_real_coc_log(case_folder, coc_log_file):
+    image_path = os.path.join(case_folder, "USBDrive-1.dd")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "USBDrive-1"},
+         "acquisition_parameters": {"output_image_path": image_path}},
+    ])
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": image_path,
+        "results": [
+            {"step": "hash_manifest", "status": "ok"},
+            {"step": "registry", "status": "ok"},
+            {"step": "prefetch", "status": "error"},
+        ],
+    })
+
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert len(result["items"]) == 1
+    item = result["items"][0]
+    assert item["evidence_id"] == "USBDrive-1"
+    assert item["kind"] == "disk_image"
+    assert item["target_path"] == image_path
+    assert item["steps_completed"] == ["hash_manifest", "registry"]
+
+
+def test_analysis_coverage_unions_steps_across_multiple_runs(case_folder, coc_log_file):
+    """A real, common scenario: an early Auto Analyze pass covered a few
+    steps, a later pass covered more - both runs' successes should be
+    credited, not just the latest."""
+    image_path = os.path.join(case_folder, "img.dd")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_image_path": image_path}},
+    ])
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": image_path, "results": [{"step": "hash_manifest", "status": "ok"}]})
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": image_path, "results": [{"step": "yara_sweep", "status": "ok"}]})
+
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert result["items"][0]["steps_completed"] == ["hash_manifest", "yara_sweep"]
+
+
+def test_analysis_coverage_mobile_event_reads_the_path_key_not_image_path(case_folder, coc_log_file):
+    pull_folder = os.path.join(case_folder, "PIXEL8A-01_pull")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_pull",
+         "case_metadata": {"evidence_id": "PIXEL8A-01"},
+         "acquisition_parameters": {"output_destination": pull_folder}},
+    ])
+    # A disk-image-shaped COC entry at the SAME literal string must never
+    # leak into a mobile item's coverage (and vice versa) - image_path vs
+    # path really are two different identity spaces this function must not
+    # blur together.
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": pull_folder, "results": [{"step": "registry", "status": "ok"}]})
+    _append_coc_entry(coc_log_file, "auto_analyze_mobile_complete", {
+        "path": pull_folder, "results": [{"step": "aleapp_scan", "status": "ok"}]})
+
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    item = result["items"][0]
+    assert item["kind"] == "mobile_or_folder"
+    assert item["steps_completed"] == ["aleapp_scan"]
+
+
+def test_analysis_coverage_hash_status_no_hash_recorded(case_folder, coc_log_file):
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "X"},
+         "acquisition_parameters": {"output_image_path": os.path.join(case_folder, "x.dd")},
+         "computed_verification_hashes": {}},
+    ])
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert result["items"][0]["hash_status"] == "no_hash_recorded"
+
+
+def test_analysis_coverage_hash_status_not_yet_reverified(case_folder, coc_log_file):
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "X"},
+         "acquisition_parameters": {"output_image_path": os.path.join(case_folder, "x.dd")},
+         "computed_verification_hashes": {"sha256": "abc123"}},
+    ])
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert result["items"][0]["hash_status"] == "not_yet_reverified"
+
+
+def test_analysis_coverage_hash_status_reflects_last_verification_result(case_folder, coc_log_file):
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "X"},
+         "acquisition_parameters": {"output_image_path": os.path.join(case_folder, "x.dd")},
+         "computed_verification_hashes": {"sha256": "abc123"}},
+    ], last_verification={"results": [{"event_id": "e1", "status": "mismatch"}]})
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert result["items"][0]["hash_status"] == "mismatch"
+
+
+def test_analysis_coverage_tag_count_reflects_real_tags_for_paths(case_folder, coc_log_file):
+    image_path = os.path.join(case_folder, "tagged.dd")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "X"},
+         "acquisition_parameters": {"output_image_path": image_path}},
+    ])
+    conn = case_index_db._case_index_open_write(case_folder)
+    tag_id = conn.execute(
+        "INSERT INTO tags (name, color, notable, is_default, created_at, severity) VALUES (?,?,?,?,?,?)",
+        ("Custom Test Tag", "danger", 1, 0, "2026-09-09T00:00:00", "high")).lastrowid
+    conn.execute(
+        "INSERT INTO tagged_items (tag_id, source_type, image_path, fs_offset, inode, path, name, tagged_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (tag_id, "real_fs", None, None, None, image_path, "tagged.dd", "2026-09-09T00:00:00"))
+    conn.commit()
+    conn.close()
+
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert result["items"][0]["tag_count"] == 1
+
+
+def test_analysis_coverage_zero_tag_count_when_nothing_tagged(case_folder, coc_log_file):
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "X"},
+         "acquisition_parameters": {"output_image_path": os.path.join(case_folder, "x.dd")}},
+    ])
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert result["items"][0]["tag_count"] == 0
+
+
+def test_analysis_coverage_handles_multiple_evidence_items_independently(case_folder, coc_log_file):
+    img1 = os.path.join(case_folder, "img1.dd")
+    img2 = os.path.join(case_folder, "img2.dd")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "ITEM-01"}, "acquisition_parameters": {"output_image_path": img1}},
+        {"event_id": "e2", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "ITEM-02"}, "acquisition_parameters": {"output_image_path": img2}},
+    ])
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": img1, "results": [{"step": "hash_manifest", "status": "ok"}]})
+
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    by_id = {i["evidence_id"]: i for i in result["items"]}
+    assert by_id["ITEM-01"]["steps_completed"] == ["hash_manifest"]
+    assert by_id["ITEM-02"]["steps_completed"] == []
+
+
+def test_analysis_coverage_missing_coc_log_file_is_not_an_error(case_folder, coc_log_file):
+    """coc_log_file fixture points at a file that's never actually created
+    - a station where nothing has been logged yet - must degrade to no
+    steps known covered, never raise."""
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "X"},
+         "acquisition_parameters": {"output_image_path": os.path.join(case_folder, "x.dd")}},
+    ])
+    assert not os.path.exists(coc_log_file)
+    result = case_index_db.compute_case_analysis_coverage(case_folder)
+    assert result["items"][0]["steps_completed"] == []

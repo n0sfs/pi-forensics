@@ -21,6 +21,20 @@ file after updating to see what changed.
 
 ---
 
+## [1.74.0] - 2026-09-09
+
+### Added
+- **Case-wide analysis-coverage dashboard.** A new "Coverage" tab in Reporting answers "what's been
+  run against each evidence item, what hasn't" for the whole case at a glance - previously the only
+  way to check was File Explorer's own right-click "already run" checkmark, one file at a time. For
+  every completed evidence item, it shows a hash-verification status badge, which Auto Analyze steps
+  have actually completed successfully (green), and which haven't been tried yet (gray "Not yet run")
+  - plus a tag count. Purely read-only against real, already-recorded data (no new tool runs), and
+  built from the exact audit record Auto Analyze already writes on every completed run, so it can
+  never drift out of sync with what actually happened. The last of the 6-item backlog from this
+  project's own recent DFIR-tool comparison research (Belkasoft's Dashboard+Tasks-window pair was the
+  strongest real precedent found across every competitor tool researched).
+
 ## [1.73.0] - 2026-09-08
 
 ### Added

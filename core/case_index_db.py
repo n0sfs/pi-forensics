@@ -2166,3 +2166,131 @@ def correlate_contacts(case_folder):
         return result
     finally:
         conn.close()
+
+
+# --- Case-wide analysis-coverage dashboard (2026-09-09, item 6 of the
+# DFIR-comparison backlog - see the dated CLAUDE.md entry) ---
+#
+# "What's been run against each evidence item, what hasn't" - the coverage
+# gap CLAUDE.md's own backlog entry described: refreshCtxMenuAlreadyRunBadges()
+# (static/js/main.js) already answers this for the single file currently
+# selected in File Explorer's context menu, one right-click at a time -
+# nothing answers it case-wide, across every acquired evidence item, at a
+# glance, the way Belkasoft's own Dashboard+Tasks-window pair does (the
+# strongest real precedent this research found across 6 competitor tools).
+#
+# Deliberately does NOT try to reverse-engineer which parsed_artifacts
+# artifact_type values "belong to" which Auto Analyze step key - a single
+# step like "registry" alone produces 15+ distinct artifact_types
+# (recentdocs/typedpaths/runmru/usbhistory/installedprograms/amcache/
+# shellbags/shimcache/bam/rdp_server/rdp_mru/office_mru_file/
+# office_mru_place/wordwheelquery/userassist), and "browser_artifacts"
+# covers Chrome+Firefox+Safari's own distinct type sets - keeping a mapping
+# like that in sync forever would be exactly the same fragile-hardcoded-
+# mirror bug class this app already found and fixed once (2026-09-01,
+# fetchAutoAnalyzeStepsRegistry()'s own docstring tells that story).
+#
+# Instead, this reads the REAL, already-authoritative record of "which
+# steps ran and succeeded against this exact evidence item": the
+# auto_analyze_complete / auto_analyze_mobile_complete chain-of-custody log
+# entries execution_worker_auto_analyze_image()/_mobile() already write on
+# every completed run, each carrying the exact target path plus a
+# results[] list with a real per-step ok/error/skipped/not_applicable
+# outcome. A step is only ever counted as "covered" if some run against
+# this exact path reached status "ok" - a failed or skipped attempt does
+# not count, matching this app's own established "disclose gaps honestly"
+# posture rather than crediting a step that never actually completed.
+#
+# Deliberately returns raw step-key lists only, never labels or the full
+# step catalog - core/case_index_db.py has no import of routes/
+# image_browser.py's AUTO_ANALYZE_STEP_LABELS/routes/file_explorer.py's
+# AUTO_ANALYZE_MOBILE_STEP_LABELS (this app's own hard "no routes/*.py
+# module imports another" rule, with one narrow documented exception
+# elsewhere - this isn't it). The frontend already fetches both of those
+# registries itself (fetchAutoAnalyzeStepsRegistry() / the mobile steps
+# route) for the Auto Analyze modal's own checklist and reuses that same
+# cached data here to label/diff against - no duplicate Python-side copy
+# of either dict to let drift out of sync a third time.
+def compute_case_analysis_coverage(case_folder):
+    """For every COMPLETED acquisition event in this case with a walkable
+    output path, returns which Auto Analyze steps have actually succeeded
+    against it at least once (from the real chain-of-custody log), plus a
+    hash-verification status and a tag count scoped to that exact path -
+    everything an examiner needs to see, case-wide, which evidence items
+    still need attention. Returns {"items": [...]}; never raises - a
+    missing/unreadable case file or log just means an empty item list, the
+    same graceful-degradation posture every other case-wide read in this
+    module already has."""
+    case_file = case_consolidated_path(case_folder)
+    if not case_file:
+        return {"items": []}
+    try:
+        with open(case_file, 'r') as f:
+            case_data = json.load(f)
+    except Exception:
+        return {"items": []}
+
+    events = case_data.get('events', [])
+    last_verification = case_data.get('last_verification') or {}
+    lv_by_event = {r.get('event_id'): r for r in last_verification.get('results', [])}
+
+    coc_entries = []
+    try:
+        if os.path.exists(config.COC_LOG_FILE):
+            with open(config.COC_LOG_FILE, 'r') as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if entry.get('action') in ('auto_analyze_complete', 'auto_analyze_mobile_complete'):
+                        coc_entries.append(entry)
+    except Exception:
+        pass  # a missing/unreadable COC log just means "no steps known covered yet", not a hard failure
+
+    items = []
+    for event in events:
+        if event.get('acquisition_status') != 'COMPLETED':
+            continue
+        params = event.get('acquisition_parameters') or {}
+        image_path = params.get('output_image_path')
+        output_dest = params.get('output_destination')
+        target_path = image_path or output_dest
+        if not target_path:
+            continue  # e.g. a companion-app extraction event - nothing walkable to report coverage for
+
+        is_image = bool(image_path)
+        completed_steps = set()
+        for entry in coc_entries:
+            details = entry.get('details', {})
+            entry_path = details.get('image_path') if is_image else details.get('path')
+            if entry_path != target_path:
+                continue
+            for r in details.get('results', []):
+                if r.get('status') == 'ok':
+                    completed_steps.add(r.get('step'))
+
+        recorded_hashes = event.get('computed_verification_hashes') or {}
+        lv = lv_by_event.get(event.get('event_id'))
+        if lv:
+            hash_status = lv.get('status', 'unverifiable')
+        elif recorded_hashes:
+            hash_status = 'not_yet_reverified'
+        else:
+            hash_status = 'no_hash_recorded'
+
+        tag_info = _tags_for_paths(case_folder, [target_path])
+        tag_count = len(tag_info.get(target_path, []))
+
+        items.append({
+            "event_id": event.get('event_id'),
+            "evidence_id": (event.get('case_metadata') or {}).get('evidence_id') or 'UNKNOWN',
+            "tool": event.get('tool') or 'unknown',
+            "kind": "disk_image" if is_image else "mobile_or_folder",
+            "target_path": target_path,
+            "steps_completed": sorted(completed_steps),
+            "hash_status": hash_status,
+            "tag_count": tag_count,
+        })
+
+    return {"items": items}
