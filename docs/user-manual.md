@@ -753,7 +753,7 @@ different case with unsaved changes still pending, so nothing gets lost silently
   Analysis / Steps Taken" section.
 - **Physical Custody Log** — a dedicated, **append-only** record of *physical* evidence handoffs
   between people (from/to custodian, reason, method, notes) — genuinely distinct from both Case Notes
-  above (your own investigative notes) and Audit Trail below (a log of actions taken in the software).
+  above (your own investigative notes) and the Case Activity Log below (a log of actions taken in the software).
   There's no edit option by design; a correction is logged as a new entry.
 - **Files & Artifacts** — every exhibit attached to the case (with thumbnails, tags, and
   analysis-tool history shown inline), plus other files discovered sitting in the case folder that
@@ -775,13 +775,14 @@ different case with unsaved changes still pending, so nothing gets lost silently
   that capture step ran, falls back to copy-time entries with a clear note explaining why.
   Anti-forensic indicators (like a cleared audit log)
   and deleted-file entries are flagged directly in the table.
-- **Audit Trail** — the station-wide activity log, filtered to just this case number.
+- **Case Activity Log** — the same station-wide activity log kept in Settings, filtered here to just
+  this case number.
 - **Search** — a live keyword search across the Report Narrative (including Case Details), Jobs,
-  Case Notes, Files & Artifacts, and Audit Trail all at once.
+  Case Notes, Files & Artifacts, and the Case Activity Log all at once.
 - **Export** — produce the actual deliverable.
 
 Checking a specific hash against **every other case** on the station, not just this one, is a
-separate, station-wide tool — see [Cross-Case Search](#case-reporting) under Settings below.
+separate, station-wide tool — see [Cross-Case Hash Lookup](#case-reporting) under Settings below.
 
 ### Exporting a report
 
@@ -792,8 +793,8 @@ Choose a **Report Template**:
 - **Standard** — fully configurable; pick exactly which sections to include.
 - **DFIR Report** — a fixed structure modeled on standard incident-response report conventions.
 - **Police Report** — a fixed structure modeled on a law-enforcement forensic examination report,
-  including a "Chain of Custody" section — disclosed honestly as this app's own Audit Trail (a log
-  of actions taken in the software), not a literal record of physical evidence handoffs between
+  including a "Chain of Custody" section — disclosed honestly as this app's own Case Activity Log (a
+  log of actions taken in the software), not a literal record of physical evidence handoffs between
   people.
 - **CASE/UCO Report** — aligned to the CASE/UCO digital-investigation ontology's structure.
 - **A custom template** you've built yourself (Settings > Case & Reporting > Custom Report
@@ -827,8 +828,9 @@ file — so you can prove later that the report itself hasn't been altered since
   (e.g. one signed by a real certificate authority). Step-by-step trust instructions are included for
   Windows, macOS, Linux, iOS/iPadOS, Android, and Firefox specifically (Firefox keeps its own
   certificate store, separate from the operating system's).
-- **Audit Log** — the full station-wide chain-of-custody log: every significant action, who did it,
-  and when, searchable, with CSV export.
+- **Station Audit Log** — the full station-wide chain-of-custody log: every significant action, who
+  did it, and when, searchable, with CSV export. Reporting's own "Case Activity Log" tab shows this
+  same log, filtered to just the active case.
 
 ### Drive Management
 
@@ -866,7 +868,7 @@ IOC Lists**, define custom keyword/regex lists that Triage Scan can use in addit
 built-in categories, plus the **Hash Sets**, **URL Lists**, and **YARA Rulesets** described in
 [Hash Sets, URL Lists, and YARA rules](#hash-sets-url-lists-and-yara-rules) above.
 
-**Cross-Case Search**, its own section here rather than inside any one case's Reporting tab (since
+**Cross-Case Hash Lookup**, its own section here rather than inside any one case's Reporting tab (since
 it deliberately isn't scoped to one), checks whether a specific hash has shown up in *any* case on
 this station — useful for spotting the same file reappearing across unrelated cases. Scoped to exact
 hash matches for now, not free-text/keyword search across cases.
