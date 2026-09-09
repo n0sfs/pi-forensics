@@ -4221,13 +4221,24 @@ function renderVol3ResultTable(container, jsonText, truncated) {
 }
 
 function renderKmlViewer(container, kmlText, mapHeightCss) {
+    renderPointMap(container, parseKmlPlacemarks(kmlText), mapHeightCss, 'No placemarks found in this KML file.');
+}
+
+// The actual map+table renderer behind renderKmlViewer() - factored out
+// 2026-09-09 so the Geolocation tab (renderReportGeolocationList(), below)
+// can render a point set that ISN'T backed by a real KML file's text (e.g.
+// a Google Takeout location-history import) through the same map/table
+// code, instead of fabricating a fake KML string just to reuse the old
+// KML-text-only renderKmlViewer(). Takes the same {name, description, lat,
+// lon} shape parseKmlPlacemarks() already produces - renderKmlViewer()
+// itself is now a thin wrapper: parse KML text, then call this.
+function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
     container.innerHTML = '';
-    const placemarks = parseKmlPlacemarks(kmlText);
 
     if (placemarks.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'text-subtle small p-2';
-        empty.textContent = 'No placemarks found in this KML file.';
+        empty.textContent = emptyMessage || 'No location points to show.';
         container.appendChild(empty);
         return;
     }
@@ -9565,69 +9576,96 @@ function renderReportUrlRows() {
     });
 }
 
+// Real bug, fixed 2026-09-09: this used to ONLY look at real .kml files
+// (attached or found in the case folder) - a case with Google Takeout
+// location-history data (parsed_artifacts, no KML export needed) but no
+// KML file would show a flatly wrong "No geolocation files found" here,
+// even though Pattern of Life's own Location Activity section - one click
+// away - correctly showed real points for the exact same case. Fixed by
+// reading /api/cases/geo_activity (Pattern of Life's own backend, already
+// merging Takeout + every KML source into one points[] array, each point
+// carrying its own real `source` label) instead of re-deriving a KML-only
+// file list here - one fetch instead of the old discover-then-fetch-each-
+// file-individually N+1 pattern, and this tab now can't fall out of sync
+// with what Pattern of Life shows for the same case.
 async function renderReportGeolocationList() {
     const container = document.getElementById("reportGeoContainer");
     if (!container) return;
     container.innerHTML = '<span class="text-subtle small italic">Loading...</span>';
 
     const caseFolder = activeCase ? activeCase.case_folder : "";
-    let discovered = [];
-    if (caseFolder) {
-        try {
-            const res = await fetch(`/api/cases/discover_files?case_folder=${encodeURIComponent(caseFolder)}`);
-            const data = await res.json();
-            if (data.success) discovered = data.files || [];
-        } catch (err) {}
-    }
-
-    const kmlPaths = new Set();
-    currentAttachedFilesList.forEach(fp => { if (fp.toLowerCase().endsWith('.kml')) kmlPaths.add(fp); });
-    discovered.forEach(f => { if (f.path.toLowerCase().endsWith('.kml')) kmlPaths.add(f.path); });
-
-    container.innerHTML = '';
-    if (kmlPaths.size === 0) {
-        container.innerHTML = '<span class="text-subtle small">No geolocation (KML) files found for this case yet.</span>';
+    if (!caseFolder) {
+        container.innerHTML = '<span class="text-subtle small">No case selected.</span>';
         return;
     }
 
-    for (const filePath of kmlPaths) {
+    let data;
+    try {
+        const res = await fetch(`/api/cases/geo_activity?case_folder=${encodeURIComponent(caseFolder)}`);
+        data = await res.json();
+    } catch (err) {
+        container.innerHTML = '<span class="text-danger small">Request failed.</span>';
+        return;
+    }
+    if (!data || !data.success) {
+        container.innerHTML = '';
+        const err = document.createElement('span');
+        err.className = 'text-danger small';
+        err.textContent = (data && data.error) || 'Failed to load geolocation data.'; // server error text - text node only
+        container.appendChild(err);
+        return;
+    }
+
+    container.innerHTML = '';
+    if (!data.points || data.points.length === 0) {
+        container.innerHTML = '<span class="text-subtle small">No geolocation data found for this case yet - no Google Takeout ' +
+            'location-history import, and no KML file attached to or found in the case folder. Generate a KML via File Explorer\'s ' +
+            '"Extract Geolocation (KML)" action or the geo-pin icon in the Sleuth Kit image toolbar, or import a Takeout archive.</span>';
+        return;
+    }
+
+    if (data.truncated) {
+        const note = document.createElement('div');
+        note.className = 'text-warning small mb-2';
+        note.textContent = 'This case has more location points than can be shown here - see Pattern of Life for the full clustered view.';
+        container.appendChild(note);
+    }
+
+    // Grouped by source (a KML file's own name, or the fixed "Google
+    // Takeout Location History" label _collect_case_geo_activity() already
+    // stamps every Takeout-sourced point with) - one map block per source,
+    // same visual shape the old KML-only version already had per file.
+    const bySource = new Map();
+    data.points.forEach(p => {
+        const key = p.source || '(unknown source)';
+        if (!bySource.has(key)) bySource.set(key, []);
+        bySource.get(key).push(p);
+    });
+
+    for (const [source, points] of bySource) {
         const block = document.createElement('div');
-        block.className = 'mb-3 border border-secondary rounded p-2 bg-black';
+        block.className = 'mb-3 border border-secondary rounded p-2 bg-app-dark';
 
         const heading = document.createElement('div');
         heading.className = 'small text-break fw-bold';
-        heading.textContent = filePath.split('/').pop(); // untrusted (filename) - text node only
+        heading.textContent = source; // untrusted (KML entry name, or the fixed Takeout label) - text node only
         block.appendChild(heading);
 
-        const pathLine = document.createElement('div');
-        pathLine.className = 'text-subtle small mb-2 text-break';
-        pathLine.textContent = filePath; // untrusted (path) - text node only
-        block.appendChild(pathLine);
+        const countLine = document.createElement('div');
+        countLine.className = 'text-subtle small mb-2';
+        countLine.textContent = `${points.length} point(s)`;
+        block.appendChild(countLine);
 
         const mapHolder = document.createElement('div');
-        mapHolder.textContent = 'Loading map...';
-        mapHolder.className = 'text-subtle small';
         block.appendChild(mapHolder);
-
         container.appendChild(block);
 
-        try {
-            const res = await fetch('/api/files/preview_text', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: filePath })
-            });
-            const data = await res.json();
-            if (data.success) {
-                renderKmlViewer(mapHolder, data.content, 'clamp(360px, 60vh, 700px)');
-            } else {
-                mapHolder.textContent = data.error || 'Failed to load this KML file.';
-                mapHolder.className = 'text-danger small';
-            }
-        } catch (err) {
-            mapHolder.textContent = 'Request failed.';
-            mapHolder.className = 'text-danger small';
-        }
+        const placemarks = points.map(p => ({
+            name: p.name || '(unnamed)',
+            description: p.timestamp ? `Recorded: ${_formatContactCorrelationTimestamp(p.timestamp)}` : '(no timestamp - KML placemarks never carry one)',
+            lat: p.lat, lon: p.lon,
+        }));
+        renderPointMap(mapHolder, placemarks, 'clamp(300px, 50vh, 600px)');
     }
 }
 
@@ -10370,6 +10408,7 @@ async function loadContactCorrelation() {
     renderRelationshipGraphLegend(data);
     renderRelationshipGraph(data);
     setPatternOfLifeContactView(patternOfLifeContactView);
+    updatePatternOfLifeHighlights();
     // Location<->Contact cross-linking (2026-09-08): both this function and
     // loadPatternOfLifeGeoActivity() are fired together, concurrently, from
     // the same Pattern of Life orchestrator - whichever resolves FIRST
@@ -10800,10 +10839,78 @@ function renderContactCorrelationTable(data) {
 // renderCaseJobs()/loadCaseHistory()) - a slow section never blocks a fast
 // one from showing its own data first.
 function loadPatternOfLife() {
+    const highlightsEl = document.getElementById('patternOfLifeHighlights');
+    if (highlightsEl) highlightsEl.innerHTML = '<span class="text-subtle small italic">Loading...</span>';
     loadContactCorrelation();
     loadPatternOfLifeActivityChart();
     loadPatternOfLifeGeoActivity();
     loadPatternOfLifeAppsAccounts();
+}
+
+// "Case Highlights" strip (2026-09-09) - a quick, plain-English "what's the
+// story here" summary at the very top of Pattern of Life, so an examiner
+// sees something of value before scrolling into the 4 detailed sections
+// below. Deliberately zero new fetch/backend route - built entirely from
+// data the pane's own 3 relevant sections already cache once they load
+// (patternOfLifeContactData/patternOfLifeGeoActivityData/
+// patternOfLifeActivityRows). Called from the tail of each of those 3
+// loaders (loadContactCorrelation/loadPatternOfLifeGeoActivity/
+// _recomputePatternOfLifeActivityRows) - since they're fire-and-forget and
+// resolve independently (loadPatternOfLife()'s own established pattern),
+// this fills in progressively as whichever loads first becomes ready
+// rather than waiting on the slowest of the three. Idempotent/safe to call
+// multiple times - always re-derives from whatever's currently cached.
+function updatePatternOfLifeHighlights() {
+    const container = document.getElementById('patternOfLifeHighlights');
+    if (!container) return;
+
+    const items = [];
+
+    if (patternOfLifeContactData && patternOfLifeContactData.contacts && patternOfLifeContactData.contacts.length) {
+        const top = patternOfLifeContactData.contacts[0];
+        const name = top.display_names && top.display_names.length ? top.display_names.join(' / ') : (_contactCorrelationKey(top) || '(unknown)');
+        const n = top.total_communications;
+        items.push({ icon: 'bi-person-lines-fill', text: `Most contacted: ${name} (${n} communication${n === 1 ? '' : 's'})` });
+    }
+
+    if (patternOfLifeGeoActivityData && patternOfLifeGeoActivityData.frequent_locations && patternOfLifeGeoActivityData.frequent_locations.length) {
+        const homeWork = classifyHomeWorkLocations(patternOfLifeGeoActivityData.points, patternOfLifeGeoActivityData.frequent_locations);
+        const homeEntry = Object.entries(homeWork).find(([, v]) => v.type === 'home');
+        if (homeEntry) {
+            items.push({ icon: 'bi-house-door-fill', text: `Likely home: ${homeEntry[0]}` });
+        } else {
+            const top = patternOfLifeGeoActivityData.frequent_locations[0];
+            items.push({ icon: 'bi-geo-alt-fill', text: `Most visited location: ${top.lat.toFixed(3)}, ${top.lon.toFixed(3)} (${top.visit_count} visits)` });
+        }
+    }
+
+    if (patternOfLifeActivityRows && patternOfLifeActivityRows.length) {
+        const hourCounts = new Array(24).fill(0);
+        patternOfLifeActivityRows.forEach((e) => { hourCounts[new Date(e.timestamp * 1000).getHours()]++; });
+        let maxHour = 0, maxCount = 0;
+        hourCounts.forEach((c, h) => { if (c > maxCount) { maxCount = c; maxHour = h; } });
+        if (maxCount > 0) {
+            const d = new Date(); d.setHours(maxHour, 0, 0, 0);
+            const label = d.toLocaleTimeString(undefined, { hour: 'numeric' });
+            items.push({ icon: 'bi-clock-fill', text: `Most active around: ${label} (${maxCount} of ${patternOfLifeActivityRows.length} event${patternOfLifeActivityRows.length === 1 ? '' : 's'})` });
+        }
+    }
+
+    if (items.length === 0) {
+        container.innerHTML = '<span class="text-subtle small">Not enough parsed data yet to summarize - see the sections below, or run Auto Analyze / File Explorer\'s "Parse..." actions first.</span>';
+        return;
+    }
+
+    container.innerHTML = '';
+    items.forEach((item) => {
+        const span = document.createElement('span');
+        span.className = 'badge bg-app-dark border border-info text-info me-2 mb-1 fw-normal py-2 px-2';
+        const icon = document.createElement('i');
+        icon.className = `bi ${item.icon} me-1`;
+        span.appendChild(icon);
+        span.appendChild(document.createTextNode(item.text)); // built from real names/coords/counts, never raw untrusted text - but a text node either way
+        container.appendChild(span);
+    });
 }
 
 // --- Location Activity (2026-09-07) - ties real GPS data into Pattern of
@@ -11005,6 +11112,7 @@ async function loadPatternOfLifeGeoActivity() {
         return;
     }
     patternOfLifeGeoActivityData = data; // cached for the contact<->location cross-linking below AND every date-range recompute, no re-fetch
+    updatePatternOfLifeHighlights();
 
     if (data.points.length === 0) {
         if (summaryEl) summaryEl.textContent = '';
@@ -11446,6 +11554,7 @@ function _recomputePatternOfLifeActivityRows() {
             : '';
     }
     renderPatternOfLifeActivityChart();
+    updatePatternOfLifeHighlights();
 }
 
 function setPatternOfLifeActivityGranularity(mode) {
