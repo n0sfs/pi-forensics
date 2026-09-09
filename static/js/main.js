@@ -12737,15 +12737,51 @@ async function clearReportLogo() {
 // whether there's an active case at all vs. an active case whose
 // consolidated report file doesn't exist yet (not-yet-migrated legacy case).
 async function loadCaseForEditing() {
-    // Every path below (re)populates the pane from server/cleared data, so
-    // whatever was flagged dirty before this call started no longer applies.
-    clearReportingDirty();
+    // Real bug found live 2026-09-09 (a 3rd Case/Reporting review pass):
+    // this function is called from ~8 places, most of them a narrow "I just
+    // added a Case Note / logged a Custody entry / attached a file" success
+    // handler that only actually needs to refresh ITS OWN sub-view - but the
+    // function used to unconditionally overwrite every narrative textarea/
+    // case-status select/custom-field input/files-checklist from fresh
+    // server data regardless, silently discarding whatever the examiner had
+    // typed into Report Narrative and not yet saved. One of those 8 call
+    // sites is fetchProgress()'s own background poll (fires the instant a
+    // "Verify All Evidence" job finishes, with zero user interaction at
+    // all) - meaning unsaved narrative text could be wiped by something the
+    // examiner never even triggered. Fixed by gating both destructive parts
+    // (narrative fields, Files & Artifacts checklist) on a LIVE re-check of
+    // reportHasUnsavedChanges at the actual moment of repaint (not a value
+    // snapshotted before this function's own await fetch() below - closes a
+    // narrow race where the examiner starts typing a fresh edit WHILE the
+    // network round-trip is still in flight). Case Notes/Custody Log/Case
+    // History/Case Jobs/the Dashboard/the raw JSON preview are NOT gated -
+    // those are read-only display views (or, for the notes/custody lists,
+    // exactly reflect the new server-side action that just triggered this
+    // call in the first place), with no user-editable input state to lose.
+    // clearReportingDirty() is deliberately NOT called unconditionally here
+    // the way it used to be - a real, subtler bug found while designing
+    // this exact fix: clearing the dirty flag while deliberately leaving
+    // the DOM's own unsaved text untouched would silently disable the
+    // "Unsaved changes" badge and the beforeunload/case-switch confirm
+    // guard, even though the text is still genuinely unsaved - worse than
+    // doing nothing, since the examiner would then see no warning at all
+    // switching cases moments later and lose the same edit anyway. It's
+    // only ever reached inside the narrative repaint block below (see
+    // reportHasUnsavedChanges being live-false there), at the exact point
+    // the in-memory state genuinely becomes clean again.
     const noCaseEl = document.getElementById("reportsNoCaseState");
     const loadedEl = document.getElementById("reportsLoadedState");
     const noCaseIcon = document.getElementById("reportsNoCaseIcon");
     const noCaseMsg = document.getElementById("reportsNoCaseMsg");
 
     if (!activeCase) {
+        // No case active at all - a genuinely clean-slate state regardless
+        // of any prior dirty state (this path is already only ever reached
+        // after confirmDiscardUnsavedReportingChanges()'s own explicit
+        // confirm-and-discard flow via clearActiveCase(), so any dirty
+        // state here has already been deliberately abandoned by the
+        // examiner, not silently overwritten out from under them).
+        clearReportingDirty();
         currentReportPath = null;
         currentLoadedReportData = null;
         if (noCaseIcon) noCaseIcon.className = 'bi bi-folder2-open fs-3 d-block mb-2';
@@ -12767,6 +12803,12 @@ async function loadCaseForEditing() {
         const data = await res.json();
 
         if (!data.success) {
+            // Same reasoning as the !activeCase branch above - this fires
+            // when the active case itself changed to one that isn't
+            // migrated yet, a transition already gated by
+            // confirmDiscardUnsavedReportingChanges() before this function
+            // is ever reached with a different case active.
+            clearReportingDirty();
             currentReportPath = null;
             currentLoadedReportData = null;
             if (noCaseIcon) noCaseIcon.className = 'bi bi-exclamation-triangle fs-3 d-block mb-2';
@@ -12792,27 +12834,41 @@ async function loadCaseForEditing() {
 
         if (legacyNotice) legacyNotice.style.display = isConsolidated ? 'none' : 'block';
 
-        renderCustomFieldsForCase(isConsolidated ? currentLoadedReportData.custom_fields : legacyMeta.custom_fields);
-
         // Report Narrative fields - same isConsolidated/legacyMeta split
-        // as case_number/examiner/notes above.
-        const narrativeSrc = isConsolidated ? currentLoadedReportData : legacyMeta;
-        const caseStatusEl = document.getElementById("editCaseStatus");
-        if (caseStatusEl) caseStatusEl.value = narrativeSrc.case_status || "Open";
-        const execSummaryEl = document.getElementById("editExecSummary");
-        const objectivesEl = document.getElementById("editObjectives");
-        const findingsEl = document.getElementById("editFindingsSummary");
-        const limitationsEl = document.getElementById("editLimitations");
-        const conclusionEl = document.getElementById("editConclusion");
-        const iocsEl = document.getElementById("editIocs");
-        const recommendationsEl = document.getElementById("editRecommendations");
-        if (execSummaryEl) execSummaryEl.value = narrativeSrc.executive_summary || "";
-        if (objectivesEl) objectivesEl.value = narrativeSrc.objectives || "";
-        if (findingsEl) findingsEl.value = narrativeSrc.findings_summary || "";
-        if (limitationsEl) limitationsEl.value = narrativeSrc.limitations || "";
-        if (conclusionEl) conclusionEl.value = narrativeSrc.conclusion || "";
-        if (iocsEl) iocsEl.value = narrativeSrc.iocs || "";
-        if (recommendationsEl) recommendationsEl.value = narrativeSrc.recommendations_next_steps || "";
+        // as case_number/examiner/notes above. Skipped entirely whenever
+        // reportHasUnsavedChanges is currently true (see this function's
+        // own opening comment) - repainting these from fresh server data
+        // would silently discard whatever the examiner has typed but not
+        // yet saved. currentLoadedReportData itself is still always
+        // replaced with fresh data above, which is fine and necessary -
+        // saveReportMetadata() always reads narrative values live from
+        // these DOM elements at save time, never from
+        // currentLoadedReportData, so leaving the DOM alone here is what
+        // actually protects the unsaved edit; a subsequent save still
+        // correctly merges it into the now-current case_notes/events/etc.
+        let skippedForUnsavedEdits = false;
+        if (!reportHasUnsavedChanges) {
+            renderCustomFieldsForCase(isConsolidated ? currentLoadedReportData.custom_fields : legacyMeta.custom_fields);
+            const narrativeSrc = isConsolidated ? currentLoadedReportData : legacyMeta;
+            const caseStatusEl = document.getElementById("editCaseStatus");
+            if (caseStatusEl) caseStatusEl.value = narrativeSrc.case_status || "Open";
+            const execSummaryEl = document.getElementById("editExecSummary");
+            const objectivesEl = document.getElementById("editObjectives");
+            const findingsEl = document.getElementById("editFindingsSummary");
+            const limitationsEl = document.getElementById("editLimitations");
+            const conclusionEl = document.getElementById("editConclusion");
+            const iocsEl = document.getElementById("editIocs");
+            const recommendationsEl = document.getElementById("editRecommendations");
+            if (execSummaryEl) execSummaryEl.value = narrativeSrc.executive_summary || "";
+            if (objectivesEl) objectivesEl.value = narrativeSrc.objectives || "";
+            if (findingsEl) findingsEl.value = narrativeSrc.findings_summary || "";
+            if (limitationsEl) limitationsEl.value = narrativeSrc.limitations || "";
+            if (conclusionEl) conclusionEl.value = narrativeSrc.conclusion || "";
+            if (iocsEl) iocsEl.value = narrativeSrc.iocs || "";
+            if (recommendationsEl) recommendationsEl.value = narrativeSrc.recommendations_next_steps || "";
+        } else {
+            skippedForUnsavedEdits = true;
+        }
 
         renderCaseNotesList();
         renderCustodyLogList();
@@ -12820,14 +12876,31 @@ async function loadCaseForEditing() {
         renderCaseJobs();
         renderCaseDashboard();
 
-        const attach = currentLoadedReportData.attachments || {};
-        currentAttachedFilesList = attach.files || [];
-        if (!currentAttachedFilesList.length && attach.image_path) {
-            currentAttachedFilesList = [attach.image_path];
+        // Same protection as above, for the Files & Artifacts checklist -
+        // currentAttachedFilesList/currentAttachmentCaptions/
+        // currentReferenceUrlsList are the module-level arrays
+        // saveReportMetadata() reads at save time (not currentLoadedReportData
+        // directly), so leaving them alone while dirty preserves an
+        // in-progress, unsaved exhibit-checkbox/caption edit exactly the
+        // same way skipping the narrative textareas above does. Same live
+        // re-check as the narrative block above, for the same race-closing
+        // reason.
+        if (!reportHasUnsavedChanges) {
+            const attach = currentLoadedReportData.attachments || {};
+            currentAttachedFilesList = attach.files || [];
+            if (!currentAttachedFilesList.length && attach.image_path) {
+                currentAttachedFilesList = [attach.image_path];
+            }
+            currentAttachmentCaptions = attach.file_captions || {};
+            currentReferenceUrlsList = attach.reference_urls || [];
+            renderReportFilesGallery();
+        } else {
+            skippedForUnsavedEdits = true;
         }
-        currentAttachmentCaptions = attach.file_captions || {};
-        currentReferenceUrlsList = attach.reference_urls || [];
-        renderReportFilesGallery();
+
+        if (skippedForUnsavedEdits) {
+            showToast("A background update refreshed this case's Notes/Custody Log/Jobs - your own unsaved Report Narrative and Files & Artifacts edits were preserved. Save when ready.", 'info');
+        }
 
         const previewEl = document.getElementById("jsonPreview");
         if (previewEl) {

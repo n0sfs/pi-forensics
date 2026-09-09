@@ -21,6 +21,26 @@ file after updating to see what changed.
 
 ---
 
+## [1.77.1] - 2026-09-09
+
+### Fixed
+- **Report Narrative and Files & Artifacts edits could be silently discarded by an unrelated action.**
+  Adding a Case Note, logging a Custody entry, attaching a file, or even a background job (like
+  Verify All Evidence) finishing on its own, refreshed Reporting's whole screen from the server -
+  which used to overwrite every Report Narrative field, Case Status, custom fields, and the Files &
+  Artifacts checklist with whatever was last saved, silently throwing away anything typed but not yet
+  saved. These background-triggered refreshes now only ever touch their own read-only views (Case
+  Notes, Custody Log, Jobs, the Dashboard) - typed-but-unsaved narrative or attachment changes are
+  preserved, with a brief notice confirming what happened, and the "Unsaved changes" indicator stays
+  correctly shown until it's actually saved.
+- **The exported report's Pattern of Life section could show an empty Frequent Locations table for a
+  legacy (not-yet-migrated) or ad-hoc report even when a location file was genuinely attached.** The
+  export was independently re-reading the case's attachment list from disk instead of using the same
+  data the rest of that export already had loaded, and that re-read only ever worked for a fully
+  migrated case - a legacy report's real attachments were silently treated as empty. Fixed to reuse
+  the export's own already-loaded attachment list, which also closes a narrow window where that
+  second disk read could have disagreed with the rest of the same export.
+
 ## [1.77.0] - 2026-09-09
 
 ### Added
