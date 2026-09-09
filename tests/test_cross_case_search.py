@@ -53,6 +53,31 @@ def test_list_case_folders_finds_consolidated_and_legacy_cases(evidence_root, mo
     assert schemas == {"2026-CASE-A": "consolidated", "2026-CASE-B": "legacy"}
 
 
+def test_list_case_folders_surfaces_status_before_archive(evidence_root, monkeypatch):
+    """2026-09-09 fix (a review pass's own lower-confidence findings): the
+    Case Manager's "Re-open" button needs to see whatever status_before_
+    archive routes/case_management.py's set_case_status() recorded, to
+    restore it instead of always defaulting to "Open" - confirms
+    list_case_folders() actually surfaces it, for both a case that has it
+    recorded and one that never has (None, not a missing key that would
+    make the frontend's own c.status_before_archive read undefined)."""
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    case_dir = _write_consolidated_case(evidence_root, "2026-CASE-ARCHIVED", "2026-CASE-ARCHIVED", "x", "2026-01-01", [])
+    case_file = os.path.join(case_dir, "2026-CASE-ARCHIVED_case.json")
+    with open(case_file) as f:
+        data = json.load(f)
+    data["case_status"] = "Archived"
+    data["status_before_archive"] = "In Review"
+    with open(case_file, "w") as f:
+        json.dump(data, f)
+
+    _write_consolidated_case(evidence_root, "2026-CASE-NEVER-ARCHIVED", "2026-CASE-NEVER-ARCHIVED", "x", "2026-01-02", [])
+
+    cases = {c["case_number"]: c for c in case_index_db.list_case_folders()}
+    assert cases["2026-CASE-ARCHIVED"]["status_before_archive"] == "In Review"
+    assert cases["2026-CASE-NEVER-ARCHIVED"]["status_before_archive"] is None
+
+
 def test_list_case_folders_sorts_newest_created_first(evidence_root, monkeypatch):
     _redirect_evidence_root(monkeypatch, evidence_root)
     _write_consolidated_case(evidence_root, "2026-CASE-OLD", "2026-CASE-OLD", "x", "2026-01-01 00:00:00", [])

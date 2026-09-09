@@ -76,8 +76,24 @@ def create_case():
     if os.path.exists(case_dir):
         return jsonify({"success": False, "error": f"A case folder named '{slug}' already exists at this location. Choose a different case number or parent location."}), 409
 
+    # The exists() check above and this makedirs() call are two separate
+    # steps - a concurrent request naming the exact same case number/parent
+    # location can create case_dir in the narrow window between them
+    # (found during a 2026-09-09 review pass). os.makedirs() itself never
+    # half-creates or overwrites anything if the directory already exists,
+    # so this race was never a data-safety issue - only a UX one: without
+    # this specific except, the loser of the race fell into the broad
+    # except below and got a generic 500 with a raw errno message instead
+    # of the same clean 409 "already exists" response a non-racing
+    # duplicate request already gets from the check above.
     try:
         os.makedirs(case_dir)
+    except FileExistsError:
+        return jsonify({"success": False, "error": f"A case folder named '{slug}' already exists at this location. Choose a different case number or parent location."}), 409
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not create case folder: {e}"}), 500
+
+    try:
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         # New cases go straight onto the consolidated one-file-per-case
         # format (see "Consolidated Per-Case Reporting" above) - only cases
@@ -187,6 +203,23 @@ def set_case_status():
         old_status = data.get('case_status') or 'Open'
         data['case_status'] = status
         data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
+        # Remember the status a case held right before being archived, so a
+        # later "Re-open" (from the Case Manager list's own dedicated
+        # button - see static/js/main.js's setCaseStatus()) can restore it
+        # instead of always landing back on the generic "Open" default
+        # (2026-09-09 fix, from a review pass's own lower-confidence
+        # findings). Only ever captured on a genuine transition INTO
+        # Archived (never overwrites an already-recorded value by
+        # re-archiving an already-archived case, which this route
+        # otherwise treats as a harmless no-op status write) and cleared
+        # the moment the case leaves Archived via ANY path - not just a
+        # "Re-open" click, any status change - so a much later archive
+        # cycle always captures a fresh snapshot rather than reusing a
+        # stale one from a completely different point in the case's life.
+        if status == 'Archived' and old_status != 'Archived':
+            data['status_before_archive'] = old_status
+        elif old_status == 'Archived' and status != 'Archived':
+            data.pop('status_before_archive', None)
         _write_case_file(marker_path, data)
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not update case status: {e}"}), 500
