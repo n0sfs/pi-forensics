@@ -74,7 +74,7 @@ from core.case_index_db import (
     _case_index_open_readonly, list_case_folders, correlate_contacts,
     CONTACT_CORRELATION_COMM_TYPES, CONTACT_CORRELATION_EMAIL_COMM_TYPES,
     _extract_raw_counterpart_candidates, _extract_email_counterparts, normalize_phone_number,
-    _comm_content_preview,
+    _comm_content_preview, tagged_real_fs_paths_for_case,
 )
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
@@ -130,6 +130,9 @@ def settings_case_reporting():
                 "header_text": (incoming.get('branding', {}).get('header_text') or '').strip()[:200],
                 "logo_path": existing_logo,
             },
+            # Station-wide only (2026-09-08) - see export_report()'s own
+            # comment on why this couldn't live inside job_fields/sections.
+            "include_timeline_previews": bool(incoming.get('include_timeline_previews', False)),
         }
 
     if 'custom_case_fields' in req:
@@ -369,7 +372,7 @@ def _custom_report_template_from_payload(req):
     corrupt storage. Any known block missing from the payload is
     defensively auto-filled (default title, enabled) rather than rejected -
     every stored record is expected to always cover every key in
-    REPORT_SECTION_BLOCKS (currently 16 - what the builder UI edits, and
+    REPORT_SECTION_BLOCKS (currently 17 - what the builder UI edits, and
     what _resolve_section_order() reads; deliberately not hardcoded here a
     second time, since this exact count has already drifted stale twice
     before as new report sections were added), so this is a self-healing
@@ -432,7 +435,10 @@ def report_templates_custom():
             "success": True,
             "templates": cfg.get('custom_report_templates', []),
             # Single source of truth for the frontend builder's palette -
-            # it never hardcodes the 15-block list itself. field_options is
+            # it never hardcodes the block list itself (this exact count has
+            # already drifted stale in a couple of comments before as new
+            # report sections were added - deliberately not repeating a
+            # specific number here again). field_options is
             # the same 7-entry map every remappable block can choose among
             # (value = header field name the way source_field stores it,
             # label = what a human calls it) - identical for every
@@ -1110,48 +1116,21 @@ def _timeline_row_category(source, activity):
     return CASE_TIMELINE_ACTIVITY_CATEGORY.get(activity, CASE_TIMELINE_DEFAULT_CATEGORY)
 
 
-@reporting_bp.route('/api/cases/timeline', methods=['GET'])
-@requires_auth
-@requires_permission('reporting')
-def case_timeline():
-    """Interactive, evidence-only timeline - merges _collect_case_timeline()'s
-    existing MACB aggregation (unmodified, reused exactly as the PDF/HTML
-    report builders already use it) with parsed_artifacts rows (browser/
-    registry/event-log records pulled from the acquired image itself).
-    Deliberately does NOT include case_notes[]/custody_log[] - those are
-    examiner-authored workflow entries, not evidence pulled off a drive/
-    phone, and both already have their own dedicated Reporting tabs; mixing
-    them in here diluted what this view is actually for (confirmed with the
-    user, 2026-08-25 - see the dated CLAUDE.md entry). Every row gets a
-    "source" tag for client-side filtering, since a busy case's MACB
-    contribution alone can run to thousands of rows.
-
-    Every row also carries "counterparts" (2026-09-07, entity-linking pass) -
-    the resolved contact-correlation key(s), if any, that row's own raw
-    counterpart field(s) matched against correlate_contacts()'s already-
-    built contact directory (the same directory the Pattern of Life
-    Relationship Graph renders from, and the same canonical key its own
-    graph node ids use - normalized_number when present, else
-    normalized_email) - never a raw, unresolved phone number/address, so
-    a click on a Relationship Graph node can filter this timeline down to
-    exactly that person's own activity. A row this app can't attribute to
-    any known contact (an unmatched number, or simply not a communication
-    row at all - the vast majority of MACB/registry/browser rows) always
-    gets an empty list, never a guessed one.
-
-    Every row also carries "content_preview" (2026-09-07) - the real
-    message/email/note text for a comm-type row, via _comm_content_
-    preview() (core/case_index_db.py, the same function correlate_
-    contacts()'s own samples[] already use), capped and always None for
-    every non-content-bearing row (MACB, call logs, anything else)."""
-    case_folder = safe_path(request.args.get('case_folder'))
-    if not case_folder or not case_consolidated_path(case_folder):
-        return jsonify({"success": False, "error": "Not a valid consolidated case folder."}), 400
-
-    case_file = case_consolidated_path(case_folder)
-    data = _read_case_file(case_file)
-    events = data.get('events', [])
-
+def _build_enriched_case_timeline(case_folder, events):
+    """Shared enrichment core behind both the interactive /api/cases/timeline
+    route and the exported report's own Timeline section (2026-09-08) -
+    merges _collect_case_timeline()'s existing MACB aggregation (unmodified,
+    reused exactly as before) with parsed_artifacts rows (browser/registry/
+    event-log records pulled from the acquired image itself), entity-linking
+    "counterparts", "suspicious" flags, and "content_preview" text. Factored
+    out of case_timeline() itself so the export builders can reuse the
+    identical enrichment logic rather than a second, potentially-drifting
+    copy of it - case_timeline() is now a thin wrapper around this. See that
+    route's own (unchanged) docstring for the fuller rationale on each field;
+    this function's own contract is simply: given a case folder and its
+    events[], return (combined_events_sorted_and_capped, truncated, notes,
+    contacts_summary) in exactly the shape case_timeline()'s JSON response
+    already exposed before this refactor."""
     # Real contact-key lookups, built once from correlate_contacts()'s own
     # already-resolved contact directory - never a second, independent
     # phone/email normalization+matching pass that could silently drift
@@ -1275,9 +1254,34 @@ def case_timeline():
          "tier": c.get("tier")}
         for c in correlation.get("contacts", [])
     ]
+    return combined[:CASE_TIMELINE_MAX_TOTAL_ENTRIES], truncated, macb["notes"], contacts_summary
+
+
+@reporting_bp.route('/api/cases/timeline', methods=['GET'])
+@requires_auth
+@requires_permission('reporting')
+def case_timeline():
+    """Interactive, evidence-only timeline - see _build_enriched_case_
+    timeline()'s own docstring for how these rows are gathered/enriched.
+    Deliberately does NOT include case_notes[]/custody_log[] - those are
+    examiner-authored workflow entries, not evidence pulled off a drive/
+    phone, and both already have their own dedicated Reporting tabs; mixing
+    them in here diluted what this view is actually for (confirmed with the
+    user, 2026-08-25 - see the dated CLAUDE.md entry). Every row gets a
+    "source" tag for client-side filtering, since a busy case's MACB
+    contribution alone can run to thousands of rows."""
+    case_folder = safe_path(request.args.get('case_folder'))
+    if not case_folder or not case_consolidated_path(case_folder):
+        return jsonify({"success": False, "error": "Not a valid consolidated case folder."}), 400
+
+    case_file = case_consolidated_path(case_folder)
+    data = _read_case_file(case_file)
+    events = data.get('events', [])
+
+    combined, truncated, notes, contacts_summary = _build_enriched_case_timeline(case_folder, events)
     return jsonify({
-        "success": True, "events": combined[:CASE_TIMELINE_MAX_TOTAL_ENTRIES],
-        "notes": macb["notes"], "truncated": truncated,
+        "success": True, "events": combined,
+        "notes": notes, "truncated": truncated,
         # The real, authoritative category list, not a second frontend-side
         # copy - static/js/main.js builds its filter checkboxes from this,
         # matching the "single source of truth" pattern already used for
@@ -1622,26 +1626,24 @@ GEO_ACTIVITY_MAX_FREQUENT_LOCATIONS = 20  # matches RELATIONSHIP_GRAPH_MAX_NODES
 GEO_ACTIVITY_MIN_FREQUENT_VISITS = 2      # a single-visit point isn't a "frequent" location by any reasonable definition - excluded from frequent_locations entirely, still present in points
 
 
-@reporting_bp.route('/api/cases/geo_activity', methods=['GET'])
-@requires_auth
-@requires_permission('reporting')
-def case_geo_activity():
-    """Pattern of Life's own "Location Activity" section (2026-09-08) - ties
-    real GPS data into the same pattern-of-life view Contact Correlation
-    already lives in, answering "where was this device, and how often was
-    it at the same place" alongside "who did it talk to." Two sources, both
-    already-established, no new parsing added here:
-    takeout_location_history (parsed_artifacts rows this app already
-    indexes from a Google Takeout import - real lat/lon/timestamp, read
-    directly, no KML export needed first) and every .kml file already
-    sitting in or attached to this case (the exact same
-    _collect_case_geolocation() the PDF/HTML report's own Geolocation
-    section already reuses - covers EXIF-tagged photos, an ALEAPP location
-    export, or any KML an examiner has manually added). A KML placemark
-    has no reliable structured timestamp (confirmed via _parse_kml_
-    placemarks()'s own shape - {name, description, lat, lon}, nothing
-    else), so those points always carry timestamp=None here rather than
-    a guessed one.
+def _collect_case_geo_activity(case_folder, attachment_files):
+    """Shared core behind both GET /api/cases/geo_activity and the exported
+    report's own "pattern_of_life" section (factored out 2026-09-08 for the
+    export - case_geo_activity() itself is now a thin wrapper) - ties real
+    GPS data into the same pattern-of-life view Contact Correlation already
+    lives in, answering "where was this device, and how often was it at
+    the same place" alongside "who did it talk to." Two sources, both
+    already-established, no new parsing added here: takeout_location_
+    history (parsed_artifacts rows this app already indexes from a Google
+    Takeout import - real lat/lon/timestamp, read directly, no KML export
+    needed first) and every .kml file already sitting in or attached to
+    this case (the exact same _collect_case_geolocation() the PDF/HTML
+    report's own Geolocation section already reuses - covers EXIF-tagged
+    photos, an ALEAPP location export, or any KML an examiner has manually
+    added). A KML placemark has no reliable structured timestamp
+    (confirmed via _parse_kml_placemarks()'s own shape - {name,
+    description, lat, lon}, nothing else), so those points always carry
+    timestamp=None here rather than a guessed one.
 
     Clustered into "frequent_locations" (grid-rounded to ~111m cells,
     ranked by visit count, capped at GEO_ACTIVITY_MAX_FREQUENT_LOCATIONS,
@@ -1652,15 +1654,11 @@ def case_geo_activity():
     tiering already established, applied to place instead of person; a
     deliberately plain, explainable grid rounding, not real geospatial
     clustering, matching this app's own established preference for a
-    disclosed, simple rule over an opaque one."""
-    case_folder = safe_path(request.args.get('case_folder'))
-    if not case_folder or not case_consolidated_path(case_folder):
-        return jsonify({"success": False, "error": "Not a valid consolidated case folder."}), 400
+    disclosed, simple rule over an opaque one.
 
-    case_file = case_consolidated_path(case_folder)
-    data = _read_case_file(case_file)
-    attachment_files = data.get('attachments', {}).get('files', [])
-
+    Returns (points, frequent_locations, truncated) - exactly the 3 keys
+    case_geo_activity()'s own JSON response already exposed before this
+    refactor."""
     points = []
     conn = _case_index_open_readonly(case_folder)
     if conn:
@@ -1712,6 +1710,25 @@ def case_geo_activity():
     frequent_locations.sort(key=lambda c: c["visit_count"], reverse=True)
     frequent_locations = frequent_locations[:GEO_ACTIVITY_MAX_FREQUENT_LOCATIONS]
 
+    return points, frequent_locations, truncated
+
+
+@reporting_bp.route('/api/cases/geo_activity', methods=['GET'])
+@requires_auth
+@requires_permission('reporting')
+def case_geo_activity():
+    """Pattern of Life's own "Location Activity" section - see
+    _collect_case_geo_activity()'s own docstring for how these rows are
+    gathered/clustered."""
+    case_folder = safe_path(request.args.get('case_folder'))
+    if not case_folder or not case_consolidated_path(case_folder):
+        return jsonify({"success": False, "error": "Not a valid consolidated case folder."}), 400
+
+    case_file = case_consolidated_path(case_folder)
+    data = _read_case_file(case_file)
+    attachment_files = data.get('attachments', {}).get('files', [])
+
+    points, frequent_locations, truncated = _collect_case_geo_activity(case_folder, attachment_files)
     return jsonify({"success": True, "points": points, "frequent_locations": frequent_locations, "truncated": truncated})
 
 
@@ -1815,20 +1832,24 @@ def add_case_note():
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not read report: {e}"}), 500
 
-    # Optional links to already-attached exhibit files, so a note can say
-    # "found in DCIM, see Exhibit 3" with a real reference instead of just
-    # prose. Add-time only - not editable via /api/cases/notes/edit, since
-    # editing is for correcting text, not changing which files a note
-    # references. Sent as a JSON-encoded string in a form field (this route
-    # is multipart, unlike the JSON-bodied edit route). Any path not
-    # currently a real attached exhibit is silently dropped - a note
-    # shouldn't fail to save over a stale reference.
+    # Optional links to an already-attached exhibit file OR a real-fs item
+    # already tagged Notable/Critical (2026-09-09) - so a note can say "found
+    # in DCIM, see Exhibit 3" or reference something the examiner flagged
+    # during investigation before ever attaching it as a report exhibit. Add-
+    # time only - not editable via /api/cases/notes/edit, since editing is
+    # for correcting text, not changing which files a note references. Sent
+    # as a JSON-encoded string in a form field (this route is multipart,
+    # unlike the JSON-bodied edit route). Any path not currently EITHER
+    # attached OR tagged is silently dropped - a note shouldn't fail to save
+    # over a stale reference (an exhibit later detached, or a tag later
+    # removed).
     try:
         requested_links = json.loads(request.form.get('linked_files', '[]'))
     except (TypeError, ValueError):
         requested_links = []
     attached_files = set((data.get('attachments') or {}).get('files', []))
-    linked_files = [p for p in requested_links if isinstance(p, str) and p in attached_files]
+    linkable_paths = attached_files | tagged_real_fs_paths_for_case(os.path.dirname(report_file))
+    linked_files = [p for p in requested_links if isinstance(p, str) and p in linkable_paths]
 
     note_id = uuid.uuid4().hex
     saved_attachments = []
@@ -2518,10 +2539,15 @@ def _draw_pdf_case_notes(c, y, notes, title="Forensic Analysis / Steps Taken (Ca
             y -= 11
         y = _draw_pdf_wrapped_text(c, y, note.get('text') or '', x=60, width_chars=90)
         y -= 4
-        linked = [p for p in (note.get('linked_files') or []) if p in exhibit_numbers]
+        linked = note.get('linked_files') or []
         if linked:
-            link_line = "Linked Exhibit(s): " + "; ".join(
-                f"Exhibit {exhibit_numbers[p]} - {os.path.basename(p)}" for p in linked)
+            # A linked path may be a tagged-but-never-attached file (not just
+            # an exhibit) since 2026-09-09 - still shown, just without a
+            # fabricated exhibit number, rather than silently vanishing from
+            # the export the way it did before this fix.
+            link_line = "Linked File(s): " + "; ".join(
+                f"Exhibit {exhibit_numbers[p]} - {os.path.basename(p)}" if p in exhibit_numbers
+                else f"{os.path.basename(p)} (tagged, not an exhibit)" for p in linked)
             y = _draw_pdf_wrapped_text(c, y, link_line, x=60, width_chars=90, font="Helvetica-Oblique", size=8, leading=10)
             y -= 2
         for att in note.get('attachments', []):
@@ -2670,15 +2696,35 @@ def _draw_pdf_timeline_table(c, y, case_notes, title="Incident Timeline"):
     y -= 12
     return y
 
-def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)"):
-    """Renders a real filesystem MACB timeline for the case's acquired
-    disk image(s) - see _collect_case_timeline() for how the underlying
-    events are gathered (dedup/status-gating/per-image budget). Unlike
-    _draw_pdf_timeline_table() above (a much shorter, case-notes-sourced
-    table reused by the DFIR/Police templates), this table can legitimately
-    run to thousands of rows across many pages, so - deliberately, not by
-    silently copying that function's behavior - the column headers are
-    redrawn after every page break rather than only once at the top."""
+def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)", case_folder=None, include_previews=False):
+    """Renders the case's evidence timeline - see _build_enriched_case_
+    timeline() for how these rows are gathered (MACB + parsed_artifacts,
+    dedup/status-gating/per-image budget, entity-linked counterparts,
+    suspicious flags). Enriched 2026-09-08 - previously this only ever drew
+    _collect_case_timeline()'s raw MACB rows, matching the interactive
+    Evidence Timeline tab's OWN earlier (2026-08-25-era) state before that
+    tab was itself enriched with parsed_artifacts/counterparts/suspicious
+    markers/content previews on 2026-09-07; the export had quietly fallen
+    behind the interactive view since. case_folder is optional (defaults to
+    the pre-2026-09-08 raw-MACB-only behavior) purely as a defensive
+    fallback for a caller that somehow doesn't have one - every real call
+    site in this file always passes it. include_previews gates whether a
+    comm-type row's actual message/note text is embedded as a wrapped
+    sub-line under that row - default False, since unlike every other field
+    here (which/when/who, all structural facts), raw content text leaving
+    the station in a portable PDF is a real, distinct sensitivity step up
+    from the same text merely being viewable on-screen within the app -
+    an examiner opts in explicitly - a single station-wide setting, not a
+    per-export one (Settings > Case & Reporting > Report Export Defaults >
+    "Include message/note text in the exported Timeline section"; see
+    export_report()'s own comment on why this couldn't live inside a
+    per-template job_fields dict the way telemetry/params/hashes do).
+    Unlike _draw_pdf_timeline_table()
+    above (a much shorter, case-notes-sourced table reused by the DFIR/
+    Police templates), this table can legitimately run to thousands of
+    rows across many pages, so - deliberately, not by silently copying that
+    function's behavior - the column headers are redrawn after every page
+    break rather than only once at the top."""
     if y < 150:
         c.showPage()
         y = 730
@@ -2687,10 +2733,30 @@ def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)"):
     c.drawString(50, y, title)
     y -= 18
 
-    result = _collect_case_timeline(events)
-    timeline_events = result["events"]
+    if case_folder:
+        timeline_events, truncated, notes, contacts_summary = _build_enriched_case_timeline(case_folder, events)
+    else:
+        macb = _collect_case_timeline(events)
+        timeline_events = [
+            {**row, "detail": row["path"], "counterparts": [], "content_preview": None, "suspicious": False}
+            for row in macb["events"]
+        ]
+        truncated = macb["truncated"]
+        notes = macb["notes"]
+        contacts_summary = []
 
-    headers = ["Timestamp", "Act.", "Evidence ID", "Path"]
+    # A row's own "counterparts" is a list of correlate_contacts() keys, not
+    # display names - resolved to this case's first known display name per
+    # key, matching how the Relationship Graph itself labels a node; a key
+    # with no resolvable name (shouldn't happen in practice, since every key
+    # here came from contacts_summary in the first place) falls back to the
+    # raw key rather than silently dropping the reference.
+    contact_name_by_key = {
+        c["key"]: (c["display_names"][0] if c.get("display_names") else c["key"])
+        for c in contacts_summary if c.get("key")
+    }
+
+    headers = ["Timestamp", "Act.", "Evidence ID", "Detail"]
     xpos = [50, 155, 195, 270]
 
     def _draw_header_row(y):
@@ -2705,7 +2771,7 @@ def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)"):
 
     if not timeline_events:
         c.setFont("Helvetica", 10)
-        c.drawString(50, y, "No filesystem timeline available for this case's evidence items.")
+        c.drawString(50, y, "No timeline data available for this case's evidence items.")
         y -= 15
     else:
         y = _draw_header_row(y)
@@ -2714,24 +2780,46 @@ def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)"):
                 c.showPage()
                 y = 750
                 y = _draw_header_row(y)
+            # Suspicious rows get a plain-ASCII "[!] " prefix rather than a
+            # Unicode warning-triangle glyph, since ReportLab's built-in
+            # Helvetica font has no guaranteed glyph coverage for it - the
+            # HTML counterpart below uses the real Unicode glyph instead,
+            # since a browser's own font stack handles that fine.
+            activity_label = str(entry.get('activity', ''))
+            if entry.get('suspicious'):
+                activity_label = '[!] ' + activity_label
+            detail_text = str(entry.get('detail', ''))
+            counterpart_names = [contact_name_by_key.get(k, k) for k in entry.get('counterparts', [])]
+            if counterpart_names:
+                detail_text = f"{detail_text} - [{', '.join(counterpart_names)}]"
             row = [
                 format_epoch(entry.get('timestamp')) or 'N/A',
-                str(entry.get('activity', '')),
-                str(entry.get('evidence_id', 'N/A'))[:14],
-                str(entry.get('path', ''))[:58],
+                activity_label[:20],
+                str(entry.get('evidence_id') or 'N/A')[:14],
+                detail_text[:58],
             ]
             for val, x in zip(row, xpos):
                 c.drawString(x, y, val)
             y -= 11
+            if include_previews and entry.get('content_preview'):
+                if y < 60:
+                    c.showPage()
+                    y = 750
+                    y = _draw_header_row(y)
+                c.setFillColorRGB(0.35, 0.35, 0.35)
+                y = _draw_pdf_wrapped_text(c, y, f'    "{entry["content_preview"]}"', x=55, width_chars=100,
+                                            font="Helvetica-Oblique", size=6.5, leading=8)
+                c.setFillColorRGB(0, 0, 0)
+                c.setFont("Helvetica", 7.5)
         y -= 6
-        if result["truncated"]:
+        if truncated:
             c.setFont("Helvetica-Oblique", 7)
             c.setFillColorRGB(0.4, 0.4, 0.4)
-            c.drawString(50, y, "Timeline truncated - not every timestamped filesystem event fit within the report's size limits.")
+            c.drawString(50, y, "Timeline truncated - not every timestamped event fit within the report's size limits.")
             c.setFillColorRGB(0, 0, 0)
             y -= 12
 
-    if result["notes"]:
+    if notes:
         if y < 100:
             c.showPage()
             y = 750
@@ -2740,7 +2828,7 @@ def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)"):
         y -= 12
         c.setFont("Helvetica-Oblique", 7)
         c.setFillColorRGB(0.4, 0.4, 0.4)
-        for note in result["notes"]:
+        for note in notes:
             if y < 60:
                 c.showPage()
                 y = 750
@@ -3018,6 +3106,164 @@ def _draw_pdf_geolocation_block(c, y, kml_data, title="Geolocation / GPS Evidenc
 
     return y
 
+def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: Contact Correlation & Location Activity"):
+    """Renders the case-wide Contact Correlation + Frequent Locations
+    summary the interactive Pattern of Life tab already builds from
+    correlate_contacts()/_collect_case_geo_activity() (2026-09-08) - the
+    export's own counterpart to that tab, previously reachable only on-
+    screen with no export path at all. Deliberately tables only, no map
+    image or graph rendering (the existing "geolocation" section already
+    covers a static map; a graph rendering has no PDF-native equivalent
+    worth building for this pass) and no "Likely Home/Work" location
+    labeling (see this block's own REPORT_SECTION_BLOCKS comment for why -
+    that heuristic is analyst-browser-timezone-dependent and has no
+    meaning server-side). Every count/tier/label here comes from the exact
+    same functions the Relationship Graph and Location Activity map
+    already render from, so this can never show a different picture of
+    the case than what an examiner already reviewed on-screen."""
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, title)
+    y -= 18
+
+    correlation = correlate_contacts(case_folder)
+    contacts = correlation.get("contacts", [])
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(50, y, "Contact Correlation")
+    y -= 14
+    if not contacts:
+        c.setFont("Helvetica-Oblique", 9)
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(50, y, "No correlated contacts found for this case.")
+        c.setFillColorRGB(0, 0, 0)
+        y -= 14
+    else:
+        headers = ["Name / Identifier", "Tier", "Total", "In/Out", "Duration"]
+        xpos = [50, 260, 320, 365, 430]
+
+        def _draw_contact_header_row(y):
+            c.setFont("Helvetica-Bold", 8)
+            for label, x in zip(headers, xpos):
+                c.drawString(x, y, label)
+            y -= 4
+            c.line(50, y, 550, y)
+            y -= 12
+            c.setFont("Helvetica", 7.5)
+            return y
+
+        y = _draw_contact_header_row(y)
+        for contact in contacts:
+            if y < 60:
+                c.showPage()
+                y = 750
+                y = _draw_contact_header_row(y)
+            identifier = contact.get("normalized_number") or contact.get("normalized_email") or ''
+            names = contact.get("display_names") or []
+            name_label = f"{names[0]} ({identifier})" if names and names[0] != identifier else identifier
+            direction = contact.get("direction_counts", {}) or {}
+            duration_s = contact.get("total_duration_seconds", 0) or 0
+            duration_label = f"{int(duration_s // 60)}m" if duration_s else '--'
+            row = [
+                name_label[:34],
+                str(contact.get("tier", ''))[:10],
+                str(contact.get("total_communications", 0)),
+                f"{direction.get('incoming', 0)}/{direction.get('outgoing', 0)}",
+                duration_label,
+            ]
+            for val, x in zip(row, xpos):
+                c.drawString(x, y, val)
+            y -= 11
+        y -= 6
+
+        co_occurrences = correlation.get("co_occurrences") or []
+        if co_occurrences:
+            if y < 80:
+                c.showPage()
+                y = 750
+            c.setFont("Helvetica-Bold", 8)
+            c.drawString(50, y, "Contacts seen communicating with each other (not the device owner):")
+            y -= 12
+            c.setFont("Helvetica", 7.5)
+            name_by_key = {
+                (c2.get("normalized_number") or c2.get("normalized_email")): (c2["display_names"][0] if c2.get("display_names") else (c2.get("normalized_number") or c2.get("normalized_email")))
+                for c2 in contacts
+            }
+            for pair in co_occurrences[:15]:
+                if y < 60:
+                    c.showPage()
+                    y = 750
+                    c.setFont("Helvetica", 7.5)
+                a, b = pair.get("contacts", [None, None])
+                line = f"  {name_by_key.get(a, a)} <-> {name_by_key.get(b, b)} - {pair.get('count', 0)} shared communication(s)"
+                c.drawString(50, y, line[:110])
+                y -= 10
+            y -= 6
+
+        if correlation.get("truncated"):
+            c.setFont("Helvetica-Oblique", 7)
+            c.setFillColorRGB(0.4, 0.4, 0.4)
+            c.drawString(50, y, "Contact list truncated - not every correlated contact fit within the report's size limits.")
+            c.setFillColorRGB(0, 0, 0)
+            y -= 12
+
+    # Frequent Locations - the raw ranked cluster data _collect_case_geo_
+    # activity() already computes; deliberately no Home/Work labeling here
+    # (see this function's own docstring).
+    y -= 6
+    if y < 100:
+        c.showPage()
+        y = 750
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(50, y, "Frequent Locations")
+    y -= 14
+
+    case_file = case_consolidated_path(case_folder)
+    attachment_files = _read_case_file(case_file).get('attachments', {}).get('files', []) if case_file else []
+    _, frequent_locations, _ = _collect_case_geo_activity(case_folder, attachment_files)
+
+    if not frequent_locations:
+        c.setFont("Helvetica-Oblique", 9)
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(50, y, "No location visited more than once was found for this case.")
+        c.setFillColorRGB(0, 0, 0)
+        y -= 14
+    else:
+        loc_headers = ["Latitude", "Longitude", "Visits", "First Seen", "Last Seen"]
+        loc_xpos = [50, 130, 210, 260, 400]
+
+        def _draw_loc_header_row(y):
+            c.setFont("Helvetica-Bold", 8)
+            for label, x in zip(loc_headers, loc_xpos):
+                c.drawString(x, y, label)
+            y -= 4
+            c.line(50, y, 550, y)
+            y -= 12
+            c.setFont("Helvetica", 7.5)
+            return y
+
+        y = _draw_loc_header_row(y)
+        for loc in frequent_locations:
+            if y < 60:
+                c.showPage()
+                y = 750
+                y = _draw_loc_header_row(y)
+            row = [
+                f"{loc['lat']:.5f}", f"{loc['lon']:.5f}", str(loc['visit_count']),
+                format_epoch(loc.get('first_seen')) or 'N/A',
+                format_epoch(loc.get('last_seen')) or 'N/A',
+            ]
+            for val, x in zip(row, loc_xpos):
+                c.drawString(x, y, val)
+            y -= 11
+        y -= 6
+
+    y -= 12
+    return y
+
 def _draw_pdf_contents_page(c, resolved_sections, event_count):
     """A plain Report Contents listing, not page-number cross-referenced -
     this renderer draws in a single streaming pass with no forward
@@ -3198,6 +3444,29 @@ REPORT_SECTION_BLOCKS = [
     # by default.
     {"key": "geolocation", "default_title": "Geolocation / GPS Evidence",
      "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
+    # Opt-in only (2026-09-08), matching timeline's own precedent - reuses
+    # correlate_contacts() (Contact Correlation/Relationship Graph's own
+    # data source) and _collect_case_geo_activity() (Frequent Locations'
+    # own data source) so this section can never drift from what the
+    # interactive Pattern of Life tab itself shows. requires_events=False,
+    # unlike timeline - unlike Timeline's MACB half, nothing here depends
+    # on events[] at all, only on the case's own parsed_artifacts index, so
+    # a case with zero acquisition events (e.g. companion-app-only mobile
+    # extraction) can still show this section. Deliberately does NOT
+    # attempt the interactive tab's own "Likely Home/Work" location
+    # labeling - that heuristic is explicitly computed in the ANALYST's
+    # browser-local time (see renderGeoActivityMap()'s own docstring on
+    # why the SUBJECT device's timezone can't be reliably known), which has
+    # no meaning at all for a document rendered server-side with no browser
+    # context, and reusing the STATION's own local time as a stand-in would
+    # be a materially weaker, less-defensible claim baked into a portable
+    # exported artifact - so this section shows the raw ranked frequent-
+    # locations data (coordinates/visit counts/first-last-seen) with no
+    # Home/Work inference layered on top. Does not render an actual map
+    # image either - that's the existing "geolocation" section's own job;
+    # an examiner wanting both enables them together in a custom template.
+    {"key": "pattern_of_life", "default_title": "Pattern of Life: Contact Correlation & Location Activity",
+     "in_legacy_default": False, "requires_events": False, "force_page_break": True, "remappable": False},
     {"key": "audit_trail", "default_title": "Case Activity Log (Audit Trail)",
      "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
     {"key": "timeline", "default_title": "Filesystem Timeline (MACB)",
@@ -3357,7 +3626,7 @@ def _resolve_template_ref(value, cfg):
         raise ValueError(f"Selected custom template '{template_id}' no longer exists.")
     return 'standard', None
 
-def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None):
+def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False):
     from reportlab.lib.pagesizes import letter
 
     c = _numbered_canvas_class()(pdf_path, pagesize=letter)
@@ -3420,8 +3689,9 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
                                                                        tags_by_path=tags_by_path, analysis_by_path=analysis_by_path,
                                                                        exhibit_numbers=exhibit_numbers),
         "audit_trail": lambda y, title, field: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
-        "timeline": lambda y, title, field: _draw_pdf_timeline_block(c, y, events, title=title),
+        "timeline": lambda y, title, field: _draw_pdf_timeline_block(c, y, events, title=title, case_folder=case_folder, include_previews=include_timeline_previews),
         "geolocation": lambda y, title, field: _draw_pdf_geolocation_block(c, y, geo_data or [], title=title),
+        "pattern_of_life": lambda y, title, field: _draw_pdf_pattern_of_life_block(c, y, case_folder, title=title),
         "custody_log": lambda y, title, field: _draw_pdf_custody_log_block(c, y, custody_log or [], title=title),
     }
 
@@ -3821,34 +4091,67 @@ def _html_timeline_table(case_notes, title="Incident Timeline", anchor_id=None):
     parts.append('</table>')
     return ''.join(parts)
 
-def _html_timeline_block(events, title="Filesystem Timeline (MACB)", anchor_id=None):
-    """HTML counterpart to _draw_pdf_timeline_block - see
-    _collect_case_timeline() for how these events are gathered (dedup/
-    status-gating/per-image budget)."""
+def _html_timeline_block(events, title="Filesystem Timeline (MACB)", anchor_id=None, case_folder=None, include_previews=False):
+    """HTML counterpart to _draw_pdf_timeline_block - see that function's
+    own docstring (and _build_enriched_case_timeline()) for the 2026-09-08
+    enrichment rationale and the include_previews sensitivity note. Every
+    cell here goes through html.escape() regardless of source - a comm-type
+    row's own "detail"/content_preview text is examiner/evidence-derived
+    and this file may be reopened directly in a browser later, so unescaped
+    interpolation would be a real stored-XSS surface, matching this
+    exporter's existing discipline everywhere else."""
     esc = html.escape
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
-    result = _collect_case_timeline(events)
-    timeline_events = result["events"]
+
+    if case_folder:
+        timeline_events, truncated, notes, contacts_summary = _build_enriched_case_timeline(case_folder, events)
+    else:
+        macb = _collect_case_timeline(events)
+        timeline_events = [
+            {**row, "detail": row["path"], "counterparts": [], "content_preview": None, "suspicious": False}
+            for row in macb["events"]
+        ]
+        truncated = macb["truncated"]
+        notes = macb["notes"]
+        contacts_summary = []
+
+    contact_name_by_key = {
+        c["key"]: (c["display_names"][0] if c.get("display_names") else c["key"])
+        for c in contacts_summary if c.get("key")
+    }
 
     parts = [f'<h2{id_attr}>{esc(title)}</h2>']
     if not timeline_events:
-        parts.append('<p class="muted">No filesystem timeline available for this case\'s evidence items.</p>')
+        parts.append('<p class="muted">No timeline data available for this case\'s evidence items.</p>')
     else:
-        parts.append('<table><tr><th>Timestamp</th><th>Activity</th><th>Evidence ID</th><th>Path</th></tr>')
+        parts.append('<table><tr><th>Timestamp</th><th>Activity</th><th>Evidence ID</th><th>Detail</th></tr>')
         for entry in timeline_events:
+            activity_label = str(entry.get("activity", ""))
+            if entry.get("suspicious"):
+                # A real Unicode warning-triangle glyph is fine here, unlike
+                # the PDF path's own plain-ASCII "[!]" fallback - a browser's
+                # font stack has broad emoji/symbol coverage, ReportLab's
+                # bundled Helvetica does not.
+                activity_label = '⚠ ' + activity_label
+            counterpart_names = [contact_name_by_key.get(k, k) for k in entry.get("counterparts", [])]
+            counterpart_html = f' <span class="muted">[{esc(", ".join(counterpart_names))}]</span>' if counterpart_names else ''
             parts.append(
                 f'<tr><td>{esc(format_epoch(entry.get("timestamp")) or "N/A")}</td>'
-                f'<td>{esc(str(entry.get("activity", "")))}</td>'
-                f'<td>{esc(str(entry.get("evidence_id", "N/A")))}</td>'
-                f'<td class="mono">{esc(str(entry.get("path", "")))}</td></tr>'
+                f'<td>{esc(activity_label)}</td>'
+                f'<td>{esc(str(entry.get("evidence_id") or "N/A"))}</td>'
+                f'<td class="mono">{esc(str(entry.get("detail", "")))}{counterpart_html}</td></tr>'
             )
+            if include_previews and entry.get("content_preview"):
+                parts.append(
+                    f'<tr><td></td><td colspan="3" class="muted"><em>"{esc(entry["content_preview"])}"</em></td></tr>'
+                )
         parts.append('</table>')
-        if result["truncated"]:
-            parts.append('<p class="muted">Timeline truncated - not every timestamped filesystem event fit within the report\'s size limits.</p>')
+        if truncated:
+            parts.append('<p class="muted">Timeline truncated - not every timestamped event fit within the report\'s size limits.</p>')
 
-    if result["notes"]:
+    if notes:
         parts.append('<p class="muted"><strong>Notes:</strong></p><ul>')
-        for note in result["notes"]:
+        for note in notes:
             parts.append(f'<li class="muted">{esc(note)}</li>')
         parts.append('</ul>')
 
@@ -3949,6 +4252,82 @@ def _html_geolocation_block(kml_data, title="Geolocation / GPS Evidence", anchor
             '})();</script>'
         )
         parts.append('</div>')
+    return ''.join(parts)
+
+def _html_pattern_of_life_block(case_folder, title="Pattern of Life: Contact Correlation & Location Activity", anchor_id=None):
+    """HTML counterpart to _draw_pdf_pattern_of_life_block - see that
+    function's own docstring for the full rationale (why no map/graph
+    rendering, why no Home/Work labeling). Every value is escaped, matching
+    this exporter's existing discipline everywhere else - a contact's own
+    display name/identifier and a location's own name string are both
+    evidence-derived (a phone's address book, a Google Takeout place name),
+    not this app's own generated text."""
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [f'<h2{id_attr}>{esc(title)}</h2>']
+
+    correlation = correlate_contacts(case_folder)
+    contacts = correlation.get("contacts", [])
+
+    parts.append('<h3>Contact Correlation</h3>')
+    if not contacts:
+        parts.append('<p class="muted">No correlated contacts found for this case.</p>')
+    else:
+        parts.append('<table><tr><th>Name / Identifier</th><th>Tier</th><th>Total</th><th>In/Out</th><th>Duration</th></tr>')
+        for contact in contacts:
+            identifier = contact.get("normalized_number") or contact.get("normalized_email") or ''
+            names = contact.get("display_names") or []
+            name_label = f"{names[0]} ({identifier})" if names and names[0] != identifier else identifier
+            direction = contact.get("direction_counts", {}) or {}
+            duration_s = contact.get("total_duration_seconds", 0) or 0
+            duration_label = f"{int(duration_s // 60)}m" if duration_s else '--'
+            dup_note = ''
+            if contact.get("possible_duplicate_keys"):
+                dup_note = ' <span class="muted">(possible duplicate of another contact)</span>'
+            in_out_label = f"{direction.get('incoming', 0)}/{direction.get('outgoing', 0)}"
+            parts.append(
+                f'<tr><td>{esc(name_label)}{dup_note}</td>'
+                f'<td>{esc(str(contact.get("tier", "")))}</td>'
+                f'<td>{esc(str(contact.get("total_communications", 0)))}</td>'
+                f'<td>{esc(in_out_label)}</td>'
+                f'<td>{esc(duration_label)}</td></tr>'
+            )
+        parts.append('</table>')
+
+        co_occurrences = correlation.get("co_occurrences") or []
+        if co_occurrences:
+            name_by_key = {
+                (c2.get("normalized_number") or c2.get("normalized_email")): (c2["display_names"][0] if c2.get("display_names") else (c2.get("normalized_number") or c2.get("normalized_email")))
+                for c2 in contacts
+            }
+            parts.append('<p class="muted"><strong>Contacts seen communicating with each other (not the device owner):</strong></p><ul>')
+            for pair in co_occurrences[:15]:
+                a, b = pair.get("contacts", [None, None])
+                parts.append(
+                    f'<li class="muted">{esc(str(name_by_key.get(a, a)))} &lt;-&gt; {esc(str(name_by_key.get(b, b)))} '
+                    f'- {pair.get("count", 0)} shared communication(s)</li>'
+                )
+            parts.append('</ul>')
+
+        if correlation.get("truncated"):
+            parts.append('<p class="muted">Contact list truncated - not every correlated contact fit within the report\'s size limits.</p>')
+
+    parts.append('<h3>Frequent Locations</h3>')
+    case_file = case_consolidated_path(case_folder)
+    attachment_files = _read_case_file(case_file).get('attachments', {}).get('files', []) if case_file else []
+    _, frequent_locations, _ = _collect_case_geo_activity(case_folder, attachment_files)
+    if not frequent_locations:
+        parts.append('<p class="muted">No location visited more than once was found for this case.</p>')
+    else:
+        parts.append('<table><tr><th>Latitude</th><th>Longitude</th><th>Visits</th><th>First Seen</th><th>Last Seen</th></tr>')
+        for loc in frequent_locations:
+            parts.append(
+                f'<tr><td>{loc["lat"]:.5f}</td><td>{loc["lon"]:.5f}</td><td>{loc["visit_count"]}</td>'
+                f'<td>{esc(format_epoch(loc.get("first_seen")) or "N/A")}</td>'
+                f'<td>{esc(format_epoch(loc.get("last_seen")) or "N/A")}</td></tr>'
+            )
+        parts.append('</table>')
+
     return ''.join(parts)
 
 def _html_methodology_tools(events, anchor_id=None):
@@ -4230,10 +4609,14 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         if note.get('edited_at'):
             parts.append(f'<div class="muted">(edited {esc(str(note["edited_at"]))})</div>')
         parts.append(f'<p style="white-space:pre-wrap;">{esc(str(note.get("text", "")))}</p>')
-        linked = [p for p in (note.get('linked_files') or []) if p in exhibit_numbers]
+        linked = note.get('linked_files') or []
         if linked:
-            link_bits = [f'Exhibit {exhibit_numbers[p]} &mdash; {esc(os.path.basename(p))}' for p in linked]
-            parts.append(f'<p class="muted"><strong>Linked Exhibit(s):</strong> {"; ".join(link_bits)}</p>')
+            # See _draw_pdf_case_notes()'s identical comment - a linked path
+            # may be tagged-but-unattached (2026-09-09), not just an exhibit.
+            link_bits = [
+                f'Exhibit {exhibit_numbers[p]} &mdash; {esc(os.path.basename(p))}' if p in exhibit_numbers
+                else f'{esc(os.path.basename(p))} (tagged, not an exhibit)' for p in linked]
+            parts.append(f'<p class="muted"><strong>Linked File(s):</strong> {"; ".join(link_bits)}</p>')
         for att in note.get('attachments', []):
             file_path = safe_path(att.get('path', ''))
             if file_path and os.path.exists(file_path):
@@ -4241,7 +4624,7 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         parts.append('</div>')
     return ''.join(parts)
 
-def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None):
+def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False):
     """Self-contained HTML report - every value is escaped since it may
     contain examiner-entered text or evidence-derived strings (filenames,
     device paths) that this file could later be reopened/served from disk.
@@ -4284,8 +4667,9 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
                                                                            tags_by_path=tags_by_path, analysis_by_path=analysis_by_path,
                                                                            exhibit_numbers=exhibit_numbers),
         "audit_trail": lambda anchor, title, field: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
-        "timeline": lambda anchor, title, field: _html_timeline_block(events, title=title, anchor_id=anchor),
+        "timeline": lambda anchor, title, field: _html_timeline_block(events, title=title, anchor_id=anchor, case_folder=case_folder, include_previews=include_timeline_previews),
         "geolocation": lambda anchor, title, field: _html_geolocation_block(geo_data or [], title=title, anchor_id=anchor),
+        "pattern_of_life": lambda anchor, title, field: _html_pattern_of_life_block(case_folder, title=title, anchor_id=anchor),
         "custody_log": lambda anchor, title, field: _html_custody_log_block(custody_log or [], anchor_id=anchor, title=title),
     }
 
@@ -4500,6 +4884,20 @@ def export_report():
     report_defaults = cfg.get('report_defaults', {})
     requested_event_ids = req.get('event_ids')
     attachment_selection = req.get('attachment_selection')
+    # Whether to embed a comm-type Timeline row's own actual message/note
+    # text (2026-09-08) - a station-wide setting, not a per-request/per-
+    # template one: the Timeline section itself has no per-export UI at all
+    # (it's in_legacy_default: False, only ever reachable through a saved
+    # custom template's own always-on/off block toggle), and threading this
+    # through a custom template's own stored job_fields dict would be a
+    # dead end anyway - _custom_report_template_from_payload() only ever
+    # persists its 3 known keys (telemetry/params/hashes), silently
+    # stripping anything else, and the Report Template Builder has no UI to
+    # set a per-template job_fields value in the first place. A single
+    # always-off-by-default station setting (Settings > Case & Reporting >
+    # Report Export Defaults) is the one level of control that actually
+    # reaches every template capable of rendering Timeline at all.
+    include_timeline_previews = bool(report_defaults.get('include_timeline_previews', False))
 
     # Falls back to the station's configured default template the same way
     # sections/job_fields below fall back to their own station defaults. A
@@ -4724,10 +5122,12 @@ def export_report():
                                            tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data)
         elif fmt == 'html':
             html_content = _build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
-                                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log)
+                                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log,
+                                                         case_folder=case_folder, include_timeline_previews=include_timeline_previews)
         else:
             _build_pdf_report_standard(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
-                                        tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log)
+                                        tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log,
+                                        case_folder=case_folder, include_timeline_previews=include_timeline_previews)
 
         if fmt == 'html':
             content_bytes = html_content.encode('utf-8')

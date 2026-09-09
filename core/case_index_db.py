@@ -524,6 +524,25 @@ def _tags_for_paths(case_folder, paths):
         conn.close()
     return result
 
+def tagged_real_fs_paths_for_case(case_folder):
+    """Returns the set of every real-fs path currently tagged in this case's
+    index - used by add_case_note()'s own linked_files validation (2026-09-09)
+    so a Case Note can reference something the examiner tagged Notable/
+    Critical even before it's ever attached as a report exhibit, not just an
+    already-attached one. Scoped to source_type='real_fs' only, matching
+    _tags_for_paths()'s own identical scope - an in-image tagged item has no
+    real on-disk path to link a note to until it's extracted (a separate,
+    known gap). Empty set if the case isn't indexed/consolidated - never an
+    error."""
+    conn = _case_index_open_readonly(case_folder)
+    if not conn:
+        return set()
+    try:
+        cur = conn.execute("SELECT DISTINCT path FROM tagged_items WHERE source_type='real_fs'")
+        return {row[0] for row in cur}
+    finally:
+        conn.close()
+
 ANALYSIS_RESULT_MAX_PER_PATH = 5  # most recent N runs shown per exhibit - a documented history, not an unbounded log dump
 ANALYSIS_RESULT_MAX_OUTPUT_CHARS = 20000  # caps one stored row - same capping discipline used throughout this app
 
@@ -744,6 +763,64 @@ def _auto_tag_case_artifact(case_folder, file_path):
         conn.close()
     except Exception as e:
         print(f"Warning: could not auto-tag case artifact {file_path}: {e}")
+
+def carry_over_image_tags_to_extracted_file(case_folder, image_path, fs_offset, inode, extracted_path):
+    """Tagging works identically on a real filesystem file and on a file
+    still living inside an unmounted acquired image (source_type='image',
+    keyed by image_path/fs_offset/inode) - but an in-image identity has no
+    real on-disk path, so it could never reach an exhibit/export before this
+    (a real, previously-disclosed gap). Called from routes/image_browser.py's
+    /api/image/extract (2026-09-09) right after a genuinely new extraction
+    succeeds: looks up every tag already applied to that exact in-image
+    identity and re-applies each one (same tag_id, so name/color/notable/
+    severity all come from the tag DEFINITION - nothing is re-derived or
+    guessable-wrong) to the freshly-extracted real-fs path, closing the gap
+    without needing a second, parallel tagging UI for images. Best-effort,
+    non-fatal, matching _auto_tag_case_artifact()'s own established
+    contract for exactly this class of side-effect-only helper - a case
+    that isn't indexed, or an item with no tags at all, is a silent no-op,
+    never an error that could turn a successful extraction into a reported
+    failure. Returns the number of tags carried over (0 if none)."""
+    try:
+        conn = _case_index_open_readonly(case_folder)
+        if not conn:
+            return 0
+        try:
+            rows = conn.execute(
+                "SELECT tag_id, comment FROM tagged_items WHERE source_type='image' "
+                "AND image_path=? AND fs_offset=? AND inode=?",
+                (image_path, fs_offset, str(inode))).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return 0
+
+        write_conn = _case_index_open_write(case_folder)
+        if not write_conn:
+            return 0
+        carried = 0
+        try:
+            extracted_name = os.path.basename(extracted_path)
+            tagged_by = getattr(g, 'forensic_user', None)  # a real request-thread call, g is genuinely valid here
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            for tag_id, comment in rows:
+                existing = write_conn.execute(
+                    "SELECT id FROM tagged_items WHERE tag_id=? AND source_type='real_fs' AND path=?",
+                    (tag_id, extracted_path)).fetchone()
+                if existing:
+                    continue  # already tagged (e.g. re-extracting the same file) - never a duplicate row
+                write_conn.execute(
+                    "INSERT INTO tagged_items (tag_id, source_type, image_path, fs_offset, inode, path, name, comment, tagged_by, tagged_at) "
+                    "VALUES (?,'real_fs',NULL,NULL,NULL,?,?,?,?,?)",
+                    (tag_id, extracted_path, extracted_name, comment, tagged_by, now))
+                carried += 1
+            write_conn.commit()
+        finally:
+            write_conn.close()
+        return carried
+    except Exception as e:
+        print(f"Warning: could not carry over in-image tags to {extracted_path}: {e}")
+        return 0
 
 def _migrate_legacy_case_artifact_tag(conn):
     """One-time-per-case migration off the original single lump 'Case
