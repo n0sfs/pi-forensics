@@ -880,6 +880,7 @@ const REPORT_FIELD_MAPPING = [
     ["Case Activity Log (Audit Trail)", "Chain-of-custody entries matching this case #", "Automatic"],
     ["Filesystem Timeline (MACB)", "MACB walk of an acquired disk image, or real file timestamps from a mobile pull/backup or Logical Acquisition folder", "Automatic, needs the image or output folder still on disk"],
     ["Physical Evidence Custody Log", "From/To custodian handoff entries, append-only", "Custody Log tab"],
+    ["Pattern of Life: Contact Correlation &amp; Location Activity", "Correlated contacts/co-occurrences + frequent-location clusters - the same data the interactive Pattern of Life tab shows (no map image or graph, no Home/Work labeling in the export)", "Automatic - reflects whatever the case's own parsed_artifacts index and Relationship Graph already show"],
 ];
 
 function populateReportFieldMapping() {
@@ -2522,11 +2523,56 @@ async function openTagItemModal() {
         bootstrap.Collapse.getOrCreateInstance(formCollapse).hide();
     }
 
+    // Tag-to-exhibit bridge (2026-09-09) - tagging something and attaching
+    // it as a report exhibit used to be two completely disconnected
+    // actions in two different tabs; this footer button offers the second
+    // step right where the first one just happened.
+    const attachBtn = document.getElementById('tagModalAttachBtn');
+    if (attachBtn) {
+        if (item.source_type === 'real_fs') {
+            if (currentAttachedFilesList.includes(item.path)) {
+                attachBtn.style.display = 'none';  // already an exhibit - nothing to offer
+            } else {
+                attachBtn.textContent = 'Also Attach as Exhibit';
+                attachBtn.style.display = '';
+            }
+        } else {
+            // An in-image item has no real on-disk path to attach directly -
+            // reuses the existing Extract & Attach action (image tags are
+            // now auto-carried onto the extracted file, see
+            // carry_over_image_tags_to_extracted_file() server-side).
+            attachBtn.textContent = 'Extract & Attach to Case';
+            attachBtn.style.display = '';
+        }
+    }
+
     if (!tagItemModalInstance) {
         tagItemModalInstance = new bootstrap.Modal(document.getElementById('tagItemModal'));
     }
     tagItemModalInstance.show();
     await refreshTagItemModalList();
+}
+
+// The tag modal's own "Also Attach as Exhibit" / "Extract & Attach to Case"
+// footer button (2026-09-09) - dispatches to whichever existing attach
+// action already fits currentTagTargetItem's own source_type, rather than a
+// third, parallel attach implementation.
+async function attachTaggedItemFromModal() {
+    if (!currentTagTargetItem) return;
+    const btn = document.getElementById('tagModalAttachBtn');
+    if (btn) { btn.disabled = true; }
+    try {
+        if (currentTagTargetItem.source_type === 'real_fs') {
+            await attachSelectedFileToCase();
+        } else {
+            await extractAndAttachExplorerImageSelected();
+        }
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.style.display = 'none';  // whichever branch ran, there's nothing further to offer here
+        }
+    }
 }
 
 async function refreshTagItemModalList() {
@@ -4631,6 +4677,18 @@ document.addEventListener('DOMContentLoaded', () => {
     if (copyBtn) copyBtn.onclick = () => { hideFileContextMenu(); promptCopySelected(); };
     if (deleteBtn) deleteBtn.onclick = () => { hideFileContextMenu(); deleteSelectedFile(); };
     if (extractBtn) extractBtn.onclick = () => { hideFileContextMenu(); extractExplorerImageSelected(); };
+
+    // Export mismatch warning (see updateExportMismatchWarning() above) -
+    // one delegated listener on the stable <details> wrapper covers every
+    // .export-section-check/.export-attach-check, including ones
+    // renderExportFilesList() rebuilds dynamically on every case load, with
+    // no per-checkbox onchange to re-wire on each render.
+    const exportOptionsRow = document.getElementById('exportPdfHtmlOptionsRow');
+    if (exportOptionsRow) {
+        exportOptionsRow.addEventListener('change', (ev) => {
+            if (ev.target.matches('.export-section-check, .export-attach-check')) updateExportMismatchWarning();
+        });
+    }
 });
 
 // Declarative real-fs context-menu item table - {id, section, visible(item)}.
@@ -12437,6 +12495,12 @@ async function loadCaseReportingSettings() {
         setChecked('defFieldTelemetry', jobFields, 'telemetry');
         setChecked('defFieldParams', jobFields, 'params');
         setChecked('defFieldHashes', jobFields, 'hashes');
+        // Same "brand new key, defaults false" treatment as Geolocation
+        // above - a top-level report_defaults key, not inside jobFields
+        // (see export_report()'s own comment on why job_fields couldn't
+        // carry this).
+        const timelinePreviewsEl = document.getElementById('defIncludeTimelinePreviews');
+        if (timelinePreviewsEl) timelinePreviewsEl.checked = !!data.report_defaults?.include_timeline_previews;
 
         const brandingText = document.getElementById("reportBrandingText");
         if (brandingText) brandingText.value = branding.header_text || '';
@@ -12587,6 +12651,7 @@ async function saveCaseReportingSettings() {
         params: document.getElementById("defFieldParams")?.checked ?? true,
         hashes: document.getElementById("defFieldHashes")?.checked ?? true,
     };
+    const includeTimelinePreviews = document.getElementById("defIncludeTimelinePreviews")?.checked ?? false;
     const headerText = document.getElementById("reportBrandingText")?.value || '';
     // key is included (not just label/default_value) so the backend can
     // preserve an existing field's key across a label rename, rather than
@@ -12606,7 +12671,7 @@ async function saveCaseReportingSettings() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                report_defaults: { template, sections, job_fields: jobFields, branding: { header_text: headerText } },
+                report_defaults: { template, sections, job_fields: jobFields, branding: { header_text: headerText }, include_timeline_previews: includeTimelinePreviews },
                 custom_case_fields: customFields,
                 reporting_stats: { enabled: enabledStats },
             })
@@ -12791,10 +12856,18 @@ async function loadCaseForEditing() {
 // is always the full mobile catalog regardless of that one item's
 // resolved target_kind, confirmed directly from that route's own code
 // before relying on it here).
+// Populated fresh by every loadAnalysisCoverage() run - {evidence_id, tool,
+// outstanding_labels: [...]}[] - the exact same already-computed outstanding-
+// step labels the Coverage cards themselves render, cached here purely so
+// insertCoverageGapsIntoLimitations() (below) doesn't need a second fetch/
+// re-derivation of the identical data just to build its own summary text.
+let coverageOutstandingCache = [];
+
 async function loadAnalysisCoverage() {
     const statusEl = document.getElementById('analysisCoverageStatus');
     const container = document.getElementById('analysisCoverageContainer');
     if (!container) return;
+    coverageOutstandingCache = [];
     if (!activeCase) {
         container.innerHTML = '<span class="text-subtle small">Select or create a case above to see its analysis coverage.</span>';
         if (statusEl) statusEl.textContent = '';
@@ -12853,6 +12926,10 @@ async function loadAnalysisCoverage() {
             const allSteps = item.kind === 'disk_image' ? imageAllSteps : mobileAllSteps;
             const completed = new Set(item.steps_completed || []);
             const outstanding = allSteps.filter(s => !completed.has(s));
+            coverageOutstandingCache.push({
+                evidence_id: item.evidence_id || '--', tool: item.tool || '--',
+                outstanding_labels: outstanding.map(s => labels[s] || s),
+            });
 
             const card = document.createElement('div');
             card.className = 'mb-2 pb-2 border-bottom border-secondary';
@@ -12908,6 +12985,31 @@ async function loadAnalysisCoverage() {
     } catch (err) {
         container.innerHTML = '<span class="text-danger small">Failed to load analysis coverage.</span>';
     }
+}
+
+// Coverage -> Limitations quick-fill (2026-09-09) - the Coverage tab already
+// computes exactly what "Limitations & Statement of Uncertainty" is meant to
+// disclose (what analysis hasn't been run against each evidence item yet),
+// but nothing connected the two before this - closing that gap by inserting
+// a plain-text summary rather than trying to auto-write prose for the
+// examiner. Appends (never overwrites) whatever's already typed there, so a
+// hand-written Limitations paragraph is never silently clobbered.
+function insertCoverageGapsIntoLimitations() {
+    const itemsWithGaps = coverageOutstandingCache.filter(i => i.outstanding_labels.length > 0);
+    if (itemsWithGaps.length === 0) {
+        return showToast("Every evidence item shown on this tab has no outstanding steps - nothing to insert.", 'info');
+    }
+    const lines = [`Outstanding Analysis (as of ${new Date().toLocaleDateString()}):`];
+    itemsWithGaps.forEach(i => {
+        lines.push(`- ${i.evidence_id} (${i.tool}): ${i.outstanding_labels.join(', ')} not yet run.`);
+    });
+    const summary = lines.join('\n');
+
+    const el = document.getElementById("editLimitations");
+    if (!el) return;
+    el.value = el.value ? `${el.value}\n\n${summary}` : summary;
+    markReportingDirty();  // programmatic .value never fires input/change - must call this directly
+    showToast("Outstanding-analysis summary inserted into Limitations - click \"Save Report Changes\" to keep it.", 'success');
 }
 
 function renderCaseJobs() {
@@ -13703,33 +13805,89 @@ function exportCaseTimelineCsv() {
 let editingCaseNoteId = null;
 
 // Populates the "Link to Exhibit(s)" checklist on the Add Note form from
-// whatever's currently attached - exhibit numbers here are each file's
+// whatever's currently attached (exhibit numbers here are each file's
 // 1-based position in currentAttachedFilesList, matching the Files gallery
-// and export_report()'s own numbering exactly.
-function renderNewCaseNoteLinkedFilesChecklist() {
+// and export_report()'s own numbering exactly) PLUS, since 2026-09-09, any
+// real-fs item already tagged Notable/Critical but not yet attached as an
+// exhibit - closing the gap where a note written in the moment ("found a
+// suspicious file, see X") couldn't cite something only tagged, not
+// attached. Async now (fetches /api/case_index/all_tagged_items, the same
+// route the Custom Case Field item-picker already uses) - fine, since it's
+// only ever called when the Case Notes tab is actually opened/refreshed,
+// never on a hot path.
+async function renderNewCaseNoteLinkedFilesChecklist() {
     const container = document.getElementById("newCaseNoteLinkedFiles");
     if (!container) return;
     container.innerHTML = '';
-    if (!currentAttachedFilesList.length) {
-        container.innerHTML = '<span class="text-subtle small italic">No exhibits attached yet - see the Files &amp; Artifacts tab.</span>';
-        return;
+
+    if (currentAttachedFilesList.length) {
+        const exhibitsLabel = document.createElement('div');
+        exhibitsLabel.className = 'text-subtle small fw-bold mb-1';
+        exhibitsLabel.textContent = 'Exhibits';
+        container.appendChild(exhibitsLabel);
+        currentAttachedFilesList.forEach((fp, i) => {
+            const row = document.createElement('div');
+            row.className = 'form-check';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'form-check-input new-case-note-link-cb';
+            cb.value = fp;
+            cb.id = `newCaseNoteLink${i}`;
+            const label = document.createElement('label');
+            label.className = 'form-check-label small';
+            label.htmlFor = cb.id;
+            label.textContent = `Exhibit ${i + 1} - ${fp.split('/').pop()}`; // untrusted (filename) - text node only
+            row.appendChild(cb);
+            row.appendChild(label);
+            container.appendChild(row);
+        });
+    } else {
+        const none = document.createElement('span');
+        none.className = 'text-subtle small italic d-block mb-1';
+        none.textContent = 'No exhibits attached yet - see the Files & Artifacts tab.';
+        container.appendChild(none);
     }
-    currentAttachedFilesList.forEach((fp, i) => {
-        const row = document.createElement('div');
-        row.className = 'form-check';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.className = 'form-check-input new-case-note-link-cb';
-        cb.value = fp;
-        cb.id = `newCaseNoteLink${i}`;
-        const label = document.createElement('label');
-        label.className = 'form-check-label small';
-        label.htmlFor = cb.id;
-        label.textContent = `Exhibit ${i + 1} - ${fp.split('/').pop()}`; // untrusted (filename) - text node only
-        row.appendChild(cb);
-        row.appendChild(label);
-        container.appendChild(row);
-    });
+
+    if (!activeCase) return;
+    try {
+        const res = await fetch('/api/case_index/all_tagged_items', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder })
+        });
+        const data = await res.json();
+        if (!data.success) return;
+        const attachedSet = new Set(currentAttachedFilesList);
+        const seen = new Set();
+        const taggedNotAttached = (data.rows || []).filter(r =>
+            r.source_type === 'real_fs' && !attachedSet.has(r.path) && !seen.has(r.path) && seen.add(r.path));
+        if (taggedNotAttached.length === 0) return;
+
+        const tagLabel = document.createElement('div');
+        tagLabel.className = 'text-subtle small fw-bold mb-1 mt-2';
+        tagLabel.textContent = 'Tagged Items (not yet attached)';
+        container.appendChild(tagLabel);
+        taggedNotAttached.forEach((row, i) => {
+            const wrap = document.createElement('div');
+            wrap.className = 'form-check';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'form-check-input new-case-note-link-cb';
+            cb.value = row.path;
+            cb.id = `newCaseNoteTagLink${i}`;
+            const label = document.createElement('label');
+            label.className = 'form-check-label small';
+            label.htmlFor = cb.id;
+            label.appendChild(document.createTextNode(`${row.name || row.path.split('/').pop()} `)); // untrusted - text node
+            const badge = document.createElement('span');
+            badge.className = 'badge ms-1';
+            badge.style.backgroundColor = row.tag_color || '#6c757d';
+            badge.textContent = row.tag_name || 'Tagged';
+            label.appendChild(badge);
+            wrap.appendChild(cb);
+            wrap.appendChild(label);
+            container.appendChild(wrap);
+        });
+    } catch (err) { /* non-fatal - the checklist just shows exhibits only */ }
 }
 
 function renderCaseNotesList() {
@@ -13810,14 +13968,21 @@ function renderCaseNotesList() {
             card.appendChild(textEl);
         }
 
-        const linkedFiles = (note.linked_files || []).filter(p => currentAttachedFilesList.includes(p));
+        // Since 2026-09-09, a linked path may be a tagged-but-never-attached
+        // file, not just an exhibit - shown either way (as "Exhibit N" or a
+        // plain filename), never silently dropped from the note's own
+        // rendering the way it used to be for anything not an exhibit.
+        const linkedFiles = note.linked_files || [];
         if (linkedFiles.length) {
             const linkLine = document.createElement('div');
             linkLine.className = 'small mt-1 d-flex flex-wrap gap-1';
             linkedFiles.forEach(fp => {
+                const exhibitIdx = currentAttachedFilesList.indexOf(fp);
                 const chip = document.createElement('span');
                 chip.className = 'badge bg-info text-dark';
-                chip.textContent = `Linked: Exhibit ${currentAttachedFilesList.indexOf(fp) + 1} - ${fp.split('/').pop()}`; // untrusted (filename) - text node only
+                chip.textContent = exhibitIdx >= 0
+                    ? `Linked: Exhibit ${exhibitIdx + 1} - ${fp.split('/').pop()}`
+                    : `Linked: ${fp.split('/').pop()} (tagged, not attached)`; // untrusted (filename) - text node only
                 linkLine.appendChild(chip);
             });
             card.appendChild(linkLine);
@@ -14436,6 +14601,41 @@ function onExportTemplateChange() {
         if (hint) hint.textContent = EXPORT_FIXED_TEMPLATE_HINTS[value] || EXPORT_FIXED_TEMPLATE_HINTS.dfir;
         if (editBtn) editBtn.style.display = 'none';
     }
+    updateExportMismatchWarning();
+}
+
+// Live "you checked files that won't actually appear" warning (2026-09-09) -
+// the Sections checkboxes and the "Case Files & URLs to Include" checklist
+// are two independent controls with no cross-check otherwise: an examiner
+// could leave 10 tagged exhibits checked below while the "Exhibits" section
+// itself is unchecked above, and export a report that shows none of them,
+// with nothing flagging the mismatch. Only meaningful for the 'standard'
+// template - a fixed template (DFIR/Police/CASE-UCO) always includes
+// Exhibits per its own fixed structure, and a custom template's own section
+// list isn't examiner-visible from this pane's checkboxes at all (there's
+// nothing here that could disagree with it). Wired via event delegation
+// (see the DOMContentLoaded listener below) rather than an onchange per
+// checkbox, since the file-inclusion checklist is rebuilt dynamically by
+// renderExportFilesList() and a per-element handler would need re-wiring
+// every render.
+function updateExportMismatchWarning() {
+    const warnEl = document.getElementById("exportMismatchWarning");
+    if (!warnEl) return;
+    const formatSel = document.getElementById("exportFormatSelect");
+    const format = formatSel ? formatSel.value : 'pdf';
+    const template = document.getElementById("exportTemplateSelect")?.value || 'standard';
+    if (format === 'json' || format === 'csv' || template !== 'standard') {
+        warnEl.style.display = 'none';
+        return;
+    }
+    const attachmentsSectionOn = !!document.getElementById("expSecAttachments")?.checked;
+    const checkedFileCount = document.querySelectorAll('.export-attach-check:checked').length;
+    if (!attachmentsSectionOn && checkedFileCount > 0) {
+        warnEl.textContent = `Heads up: ${checkedFileCount} file(s)/URL(s) are checked in "Case Files & URLs to Include" below, but won't appear in this export - the "Exhibits" section itself is unchecked above.`;
+        warnEl.style.display = '';
+    } else {
+        warnEl.style.display = 'none';
+    }
 }
 
 // Raw JSON is just the case file as-is - no template/sections/job_fields/
@@ -14466,6 +14666,7 @@ function onExportFormatChange() {
     // would be actively misleading, not just stale.
     if (previewGroup) previewGroup.style.display = isRawFormat ? 'none' : '';
     resetExportPreview();
+    if (isRawFormat) updateExportMismatchWarning();  // meaningless for json/csv - hides it
 
     if (isJson) {
         const previewEl = document.getElementById("jsonPreview");
@@ -14621,6 +14822,7 @@ async function renderExportFilesList() {
 
     if (urls.length === 0 && explicitFiles.length === 0 && extraFiles.length === 0) {
         listEl.innerHTML = '<div class="text-subtle small p-2">No attached files, notes, or reference URLs found for this case.</div>';
+        updateExportMismatchWarning();  // no files at all -> definitely nothing to warn about
         return;
     }
 
@@ -14677,10 +14879,12 @@ async function renderExportFilesList() {
         note.textContent = 'Showing the first 200 discovered files - some case-folder files were not listed.';
         listEl.appendChild(note);
     }
+    updateExportMismatchWarning();
 }
 
 function setExportCheckboxes(checked) {
     document.querySelectorAll('.export-section-check, .export-field-check').forEach(cb => { cb.checked = checked; });
+    updateExportMismatchWarning();
 }
 
 function setExportItemCheckboxes(checked) {
@@ -14689,6 +14893,7 @@ function setExportItemCheckboxes(checked) {
 
 function setExportFileCheckboxes(checked) {
     document.querySelectorAll('.export-attach-check').forEach(cb => { cb.checked = checked; });
+    updateExportMismatchWarning();
 }
 
 async function runExportReport() {

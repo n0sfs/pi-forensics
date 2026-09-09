@@ -21,6 +21,45 @@ file after updating to see what changed.
 
 ---
 
+## [1.77.0] - 2026-09-09
+
+### Added
+- **Six case-workflow improvements, from a review of the path between "something significant is
+  found" and "it shows up correctly in the final report".**
+  - **Tag-to-exhibit bridge.** A file tagged while browsing inside an acquired disk image (Sleuth
+    Kit) previously lost that tag entirely if it was later extracted out onto the real filesystem -
+    the tag stayed attached to the now-inaccessible in-image identity. Extracting a tagged file now
+    automatically carries its tags (and any comment) over to the extracted copy.
+  - **Export mismatch warning.** The Export Report screen's checklist (which sections/fields to
+    include) and its file-attachment checklist are two separate controls - checking "Exhibits" as a
+    section while leaving every individual attachment unchecked (or vice versa) previously produced a
+    silently empty or silently missing Exhibits section with no warning. A clear on-screen notice now
+    appears whenever the two are inconsistent, before the export is generated.
+  - **Coverage-gap quick-fill.** The Reporting > Coverage tab already shows which analysis steps have
+    and haven't been run against each piece of evidence. A new "Insert Outstanding Analysis into
+    Limitations" button drafts a dated summary of exactly what hasn't been run yet, straight into the
+    report's Limitations section, instead of requiring it to be retyped by hand.
+  - **Case Notes can now reference a tagged-but-not-yet-attached file.** Previously a Case Note could
+    only link to a file already formally attached as a case exhibit - a file that had been tagged for
+    attention but not yet attached had no way to be referenced from a note at all. The note-linking
+    picker now offers both, clearly labeled, and a note's own displayed link no longer silently
+    disappears if the linked file isn't a numbered exhibit.
+  - **Richer exported Timeline.** The exported report's own Filesystem Timeline section (a niche,
+    opt-in section reachable through a custom report template) previously only ever showed raw
+    filesystem MACB events, unlike the interactive Evidence Timeline tab, which had since been
+    enriched with parsed-artifact records, resolved contact names, and suspicious-activity flags.
+    The export now uses the exact same enriched data. A new, separate, off-by-default station setting
+    (Settings > Case & Reporting > Report Export Defaults) additionally controls whether a
+    communication's own actual recovered text is embedded in the exported timeline, or just the
+    structural facts (who/when/what) - a real message/note leaving the station in a portable file is
+    treated as a deliberate, opt-in decision, not a default.
+  - **Export Contact Correlation and frequent locations.** The Pattern of Life tab's Contact
+    Correlation (who a device communicated with, how often, and who those people were seen
+    communicating with each other) and Location Activity (frequently-visited places) previously had no
+    export path at all - reachable only on-screen. A new, opt-in "Pattern of Life" report section
+    (also reachable through a custom report template) now includes both as tables in the exported PDF/
+    HTML report, reusing the exact same data the on-screen tabs already show.
+
 ## [1.76.1] - 2026-09-09
 
 ### Fixed
