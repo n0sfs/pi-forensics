@@ -21,6 +21,22 @@ file after updating to see what changed.
 
 ---
 
+## [1.80.0] - 2026-09-09
+
+### Added
+- **Multi-select batch actions in File Explorer.** Every real-folder file listing (not disk-image
+  browsing) now shows a checkbox per row plus a "select all" checkbox in the column header. Selecting
+  one or more files shows a small toolbar above the listing with three batch actions:
+  - **Attach to Case** - attaches every selected file to the active case as an exhibit in one click,
+    instead of one file at a time.
+  - **Tag...** - applies one existing tag (or a brand-new one you create right there, with its own
+    color/notable flag/severity) to every selected file at once, with an optional shared comment.
+  - **Check Hash Sets...** - hashes every selected file and checks each one against your saved hash
+    sets, showing a clear per-file Clean/Match result table.
+  The selection is cleared automatically whenever you navigate to a different folder, and stays intact
+  across a batch action so you can, for example, tag a set of files and then immediately attach the
+  same set as exhibits.
+
 ## [1.79.1] - 2026-09-09
 
 ### Fixed
