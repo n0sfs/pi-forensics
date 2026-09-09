@@ -149,6 +149,59 @@ def test_set_status_re_opens_an_archived_case(client, runtime_config_file, evide
     assert on_disk["case_status"] == "Open"
 
 
+def test_set_status_records_status_before_archive_and_restores_it_on_reopen(client, runtime_config_file, evidence_root):
+    """The actual case/2026-09-09 fix: a case archived from a non-"Open"
+    status ("In Review" here) records that value, and re-opening to
+    exactly that value (mirroring what the Case Manager's own Re-open
+    button now sends - c.status_before_archive || 'Open') both restores
+    the real prior status AND clears the now-served-its-purpose field
+    from the case record, so a later archive cycle captures a fresh
+    snapshot rather than reusing this one."""
+    case_dir = _make_consolidated_case(evidence_root)
+    _login_as_operational_user(client, evidence_root, "restore")
+    case_file = os.path.join(case_dir, "2026-CASE-STATUS-TEST_case.json")
+
+    # Start from "In Review", not the fixture's default "Open" - the whole
+    # point of this test is proving something OTHER than "Open" survives.
+    client.post("/api/cases/set_status", json={"case_folder": case_dir, "status": "In Review"})
+
+    res = client.post("/api/cases/set_status", json={"case_folder": case_dir, "status": "Archived"})
+    assert res.get_json()["success"] is True
+    with open(case_file) as f:
+        on_disk = json.load(f)
+    assert on_disk["case_status"] == "Archived"
+    assert on_disk["status_before_archive"] == "In Review"
+
+    res = client.post("/api/cases/set_status", json={"case_folder": case_dir, "status": "In Review"})
+    assert res.get_json()["success"] is True
+    with open(case_file) as f:
+        on_disk = json.load(f)
+    assert on_disk["case_status"] == "In Review"
+    assert "status_before_archive" not in on_disk  # cleared, not left stale
+
+
+def test_set_status_re_archiving_an_already_archived_case_never_clobbers_the_recorded_prior_status(client, runtime_config_file, evidence_root):
+    """A re-archive of an already-Archived case (e.g. a double-click, or
+    two examiners both hitting Archive) must not overwrite the real
+    remembered prior status with "Archived" itself - that would make a
+    later Re-open restore "Archived" (a no-op status, functionally
+    identical to the original bug this whole fix closes)."""
+    case_dir = _make_consolidated_case(evidence_root)
+    _login_as_operational_user(client, evidence_root, "idempotent")
+    case_file = os.path.join(case_dir, "2026-CASE-STATUS-TEST_case.json")
+
+    client.post("/api/cases/set_status", json={"case_folder": case_dir, "status": "Closed"})
+    client.post("/api/cases/set_status", json={"case_folder": case_dir, "status": "Archived"})
+    # Re-archive while already Archived.
+    res = client.post("/api/cases/set_status", json={"case_folder": case_dir, "status": "Archived"})
+    assert res.get_json()["success"] is True
+
+    with open(case_file) as f:
+        on_disk = json.load(f)
+    assert on_disk["case_status"] == "Archived"
+    assert on_disk["status_before_archive"] == "Closed"  # still the real original value
+
+
 def test_set_status_works_against_a_legacy_case_marker_too(client, runtime_config_file, evidence_root):
     """Confirms the route targets case_info.json (not just {slug}_case.json)
     for a not-yet-migrated case, matching list_case_folders()'s own

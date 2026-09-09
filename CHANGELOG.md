@@ -21,6 +21,25 @@ file after updating to see what changed.
 
 ---
 
+## [1.77.2] - 2026-09-09
+
+### Fixed
+- **Creating a case with the exact same case number/parent location at the exact same time (two
+  browser tabs, two examiners) could return a confusing generic error instead of the normal "already
+  exists" message.** No data was ever at risk from this - it was purely a wrong error message in a
+  rare timing scenario, now reported the same clean way a non-racing duplicate already is.
+- **The Export screen's "checklist mismatch" warning only ever caught one direction.** Checking the
+  "Exhibits" section while leaving every individual file/URL unchecked already warned that the section
+  would be missing - now the reverse (files/URLs checked, but "Exhibits" itself unchecked) is caught
+  too, so an export that would otherwise silently show an empty Exhibits section gets a heads-up
+  before it's generated.
+
+### Changed
+- **Re-opening an archived case now restores whatever status it actually had before being archived**
+  (e.g. "In Review" or "Closed"), instead of always resetting it to "Open." The Case Manager's confirm
+  dialog now says exactly which status will be restored. A case archived before this change, or
+  archived by directly editing its file, falls back to "Open" as before.
+
 ## [1.77.1] - 2026-09-09
 
 ### Fixed
