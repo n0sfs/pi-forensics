@@ -3106,7 +3106,7 @@ def _draw_pdf_geolocation_block(c, y, kml_data, title="Geolocation / GPS Evidenc
 
     return y
 
-def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: Contact Correlation & Location Activity"):
+def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: Contact Correlation & Location Activity", attachment_files=None):
     """Renders the case-wide Contact Correlation + Frequent Locations
     summary the interactive Pattern of Life tab already builds from
     correlate_contacts()/_collect_case_geo_activity() (2026-09-08) - the
@@ -3120,7 +3120,24 @@ def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: C
     meaning server-side). Every count/tier/label here comes from the exact
     same functions the Relationship Graph and Location Activity map
     already render from, so this can never show a different picture of
-    the case than what an examiner already reviewed on-screen."""
+    the case than what an examiner already reviewed on-screen.
+
+    attachment_files (2026-09-09, real bug found via a 3rd review pass) -
+    the case's own already-known attachments.get('files', []) list, passed
+    down from export_report() (the same value its sibling "geolocation"
+    section already reuses for _collect_case_geolocation()) rather than
+    re-read from disk a second time inside this function. The original
+    version did a second, independent case_consolidated_path()+_read_case_
+    file() call here, which had two real problems: it silently returned []
+    for a legacy/ad-hoc single-job report (case_consolidated_path() is
+    None for that schema, even though export_report() itself already
+    correctly supports exporting one), so any KML attached to that kind of
+    report was invisible to Frequent Locations even though the sibling
+    Geolocation section still showed it correctly; and it re-read the same
+    case file a second time mid-request, a real TOCTOU risk against the
+    single already-loaded snapshot every other section of this same export
+    uses. Defaults to None -> [] only as a defensive fallback for a caller
+    that somehow doesn't pass one; every real call site always does."""
     if y < 150:
         c.showPage()
         y = 730
@@ -3221,9 +3238,7 @@ def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: C
     c.drawString(50, y, "Frequent Locations")
     y -= 14
 
-    case_file = case_consolidated_path(case_folder)
-    attachment_files = _read_case_file(case_file).get('attachments', {}).get('files', []) if case_file else []
-    _, frequent_locations, _ = _collect_case_geo_activity(case_folder, attachment_files)
+    _, frequent_locations, _ = _collect_case_geo_activity(case_folder, attachment_files or [])
 
     if not frequent_locations:
         c.setFont("Helvetica-Oblique", 9)
@@ -3626,7 +3641,7 @@ def _resolve_template_ref(value, cfg):
         raise ValueError(f"Selected custom template '{template_id}' no longer exists.")
     return 'standard', None
 
-def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False):
+def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None):
     from reportlab.lib.pagesizes import letter
 
     c = _numbered_canvas_class()(pdf_path, pagesize=letter)
@@ -3691,7 +3706,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
         "audit_trail": lambda y, title, field: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
         "timeline": lambda y, title, field: _draw_pdf_timeline_block(c, y, events, title=title, case_folder=case_folder, include_previews=include_timeline_previews),
         "geolocation": lambda y, title, field: _draw_pdf_geolocation_block(c, y, geo_data or [], title=title),
-        "pattern_of_life": lambda y, title, field: _draw_pdf_pattern_of_life_block(c, y, case_folder, title=title),
+        "pattern_of_life": lambda y, title, field: _draw_pdf_pattern_of_life_block(c, y, case_folder, title=title, attachment_files=attachment_files),
         "custody_log": lambda y, title, field: _draw_pdf_custody_log_block(c, y, custody_log or [], title=title),
     }
 
@@ -4254,14 +4269,16 @@ def _html_geolocation_block(kml_data, title="Geolocation / GPS Evidence", anchor
         parts.append('</div>')
     return ''.join(parts)
 
-def _html_pattern_of_life_block(case_folder, title="Pattern of Life: Contact Correlation & Location Activity", anchor_id=None):
+def _html_pattern_of_life_block(case_folder, title="Pattern of Life: Contact Correlation & Location Activity", anchor_id=None, attachment_files=None):
     """HTML counterpart to _draw_pdf_pattern_of_life_block - see that
     function's own docstring for the full rationale (why no map/graph
-    rendering, why no Home/Work labeling). Every value is escaped, matching
-    this exporter's existing discipline everywhere else - a contact's own
-    display name/identifier and a location's own name string are both
-    evidence-derived (a phone's address book, a Google Takeout place name),
-    not this app's own generated text."""
+    rendering, why no Home/Work labeling, and why attachment_files is
+    passed in from export_report() rather than re-read from disk here -
+    a real bug found and fixed 2026-09-09). Every value is escaped,
+    matching this exporter's existing discipline everywhere else - a
+    contact's own display name/identifier and a location's own name
+    string are both evidence-derived (a phone's address book, a Google
+    Takeout place name), not this app's own generated text."""
     esc = html.escape
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     parts = [f'<h2{id_attr}>{esc(title)}</h2>']
@@ -4313,9 +4330,7 @@ def _html_pattern_of_life_block(case_folder, title="Pattern of Life: Contact Cor
             parts.append('<p class="muted">Contact list truncated - not every correlated contact fit within the report\'s size limits.</p>')
 
     parts.append('<h3>Frequent Locations</h3>')
-    case_file = case_consolidated_path(case_folder)
-    attachment_files = _read_case_file(case_file).get('attachments', {}).get('files', []) if case_file else []
-    _, frequent_locations, _ = _collect_case_geo_activity(case_folder, attachment_files)
+    _, frequent_locations, _ = _collect_case_geo_activity(case_folder, attachment_files or [])
     if not frequent_locations:
         parts.append('<p class="muted">No location visited more than once was found for this case.</p>')
     else:
@@ -4624,7 +4639,7 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         parts.append('</div>')
     return ''.join(parts)
 
-def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False):
+def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None):
     """Self-contained HTML report - every value is escaped since it may
     contain examiner-entered text or evidence-derived strings (filenames,
     device paths) that this file could later be reopened/served from disk.
@@ -4669,7 +4684,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         "audit_trail": lambda anchor, title, field: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
         "timeline": lambda anchor, title, field: _html_timeline_block(events, title=title, anchor_id=anchor, case_folder=case_folder, include_previews=include_timeline_previews),
         "geolocation": lambda anchor, title, field: _html_geolocation_block(geo_data or [], title=title, anchor_id=anchor),
-        "pattern_of_life": lambda anchor, title, field: _html_pattern_of_life_block(case_folder, title=title, anchor_id=anchor),
+        "pattern_of_life": lambda anchor, title, field: _html_pattern_of_life_block(case_folder, title=title, anchor_id=anchor, attachment_files=attachment_files),
         "custody_log": lambda anchor, title, field: _html_custody_log_block(custody_log or [], anchor_id=anchor, title=title),
     }
 
@@ -5123,11 +5138,11 @@ def export_report():
         elif fmt == 'html':
             html_content = _build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
                                                          tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log,
-                                                         case_folder=case_folder, include_timeline_previews=include_timeline_previews)
+                                                         case_folder=case_folder, include_timeline_previews=include_timeline_previews, attachment_files=attachments.get('files', []))
         else:
             _build_pdf_report_standard(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log,
-                                        case_folder=case_folder, include_timeline_previews=include_timeline_previews)
+                                        case_folder=case_folder, include_timeline_previews=include_timeline_previews, attachment_files=attachments.get('files', []))
 
         if fmt == 'html':
             content_bytes = html_content.encode('utf-8')

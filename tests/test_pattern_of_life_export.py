@@ -139,6 +139,73 @@ def test_pdf_export_also_renders_real_data(client, evidence_root):
     assert len(pdf_bytes) > 500
 
 
+def test_frequent_locations_uses_the_passed_attachment_files_not_a_stale_disk_reread(evidence_root):
+    """Direct regression test for a 2026-09-09 fix: _draw_pdf_pattern_of_
+    life_block()/_html_pattern_of_life_block() used to independently
+    re-read attachment_files from disk via case_consolidated_path() +
+    _read_case_file() instead of taking it as a parameter -
+    case_consolidated_path() returns None (and the old code then hardcoded
+    attachment_files=[]) for ANY case folder with no {slug}_case.json
+    marker file, silently dropping every real KML attachment for a legacy/
+    ad-hoc report's Frequent Locations section regardless of what export_
+    report() itself had already loaded from the real report data. It also
+    meant a second, independent disk read mid-export - a real TOCTOU risk
+    against the rest of the same export's already-loaded snapshot.
+
+    Proven directly against the drawing functions (no {slug}_case.json
+    exists in case_folder at all here, guaranteeing case_consolidated_
+    path() would have returned None under the old code) rather than
+    through the full export route, to isolate exactly the code path this
+    fix touches. The KML itself sits OUTSIDE case_folder entirely - only
+    reachable via the attachment_files argument, never via _discover_
+    case_files()'s own case-folder-scoped walk - so a passing result here
+    can only mean the parameter was genuinely honored, not that the KML
+    was separately found by folder discovery regardless."""
+    from reportlab.pdfgen import canvas
+    import io
+
+    from routes.reporting import _draw_pdf_pattern_of_life_block, _html_pattern_of_life_block
+
+    case_folder = os.path.join(evidence_root, "2026-TEST-LEGACY-POL")
+    os.makedirs(case_folder, exist_ok=True)
+    kml_dir = os.path.join(evidence_root, "elsewhere")
+    os.makedirs(kml_dir, exist_ok=True)
+    kml_path = os.path.join(kml_dir, "trip.kml")
+    # Two placemarks at essentially the same spot (rounds to the identical
+    # 3-decimal GEO_ACTIVITY_CLUSTER_PRECISION grid cell) - a single
+    # placemark alone would legitimately, correctly stay excluded from
+    # frequent_locations entirely (GEO_ACTIVITY_MIN_FREQUENT_VISITS=2), the
+    # exact same real threshold test_html_export_shows_frequent_location_
+    # cluster() already exercises for the takeout-sourced case.
+    with open(kml_path, "w", encoding="utf-8") as f:
+        f.write(
+            "<?xml version='1.0' encoding='UTF-8'?>"
+            "<kml xmlns='http://www.opengis.net/kml/2.2'><Document>"
+            "<Placemark><name>Cabin</name>"
+            "<Point><coordinates>-122.4194,37.7749,0</coordinates></Point>"
+            "</Placemark>"
+            "<Placemark><name>Cabin (return trip)</name>"
+            "<Point><coordinates>-122.41941,37.77491,0</coordinates></Point>"
+            "</Placemark></Document></kml>"
+        )
+
+    html_out = _html_pattern_of_life_block(case_folder, attachment_files=[kml_path])
+    # A frequent-locations cluster carries only rounded coordinates/visit
+    # count/first-last-seen - no placemark name or source filename - so
+    # this is the real, correct signal the parameter reached the function
+    # (mirrors test_html_export_shows_frequent_location_cluster's own
+    # identical assertions for the takeout-sourced equivalent).
+    assert "37.77500" in html_out
+    assert "-122.41900" in html_out
+    assert "<td>2</td>" in html_out
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    _draw_pdf_pattern_of_life_block(c, 700, case_folder, attachment_files=[kml_path])
+    c.save()
+    assert buf.getvalue()[:4] == b"%PDF"
+
+
 def test_co_occurrence_pair_rendered_in_html_export(client, evidence_root):
     case_folder, case_file = _make_real_case(evidence_root)
     _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "contacts2.db")}, [
