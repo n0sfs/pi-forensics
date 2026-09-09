@@ -1802,6 +1802,18 @@ def execution_worker_mtp_pull(bus, devnum, output_path, report_file_path, report
         update_job(status="Failed")
         append_log(f"[-] Execution Exception: {str(e)}")
     finally:
+        # A real, previously-undetected bug found during a 2026-09-09
+        # systematic sweep of every execution_worker_* function's own
+        # cleanup guarantee: this finally block used to only unmount/
+        # remove the staging directory and NEVER released the shared job
+        # slot on any exit path (happy path, every early return, or the
+        # exception handler above) - current_job["active"] stayed True
+        # forever after any MTP pull, blocking every subsequent
+        # acquisition/recovery/mobile job on the whole station until the
+        # service happened to be restarted. Fixed to match every other
+        # worker in this file's own established finally-block convention
+        # (release the job slot first, then do the rest of cleanup).
+        update_job(active=False)
         if mounted:
             try:
                 subprocess.run(["sudo", "/bin/umount", staging_dir], capture_output=True, timeout=15)

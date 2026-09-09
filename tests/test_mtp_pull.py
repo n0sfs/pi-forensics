@@ -281,3 +281,65 @@ class TestMtpPullWriteConfirmation:
         assert report_data["acquisition_status"] == "FAILED"
         assert report_data["acquisition_parameters"]["files_copied"] == 0
         assert report_data["acquisition_parameters"]["files_errored"] == 2
+
+
+class TestMtpPullJobSlotCleanup:
+    """A real, previously-undetected bug found by a 2026-09-09 systematic
+    AST sweep of every execution_worker_* function's own cleanup
+    guarantee: this worker's finally block used to only unmount/remove the
+    staging directory and never called update_job(active=False) on ANY
+    exit path - current_job["active"] stayed True forever after any MTP
+    pull, blocking every subsequent acquisition/recovery/mobile job on the
+    whole station until the process happened to restart. None of the
+    existing tests above ever asserted job["active"] specifically (only
+    job["status"]), which is exactly how this slipped past both live
+    device testing and the pre-existing suite - these tests close that
+    gap directly, across every meaningfully distinct exit path."""
+
+    def test_active_is_false_after_a_successful_run(self, tmp_path):
+        job, *_ = TestExecutionWorkerMtpPull()._run(tmp_path, walk_files=["a.jpg"])
+        assert job["active"] is False
+
+    def test_active_is_false_after_a_mount_failure(self, tmp_path):
+        job, *_ = TestExecutionWorkerMtpPull()._run(tmp_path, mount_returncode=1)
+        assert job["active"] is False
+
+    def test_active_is_false_after_ismount_false(self, tmp_path):
+        job, *_ = TestExecutionWorkerMtpPull()._run(tmp_path, mount_returncode=0, mount_ismount=False)
+        assert job["active"] is False
+
+    def test_active_is_false_after_a_stop_right_after_mounting(self, tmp_path):
+        job, *_ = TestExecutionWorkerMtpPull()._run(tmp_path, snapshot_side_effect=[{"status": "Stopped"}])
+        assert job["active"] is False
+
+    def test_active_is_false_after_a_stop_mid_copy(self, tmp_path):
+        job, *_ = TestExecutionWorkerMtpPull()._run(
+            tmp_path, walk_files=["a.jpg", "b.jpg", "c.jpg"],
+            snapshot_side_effect=[
+                {"status": "Running"}, {"status": "Running"},
+                {"status": "Stopped"}, {"status": "Stopped"},
+            ],
+        )
+        assert job["active"] is False
+
+    def test_active_is_false_after_every_file_fails_to_copy(self, tmp_path):
+        def copy_side_effect(src, dst):
+            raise OSError(5, "Input/output error")
+        job, *_ = TestExecutionWorkerMtpPull()._run(
+            tmp_path, walk_files=["a.jpg"], copy_side_effect=copy_side_effect,
+        )
+        assert job["active"] is False
+
+    def test_active_is_false_after_an_unexpected_exception(self, tmp_path):
+        # subprocess.run itself raising something the mount-specific
+        # except clauses don't catch (neither TimeoutExpired nor
+        # FileNotFoundError) exercises the outer except Exception branch -
+        # the one exit path with no dedicated test above at all.
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(mobile, "MTP_MOUNT_STAGING_ROOT", str(tmp_path / ".mtp_mounts")))
+            stack.enter_context(mock.patch("subprocess.run", side_effect=RuntimeError("simulated failure")))
+            mobile.execution_worker_mtp_pull(
+                "1", "5", str(tmp_path / "out"), str(tmp_path / "report.json"),
+                {"acquisition_status": "IN_PROGRESS", "acquisition_parameters": {}},
+            )
+        assert snapshot_job()["active"] is False
