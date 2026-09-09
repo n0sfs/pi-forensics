@@ -2261,14 +2261,27 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
                                progress_percent=round((bytes_done / total_size) * 100, 1) if total_size else 100.0)
                     last_update = time.time()
 
-        update_job(transferred_bytes=total_size, progress_percent=100.0)
+        # A genuine, if minor, real inaccuracy found and fixed 2026-09-09:
+        # this used to unconditionally report progress_percent=100.0/
+        # transferred_bytes=total_size regardless of whether the loop above
+        # actually ran to completion or broke early on a Stop request - a
+        # stopped run's own progress bar would silently claim "100% done"
+        # even though the bundle only contains whatever was written before
+        # the stop. stopped is computed once here and reused below so both
+        # decisions agree with each other.
+        stopped = snapshot_job()["status"] == "Stopped"
+        if stopped:
+            update_job(transferred_bytes=bytes_done,
+                       progress_percent=round((bytes_done / total_size) * 100, 1) if total_size else 100.0)
+        else:
+            update_job(transferred_bytes=total_size, progress_percent=100.0)
         # No sudo/root involvement anywhere in this worker (unlike the
         # acquisition tools' output), so there's no ownership to reclaim -
         # the zip is already written by, and owned by, this app's own
         # service account.
         _auto_tag_case_artifact(case_folder, zip_path)
 
-        if snapshot_job()["status"] != "Stopped":
+        if not stopped:
             update_job(status="Completed Successfully")
         append_log(f"[+] Bundle export complete: {written} file(s) added, {errored} error(s) -> {zip_path}")
         log_chain_of_custody("case_bundle_export_complete", {
