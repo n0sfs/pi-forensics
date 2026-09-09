@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.79.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.79.1-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -226,7 +226,7 @@ Destination against it — each case is a real folder with one consolidated JSON
 scattered per-job files. A case-wide **Overview** dashboard, **Verify All Evidence** (re-hashes every
 acquisition's own output and compares it against the hash recorded at acquisition time), and
 **Case Bundle Export** (zip the whole case folder for archival/handoff) sit alongside a station-wide
-**Cross-Case Search** for checking whether a hash has shown up in another case. Reporting itself
+**Cross-Case Hash Lookup** for checking whether a hash has shown up in another case. Reporting itself
 follows standard DFIR report structure: a timestamped, append-only Case Notes journal (with
 attachments and a local integrity hash per note, disclosed as tamper-evidence, not legal
 notarization), a separate append-only physical-evidence **Custody Log**, a polished Report Narrative
@@ -241,7 +241,7 @@ contact (phone, iOS backup, Google Takeout, or WhatsApp) against every parsed SM
 message to resolve a raw number to a real name wherever the two agree (most-contacted people surface
 first; a number named by more than one contact source is stronger corroboration), and a device
 profile of recently installed/updated apps and configured accounts, both captured automatically
-during any Android `adb pull` — and a station-wide Audit Trail filtered to the case — plus a
+during any Android `adb pull` — and a Case Activity Log (the station-wide audit log, filtered to the case) — plus a
 cross-source Search across all of them. Export to PDF, HTML, JSON, or CSV, with
 a choice of a fully configurable layout or a fixed DFIR/law-enforcement/CASE-UCO-aligned structure,
 embedded image/text attachments, and optional station branding (logo + header text).
@@ -353,7 +353,7 @@ flowchart TD
 <p align="center">
   <img src="docs/images/PIF6.JPG" width="100%" alt="Reporting" />
   <br>
-  <em>Reporting — the case-wide Overview dashboard (Evidence Items, Tagged Items, Analysis Activity, Case Notes, Exhibits, Case Age at a glance), with Verify All Evidence and Case Bundle Export alongside the full tab set: Report Narrative, Case Notes, Custody Log, Files & Artifacts, Geolocation, Jobs, Evidence Timeline, Audit Trail, Search, and Export.</em>
+  <em>Reporting — the case-wide Overview dashboard (Evidence Items, Tagged Items, Analysis Activity, Case Notes, Exhibits, Case Age at a glance), with Verify All Evidence and Case Bundle Export alongside the full tab set: Report Narrative, Case Notes, Custody Log, Files & Artifacts, Geolocation, Jobs, Evidence Timeline, Case Activity Log, Search, and Export.</em>
 </p>
 
 <p align="center">
@@ -390,7 +390,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.79.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v1.79.1 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
@@ -445,7 +445,7 @@ networks the examiner doesn't fully control. It's built with that threat model i
 | **Device validation** | Acquisition/recovery source paths must match a whole-disk device pattern (`/dev/sdX`, `/dev/nvme*n*`, `/dev/mmcblk*`) - arbitrary files can't be pointed at the privileged `ddrescue`/`dc3dd` commands. |
 | **Evidence-drive-safe UI** | Filenames and file content pulled from mounted/browsed media are rendered as plain text or inside a fully sandboxed iframe (no scripts, no same-origin access), never trusted as active HTML - a maliciously named or crafted file on a suspect drive can't inject script into the examiner's session. |
 | **Acquisition tools run via scoped sudo** | dc3dd/dcfldd/plain `dd`/ewfacquire/PhotoRec/ddrescue all need raw read access to the source device, which this unprivileged service account doesn't have by default - each runs via an exact-match NOPASSWD sudoers entry (never a wildcard on the tool itself). Their output lands owned by root as a side effect; the app automatically hands ownership back to the service account (via a similarly scoped `chown`/`chgrp` grant, fixed target user - never attacker-controllable) so later actions (delete, hash verify, copy) work normally. |
-| **Chain-of-custody log** | Every significant action is logged with timestamp, source IP, and (once real accounts are in use) the acting examiner's username - viewable in Settings > Audit Log with search and one-click CSV export of the complete log. |
+| **Chain-of-custody log** | Every significant action is logged with timestamp, source IP, and (once real accounts are in use) the acting examiner's username - viewable in Settings > Station Audit Log with search and one-click CSV export of the complete log, or filtered to one case via Reporting's own Case Activity Log tab. |
 | **Network configuration safety net** | Changing the station's own IP addressing (Settings > Network Configuration) applies immediately but automatically reverts to the previous working settings after 60 seconds unless explicitly confirmed - protects against a typo locking you out of the very page you'd use to fix it. |
 | **Network share credentials** | SMB/CIFS/SFTP passwords are passed via a private, mode-0600 temporary credentials file or piped over stdin rather than on the mount command line, so they don't show up in `ps aux`. |
 | **Transport encryption** | `install.py` prompts to set up nginx with a self-signed TLS certificate (generated per-install under `/etc/ssl/pi-forensics`, with SAN entries for the station's actual LAN IP). If accepted, nginx terminates TLS on 80/443 and gunicorn moves to loopback-only; if declined, gunicorn binds directly and both the session cookie and any Basic Auth credentials travel unencrypted. Certificates can be regenerated, downloaded, or replaced with your own from Settings > Security at any time. |

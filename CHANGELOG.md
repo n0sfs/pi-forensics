@@ -21,6 +21,28 @@ file after updating to see what changed.
 
 ---
 
+## [1.79.1] - 2026-09-09
+
+### Fixed
+- **A real, serious bug: two analysts editing the same case at once could have one silently overwrite
+  the other's changes.** Saving Report Narrative, Case Status, Custom Case Fields, or the attached-
+  files list sent the entire cached report from whenever that browser tab last loaded the case, with
+  no check against what's on disk now - a second analyst's concurrent save (or even a later action
+  from a DIFFERENT tab) could be silently reverted the next time the first tab's own stale copy was
+  saved, with zero warning. Now rejected outright with a clear message ("this case was edited
+  elsewhere - reload to see the latest version") instead of silently overwriting - matches how this
+  app already handles the identical class of problem elsewhere (case-folder name collisions, etc.).
+  Case Notes, tags, the Physical Custody Log, and attaching a file were never affected by this - only
+  the "Save Report Changes" round trip was.
+
+### Changed
+- **Clearer naming for two easily-confused features.** "Cross-Case Search" (Settings > Case &
+  Reporting) is renamed "Cross-Case Hash Lookup" - it only ever checks an exact hash against every
+  other case, not a general search, and the old name overpromised. "Audit Log" (Settings > Security)
+  and "Audit Trail" (Reporting) were the exact same underlying log - filtered vs. unfiltered - with
+  near-identical names that didn't say so; renamed to "Station Audit Log" (the full, station-wide
+  version in Settings) and "Case Activity Log" (the same log, filtered to one case, in Reporting).
+
 ## [1.79.0] - 2026-09-09
 
 ### Added

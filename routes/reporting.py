@@ -613,14 +613,52 @@ def save_report_json():
     # already does. Matches those routes' exact "if 'updated_at' in data"
     # guard, since the incoming payload could in principle be a legacy
     # report shape with no such key at all.
+    #
+    # Concurrency guard, added 2026-09-09: this route sends the FULL cached
+    # report object from whenever the browser tab last loaded/refreshed it -
+    # a second examiner's own concurrent save was previously silently
+    # reverted the next time THIS tab's own stale copy got saved, with zero
+    # warning either way. Every sibling write route (Case Notes/Custody
+    # Log/tags/attach/set_case_status) is already safe from this, since
+    # each re-reads fresh from disk immediately before writing; this is the
+    # one route that never did. Reject rather than silently overwrite - the
+    # same "hard error over silent data loss" pattern already used
+    # elsewhere in this app for the identical class of problem (case-folder
+    # collisions, F2FS double mounts). Only checked when BOTH the incoming
+    # payload and the on-disk file actually carry an updated_at value - a
+    # report saved before this field existed, or a payload shape with no
+    # such key, skips the check rather than becoming permanently
+    # unsaveable. Note this can never fire from a legitimate same-tab
+    # double-save: the frontend's own success handler stores the fresh
+    # updated_at this route returns back into its cached copy, so a second
+    # save from the SAME tab always compares against the value it itself
+    # just wrote.
     if isinstance(data, dict) and 'updated_at' in data:
+        try:
+            with open(report_file, 'r') as f:
+                on_disk = json.load(f)
+        except Exception:
+            on_disk = None
+        if isinstance(on_disk, dict) and 'updated_at' in on_disk and on_disk['updated_at'] != data['updated_at']:
+            return jsonify({
+                "success": False,
+                "error": f"This case was edited elsewhere since it was loaded here (last updated "
+                         f"{on_disk['updated_at']}). Reload the case to see the latest version, then "
+                         f"reapply your changes.",
+                "conflict": True,
+                "server_updated_at": on_disk['updated_at'],
+            }), 409
         data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     try:
         with open(report_file, 'w') as f:
             json.dump(data, f, indent=2)
         log_chain_of_custody("report_edit", {"report_path": report_file})
-        return jsonify({"success": True, "message": "Report JSON updated successfully."})
+        return jsonify({
+            "success": True,
+            "message": "Report JSON updated successfully.",
+            "updated_at": data.get('updated_at') if isinstance(data, dict) else None,
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
