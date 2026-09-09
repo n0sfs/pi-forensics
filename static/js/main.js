@@ -14702,9 +14702,24 @@ function updateExportMismatchWarning() {
         return;
     }
     const attachmentsSectionOn = !!document.getElementById("expSecAttachments")?.checked;
+    // totalFileCount (not just checked) is what distinguishes "genuinely
+    // nothing to attach" from "items exist but none are checked" - without
+    // it, the reverse-direction check below would fire on every case that
+    // has zero attachable files/URLs at all (a real, empty checklist is
+    // already handled explicitly by renderExportFilesList()'s own early
+    // return, not something to nag about here too).
+    const totalFileCount = document.querySelectorAll('.export-attach-check').length;
     const checkedFileCount = document.querySelectorAll('.export-attach-check:checked').length;
     if (!attachmentsSectionOn && checkedFileCount > 0) {
         warnEl.textContent = `Heads up: ${checkedFileCount} file(s)/URL(s) are checked in "Case Files & URLs to Include" below, but won't appear in this export - the "Exhibits" section itself is unchecked above.`;
+        warnEl.style.display = '';
+    } else if (attachmentsSectionOn && checkedFileCount === 0 && totalFileCount > 0) {
+        // The reverse mismatch (2026-09-09 fix) - the original design
+        // (see this project's own dated changelog entry for this feature)
+        // was meant to cover both directions ("checking Exhibits while
+        // leaving every attachment unchecked, or vice versa"), but only
+        // the first direction was ever actually implemented.
+        warnEl.textContent = `Heads up: the "Exhibits" section is checked above, but no files/URLs are checked in "Case Files & URLs to Include" below - the export's Exhibits section will be empty.`;
         warnEl.style.display = '';
     } else {
         warnEl.style.display = 'none';
@@ -16227,7 +16242,13 @@ function renderCaseList() {
         if ((c.case_status || 'Open') === 'Archived') {
             archiveBtn.className = 'btn btn-xs btn-outline-info py-0 px-2';
             archiveBtn.innerHTML = '<i class="bi bi-box-arrow-up me-1"></i>Re-open';
-            archiveBtn.onclick = (ev) => { ev.stopPropagation(); setCaseStatus(c, 'Open'); };
+            // Restore whatever status the case actually held right before
+            // being archived (routes/case_management.py's set_case_status()
+            // now remembers it) rather than always landing back on the
+            // generic "Open" default - falls back to "Open" for a case
+            // archived before this existed, or one archived by hand-
+            // editing the case file directly (2026-09-09 fix).
+            archiveBtn.onclick = (ev) => { ev.stopPropagation(); setCaseStatus(c, c.status_before_archive || 'Open'); };
         } else {
             archiveBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
             archiveBtn.innerHTML = '<i class="bi bi-archive me-1"></i>Archive';
@@ -16290,7 +16311,7 @@ async function setCaseStatus(c, newStatus) {
     const archiving = newStatus === 'Archived';
     const confirmMsg = archiving
         ? `Archive case "${c.case_number}"?\n\nIt will be hidden from the default "Active" list but never deleted or otherwise touched - switch the status filter to "Archived" here any time to find and re-open it.`
-        : `Re-open case "${c.case_number}"?`;
+        : `Re-open case "${c.case_number}"?\n\nIts status will be restored to "${newStatus}"${newStatus === 'Open' && !c.status_before_archive ? ' (its status from before archiving isn\'t known - defaulting to "Open")' : ' - its status from right before it was archived'}.`;
     if (!confirm(confirmMsg)) return;
 
     try {

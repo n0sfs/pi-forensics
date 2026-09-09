@@ -147,3 +147,55 @@ def test_migrate_apply_preserves_case_status_and_seeds_custom_field_defaults(cli
     # The actual regressions this test guards.
     assert migrated["case_status"] == "Closed"  # preserved, not reset to "Open"
     assert migrated["custom_fields"] == {"agency": "Regional Crime Lab"}
+
+
+def test_create_case_returns_a_clean_409_on_a_genuine_directory_creation_race(client, runtime_config_file, evidence_root, monkeypatch):
+    """Real bug, fixed 2026-09-09 (a 3rd Case/Reporting review pass's own
+    lower-confidence findings): the os.path.exists() check and the
+    os.makedirs() call are two separate steps - a concurrent request for
+    the identical case number/parent location can create the directory in
+    the narrow window between them. os.makedirs() itself never half-
+    creates or overwrites anything if the directory already exists, so
+    this was never a data-safety issue, only a UX one: the old broad
+    `except Exception` classified this as a generic 500 with a raw errno
+    message instead of the same clean 409 a non-racing duplicate request
+    already gets from the exists() check itself.
+
+    Simulated deterministically (not a genuine race, which single-threaded
+    Flask test-client calls can't produce) by making os.makedirs() itself
+    raise FileExistsError regardless of what the exists() check already
+    saw - directly proves the new except branch, not just that the happy
+    path still works."""
+    import routes.case_management as case_management_mod
+
+    def _raise_file_exists(path):
+        raise FileExistsError(17, "File exists")
+
+    monkeypatch.setattr(case_management_mod.os, "makedirs", _raise_file_exists)
+
+    _save_group("race_group", reporting=True)
+    _save_user("race_user", "pw", "race_group")
+    _login(client, "race_user")
+    res = client.post("/api/cases/create", json={"case_number": "2026-TEST-RACE", "examiner": "x", "parent_dir": evidence_root})
+    assert res.status_code == 409
+    assert "already exists" in res.get_json()["error"]
+
+
+def test_create_case_still_returns_500_for_a_genuine_unrelated_makedirs_failure(client, runtime_config_file, evidence_root, monkeypatch):
+    """The new FileExistsError-specific except must not swallow every other
+    real makedirs() failure (permission denied, disk full, etc.) - those
+    still need to surface as the existing generic 500, not be silently
+    misreported as a 409 'already exists'."""
+    import routes.case_management as case_management_mod
+
+    def _raise_permission_error(path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(case_management_mod.os, "makedirs", _raise_permission_error)
+
+    _save_group("perm_err_group", reporting=True)
+    _save_user("perm_err_user", "pw", "perm_err_group")
+    _login(client, "perm_err_user")
+    res = client.post("/api/cases/create", json={"case_number": "2026-TEST-PERMERR", "examiner": "x", "parent_dir": evidence_root})
+    assert res.status_code == 500
+    assert "Could not create case folder" in res.get_json()["error"]

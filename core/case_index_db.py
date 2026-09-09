@@ -958,8 +958,12 @@ def list_case_folders():
     2nd caller (cross_case_hash_search() below), matching this project's
     own established bar for factoring something out of a single inline
     route body. Returns a list of dicts: {case_number, examiner,
-    case_folder, created_at, notes, case_status, event_count, schema},
-    sorted newest-created-first.
+    case_folder, created_at, notes, case_status, status_before_archive,
+    event_count, schema}, sorted newest-created-first.
+    status_before_archive is None unless routes/case_management.py's
+    set_case_status() has captured one (i.e. the case is currently
+    Archived and was set_case_status()-archived, not hand-edited on
+    disk) - see that route's own comment for when it's set/cleared.
 
     Reads config.EVIDENCE_ROOT module-qualified (not a bare imported name)
     - the exact same "read through config.X, not a copied binding" fix
@@ -1006,6 +1010,7 @@ def list_case_folders():
                     "created_at": data.get('created_at', '--'),
                     "notes": data.get('notes', ''),
                     "case_status": data.get('case_status') or 'Open',
+                    "status_before_archive": data.get('status_before_archive'),
                     "event_count": len(data.get('events', [])),
                     "schema": "consolidated",
                 })
@@ -1023,6 +1028,7 @@ def list_case_folders():
                     "created_at": data.get('created_at', '--'),
                     "notes": data.get('notes', ''),
                     "case_status": data.get('case_status') or 'Open',
+                    "status_before_archive": data.get('status_before_archive'),
                     "event_count": None,
                     "schema": "legacy",
                 })
