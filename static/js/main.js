@@ -426,7 +426,7 @@ const GUIDE_SCENARIOS = {
             "Make sure the case you're reporting on is the active case (top-left \"Case\" button), then open the Reporting tab - it loads that case automatically, no manual file browsing needed. \"Overview\" (the default view) gives you a dashboard of everything recorded so far - evidence items, tags, analysis activity, case notes - plus \"Verify All Evidence\" (re-checks every acquisition's hash) and \"Export Case Bundle\" (zips the whole case for handoff).",
             "Use \"Case Notes\" as you work, not just at the end - it's a timestamped, append-only journal (each note gets an author and a local integrity hash; editing keeps the original text rather than overwriting it). This becomes the \"Forensic Analysis / Steps Taken\" section of the exported report.",
             "\"Report Narrative\" holds the polished closing write-up (executive summary, objectives, findings, limitations, conclusion) - a separate, deliberately distinct thing from the running Case Notes journal.",
-            "\"Jobs\" shows every acquisition/recovery/mobile job run against this case with full telemetry and hashes; \"Evidence Timeline\" merges every acquired image's filesystem timeline with parsed-artifact timestamps; \"Audit Trail\" is the station-wide activity log filtered to this case number; \"Custody Log\" records physical evidence handoffs between people, separate from all of the above.",
+            "\"Jobs\" shows every acquisition/recovery/mobile job run against this case with full telemetry and hashes; \"Evidence Timeline\" merges every acquired image's filesystem timeline with parsed-artifact timestamps; \"Case Activity Log\" is the station-wide activity log filtered to this case number; \"Custody Log\" records physical evidence handoffs between people, separate from all of the above.",
             "When ready, go to Export - pick PDF, HTML, JSON, or CSV, choose a report template (Standard, or a fixed DFIR/Police/CASE-UCO structure), and which sections/evidence items to include, then export. Attached photos and text files get embedded directly in the output, not just listed by path.",
         ],
         tabId: "reports-tab"
@@ -638,11 +638,11 @@ const FAQ_GROUPS = [
             },
             {
                 q: "How does this station track what was done and by whom?",
-                a: "Settings > Audit Log keeps a station-wide, append-only log of significant actions (acquisitions, deletes, copies, report edits, logins) with a timestamp, source IP, and - since real per-user accounts are supported rather than one shared login - which logged-in user did it. Reporting's own \"Audit Trail\" sub-tab shows that same log filtered down to just the active case."
+                a: "Settings > Station Audit Log keeps a station-wide, append-only log of significant actions (acquisitions, deletes, copies, report edits, logins) with a timestamp, source IP, and - since real per-user accounts are supported rather than one shared login - which logged-in user did it. Reporting's own \"Case Activity Log\" sub-tab shows that same underlying log filtered down to just the active case - same data, narrower view."
             },
             {
-                q: "Custody Log vs. Case Notes vs. Audit Trail - what's the difference between the three?",
-                a: "All three live in Reporting but track genuinely different things. Custody Log is a dedicated, append-only record of physical evidence handoffs between people - who had it, who it went to, why, and how. Case Notes is your own running, timestamped investigative journal (\"what did I do/observe just now\"). Audit Trail is the software's own activity log - actions taken in this app - filtered to the active case. Only Case Notes and Custody Log are things you write yourself; Audit Trail is fully automatic."
+                q: "Custody Log vs. Case Notes vs. Case Activity Log - what's the difference between the three?",
+                a: "All three live in Reporting but track genuinely different things. Custody Log is a dedicated, append-only record of physical evidence handoffs between people - who had it, who it went to, why, and how. Case Notes is your own running, timestamped investigative journal (\"what did I do/observe just now\"). Case Activity Log is the software's own activity log - actions taken in this app - filtered to the active case (the unfiltered, station-wide version lives in Settings). Only Case Notes and Custody Log are things you write yourself; the Case Activity Log is fully automatic."
             },
             {
                 q: "Can I verify that an already-acquired image hasn't been tampered with, without re-checking each one by hand?",
@@ -654,7 +654,7 @@ const FAQ_GROUPS = [
             },
             {
                 q: "Has this exact file/hash shown up in a different case on this station?",
-                a: "Settings > Case & Reporting > Cross-Case Search checks a specific hash against every other case on the station - useful for spotting the same file reappearing across unrelated cases. It's scoped to exact hash matches, not free-text search across cases."
+                a: "Settings > Case & Reporting > Cross-Case Hash Lookup checks a specific hash against every other case on the station - useful for spotting the same file reappearing across unrelated cases. It's scoped to exact hash matches, not free-text search across cases - for that, use the Search tab inside a case's own Reporting > Search pane, or Pattern of Life/File Views for tags and parsed evidence content."
             },
             {
                 q: "What's the Evidence Timeline tab?",
@@ -877,7 +877,7 @@ const REPORT_FIELD_MAPPING = [
     ["Recommendations / Next Steps", "Free text (Remappable)", "Report Narrative"],
     ["Exhibits", "Attached files/URLs + captions + tags + analysis results", "Files &amp; Artifacts tab (check/caption); File Explorer (tag/analyze)"],
     ["Geolocation / GPS Evidence", "KML files attached to or found in the case folder", "Auto-discovered; generate via File Explorer's \"Extract Geolocation (KML)\""],
-    ["Case Activity Log (Audit Trail)", "Chain-of-custody entries matching this case #", "Automatic"],
+    ["Case Activity Log", "Chain-of-custody entries matching this case #", "Automatic"],
     ["Filesystem Timeline (MACB)", "MACB walk of an acquired disk image, or real file timestamps from a mobile pull/backup or Logical Acquisition folder", "Automatic, needs the image or output folder still on disk"],
     ["Physical Evidence Custody Log", "From/To custodian handoff entries, append-only", "Custody Log tab"],
     ["Pattern of Life: Contact Correlation &amp; Location Activity", "Correlated contacts/co-occurrences + frequent-location clusters - the same data the interactive Pattern of Life tab shows (no map image or graph, no Home/Work labeling in the export)", "Automatic - reflects whatever the case's own parsed_artifacts index and Relationship Graph already show"],
@@ -7592,7 +7592,7 @@ const IMAGE_JOB_COMPLETION_MESSAGES = {
     leapp_scan: (status) => `ALEAPP/iLEAPP mobile artifact scan finished: ${status}\n\nOpen the new *_aleapp_output or *_ileapp_output folder next to the extraction in File Explorer, then click the HTML report inside it.`,
     verify_all_evidence: (status) => `Case-wide evidence verification finished: ${status}\n\nSee the Overview tab in Reporting for the full result.`,
     case_bundle_export: (status) => `Case bundle export finished: ${status}\n\nCheck the case folder for the generated *_case_bundle_<timestamp>.zip file.`,
-    auto_analyze_image: (status) => `Auto Analyze finished: ${status}\n\nSee the Audit Log (Settings > Security) for the full per-step results, or File Views > Parsed Artifacts for the individual tools' output.`,
+    auto_analyze_image: (status) => `Auto Analyze finished: ${status}\n\nSee the Station Audit Log (Settings > Security) for the full per-step results, or File Views > Parsed Artifacts for the individual tools' output.`,
     vss_materialize: (status) => `Shadow copy materialization finished: ${status}\n\nCheck the case folder for the generated *_shadowcopyN.dd file - browse it via File Explorer's normal "Browse as Image" action, same as any other acquired image.`,
     live_collection_build: (status) => `Live Collection USB build finished: ${status}` + (
         status === 'Completed Successfully'
@@ -14660,7 +14660,7 @@ function runCaseSearch() {
     });
     if (historyMatches.length > 0) {
         totalMatches += historyMatches.length;
-        appendCaseSearchGroup(container, 'Audit Trail', 'repHistoryTab', historyMatches.map(entry => (
+        appendCaseSearchGroup(container, 'Case Activity Log', 'repHistoryTab', historyMatches.map(entry => (
             { label: `${entry.timestamp || '--'} · ${entry.action || '--'}${entry.user ? ' · ' + entry.user : ''}`, snippet: null }
         )));
     }
@@ -14726,12 +14726,38 @@ async function saveReportMetadata() {
         const data = await res.json();
 
         if (data.success) {
+            // Sync the fresh updated_at the server just wrote back into our
+            // OWN cached copy - this is what makes a second, immediate save
+            // from this same tab (with no intervening reload) compare
+            // correctly against the conflict check below, instead of
+            // false-positive rejecting itself against its own prior save.
+            if (data.updated_at) currentLoadedReportData.updated_at = data.updated_at;
             const previewEl = document.getElementById("jsonPreview");
             if (previewEl) {
                 previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
             }
             clearReportingDirty();
             showToast("Report JSON saved successfully!", 'success');
+        } else if (res.status === 409 && data.conflict) {
+            // Another analyst (or another tab) saved this case after this
+            // tab last loaded it - reject rather than silently overwrite,
+            // per this app's own established posture for exactly this
+            // class of problem. The examiner's own typed edits stay intact
+            // in the DOM/currentLoadedReportData either way (this never
+            // reloads on their behalf) - Reload Case explicitly re-fetches
+            // and repaints, discarding those edits, only if they choose it.
+            showToast(data.error, 'danger');
+            if (confirm(`${data.error}\n\nReload this case now? (Any unsaved edits in this tab will be lost - reapply them after reloading.)`)) {
+                // The examiner just explicitly confirmed discarding their
+                // own in-tab edits - clear the dirty flag BEFORE reloading,
+                // or loadCaseForEditing()'s own live reportHasUnsavedChanges
+                // guard (built to PROTECT unsaved edits from an unrelated
+                // background refresh) would see it still set and skip
+                // repainting the very fields this reload is meant to
+                // refresh, silently no-opping the confirmed discard.
+                clearReportingDirty();
+                await loadCaseForEditing();
+            }
         } else {
             showToast(`Save error: ${data.error}`, 'danger');
         }
