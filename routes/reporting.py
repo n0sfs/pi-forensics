@@ -217,6 +217,12 @@ REPORTING_STAT_DEFINITIONS = [
                      "every case's own per-case analysis index, station-wide. Only counts cases that already "
                      "have an index (opened the moment anything is first tagged/scanned/triage-run) - a case "
                      "that's never had any of those actions run has no index yet and contributes 0, not an error."},
+    {"key": "cases_needing_migration", "label": "Cases Needing Migration",
+     "description": "Cases created before the consolidated one-JSON-file-per-case format existed, still on the "
+                     "older, per-job case_info.json/*_report.json layout. Migrate them from the Case Manager "
+                     "modal (a 'Migrate to Consolidated Format' button appears next to each one there) - "
+                     "non-destructive, the originals are kept as backups. Originally floated alongside Tags/"
+                     "Notable Items Flagged when that stat shipped (2026-09-05) but not built at the time."},
 ]
 REPORTING_STAT_KEYS = {d["key"] for d in REPORTING_STAT_DEFINITIONS}
 # Every existing station's saved config predates this feature and has no
@@ -290,19 +296,23 @@ def _count_notable_tagged_items_station_wide(cases):
 
 def _compute_reporting_stats(enabled_keys):
     """Computes only the requested stat keys. total_cases/active_cases/
-    evidence_items/tags_flagged all share ONE list_case_folders() walk
-    rather than one per stat (tags_flagged included specifically to fix a
-    real, live-caught duplicate-walk bug - see that function's own
-    docstring); reports_exported reads the chain-of-custody log once, only
-    if actually enabled. tags_flagged additionally opens each case's own
-    per-case SQLite index only if actually enabled (a real per-case-DB cost
-    the other three station-wide stats don't have, throttled - see
+    evidence_items/tags_flagged/cases_needing_migration all share ONE
+    list_case_folders() walk rather than one per stat (tags_flagged
+    included specifically to fix a real, live-caught duplicate-walk bug -
+    see that function's own docstring; cases_needing_migration is free once
+    the walk is already happening, since every case dict it returns already
+    carries its own `schema` field); reports_exported reads the chain-of-
+    custody log once, only if actually enabled. tags_flagged additionally
+    opens each case's own per-case SQLite index only if actually enabled (a
+    real per-case-DB cost the other stats don't have, throttled - see
     _TAGS_FLAGGED_CACHE_INTERVAL_SECONDS above). One unrecognized/removed key
     is silently skipped, never a 500 - this stays out of the request's own
     validation, since a stale saved key shouldn't be able to break the whole
     row."""
     stats = []
-    needs_cases = any(k in enabled_keys for k in ("total_cases", "active_cases", "evidence_items", "tags_flagged"))
+    needs_cases = any(k in enabled_keys for k in (
+        "total_cases", "active_cases", "evidence_items", "tags_flagged", "cases_needing_migration",
+    ))
     cases = list_case_folders() if needs_cases else []
 
     for key in enabled_keys:
@@ -339,6 +349,8 @@ def _compute_reporting_stats(enabled_keys):
             entry["value"] = sum(1 for e in coc_entries if e.get("action") == "report_exported")
         elif key == "tags_flagged":
             entry["value"] = _count_notable_tagged_items_station_wide(cases)
+        elif key == "cases_needing_migration":
+            entry["value"] = sum(1 for c in cases if c.get("schema") != "consolidated")
         stats.append(entry)
     return stats
 

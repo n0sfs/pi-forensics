@@ -3883,6 +3883,18 @@ def start_mquire_scan():
 F2FS_MOUNT_STAGING_ROOT = os.path.join(INSTALL_DIR, ".f2fs_mounts")
 f2fs_lock = threading.Lock()
 active_f2fs_mounts = {}  # mount_id -> {raw_dir, browse_dir, loop_device, image_path, offset, mounted_at}
+# Tracks a browse_dir that a call to _f2fs_mount() has already claimed but
+# hasn't finished mounting yet - closes a real, narrow TOCTOU race found
+# during a 2026-09-09 systematic sweep: browse_dir's own os.path.exists()
+# pre-flight check has no lock held across the multi-subprocess sequence
+# (losetup/mount/bindfs) that follows before browse_dir is actually
+# created, so two genuinely concurrent requests for the identical
+# image+destination+offset could both pass the early check and end up
+# double-mounting onto the same browse_dir. Never a crash/security issue
+# (both racing mounts would present identical read-only content), just a
+# real bookkeeping/resource-leak risk - see the dated CLAUDE.md section for
+# the full investigation.
+_f2fs_browse_dirs_in_progress = set()
 
 def _f2fs_cleanup_dirs(*dirs):
     for d in dirs:
@@ -3947,9 +3959,31 @@ def _f2fs_mount(image_path, offset, destination_dir):
         return False, None, None, "Invalid partition offset."
 
     browse_dir = os.path.join(validated_dest, f"{os.path.basename(validated_image)}_f2fs_mounted")
-    if os.path.exists(browse_dir):
-        return False, None, None, "A mount folder for this image already exists here - unmount the existing one first (see Active F2FS Mounts above), or choose a different destination."
 
+    # The atomic check-and-reserve: both the existence check and the
+    # in-progress-set membership check happen under the SAME lock
+    # acquisition as the reservation itself, so two concurrent callers can
+    # never both pass this gate for the same browse_dir - unlike a bare
+    # os.path.exists() check with no lock, which is exactly the race this
+    # closes (see _f2fs_browse_dirs_in_progress's own module-level comment).
+    # The reservation is released in the finally block below regardless of
+    # how the actual mount attempt turns out.
+    with f2fs_lock:
+        if os.path.exists(browse_dir) or browse_dir in _f2fs_browse_dirs_in_progress:
+            return False, None, None, "A mount folder for this image already exists here - unmount the existing one first (see Active F2FS Mounts above), or choose a different destination."
+        _f2fs_browse_dirs_in_progress.add(browse_dir)
+    try:
+        return _f2fs_do_mount(validated_image, offset, browse_dir)
+    finally:
+        with f2fs_lock:
+            _f2fs_browse_dirs_in_progress.discard(browse_dir)
+
+def _f2fs_do_mount(validated_image, offset, browse_dir):
+    """The actual mount sequence (losetup for offset>0, mount, bindfs) -
+    factored out of _f2fs_mount() so that function's own reservation-release
+    try/finally doesn't need to re-indent this entire body. Every line here
+    is unchanged from before the 2026-09-09 double-mount-race fix; only the
+    caller's own validation/reservation wrapping around it changed."""
     os.makedirs(F2FS_MOUNT_STAGING_ROOT, exist_ok=True)
     mount_id = uuid.uuid4().hex
     raw_dir = os.path.join(F2FS_MOUNT_STAGING_ROOT, mount_id)

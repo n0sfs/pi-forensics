@@ -21,6 +21,25 @@ file after updating to see what changed.
 
 ---
 
+## [1.78.0] - 2026-09-09
+
+### Added
+- **A new "Cases Needing Migration" option for Reporting's customizable header stats** (Settings >
+  Case & Reporting > Reporting Header Stats), alongside the existing Total Cases/Active Cases/
+  Evidence Items/Reports Exported/Tags Flagged options - counts how many cases on the station are
+  still on the older, pre-2026-08-13 per-job report layout and haven't yet been migrated to the
+  current consolidated one-file-per-case format. Off by default, matching how every other optional
+  header stat already behaves.
+
+### Fixed
+- **Two USB drives could, in a narrow timing window, both end up mounted as an F2FS filesystem at the
+  same folder in File Explorer** - a real but low-severity race in the F2FS browse-mount feature that
+  needed two nearly-simultaneous requests for the exact same drive/destination to trigger (a
+  double-click, or two browser tabs open to the same action). Never a data-integrity risk (both
+  mounts always showed identical, correct, read-only content), but could leave one mount silently
+  still attached after unmounting the other. Found during a systematic internal review, not reported
+  by a user.
+
 ## [1.77.4] - 2026-09-09
 
 ### Fixed
