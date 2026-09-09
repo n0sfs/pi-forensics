@@ -422,7 +422,10 @@
                                                 </div>
                                                 <div class="tab-pane fade" id="repCoveragePane" role="tabpanel">
                                                     <div class="small text-subtle mb-2">Which analysis tools have actually been run against each completed evidence item, and which haven't yet - a case-wide view of the same "already run" checkmark File Explorer's own right-click menu shows one file at a time. A gray "Not yet run" badge doesn't mean a tool found nothing; it means it's never been tried against this item at all.</div>
-                                                    <div id="analysisCoverageStatus" class="small text-subtle mb-2"></div>
+                                                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                                                        <div id="analysisCoverageStatus" class="small text-subtle mb-0"></div>
+                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="insertCoverageGapsIntoLimitations()"><i class="bi bi-arrow-right-circle me-1"></i>Insert Outstanding Analysis into Limitations</button>
+                                                    </div>
                                                     <div id="analysisCoverageContainer" class="border border-secondary rounded-2 p-2" style="max-height: 500px; overflow-y: auto; background-color:#090b10;">
                                                         <span class="text-subtle small">Open this tab to see this case's analysis coverage.</span>
                                                     </div>
@@ -515,6 +518,7 @@
                                                         <button type="button" class="btn btn-sm btn-outline-info fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
                                                     </div>
                                                     <div id="exportReportStatus" class="small text-subtle mb-2"></div>
+                                                    <div id="exportMismatchWarning" class="small alert alert-warning py-2 px-3 mb-2" style="display:none;"></div>
                                                     <details class="mb-2" id="exportPdfHtmlOptionsRow">
                                                         <summary class="small fw-bold text-bright" style="cursor:pointer;"><i class="bi bi-sliders me-1"></i>Customize contents (sections, evidence items, files)</summary>
                                                     <div class="row g-3 mt-1">

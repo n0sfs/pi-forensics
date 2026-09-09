@@ -53,7 +53,7 @@ from core.decrypted_sources import get_decrypted_source_kind
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
-    _record_parsed_artifacts,
+    _record_parsed_artifacts, carry_over_image_tags_to_extracted_file,
 )
 from core.browser_artifacts import (
     BROWSER_ARTIFACT_FILENAMES, BROWSER_ARTIFACT_SCAN_MAX_CANDIDATES, parse_browser_profile_file,
@@ -481,6 +481,15 @@ def image_extract():
         return jsonify({"success": False, "error": f"Extraction failed: {e}"}), 500
 
     log_chain_of_custody("image_file_extract", {"image_path": image_path, "inode": str(inode), "extracted_to": dest_file})
+    # Tag-to-exhibit bridge (2026-09-09): if this exact in-image identity was
+    # already tagged Notable/Critical, carry those tags over to the newly-
+    # extracted real-fs file - closing the gap where tagging something still
+    # inside an image had no path to a report exhibit. dest_dir is the
+    # examiner's own currently-active case folder in every real flow (both
+    # extractExplorerImageSelected() and extractAndAttachExplorerImageSelected()
+    # extract into activeCase.case_folder) - a silent no-op if it isn't
+    # actually a valid case folder (e.g. no case active, extracting to /mnt).
+    carry_over_image_tags_to_extracted_file(dest_dir, image_path, offset, inode_num, dest_file)
     return jsonify({"success": True, "message": f"Extracted to {dest_file}", "path": dest_file})
 
 @image_browser_bp.route('/api/image/preview', methods=['POST'])
