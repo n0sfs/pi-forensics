@@ -20,6 +20,15 @@
                                                     <span class="telemetry-grid-label">Listing</span>
                                                     <span id="explorerPath" class="font-monospace small text-info fw-bold text-truncate" style="max-width: 70%;">/mnt</span>
                                                 </div>
+                                                <div id="explorerBatchToolbar" class="d-flex justify-content-between align-items-center py-1 px-2 mb-1 bg-app-dark border border-info rounded" style="display:none;">
+                                                    <span id="explorerBatchCount" class="small fw-bold text-info"></span>
+                                                    <div class="d-flex gap-1 flex-wrap">
+                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="batchAttachSelectedFilesToCase()" title="Attach every selected file to the active case as an exhibit"><i class="bi bi-paperclip me-1"></i>Attach to Case</button>
+                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="openBatchTagModal()" title="Apply one tag (existing or new) to every selected file"><i class="bi bi-tag me-1"></i>Tag...</button>
+                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="openBatchHashCheckModal()" title="Hash every selected file and check it against saved hash sets"><i class="bi bi-list-check me-1"></i>Check Hash Sets...</button>
+                                                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="clearExplorerSelection()" title="Clear the current selection"><i class="bi bi-x-lg me-1"></i>Clear</button>
+                                                    </div>
+                                                </div>
                                                 <div id="explorerLivePreviewBanner" class="alert alert-warning py-1 px-2 small fw-bold mb-1" style="display:none;"><i class="bi bi-exclamation-triangle-fill me-1"></i>LIVE DEVICE PREVIEW - READ-ONLY - this is the live drive itself, not yet an acquired image.</div>
                                                 <div id="explorerImageToolbar" style="display:none; align-items:center; justify-content:space-between; margin-bottom:.25rem; flex-wrap:wrap; gap:.25rem;">
                                                     <select id="explorerImagePartitionSelect" class="form-select form-select-sm" style="max-width: 45%;" onchange="explorerImageChangePartition()"></select>
@@ -681,6 +690,113 @@
                 </div>
                 <div class="modal-footer border-secondary py-2 d-flex justify-content-between">
                     <button type="button" class="btn btn-sm btn-outline-info" id="tagModalAttachBtn" style="display:none;" onclick="attachTaggedItemFromModal()"></button>
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Batch Tag modal (2026-09-09) - the multi-select sibling of tagItemModal
+         above. A dedicated modal rather than retrofitting the single-item one:
+         that modal's whole "already applied" per-tag list doesn't cleanly
+         generalize once N files can have genuinely divergent existing tag
+         state - this one is deliberately simpler (pick or create one tag,
+         apply it to every selected file, show a running/final status). -->
+    <div class="modal fade" id="batchTagModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-tag me-2"></i>Tag <span id="batchTagFileCount">0</span> File(s)</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-2">Applies one tag (and an optional shared comment) to every selected file.</div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Comment (optional, shared across every selected file):</label>
+                        <textarea id="batchTagComment" class="form-control form-control-sm" rows="2" placeholder="e.g. why these files matter to the case..."></textarea>
+                    </div>
+                    <div class="mb-2">
+                        <label class="telemetry-grid-label d-block mb-1">Existing Tag:</label>
+                        <select id="batchTagExistingSelect" class="form-select form-select-sm">
+                            <option value="">-- pick a tag --</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-sm btn-info text-dark fw-bold w-100 mb-2" onclick="runBatchTagApply()"><i class="bi bi-play-fill me-1"></i>Apply Existing Tag to Selected Files</button>
+                    <div class="border-top border-secondary pt-2">
+                        <button class="btn btn-sm btn-outline-info w-100" type="button" data-bs-toggle="collapse" data-bs-target="#batchTagNewTagForm">
+                            <i class="bi bi-plus-lg me-1"></i>Create New Tag
+                        </button>
+                        <div class="collapse mt-2" id="batchTagNewTagForm">
+                            <div class="row g-2 align-items-end">
+                                <div class="col-6">
+                                    <label class="telemetry-grid-label d-block mb-1">Tag Name:</label>
+                                    <input type="text" id="batchNewTagName" class="form-control form-control-sm" maxlength="60" placeholder="e.g. Contraband">
+                                </div>
+                                <div class="col-3">
+                                    <label class="telemetry-grid-label d-block mb-1">Color:</label>
+                                    <select id="batchNewTagColor" class="form-select form-select-sm">
+                                        <option value="secondary" selected>Gray</option>
+                                        <option value="info">Blue</option>
+                                        <option value="success">Green</option>
+                                        <option value="warning">Yellow</option>
+                                        <option value="danger">Red</option>
+                                        <option value="primary">Purple</option>
+                                    </select>
+                                </div>
+                                <div class="col-3">
+                                    <button class="btn btn-sm btn-info text-dark fw-bold w-100" onclick="runBatchTagCreateAndApply()">Create</button>
+                                </div>
+                            </div>
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="batchNewTagNotable">
+                                <label class="form-check-label small telemetry-grid-label" for="batchNewTagNotable">
+                                    Notable (flags this tag as evidence of particular interest)
+                                </label>
+                            </div>
+                            <div class="row g-2 mt-1 align-items-center">
+                                <div class="col-4">
+                                    <label class="telemetry-grid-label mb-0" for="batchNewTagSeverity">Severity:</label>
+                                </div>
+                                <div class="col-8">
+                                    <select id="batchNewTagSeverity" class="form-select form-select-sm">
+                                        <option value="none" selected>None</option>
+                                        <option value="low">Low</option>
+                                        <option value="medium">Medium</option>
+                                        <option value="high">High</option>
+                                        <option value="critical">Critical</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="batchTagModalStatus" class="small mt-2" style="max-height: 180px; overflow-y: auto;"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Batch Hash Check modal (2026-09-09) - the multi-select sibling of
+         hashListCheckModal (templates/modals/shared.html). Renders a real
+         per-file results table (rather than the single-item modal's single
+         result block) since the whole point of checking several files at
+         once is seeing which ones match. -->
+    <div class="modal fade" id="batchHashCheckModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title text-info fs-6"><i class="bi bi-list-check me-2"></i>Check <span id="batchHashCheckFileCount">0</span> File(s) Against Hash Sets</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body py-2">
+                    <div class="small text-subtle mb-2">Hashes every selected file with whichever algorithm(s) the checked sets below actually use, then checks for membership. Manage sets in Settings &gt; Case &amp; Reporting &gt; Hash Sets.</div>
+                    <div id="batchHashCheckContainer" class="mb-2" style="max-height: 140px; overflow-y: auto;">
+                        <span class="text-subtle small">Loading hash lists...</span>
+                    </div>
+                    <button class="btn btn-sm btn-info text-dark fw-bold" onclick="runBatchHashCheck()"><i class="bi bi-play-fill me-1"></i>Check All Selected Files</button>
+                    <div id="batchHashCheckResult" class="small mt-2" style="max-height: 260px; overflow-y: auto;"></div>
+                </div>
+                <div class="modal-footer border-secondary py-2">
                     <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>

@@ -1065,6 +1065,21 @@ function buildExplorerListingTable() {
     table.className = 'table table-dark table-sm table-hover mb-0';
     const thead = document.createElement('thead');
     const headRow = document.createElement('tr');
+    // Multi-select checkbox column (2026-09-09) - real-fs listing only.
+    // buildFileTableRow is exclusively the real-fs row renderer (image-mode/
+    // inline-image/File Views browsing each use their own separate renderer),
+    // so this check is a reliable "are we in real-fs mode right now" gate.
+    if (explorerActiveRowRenderer === buildFileTableRow) {
+        const selTh = document.createElement('th');
+        selTh.style.width = '2.5em';
+        const selectAllCb = document.createElement('input');
+        selectAllCb.type = 'checkbox';
+        selectAllCb.className = 'form-check-input';
+        selectAllCb.title = 'Select all files in this folder';
+        selectAllCb.onclick = () => toggleSelectAllExplorerFiles(selectAllCb.checked);
+        selTh.appendChild(selectAllCb);
+        headRow.appendChild(selTh);
+    }
     [['name', 'Name'], ['size', 'Size'], ['modified', 'Modified'], ['accessed', 'Accessed'], ['changed', 'Changed'], ['created', 'Created']].forEach(([field, label]) => {
         const th = document.createElement('th');
         th.className = 'explorer-sort-th';
@@ -1132,6 +1147,26 @@ function buildFileTableRow(tbody, item) {
     const tr = document.createElement('tr');
     tr.className = 'file-item';
     tr.dataset.itemPath = item.path; // lets the tree's own file-click handler find and select this exact row
+
+    // Multi-select checkbox (2026-09-09) - real files only, since every
+    // batch action (attach/tag/hash-check) needs a real on-disk path; a
+    // directory gets an empty placeholder cell instead, keeping column
+    // alignment with the header's own select-all checkbox.
+    const selTd = document.createElement('td');
+    if (!item.is_dir) {
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input';
+        cb.checked = explorerSelectedFiles.has(item.path);
+        cb.onclick = (ev) => {
+            ev.stopPropagation(); // don't also trigger the row's own single-select/preview click handler below
+            if (cb.checked) explorerSelectedFiles.set(item.path, item);
+            else explorerSelectedFiles.delete(item.path);
+            updateExplorerBatchToolbar();
+        };
+        selTd.appendChild(cb);
+    }
+    tr.appendChild(selTd);
 
     const nameTd = document.createElement('td');
     const icon = item.is_dir
@@ -1203,6 +1238,311 @@ function buildFileTableRow(tbody, item) {
     };
 
     tbody.appendChild(tr);
+}
+
+// --- Multi-select batch actions (2026-09-09) - real-fs listing only. A
+// single-select scalar (activeSelectedFile) already covers "click one file,
+// preview/act on it" everywhere else in File Explorer; this is a genuinely
+// separate, additive selection model layered on top for "act on several
+// files at once" (attach to case / tag / check hash sets), scoped to the
+// real-fs table via buildFileTableRow's own exclusive real-fs-renderer role
+// - image-mode/inline-image/File Views browsing keep their existing
+// single-select-only behavior unchanged. ---
+let explorerSelectedFiles = new Map(); // path -> item (real-fs items only)
+
+// Called whenever the listing changes to something new (a fresh directory,
+// or switching into/out of real-fs mode entirely) - a stale selection from
+// the PREVIOUS listing would otherwise silently survive into a new one.
+function resetExplorerBatchSelection() {
+    explorerSelectedFiles.clear();
+    updateExplorerBatchToolbar();
+}
+
+function toggleSelectAllExplorerFiles(checked) {
+    if (checked) {
+        explorerActiveRows.forEach(row => {
+            if (!row.raw.is_dir) explorerSelectedFiles.set(row.raw.path, row.raw);
+        });
+    } else {
+        explorerSelectedFiles.clear();
+    }
+    renderExplorerActiveTable();
+    updateExplorerBatchToolbar();
+}
+
+function updateExplorerBatchToolbar() {
+    const toolbar = document.getElementById('explorerBatchToolbar');
+    if (!toolbar) return;
+    const n = explorerSelectedFiles.size;
+    if (n === 0) {
+        toolbar.style.display = 'none';
+        return;
+    }
+    toolbar.style.display = 'flex';
+    const countEl = document.getElementById('explorerBatchCount');
+    if (countEl) countEl.textContent = `${n} file${n === 1 ? '' : 's'} selected`;
+}
+
+function clearExplorerSelection() {
+    explorerSelectedFiles.clear();
+    renderExplorerActiveTable();
+    updateExplorerBatchToolbar();
+}
+
+async function batchAttachSelectedFilesToCase() {
+    if (explorerSelectedFiles.size === 0) return;
+    if (!activeCase || !activeCase.case_folder) {
+        showToast('Select or create a case before attaching files.', 'warning');
+        return;
+    }
+    const paths = Array.from(explorerSelectedFiles.keys());
+    let attached = 0, alreadyAttached = 0, failed = 0;
+    for (const path of paths) {
+        try {
+            const res = await fetch('/api/cases/attach_file', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ case_folder: activeCase.case_folder, file_path: path })
+            });
+            const data = await res.json();
+            if (data.success) {
+                if (data.already_attached) alreadyAttached++; else attached++;
+            } else {
+                failed++;
+            }
+        } catch (err) {
+            failed++;
+        }
+    }
+    let msg = `${attached} file(s) attached`;
+    if (alreadyAttached) msg += `, ${alreadyAttached} already attached`;
+    if (failed) msg += `, ${failed} failed`;
+    msg += `. Edit captions or reorder exhibits in Reporting > Files & Artifacts.`;
+    showToast(msg, failed > 0 ? 'warning' : 'success');
+    if (currentReportPath) loadCaseForEditing();
+}
+
+// --- Batch Tag modal ---
+let batchTagModalInstance = null;
+
+async function openBatchTagModal() {
+    if (explorerSelectedFiles.size === 0) return;
+    if (!activeCase || !activeCase.case_folder) {
+        showToast('Select or create a case before tagging.', 'warning');
+        return;
+    }
+    document.getElementById('batchTagFileCount').textContent = explorerSelectedFiles.size;
+    document.getElementById('batchTagComment').value = '';
+    document.getElementById('batchTagModalStatus').textContent = '';
+    document.getElementById('batchNewTagName').value = '';
+    document.getElementById('batchNewTagNotable').checked = false;
+    document.getElementById('batchNewTagSeverity').value = 'none';
+    const formCollapse = document.getElementById('batchTagNewTagForm');
+    if (formCollapse && formCollapse.classList.contains('show')) {
+        bootstrap.Collapse.getOrCreateInstance(formCollapse).hide();
+    }
+
+    const selectEl = document.getElementById('batchTagExistingSelect');
+    selectEl.innerHTML = '<option value="">-- loading tags --</option>';
+    try {
+        const res = await fetch('/api/case_index/summary', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder })
+        });
+        const data = await res.json();
+        const tags = data.tags || [];
+        selectEl.innerHTML = '';
+        if (tags.length === 0) {
+            selectEl.innerHTML = '<option value="">-- no tags yet, create one below --</option>';
+        } else {
+            selectEl.innerHTML = '<option value="">-- pick a tag --</option>';
+            tags.forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = `${t.name}${t.notable ? ' (Notable)' : ''}`; // examiner-entered tag name
+                selectEl.appendChild(opt);
+            });
+        }
+    } catch (err) {
+        selectEl.innerHTML = '<option value="">-- failed to load tags --</option>';
+    }
+
+    if (!batchTagModalInstance) {
+        batchTagModalInstance = new bootstrap.Modal(document.getElementById('batchTagModal'));
+    }
+    batchTagModalInstance.show();
+}
+
+async function runBatchTagApply() {
+    const tagId = document.getElementById('batchTagExistingSelect').value;
+    if (!tagId) { showToast('Pick a tag first.', 'warning'); return; }
+    const comment = document.getElementById('batchTagComment').value.trim();
+    await _runBatchTagApply(tagId, null, comment);
+}
+
+async function runBatchTagCreateAndApply() {
+    const name = document.getElementById('batchNewTagName').value.trim();
+    if (!name) { showToast('Enter a tag name first.', 'warning'); return; }
+    const newTagFields = {
+        new_tag_name: name,
+        new_tag_color: document.getElementById('batchNewTagColor').value,
+        new_tag_notable: document.getElementById('batchNewTagNotable').checked,
+        new_tag_severity: document.getElementById('batchNewTagSeverity').value,
+    };
+    const comment = document.getElementById('batchTagComment').value.trim();
+    await _runBatchTagApply(null, newTagFields, comment);
+}
+
+// Shared apply loop for both "pick an existing tag" and "create a new tag,
+// then apply it" to every selected file. When creating, the FIRST successful
+// call's own returned tag.id is reused for every subsequent file (switching
+// to plain tag_id mode) rather than re-sending new_tag_name N times - the
+// backend's own soft-dedupe-by-name would make that safe anyway, but this
+// avoids relying on it and guarantees every file lands on the exact same
+// tag row, not N separately-deduped lookups.
+async function _runBatchTagApply(tagId, newTagFields, comment) {
+    const statusEl = document.getElementById('batchTagModalStatus');
+    const items = Array.from(explorerSelectedFiles.values());
+    let effectiveTagId = tagId;
+    let tagName = null;
+    let successCount = 0, failCount = 0;
+    for (let i = 0; i < items.length; i++) {
+        statusEl.textContent = `Tagging... (${i + 1}/${items.length})`;
+        const item = items[i];
+        const identity = { source_type: 'real_fs', path: item.path, name: item.name };
+        const body = effectiveTagId
+            ? { case_folder: activeCase.case_folder, tag_id: effectiveTagId, comment, ...identity }
+            : { case_folder: activeCase.case_folder, ...newTagFields, comment, ...identity };
+        try {
+            const res = await fetch('/api/case_index/tag_item', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await res.json();
+            if (data.success) {
+                successCount++;
+                tagName = data.tag.name;
+                if (!effectiveTagId) effectiveTagId = data.tag.id;
+            } else {
+                failCount++;
+            }
+        } catch (err) {
+            failCount++;
+        }
+    }
+    statusEl.textContent = tagName
+        ? `Tagged ${successCount} of ${items.length} file(s) with "${tagName}"${failCount ? ` - ${failCount} failed` : ''}.`
+        : `${successCount} succeeded, ${failCount} failed - no tag was ever created (check the tag name and try again).`;
+    if (successCount > 0) initFileViewsTree(true);
+}
+
+// --- Batch Hash Check modal ---
+let batchHashCheckModalInstance = null;
+
+async function openBatchHashCheckModal() {
+    if (explorerSelectedFiles.size === 0) return;
+    document.getElementById('batchHashCheckFileCount').textContent = explorerSelectedFiles.size;
+    document.getElementById('batchHashCheckResult').innerHTML = '';
+
+    const container = document.getElementById('batchHashCheckContainer');
+    container.innerHTML = '<span class="text-subtle small">Loading hash lists...</span>';
+    const lists = await fetchHashLists();
+    container.innerHTML = '';
+    if (lists.length === 0) {
+        container.innerHTML = '<span class="text-subtle small">No saved hash sets yet - create one in Settings &gt; Case &amp; Reporting &gt; Hash Sets.</span>';
+    } else {
+        lists.forEach(l => {
+            const row = document.createElement('div');
+            row.className = 'form-check';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.className = 'form-check-input batch-hash-list-check-cb';
+            input.id = `batchHashListCheckCb_${l.id}`;
+            input.value = l.id;
+            input.checked = true; // opt-out, not opt-in - matches the single-file hash-check modal's own convention
+            const label = document.createElement('label');
+            label.className = 'form-check-label';
+            label.htmlFor = input.id;
+            label.textContent = `${l.name} (${l.algorithm.toUpperCase()}, ${l.label === 'known_good' ? 'Known Good' : 'Known Bad'}, ${l.hash_count} hash${l.hash_count === 1 ? '' : 'es'})`; // examiner-entered name
+            row.appendChild(input);
+            row.appendChild(label);
+            container.appendChild(row);
+        });
+    }
+
+    if (!batchHashCheckModalInstance) {
+        batchHashCheckModalInstance = new bootstrap.Modal(document.getElementById('batchHashCheckModal'));
+    }
+    batchHashCheckModalInstance.show();
+}
+
+async function runBatchHashCheck() {
+    const resultEl = document.getElementById('batchHashCheckResult');
+    const hashListIds = Array.from(document.querySelectorAll('.batch-hash-list-check-cb:checked')).map(cb => cb.value);
+    if (hashListIds.length === 0) {
+        resultEl.innerHTML = '<span class="text-warning">Select at least one hash list.</span>';
+        return;
+    }
+    const items = Array.from(explorerSelectedFiles.values());
+    resultEl.innerHTML = '';
+    const table = document.createElement('table');
+    table.className = 'table table-dark table-sm mb-0';
+    table.innerHTML = '<thead><tr><th>File</th><th>Result</th></tr></thead>'; // static/trusted markup
+    const tbody = document.createElement('tbody');
+    table.appendChild(tbody);
+    resultEl.appendChild(table);
+
+    let matchCount = 0, failCount = 0;
+    for (const item of items) {
+        const tr = document.createElement('tr');
+        const nameTd = document.createElement('td');
+        nameTd.className = 'font-monospace small';
+        nameTd.appendChild(document.createTextNode(item.name)); // examiner-visible filename, text node only
+        const resultTd = document.createElement('td');
+        resultTd.className = 'small';
+        resultTd.textContent = 'Checking...';
+        tr.appendChild(nameTd);
+        tr.appendChild(resultTd);
+        tbody.appendChild(tr);
+
+        try {
+            const res = await fetch('/api/files/check_hash_lists', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: item.path, hash_list_ids: hashListIds })
+            });
+            const data = await res.json();
+            resultTd.innerHTML = '';
+            if (!data.success) {
+                resultTd.className = 'small text-danger';
+                resultTd.appendChild(document.createTextNode(data.error || 'Failed.'));
+                failCount++;
+            } else if (data.matches.length === 0) {
+                resultTd.className = 'small text-success';
+                resultTd.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i>'; // static/trusted markup
+                resultTd.appendChild(document.createTextNode('Clean'));
+            } else {
+                resultTd.className = 'small text-danger fw-bold';
+                matchCount++;
+                data.matches.forEach(m => {
+                    const icon = m.label === 'known_good' ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill';
+                    const line = document.createElement('div');
+                    line.innerHTML = `<i class="bi ${icon} me-1"></i>`; // static/trusted markup
+                    line.appendChild(document.createTextNode(`${m.list_name} (${m.label === 'known_good' ? 'Known Good' : 'Known Bad'})`)); // examiner-entered list name
+                    resultTd.appendChild(line);
+                });
+            }
+        } catch (err) {
+            resultTd.className = 'small text-danger';
+            resultTd.textContent = 'Request failed.';
+            failCount++;
+        }
+    }
+
+    const summary = document.createElement('div');
+    summary.className = 'small mt-2 fw-bold ' + (matchCount > 0 ? 'text-danger' : 'text-success');
+    summary.textContent = matchCount > 0
+        ? `${matchCount} of ${items.length} file(s) matched a hash set.`
+        : `No matches across ${items.length} file(s)${failCount ? ` (${failCount} failed to check)` : ''}.`;
+    resultEl.appendChild(summary);
 }
 
 // --- File Explorer folder tree (left column) ---
@@ -1497,6 +1837,7 @@ async function loadInlineImageDir(node, ancestorPath) {
         accessed: child.raw.atime, changed: child.raw.ctime, created: child.raw.crtime, raw: child,
     }));
     explorerListingExtraCols = [];
+    resetExplorerBatchSelection();
     explorerActiveRowRenderer = (tbody, child) => renderInlineImageEntryRow(tbody, child, childAncestors);
     renderExplorerActiveTable();
 }
@@ -2348,6 +2689,7 @@ function renderFileViewsResults(node, rows) {
         size: row.size, modified: row.mtime, accessed: row.atime, changed: row.ctime, created: row.crtime,
         raw: row,
     }));
+    resetExplorerBatchSelection();
     explorerActiveRowRenderer = (tbody, row) => renderFileViewsResultRow(tbody, row, node.queryType);
     renderExplorerActiveTable();
 }
@@ -4053,6 +4395,7 @@ async function loadExplorer(path) {
             accessed: item.accessed, changed: item.changed, created: item.created, raw: item
         }));
         explorerListingExtraCols = [];
+        resetExplorerBatchSelection();
         explorerActiveRowRenderer = buildFileTableRow;
         renderExplorerActiveTable();
 
@@ -8204,6 +8547,7 @@ async function loadExplorerImageDir(inode) {
             accessed: entry.atime, changed: entry.ctime, created: entry.crtime, raw: entry
         }));
         explorerListingExtraCols = [];
+        resetExplorerBatchSelection();
         explorerActiveRowRenderer = (tbody, entry) => renderExplorerImageEntryRow(tbody, entry);
         renderExplorerActiveTable();
 
