@@ -21,6 +21,28 @@ file after updating to see what changed.
 
 ---
 
+## [1.79.0] - 2026-09-09
+
+### Added
+- **A "Case Highlights" summary at the top of Pattern of Life** - a few plain-English badges (most-
+  contacted person, likely home location, busiest time of day) computed automatically from whatever
+  the pane's own sections have already loaded, so there's something worth noticing at a glance
+  before scrolling into the detailed sections below. Fills in progressively as each section's data
+  becomes available; shows a "not enough data yet" note if nothing has been parsed for this case yet.
+
+### Fixed
+- **The standalone Geolocation report tab only ever checked for KML files, so a case with real
+  Google Takeout location-history data (already shown correctly on Pattern of Life) misleadingly
+  reported "no geolocation data found" if it had no KML file attached.** Now pulls from the same
+  merged data source Pattern of Life's own map already uses - every already-indexed Takeout point
+  plus every KML file, grouped and labeled by source.
+
+### Changed
+- **Pattern of Life moved to the 2nd tab in Reporting**, right after Overview (previously 7th of 11,
+  well past Report Narrative/Case Notes/Physical Custody Log/Files & Artifacts) - it's one of the
+  most useful "quick look, find something of value" views in the app and was buried behind several
+  editing-focused tabs a first-time reviewer of a case is less likely to need immediately.
+
 ## [1.78.0] - 2026-09-09
 
 ### Added
