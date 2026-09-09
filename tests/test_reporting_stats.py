@@ -255,6 +255,58 @@ def test_tags_flagged_shares_one_list_case_folders_walk_not_a_second_of_its_own(
     assert call_count["n"] == 1
 
 
+def test_cases_needing_migration_counts_only_non_consolidated_schema_cases(evidence_root, monkeypatch):
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Open", 1)
+    # A legacy case (case_info.json, no *_case.json marker) - list_case_
+    # folders() reports its schema back as "legacy", never "consolidated".
+    legacy_dir = os.path.join(evidence_root, "2026-CASE-LEGACY")
+    os.makedirs(legacy_dir)
+    with open(os.path.join(legacy_dir, "case_info.json"), 'w') as f:
+        json.dump({"case_number": "2026-CASE-LEGACY", "examiner": "x", "created_at": "2026-01-01"}, f)
+
+    stats = _compute_reporting_stats(["cases_needing_migration"])
+    assert stats[0]["value"] == 1
+
+
+def test_cases_needing_migration_is_zero_when_every_case_is_already_consolidated(evidence_root, monkeypatch):
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Open", 1)
+    _write_consolidated_case(evidence_root, "2026-CASE-B", "2026-CASE-B", "Closed", 0)
+    stats = _compute_reporting_stats(["cases_needing_migration"])
+    assert stats[0]["value"] == 0
+
+
+def test_cases_needing_migration_shares_the_one_list_case_folders_walk(evidence_root, monkeypatch):
+    """Unlike tags_flagged (which needs its own throttle since it opens a
+    per-case SQLite connection per case), cases_needing_migration is free
+    once the shared list_case_folders() walk already ran - every case dict
+    it returns already carries its own `schema` field, no second walk or
+    per-case I/O needed. Proven the same strong way tags_flagged's own
+    duplicate-walk regression test already established: fail loudly on a
+    second call, not just check the end result looks right."""
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    legacy_dir = os.path.join(evidence_root, "2026-CASE-LEGACY")
+    os.makedirs(legacy_dir)
+    with open(os.path.join(legacy_dir, "case_info.json"), 'w') as f:
+        json.dump({"case_number": "2026-CASE-LEGACY", "examiner": "x", "created_at": "2026-01-01"}, f)
+
+    real_list_case_folders = reporting.list_case_folders
+    call_count = {"n": 0}
+
+    def counting_wrapper():
+        call_count["n"] += 1
+        if call_count["n"] > 1:
+            raise AssertionError("list_case_folders() was called a second time in one request")
+        return real_list_case_folders()
+
+    monkeypatch.setattr(reporting, "list_case_folders", counting_wrapper)
+    stats = _compute_reporting_stats(["total_cases", "cases_needing_migration"])
+    by_key = {s["key"]: s for s in stats}
+    assert by_key["cases_needing_migration"]["value"] == 1
+    assert call_count["n"] == 1
+
+
 def test_an_unrecognized_key_is_silently_skipped_not_fatal(evidence_root, monkeypatch):
     _redirect_evidence_root(monkeypatch, evidence_root)
     stats = _compute_reporting_stats(["total_cases", "made_up_stat"])
@@ -269,13 +321,16 @@ def test_stat_order_follows_the_requested_key_order_not_registry_order(evidence_
 
 # --- Route-level tests ---
 
-def test_registry_route_returns_all_five_definitions(client):
+def test_registry_route_returns_all_six_definitions(client):
     res = client.get("/api/reporting/stats/registry")
     assert res.status_code == 200
     data = res.get_json()
     assert data["success"] is True
     keys = {d["key"] for d in data["stats"]}
-    assert keys == {"total_cases", "active_cases", "evidence_items", "reports_exported", "tags_flagged"}
+    assert keys == {
+        "total_cases", "active_cases", "evidence_items", "reports_exported",
+        "tags_flagged", "cases_needing_migration",
+    }
     # Every definition needs a real label an examiner-facing checkbox can
     # show, not just an internal key.
     assert all(d.get("label") for d in data["stats"])
