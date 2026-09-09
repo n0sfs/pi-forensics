@@ -21,6 +21,17 @@ file after updating to see what changed.
 
 ---
 
+## [1.77.4] - 2026-09-09
+
+### Fixed
+- **An MTP fallback pull (Mobile Forensics > Android Device > MTP File Transfer) could leave the
+  station's shared acquisition/recovery/mobile job slot stuck as "busy" forever**, blocking every
+  other job on the station - a new acquisition, a recovery run, another mobile pull, anything - until
+  the app itself was restarted. This affected every MTP pull regardless of whether it succeeded,
+  failed, or was stopped early; the standard `adb pull`/Backup/Bugreport modes were never affected.
+  Found during a systematic internal review, not reported by a user - fixed and confirmed against the
+  station's real running code.
+
 ## [1.77.3] - 2026-09-09
 
 ### Fixed
