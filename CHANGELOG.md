@@ -21,6 +21,14 @@ file after updating to see what changed.
 
 ---
 
+## [1.77.3] - 2026-09-09
+
+### Fixed
+- **A Case Bundle export stopped partway through could still report "100% complete" and the full
+  expected size**, even though the resulting zip file only actually contains whatever was added before
+  the stop. The progress bar and byte count now correctly reflect the real, partial amount whenever a
+  bundle export is stopped early.
+
 ## [1.77.2] - 2026-09-09
 
 ### Fixed
