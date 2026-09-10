@@ -1857,6 +1857,63 @@ def attach_file_to_case():
 
     return jsonify({"success": True, "already_attached": already_attached, "file_count": len(files)})
 
+@reporting_bp.route('/api/cases/set_file_caption', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def set_file_caption():
+    """Sets or clears an exhibit's caption immediately - commits straight to
+    the case JSON on disk, the same "tag it where you find it" immediacy
+    attach_file_to_case()/case_index_tag_item() already have (2026-09-09,
+    the last of the investigation-workflow backlog's own items). Closes a
+    real data-loss trap: a caption previously only ever persisted through
+    Reporting's own staged "Save Report Changes" flow, so navigating away
+    (or simply forgetting to click Save) lost it silently - a trap File
+    Explorer's Tag/Attach modal made worse, since that modal has no Save
+    button at all to remind an examiner one exists. Only ever settable on a
+    file that's ALREADY an attached exhibit - captioning something not yet
+    attached is meaningless, there's no exhibit yet for the caption to
+    describe (mirrors attach_file_to_case() itself: attach first, caption
+    after, never the other way around).
+
+    file_path is deliberately NOT re-validated through safe_path() here -
+    unlike attach_file_to_case() (which does a real os.path.isfile() check
+    against it), this route never touches the filesystem at file_path at
+    all, only using it as a dict key checked against attachments.files (a
+    list whose every entry was already safe_path()-validated the moment it
+    was attached). Matches add_custody_entry()'s own identical linked_files
+    membership-only check, for the identical reason."""
+    req = request.get_json() or {}
+    case_folder = safe_path(req.get('case_folder'))
+    file_path = req.get('file_path')
+    caption = (req.get('caption') or '').strip()
+
+    if not case_folder or not os.path.isdir(case_folder):
+        return jsonify({"success": False, "error": "Case folder not found or outside the permitted evidence directory."}), 400
+    if not file_path or not isinstance(file_path, str):
+        return jsonify({"success": False, "error": "A file path is required."}), 400
+
+    case_file = case_consolidated_path(case_folder)
+    if not case_file:
+        return jsonify({"success": False, "error": "This case hasn't been migrated to the consolidated report format yet - edit captions from the Reporting tab instead."}), 400
+
+    data = _read_case_file(case_file)
+    attachments = data.setdefault('attachments', {})
+    files = attachments.get('files', [])
+    if file_path not in files:
+        return jsonify({"success": False, "error": "This file isn't an attached exhibit yet - attach it to the case first."}), 400
+
+    captions = attachments.setdefault('file_captions', {})
+    if caption:
+        captions[file_path] = caption
+    else:
+        captions.pop(file_path, None)
+
+    data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
+    _write_case_file(case_file, data)
+    log_chain_of_custody("file_caption_set", {"case_folder": case_folder, "file_path": file_path, "cleared": not bool(caption)})
+
+    return jsonify({"success": True, "caption": caption, "updated_at": data['updated_at']})
+
 # --- Case Notes: timestamped, append-only journal entries ---
 # Inspired by forensicnotes.com's contemporaneous-notes model, adapted to
 # what this appliance can honestly provide: there's no real cryptographic
