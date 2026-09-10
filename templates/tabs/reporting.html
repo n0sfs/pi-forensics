@@ -3,17 +3,13 @@
                             <div class="card">
                                 <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-3 py-2">
                                     <span><i class="bi bi-journal-richtext me-2"></i>Case Report</span>
-                                    <!-- Station-wide stat cards - examiner-selected (Settings >
-                                         Case & Reporting), one row of however many are enabled. Moved
-                                         here from Home (2026-08-21), originally a single hardcoded
-                                         Total Cases block; made a generic, examiner-configurable row
-                                         (2026-09-03) driven entirely by GET /api/reporting/stats -
-                                         renderReportingStatCard() below needs zero changes to support
-                                         a future new stat, only REPORTING_STAT_DEFINITIONS on the
-                                         backend does. Deliberately station-wide, not scoped to
-                                         whatever case is currently active - stays visible even with
-                                         no case selected. -->
-                                    <div id="reportingStatsRow" class="d-flex flex-wrap align-items-center gap-3"></div>
+                                    <!-- The station-wide stat row (Total Cases, etc.) that used to sit
+                                         here moved to its own global row below the top navbar
+                                         (#reportingStatsRow in index.html) - it was already station-wide,
+                                         not case-scoped, so it fits better next to the system-telemetry
+                                         header than buried inside one specific tab. loadReportingStats()/
+                                         renderReportingStatCard() in main.js are unchanged, only the
+                                         markup's location moved. -->
                                     <div class="d-flex flex-wrap align-items-center gap-2">
                                         <span class="small text-subtle fw-normal">Follows the case selected in the bar above - select or create one there to populate this</span>
                                         <!-- Case Notes/Custody Log/Attach-to-Case/tags all save immediately - only
@@ -70,14 +66,18 @@
                                                     <!-- Search moved here from its own tab (2026-09-09) - light enough
                                                          (one input + a results list) to live at the top of the hub
                                                          rather than needing a dedicated nav item; ids/logic unchanged
-                                                         from the old Search tab, see runCaseSearch() in main.js. -->
+                                                         from the old Search tab, see runCaseSearch() in main.js.
+                                                         The explanatory paragraph that used to sit here as its own
+                                                         line was condensed into a hover/click info icon instead -
+                                                         same text, just on-demand rather than always-on-screen. -->
                                                     <div class="mb-3">
-                                                        <label class="telemetry-grid-label d-block mb-1"><i class="bi bi-search me-1"></i>Quick Search</label>
-                                                        <div class="small text-subtle mb-2">Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab.</div>
+                                                        <label class="telemetry-grid-label d-block mb-1" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button" style="cursor:help;"
+                                                               title="Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab.">
+                                                            <i class="bi bi-search me-1"></i>Quick Search
+                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem;"></i>
+                                                        </label>
                                                         <input type="text" id="repSearchInput" class="form-control form-control-sm mb-2" placeholder="Search keyword..." oninput="runCaseSearch()">
-                                                        <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 260px; overflow-y: auto; background-color:#090b10;">
-                                                            <span class="text-subtle">Type a keyword above to search.</span>
-                                                        </div>
+                                                        <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 260px; overflow-y: auto; background-color:#090b10;"></div>
                                                     </div>
                                                     <hr class="border-secondary my-3">
                                                     <!-- Every tile below is clickable (2026-09-09) - jumps

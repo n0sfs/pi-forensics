@@ -21,6 +21,18 @@ file after updating to see what changed.
 
 ---
 
+## [1.87.1] - 2026-09-10
+
+### Changed
+- **Reporting's Case Report tab is a little less cluttered.** The paragraph explaining what Quick
+  Search covers is now an info icon next to the "Quick Search" label - hover or click it (or the
+  label itself) to see the same explanation as a tooltip instead of it always taking up a line. The
+  "Type a keyword above to search" placeholder under the search box is gone too - it now just stays
+  blank until you type something.
+- **The Total Cases stat row moved out of the Reporting tab.** It was already station-wide (visible
+  with no case selected), so it now lives in its own row right below the top header, visible from
+  every tab instead of only when you're on Reporting.
+
 ## [1.87.0] - 2026-09-10
 
 ### Changed
