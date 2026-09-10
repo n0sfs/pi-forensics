@@ -207,47 +207,36 @@
                                                                 </div>
                                                             </div>
                                                         </div>
-                                                    </div>
-                                                    <hr class="border-secondary my-3">
-                                                    <!-- Both blocks below condensed into side-by-side cards, with their
-                                                         explanatory paragraph moved to a hover/click info icon on the
-                                                         heading instead of always-visible text - same pattern as Quick
-                                                         Search's own info icon above. -->
-                                                    <div class="row g-2">
-                                                        <div class="col-md-6">
-                                                            <div class="bg-app-dark border border-secondary rounded-2 p-3 h-100">
-                                                                <h6 class="text-success fw-bold fs-6 mb-2">
-                                                                    <i class="bi bi-patch-check-fill me-1"></i>Case-wide Integrity Check
-                                                                    <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
-                                                                       title="Re-hashes every completed acquisition's own output file and compares it against the hashes recorded at acquisition time - the case-wide equivalent of File Explorer's single-file &quot;Verify Image Hash&quot; action. Runs as a background job and uses the one station-wide job slot, so it will block a new acquisition/recovery job from starting until it finishes."></i>
-                                                                </h6>
-                                                                <button class="btn btn-sm btn-warning fw-bold" id="btnVerifyAllEvidence" onclick="startVerifyAllEvidence()"><i class="bi bi-patch-check me-1"></i>Verify All Evidence</button>
-                                                                <div id="verifyAllEvidenceProgress" style="display:none;" class="mt-2">
-                                                                    <div id="verifyAllEvidenceStatus" class="small text-info mb-1">Status: --</div>
-                                                                    <div class="progress" style="height: 6px;">
-                                                                        <div id="verifyAllEvidenceBar" class="progress-bar bg-warning" style="width: 0%;"></div>
+                                                        <!-- 9th tile (2026-09-10, completes the 3x3 grid - was previously
+                                                             its own visually-mismatched block below, styled with a plain
+                                                             bg-app-dark div instead of a real .card like every tile above
+                                                             it). Not a click-to-navigate tile like its 8 siblings (it has
+                                                             its own real button/progress/result inside, so the whole card
+                                                             doesn't get role=button/onclick/the hover-lift .home-tile
+                                                             affordance - that would wrongly imply "click anywhere to go
+                                                             somewhere") - just the same .card + .home-tile-icon visual
+                                                             treatment for consistency. Case Bundle Export (the sibling
+                                                             this used to sit beside) moved to its own section on the
+                                                             Export tab - see #repExportPane below. -->
+                                                        <div class="col-md-6 col-lg-4">
+                                                            <div class="card">
+                                                                <div class="card-body">
+                                                                    <div class="d-flex align-items-center gap-3 mb-2">
+                                                                        <div class="home-tile-icon"><i class="bi bi-patch-check-fill"></i></div>
+                                                                        <div class="fw-bold fs-6">
+                                                                            Case-wide Integrity Check
+                                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                                               title="Re-hashes every completed acquisition's own output file and compares it against the hashes recorded at acquisition time - the case-wide equivalent of File Explorer's single-file &quot;Verify Image Hash&quot; action. Runs as a background job and uses the one station-wide job slot, so it will block a new acquisition/recovery job from starting until it finishes."></i>
+                                                                        </div>
                                                                     </div>
-                                                                </div>
-                                                                <div id="verifyAllEvidenceLastResult" class="small mt-2"></div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6">
-                                                            <div class="bg-app-dark border border-secondary rounded-2 p-3 h-100">
-                                                                <h6 class="text-success fw-bold fs-6 mb-2">
-                                                                    <i class="bi bi-file-earmark-zip-fill me-1"></i>Case Bundle Export
-                                                                    <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
-                                                                       title="Zips the entire case folder for archival or handoff to another examiner - everything a case actually contains, not just the exported report. Uses the one station-wide job slot; a bundle that includes raw acquisition images will block a new acquisition/recovery job from starting for as long as it runs."></i>
-                                                                </h6>
-                                                                <div class="form-check mb-2">
-                                                                    <input type="checkbox" class="form-check-input" id="bundleIncludeImages">
-                                                                    <label class="form-check-label small" for="bundleIncludeImages">Include raw acquisition images (can be very large - blocks new jobs for longer)</label>
-                                                                </div>
-                                                                <button class="btn btn-sm btn-outline-info fw-bold" id="btnCaseBundleExport" onclick="startCaseBundleExport()"><i class="bi bi-file-earmark-zip me-1"></i>Export Case Bundle</button>
-                                                                <div id="caseBundleExportProgress" style="display:none;" class="mt-2">
-                                                                    <div id="caseBundleExportStatus" class="small text-info mb-1">Status: --</div>
-                                                                    <div class="progress" style="height: 6px;">
-                                                                        <div id="caseBundleExportBar" class="progress-bar bg-info" style="width: 0%;"></div>
+                                                                    <button class="btn btn-sm btn-warning fw-bold" id="btnVerifyAllEvidence" onclick="startVerifyAllEvidence()"><i class="bi bi-patch-check me-1"></i>Verify All Evidence</button>
+                                                                    <div id="verifyAllEvidenceProgress" style="display:none;" class="mt-2">
+                                                                        <div id="verifyAllEvidenceStatus" class="small text-info mb-1">Status: --</div>
+                                                                        <div class="progress" style="height: 6px;">
+                                                                            <div id="verifyAllEvidenceBar" class="progress-bar bg-warning" style="width: 0%;"></div>
+                                                                        </div>
                                                                     </div>
+                                                                    <div id="verifyAllEvidenceLastResult" class="small mt-2"></div>
                                                                 </div>
                                                             </div>
                                                         </div>
@@ -807,6 +796,32 @@
                                                     <div id="exportJsonPreviewGroup" class="mt-3" style="display:none;">
                                                         <div class="small text-subtle mb-2">Live raw JSON structure of the case report - auto-updates on load/save. Export downloads exactly this.</div>
                                                         <pre id="jsonPreview" class="log-window mb-0" style="height: clamp(180px, 40vh, 420px);">[Select or create a case above to view raw structured JSON data]</pre>
+                                                    </div>
+                                                    <hr class="border-secondary my-3">
+                                                    <!-- Moved here from Overview (2026-09-10) - a genuinely different
+                                                         kind of export from everything above (a curated report
+                                                         document): this zips the whole case FOLDER, raw acquisition
+                                                         images and all, not a generated document. Kept visually
+                                                         distinct (its own bordered block, own explanatory line) so it
+                                                         doesn't read as one more Export Report format option. -->
+                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3">
+                                                        <h6 class="text-success fw-bold fs-6 mb-2">
+                                                            <i class="bi bi-file-earmark-zip-fill me-1"></i>Case Bundle Export (Full Archive)
+                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                               title="Zips the entire case folder for archival or handoff to another examiner - everything a case actually contains, not just the exported report above. Uses the one station-wide job slot; a bundle that includes raw acquisition images will block a new acquisition/recovery job from starting for as long as it runs."></i>
+                                                        </h6>
+                                                        <div class="small text-subtle mb-2">A different kind of export from the report above - a zip of the whole case folder as it sits on disk (raw images, exhibits, notes, everything), not a generated document.</div>
+                                                        <div class="form-check mb-2">
+                                                            <input type="checkbox" class="form-check-input" id="bundleIncludeImages">
+                                                            <label class="form-check-label small" for="bundleIncludeImages">Include raw acquisition images (can be very large - blocks new jobs for longer)</label>
+                                                        </div>
+                                                        <button class="btn btn-sm btn-outline-info fw-bold" id="btnCaseBundleExport" onclick="startCaseBundleExport()"><i class="bi bi-file-earmark-zip me-1"></i>Export Case Bundle</button>
+                                                        <div id="caseBundleExportProgress" style="display:none;" class="mt-2">
+                                                            <div id="caseBundleExportStatus" class="small text-info mb-1">Status: --</div>
+                                                            <div class="progress" style="height: 6px;">
+                                                                <div id="caseBundleExportBar" class="progress-bar bg-info" style="width: 0%;"></div>
+                                                            </div>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
