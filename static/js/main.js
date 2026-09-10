@@ -363,7 +363,7 @@ const GUIDE_SCENARIOS = {
             "Leave the write-blocker switched on (it's on by default) - this guarantees nothing can be written to the original drive. The top-right \"Write Blocker\" badge always shows the state of whichever drive is selected here.",
             "Under \"Format\", the default (Raw / dc3dd) is a safe choice for most cases - hover the format dropdown for what each option means.",
             "Fill in Case #, Evidence ID, and Examiner if you haven't already, then click \"Start Acquisition\" and wait for it to finish.",
-            "Once done, open Reporting - if a case was active, the job's hashes and telemetry are already there under the Jobs tab. Use Export to generate a PDF/HTML report.",
+            "Once done, open Reporting - if a case was active, the job's hashes and telemetry are already there under the Evidence Activity tab. Use Export to generate a PDF/HTML report.",
         ]
     },
     damaged: {
@@ -527,7 +527,7 @@ const FAQ_GROUPS = [
             },
             {
                 q: "How do I know my acquisition actually completed successfully?",
-                a: "Check the status text and console during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, if the job ran against an active case, open Reporting - its hashes and telemetry are already recorded under the Jobs tab. Otherwise, right-click the resulting image in File Explorer and use \"Verify Image Hash\"."
+                a: "Check the status text and console during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, if the job ran against an active case, open Reporting - its hashes and telemetry are already recorded under the Evidence Activity tab. Otherwise, right-click the resulting image in File Explorer and use \"Verify Image Hash\"."
             },
             {
                 q: "The drive I need to image is BitLocker, LUKS, or VeraCrypt encrypted - can this station handle that?",
@@ -654,7 +654,7 @@ const FAQ_GROUPS = [
             },
             {
                 q: "Has this exact file/hash shown up in a different case on this station?",
-                a: "Settings > Case & Reporting > Cross-Case Hash Lookup checks a specific hash against every other case on the station - useful for spotting the same file reappearing across unrelated cases. It's scoped to exact hash matches, not free-text search across cases - for that, use the Search tab inside a case's own Reporting > Search pane, or Pattern of Life/File Views for tags and parsed evidence content."
+                a: "Settings > Case & Reporting > Cross-Case Hash Lookup checks a specific hash against every other case on the station - useful for spotting the same file reappearing across unrelated cases. It's scoped to exact hash matches, not free-text search across cases - for that, use the Quick Search box on a case's own Reporting > Overview tab, or Pattern of Life/File Views for tags and parsed evidence content."
             },
             {
                 q: "What's the Evidence Timeline tab?",
@@ -879,7 +879,7 @@ const REPORT_FIELD_MAPPING = [
     ["Geolocation / GPS Evidence", "KML files attached to or found in the case folder", "Auto-discovered; generate via File Explorer's \"Extract Geolocation (KML)\""],
     ["Case Activity Log", "Chain-of-custody entries matching this case #", "Automatic"],
     ["Filesystem Timeline (MACB)", "MACB walk of an acquired disk image, or real file timestamps from a mobile pull/backup or Logical Acquisition folder", "Automatic, needs the image or output folder still on disk"],
-    ["Physical Evidence Custody Log", "From/To custodian handoff entries, append-only", "Custody Log tab"],
+    ["Physical Evidence Custody Log", "From/To custodian handoff entries, append-only", "Case Notes &amp; Custody Log tab"],
     ["Pattern of Life: Contact Correlation &amp; Location Activity", "Correlated contacts/co-occurrences + frequent-location clusters - the same data the interactive Pattern of Life tab shows (no map image or graph, no Home/Work labeling in the export)", "Automatic - reflects whatever the case's own parsed_artifacts index and Relationship Graph already show"],
 ];
 
@@ -13602,7 +13602,8 @@ async function loadAnalysisCoverage() {
     }
 }
 
-// Coverage -> Limitations quick-fill (2026-09-09) - the Coverage tab already
+// Coverage -> Limitations quick-fill (2026-09-09) - the Analysis Coverage
+// section (Evidence Activity tab) already
 // computes exactly what "Limitations & Statement of Uncertainty" is meant to
 // disclose (what analysis hasn't been run against each evidence item yet),
 // but nothing connected the two before this - closing that gap by inserting
@@ -15039,6 +15040,19 @@ function caseSearchSnippet(text, query) {
     return (start > 0 ? '...' : '') + text.slice(start, end) + (end < text.length ? '...' : '');
 }
 
+// Shared by both the Overview dashboard tiles and appendCaseSearchGroup()
+// below - a real .click() on the target nav button, not
+// new bootstrap.Tab(tabBtn).show(), since several targets (Case Notes &
+// Custody Log, Evidence Activity, Files & Artifacts, ...) have their own
+// onclick attribute that (re)renders the pane's content from whatever's
+// currently loaded; Tab.show() alone switches the visible pane but skips
+// that render, which would show stale or empty content on a pane never
+// manually clicked into yet this session.
+function jumpToReportingTab(tabId) {
+    const tabBtn = document.getElementById(tabId);
+    if (tabBtn) tabBtn.click();
+}
+
 function appendCaseSearchGroup(container, title, jumpToTabId, items) {
     const groupHeader = document.createElement('div');
     groupHeader.className = 'text-info fw-bold small text-uppercase mt-2 mb-1';
@@ -15050,18 +15064,7 @@ function appendCaseSearchGroup(container, title, jumpToTabId, items) {
         row.className = 'mb-1 pb-1 border-bottom border-secondary';
         row.style.cursor = 'pointer';
         row.title = `Jump to ${title}`;
-        row.onclick = () => {
-            // A real .click() (not new bootstrap.Tab(tabBtn).show()) - several
-            // jump targets (Case Notes/Files & Artifacts/Jobs/Case Activity
-            // Log, and now Pattern of Life for a Contacts match) have their
-            // own onclick attribute that (re)renders the pane's content from
-            // whatever's currently loaded; Tab.show() alone switches the
-            // visible pane but skips that render entirely, which would show
-            // stale or empty content on a pane never manually clicked into
-            // yet this session. A real click fires both.
-            const tabBtn = document.getElementById(jumpToTabId);
-            if (tabBtn) tabBtn.click();
-        };
+        row.onclick = () => jumpToReportingTab(jumpToTabId);
 
         const labelEl = document.createElement('div');
         labelEl.className = 'text-warning';
@@ -15184,7 +15187,10 @@ async function runCaseSearch() {
     });
     if (historyMatches.length > 0) {
         totalMatches += historyMatches.length;
-        appendCaseSearchGroup(container, 'Case Activity Log', 'repHistoryTab', historyMatches.map(entry => (
+        // 'repJobsTab' (not the old, now-removed 'repHistoryTab') - Case
+        // Activity Log was folded into the same merged Evidence Activity
+        // tab as Jobs/Coverage on 2026-09-09, see reporting.html.
+        appendCaseSearchGroup(container, 'Case Activity Log', 'repJobsTab', historyMatches.map(entry => (
             { label: `${entry.timestamp || '--'} · ${entry.action || '--'}${entry.user ? ' · ' + entry.user : ''}`, snippet: null }
         )));
     }
