@@ -21,6 +21,14 @@ file after updating to see what changed.
 
 ---
 
+## [1.83.0] - 2026-09-09
+
+### Added
+- **Follow-up/task flag on Case Notes.** Every note now has a Status (Open/Resolved) and an
+  optional "Assigned to" name, both changeable with a click right on the note - no need to edit the
+  note's own text to hand something off to a colleague or mark it done. Neither field touches the
+  note's own edit history; they're metadata about the note, not corrections to it.
+
 ## [1.82.0] - 2026-09-09
 
 ### Added
