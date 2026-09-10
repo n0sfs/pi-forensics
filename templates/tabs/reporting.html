@@ -71,7 +71,15 @@
                                                          line was condensed into a hover/click info icon instead -
                                                          same text, just on-demand rather than always-on-screen. -->
                                                     <div class="mb-3">
-                                                        <label class="telemetry-grid-label d-block mb-1" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button" style="cursor:help;"
+                                                        <!-- d-inline-block, not d-block - this label doubles as the tooltip
+                                                             trigger. d-block stretched its bounding box across the whole
+                                                             card (its parent has no other inline content to constrain it
+                                                             to), so Popper centered the tooltip on that full-width invisible
+                                                             box instead of the actual "Quick Search" text+icon - it visibly
+                                                             landed near screen-center rather than next to the label. The
+                                                             following <input> is still block-level on its own, so it still
+                                                             lands on its own line below regardless of the label's display. -->
+                                                        <label class="telemetry-grid-label d-inline-block mb-1" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button" style="cursor:help;"
                                                                title="Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab.">
                                                             <i class="bi bi-search me-1"></i>Quick Search
                                                             <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem;"></i>
