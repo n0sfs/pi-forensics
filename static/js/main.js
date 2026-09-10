@@ -890,7 +890,7 @@ const REPORT_FIELD_MAPPING = [
     ["Geolocation / GPS Evidence", "KML files attached to or found in the case folder", "Auto-discovered; generate via File Explorer's \"Extract Geolocation (KML)\""],
     ["Case Activity Log", "Chain-of-custody entries matching this case #", "Automatic"],
     ["Filesystem Timeline (MACB)", "MACB walk of an acquired disk image, or real file timestamps from a mobile pull/backup or Logical Acquisition folder", "Automatic, needs the image or output folder still on disk"],
-    ["Physical Evidence Custody Log", "From/To custodian handoff entries, append-only", "Case Notes &amp; Custody Log tab"],
+    ["Physical Evidence Custody Log", "From/To custodian handoff entries, append-only, each optionally linked to which exhibit(s) changed hands", "Case Notes &amp; Custody Log tab"],
     ["Pattern of Life: Contact Correlation &amp; Location Activity", "Correlated contacts/co-occurrences + frequent-location clusters - the same data the interactive Pattern of Life tab shows (no map image or graph, no Home/Work labeling in the export)", "Automatic - reflects whatever the case's own parsed_artifacts index and Relationship Graph already show"],
 ];
 
@@ -14522,8 +14522,15 @@ let assigningCaseNoteId = null; // mirrors editingCaseNoteId's own inline-toggle
 // route the Custom Case Field item-picker already uses) - fine, since it's
 // only ever called when the Case Notes tab is actually opened/refreshed,
 // never on a hot path.
-async function renderNewCaseNoteLinkedFilesChecklist() {
-    const container = document.getElementById("newCaseNoteLinkedFiles");
+// Shared by Case Notes' own "Link to Exhibit(s)" checklist and Custody
+// Log's identical one (added 2026-09-09, item 8 of the investigation-
+// workflow backlog) - same two-source list (already-attached exhibits,
+// plus real-fs items tagged but not yet attached) either form lets an
+// examiner check off, just rendered into a different container with a
+// different checkbox class so the two forms' selections never collide
+// when both live on the same merged "Case Notes & Custody Log" pane.
+async function renderLinkedFilesChecklist(containerId, checkboxClass) {
+    const container = document.getElementById(containerId);
     if (!container) return;
     container.innerHTML = '';
 
@@ -14537,9 +14544,9 @@ async function renderNewCaseNoteLinkedFilesChecklist() {
             row.className = 'form-check';
             const cb = document.createElement('input');
             cb.type = 'checkbox';
-            cb.className = 'form-check-input new-case-note-link-cb';
+            cb.className = `form-check-input ${checkboxClass}`;
             cb.value = fp;
-            cb.id = `newCaseNoteLink${i}`;
+            cb.id = `${containerId}Link${i}`;
             const label = document.createElement('label');
             label.className = 'form-check-label small';
             label.htmlFor = cb.id;
@@ -14578,9 +14585,9 @@ async function renderNewCaseNoteLinkedFilesChecklist() {
             wrap.className = 'form-check';
             const cb = document.createElement('input');
             cb.type = 'checkbox';
-            cb.className = 'form-check-input new-case-note-link-cb';
+            cb.className = `form-check-input ${checkboxClass}`;
             cb.value = row.path;
-            cb.id = `newCaseNoteTagLink${i}`;
+            cb.id = `${containerId}TagLink${i}`;
             const label = document.createElement('label');
             label.className = 'form-check-label small';
             label.htmlFor = cb.id;
@@ -14595,6 +14602,34 @@ async function renderNewCaseNoteLinkedFilesChecklist() {
             container.appendChild(wrap);
         });
     } catch (err) { /* non-fatal - the checklist just shows exhibits only */ }
+}
+
+function renderNewCaseNoteLinkedFilesChecklist() {
+    return renderLinkedFilesChecklist('newCaseNoteLinkedFiles', 'new-case-note-link-cb');
+}
+
+function renderNewCustodyLinkedFilesChecklist() {
+    return renderLinkedFilesChecklist('newCustodyLinkedFiles', 'new-custody-link-cb');
+}
+
+// Shared by both Case Notes' and Custody Log's own display rendering - a
+// row of "Linked: Exhibit N - filename" / "Linked: filename (tagged, not
+// attached)" badges, or null if the entry/note has nothing linked at all
+// (so a caller can skip appending anything rather than adding an empty div).
+function buildLinkedFilesChipsRow(linkedFiles) {
+    if (!linkedFiles || !linkedFiles.length) return null;
+    const linkLine = document.createElement('div');
+    linkLine.className = 'small mt-1 d-flex flex-wrap gap-1';
+    linkedFiles.forEach(fp => {
+        const exhibitIdx = currentAttachedFilesList.indexOf(fp);
+        const chip = document.createElement('span');
+        chip.className = 'badge bg-info text-dark';
+        chip.textContent = exhibitIdx >= 0
+            ? `Linked: Exhibit ${exhibitIdx + 1} - ${fp.split('/').pop()}`
+            : `Linked: ${fp.split('/').pop()} (tagged, not attached)`; // untrusted (filename) - text node only
+        linkLine.appendChild(chip);
+    });
+    return linkLine;
 }
 
 function renderCaseNotesList() {
@@ -14723,21 +14758,8 @@ function renderCaseNotesList() {
         // file, not just an exhibit - shown either way (as "Exhibit N" or a
         // plain filename), never silently dropped from the note's own
         // rendering the way it used to be for anything not an exhibit.
-        const linkedFiles = note.linked_files || [];
-        if (linkedFiles.length) {
-            const linkLine = document.createElement('div');
-            linkLine.className = 'small mt-1 d-flex flex-wrap gap-1';
-            linkedFiles.forEach(fp => {
-                const exhibitIdx = currentAttachedFilesList.indexOf(fp);
-                const chip = document.createElement('span');
-                chip.className = 'badge bg-info text-dark';
-                chip.textContent = exhibitIdx >= 0
-                    ? `Linked: Exhibit ${exhibitIdx + 1} - ${fp.split('/').pop()}`
-                    : `Linked: ${fp.split('/').pop()} (tagged, not attached)`; // untrusted (filename) - text node only
-                linkLine.appendChild(chip);
-            });
-            card.appendChild(linkLine);
-        }
+        const linkChips = buildLinkedFilesChipsRow(note.linked_files);
+        if (linkChips) card.appendChild(linkChips);
 
         (note.attachments || []).forEach(att => {
             if (att.kind === 'image') {
@@ -14849,6 +14871,7 @@ async function setCaseNoteStatus(noteId, fields) {
 // the software Audit Trail - a record of who physically had the evidence,
 // append-only, no edit endpoint by design). ---
 function renderCustodyLogList() {
+    renderNewCustodyLinkedFilesChecklist();
     const container = document.getElementById("custodyLogContainer");
     if (!container) return;
 
@@ -14893,6 +14916,12 @@ function renderCustodyLogList() {
             card.appendChild(loggedLine);
         }
 
+        // Which exhibit(s) actually changed hands (2026-09-09, item 8 of
+        // the investigation-workflow backlog) - same shared chip renderer
+        // Case Notes' own linked_files display already uses.
+        const linkChips = buildLinkedFilesChipsRow(entry.linked_files);
+        if (linkChips) card.appendChild(linkChips);
+
         container.appendChild(card);
     });
 }
@@ -14910,6 +14939,7 @@ async function addCustodyEntry() {
         if (statusEl) { statusEl.textContent = 'Both From and To custodian are required.'; statusEl.className = 'small mt-1 text-danger'; }
         return;
     }
+    const linkedFiles = Array.from(document.querySelectorAll('.new-custody-link-cb:checked')).map(cb => cb.value);
     const body = {
         report_path: reportPath,
         from_custodian: fromCustodian,
@@ -14917,6 +14947,7 @@ async function addCustodyEntry() {
         reason: document.getElementById("newCustodyReason")?.value.trim() || "",
         method: document.getElementById("newCustodyMethod")?.value || "",
         notes: document.getElementById("newCustodyNotes")?.value.trim() || "",
+        linked_files: linkedFiles,
     };
 
     if (statusEl) { statusEl.textContent = 'Logging...'; statusEl.className = 'small mt-1 text-info'; }

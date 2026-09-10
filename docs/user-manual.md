@@ -754,7 +754,10 @@ different case with unsaved changes still pending, so nothing gets lost silently
 - **Physical Custody Log** — a dedicated, **append-only** record of *physical* evidence handoffs
   between people (from/to custodian, reason, method, notes) — genuinely distinct from both Case Notes
   above (your own investigative notes) and the Case Activity Log below (a log of actions taken in the software).
-  There's no edit option by design; a correction is logged as a new entry.
+  There's no edit option by design; a correction is logged as a new entry. Each entry can optionally
+  note which exhibit(s) actually changed hands — pick from the case's already-attached exhibits or
+  anything already tagged but not yet attached — and that linkage shows up in both the on-screen log
+  and the exported report.
 - **Files & Artifacts** — every exhibit attached to the case (with thumbnails, tags, and
   analysis-tool history shown inline), plus other files discovered sitting in the case folder that
   haven't been explicitly attached yet, files this app generated itself (reports, hash manifests,
