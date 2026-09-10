@@ -899,7 +899,7 @@ const REPORT_FIELD_MAPPING = [
     ["Case Information", "Case #, Examiner(s), Status, Created date, Custom Fields", "Case # set at creation (not editable after); additional Examiners added/removed in Report Narrative &gt; Examiners; Report Narrative &gt; Case Status; Custom Fields defined in Settings &gt; Case &amp; Reporting, values in Report Narrative &gt; Case Details"],
     ["Executive Summary", "Free text (Remappable)", "Report Narrative"],
     ["Objectives", "Free text (Remappable)", "Report Narrative"],
-    ["Evidence Inventory", "Auto-built table (make/model/serial/capacity/hash)", "Not directly editable - comes from the acquisition job itself"],
+    ["Evidence Inventory", "Auto-built table (make/model/serial/capacity/hash + hash-verification status)", "Not directly editable - comes from the acquisition job itself; the Verification Status column reflects the case's own last \"Verify All Evidence\" run (Overview tab), \"Not Checked\" if it's never been run"],
     ["Acquisition Method", "Full per-job telemetry/parameters/hashes", "Not directly editable - comes from the acquisition job itself"],
     ["Forensic Analysis / Steps Taken", "The Case Notes journal, in order", "Case Notes"],
     ["Relevant Findings", "Free text (Remappable)", "Report Narrative"],

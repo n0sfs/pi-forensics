@@ -21,6 +21,17 @@ file after updating to see what changed.
 
 ---
 
+## [1.88.0] - 2026-09-10
+
+### Added
+- The exported report's Evidence Inventory table now shows each evidence item's hash-verification
+  status ("Hash Verified", "HASH MISMATCH", "File Missing", "Unverifiable", "Not Yet Re-Verified",
+  "No Hash Recorded"), right alongside its acquisition hash. Previously this information only ever
+  showed up in the raw JSON export or the on-screen Overview dashboard - it now appears directly in
+  the PDF and HTML report, for every report format that already includes this table (Standard,
+  Police, and CASE/UCO templates). Run "Verify All Evidence" from the Reporting > Overview tab first
+  if you want an up-to-date status shown; a case that's never had it run shows a plain "Not Checked".
+
 ## [1.87.7] - 2026-09-10
 
 ### Changed
