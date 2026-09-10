@@ -480,6 +480,92 @@ def case_index_parsed_artifacts():
             conn.close()
     return jsonify({"success": True, "rows": rows})
 
+# Unified Case Search (2026-09-09) - item 2 of the 6-item investigation-
+# workflow backlog. Reporting's own Search tab (runCaseSearch() in main.js)
+# already covers Report Narrative/Files & Artifacts/Jobs/Case Notes/Case
+# Activity Log entirely client-side, since all of that already lives in
+# currentLoadedReportData/caseHistoryEntriesCache the moment a case loads.
+# The three sources below genuinely can't be searched that same way:
+# parsed_artifacts can run into the thousands of rows for a busy case
+# (browser history, registry hive entries, event logs, etc. - never all
+# pulled into the browser at once), and tagged_items/known contacts, while
+# far smaller, still aren't part of the report JSON at all - both only ever
+# live in the per-case SQLite index (tagged_items) or are computed fresh on
+# demand (correlate_contacts, same as /api/cases/timeline already does) -
+# so this is a real, dedicated route, not an extension of the client-side
+# search. Deliberately does NOT try to search Keyword Lists/Hash Sets/YARA
+# Rulesets (those are station-wide CONFIGURATION an examiner selects before
+# running a scan, not case content to search through) or Cross-Case Hash
+# Lookup (that's a station-wide, cross-CASE hash-only tool with its own
+# already-documented, deliberately narrow v1 scope - see cases_cross_
+# search() above) - both stay their own separate, purpose-built tools.
+@case_index_bp.route('/api/case_index/unified_search', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def case_index_unified_search():
+    req = request.get_json() or {}
+    query = (req.get('query') or '').strip()
+    case_folder = req.get('case_folder')
+    if not query:
+        return jsonify({"success": True, "parsed_artifacts": [], "tags": [], "contacts": []})
+
+    like = f"%{query}%"
+    parsed_artifact_matches = []
+    tag_matches = []
+    conn = _case_index_open_readonly(case_folder)
+    if conn:
+        try:
+            # SQLite's LIKE is case-insensitive by default for ASCII text -
+            # matches this route's own contact-matching branch below, which
+            # explicitly lowercases both sides for the identical reason.
+            cur = conn.execute(
+                "SELECT source_type, image_path, source_path, artifact_type, title, url, value, timestamp "
+                "FROM parsed_artifacts WHERE title LIKE ? OR url LIKE ? OR value LIKE ? "
+                "ORDER BY timestamp DESC LIMIT 50",
+                (like, like, like))
+            for r in cur:
+                parsed_artifact_matches.append({
+                    "source_type": r[0], "image_path": r[1], "source_path": r[2],
+                    "artifact_type": r[3], "label": PARSED_ARTIFACT_TYPE_LABELS.get(r[3], r[3]),
+                    "title": r[4], "url": r[5], "value": r[6], "timestamp": r[7],
+                })
+
+            cur = conn.execute(
+                "SELECT ti.path, ti.image_path, ti.name, ti.comment, t.name, t.color "
+                "FROM tagged_items ti JOIN tags t ON ti.tag_id = t.id "
+                "WHERE ti.path LIKE ? OR ti.name LIKE ? OR ti.comment LIKE ? OR t.name LIKE ? "
+                "LIMIT 50",
+                (like, like, like, like))
+            for r in cur:
+                tag_matches.append({
+                    "path": r[0], "image_path": r[1], "name": r[2], "comment": r[3],
+                    "tag_name": r[4], "tag_color": r[5],
+                })
+        finally:
+            conn.close()
+
+    # Reuses correlate_contacts() wholesale (same already-bounded/capped
+    # computation Pattern of Life's own Contact Correlation view already
+    # runs, no second query mechanism) and filters its already-built
+    # contacts list in Python - that list is small (capped at
+    # CONTACT_CORRELATION_MAX_CONTACTS by correlate_contacts() itself), so a
+    # second SQL round trip just to filter it would be unnecessary.
+    contact_result = correlate_contacts(case_folder)
+    q_lower = query.lower()
+    contact_matches = [
+        c for c in contact_result.get("contacts", [])
+        if q_lower in " ".join(c.get("display_names") or []).lower()
+        or q_lower in (c.get("normalized_number") or "").lower()
+        or q_lower in (c.get("normalized_email") or "").lower()
+    ][:50]
+
+    return jsonify({
+        "success": True,
+        "parsed_artifacts": parsed_artifact_matches,
+        "tags": tag_matches,
+        "contacts": contact_matches,
+    })
+
 @case_index_bp.route('/api/case_index/contact_correlation', methods=['POST'])
 @requires_auth
 @requires_permission('reporting', 'file_explorer')

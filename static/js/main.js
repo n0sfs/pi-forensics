@@ -14889,8 +14889,16 @@ function appendCaseSearchGroup(container, title, jumpToTabId, items) {
         row.style.cursor = 'pointer';
         row.title = `Jump to ${title}`;
         row.onclick = () => {
+            // A real .click() (not new bootstrap.Tab(tabBtn).show()) - several
+            // jump targets (Case Notes/Files & Artifacts/Jobs/Case Activity
+            // Log, and now Pattern of Life for a Contacts match) have their
+            // own onclick attribute that (re)renders the pane's content from
+            // whatever's currently loaded; Tab.show() alone switches the
+            // visible pane but skips that render entirely, which would show
+            // stale or empty content on a pane never manually clicked into
+            // yet this session. A real click fires both.
             const tabBtn = document.getElementById(jumpToTabId);
-            if (tabBtn) new bootstrap.Tab(tabBtn).show();
+            if (tabBtn) tabBtn.click();
         };
 
         const labelEl = document.createElement('div');
@@ -14910,7 +14918,17 @@ function appendCaseSearchGroup(container, title, jumpToTabId, items) {
     });
 }
 
-function runCaseSearch() {
+// Live-as-you-type (oninput) - a fast typist can have an OLDER, slower
+// unified-search response land after a NEWER one, which would otherwise
+// silently stomp the newer, more-correct result set. Mirrors
+// reportFilesGalleryRenderToken's own established guard exactly: capture a
+// token at the start of each call, re-check it after the one await
+// boundary (the new backend search), and skip rendering entirely if a
+// newer call has since started.
+let caseSearchRenderToken = 0;
+
+async function runCaseSearch() {
+    const myToken = ++caseSearchRenderToken;
     const container = document.getElementById("repSearchResults");
     if (!container) return;
 
@@ -15009,6 +15027,58 @@ function runCaseSearch() {
         )));
     }
 
+    // Parsed Artifacts / Tags / Contacts - genuinely can't be searched
+    // client-side the same way as the 5 groups above: parsed_artifacts can
+    // run into the thousands of rows for a busy case, and tagged_items/
+    // known contacts, while smaller, still aren't part of the loaded report
+    // JSON at all (they only ever live in the per-case SQLite index or are
+    // computed fresh via correlate_contacts) - a real, dedicated backend
+    // route (2026-09-09).
+    if (activeCase && activeCase.case_folder) {
+        try {
+            const res = await fetch('/api/case_index/unified_search', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ case_folder: activeCase.case_folder, query })
+            });
+            const data = await res.json();
+            if (myToken !== caseSearchRenderToken) return; // a newer search has since started - discard this stale response
+
+            const artifactMatches = data.parsed_artifacts || [];
+            if (artifactMatches.length > 0) {
+                totalMatches += artifactMatches.length;
+                appendCaseSearchGroup(container, 'Parsed Artifacts', 'explorer-tab', artifactMatches.map(m => ({
+                    label: `${m.label} · ${m.timestamp ? new Date(m.timestamp * 1000).toLocaleString() : '--'}`,
+                    snippet: caseSearchSnippet(`${m.title || ''} ${m.url || ''} ${m.value || ''}`.trim(), query),
+                })));
+            }
+
+            const tagMatches = data.tags || [];
+            if (tagMatches.length > 0) {
+                totalMatches += tagMatches.length;
+                appendCaseSearchGroup(container, 'Tagged Items', 'explorer-tab', tagMatches.map(m => ({
+                    label: `${m.name} · tagged "${m.tag_name}"`,
+                    snippet: m.comment ? caseSearchSnippet(m.comment, query) : null,
+                })));
+            }
+
+            const contactMatches = data.contacts || [];
+            if (contactMatches.length > 0) {
+                totalMatches += contactMatches.length;
+                appendCaseSearchGroup(container, 'Contacts', 'repContactsTab', contactMatches.map(c => ({
+                    label: `${(c.display_names || []).join(', ') || '(unknown name)'} · ${c.normalized_number || c.normalized_email || ''}`,
+                    snippet: null,
+                })));
+            }
+        } catch (err) {
+            if (myToken !== caseSearchRenderToken) return;
+            // A failed unified-search fetch shouldn't hide the 5 client-side
+            // groups that already rendered successfully above - just skip
+            // adding these 3, the same tolerant posture the rest of this
+            // function already has for any one source coming back empty.
+        }
+    }
+
+    if (myToken !== caseSearchRenderToken) return;
     if (totalMatches === 0) {
         container.innerHTML = '<span class="text-subtle">No matches found.</span>';
     }
