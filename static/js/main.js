@@ -1181,6 +1181,10 @@ function buildFileTableRow(tbody, item) {
     labelSpan.className = item.is_dir ? 'folder-text' : 'text-light';
     labelSpan.innerHTML = icon; // icon markup is static/trusted, not user data
     labelSpan.appendChild(document.createTextNode(item.name));
+    if (!item.is_dir) {
+        const tagIndicator = buildInlineFileTagIndicator(explorerFileTagsCache[item.path]);
+        if (tagIndicator) labelSpan.appendChild(tagIndicator);
+    }
     nameTd.appendChild(labelSpan);
 
     const sizeTd = document.createElement('td');
@@ -1250,11 +1254,22 @@ function buildFileTableRow(tbody, item) {
 // single-select-only behavior unchanged. ---
 let explorerSelectedFiles = new Map(); // path -> item (real-fs items only)
 
+// Inline tag/severity indicators (2026-09-09) - real-fs listing only, same
+// scoping as the multi-select state right above. path -> [{id, name, color,
+// notable, severity, comment}, ...], from /api/case_index/tags_for_paths.
+// Reset alongside explorerSelectedFiles below (that function already fires
+// at every real-fs/image-mode/File-Views listing-reload site) so a stale
+// cache from a previously-viewed directory can never bleed into a new one.
+let explorerFileTagsCache = {};
+let explorerFileTagsFetchToken = 0;
+
 // Called whenever the listing changes to something new (a fresh directory,
 // or switching into/out of real-fs mode entirely) - a stale selection from
 // the PREVIOUS listing would otherwise silently survive into a new one.
 function resetExplorerBatchSelection() {
     explorerSelectedFiles.clear();
+    explorerFileTagsCache = {};
+    explorerFileTagsFetchToken++; // invalidate any in-flight fetch from the previous listing
     updateExplorerBatchToolbar();
 }
 
@@ -1281,6 +1296,79 @@ function updateExplorerBatchToolbar() {
     toolbar.style.display = 'flex';
     const countEl = document.getElementById('explorerBatchCount');
     if (countEl) countEl.textContent = `${n} file${n === 1 ? '' : 's'} selected`;
+}
+
+// Inline tag/severity indicators (2026-09-09) - the 5th of 9 investigation-
+// workflow items: buildFileTableRow() previously showed zero tag/severity
+// signal on a row, so an examiner had to open the Tag modal or switch to
+// File Views just to notice something was already flagged. Batch-fetches
+// via the same /api/case_index/tags_for_paths route Reporting's own Files &
+// Artifacts gallery already uses (core/case_index_db.py::_tags_for_paths) -
+// no new backend route needed. Best-effort and silent on failure: no active
+// case, or the fetch itself failing, just means no rows get a badge - the
+// listing itself is never blocked or delayed waiting on this.
+async function fetchExplorerFileTagsForListing() {
+    if (!activeCase || !activeCase.case_folder) return;
+    const paths = explorerActiveRows.filter(r => r.raw && !r.raw.is_dir).map(r => r.raw.path);
+    if (paths.length === 0) return;
+    const myToken = ++explorerFileTagsFetchToken;
+    try {
+        const res = await fetch('/api/case_index/tags_for_paths', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder, paths })
+        });
+        const data = await res.json();
+        if (myToken !== explorerFileTagsFetchToken) return; // a newer listing loaded while this was in flight
+        if (data.success) {
+            explorerFileTagsCache = data.tags || {};
+            if (explorerActiveRowRenderer === buildFileTableRow) renderExplorerActiveTable();
+        }
+    } catch (err) { /* silent - a missing badge is not worth surfacing as an error */ }
+}
+
+const TAG_SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
+
+// Small inline badge cluster for one file's row - a notable star (if any
+// applied tag is notable), a severity badge for the single HIGHEST severity
+// among its tags (mirrors File Views' own "show the most urgent thing"
+// convention, not every tag's own severity separately), and a rich title
+// tooltip listing every tag by name with its own severity/comment. Returns
+// null for a file with no tags, so a plain row renders exactly as before
+// this feature existed.
+function buildInlineFileTagIndicator(tags) {
+    if (!tags || tags.length === 0) return null;
+    const anyNotable = tags.some(t => t.notable);
+    let topSeverity = null, topRank = 0;
+    tags.forEach(t => {
+        const rank = TAG_SEVERITY_RANK[t.severity] || 0;
+        if (rank > topRank) { topRank = rank; topSeverity = t.severity; }
+    });
+    const wrap = document.createElement('span');
+    wrap.className = 'ms-2';
+    if (anyNotable) {
+        const star = document.createElement('span');
+        star.className = 'text-warning';
+        star.textContent = '★'; // matches File Views' own notable-star prefix
+        wrap.appendChild(star);
+    }
+    const sevBadge = _tagSeverityBadgeEl(topSeverity);
+    if (sevBadge) wrap.appendChild(sevBadge); // Bootstrap badges are already compact - no extra sizing class needed
+    if (!anyNotable && !sevBadge) {
+        const icon = document.createElement('i');
+        icon.className = 'bi bi-tag-fill text-info';
+        wrap.appendChild(icon);
+    }
+    // Tag names/comments are examiner-entered text - build the tooltip from
+    // real strings, never interpolated into innerHTML.
+    const lines = tags.map(t => {
+        let line = t.name;
+        if (t.severity && t.severity !== 'none') line += ` (${t.severity})`;
+        if (t.notable) line += ' ★';
+        if (t.comment) line += `: ${t.comment}`;
+        return line;
+    });
+    wrap.title = `Tagged: ${lines.join(' | ')}`;
+    return wrap;
 }
 
 function clearExplorerSelection() {
@@ -4398,6 +4486,7 @@ async function loadExplorer(path) {
         resetExplorerBatchSelection();
         explorerActiveRowRenderer = buildFileTableRow;
         renderExplorerActiveTable();
+        fetchExplorerFileTagsForListing(); // fire-and-forget; patches in badges once it resolves
 
         syncExplorerTreeSelection(data.path);
 

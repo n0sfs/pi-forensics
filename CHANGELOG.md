@@ -21,6 +21,14 @@ file after updating to see what changed.
 
 ---
 
+## [1.82.0] - 2026-09-09
+
+### Added
+- **Inline tag/severity indicators in File Explorer.** A tagged file's real-file listing row now shows
+  a small notable-star and/or severity badge (High/Critical/etc.) right next to its name, with a
+  tooltip listing every applied tag and comment - no need to open the Tag panel or switch to File
+  Views just to notice something was already flagged during an earlier pass.
+
 ## [1.81.0] - 2026-09-09
 
 ### Added
