@@ -15334,17 +15334,22 @@ async function runCaseSearch() {
     const query = (document.getElementById("repSearchInput")?.value || '').trim().toLowerCase();
     if (!query) {
         // Blank, not a "type a keyword" placeholder - the static markup no
-        // longer shows one either (see reporting.html), so clearing the box
-        // shouldn't bring one back either.
+        // longer shows one either (see reporting.html). Hidden too, not just
+        // empty - an empty bordered/padded box with nothing in it still
+        // renders as a bare strip with no purpose, so the box itself only
+        // ever shows once there's something to put in it.
         container.innerHTML = '';
+        container.style.display = 'none';
         return;
     }
     if (!currentLoadedReportData) {
         container.innerHTML = '<span class="text-subtle">Select or create a case using the bar above first.</span>';
+        container.style.display = '';
         return;
     }
 
     container.innerHTML = '';
+    container.style.display = '';
     let totalMatches = 0;
 
     // Report Narrative - searches the live form fields (so it also finds
