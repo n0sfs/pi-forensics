@@ -21,6 +21,18 @@ file after updating to see what changed.
 
 ---
 
+## [1.87.2] - 2026-09-10
+
+### Changed
+- **Reporting's Overview tab is a bit tidier.** "Case-wide Integrity Check" and "Case Bundle Export"
+  are now two side-by-side cards instead of two long always-expanded sections, each with its
+  explanation moved to a hover/click info icon on the heading (same pattern as Quick Search's own
+  icon). The "Ready to generate a report?" text link is gone too - there's now a proper clickable
+  Export Report card in the dashboard grid above, alongside the other case-summary tiles.
+- Fixed a real visual leftover from the last release: the empty Quick Search results box showed as a
+  bare bordered strip with nothing in it once its placeholder text was removed. It's hidden now until
+  there's actually something to show in it.
+
 ## [1.87.1] - 2026-09-10
 
 ### Changed
