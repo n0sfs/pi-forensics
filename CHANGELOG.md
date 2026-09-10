@@ -21,6 +21,16 @@ file after updating to see what changed.
 
 ---
 
+## [1.81.0] - 2026-09-09
+
+### Added
+- **Unified case search.** Reporting's Search tab now also searches parsed evidence (browser history,
+  registry entries, event logs, and every other indexed record type), tagged items, and known contacts
+  for the active case, alongside the existing Report Narrative/Files & Artifacts/Jobs/Case Notes/Case
+  Activity Log results - one search box, in one place, instead of checking File Explorer's own File
+  Views tree, the Tag list, and Contact Correlation separately. Click any result to jump straight to
+  the tab it lives in.
+
 ## [1.80.0] - 2026-09-09
 
 ### Added
