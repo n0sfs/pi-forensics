@@ -1926,6 +1926,12 @@ def add_case_note():
                 "kind": kind,
             })
 
+    # assigned_to (2026-09-09) - a free string, matching the "Examiner" field's
+    # own already-established convention of a free-text name rather than a
+    # rigid FK to a user account (an examiner can hand a note to someone with
+    # no login on this station at all - a colleague, an outside reviewer).
+    assigned_to = request.form.get('assigned_to', '').strip() or None
+
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     note = {
         "note_id": note_id,
@@ -1938,6 +1944,13 @@ def add_case_note():
         "content_hash": _hash_note_content(text, [a["path"] for a in saved_attachments]),
         "edited_at": None,
         "edit_history": [],
+        # Follow-up/task flag (2026-09-09) - a note starts 'open' regardless
+        # of whether it was ever meant as a task at all; most notes never
+        # get their status touched again, which is fine - the field is only
+        # ever surfaced/actionable once an examiner chooses to use it that
+        # way (a status toggle button on every note, always visible).
+        "status": "open",
+        "assigned_to": assigned_to,
     }
 
     data.setdefault('case_notes', []).append(note)
@@ -2001,6 +2014,68 @@ def edit_case_note():
         return jsonify({"success": False, "error": f"Could not save note edit: {e}"}), 500
 
     log_chain_of_custody("case_note_edit", {"report_path": report_file, "note_id": note_id})
+    return jsonify({"success": True, "note": note})
+
+CASE_NOTE_STATUS_VALUES = ('open', 'resolved')
+
+@reporting_bp.route('/api/cases/notes/set_status', methods=['POST'])
+@requires_auth
+@requires_permission('reporting')
+def set_case_note_status():
+    """Follow-up/task flag on notes (2026-09-09) - deliberately a SEPARATE
+    route from edit_case_note() above, not a new optional field on it: that
+    route requires non-empty new text on every call (it's for correcting a
+    note's own evidentiary content, appending to edit_history) and marking
+    a note resolved or reassigning it is neither of those things - it
+    shouldn't need to re-submit the note's full text just to flip a status,
+    and it deliberately never touches edit_history at all (a status/
+    assignment change isn't a correction to the note's own recorded
+    content). Both fields are optional and independently settable - a
+    caller changing only status leaves assigned_to untouched, and vice
+    versa (checked via 'in req', not truthiness, so assigned_to can be
+    explicitly cleared with an empty string)."""
+    req = request.get_json() or {}
+    report_file = safe_path(req.get('report_path'))
+    note_id = req.get('note_id', '')
+
+    if not report_file or not os.path.exists(report_file):
+        return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
+    if 'status' in req and req['status'] not in CASE_NOTE_STATUS_VALUES:
+        return jsonify({"success": False, "error": f"Invalid status - must be one of: {', '.join(CASE_NOTE_STATUS_VALUES)}"}), 400
+    if 'status' not in req and 'assigned_to' not in req:
+        return jsonify({"success": False, "error": "Nothing to update - provide status and/or assigned_to."}), 400
+
+    try:
+        with open(report_file, 'r') as f:
+            data = json.load(f)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read report: {e}"}), 500
+
+    notes = data.get('case_notes', [])
+    note = next((n for n in notes if n.get('note_id') == note_id), None)
+    if not note:
+        return jsonify({"success": False, "error": "Note not found on this case/report."}), 404
+
+    if 'status' in req:
+        note['status'] = req['status']
+    if 'assigned_to' in req:
+        assigned_to = (req['assigned_to'] or '').strip()
+        note['assigned_to'] = assigned_to or None
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    if 'updated_at' in data:
+        data['updated_at'] = now
+
+    try:
+        with open(report_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not save note status: {e}"}), 500
+
+    log_chain_of_custody("case_note_status_changed", {
+        "report_path": report_file, "note_id": note_id,
+        "status": note.get('status'), "assigned_to": note.get('assigned_to'),
+    })
     return jsonify({"success": True, "note": note})
 
 @reporting_bp.route('/api/cases/custody/add', methods=['POST'])
