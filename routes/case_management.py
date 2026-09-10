@@ -33,13 +33,19 @@ from core.case_index_db import list_case_folders
 
 case_management_bp = Blueprint('case_management', __name__)
 
-# The same 5 values Reporting's own Case Details Status <select> (templates/
-# tabs/reporting.html) and its client-side CASE_STATUS_BADGE_CLASS/
+# The same 6 values Reporting's own Case Details Status <select> (templates/
+# tabs/reporting.html), the Case Manager's own status filter (templates/
+# modals/shared.html), and their client-side CASE_STATUS_BADGE_CLASS/
 # CASE_STATUS_BAR_COLOR mirrors (static/js/main.js) already use - no prior
 # backend-side constant existed before /api/cases/set_status needed one to
 # validate against (create_case() below just hardcodes the single "Open"
-# starting value, never needed the full enum).
-CASE_STATUS_VALUES = ('Open', 'In Review', 'On Hold', 'Closed', 'Archived')
+# starting value, never needed the full enum). "In Progress" (2026-09-10,
+# user-flagged live) sits between Open and In Review specifically to
+# distinguish "created but not yet actively worked" from "an examiner is
+# actively working it" from "handed off to another examiner/supervisor to
+# review" - three genuinely different states this enum only had two of
+# before.
+CASE_STATUS_VALUES = ('Open', 'In Progress', 'In Review', 'On Hold', 'Closed', 'Archived')
 
 
 @case_management_bp.route('/api/cases/create', methods=['POST'])

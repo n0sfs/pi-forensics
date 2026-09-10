@@ -24,7 +24,7 @@ from core.case_index_db import (
     _tags_for_paths, _analysis_results_for_paths, TRIAGE_PATTERNS,
     _backfill_case_artifact_tags, KEYWORD_CATEGORY_PREFIX, resolve_scan_category_label,
     has_case_analysis_activity, cross_case_hash_search, correlate_contacts,
-    compute_case_analysis_coverage,
+    compute_case_analysis_coverage, ensure_examiner_recorded,
 )
 
 case_index_bp = Blueprint('case_index', __name__)
@@ -862,6 +862,14 @@ def case_index_tag_item():
         })
     finally:
         conn.close()
+
+    # Tagging an item is genuine case work - see add_case_note()'s identical
+    # comment in routes/reporting.py. Unlike the tag write itself (which
+    # lives entirely in the per-case SQLite index), this is a separate
+    # JSON-case-record read/write - ensure_examiner_recorded() resolves and
+    # validates case_folder on its own, so it's safe to call with the same
+    # raw value _case_index_open_write() above already accepted.
+    ensure_examiner_recorded(req.get('case_folder'), getattr(g, 'forensic_user', None))
 
     return jsonify({"success": True, "already_tagged": already_tagged,
                      "tag": {"id": tag_id, "name": tag_name, "color": tag_color, "notable": tag_notable, "severity": tag_severity}})

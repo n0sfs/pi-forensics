@@ -107,21 +107,29 @@ function clearReportingDirty() {
 }
 
 // Delegated rather than one listener per field: #repNarrativePane holds
-// Case Status, Examiners (its add-input only - renderExaminersList()'s own
-// add/remove buttons call markReportingDirty() explicitly, matching
-// renderReportUrlRows()'s identical convention, since a button click never
-// fires input/change on its own), Case Details (renderCustomFieldsForCase()
-// rebuilds its own inputs on every case load, so a per-field listener
-// would need re-attaching every time), and all 7 narrative textareas - one
-// listener on the pane covers all of them, and setting .value
-// programmatically (loadCaseForEditing() populating fresh case data)
-// never fires input/change, so this can't mistake a case reload for a
-// real edit.
+// Case Details (renderCustomFieldsForCase() rebuilds its own inputs on
+// every case load, so a per-field listener would need re-attaching every
+// time) and all 7 narrative textareas - one listener on the pane covers
+// all of them, and setting .value programmatically (loadCaseForEditing()
+// populating fresh case data) never fires input/change, so this can't
+// mistake a case reload for a real edit.
+//
+// #editCaseStatus (2026-09-10) moved out of #repNarrativePane into
+// Reporting's own persistent header alongside Examiners - it's a plain
+// static <select> with no onchange handler of its own, so it needs its own
+// explicit id check here rather than relying on the pane-scoped delegation
+// above. Examiners' own add/remove controls deliberately AREN'T included -
+// renderExaminersList()'s own add/remove buttons already call
+// markReportingDirty() explicitly (matching renderReportUrlRows()'s
+// identical convention, since a button click never fires input/change on
+// its own), and including the add-select/add-input here too would mark
+// the report dirty the instant someone merely opens that dropdown, before
+// they've actually added anyone.
 document.addEventListener('input', (ev) => {
-    if (ev.target.closest && ev.target.closest('#repNarrativePane')) markReportingDirty();
+    if (ev.target.closest && (ev.target.closest('#repNarrativePane') || ev.target.id === 'editCaseStatus')) markReportingDirty();
 });
 document.addEventListener('change', (ev) => {
-    if (ev.target.closest && ev.target.closest('#repNarrativePane')) markReportingDirty();
+    if (ev.target.closest && (ev.target.closest('#repNarrativePane') || ev.target.id === 'editCaseStatus')) markReportingDirty();
 });
 
 // beforeunload only guards a real navigation/refresh/tab-close - switching
@@ -296,7 +304,7 @@ function switchToTab(tabId) {
 // needs but a bare bar segment doesn't) as CASE_STATUS_BADGE_CLASS further
 // down this file, so a status reads as the same color everywhere in the app.
 const CASE_STATUS_BAR_COLOR = {
-    'Open': 'bg-info', 'In Review': 'bg-warning', 'On Hold': 'bg-secondary',
+    'Open': 'bg-info', 'In Progress': 'bg-primary', 'In Review': 'bg-warning', 'On Hold': 'bg-secondary',
     'Closed': 'bg-success', 'Archived': 'bg-dark',
 };
 
@@ -323,25 +331,33 @@ function renderReportingStatCard(stat) {
         const bar = document.createElement('div');
         bar.className = 'reports-stat-bar';
         bar.style.width = '70px';
-        const legend = document.createElement('div');
-        legend.className = 'd-flex flex-wrap align-items-center gap-2 small text-subtle';
         Object.keys(stat.breakdown).forEach(status => {
             const count = stat.breakdown[status];
             const seg = document.createElement('div');
             seg.className = CASE_STATUS_BAR_COLOR[status] || 'bg-secondary';
             seg.style.flex = String(count);
-            seg.title = `${status}: ${count}`;
             bar.appendChild(seg);
-
-            const legendItem = document.createElement('span');
-            const dot = document.createElement('span');
-            dot.className = `reports-stat-legend-dot ${CASE_STATUS_BAR_COLOR[status] || 'bg-secondary'}`;
-            legendItem.appendChild(dot);
-            legendItem.appendChild(document.createTextNode(`${status} (${count})`));
-            legend.appendChild(legendItem);
         });
         wrap.appendChild(bar);
-        wrap.appendChild(legend);
+
+        // The full status breakdown (Open/In Review/On Hold/Closed/
+        // Archived, whichever have at least one case) used to render as an
+        // always-visible dot+text legend next to the bar - real width this
+        // row could no longer spare once it moved to share space with the
+        // case bar's own "Create/Select Case" button (2026-09-10). Now
+        // shown on hover instead, via a plain native title attribute -
+        // deliberately not this app's own data-bs-toggle="tooltip"/Popper
+        // mechanism, which needs an explicit new bootstrap.Tooltip(...)
+        // construction call per element (and disposal before the card is
+        // rebuilt on every loadReportingStats() refresh) to actually work -
+        // skipping this dynamically-rebuilt card, was exactly the "set the
+        // attribute but never construct it" bug this app's own tooltip
+        // history has already been bitten by more than once. A native
+        // tooltip needs none of that, and is immune to the Popper mis-
+        // anchoring bug that history is about, since it's never Popper-
+        // positioned in the first place.
+        wrap.title = Object.keys(stat.breakdown).map(status => `${status}: ${stat.breakdown[status]}`).join('\n');
+        wrap.style.cursor = 'help';
     }
     return wrap;
 }
@@ -666,7 +682,7 @@ const FAQ_GROUPS = [
             },
             {
                 q: "What's the Case Status field for?",
-                a: "Reporting's Case Details block has a Status dropdown (Open / In Review / On Hold / Closed / Archived) for your own case tracking. The Case Manager's case list shows a colored badge for each case's current status, and Reporting's own header shows a live breakdown of every case's status across the whole station."
+                a: "Reporting's own header (next to the case number) has a Status dropdown (Open / In Progress / In Review / On Hold / Closed / Archived) for your own case tracking - Open means created but not yet actively worked, In Progress means you're actively working it, and In Review means it's been handed to another examiner or a supervisor to check. The Case Manager's case list shows a colored badge for each case's current status (and can filter by it), and the Total Cases stat you can enable in Settings shows a live breakdown of every case's status across the whole station."
             },
             {
                 q: "How does this station track what was done and by whom?",
@@ -896,7 +912,7 @@ function populateToolReference() {
 // section pulls from structured data (a table, a log, a filesystem walk)
 // that isn't something a dropdown can meaningfully rewire.
 const REPORT_FIELD_MAPPING = [
-    ["Case Information", "Case #, Examiner(s), Status, Created date, Custom Fields", "Case # set at creation (not editable after); additional Examiners added/removed in Report Narrative &gt; Examiners; Report Narrative &gt; Case Status; Custom Fields defined in Settings &gt; Case &amp; Reporting, values in Report Narrative &gt; Case Details"],
+    ["Case Information", "Case #, Examiner(s), Status, Created date, Custom Fields", "Case # set at creation (not editable after); Examiners and Status both live in Reporting's own header, next to the case number (Examiners are also added automatically the moment someone adds a note, logs custody, tags, or attaches/captions an exhibit - no manual \"+ Add\" needed); Custom Fields defined in Settings &gt; Case &amp; Reporting, values in Report Narrative &gt; Case Details"],
     ["Executive Summary", "Free text (Remappable)", "Report Narrative"],
     ["Objectives", "Free text (Remappable)", "Report Narrative"],
     ["Evidence Inventory", "Auto-built table (make/model/serial/capacity/hash + hash-verification status)", "Not directly editable - comes from the acquisition job itself; the Verification Status column reflects the case's own last \"Verify All Evidence\" run (Overview tab), \"Not Checked\" if it's never been run"],
@@ -13068,31 +13084,33 @@ async function fetchExaminerUsernames(forceRefresh) {
 // matches a real account is flagged with a warning icon instead, not
 // silently hidden or removed.
 function renderReportHeaderCaseSummary() {
-    // Read-only Case #/Examiners summary in Reporting's own "Case Report"
-    // header (2026-09-10) - reads whatever loadCaseForEditing()/
-    // renderExaminersList() have already set (currentLoadedReportData,
-    // currentExaminersList), no fetch of its own. Called from
-    // renderExaminersList() (covers the initial load AND every later
-    // add/remove, since that's the one function every examiner-list change
-    // already funnels through) and from loadCaseForEditing()'s two
-    // no-report-loaded branches, which set currentLoadedReportData = null
-    // right before calling this - the null check below is what actually
-    // hides it in both of those cases.
-    const btn = document.getElementById('reportHeaderCaseSummary');
-    if (!btn) return;
+    // Reporting's own persistent header (2026-09-10, then folded further
+    // into a single row 2026-09-10 same day): #reportHeaderCaseNum shows the
+    // real case number in place of the static "Case Report" fallback label,
+    // and #reportHeaderCaseMeta (the actual Case Status select + Examiners
+    // controls, both live-editable right there) shows/hides alongside it -
+    // no separate read-only summary text anymore, since the real controls
+    // are now what's in the header. Reads whatever loadCaseForEditing() has
+    // already set (currentLoadedReportData), no fetch of its own. Called
+    // from renderExaminersList() (covers the initial load AND every later
+    // add/remove) and from loadCaseForEditing()'s two no-report-loaded
+    // branches, which set currentLoadedReportData = null right before
+    // calling this - the null check below is what actually hides the meta
+    // row and reverts the title to its fallback text in both of those cases.
+    const numEl = document.getElementById('reportHeaderCaseNum');
+    const metaWrap = document.getElementById('reportHeaderCaseMeta');
+    if (!numEl) return;
     if (!currentLoadedReportData) {
-        btn.style.display = 'none';
+        numEl.textContent = 'Case Report';
+        if (metaWrap) metaWrap.style.display = 'none';
         return;
     }
     const isConsolidated = Array.isArray(currentLoadedReportData.events);
     const caseNum = isConsolidated
         ? currentLoadedReportData.case_number
         : (currentLoadedReportData.case_metadata || {}).case_number;
-    const numEl = document.getElementById('reportHeaderCaseNum');
-    const examinersEl = document.getElementById('reportHeaderExaminers');
-    if (numEl) numEl.textContent = caseNum || '--';
-    if (examinersEl) examinersEl.textContent = currentExaminersList.length ? currentExaminersList.join(', ') : 'None recorded';
-    btn.style.display = 'inline-flex';
+    numEl.textContent = caseNum || '--';
+    if (metaWrap) metaWrap.style.display = 'flex';
 }
 
 function renderExaminersList() {
@@ -13100,13 +13118,18 @@ function renderExaminersList() {
     const container = document.getElementById('examinersContainer');
     if (!container) return;
     container.innerHTML = '';
+    // A single flex row - the add-select/input, its button, and every
+    // examiner chip are all DIRECT children of this one container (no
+    // nested addRow/chipsWrap sub-divs stacking them on separate lines) -
+    // that nesting was what forced this into two visual rows before, even
+    // after the header-row compaction pass. flex-wrap is only a fallback
+    // for a genuinely narrow viewport or a long examiner list, never the
+    // deliberate layout.
+    container.className = 'd-flex flex-wrap align-items-center gap-2';
 
     const knownUsernames = examinerUsernamesCache || [];
     const alreadyAdded = new Set(currentExaminersList.map(e => e.toLowerCase()));
     const available = knownUsernames.filter(u => !alreadyAdded.has(u.toLowerCase()));
-
-    const addRow = document.createElement('div');
-    addRow.className = 'd-flex gap-2 mb-2';
 
     if (knownUsernames.length === 0) {
         // No registered accounts on this station at all - the original
@@ -13114,7 +13137,9 @@ function renderExaminersList() {
         const addInput = document.createElement('input');
         addInput.type = 'text';
         addInput.className = 'form-control form-control-sm';
+        addInput.style.maxWidth = '200px';
         addInput.placeholder = 'Add an examiner name...';
+        addInput.title = "No user accounts are configured on this station, so examiner names can't be checked against a real account list yet.";
         const doAdd = () => {
             const val = addInput.value.trim();
             if (!val) return;
@@ -13125,22 +13150,18 @@ function renderExaminersList() {
             renderExaminersList();
         };
         addInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); doAdd(); } });
-        addRow.appendChild(addInput);
+        container.appendChild(addInput);
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.className = 'btn btn-sm btn-outline-secondary flex-shrink-0';
         addBtn.title = 'Add examiner';
         addBtn.innerHTML = '<i class="bi bi-plus-lg"></i>';
         addBtn.onclick = doAdd;
-        addRow.appendChild(addBtn);
-        container.appendChild(addRow);
-        const hint = document.createElement('div');
-        hint.className = 'text-subtle small mb-2';
-        hint.textContent = "No user accounts are configured on this station, so examiner names can't be checked against a real account list yet.";
-        container.appendChild(hint);
+        container.appendChild(addBtn);
     } else {
         const select = document.createElement('select');
         select.className = 'form-select form-select-sm';
+        select.style.maxWidth = '200px';
         select.id = 'examinerAddSelect';
         if (available.length === 0) {
             const opt = document.createElement('option');
@@ -13160,7 +13181,7 @@ function renderExaminersList() {
                 select.appendChild(opt);
             });
         }
-        addRow.appendChild(select);
+        container.appendChild(select);
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.className = 'btn btn-sm btn-outline-secondary flex-shrink-0';
@@ -13174,34 +13195,34 @@ function renderExaminersList() {
             markReportingDirty();
             renderExaminersList();
         };
-        addRow.appendChild(addBtn);
-        container.appendChild(addRow);
-        const hint = document.createElement('div');
-        hint.className = 'text-subtle small mb-2';
-        hint.textContent = "Only this station's own registered user accounts can be added as an examiner.";
-        container.appendChild(hint);
+        container.appendChild(addBtn);
+        // The "only registered accounts" caveat lives in the heading's own
+        // info tooltip instead of a standalone line here.
     }
 
     if (currentExaminersList.length === 0) {
-        const empty = document.createElement('div');
+        const empty = document.createElement('span');
         empty.className = 'text-subtle small';
         empty.textContent = 'No examiners recorded for this case yet.';
         container.appendChild(empty);
         return;
     }
 
+    // Compact inline chips (not one full-width bordered row per examiner),
+    // appended directly into the same single flex row as the add controls
+    // above rather than a separate stacked block.
     currentExaminersList.forEach((name, idx) => {
-        const row = document.createElement('div');
-        row.className = 'd-flex align-items-center gap-2 bg-dark p-2 rounded mb-1 border border-secondary';
+        const chip = document.createElement('span');
+        chip.className = 'badge bg-dark border border-secondary text-light fw-normal d-inline-flex align-items-center gap-2 py-1 px-2';
 
         const icon = document.createElement('i');
-        icon.className = 'bi bi-person-fill text-subtle flex-shrink-0';
-        row.appendChild(icon);
+        icon.className = 'bi bi-person-fill text-subtle';
+        chip.appendChild(icon);
 
         const nameEl = document.createElement('span');
-        nameEl.className = 'small text-break flex-grow-1';
+        nameEl.className = 'small';
         nameEl.textContent = name; // examiner-entered - text node only
-        row.appendChild(nameEl);
+        chip.appendChild(nameEl);
 
         // Flags a name that doesn't match any currently-registered account -
         // covers both a name added before this fix shipped, and one typed
@@ -13211,24 +13232,25 @@ function renderExaminersList() {
         // against - never for the empty-station fallback state itself.
         if (knownUsernames.length > 0 && !knownUsernames.some(u => u.toLowerCase() === name.toLowerCase())) {
             const warn = document.createElement('i');
-            warn.className = 'bi bi-exclamation-triangle-fill text-warning flex-shrink-0';
+            warn.className = 'bi bi-exclamation-triangle-fill text-warning';
             warn.title = "This name doesn't match any currently-registered user account on this station.";
-            row.appendChild(warn);
+            chip.appendChild(warn);
         }
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-2 flex-shrink-0';
+        delBtn.className = 'btn-close btn-close-white';
+        delBtn.style.fontSize = '0.55rem';
         delBtn.title = 'Remove';
-        delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+        delBtn.setAttribute('aria-label', 'Remove');
         delBtn.onclick = () => {
             currentExaminersList.splice(idx, 1);
             markReportingDirty();
             renderExaminersList();
         };
-        row.appendChild(delBtn);
+        chip.appendChild(delBtn);
 
-        container.appendChild(row);
+        container.appendChild(chip);
     });
 }
 
@@ -17224,6 +17246,7 @@ async function createCase() {
 // of keeping status color separate from the accent hue).
 const CASE_STATUS_BADGE_CLASS = {
     'Open': 'bg-info text-dark',
+    'In Progress': 'bg-primary',
     'In Review': 'bg-warning text-dark',
     'On Hold': 'bg-secondary',
     'Closed': 'bg-success',

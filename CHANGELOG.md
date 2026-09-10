@@ -21,6 +21,26 @@ file after updating to see what changed.
 
 ---
 
+## [1.89.0] - 2026-09-10
+
+### Added
+- Case status now has a sixth value, **In Progress**, between Open and In Review - Open means a
+  case has been created but not yet actively worked, In Progress means an examiner is actively
+  working it, and In Review means it's been handed off to another examiner or a supervisor to
+  check. Shows up everywhere a case's status already did: the Status dropdown in Reporting's
+  header, the Case Manager's status filter, the Total Cases stat's breakdown, and colored badges
+  throughout.
+- **Examiners are now added to a case automatically** the moment someone does real work on it - adds
+  a note, logs a custody transfer, tags an item, or attaches/captions an exhibit - without a manual
+  "+ Add" click. The examiner set at case creation is still recorded separately and never changes;
+  this only adds to the case's own growing Examiners list, and only for a real logged-in account
+  (never the physical-kiosk shared identity).
+
+### Changed
+- Case Status and Examiners moved directly into Reporting's persistent header, right next to the
+  case number - visible and editable from any Reporting sub-tab, not just Report Narrative, and
+  laid out as a single compact row instead of two stacked cards.
+
 ## [1.88.1] - 2026-09-10
 
 ### Changed
