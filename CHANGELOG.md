@@ -21,6 +21,20 @@ file after updating to see what changed.
 
 ---
 
+## [1.87.5] - 2026-09-10
+
+### Fixed
+- The same middle-of-the-screen tooltip bug fixed for Quick Search in the previous release could
+  also happen on any right-click context menu item in File Explorer whose menu had a short label
+  sitting next to a longer one (for example "Tag..." next to "Attach to Case" or "Browse as Image
+  (Sleuth Kit)") - the short item's own clickable box stretched to match the menu's full width, so
+  its hover tooltip could land away from the actual text. Every context-menu tooltip now hugs its
+  own icon and label instead, without changing the button's own click target size.
+- The green "already run" checkmark that appears next to a context-menu action after it's been
+  used on a file never actually showed a tooltip on hover, even though it looked like it should -
+  it was missing the one line of code that turns a hover-help attribute into a working tooltip.
+  Hovering it now correctly shows which tool ran and when.
+
 ## [1.87.4] - 2026-09-10
 
 ### Fixed
