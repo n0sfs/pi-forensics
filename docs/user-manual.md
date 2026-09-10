@@ -727,12 +727,14 @@ The **Reporting** tab is where a case's data lives once collected — and where 
 only shows content once a case is active (create or select one via the Case button, same as
 everywhere else).
 
-Most of what you do here saves immediately (Case Notes, the Physical Custody Log, tagging, and
-attaching a file from File Explorer's own right-click menu) — but Report Narrative, Case Status,
-Case Details, and the exhibit checklist/captions/reference URLs in Files & Artifacts only persist
-when you click **Save Report Changes**. Reporting shows an "Unsaved changes" badge next to that
-button the moment any of those have edits, and warns before you close the tab or switch to a
-different case with unsaved changes still pending, so nothing gets lost silently.
+Most of what you do here saves immediately (Case Notes, the Physical Custody Log, tagging,
+attaching a file from File Explorer's own right-click menu, and an exhibit's caption — editable
+either right there in Files & Artifacts or directly from File Explorer's Tag/Attach modal, both
+saving the instant you tab away from the field) — but Report Narrative, Case Status, Case Details,
+and the exhibit checklist/reference URLs in Files & Artifacts only persist when you click **Save
+Report Changes**. Reporting shows an "Unsaved changes" badge next to that button the moment any of
+those have edits, and warns before you close the tab or switch to a different case with unsaved
+changes still pending, so nothing gets lost silently.
 
 - **Overview** (the default view) — a dashboard for the case: evidence item count, tag counts
   (Notable items called out), analysis activity, case notes, case age, plus two case-wide actions:

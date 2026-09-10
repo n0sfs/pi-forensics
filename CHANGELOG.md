@@ -21,6 +21,16 @@ file after updating to see what changed.
 
 ---
 
+## [1.87.0] - 2026-09-10
+
+### Changed
+- **Exhibit captions now save the instant you type them, from either place you'd edit one.** A
+  caption used to live only in Reporting > Files & Artifacts, and only actually persisted once you
+  clicked "Save Report Changes" - a real trap if you navigated away first. File Explorer's own
+  Tag/Attach modal now has its own caption field too (enabled once the file is an attached exhibit -
+  attach it right there with one click if it isn't yet), and both it and the Files & Artifacts field
+  save immediately, the same way tagging already does.
+
 ## [1.86.0] - 2026-09-09
 
 ### Added
