@@ -21,6 +21,17 @@ file after updating to see what changed.
 
 ---
 
+## [1.88.1] - 2026-09-10
+
+### Changed
+- The Case #/Examiner display used to appear twice at the top of the screen - once in the
+  persistent case bar, and again (redundantly) in Reporting's own "Case Report" header. The case
+  bar version is gone; the header version now shows the case's full, real list of examiners
+  (not just the one name recorded when the case was created) and doubles as a shortcut into
+  Report Narrative, where both are actually edited. The Total Cases stat row (and whichever other
+  station-wide stats you've enabled in Settings) moved up into the same row as the case bar,
+  right-aligned, instead of its own separate row underneath it.
+
 ## [1.88.0] - 2026-09-10
 
 ### Added
