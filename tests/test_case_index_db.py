@@ -2054,3 +2054,77 @@ def test_analysis_coverage_missing_coc_log_file_is_not_an_error(case_folder, coc
     assert not os.path.exists(coc_log_file)
     result = case_index_db.compute_case_analysis_coverage(case_folder)
     assert result["items"][0]["steps_completed"] == []
+
+
+# --- derive_examiner_display() / Multiple Examiner Names per Case ---
+# (item 7 of the investigation-workflow backlog) - the shared funnel point
+# both list_case_folders() below and routes/reporting.py's export_report()
+# header build use, so every reader of a case's own "who worked this"
+# information agrees, regardless of which one a given case happens to
+# still be missing.
+
+def test_derive_examiner_display_prefers_a_non_empty_examiners_list():
+    assert case_index_db.derive_examiner_display(["Jane Doe", "Bob Roe"], "Legacy Solo") == "Jane Doe, Bob Roe"
+
+
+def test_derive_examiner_display_falls_back_to_the_legacy_singular_field_when_no_list_at_all():
+    # The real, dominant shape for every case recorded before this feature
+    # shipped - no "examiners" key exists on disk at all (not even an
+    # empty list), so this is what most already-existing cases hit.
+    assert case_index_db.derive_examiner_display(None, "Solo Examiner") == "Solo Examiner"
+
+
+def test_derive_examiner_display_falls_back_when_the_list_is_present_but_empty_or_all_blank():
+    assert case_index_db.derive_examiner_display([], "Solo Examiner") == "Solo Examiner"
+    assert case_index_db.derive_examiner_display(["", "   "], "Solo Examiner") == "Solo Examiner"
+
+
+def test_derive_examiner_display_strips_blank_entries_out_of_an_otherwise_real_list():
+    assert case_index_db.derive_examiner_display(["Jane Doe", "  ", ""], "Legacy Solo") == "Jane Doe"
+
+
+def test_derive_examiner_display_uses_the_caller_given_default_when_nothing_is_recorded_at_all():
+    assert case_index_db.derive_examiner_display(None, None, default="--") == "--"
+    assert case_index_db.derive_examiner_display([], "", default="N/A") == "N/A"
+
+
+def _redirect_evidence_root(monkeypatch, evidence_root):
+    """list_case_folders() reads config.EVIDENCE_ROOT module-qualified (not
+    a bare imported name) - a separate binding from core.paths.EVIDENCE_ROOT,
+    which the evidence_root fixture itself patches. Same helper
+    test_cross_case_search.py already uses for this identical reason."""
+    import core.config as config
+    monkeypatch.setattr(config, "EVIDENCE_ROOT", evidence_root)
+
+
+def test_list_case_folders_shows_every_examiner_joined_for_a_real_case_with_a_multi_examiner_list(evidence_root, monkeypatch):
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    slug = "2026-CASE-MULTI-EXAM"
+    case_dir = os.path.join(evidence_root, slug)
+    os.makedirs(case_dir)
+    with open(os.path.join(case_dir, f"{slug}_case.json"), "w") as f:
+        json.dump({
+            "case_number": slug, "examiner": "First Examiner",
+            "examiners": ["First Examiner", "Second Examiner"],
+            "case_folder": case_dir, "created_at": "2026-01-01", "events": [],
+        }, f)
+    cases = case_index_db.list_case_folders()
+    by_number = {c["case_number"]: c for c in cases}
+    assert by_number[slug]["examiner"] == "First Examiner, Second Examiner"
+
+
+def test_list_case_folders_falls_back_to_the_singular_field_for_a_case_with_no_examiners_list(evidence_root, monkeypatch):
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    # Exactly the shape of a case recorded before this feature shipped -
+    # no "examiners" key at all, only the original singular one.
+    slug = "2026-CASE-LEGACY-SINGLE-EXAM"
+    case_dir = os.path.join(evidence_root, slug)
+    os.makedirs(case_dir)
+    with open(os.path.join(case_dir, f"{slug}_case.json"), "w") as f:
+        json.dump({
+            "case_number": slug, "examiner": "Original Examiner",
+            "case_folder": case_dir, "created_at": "2026-01-01", "events": [],
+        }, f)
+    cases = case_index_db.list_case_folders()
+    by_number = {c["case_number"]: c for c in cases}
+    assert by_number[slug]["examiner"] == "Original Examiner"

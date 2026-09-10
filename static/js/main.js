@@ -66,13 +66,20 @@ let currentReportPath = null;
 let currentAttachedFilesList = [];
 let currentAttachmentCaptions = {};
 let currentReferenceUrlsList = [];
+// Multiple Examiner Names per Case (item 7 of the investigation-workflow
+// backlog) - the case's own editable examiners list, mirroring
+// currentReferenceUrlsList's exact add/remove/save pattern. Populated by
+// loadCaseForEditing(), read (not currentLoadedReportData directly) by
+// saveReportMetadata() at save time - same reason those other module-level
+// arrays exist rather than reading straight off the DOM/report object.
+let currentExaminersList = [];
 
 // Tracks whether Reporting has edits that only persist via the explicit
 // "Save Report Changes" button (Report Narrative, Case Status, Case
-// Details/custom fields, and the Files & Artifacts exhibit checklist/
-// captions/reference URLs) - unlike Case Notes, Custody Log, tags, and
-// "Attach to Case" from File Explorer, which all save immediately. See
-// markReportingDirty()/clearReportingDirty() below, and
+// Details/custom fields, Examiners, and the Files & Artifacts exhibit
+// checklist/captions/reference URLs) - unlike Case Notes, Custody Log,
+// tags, and "Attach to Case" from File Explorer, which all save
+// immediately. See markReportingDirty()/clearReportingDirty() below, and
 // #reportUnsavedIndicator in reporting.html.
 let reportHasUnsavedChanges = false;
 
@@ -90,12 +97,16 @@ function clearReportingDirty() {
 }
 
 // Delegated rather than one listener per field: #repNarrativePane holds
-// Case Status, Case Details (renderCustomFieldsForCase() rebuilds its own
-// inputs on every case load, so a per-field listener would need
-// re-attaching every time), and all 7 narrative textareas - one listener
-// on the pane covers all of them, and setting .value programmatically
-// (loadCaseForEditing() populating fresh case data) never fires input/
-// change, so this can't mistake a case reload for a real edit.
+// Case Status, Examiners (its add-input only - renderExaminersList()'s own
+// add/remove buttons call markReportingDirty() explicitly, matching
+// renderReportUrlRows()'s identical convention, since a button click never
+// fires input/change on its own), Case Details (renderCustomFieldsForCase()
+// rebuilds its own inputs on every case load, so a per-field listener
+// would need re-attaching every time), and all 7 narrative textareas - one
+// listener on the pane covers all of them, and setting .value
+// programmatically (loadCaseForEditing() populating fresh case data)
+// never fires input/change, so this can't mistake a case reload for a
+// real edit.
 document.addEventListener('input', (ev) => {
     if (ev.target.closest && ev.target.closest('#repNarrativePane')) markReportingDirty();
 });
@@ -864,7 +875,7 @@ function populateToolReference() {
 // section pulls from structured data (a table, a log, a filesystem walk)
 // that isn't something a dropdown can meaningfully rewire.
 const REPORT_FIELD_MAPPING = [
-    ["Case Information", "Case #, Examiner, Status, Created date, Custom Fields", "Case #/Examiner set at creation (not editable after); Report Narrative &gt; Case Status; Custom Fields defined in Settings &gt; Case &amp; Reporting, values in Report Narrative &gt; Case Details"],
+    ["Case Information", "Case #, Examiner(s), Status, Created date, Custom Fields", "Case # set at creation (not editable after); additional Examiners added/removed in Report Narrative &gt; Examiners; Report Narrative &gt; Case Status; Custom Fields defined in Settings &gt; Case &amp; Reporting, values in Report Narrative &gt; Case Details"],
     ["Executive Summary", "Free text (Remappable)", "Report Narrative"],
     ["Objectives", "Free text (Remappable)", "Report Narrative"],
     ["Evidence Inventory", "Auto-built table (make/model/serial/capacity/hash)", "Not directly editable - comes from the acquisition job itself"],
@@ -12893,6 +12904,82 @@ function renderCustomFieldsForCase(values) {
     });
 }
 
+// Multiple Examiner Names per Case (item 7 of the investigation-workflow
+// backlog) - mirrors renderReportUrlRows()'s exact add/remove-chip pattern.
+// Always rebuilt in full (unlike that function's own body-only rebuild,
+// which exists to preserve an outer collapsible group's own open/closed
+// state - this list has no such wrapper to preserve).
+function renderExaminersList() {
+    const container = document.getElementById('examinersContainer');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const addRow = document.createElement('div');
+    addRow.className = 'd-flex gap-2 mb-2';
+    const addInput = document.createElement('input');
+    addInput.type = 'text';
+    addInput.className = 'form-control form-control-sm';
+    addInput.placeholder = 'Add an examiner name...';
+    const doAdd = () => {
+        const val = addInput.value.trim();
+        if (!val) return;
+        if (currentExaminersList.some(e => e.toLowerCase() === val.toLowerCase())) {
+            addInput.value = '';
+            return;
+        }
+        currentExaminersList.push(val);
+        addInput.value = '';
+        markReportingDirty();
+        renderExaminersList();
+    };
+    addInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); doAdd(); } });
+    addRow.appendChild(addInput);
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn btn-sm btn-outline-secondary flex-shrink-0';
+    addBtn.title = 'Add examiner';
+    addBtn.innerHTML = '<i class="bi bi-plus-lg"></i>';
+    addBtn.onclick = doAdd;
+    addRow.appendChild(addBtn);
+    container.appendChild(addRow);
+
+    if (currentExaminersList.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'text-subtle small';
+        empty.textContent = 'No examiners recorded for this case yet.';
+        container.appendChild(empty);
+        return;
+    }
+
+    currentExaminersList.forEach((name, idx) => {
+        const row = document.createElement('div');
+        row.className = 'd-flex align-items-center gap-2 bg-dark p-2 rounded mb-1 border border-secondary';
+
+        const icon = document.createElement('i');
+        icon.className = 'bi bi-person-fill text-subtle flex-shrink-0';
+        row.appendChild(icon);
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'small text-break flex-grow-1';
+        nameEl.textContent = name; // examiner-entered - text node only
+        row.appendChild(nameEl);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn btn-xs btn-outline-danger py-0 px-2 flex-shrink-0';
+        delBtn.title = 'Remove';
+        delBtn.innerHTML = '<i class="bi bi-trash"></i>';
+        delBtn.onclick = () => {
+            currentExaminersList.splice(idx, 1);
+            markReportingDirty();
+            renderExaminersList();
+        };
+        row.appendChild(delBtn);
+
+        container.appendChild(row);
+    });
+}
+
 // --- Custom Case Field item picker (set a field's value from an attached
 // exhibit or a tagged item, instead of typing it) ---
 let customFieldItemPickerModalInstance = null;
@@ -13391,6 +13478,9 @@ async function loadCaseForEditing() {
         let skippedForUnsavedEdits = false;
         if (!reportHasUnsavedChanges) {
             renderCustomFieldsForCase(isConsolidated ? currentLoadedReportData.custom_fields : legacyMeta.custom_fields);
+            const examinersSrc = isConsolidated ? currentLoadedReportData.examiners : legacyMeta.examiners;
+            currentExaminersList = Array.isArray(examinersSrc) ? [...examinersSrc] : [];
+            renderExaminersList();
             const narrativeSrc = isConsolidated ? currentLoadedReportData : legacyMeta;
             const caseStatusEl = document.getElementById("editCaseStatus");
             if (caseStatusEl) caseStatusEl.value = narrativeSrc.case_status || "Open";
@@ -15277,18 +15367,23 @@ async function saveReportMetadata() {
         // Consolidated case file - narrative fields (now including
         // case_status, genuinely editable over a case's life unlike the
         // other three) are top-level; case_number/examiner/notes stay
-        // untouched (notes is set once at case creation, the other two
-        // come read-only from the Active Case Bar), same as events[] and
-        // case_notes[] already are.
+        // untouched (notes is set once at case creation, examiner is the
+        // immutable examiner-of-record - see examiners below for the
+        // actually-editable list), same as events[] and case_notes[]
+        // already are. examiners (plural, the Multiple Examiner Names per
+        // Case list) IS saved here - see currentExaminersList's own comment.
         currentLoadedReportData.custom_fields = customFieldValues;
+        currentLoadedReportData.examiners = currentExaminersList;
         Object.assign(currentLoadedReportData, narrativeFields);
     } else {
         // Legacy single-job report - preserve case_number/examiner/notes/
         // evidence_id (no longer editable here, but still part of this
-        // report's own data).
+        // report's own data). examiners is still saved under case_metadata,
+        // matching where every other legacy per-case field already lives.
         currentLoadedReportData.case_metadata = {
             ...(currentLoadedReportData.case_metadata || {}),
             custom_fields: customFieldValues,
+            examiners: currentExaminersList,
             ...narrativeFields
         };
     }

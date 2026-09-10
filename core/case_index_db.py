@@ -949,6 +949,32 @@ CROSS_CASE_SEARCH_MAX_CASES = 200
 CROSS_CASE_SEARCH_MAX_RESULTS = 500
 
 
+def derive_examiner_display(examiners, legacy_examiner, default="N/A"):
+    """Case-level Examiner display string - Multiple Examiner Names per
+    Case, item 7 of the 9-item investigation-workflow backlog. A case's
+    examiner was always a single string, set once at creation and never
+    editable again. This adds an `examiners` list (seeded with that first
+    name at creation, editable afterward in Reporting) without breaking
+    every already-shipped reader of the old singular field: the list is
+    preferred and its non-empty entries joined with ", " whenever present,
+    falling back to `legacy_examiner` only when the list is missing/empty -
+    which is exactly the shape of every case on disk before this shipped
+    (no `examiners` key at all), so nothing already-recorded needs
+    migrating and every existing case keeps showing precisely what it
+    always has. The one shared funnel point for every caller that displays
+    an examiner (this module's own list_case_folders(), and routes/
+    reporting.py's export_report() header build) - deliberately never
+    duplicated a second time the way this app has already been bitten by
+    for other "two copies of the same derivation" mistakes.
+    """
+    if isinstance(examiners, list):
+        cleaned = [str(e).strip() for e in examiners if str(e).strip()]
+        if cleaned:
+            return ", ".join(cleaned)
+    legacy = legacy_examiner.strip() if isinstance(legacy_examiner, str) else legacy_examiner
+    return legacy or default
+
+
 def list_case_folders():
     """Walks EVIDENCE_ROOT for every real case folder (both the modern
     consolidated {slug}_case.json schema and the legacy case_info.json one
@@ -959,7 +985,9 @@ def list_case_folders():
     own established bar for factoring something out of a single inline
     route body. Returns a list of dicts: {case_number, examiner,
     case_folder, created_at, notes, case_status, status_before_archive,
-    event_count, schema}, sorted newest-created-first.
+    event_count, schema}, sorted newest-created-first. "examiner" is
+    already resolved via derive_examiner_display() above - a case with a
+    real `examiners` list shows every name joined, never just the first.
     status_before_archive is None unless routes/case_management.py's
     set_case_status() has captured one (i.e. the case is currently
     Archived and was set_case_status()-archived, not hand-edited on
@@ -1005,7 +1033,7 @@ def list_case_folders():
                     data = json.load(f)
                 cases.append({
                     "case_number": data.get('case_number', '--'),
-                    "examiner": data.get('examiner', '--'),
+                    "examiner": derive_examiner_display(data.get('examiners'), data.get('examiner'), default='--'),
                     "case_folder": data.get('case_folder', root),
                     "created_at": data.get('created_at', '--'),
                     "notes": data.get('notes', ''),
@@ -1023,7 +1051,7 @@ def list_case_folders():
                     data = json.load(f)
                 cases.append({
                     "case_number": data.get('case_number', '--'),
-                    "examiner": data.get('examiner', '--'),
+                    "examiner": derive_examiner_display(data.get('examiners'), data.get('examiner'), default='--'),
                     "case_folder": data.get('case_folder', root),
                     "created_at": data.get('created_at', '--'),
                     "notes": data.get('notes', ''),

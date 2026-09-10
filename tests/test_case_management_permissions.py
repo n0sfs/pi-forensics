@@ -149,6 +149,73 @@ def test_migrate_apply_preserves_case_status_and_seeds_custom_field_defaults(cli
     assert migrated["custom_fields"] == {"agency": "Regional Crime Lab"}
 
 
+def test_create_case_seeds_the_examiners_list_from_the_single_typed_examiner(client, runtime_config_file, evidence_root):
+    """Multiple Examiner Names per Case (item 7 of the investigation-
+    workflow backlog) - a fresh case's own "examiner" field is still the
+    single string typed at creation (auto-filled from the logged-in
+    account, unchanged), but "examiners" (the new, editable list) must be
+    seeded with that same name as its first entry, not left empty - that's
+    what makes core.case_index_db.derive_examiner_display() show exactly
+    the same name a brand-new case has always shown, before any additional
+    examiner is ever added."""
+    import os
+    _save_group("has_reporting", reporting=True)
+    _save_user("exam_user", "pw", "has_reporting")
+    _login(client, "exam_user")
+    res = client.post("/api/cases/create", json={
+        "case_number": "2026-TEST-EXAM-SEED", "examiner": "Jane Doe", "parent_dir": evidence_root,
+    })
+    assert res.status_code == 200
+    case_record = res.get_json()["case"]
+    assert case_record["examiner"] == "Jane Doe"
+    assert case_record["examiners"] == ["Jane Doe"]
+
+    # Also confirmed on the actual written file, not just the response body.
+    case_dir = os.path.join(evidence_root, "2026-TEST-EXAM-SEED")
+    with open(os.path.join(case_dir, "2026-TEST-EXAM-SEED_case.json")) as f:
+        on_disk = json.load(f)
+    assert on_disk["examiners"] == ["Jane Doe"]
+
+
+def test_create_case_seeds_an_empty_examiners_list_when_no_examiner_was_typed(client, runtime_config_file, evidence_root):
+    """A blank examiner (whoami/currentUsername came back empty, or a
+    caller other than the real UI omits it) must seed [] rather than
+    [""], or derive_examiner_display() would show a bare blank string
+    instead of correctly falling through to its own default."""
+    _save_group("has_reporting2", reporting=True)
+    _save_user("exam_user2", "pw", "has_reporting2")
+    _login(client, "exam_user2")
+    res = client.post("/api/cases/create", json={
+        "case_number": "2026-TEST-EXAM-BLANK", "parent_dir": evidence_root,
+    })
+    assert res.status_code == 200
+    assert res.get_json()["case"]["examiners"] == []
+
+
+def test_migrate_apply_seeds_examiners_from_the_legacy_singular_field(client, runtime_config_file, evidence_root):
+    """Same seeding as create_case() above, applied at the OTHER place a
+    brand-new {slug}_case.json gets written for the first time - a legacy
+    case_info.json never had an "examiners" key at all, only the original
+    singular field, which becomes this list's sole entry post-migration."""
+    import os
+    slug = "2026-LEGACY-EXAM-SEED"
+    case_dir = os.path.join(evidence_root, slug)
+    os.makedirs(case_dir)
+    with open(os.path.join(case_dir, "case_info.json"), "w") as f:
+        json.dump({"case_number": slug, "examiner": "Original Examiner"}, f)
+
+    _save_group("reporting_group3", reporting=True)
+    _save_user("rep_user3", "pw", "reporting_group3")
+    _login(client, "rep_user3")
+    res = client.post("/api/cases/migrate_apply", json={"case_folder": case_dir})
+    assert res.status_code == 200
+    assert res.get_json()["success"] is True
+
+    with open(os.path.join(case_dir, f"{slug}_case.json")) as f:
+        migrated = json.load(f)
+    assert migrated["examiners"] == ["Original Examiner"]
+
+
 def test_create_case_returns_a_clean_409_on_a_genuine_directory_creation_race(client, runtime_config_file, evidence_root, monkeypatch):
     """Real bug, fixed 2026-09-09 (a 3rd Case/Reporting review pass's own
     lower-confidence findings): the os.path.exists() check and the
