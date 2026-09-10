@@ -5410,7 +5410,10 @@ const CTX_MENU_ANALYSIS_TOOL_NAMES = {
 let ctxMenuAlreadyRunToken = 0;
 
 async function refreshCtxMenuAlreadyRunBadges(path) {
-    document.querySelectorAll('#ctxMenuRealActions .ctx-already-run-badge').forEach(b => b.remove());
+    document.querySelectorAll('#ctxMenuRealActions .ctx-already-run-badge').forEach(b => {
+        bootstrap.Tooltip.getInstance(b)?.dispose();
+        b.remove();
+    });
     if (!path) return;
     const token = ++ctxMenuAlreadyRunToken;
     try {
@@ -5429,10 +5432,14 @@ async function refreshCtxMenuAlreadyRunBadges(path) {
             if (!matched) return;
             const badge = document.createElement('i');
             badge.className = 'bi bi-check-circle-fill text-success ms-2 ctx-already-run-badge';
-            badge.setAttribute('data-bs-toggle', 'tooltip');
             badge.setAttribute('data-bs-placement', 'right');
             badge.title = `Already run: ${matched.summary || matched.tool} (${matched.run_at || ''})`;
             btn.appendChild(badge);
+            // Added after page load, so it needs its own explicit tooltip init -
+            // initHelpTooltips() only ever scans the DOM once, at DOMContentLoaded.
+            // A bare i.bi-check-circle-fill is already tightly sized, unlike its
+            // .dropdown-item parent, so no span-wrapping needed here.
+            new bootstrap.Tooltip(badge, { trigger: 'hover focus', placement: 'right' });
         });
     } catch (err) {
         // Best-effort UI enrichment only - a failed lookup just means no
@@ -21820,11 +21827,43 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 });
 
+// A Bootstrap .dropdown-item is display:block; width:100% of its whole menu - a short
+// item ("Tag...") sitting next to a long sibling ("Browse as Image (Sleuth Kit)") in the
+// same context menu ends up with a box far wider than its own visible icon+text. Popper
+// anchors/centers a tooltip on the TRIGGER's own bounding box, not its visible content, so
+// once that box is stretched, a flipped-placement tooltip (there's rarely room on every
+// requested side once the menu itself is near a screen edge - routine on the touchscreen
+// kiosk, or when right-clicking something in File Explorer's own left-side tree) lands far
+// from what's actually on screen - the same underlying bug already found and fixed for
+// Reporting's Quick Search label (2026-09-10), just triggered by a sibling's long text
+// instead of a `d-block` utility class. Unlike that label, these buttons genuinely need to
+// stay full-width for their own click target - shrinking them would be a real regression -
+// so the fix here moves the TOOLTIP's own reference onto a tight inner <span> wrapping just
+// the icon+text, leaving the button (width, onclick, disabled state) completely untouched.
+// Idempotent (checks for an already-created span) so a stray second init call is harmless.
+function _tooltipTriggerFor(el) {
+    if (!el.classList.contains('dropdown-item')) return el;
+    const existing = el.querySelector(':scope > .tooltip-hitbox');
+    if (existing) return existing;
+    const span = document.createElement('span');
+    span.className = 'tooltip-hitbox';
+    while (el.firstChild) span.appendChild(el.firstChild);
+    el.appendChild(span);
+    const placementAttr = el.getAttribute('data-bs-placement');
+    if (placementAttr) span.setAttribute('data-bs-placement', placementAttr);
+    span.setAttribute('title', el.getAttribute('title') || '');
+    el.removeAttribute('title');
+    el.removeAttribute('data-bs-placement');
+    el.removeAttribute('data-bs-toggle');
+    return span;
+}
+
 function initHelpTooltips() {
     // Bootstrap tooltips need explicit init - "hover focus" so they also
     // work reasonably on touch (tapping a button focuses it first), since
     // this is primarily a touchscreen kiosk interface, not a mouse-driven one.
     document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
-        new bootstrap.Tooltip(el, { trigger: 'hover focus', placement: el.getAttribute('data-bs-placement') || 'top' });
+        const triggerEl = _tooltipTriggerFor(el);
+        new bootstrap.Tooltip(triggerEl, { trigger: 'hover focus', placement: triggerEl.getAttribute('data-bs-placement') || 'top' });
     });
 }
