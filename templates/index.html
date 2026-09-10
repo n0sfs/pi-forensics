@@ -649,33 +649,34 @@
         <div class="app-content-area">
             <!-- Active Case Bar: persists across every tab below, unlike everything in .container-fluid.
                  Now the first row in .app-content-area (telemetry moved into the navbar above), so
-                 the sidebar's align-items:stretch aligns its top edge with this bar's top edge. -->
+                 the sidebar's align-items:stretch aligns its top edge with this bar's top edge.
+                 The Case #/Examiner display that used to live here (2026-09-10) moved to Reporting's
+                 own "Case Report" header instead (#reportHeaderCaseSummary in reporting.html) - it's
+                 alongside the actual report it describes there, and can show the real, full
+                 multi-examiner list (currentExaminersList) instead of just activeCase.examiner (this
+                 app's one single legacy examiner-of-record, still used for job-form auto-fill, but
+                 never the same thing as "who's actually working this case"). The station-wide stat
+                 row (Total Cases, etc.) now shares this same row instead, right-aligned via ms-auto. -->
             <div id="activeCaseBar" class="top-telemetry-bar d-flex flex-wrap align-items-center gap-3 text-nowrap">
                 <button id="btnCaseAction" class="btn btn-sm btn-outline-info fw-bold" onclick="openCaseManagerModal()">
                     <i class="bi bi-folder-plus me-1"></i><span id="btnCaseActionLabel">Create / Select Case</span>
                 </button>
-                <div id="activeCaseInfo" style="display:none; align-items: center; gap: 1rem;">
-                    <span><span class="telemetry-label">Case #:</span> <span id="activeCaseNumVal" class="fw-bold text-info">--</span></span>
-                    <span><span class="telemetry-label">Examiner:</span> <span id="activeCaseExaminerVal" class="fw-bold text-light">--</span></span>
-                </div>
-            </div>
 
-            <!-- Station-wide stat row (Total Cases, etc.) - examiner-selected (Settings >
-                 Case & Reporting), one card per enabled stat. Moved here (2026-09-10) from
-                 Reporting's own card-header - it was already deliberately station-wide, not
-                 case-scoped (stays visible with no case selected), so it belongs next to the
-                 rest of this app's persistent global chrome, not buried in one specific tab.
-                 loadReportingStats()/renderReportingStatCard() in main.js are unchanged;
-                 loadReportingStats() also hides this whole row (via a real !important
-                 display:none, not a plain style reset - see the function itself) whenever the
-                 examiner has nothing enabled, so it never shows up as an empty strip. -->
-            <!-- The plain style="display:none" here needs the explicit !important - this
-                 element also carries Bootstrap's d-flex utility (display:flex !important),
-                 which otherwise beats a non-important inline style regardless of source
-                 order and would flash the row visible-but-empty for a moment before JS
-                 ever runs. Same gotcha this app has already hit (and fixed) more than once
-                 elsewhere for exactly this class/inline-style combination. -->
-            <div id="reportingStatsRow" class="top-telemetry-bar d-flex flex-wrap align-items-center gap-3 text-nowrap" style="display:none !important;"></div>
+                <!-- Station-wide stat row (Total Cases, etc.) - examiner-selected (Settings >
+                     Case & Reporting), one card per enabled stat. Right-aligned within this same
+                     bar (ms-auto) rather than its own separate row - loadReportingStats()/
+                     renderReportingStatCard() in main.js are unchanged, only the markup's
+                     location/wrapper class changed. It's already deliberately station-wide, not
+                     case-scoped (stays visible with no case selected), so it belongs next to the
+                     rest of this app's persistent global chrome, not buried in one specific tab. -->
+                <!-- The plain style="display:none" here needs the explicit !important - this
+                     element also carries Bootstrap's d-flex utility (display:flex !important),
+                     which otherwise beats a non-important inline style regardless of source
+                     order and would flash the row visible-but-empty for a moment before JS
+                     ever runs. Same gotcha this app has already hit (and fixed) more than once
+                     elsewhere for exactly this class/inline-style combination. -->
+                <div id="reportingStatsRow" class="d-flex flex-wrap align-items-center gap-3 text-nowrap ms-auto" style="display:none !important;"></div>
+            </div>
 
             <div class="container-fluid px-4">
                 <div class="tab-content" id="forensicTabContent">

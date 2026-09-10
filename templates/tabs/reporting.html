@@ -2,14 +2,35 @@
             <div class="tab-pane fade" id="reports-app" role="tabpanel">
                             <div class="card">
                                 <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-3 py-2">
-                                    <span><i class="bi bi-journal-richtext me-2"></i>Case Report</span>
                                     <!-- The station-wide stat row (Total Cases, etc.) that used to sit
-                                         here moved to its own global row below the top navbar
-                                         (#reportingStatsRow in index.html) - it was already station-wide,
-                                         not case-scoped, so it fits better next to the system-telemetry
-                                         header than buried inside one specific tab. loadReportingStats()/
+                                         here moved to the global Active Case Bar (#reportingStatsRow in
+                                         index.html) - it was already station-wide, not case-scoped, so
+                                         it fits better next to the rest of this app's persistent global
+                                         chrome than buried inside one specific tab. loadReportingStats()/
                                          renderReportingStatCard() in main.js are unchanged, only the
                                          markup's location moved. -->
+                                    <div class="d-flex flex-wrap align-items-center gap-3">
+                                        <span><i class="bi bi-journal-richtext me-2"></i>Case Report</span>
+                                        <!-- Case #/Examiners summary - moved here from the global Active
+                                             Case Bar (2026-09-10), which used to show the case number
+                                             and activeCase.examiner (this app's one single legacy
+                                             examiner-of-record) on every tab. That display now lives
+                                             here instead, next to the actual report it describes, and
+                                             shows the real, full multi-examiner list
+                                             (currentExaminersList - the Multiple Examiners feature) that
+                                             the case bar never had room for. Read-only; clicking it jumps
+                                             to Report Narrative, where both are actually edited. Hidden
+                                             whenever no case's report is currently loaded - see
+                                             renderReportHeaderCaseSummary() in main.js, called from
+                                             renderExaminersList() (covers both the initial load and every
+                                             later add/remove) and from loadCaseForEditing()'s two
+                                             no-report-loaded branches. -->
+                                        <button type="button" id="reportHeaderCaseSummary" class="btn btn-sm btn-outline-secondary py-0 px-2 small" style="display:none;" onclick="jumpToReportingTab('repNarrativeTab')" title="Click to edit Case # / Examiners in Report Narrative">
+                                            <span class="text-info fw-bold">Case #: <span id="reportHeaderCaseNum">--</span></span>
+                                            <span class="mx-1 text-subtle">&middot;</span>
+                                            <span class="text-light">Examiners: <span id="reportHeaderExaminers">--</span></span>
+                                        </button>
+                                    </div>
                                     <div class="d-flex flex-wrap align-items-center gap-2">
                                         <span class="small text-subtle fw-normal">Follows the case selected in the bar above - select or create one there to populate this</span>
                                         <!-- Case Notes/Custody Log/Attach-to-Case/tags all save immediately - only
