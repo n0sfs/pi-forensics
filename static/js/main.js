@@ -14418,6 +14418,7 @@ function exportCaseTimelineCsv() {
 // overwrites in place: the prior text is preserved in edit_history, see
 // /api/cases/notes/edit in app.py.
 let editingCaseNoteId = null;
+let assigningCaseNoteId = null; // mirrors editingCaseNoteId's own inline-toggle pattern, for the "Assign to" input
 
 // Populates the "Link to Exhibit(s)" checklist on the Add Note form from
 // whatever's currently attached (exhibit numbers here are each file's
@@ -14552,9 +14553,53 @@ function renderCaseNotesList() {
         editBtn.textContent = 'Edit';
         editBtn.onclick = () => { editingCaseNoteId = note.note_id; renderCaseNotesList(); };
 
+        const btnGroup = document.createElement('div');
+        btnGroup.className = 'd-flex gap-1 flex-shrink-0';
+        const status = note.status || 'open'; // no status field at all = a note created before this feature - defaults to Open
+        const statusBtn = document.createElement('button');
+        statusBtn.className = `btn btn-xs py-0 px-2 ${status === 'resolved' ? 'btn-outline-success' : 'btn-outline-warning'}`;
+        statusBtn.textContent = status === 'resolved' ? '✓ Resolved' : '○ Open';
+        statusBtn.title = status === 'resolved' ? 'Click to reopen' : 'Click to mark resolved';
+        statusBtn.onclick = () => setCaseNoteStatus(note.note_id, { status: status === 'resolved' ? 'open' : 'resolved' });
+        const assignBtn = document.createElement('button');
+        assignBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
+        assignBtn.textContent = note.assigned_to ? 'Reassign' : 'Assign...';
+        assignBtn.onclick = () => { assigningCaseNoteId = note.note_id; renderCaseNotesList(); };
+        btnGroup.appendChild(statusBtn);
+        btnGroup.appendChild(assignBtn);
+        btnGroup.appendChild(editBtn);
+
         headerLine.appendChild(left);
-        headerLine.appendChild(editBtn);
+        headerLine.appendChild(btnGroup);
         card.appendChild(headerLine);
+
+        if (note.assigned_to) {
+            const assignedLine = document.createElement('div');
+            assignedLine.className = 'small text-subtle mb-1';
+            assignedLine.appendChild(document.createTextNode(`→ Assigned to: ${note.assigned_to}`)); // examiner-entered, text node only
+            card.appendChild(assignedLine);
+        }
+        if (assigningCaseNoteId === note.note_id) {
+            const assignRow = document.createElement('div');
+            assignRow.className = 'd-flex gap-1 mb-1';
+            const assignInput = document.createElement('input');
+            assignInput.type = 'text';
+            assignInput.className = 'form-control form-control-sm';
+            assignInput.placeholder = "Assign to (a colleague's name)";
+            assignInput.value = note.assigned_to || '';
+            const assignSaveBtn = document.createElement('button');
+            assignSaveBtn.className = 'btn btn-xs btn-success py-0 px-2 flex-shrink-0';
+            assignSaveBtn.textContent = 'Save';
+            assignSaveBtn.onclick = () => setCaseNoteStatus(note.note_id, { assigned_to: assignInput.value });
+            const assignCancelBtn = document.createElement('button');
+            assignCancelBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2 flex-shrink-0';
+            assignCancelBtn.textContent = 'Cancel';
+            assignCancelBtn.onclick = () => { assigningCaseNoteId = null; renderCaseNotesList(); };
+            assignRow.appendChild(assignInput);
+            assignRow.appendChild(assignSaveBtn);
+            assignRow.appendChild(assignCancelBtn);
+            card.appendChild(assignRow);
+        }
 
         if (editingCaseNoteId === note.note_id) {
             const textarea = document.createElement('textarea');
@@ -14652,6 +14697,7 @@ async function addCaseNote() {
         return;
     }
     const category = document.getElementById("newCaseNoteCategory")?.value || "General";
+    const assignedTo = document.getElementById("newCaseNoteAssignedTo")?.value.trim() || "";
     const filesInput = document.getElementById("newCaseNoteFiles");
     const linkedFiles = Array.from(document.querySelectorAll('.new-case-note-link-cb:checked')).map(cb => cb.value);
 
@@ -14659,6 +14705,7 @@ async function addCaseNote() {
     formData.append('report_path', reportPath);
     formData.append('text', text);
     formData.append('category', category);
+    formData.append('assigned_to', assignedTo);
     formData.append('linked_files', JSON.stringify(linkedFiles));
     if (filesInput && filesInput.files) {
         Array.from(filesInput.files).forEach(f => formData.append('files', f));
@@ -14670,6 +14717,8 @@ async function addCaseNote() {
         const data = await res.json();
         if (data.success) {
             document.getElementById("newCaseNoteText").value = '';
+            const assignedToEl = document.getElementById("newCaseNoteAssignedTo");
+            if (assignedToEl) assignedToEl.value = '';
             if (filesInput) filesInput.value = '';
             if (statusEl) { statusEl.textContent = 'Note added.'; statusEl.className = 'small mt-1 text-success'; }
             await loadCaseForEditing();
@@ -14678,6 +14727,30 @@ async function addCaseNote() {
         }
     } catch (err) {
         if (statusEl) { statusEl.textContent = `Failed: ${err.message}`; statusEl.className = 'small mt-1 text-danger'; }
+    }
+}
+
+// Follow-up/task flag (2026-09-09) - status/assigned_to are independent,
+// non-append-only fields on a note (deliberately never touching
+// edit_history - see /api/cases/notes/set_status's own docstring). `fields`
+// is {status: ...} and/or {assigned_to: ...}; only the key(s) actually
+// present get sent, matching the backend's own partial-update contract.
+async function setCaseNoteStatus(noteId, fields) {
+    if (!currentReportPath) return;
+    try {
+        const res = await fetch('/api/cases/notes/set_status', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report_path: currentReportPath, note_id: noteId, ...fields })
+        });
+        const data = await res.json();
+        if (data.success) {
+            assigningCaseNoteId = null;
+            await loadCaseForEditing();
+        } else {
+            showToast(`Could not update note: ${data.error}`, 'danger');
+        }
+    } catch (err) {
+        showToast(`Failed to update note: ${err.message}`, 'danger');
     }
 }
 
