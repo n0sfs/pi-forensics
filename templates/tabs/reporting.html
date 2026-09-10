@@ -40,27 +40,55 @@
                                             This is a single-job report, not a consolidated case file. Migrate this case from the Case Manager to combine all of its evidence items into one file.
                                         </div>
                                         <div class="reports-shell">
+                                            <!-- Condensed 2026-09-09 from 13 nav items to 9 - Case Notes
+                                                 absorbed Physical Custody Log (both are examiner-authored
+                                                 journals, form-above-list); Jobs absorbed Coverage and
+                                                 Case Activity Log (all 3 are "what's been done to this
+                                                 evidence" views, at raw/analysis/audit granularity) and
+                                                 was relabeled "Evidence Activity"; Search was folded
+                                                 directly into Overview, and Export gained a quick-link
+                                                 from there instead of being folded in itself (its own
+                                                 sections/items/files checklist is too large to fit
+                                                 inside a dashboard tile). Every id below that survives a
+                                                 merge is unchanged - only the label/icon/onclick changed,
+                                                 per this project's own "rename the label, not the
+                                                 internal id" convention. -->
                                             <div class="reports-nav list-group" id="reportsNavList" role="tablist">
                                                 <button class="list-group-item list-group-item-action active" id="repOverviewTab" data-bs-toggle="list" data-bs-target="#repOverviewPane" type="button" role="tab"><i class="bi bi-speedometer2"></i>Overview</button>
                                                 <button class="list-group-item list-group-item-action" id="repContactsTab" data-bs-toggle="list" data-bs-target="#repContactsPane" type="button" role="tab" onclick="loadPatternOfLife()"><i class="bi bi-activity"></i>Pattern of Life</button>
                                                 <button class="list-group-item list-group-item-action" id="repNarrativeTab" data-bs-toggle="list" data-bs-target="#repNarrativePane" type="button" role="tab"><i class="bi bi-file-text"></i>Report Narrative</button>
-                                                <button class="list-group-item list-group-item-action" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList()"><i class="bi bi-clipboard2-pulse"></i>Case Notes</button>
-                                                <button class="list-group-item list-group-item-action" id="repCustodyTab" data-bs-toggle="list" data-bs-target="#repCustodyPane" type="button" role="tab" onclick="renderCustodyLogList()"><i class="bi bi-people-fill"></i>Physical Custody Log</button>
+                                                <button class="list-group-item list-group-item-action" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList(); renderCustodyLogList();"><i class="bi bi-clipboard2-pulse"></i>Case Notes &amp; Custody Log</button>
                                                 <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab" onclick="renderReportFilesGallery()"><i class="bi bi-paperclip"></i>Files &amp; Artifacts</button>
                                                 <button class="list-group-item list-group-item-action" id="repGeoTab" data-bs-toggle="list" data-bs-target="#repGeoPane" type="button" role="tab" onclick="renderReportGeolocationList()"><i class="bi bi-geo-alt"></i>Geolocation</button>
-                                                <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs()"><i class="bi bi-list-task"></i>Jobs</button>
-                                                <button class="list-group-item list-group-item-action" id="repCoverageTab" data-bs-toggle="list" data-bs-target="#repCoveragePane" type="button" role="tab" onclick="loadAnalysisCoverage()"><i class="bi bi-check2-square"></i>Coverage</button>
+                                                <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs(); loadAnalysisCoverage(); loadCaseHistory();"><i class="bi bi-list-task"></i>Evidence Activity</button>
                                                 <button class="list-group-item list-group-item-action" id="repTimelineTab" data-bs-toggle="list" data-bs-target="#repTimelinePane" type="button" role="tab" onclick="loadCaseTimeline()"><i class="bi bi-clock-history"></i>Evidence Timeline</button>
-                                                <button class="list-group-item list-group-item-action" id="repHistoryTab" data-bs-toggle="list" data-bs-target="#repHistoryPane" type="button" role="tab" onclick="loadCaseHistory()"><i class="bi bi-clock-history"></i>Case Activity Log</button>
-                                                <button class="list-group-item list-group-item-action" id="repSearchTab" data-bs-toggle="list" data-bs-target="#repSearchPane" type="button" role="tab"><i class="bi bi-search"></i>Search</button>
                                                 <button class="list-group-item list-group-item-action" id="repExportTab" data-bs-toggle="list" data-bs-target="#repExportPane" type="button" role="tab" onclick="prepareExportPane()"><i class="bi bi-file-earmark-arrow-down-fill"></i>Export</button>
                                             </div>
                                             <div class="reports-content tab-content" id="reportDetailTabContent">
                                                 <div class="tab-pane fade show active" id="repOverviewPane" role="tabpanel">
-                                                    <div class="small text-subtle mb-3">Everything that's happened in this case at a glance - complements the step-by-step Guided Workflow under Help, which tracks whether you've done each stage rather than what's actually in the case.</div>
+                                                    <div class="small text-subtle mb-3">Everything that's happened in this case at a glance - complements the step-by-step Guided Workflow under Help, which tracks whether you've done each stage rather than what's actually in the case. Click a tile below to jump straight to that tab.</div>
+                                                    <!-- Search moved here from its own tab (2026-09-09) - light enough
+                                                         (one input + a results list) to live at the top of the hub
+                                                         rather than needing a dedicated nav item; ids/logic unchanged
+                                                         from the old Search tab, see runCaseSearch() in main.js. -->
+                                                    <div class="mb-3">
+                                                        <label class="telemetry-grid-label d-block mb-1"><i class="bi bi-search me-1"></i>Quick Search</label>
+                                                        <div class="small text-subtle mb-2">Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab.</div>
+                                                        <input type="text" id="repSearchInput" class="form-control form-control-sm mb-2" placeholder="Search keyword..." oninput="runCaseSearch()">
+                                                        <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 260px; overflow-y: auto; background-color:#090b10;">
+                                                            <span class="text-subtle">Type a keyword above to search.</span>
+                                                        </div>
+                                                    </div>
+                                                    <hr class="border-secondary my-3">
+                                                    <!-- Every tile below is clickable (2026-09-09) - jumps
+                                                         to whichever tab actually shows that number's own
+                                                         detail. Reuses jumpToReportingTab() (main.js), which
+                                                         itself calls .click() on the target nav button (not
+                                                         bootstrap.Tab(...).show()) so the pane's own onclick-
+                                                         driven render fires too, not just the tab switch. -->
                                                     <div class="row g-2" id="caseDashboardGrid">
                                                         <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" style="cursor: default;">
+                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Evidence Activity" onclick="jumpToReportingTab('repJobsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repJobsTab');}">
                                                                 <div class="card-body">
                                                                     <div class="d-flex align-items-center gap-3 mb-1">
                                                                         <div class="home-tile-icon"><i class="bi bi-hdd-stack"></i></div>
@@ -72,7 +100,7 @@
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" style="cursor: default;">
+                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Files &amp; Artifacts" onclick="jumpToReportingTab('repFilesTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repFilesTab');}">
                                                                 <div class="card-body">
                                                                     <div class="d-flex align-items-center gap-3 mb-1">
                                                                         <div class="home-tile-icon"><i class="bi bi-tags-fill"></i></div>
@@ -84,7 +112,7 @@
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" style="cursor: default;">
+                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Evidence Activity" onclick="jumpToReportingTab('repJobsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repJobsTab');}">
                                                                 <div class="card-body">
                                                                     <div class="d-flex align-items-center gap-3 mb-1">
                                                                         <div class="home-tile-icon"><i class="bi bi-search"></i></div>
@@ -96,7 +124,7 @@
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" style="cursor: default;">
+                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Case Notes &amp; Custody Log" onclick="jumpToReportingTab('repCaseNotesTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repCaseNotesTab');}">
                                                                 <div class="card-body">
                                                                     <div class="d-flex align-items-center gap-3 mb-1">
                                                                         <div class="home-tile-icon"><i class="bi bi-clipboard2-pulse"></i></div>
@@ -107,7 +135,7 @@
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" style="cursor: default;">
+                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Files &amp; Artifacts" onclick="jumpToReportingTab('repFilesTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repFilesTab');}">
                                                                 <div class="card-body">
                                                                     <div class="d-flex align-items-center gap-3 mb-1">
                                                                         <div class="home-tile-icon"><i class="bi bi-paperclip"></i></div>
@@ -118,7 +146,7 @@
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" style="cursor: default;">
+                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Report Narrative" onclick="jumpToReportingTab('repNarrativeTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repNarrativeTab');}">
                                                                 <div class="card-body">
                                                                     <div class="d-flex align-items-center gap-3 mb-1">
                                                                         <div class="home-tile-icon"><i class="bi bi-calendar3"></i></div>
@@ -129,6 +157,7 @@
                                                             </div>
                                                         </div>
                                                     </div>
+                                                    <div class="small text-subtle mt-2"><i class="bi bi-arrow-right-short"></i>Ready to generate a report from this case's data? See <a href="#" onclick="jumpToReportingTab('repExportTab'); return false;">Export</a>.</div>
                                                     <hr class="border-secondary my-3">
                                                     <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-patch-check-fill me-1"></i>Case-wide Integrity Check</h6>
                                                     <div class="small text-subtle mb-2">
@@ -200,8 +229,12 @@
                                                     <div id="caseNotesContainer" class="mb-3 bg-app-dark border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
                                                         <span class="text-subtle small italic">No case notes recorded yet.</span>
                                                     </div>
-                                                </div>
-                                                <div class="tab-pane fade" id="repCustodyPane" role="tabpanel">
+                                                    <hr class="border-secondary my-4">
+                                                    <!-- Merged in from its own former tab (2026-09-09) - a
+                                                         second, genuinely distinct examiner-authored journal
+                                                         living in the same pane rather than its own nav item;
+                                                         every id/onclick below is unchanged. -->
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-people-fill me-1"></i>Physical Custody Log</h6>
                                                     <div class="small text-subtle mb-2">
                                                         A record of physical evidence handoffs between people (e.g. field examiner &rarr; evidence locker) - distinct from the investigative Case Notes journal above and the software's Case Activity Log, which only records actions taken in this application. Append-only: a correction is logged as a new entry, matching real physical chain-of-custody practice.
                                                     </div>
@@ -423,12 +456,18 @@
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repJobsPane" role="tabpanel">
+                                                    <!-- Condensed from 3 former tabs (2026-09-09) - all 3
+                                                         are "what's been done to this evidence" views, just
+                                                         at different granularity (raw acquisition record /
+                                                         analysis coverage / software audit trail). Every id
+                                                         below is unchanged from its own old tab. -->
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-list-task me-1"></i>Acquisition Jobs</h6>
                                                     <div class="small text-subtle mb-2">Every acquisition/recovery job recorded against this case, most recent first. Click a row to see its full telemetry, parameters and hashes.</div>
                                                     <div id="jobsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
                                                         <span class="text-subtle">Open this tab to see this case's jobs.</span>
                                                     </div>
-                                                </div>
-                                                <div class="tab-pane fade" id="repCoveragePane" role="tabpanel">
+                                                    <hr class="border-secondary my-4">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-check2-square me-1"></i>Analysis Coverage</h6>
                                                     <div class="small text-subtle mb-2">Which analysis tools have actually been run against each completed evidence item, and which haven't yet - a case-wide view of the same "already run" checkmark File Explorer's own right-click menu shows one file at a time. A gray "Not yet run" badge doesn't mean a tool found nothing; it means it's never been tried against this item at all.</div>
                                                     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
                                                         <div id="analysisCoverageStatus" class="small text-subtle mb-0"></div>
@@ -437,9 +476,15 @@
                                                     <div id="analysisCoverageContainer" class="border border-secondary rounded-2 p-2" style="max-height: 500px; overflow-y: auto; background-color:#090b10;">
                                                         <span class="text-subtle small">Open this tab to see this case's analysis coverage.</span>
                                                     </div>
+                                                    <hr class="border-secondary my-4">
+                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-clock-history me-1"></i>Case Activity Log</h6>
+                                                    <div class="small text-subtle mb-2">Station-wide actions tagged to this case number (creation, selection, job starts/stops, settings changes) - a broad activity log, not a structured acquisition record like the Acquisition Jobs section above. See Settings &gt; Station Audit Log for the full, unfiltered station-wide log across all cases.</div>
+                                                    <div id="caseHistoryContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
+                                                        <span class="text-subtle">Open this tab to see this case's history.</span>
+                                                    </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repTimelinePane" role="tabpanel">
-                                                    <div class="small text-subtle mb-2">Every acquired image's MACB filesystem timeline (plus real file timestamps from a mobile pull/backup or Logical Acquisition folder), merged with parsed browser/registry/event-log/mobile-app artifacts - evidence pulled from the drive/phone itself, not examiner workflow entries (see the Case Notes and Custody Log tabs for those). A large image's MACB data can run to thousands of rows; use the filters below to narrow it - the Category row is the fast way to see just a phone's texts, web history, or app-based chats.</div>
+                                                    <div class="small text-subtle mb-2">Every acquired image's MACB filesystem timeline (plus real file timestamps from a mobile pull/backup or Logical Acquisition folder), merged with parsed browser/registry/event-log/mobile-app artifacts - evidence pulled from the drive/phone itself, not examiner workflow entries (see the Case Notes &amp; Custody Log tab for those). A large image's MACB data can run to thousands of rows; use the filters below to narrow it - the Category row is the fast way to see just a phone's texts, web history, or app-based chats.</div>
                                                     <div class="d-flex flex-wrap align-items-center gap-3 mb-2 small">
                                                         <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="macb" checked onchange="renderCaseTimeline()">Filesystem (MACB)</label>
                                                         <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-source-check" value="parsed_artifact" checked onchange="renderCaseTimeline()">Parsed Artifacts</label>
@@ -479,19 +524,6 @@
                                                             <thead><tr class="text-info"><th>Timestamp</th><th>Source</th><th>Category</th><th>Activity</th><th>Detail</th><th>Contact</th><th>Preview</th></tr></thead>
                                                             <tbody id="caseTimelineBody"><tr><td colspan="7" class="text-subtle p-2">Open this tab to build this case's timeline.</td></tr></tbody>
                                                         </table>
-                                                    </div>
-                                                </div>
-                                                <div class="tab-pane fade" id="repHistoryPane" role="tabpanel">
-                                                    <div class="small text-subtle mb-2">Station-wide actions tagged to this case number (creation, selection, job starts/stops, settings changes) - a broad activity log, not a structured acquisition record. See the Jobs tab for that, or Settings &gt; Station Audit Log for the full, unfiltered station-wide log across all cases.</div>
-                                                    <div id="caseHistoryContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 320px; overflow-y: auto; background-color:#090b10;">
-                                                        <span class="text-subtle">Open this tab to see this case's history.</span>
-                                                    </div>
-                                                </div>
-                                                <div class="tab-pane fade" id="repSearchPane" role="tabpanel">
-                                                    <div class="small text-subtle mb-2">Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded for this case (the Case Activity Log group is limited to the same 200 most recent entries the tab above shows) - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab.</div>
-                                                    <input type="text" id="repSearchInput" class="form-control form-control-sm mb-3" placeholder="Search keyword..." oninput="runCaseSearch()">
-                                                    <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 420px; overflow-y: auto; background-color:#090b10;">
-                                                        <span class="text-subtle">Type a keyword above to search.</span>
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repExportPane" role="tabpanel">
