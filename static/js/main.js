@@ -13067,7 +13067,36 @@ async function fetchExaminerUsernames(forceRefresh) {
 // ADDING is now restricted; a name already on the list that no longer
 // matches a real account is flagged with a warning icon instead, not
 // silently hidden or removed.
+function renderReportHeaderCaseSummary() {
+    // Read-only Case #/Examiners summary in Reporting's own "Case Report"
+    // header (2026-09-10) - reads whatever loadCaseForEditing()/
+    // renderExaminersList() have already set (currentLoadedReportData,
+    // currentExaminersList), no fetch of its own. Called from
+    // renderExaminersList() (covers the initial load AND every later
+    // add/remove, since that's the one function every examiner-list change
+    // already funnels through) and from loadCaseForEditing()'s two
+    // no-report-loaded branches, which set currentLoadedReportData = null
+    // right before calling this - the null check below is what actually
+    // hides it in both of those cases.
+    const btn = document.getElementById('reportHeaderCaseSummary');
+    if (!btn) return;
+    if (!currentLoadedReportData) {
+        btn.style.display = 'none';
+        return;
+    }
+    const isConsolidated = Array.isArray(currentLoadedReportData.events);
+    const caseNum = isConsolidated
+        ? currentLoadedReportData.case_number
+        : (currentLoadedReportData.case_metadata || {}).case_number;
+    const numEl = document.getElementById('reportHeaderCaseNum');
+    const examinersEl = document.getElementById('reportHeaderExaminers');
+    if (numEl) numEl.textContent = caseNum || '--';
+    if (examinersEl) examinersEl.textContent = currentExaminersList.length ? currentExaminersList.join(', ') : 'None recorded';
+    btn.style.display = 'inline-flex';
+}
+
 function renderExaminersList() {
+    renderReportHeaderCaseSummary();
     const container = document.getElementById('examinersContainer');
     if (!container) return;
     container.innerHTML = '';
@@ -13636,6 +13665,7 @@ async function loadCaseForEditing() {
         clearReportingDirty();
         currentReportPath = null;
         currentLoadedReportData = null;
+        renderReportHeaderCaseSummary();
         if (noCaseIcon) noCaseIcon.className = 'bi bi-folder2-open fs-3 d-block mb-2';
         if (noCaseMsg) noCaseMsg.textContent = 'Select or create a case using the bar above to view its report.';
         if (noCaseEl) noCaseEl.style.display = 'block';
@@ -13671,6 +13701,7 @@ async function loadCaseForEditing() {
             clearReportingDirty();
             currentReportPath = null;
             currentLoadedReportData = null;
+            renderReportHeaderCaseSummary();
             if (noCaseIcon) noCaseIcon.className = 'bi bi-exclamation-triangle fs-3 d-block mb-2';
             if (noCaseMsg) noCaseMsg.textContent = `This case ("${activeCase.case_number}") hasn't been migrated to the consolidated report format yet - migrate it via the Case Manager.`;
             if (noCaseEl) noCaseEl.style.display = 'block';
@@ -17101,20 +17132,12 @@ function persistActiveCase() {
 }
 
 function renderActiveCaseBar() {
+    // The Case #/Examiner(s) display this used to also update
+    // (#activeCaseInfo) moved to Reporting's own "Case Report" header
+    // (2026-09-10) - see renderReportHeaderCaseSummary(). This bar's own
+    // job is now just the button's own label.
     const label = document.getElementById("btnCaseActionLabel");
-    const info = document.getElementById("activeCaseInfo");
-    const numVal = document.getElementById("activeCaseNumVal");
-    const examinerVal = document.getElementById("activeCaseExaminerVal");
-
-    if (activeCase) {
-        if (label) label.textContent = `Case: ${activeCase.case_number}`;
-        if (info) info.style.display = 'flex';
-        if (numVal) numVal.textContent = activeCase.case_number;
-        if (examinerVal) examinerVal.textContent = activeCase.examiner || '--';
-    } else {
-        if (label) label.textContent = 'Create / Select Case';
-        if (info) info.style.display = 'none';
-    }
+    if (label) label.textContent = activeCase ? `Case: ${activeCase.case_number}` : 'Create / Select Case';
 }
 
 function applyActiveCaseToFields() {
