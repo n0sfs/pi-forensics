@@ -75,7 +75,7 @@ from core.case_index_db import (
     CONTACT_CORRELATION_COMM_TYPES, CONTACT_CORRELATION_EMAIL_COMM_TYPES,
     _extract_raw_counterpart_candidates, _extract_email_counterparts, normalize_phone_number,
     _comm_content_preview, tagged_real_fs_paths_for_case, derive_examiner_display,
-    compute_case_analysis_coverage,
+    compute_case_analysis_coverage, ensure_examiner_recorded,
 )
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
@@ -204,7 +204,7 @@ def settings_case_reporting():
 # registry / GET /api/image/auto_analyze/steps for the identical fix).
 REPORTING_STAT_DEFINITIONS = [
     {"key": "total_cases", "label": "Total Cases",
-     "description": "Every case on this station, with a status breakdown (Open/In Review/On Hold/Closed/Archived)."},
+     "description": "Every case on this station, with a status breakdown (Open/In Progress/In Review/On Hold/Closed/Archived)."},
     {"key": "active_cases", "label": "Active Cases",
      "description": "Cases not yet marked Closed or Archived - work still open."},
     {"key": "evidence_items", "label": "Evidence Items",
@@ -1873,6 +1873,10 @@ def attach_file_to_case():
         data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
         _write_case_file(case_file, data)
         log_chain_of_custody("file_attached_to_case", {"case_folder": case_folder, "file_path": file_path})
+        # Attaching an exhibit is genuine case work - see add_case_note()'s
+        # identical comment above. Only on a real new attachment, not a
+        # repeat call against an already-attached path.
+        ensure_examiner_recorded(case_folder, getattr(g, 'forensic_user', None))
 
     return jsonify({"success": True, "already_attached": already_attached, "file_count": len(files)})
 
@@ -1930,6 +1934,9 @@ def set_file_caption():
     data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
     _write_case_file(case_file, data)
     log_chain_of_custody("file_caption_set", {"case_folder": case_folder, "file_path": file_path, "cleared": not bool(caption)})
+    # Captioning an exhibit is genuine case work - see add_case_note()'s
+    # identical comment above.
+    ensure_examiner_recorded(case_folder, getattr(g, 'forensic_user', None))
 
     return jsonify({"success": True, "caption": caption, "updated_at": data['updated_at']})
 
@@ -2053,6 +2060,11 @@ def add_case_note():
             json.dump(data, f, indent=2)
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not save note: {e}"}), 500
+
+    # Adding a note is genuine case work - the examiner who wrote it should
+    # show up in the case's own Examiners list without a separate manual
+    # "+ Add" click (2026-09-10, user-flagged live).
+    ensure_examiner_recorded(os.path.dirname(report_file), getattr(g, 'forensic_user', None))
 
     log_chain_of_custody("case_note_add", {"report_path": report_file, "note_id": note_id, "category": category})
     return jsonify({"success": True, "note": note})
@@ -2235,6 +2247,10 @@ def add_custody_entry():
             json.dump(data, f, indent=2)
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not save custody entry: {e}"}), 500
+
+    # Logging a custody transfer is genuine case work - see add_case_note()'s
+    # identical comment just above.
+    ensure_examiner_recorded(os.path.dirname(report_file), getattr(g, 'forensic_user', None))
 
     log_chain_of_custody("custody_log_add", {"report_path": report_file, "entry_id": entry["entry_id"]})
     return jsonify({"success": True, "entry": entry})

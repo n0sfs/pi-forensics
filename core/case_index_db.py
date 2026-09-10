@@ -975,6 +975,70 @@ def derive_examiner_display(examiners, legacy_examiner, default="N/A"):
     return legacy or default
 
 
+def ensure_examiner_recorded(case_folder, username):
+    """Adds `username` to a case's own `examiners` list if they aren't
+    already on it - closing a real, user-flagged gap (2026-09-10):
+    Examiners previously required a manual "+ Add" click in Reporting's
+    header, so a second analyst who ran an action on the case (a note, a
+    custody-log entry, a tag, an attached/captioned exhibit) never showed
+    up unless someone remembered to add them by hand. Called from each of
+    those route handlers as a small best-effort side-effect step, the same
+    "reads/writes on top of the caller's own real action, never blocks it"
+    shape _auto_tag_case_artifact()/_record_analysis_result() already use
+    elsewhere in this module.
+
+    Resolves the case's marker file the same way list_case_folders() does
+    (consolidated {slug}_case.json first, else a legacy case_info.json),
+    both of which store `examiners` at the top level - confirmed by
+    reading list_case_folders()'s own two branches before writing this,
+    not assumed. Deliberately does its OWN read/write rather than reusing
+    core/jobs.py's _read_case_file() - that function's graceful "return an
+    empty default shape" behavior on a read failure is correct for its own
+    callers (about to overwrite most of the file anyway), but would be
+    actively dangerous here: writing that empty shape back for a case
+    where the ONLY intended change is appending one name would silently
+    wipe the real record on a transient read error. This aborts with no
+    write at all instead.
+
+    Never raises - any failure (an invalid/unresolvable case_folder, a
+    malformed marker file, a blocked write) just means the examiner isn't
+    recorded this time, not that the caller's own real action fails.
+    """
+    if not username or not str(username).strip():
+        return
+    username = str(username).strip()
+    if username.lower() == 'local-kiosk':
+        # The physical-kiosk auth-bypass sentinel (core/auth.py's
+        # is_local_kiosk_request()), not a real logged-in examiner - every
+        # kiosk-originated request shares this one identity, so crediting
+        # it as "an examiner" would be meaningless.
+        return
+    try:
+        marker_path = case_consolidated_path(case_folder)
+        if not marker_path:
+            resolved_folder = safe_path(case_folder)
+            if not resolved_folder or not os.path.isdir(resolved_folder):
+                return
+            legacy_path = os.path.join(resolved_folder, 'case_info.json')
+            if not os.path.isfile(legacy_path):
+                return
+            marker_path = legacy_path
+        with open(marker_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        examiners = data.get('examiners')
+        if not isinstance(examiners, list):
+            examiners = []
+        if any(str(e).strip().lower() == username.lower() for e in examiners):
+            return  # already recorded - nothing to write
+        examiners.append(username)
+        data['examiners'] = examiners
+        data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(marker_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
 def list_case_folders():
     """Walks EVIDENCE_ROOT for every real case folder (both the modern
     consolidated {slug}_case.json schema and the legacy case_info.json one
