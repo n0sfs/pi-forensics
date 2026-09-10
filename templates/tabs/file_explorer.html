@@ -632,6 +632,24 @@
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body py-2">
+                    <!-- Exhibit Caption (2026-09-09) - folded in from Reporting's own
+                         staged Files & Artifacts editor, and made immediately-
+                         persisted here (see setTagModalCaption() / /api/cases/
+                         set_file_caption) rather than staged-until-"Save Report
+                         Changes" - this modal has no Save button of its own, so a
+                         staged caption typed here would previously have been lost
+                         the moment the modal closed. Genuinely a different concern
+                         from the Comment field below (a property of the exhibit
+                         itself vs. metadata on one specific tag application), so it
+                         gets its own clearly-labeled, bordered section. -->
+                    <div class="mb-2 pb-2 border-bottom border-secondary">
+                        <label class="telemetry-grid-label d-block mb-1">Exhibit Caption (shown in the exported report):</label>
+                        <div class="d-flex gap-2 align-items-start">
+                            <input type="text" id="tagItemCaption" class="form-control form-control-sm" maxlength="300" placeholder="Optional caption for the exported report..." onblur="saveTagModalCaption()">
+                            <button type="button" class="btn btn-sm btn-outline-info flex-shrink-0" id="tagItemCaptionSaveBtn" onclick="saveTagModalCaption()">Save</button>
+                        </div>
+                        <div id="tagItemCaptionHint" class="text-subtle small mt-1"></div>
+                    </div>
                     <div class="mb-2">
                         <label class="telemetry-grid-label d-block mb-1">Comment (optional, applied when you tag with a new tag below):</label>
                         <textarea id="tagItemComment" class="form-control form-control-sm" rows="2" placeholder="e.g. why this file matters to the case..."></textarea>

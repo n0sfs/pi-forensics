@@ -2987,11 +2987,97 @@ async function openTagItemModal() {
         }
     }
 
+    updateTagModalCaptionSectionState();
+
     if (!tagItemModalInstance) {
         tagItemModalInstance = new bootstrap.Modal(document.getElementById('tagItemModal'));
     }
     tagItemModalInstance.show();
     await refreshTagItemModalList();
+}
+
+// Exhibit Caption section (2026-09-09) - only meaningful for a real_fs item
+// that's ALREADY an attached exhibit (mirrors the backend's own set_file_
+// caption() route, which refuses to caption anything not yet attached).
+// An in-image item is deliberately left out of scope here - captioning it
+// would mean tracking the NEW real-fs path an extraction produces, which
+// this modal has no way to know about mid-session without a materially
+// larger change; extract & attach it first (the footer button already
+// offers this), then reopen Tag... on the resulting real file to caption
+// it. Called on modal open and again right after a successful real_fs
+// attach from this same modal, so captioning becomes available
+// immediately with zero need to close and reopen.
+function updateTagModalCaptionSectionState() {
+    const input = document.getElementById('tagItemCaption');
+    const saveBtn = document.getElementById('tagItemCaptionSaveBtn');
+    const hint = document.getElementById('tagItemCaptionHint');
+    if (!input || !saveBtn || !hint || !currentTagTargetItem) return;
+
+    const item = currentTagTargetItem;
+    const eligible = item.source_type === 'real_fs' && currentAttachedFilesList.includes(item.path);
+    input.disabled = !eligible;
+    saveBtn.disabled = !eligible;
+    if (eligible) {
+        input.value = currentAttachmentCaptions[item.path] || '';
+        hint.textContent = '';
+    } else {
+        input.value = '';
+        hint.textContent = item.source_type === 'real_fs'
+            ? 'Attach this file as an exhibit above to caption it.'
+            : 'Extract & attach this file to the case (above), then reopen Tag... on the extracted file to caption it.';
+    }
+}
+
+// Saves the caption immediately - commits straight to the case JSON on
+// disk via the same "tag it where you find it" immediacy every other
+// action in this modal already has, closing the real data-loss trap this
+// field used to have when it only ever lived in Reporting's own staged
+// "Save Report Changes" flow (this modal has no Save button at all).
+// Shared low-level immediate-persistence call (2026-09-09) - the one
+// thing both the Tag/Attach modal's own caption field and Reporting's
+// Files & Artifacts gallery caption field need, so the actual network
+// call and self-conflict-guard bookkeeping exists exactly once rather
+// than being copied into both call sites. Returns {success, error}
+// (never throws) - each caller renders its own feedback UI afterward.
+async function persistFileCaption(caseFolder, filePath, caption) {
+    try {
+        const res = await fetch('/api/cases/set_file_caption', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: caseFolder, file_path: filePath, caption })
+        });
+        const data = await res.json();
+        if (data.success) {
+            currentAttachmentCaptions[filePath] = caption;
+            // Same self-conflict guard saveReportMetadata()'s own success
+            // handler already uses - this immediate write just bumped
+            // updated_at on disk, so a stale in-memory copy would
+            // otherwise reject the NEXT "Save Report Changes" click from
+            // this same tab as a false conflict.
+            if (currentLoadedReportData) currentLoadedReportData.updated_at = data.updated_at;
+            return { success: true };
+        }
+        return { success: false, error: data.error };
+    } catch (err) {
+        return { success: false, error: 'Network error.' };
+    }
+}
+
+async function saveTagModalCaption() {
+    if (!currentTagTargetItem || currentTagTargetItem.source_type !== 'real_fs') return;
+    const input = document.getElementById('tagItemCaption');
+    const hint = document.getElementById('tagItemCaptionHint');
+    if (!input || input.disabled) return;
+    const filePath = currentTagTargetItem.path;
+    const caption = input.value.trim();
+
+    const result = await persistFileCaption(activeCase.case_folder, filePath, caption);
+    if (result.success) {
+        if (hint) { hint.textContent = 'Saved.'; hint.className = 'text-success small mt-1'; }
+        renderReportFilesGallery();
+    } else if (hint) {
+        hint.textContent = `Failed: ${result.error}`;
+        hint.className = 'text-danger small mt-1';
+    }
 }
 
 // The tag modal's own "Also Attach as Exhibit" / "Extract & Attach to Case"
@@ -3005,6 +3091,10 @@ async function attachTaggedItemFromModal() {
     try {
         if (currentTagTargetItem.source_type === 'real_fs') {
             await attachSelectedFileToCase();
+            // The caption field only ever unlocks for an already-attached
+            // real_fs exhibit - re-check right away so it becomes usable
+            // immediately, without needing to close and reopen this modal.
+            updateTagModalCaptionSectionState();
         } else {
             await extractAndAttachExplorerImageSelected();
         }
@@ -9813,12 +9903,24 @@ async function renderReportFilesGallery() {
         }
 
         if (checked) {
+            // Persists on blur via the same immediate-write route the Tag/
+            // Attach modal's own caption field now uses (2026-09-09) -
+            // this used to only ever save as part of the staged "Save
+            // Report Changes" flow, a real data-loss trap if you navigated
+            // away before clicking it. Both entry points now behave
+            // identically, closing the trap regardless of which one an
+            // examiner happens to reach for.
             const capInput = document.createElement('input');
             capInput.type = 'text';
             capInput.className = 'form-control form-control-sm mt-1';
             capInput.placeholder = 'Optional caption for the exported report...';
             capInput.value = currentAttachmentCaptions[filePath] || '';
-            capInput.addEventListener('input', () => { currentAttachmentCaptions[filePath] = capInput.value; markReportingDirty(); });
+            capInput.addEventListener('blur', async () => {
+                const caption = capInput.value.trim();
+                if (caption === (currentAttachmentCaptions[filePath] || '')) return; // unchanged - nothing to persist
+                const result = await persistFileCaption(activeCase.case_folder, filePath, caption);
+                if (!result.success) showToast(`Caption not saved: ${result.error}`, 'danger');
+            });
             textWrap.appendChild(capInput);
         }
         row.appendChild(textWrap);
@@ -16110,7 +16212,18 @@ async function attachSelectedFileToCase() {
             if (data.already_attached) {
                 showToast(`This file is already attached to ${activeCase.case_number}.`, 'success');
             } else {
-                showToast(`Attached to ${activeCase.case_number} as a case exhibit (${data.file_count} file(s) now attached). Edit captions or reorder exhibits in Reporting > Files & Artifacts.`, 'success');
+                showToast(`Attached to ${activeCase.case_number} as a case exhibit (${data.file_count} file(s) now attached). Add a caption right here, or from Reporting > Files & Artifacts.`, 'success');
+                // Update the local list directly, not just via
+                // loadCaseForEditing()'s own reload below - that reload's
+                // repaint is deliberately skipped while an unsaved Report
+                // Narrative/Files edit is pending elsewhere (protecting
+                // it), which would otherwise leave this file invisible to
+                // currentAttachedFilesList.includes() checks (e.g. the Tag
+                // modal's own caption-eligibility check right after this
+                // call) even though the attach itself genuinely succeeded.
+                if (!currentAttachedFilesList.includes(activeSelectedFile)) {
+                    currentAttachedFilesList.push(activeSelectedFile);
+                }
                 if (currentReportPath) loadCaseForEditing();
             }
         } else {
