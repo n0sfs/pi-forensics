@@ -1472,14 +1472,20 @@ def _draw_pdf_audit_trail(c, y, entries, title="Case Activity Log (Audit Trail)"
             y -= 11
     return y
 
-def _draw_pdf_custody_log_block(c, y, custody_log, title="Physical Evidence Custody Log"):
+def _draw_pdf_custody_log_block(c, y, custody_log, title="Physical Evidence Custody Log", exhibit_numbers=None):
     """Renders the append-only physical-evidence custody_log[] (from-person
     -> to-person handoffs, distinct from the software Audit Trail above) -
     same internal-pagination-guard shape as _draw_pdf_audit_trail, not the
     header/job_section pattern (those two lack their own guard and are only
     safe because REPORT_SECTION_BLOCKS forces them to always draw first -
     see that registry's force_page_break docstring; this block has no such
-    restriction, so it must guard itself)."""
+    restriction, so it must guard itself).
+
+    exhibit_numbers resolves a linked_files path back to its "Exhibit N"
+    number for display (2026-09-09, item 8 of the investigation-workflow
+    backlog) - the identical convention _draw_pdf_case_notes() already
+    established for the same concept on a Case Note."""
+    exhibit_numbers = exhibit_numbers or {}
     if y < 150:
         c.showPage()
         y = 730
@@ -1513,6 +1519,15 @@ def _draw_pdf_custody_log_block(c, y, custody_log, title="Physical Evidence Cust
         if logged_by:
             c.setFillColorRGB(0.4, 0.4, 0.4)
             c.drawString(60, y, f"Logged by: {logged_by}"[:130])
+            c.setFillColorRGB(0, 0, 0)
+            y -= 11
+        linked = entry.get('linked_files') or []
+        if linked:
+            link_line = "Linked Exhibit(s): " + "; ".join(
+                f"Exhibit {exhibit_numbers[p]} - {os.path.basename(p)}" if p in exhibit_numbers
+                else f"{os.path.basename(p)} (tagged, not an exhibit)" for p in linked)
+            c.setFillColorRGB(0.4, 0.4, 0.4)
+            c.drawString(60, y, link_line[:130])
             c.setFillColorRGB(0, 0, 0)
             y -= 11
         y -= 4
@@ -2106,6 +2121,22 @@ def add_custody_entry():
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not read report: {e}"}), 500
 
+    # Optional link to WHICH exhibit(s) actually changed hands (item 8 of
+    # the investigation-workflow backlog) - a custody-transfer entry
+    # previously had no way to say this at all, just a from/to/reason/
+    # method. Mirrors add_case_note()'s own linked_files precedent exactly:
+    # only an already-attached exhibit or an already-tagged real-fs item
+    # is accepted, anything else silently dropped rather than failing the
+    # save over a stale reference. Add-time only, matching this route's
+    # own already-established append-only/no-edit-endpoint design (a
+    # correction is a new entry, never a rewrite of an existing one).
+    requested_links = req.get('linked_files') or []
+    if not isinstance(requested_links, list):
+        requested_links = []
+    attached_files = set((data.get('attachments') or {}).get('files', []))
+    linkable_paths = attached_files | tagged_real_fs_paths_for_case(os.path.dirname(report_file))
+    linked_files = [p for p in requested_links if isinstance(p, str) and p in linkable_paths]
+
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     entry = {
         "entry_id": uuid.uuid4().hex,
@@ -2116,6 +2147,7 @@ def add_custody_entry():
         "method": (req.get('method') or '').strip(),
         "notes": (req.get('notes') or '').strip(),
         "logged_by": getattr(g, 'forensic_user', None),
+        "linked_files": linked_files,
     }
 
     data.setdefault('custody_log', []).append(entry)
@@ -3845,7 +3877,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
         "timeline": lambda y, title, field: _draw_pdf_timeline_block(c, y, events, title=title, case_folder=case_folder, include_previews=include_timeline_previews),
         "geolocation": lambda y, title, field: _draw_pdf_geolocation_block(c, y, geo_data or [], title=title),
         "pattern_of_life": lambda y, title, field: _draw_pdf_pattern_of_life_block(c, y, case_folder, title=title, attachment_files=attachment_files),
-        "custody_log": lambda y, title, field: _draw_pdf_custody_log_block(c, y, custody_log or [], title=title),
+        "custody_log": lambda y, title, field: _draw_pdf_custody_log_block(c, y, custody_log or [], title=title, exhibit_numbers=exhibit_numbers),
     }
 
     for i, entry in enumerate(resolved_sections):
@@ -4610,16 +4642,24 @@ def _html_audit_trail_block(audit_entries, anchor_id=None, title="Case Activity 
         parts.append('<p class="muted">No activity log entries found for this case.</p>')
     return ''.join(parts)
 
-def _html_custody_log_block(custody_log, anchor_id=None, title="Physical Evidence Custody Log"):
+def _html_custody_log_block(custody_log, anchor_id=None, title="Physical Evidence Custody Log", exhibit_numbers=None):
     """HTML counterpart to _draw_pdf_custody_log_block - see that function
     for the from/to-custodian, append-only physical-handoff shape this
-    renders (distinct from the software Audit Trail above)."""
+    renders (distinct from the software Audit Trail above), and for what
+    exhibit_numbers resolves (2026-09-09, item 8 of the investigation-
+    workflow backlog)."""
     esc = html.escape
+    exhibit_numbers = exhibit_numbers or {}
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     parts = [f'<h2{id_attr}>{esc(title)}</h2>']
     if custody_log:
-        parts.append('<table><tr><th>Timestamp</th><th>From</th><th>To</th><th>Reason</th><th>Method</th><th>Notes</th><th>Logged By</th></tr>')
+        parts.append('<table><tr><th>Timestamp</th><th>From</th><th>To</th><th>Reason</th><th>Method</th><th>Notes</th><th>Logged By</th><th>Linked Exhibit(s)</th></tr>')
         for entry in custody_log:
+            linked = entry.get('linked_files') or []
+            linked_display = "; ".join(
+                f"Exhibit {exhibit_numbers[p]} - {os.path.basename(p)}" if p in exhibit_numbers
+                else f"{os.path.basename(p)} (tagged, not an exhibit)" for p in linked
+            ) if linked else ""
             parts.append(
                 '<tr><td>' + esc(str(entry.get('timestamp', ''))) + '</td>'
                 '<td>' + esc(str(entry.get('from_custodian', ''))) + '</td>'
@@ -4627,7 +4667,8 @@ def _html_custody_log_block(custody_log, anchor_id=None, title="Physical Evidenc
                 '<td>' + esc(str(entry.get('reason', ''))) + '</td>'
                 '<td>' + esc(str(entry.get('method', ''))) + '</td>'
                 '<td>' + esc(str(entry.get('notes', ''))) + '</td>'
-                '<td>' + esc(str(entry.get('logged_by', ''))) + '</td></tr>'
+                '<td>' + esc(str(entry.get('logged_by', ''))) + '</td>'
+                '<td>' + esc(linked_display) + '</td></tr>'
             )
         parts.append('</table>')
     else:
@@ -4823,7 +4864,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         "timeline": lambda anchor, title, field: _html_timeline_block(events, title=title, anchor_id=anchor, case_folder=case_folder, include_previews=include_timeline_previews),
         "geolocation": lambda anchor, title, field: _html_geolocation_block(geo_data or [], title=title, anchor_id=anchor),
         "pattern_of_life": lambda anchor, title, field: _html_pattern_of_life_block(case_folder, title=title, anchor_id=anchor, attachment_files=attachment_files),
-        "custody_log": lambda anchor, title, field: _html_custody_log_block(custody_log or [], anchor_id=anchor, title=title),
+        "custody_log": lambda anchor, title, field: _html_custody_log_block(custody_log or [], anchor_id=anchor, title=title, exhibit_numbers=exhibit_numbers),
     }
 
     for entry in resolved_sections:

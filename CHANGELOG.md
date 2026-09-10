@@ -21,6 +21,17 @@ file after updating to see what changed.
 
 ---
 
+## [1.86.0] - 2026-09-09
+
+### Added
+- **Physical Custody Log entries can now say which exhibit(s) actually changed hands.** A
+  custody-transfer entry (from custodian / to custodian / reason / method) previously had no way to
+  reference the specific evidence involved - just who handed it to whom. Logging a transfer now
+  shows a checklist of the case's attached exhibits and any tagged-but-not-yet-attached items, and
+  the entry displays "Linked: Exhibit N - filename" (or "tagged, not attached" for something flagged
+  but not formally attached yet). Both the PDF and HTML exported report show the same linkage under
+  each custody entry.
+
 ## [1.85.0] - 2026-09-09
 
 ### Added
