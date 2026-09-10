@@ -1,51 +1,67 @@
             <!-- REPORTING & VERIFICATION -->
             <div class="tab-pane fade" id="reports-app" role="tabpanel">
                             <div class="card">
-                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-3 py-2">
-                                    <!-- The station-wide stat row (Total Cases, etc.) that used to sit
-                                         here moved to the global Active Case Bar (#reportingStatsRow in
-                                         index.html) - it was already station-wide, not case-scoped, so
-                                         it fits better next to the rest of this app's persistent global
-                                         chrome than buried inside one specific tab. loadReportingStats()/
-                                         renderReportingStatCard() in main.js are unchanged, only the
-                                         markup's location moved. -->
-                                    <div class="d-flex flex-wrap align-items-center gap-3">
-                                        <span><i class="bi bi-journal-richtext me-2"></i>Case Report</span>
-                                        <!-- Case #/Examiners summary - moved here from the global Active
-                                             Case Bar (2026-09-10), which used to show the case number
-                                             and activeCase.examiner (this app's one single legacy
-                                             examiner-of-record) on every tab. That display now lives
-                                             here instead, next to the actual report it describes, and
-                                             shows the real, full multi-examiner list
-                                             (currentExaminersList - the Multiple Examiners feature) that
-                                             the case bar never had room for. Read-only; clicking it jumps
-                                             to Report Narrative, where both are actually edited. Hidden
-                                             whenever no case's report is currently loaded - see
-                                             renderReportHeaderCaseSummary() in main.js, called from
-                                             renderExaminersList() (covers both the initial load and every
-                                             later add/remove) and from loadCaseForEditing()'s two
-                                             no-report-loaded branches. -->
-                                        <button type="button" id="reportHeaderCaseSummary" class="btn btn-sm btn-outline-secondary py-0 px-2 small" style="display:none;" onclick="jumpToReportingTab('repNarrativeTab')" title="Click to edit Case # / Examiners in Report Narrative">
-                                            <span class="text-info fw-bold">Case #: <span id="reportHeaderCaseNum">--</span></span>
-                                            <span class="mx-1 text-subtle">&middot;</span>
-                                            <span class="text-light">Examiners: <span id="reportHeaderExaminers">--</span></span>
-                                        </button>
+                                    <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-3 py-2">
+                                        <!-- The station-wide stat row (Total Cases, etc.) that used to sit
+                                             here moved to the global Active Case Bar (#reportingStatsRow in
+                                             index.html) - it was already station-wide, not case-scoped, so
+                                             it fits better next to the rest of this app's persistent global
+                                             chrome than buried inside one specific tab. loadReportingStats()/
+                                             renderReportingStatCard() in main.js are unchanged, only the
+                                             markup's location moved. -->
+                                        <!-- Case #, Case Status, and Examiners all live directly in this
+                                             persistent header (2026-09-10 follow-up) - visible across every
+                                             Reporting sub-tab, not just Report Narrative, since they're
+                                             case-level metadata an examiner may need to touch regardless of
+                                             which sub-tab they're actually working in. #reportHeaderCaseNum
+                                             shows the real case number in place of a static "Case Report"
+                                             label once one loads; #reportHeaderCaseMeta (Status + Examiners)
+                                             stays hidden until then. See renderReportHeaderCaseSummary() in
+                                             main.js, called from renderExaminersList() (covers the initial
+                                             load and every later add/remove) and from loadCaseForEditing()'s
+                                             two no-report-loaded branches. -->
+                                        <div class="d-flex flex-wrap align-items-center gap-3">
+                                            <span class="fs-6 fw-bold text-info text-nowrap">
+                                                <i class="bi bi-journal-richtext me-2"></i><span id="reportHeaderCaseNum">Case Report</span>
+                                            </span>
+                                            <div id="reportHeaderCaseMeta" class="d-flex flex-wrap align-items-center gap-3" style="display:none;">
+                                                <div class="d-flex align-items-center gap-1">
+                                                    <i class="bi bi-flag-fill text-subtle"></i>
+                                                    <select id="editCaseStatus" class="form-select form-select-sm" style="width:118px;">
+                                                        <option value="Open">Open</option>
+                                                        <option value="In Progress">In Progress</option>
+                                                        <option value="In Review">In Review</option>
+                                                        <option value="On Hold">On Hold</option>
+                                                        <option value="Closed">Closed</option>
+                                                        <option value="Archived">Archived</option>
+                                                    </select>
+                                                    <i class="bi bi-info-circle text-subtle" style="font-size:0.75rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="bottom" tabindex="0" role="button"
+                                                       title="Where this case stands in its own lifecycle - shown in the Case Manager list and included in exported reports. New cases start Open."></i>
+                                                </div>
+                                                <div class="d-flex align-items-center gap-2">
+                                                    <i class="bi bi-people-fill text-subtle"></i>
+                                                    <div id="examinersContainer"></div>
+                                                    <i class="bi bi-info-circle text-subtle" style="font-size:0.75rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="bottom" tabindex="0" role="button"
+                                                       title="Everyone who worked this case, for chain-of-custody attribution in exported reports. The examiner of record (set once at case creation, from whoever was logged in) is pre-added below - add or remove additional examiners as more than one analyst works the case, from this station&#39;s own registered user accounts. Saved via the Save Report Changes button to the right."></i>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="d-flex flex-wrap align-items-center gap-2">
+                                            <!-- Case Notes/Custody Log/Attach-to-Case/tags all save immediately - only
+                                                 Report Narrative, Case Status, Case Details, Examiners, and the Files &
+                                                 Artifacts exhibit checklist/captions here wait for an explicit click.
+                                                 This badge is the visible cue for that second group - see
+                                                 markReportingDirty()/clearReportingDirty() in main.js. -->
+                                            <i class="bi bi-info-circle text-subtle" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="left" tabindex="0" role="button"
+                                               title="Follows the case selected in the bar above - select or create one there to populate this."></i>
+                                            <span id="reportUnsavedIndicator" class="badge bg-warning text-dark" style="display:none;" title="Report Narrative, Case Status, Case Details, and exhibit changes below don't save until you click this button.">
+                                                <i class="bi bi-exclamation-circle-fill me-1"></i>Unsaved changes
+                                            </span>
+                                            <button id="btnSaveReportChanges" class="btn btn-sm btn-success fw-bold" onclick="saveReportMetadata()">
+                                                <i class="bi bi-save me-1"></i>Save Report Changes
+                                            </button>
+                                        </div>
                                     </div>
-                                    <div class="d-flex flex-wrap align-items-center gap-2">
-                                        <span class="small text-subtle fw-normal">Follows the case selected in the bar above - select or create one there to populate this</span>
-                                        <!-- Case Notes/Custody Log/Attach-to-Case/tags all save immediately - only
-                                             Report Narrative, Case Status, Case Details, and the Files & Artifacts
-                                             exhibit checklist/captions here wait for an explicit click. This badge
-                                             is the visible cue for that second group - see markReportingDirty()/
-                                             clearReportingDirty() in main.js. -->
-                                        <span id="reportUnsavedIndicator" class="badge bg-warning text-dark" style="display:none;" title="Report Narrative, Case Status, Case Details, and exhibit changes below don't save until you click this button.">
-                                            <i class="bi bi-exclamation-circle-fill me-1"></i>Unsaved changes
-                                        </span>
-                                        <button id="btnSaveReportChanges" class="btn btn-sm btn-success fw-bold" onclick="saveReportMetadata()">
-                                            <i class="bi bi-save me-1"></i>Save Report Changes
-                                        </button>
-                                    </div>
-                                </div>
                                 <div class="card-body py-3">
                                     <div id="reportsNoCaseState" class="text-subtle small py-4 text-center">
                                         <i id="reportsNoCaseIcon" class="bi bi-folder2-open fs-3 d-block mb-2"></i>
@@ -348,39 +364,6 @@
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repNarrativePane" role="tabpanel">
-                                                    <!-- Case Status/Examiners condensed into a side-by-side card
-                                                         row (both compact), matching Overview's own two-card row -
-                                                         each heading's paragraph moved to a hover/click info icon. -->
-                                                    <div class="row g-2 mb-3">
-                                                        <div class="col-md-6">
-                                                            <div class="bg-app-dark border border-secondary rounded-2 p-3 h-100">
-                                                                <h6 class="text-success fw-bold fs-6 mb-2">
-                                                                    <i class="bi bi-flag-fill me-1"></i>Case Status
-                                                                    <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
-                                                                       title="Where this case stands in its own lifecycle - shown in the Case Manager list and included in exported reports. New cases start Open."></i>
-                                                                </h6>
-                                                                <div style="max-width: 260px;">
-                                                                    <select id="editCaseStatus" class="form-select form-select-sm">
-                                                                        <option value="Open">Open</option>
-                                                                        <option value="In Review">In Review</option>
-                                                                        <option value="On Hold">On Hold</option>
-                                                                        <option value="Closed">Closed</option>
-                                                                        <option value="Archived">Archived</option>
-                                                                    </select>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6">
-                                                            <div class="bg-app-dark border border-secondary rounded-2 p-3 h-100">
-                                                                <h6 class="text-success fw-bold fs-6 mb-2">
-                                                                    <i class="bi bi-people-fill me-1"></i>Examiners
-                                                                    <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
-                                                                       title="Everyone who worked this case, for chain-of-custody attribution in exported reports. The examiner of record (set once at case creation, from whoever was logged in) is pre-added below - add or remove additional examiners as more than one analyst works the case. Saved via &quot;Save Report Changes&quot; in the header above."></i>
-                                                                </h6>
-                                                                <div id="examinersContainer"></div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
                                                     <div class="bg-app-dark border border-secondary rounded-2 p-3 mb-3">
                                                         <h6 class="text-success fw-bold fs-6 mb-2">
                                                             <i class="bi bi-info-circle me-1"></i>Case Details

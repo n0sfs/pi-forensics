@@ -2088,6 +2088,97 @@ def test_derive_examiner_display_uses_the_caller_given_default_when_nothing_is_r
     assert case_index_db.derive_examiner_display([], "", default="N/A") == "N/A"
 
 
+# --- ensure_examiner_recorded() - auto-populate Examiners on real case work ---
+# (user-flagged live, 2026-09-10) - a note/custody-entry/tag/attach/caption
+# route calls this so the acting examiner shows up without a manual "+ Add"
+# in Reporting's header.
+
+def test_ensure_examiner_recorded_adds_a_new_examiner_to_a_case_with_none_yet(case_folder):
+    marker = os.path.join(case_folder, "2026-CASE-TEST_case.json")
+    case_index_db.ensure_examiner_recorded(case_folder, "Jane Doe")
+    with open(marker) as f:
+        data = json.load(f)
+    assert data["examiners"] == ["Jane Doe"]
+    assert data["updated_at"]  # a real write happened
+
+
+def test_ensure_examiner_recorded_appends_to_an_existing_list_without_losing_prior_entries(case_folder):
+    marker = os.path.join(case_folder, "2026-CASE-TEST_case.json")
+    with open(marker) as f:
+        data = json.load(f)
+    data["examiners"] = ["Jane Doe"]
+    with open(marker, "w") as f:
+        json.dump(data, f)
+
+    case_index_db.ensure_examiner_recorded(case_folder, "Bob Roe")
+    with open(marker) as f:
+        data = json.load(f)
+    assert data["examiners"] == ["Jane Doe", "Bob Roe"]
+
+
+def test_ensure_examiner_recorded_does_not_duplicate_an_already_present_examiner_case_insensitively(case_folder):
+    marker = os.path.join(case_folder, "2026-CASE-TEST_case.json")
+    with open(marker) as f:
+        data = json.load(f)
+    data["examiners"] = ["Jane Doe"]
+    data["updated_at"] = "SENTINEL-UNCHANGED"
+    with open(marker, "w") as f:
+        json.dump(data, f)
+
+    case_index_db.ensure_examiner_recorded(case_folder, "jane doe")  # different case
+    with open(marker) as f:
+        data = json.load(f)
+    assert data["examiners"] == ["Jane Doe"]  # not duplicated, original casing kept
+    assert data["updated_at"] == "SENTINEL-UNCHANGED"  # a real no-op - no write at all
+
+
+def test_ensure_examiner_recorded_is_a_no_op_for_none_blank_or_whitespace_username(case_folder):
+    marker = os.path.join(case_folder, "2026-CASE-TEST_case.json")
+    for bad_username in (None, "", "   "):
+        case_index_db.ensure_examiner_recorded(case_folder, bad_username)
+    with open(marker) as f:
+        data = json.load(f)
+    assert "examiners" not in data  # never even created the key
+
+
+def test_ensure_examiner_recorded_is_a_no_op_for_the_local_kiosk_sentinel(case_folder):
+    # is_local_kiosk_request()'s auth-bypass identity (core/auth.py) - every
+    # physical-kiosk request shares it, so it isn't a real examiner.
+    marker = os.path.join(case_folder, "2026-CASE-TEST_case.json")
+    case_index_db.ensure_examiner_recorded(case_folder, "local-kiosk")
+    with open(marker) as f:
+        data = json.load(f)
+    assert "examiners" not in data
+
+
+def test_ensure_examiner_recorded_works_against_a_legacy_case_info_json_schema(evidence_root):
+    import pathlib
+    folder = pathlib.Path(evidence_root) / "2026-CASE-LEGACY"
+    folder.mkdir()
+    marker = folder / "case_info.json"
+    marker.write_text(json.dumps({"case_number": "2026-CASE-LEGACY"}))
+
+    case_index_db.ensure_examiner_recorded(str(folder), "Jane Doe")
+    data = json.loads(marker.read_text())
+    assert data["examiners"] == ["Jane Doe"]
+
+
+def test_ensure_examiner_recorded_is_a_silent_no_op_for_a_non_case_folder(tmp_path):
+    # Not a real case (no {slug}_case.json or case_info.json marker), and
+    # outside EVIDENCE_ROOT to boot - must not raise, must not write.
+    not_a_case = tmp_path / "just_a_folder"
+    not_a_case.mkdir()
+    case_index_db.ensure_examiner_recorded(str(not_a_case), "Jane Doe")
+    assert os.listdir(not_a_case) == []
+
+
+def test_ensure_examiner_recorded_is_a_silent_no_op_for_none_or_empty_case_folder():
+    # Must not raise for the "no active case" states every other best-effort
+    # case-index write in this app already tolerates.
+    case_index_db.ensure_examiner_recorded(None, "Jane Doe")
+    case_index_db.ensure_examiner_recorded("", "Jane Doe")
+
+
 def _redirect_evidence_root(monkeypatch, evidence_root):
     """list_case_folders() reads config.EVIDENCE_ROOT module-qualified (not
     a bare imported name) - a separate binding from core.paths.EVIDENCE_ROOT,

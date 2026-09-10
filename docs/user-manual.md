@@ -727,6 +727,14 @@ The **Reporting** tab is where a case's data lives once collected — and where 
 only shows content once a case is active (create or select one via the Case button, same as
 everywhere else).
 
+A header row above the tabs shows the case number, a **Status** dropdown (Open, In Progress, In
+Review, On Hold, Closed, Archived), and **Examiners**, and stays visible no matter which sub-tab
+you're on. Examiners populate two ways: add or remove someone by hand right there, or — since
+2026-09-10 — automatically, the moment they actually do something on the case (add a Case Note, log
+a custody transfer, tag an item, or attach/caption an exhibit). You should rarely need the manual
+"+" button at all in practice; it's there mainly to add someone before they've done anything yet, or
+to remove a name added by mistake.
+
 Most of what you do here saves immediately (Case Notes, the Physical Custody Log, tagging,
 attaching a file from File Explorer's own right-click menu, and an exhibit's caption — editable
 either right there in Files & Artifacts or directly from File Explorer's Tag/Attach modal, both
@@ -744,10 +752,11 @@ changes still pending, so nothing gets lost silently.
   entire case folder — everything it actually contains, not just the exported report — for archival
   or handoff to another examiner; optionally including the raw acquisition images, which can make it
   very large).
-- **Report Narrative** — Case Status, any custom fields your station defines, and the polished
+- **Report Narrative** — any custom fields your station defines (Case Details), and the polished
   write-up sections: Executive Summary, Objectives, Relevant Findings, Limitations & Statement of
   Uncertainty, Conclusion, Indicators of Compromise, Recommendations/Next Steps. This is the closing
-  narrative you write once, generally near the end.
+  narrative you write once, generally near the end. (Case Status and Examiners live in the header
+  above the tabs instead — see the note at the top of this section.)
 - **Case Notes** — a running, timestamped, **append-only** journal, genuinely distinct from Report
   Narrative above. Add a note as you work, not just at the end — each one gets an author and a local
   integrity hash automatically, and editing a note preserves the original text rather than
