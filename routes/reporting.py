@@ -578,6 +578,24 @@ def clear_report_logo():
     save_runtime_config(cfg)
     return jsonify({"success": True})
 
+@reporting_bp.route('/api/report/examiner_names', methods=['GET'])
+@requires_auth
+@requires_permission('reporting')
+def report_examiner_names():
+    # Backs the Examiners picker on Report Narrative - an examiner name should
+    # correspond to a real, accountable station account, not an arbitrary typed
+    # string (a real gap: the field used to accept anything at all). Returns
+    # every currently-registered username, sorted, so the frontend can render a
+    # select-only add control instead of a free-text input. Deliberately no
+    # extra per-user detail (group/last_login/etc, unlike /api/users/list) -
+    # this route only needs to answer "who is a real account," and gating it on
+    # 'reporting' rather than 'manage_users' means anyone who can edit a case's
+    # own examiner list can also see who's eligible, without needing user-
+    # management access just to add themselves.
+    cfg = load_runtime_config()
+    usernames = sorted({u.get('username') for u in (cfg.get('users') or []) if u.get('username')})
+    return jsonify({"success": True, "usernames": usernames})
+
 @reporting_bp.route('/api/report/load', methods=['POST'])
 @requires_auth
 def load_report_json():

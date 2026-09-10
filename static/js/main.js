@@ -74,6 +74,16 @@ let currentReferenceUrlsList = [];
 // arrays exist rather than reading straight off the DOM/report object.
 let currentExaminersList = [];
 
+// Which usernames are eligible to be recorded as a case's own examiner -
+// fetched once per page load (see fetchExaminerUsernames() near
+// renderExaminersList() below) and reused for the whole session, matching
+// hashListsCache/customReportTemplatesCache's own established caching
+// convention. null until the first fetch resolves; [] genuinely means "this
+// station has no registered user accounts yet" (still on the legacy
+// single-shared-login fallback), which renderExaminersList() treats as its
+// own distinct case, not an error.
+let examinerUsernamesCache = null;
+
 // Tracks whether Reporting has edits that only persist via the explicit
 // "Save Report Changes" button (Report Narrative, Case Status, Case
 // Details/custom fields, Examiners, and the Files & Artifacts exhibit
@@ -13029,39 +13039,119 @@ function renderCustomFieldsForCase(values) {
 // Always rebuilt in full (unlike that function's own body-only rebuild,
 // which exists to preserve an outer collapsible group's own open/closed
 // state - this list has no such wrapper to preserve).
+async function fetchExaminerUsernames(forceRefresh) {
+    if (examinerUsernamesCache !== null && !forceRefresh) return examinerUsernamesCache;
+    try {
+        const res = await fetch('/api/report/examiner_names');
+        const data = await res.json();
+        examinerUsernamesCache = (data.success && data.usernames) || [];
+    } catch (err) {
+        examinerUsernamesCache = []; // fetch failed - fall back to free text, matching an empty-station response
+    }
+    return examinerUsernamesCache;
+}
+
+// Real gap found and fixed 2026-09-10: adding an examiner used to accept
+// any typed string, with zero check against this station's own registered
+// user accounts - an "examiner of record" is a chain-of-custody-adjacent
+// fact and should correspond to a real, accountable account. The add
+// control is now a select populated from fetchExaminerUsernames() (already
+// fetched once by loadCaseForEditing(), in parallel with the report load
+// itself) rather than a free-text input - strictly pick-only, no typing.
+// A station with zero registered accounts at all (still on the legacy
+// single-shared-login env-var fallback, examinerUsernamesCache === [])
+// falls back to the original free-text behavior, since there's no real
+// "platform user list" to validate against in that mode. Already-recorded
+// names are never touched or deleted by this change (including ones added
+// before this fix shipped, or a name typed during that fallback) - only
+// ADDING is now restricted; a name already on the list that no longer
+// matches a real account is flagged with a warning icon instead, not
+// silently hidden or removed.
 function renderExaminersList() {
     const container = document.getElementById('examinersContainer');
     if (!container) return;
     container.innerHTML = '';
 
+    const knownUsernames = examinerUsernamesCache || [];
+    const alreadyAdded = new Set(currentExaminersList.map(e => e.toLowerCase()));
+    const available = knownUsernames.filter(u => !alreadyAdded.has(u.toLowerCase()));
+
     const addRow = document.createElement('div');
     addRow.className = 'd-flex gap-2 mb-2';
-    const addInput = document.createElement('input');
-    addInput.type = 'text';
-    addInput.className = 'form-control form-control-sm';
-    addInput.placeholder = 'Add an examiner name...';
-    const doAdd = () => {
-        const val = addInput.value.trim();
-        if (!val) return;
-        if (currentExaminersList.some(e => e.toLowerCase() === val.toLowerCase())) {
+
+    if (knownUsernames.length === 0) {
+        // No registered accounts on this station at all - the original
+        // free-text fallback, unchanged from before this fix.
+        const addInput = document.createElement('input');
+        addInput.type = 'text';
+        addInput.className = 'form-control form-control-sm';
+        addInput.placeholder = 'Add an examiner name...';
+        const doAdd = () => {
+            const val = addInput.value.trim();
+            if (!val) return;
+            if (alreadyAdded.has(val.toLowerCase())) { addInput.value = ''; return; }
+            currentExaminersList.push(val);
             addInput.value = '';
-            return;
+            markReportingDirty();
+            renderExaminersList();
+        };
+        addInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); doAdd(); } });
+        addRow.appendChild(addInput);
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'btn btn-sm btn-outline-secondary flex-shrink-0';
+        addBtn.title = 'Add examiner';
+        addBtn.innerHTML = '<i class="bi bi-plus-lg"></i>';
+        addBtn.onclick = doAdd;
+        addRow.appendChild(addBtn);
+        container.appendChild(addRow);
+        const hint = document.createElement('div');
+        hint.className = 'text-subtle small mb-2';
+        hint.textContent = "No user accounts are configured on this station, so examiner names can't be checked against a real account list yet.";
+        container.appendChild(hint);
+    } else {
+        const select = document.createElement('select');
+        select.className = 'form-select form-select-sm';
+        select.id = 'examinerAddSelect';
+        if (available.length === 0) {
+            const opt = document.createElement('option');
+            opt.textContent = 'Every registered user is already listed';
+            opt.disabled = true;
+            select.appendChild(opt);
+            select.disabled = true;
+        } else {
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Select a registered user...';
+            select.appendChild(placeholder);
+            available.forEach(u => {
+                const opt = document.createElement('option');
+                opt.value = u;
+                opt.textContent = u;
+                select.appendChild(opt);
+            });
         }
-        currentExaminersList.push(val);
-        addInput.value = '';
-        markReportingDirty();
-        renderExaminersList();
-    };
-    addInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); doAdd(); } });
-    addRow.appendChild(addInput);
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'btn btn-sm btn-outline-secondary flex-shrink-0';
-    addBtn.title = 'Add examiner';
-    addBtn.innerHTML = '<i class="bi bi-plus-lg"></i>';
-    addBtn.onclick = doAdd;
-    addRow.appendChild(addBtn);
-    container.appendChild(addRow);
+        addRow.appendChild(select);
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'btn btn-sm btn-outline-secondary flex-shrink-0';
+        addBtn.title = 'Add examiner';
+        addBtn.innerHTML = '<i class="bi bi-plus-lg"></i>';
+        addBtn.disabled = available.length === 0;
+        addBtn.onclick = () => {
+            const val = select.value;
+            if (!val) return;
+            currentExaminersList.push(val);
+            markReportingDirty();
+            renderExaminersList();
+        };
+        addRow.appendChild(addBtn);
+        container.appendChild(addRow);
+        const hint = document.createElement('div');
+        hint.className = 'text-subtle small mb-2';
+        hint.textContent = "Only this station's own registered user accounts can be added as an examiner.";
+        container.appendChild(hint);
+    }
 
     if (currentExaminersList.length === 0) {
         const empty = document.createElement('div');
@@ -13083,6 +13173,19 @@ function renderExaminersList() {
         nameEl.className = 'small text-break flex-grow-1';
         nameEl.textContent = name; // examiner-entered - text node only
         row.appendChild(nameEl);
+
+        // Flags a name that doesn't match any currently-registered account -
+        // covers both a name added before this fix shipped, and one typed
+        // during the no-accounts-configured fallback above that a real
+        // account was later created for (or renamed away from) since.
+        // Only shown once we actually have a real account list to compare
+        // against - never for the empty-station fallback state itself.
+        if (knownUsernames.length > 0 && !knownUsernames.some(u => u.toLowerCase() === name.toLowerCase())) {
+            const warn = document.createElement('i');
+            warn.className = 'bi bi-exclamation-triangle-fill text-warning flex-shrink-0';
+            warn.title = "This name doesn't match any currently-registered user account on this station.";
+            row.appendChild(warn);
+        }
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
@@ -13544,11 +13647,19 @@ async function loadCaseForEditing() {
     currentReportPath = `${activeCase.case_folder}/${slug}_case.json`;
 
     try {
-        const res = await fetch('/api/report/load', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ report_path: currentReportPath })
-        });
+        // Fetched alongside the report itself (not awaited separately
+        // beforehand) so this doesn't add sequential latency to every one of
+        // this function's ~8 call sites - fetchExaminerUsernames() is
+        // cached after its first real network round trip, so every call
+        // past the first resolves instantly anyway.
+        const [res] = await Promise.all([
+            fetch('/api/report/load', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ report_path: currentReportPath })
+            }),
+            fetchExaminerUsernames()
+        ]);
         const data = await res.json();
 
         if (!data.success) {
