@@ -21,6 +21,17 @@ file after updating to see what changed.
 
 ---
 
+## [1.84.0] - 2026-09-09
+
+### Changed
+- **Reporting condensed from 13 tabs down to 9.** Case Notes and Physical Custody Log now share one
+  tab; Jobs, Analysis Coverage, and Case Activity Log are now one "Evidence Activity" tab (all three
+  are "what's been done to this evidence" at different levels of detail); Search moved directly onto
+  Overview instead of its own tab. Export stays its own tab (too much to fit on a dashboard), but
+  Overview now has a quick link straight to it.
+- **Overview's stat tiles are clickable.** Click "Tagged Items" and jump straight to Files &
+  Artifacts; click "Case Notes" and jump to Case Notes & Custody Log; every tile now goes somewhere.
+
 ## [1.83.0] - 2026-09-09
 
 ### Added
