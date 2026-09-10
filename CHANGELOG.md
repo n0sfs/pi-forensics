@@ -21,6 +21,16 @@ file after updating to see what changed.
 
 ---
 
+## [1.85.0] - 2026-09-09
+
+### Added
+- **Multiple Examiner Names per Case.** A case used to record exactly one examiner, set once at
+  creation and never editable again. Reporting > Report Narrative now has an "Examiners" list -
+  the case's original examiner of record is pre-added, and you can add or remove additional
+  examiners as more than one analyst works the case. Shown wherever a case's examiner already
+  appeared - the Case Manager list, and both the PDF and HTML exported report - as every name
+  joined together. Existing cases with just the one original examiner are completely unaffected.
+
 ## [1.84.0] - 2026-09-09
 
 ### Changed
