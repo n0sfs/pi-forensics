@@ -21,6 +21,19 @@ file after updating to see what changed.
 
 ---
 
+## [1.87.6] - 2026-09-10
+
+### Fixed
+- A case's Examiners list (Reporting > Report Narrative) accepted any typed name with no check
+  against this station's own registered user accounts - an examiner-of-record is a chain-of-
+  custody-adjacent fact and should correspond to a real, accountable account, not an arbitrary
+  string. Adding an examiner is now a select-only picker restricted to this station's actual user
+  accounts, not a free-text field. A station with no user accounts configured at all (the legacy
+  single-shared-login mode) still falls back to typing a name, since there's no real account list
+  to check against in that case. Any name already recorded before this fix (or typed during that
+  fallback) is left exactly as it was - only *adding* a new name is now restricted - but a name
+  that doesn't match a real account is now flagged with a warning icon so it's not mistaken for one.
+
 ## [1.87.5] - 2026-09-10
 
 ### Fixed
