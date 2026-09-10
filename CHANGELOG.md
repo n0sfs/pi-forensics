@@ -21,6 +21,16 @@ file after updating to see what changed.
 
 ---
 
+## [1.87.7] - 2026-09-10
+
+### Changed
+- Reorganized Reporting's Overview tab. "Case-wide Integrity Check" (the "Verify All Evidence"
+  button) previously sat in its own differently-styled box below the 8 dashboard tiles - it's now
+  a matching 9th tile, completing the grid to a clean 3x3 with no visual gap. "Case Bundle Export"
+  (the full case-folder zip) moved to its own clearly-labeled section on the Export tab, next to
+  the report-export preview it's a genuinely different kind of export from - it no longer clutters
+  Overview at all. No functionality changed for either action, only where they live on screen.
+
 ## [1.87.6] - 2026-09-10
 
 ### Fixed
