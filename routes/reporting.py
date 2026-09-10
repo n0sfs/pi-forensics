@@ -74,7 +74,7 @@ from core.case_index_db import (
     _case_index_open_readonly, list_case_folders, correlate_contacts,
     CONTACT_CORRELATION_COMM_TYPES, CONTACT_CORRELATION_EMAIL_COMM_TYPES,
     _extract_raw_counterpart_candidates, _extract_email_counterparts, normalize_phone_number,
-    _comm_content_preview, tagged_real_fs_paths_for_case,
+    _comm_content_preview, tagged_real_fs_paths_for_case, derive_examiner_display,
 )
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
@@ -5132,7 +5132,11 @@ def export_report():
             events = all_events
         header = {
             "case_number": data.get('case_number', 'N/A'),
-            "examiner": data.get('examiner', 'N/A'),
+            # Multiple Examiner Names per Case (item 7 of the investigation-
+            # workflow backlog): a case-level examiners list is preferred
+            # and joined; falls back to the original singular field for
+            # every case recorded before this shipped.
+            "examiner": derive_examiner_display(data.get('examiners'), data.get('examiner')),
             "notes": data.get('notes', ''),
             "case_status": data.get('case_status') or 'Open',
             "created_at": data.get('created_at', 'N/A'),
@@ -5151,7 +5155,7 @@ def export_report():
         meta = data.get('case_metadata', {})
         header = {
             "case_number": meta.get('case_number', 'N/A'),
-            "examiner": meta.get('examiner', 'N/A'),
+            "examiner": derive_examiner_display(meta.get('examiners'), meta.get('examiner')),
             "notes": meta.get('notes', ''),
             "case_status": meta.get('case_status') or 'Open',
             "created_at": data.get('timestamp_start', 'N/A'),

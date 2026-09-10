@@ -104,6 +104,16 @@ def create_case():
             "case_number": case_number_raw,
             "case_folder": case_dir,
             "examiner": examiner,
+            # Multiple Examiner Names per Case (item 7 of the investigation-
+            # workflow backlog) - a case-level list, editable afterward in
+            # Reporting > Report Narrative. Seeded with the single examiner
+            # typed here (auto-filled from the logged-in account, see
+            # #newCaseExaminer's own readonly behavior) as its first entry -
+            # the singular "examiner" field above stays the untouched,
+            # immutable examiner-of-record; this list is what actually
+            # displays/exports (core.case_index_db.derive_examiner_display()
+            # prefers it, falling back to "examiner" only when it's empty).
+            "examiners": [examiner] if examiner else [],
             "notes": notes,
             "case_status": "Open",
             "created_at": now,
@@ -332,6 +342,11 @@ def migrate_case_apply():
         "case_number": (case_info or {}).get("case_number", slug),
         "case_folder": case_dir,
         "examiner": (case_info or {}).get("examiner", ""),
+        # Same reasoning as create_case()'s own "examiners" seed above - a
+        # legacy case_info.json never had this key at all, so this is
+        # always a fresh single-entry list from whatever the old singular
+        # field recorded (or empty, if that was blank too).
+        "examiners": [(case_info or {}).get("examiner")] if (case_info or {}).get("examiner") else [],
         "notes": (case_info or {}).get("notes", ""),
         # Real bug, fixed 2026-09-09: this is the OTHER place (besides
         # create_case() above) that produces a brand-new {slug}_case.json
