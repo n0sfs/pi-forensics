@@ -75,6 +75,7 @@ from core.case_index_db import (
     CONTACT_CORRELATION_COMM_TYPES, CONTACT_CORRELATION_EMAIL_COMM_TYPES,
     _extract_raw_counterpart_candidates, _extract_email_counterparts, normalize_phone_number,
     _comm_content_preview, tagged_real_fs_paths_for_case, derive_examiner_display,
+    compute_case_analysis_coverage,
 )
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
@@ -2709,9 +2710,57 @@ def _pick_display_hash(hashes):
     algo, value = next(iter(hashes.items()))
     return f"{algo.upper()}: {value}"
 
-def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory"):
+# Verify All Evidence's own hash-verification status, per acquisition
+# event - shared by both the PDF and HTML Evidence Inventory renderers so
+# the exported report can never show a different verification picture than
+# the app's own Reporting > Coverage tab, which already uses this exact
+# status vocabulary/color scheme (see HASH_STATUS_META in main.js). Only
+# the *labels* need to differ per output format - a fixed-width PDF cell
+# still needs to stay short, an HTML cell has no such constraint - so this
+# is one shared dict, not two separately-maintained copies of the same
+# five real states.
+_HASH_STATUS_META = {
+    "match": {
+        "pdf_label": "VERIFIED", "pdf_color": (0.0, 0.45, 0.15),
+        "html_label": "Hash Verified", "html_class": "hash-ok",
+    },
+    "mismatch": {
+        "pdf_label": "HASH MISMATCH", "pdf_color": (0.75, 0.0, 0.05),
+        "html_label": "HASH MISMATCH", "html_class": "hash-mismatch",
+    },
+    "missing_file": {
+        "pdf_label": "FILE MISSING", "pdf_color": (0.75, 0.0, 0.05),
+        "html_label": "File Missing", "html_class": "hash-mismatch",
+    },
+    "unverifiable": {
+        "pdf_label": "UNVERIFIABLE", "pdf_color": (0.4, 0.4, 0.4),
+        "html_label": "Unverifiable", "html_class": "hash-muted",
+    },
+    "not_yet_reverified": {
+        "pdf_label": "NOT RE-VERIFIED", "pdf_color": (0.6, 0.42, 0.0),
+        "html_label": "Not Yet Re-Verified", "html_class": "hash-warn",
+    },
+    "no_hash_recorded": {
+        "pdf_label": "N/A", "pdf_color": (0.4, 0.4, 0.4),
+        "html_label": "No Hash Recorded", "html_class": "hash-muted",
+    },
+}
+# Falls back here for an event with no compute_case_analysis_coverage()
+# entry at all - e.g. a legacy/not-yet-consolidated case (that function
+# always returns {"items": []} for one), or an event that was never
+# COMPLETED/never had a walkable output path. Distinct from
+# "no_hash_recorded" above (a real, checked "this evidence item genuinely
+# has no hash on file" state) - this is "verification status was never
+# even computed for this row", an honest, separate thing to disclose.
+_HASH_STATUS_UNKNOWN = {
+    "pdf_label": "N/A", "pdf_color": (0.4, 0.4, 0.4),
+    "html_label": "Not Checked", "html_class": "hash-muted",
+}
+
+def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_status_by_event=None):
     if not events:
         return y
+    hash_status_by_event = hash_status_by_event or {}
     if y < 150:
         c.showPage()
         y = 730
@@ -2719,8 +2768,8 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory"):
     c.setFont("Helvetica-Bold", 12)
     c.drawString(50, y, title)
     y -= 20
-    headers = ["Evidence ID", "Device", "Model", "Serial", "Capacity", "Acquisition Hash"]
-    xpos = [50, 130, 225, 320, 400, 460]
+    headers = ["Evidence ID", "Device", "Model", "Serial", "Capacity", "Acquisition Hash", "Verified"]
+    xpos = [50, 125, 200, 265, 325, 370, 470]
     c.setFont("Helvetica-Bold", 8)
     for label, x in zip(headers, xpos):
         c.drawString(x, y, label)
@@ -2739,13 +2788,22 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory"):
         row = [
             str(meta.get('evidence_id', 'N/A'))[:14],
             str(drive.get('device_path', 'N/A'))[:16],
-            str(drive.get('vendor_model', 'N/A'))[:15],
-            str(drive.get('serial_number', 'N/A'))[:13],
+            str(drive.get('vendor_model', 'N/A'))[:13],
+            str(drive.get('serial_number', 'N/A'))[:12],
             f"{drive.get('capacity_gb', 'N/A')} GB",
-            str(hash_display)[:26],
+            str(hash_display)[:24],
         ]
-        for val, x in zip(row, xpos):
+        for val, x in zip(row, xpos[:6]):
             c.drawString(x, y, val)
+        # Verified column - colored so a MISMATCH/File-Missing status can
+        # never be mistaken for a routine value at a glance, matching this
+        # app's already-established "a mismatch gets elevated visibility"
+        # posture (execution_worker_verify_all_evidence's own dedicated,
+        # higher-visibility chain-of-custody entry for the same real case).
+        status_meta = _HASH_STATUS_META.get(hash_status_by_event.get(event.get('event_id')), _HASH_STATUS_UNKNOWN)
+        c.setFillColorRGB(*status_meta["pdf_color"])
+        c.drawString(xpos[6], y, status_meta["pdf_label"])
+        c.setFillColorRGB(0, 0, 0)
         y -= 11
     y -= 12
     return y
@@ -3886,7 +3944,7 @@ def _resolve_template_ref(value, cfg):
         raise ValueError(f"Selected custom template '{template_id}' no longer exists.")
     return 'standard', None
 
-def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None):
+def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None, hash_status_by_event=None):
     from reportlab.lib.pagesizes import letter
 
     c = _numbered_canvas_class()(pdf_path, pagesize=letter)
@@ -3937,7 +3995,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
         "case_info": lambda y, title, field: _draw_pdf_header(c, header, title=title),
         "executive_summary": lambda y, title, field: _draw_pdf_narrative_section(c, y, title, header.get(field)),
         "objectives": lambda y, title, field: _draw_pdf_narrative_section(c, y, title, header.get(field)),
-        "evidence_inventory": lambda y, title, field: _draw_pdf_evidence_inventory(c, y, events, title=title),
+        "evidence_inventory": lambda y, title, field: _draw_pdf_evidence_inventory(c, y, events, title=title, hash_status_by_event=hash_status_by_event),
         "acquisition_method": lambda y, title, field: _draw_pdf_acquisition_method(c, y, events, job_fields, title=title),
         "forensic_analysis": lambda y, title, field: _draw_pdf_case_notes(c, y, case_notes, title=title, exhibit_numbers=exhibit_numbers),
         "relevant_findings": lambda y, title, field: _draw_pdf_narrative_section(c, y, title, header.get(field)),
@@ -4056,7 +4114,7 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
 
     c.save()
 
-def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
+def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None):
     """Fixed-structure Forensics (Police) Report, modeled on the reference
     law-enforcement examination report. Reuses the same low-level drawing
     helpers as the other two templates - see the plan's field-mapping table
@@ -4117,7 +4175,7 @@ def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entrie
 
     c.bookmarkPage('evidence_coc')
     c.addOutlineEntry("Evidence Collection & Chain of Custody", 'evidence_coc', level=0)
-    y = _draw_pdf_evidence_inventory(c, y, events, title="Itemized Evidence & Integrity Hashing")
+    y = _draw_pdf_evidence_inventory(c, y, events, title="Itemized Evidence & Integrity Hashing", hash_status_by_event=hash_status_by_event)
     y = _draw_pdf_audit_trail(c, y, audit_entries, title="Chain of Custody / Activity Log")
 
     c.bookmarkPage('methodology')
@@ -4146,7 +4204,7 @@ def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entrie
 
     c.save()
 
-def _build_pdf_report_caseuco(pdf_path, header, events, urls, files, audit_entries, case_notes, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None):
+def _build_pdf_report_caseuco(pdf_path, header, events, urls, files, audit_entries, case_notes, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, hash_status_by_event=None):
     """Fixed-structure report aligned with the CASE/UCO cyber-forensic
     ontology (caseontology.org) - Investigation, ObservableObject,
     InvestigativeAction, ProvenanceRecord, Analysis, Tool, Location. Reuses
@@ -4229,7 +4287,7 @@ def _build_pdf_report_caseuco(pdf_path, header, events, urls, files, audit_entri
 
     c.bookmarkPage('observable_objects')
     c.addOutlineEntry("Observable Objects (Digital Evidence)", 'observable_objects', level=0)
-    y = _draw_pdf_evidence_inventory(c, y, events, title="Observable Objects (Digital Evidence)")
+    y = _draw_pdf_evidence_inventory(c, y, events, title="Observable Objects (Digital Evidence)", hash_status_by_event=hash_status_by_event)
 
     c.showPage()
     y = 750
@@ -4644,25 +4702,31 @@ def _build_html_toc(resolved_sections, has_exhibits):
     items = ''.join(f'<li><a href="#{anchor}">{label}</a></li>' for anchor, label in entries)
     return f'<nav class="toc"><h2>Report Contents</h2><ol>{items}</ol></nav>'
 
-def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id=None):
+def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id=None, hash_status_by_event=None):
     """HTML counterpart to _draw_pdf_evidence_inventory - shared by all
     three templates. The Police template reuses this under a different
-    title ("Itemized Evidence & Integrity Hashing")."""
+    title ("Itemized Evidence & Integrity Hashing"). Unlike the PDF's
+    fixed-width table, this format has no space constraint, so the
+    Verification Status column shows the full real label/color (see
+    _HASH_STATUS_META) rather than the PDF's shortened version."""
     esc = html.escape
+    hash_status_by_event = hash_status_by_event or {}
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     parts = [f'<h2{id_attr}>{esc(title)}</h2><table>']
-    parts.append('<tr><th>Evidence ID</th><th>Device</th><th>Model</th><th>Serial</th><th>Capacity</th><th>Acquisition Hash</th></tr>')
+    parts.append('<tr><th>Evidence ID</th><th>Device</th><th>Model</th><th>Serial</th><th>Capacity</th><th>Acquisition Hash</th><th>Verification Status</th></tr>')
     for event in events:
         meta = event.get('case_metadata', {})
         drive = event.get('source_drive_telemetry', {})
         hash_display = _pick_display_hash(event.get('computed_verification_hashes', {}))
+        status_meta = _HASH_STATUS_META.get(hash_status_by_event.get(event.get('event_id')), _HASH_STATUS_UNKNOWN)
         parts.append(
             f'<tr><td>{esc(str(meta.get("evidence_id", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("device_path", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("vendor_model", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("serial_number", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("capacity_gb", "N/A")))} GB</td>'
-            f'<td class="mono">{esc(str(hash_display))}</td></tr>'
+            f'<td class="mono">{esc(str(hash_display))}</td>'
+            f'<td><span class="{esc(status_meta["html_class"])}">{esc(status_meta["html_label"])}</span></td></tr>'
         )
     parts.append('</table>')
     return ''.join(parts)
@@ -4765,6 +4829,10 @@ def _html_report_style_block():
         '.job{margin-top:1.2em;padding:.8em;border:1px solid #ccc;border-radius:6px;}'
         '.muted{color:#666;font-size:.85em;}'
         '.mono{font-family:"Courier New",monospace;}'
+        '.hash-ok{color:#0a7d2c;font-weight:bold;}'
+        '.hash-mismatch{color:#b00020;font-weight:bold;}'
+        '.hash-warn{color:#8a5a00;font-weight:bold;}'
+        '.hash-muted{color:#666;}'
         '.attach-item{margin-top:1em;padding:.7em;border:1px solid #ddd;border-radius:6px;}'
         '.attach-item img{max-width:100%;border:1px solid #ccc;display:block;margin-top:.4em;}'
         '.attach-item pre{background:#f5f5f5;padding:.6em;overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:.8em;margin-top:.4em;}'
@@ -4893,7 +4961,7 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         parts.append('</div>')
     return ''.join(parts)
 
-def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None):
+def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None, hash_status_by_event=None):
     """Self-contained HTML report - every value is escaped since it may
     contain examiner-entered text or evidence-derived strings (filenames,
     device paths) that this file could later be reopened/served from disk.
@@ -4924,7 +4992,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         "case_info": lambda anchor, title, field: _html_case_info_block(header, len(events), anchor_id=anchor, title=title),
         "executive_summary": lambda anchor, title, field: _html_narrative_block(title, header.get(field), anchor),
         "objectives": lambda anchor, title, field: _html_narrative_block(title, header.get(field), anchor),
-        "evidence_inventory": lambda anchor, title, field: _html_evidence_inventory_table(events, title=title, anchor_id=anchor),
+        "evidence_inventory": lambda anchor, title, field: _html_evidence_inventory_table(events, title=title, anchor_id=anchor, hash_status_by_event=hash_status_by_event),
         "acquisition_method": lambda anchor, title, field: _html_acquisition_method(events, job_fields, anchor_id=anchor),
         "forensic_analysis": lambda anchor, title, field: _html_case_notes_block(case_notes, anchor_id=anchor, title=title, exhibit_numbers=exhibit_numbers),
         "relevant_findings": lambda anchor, title, field: _html_narrative_block(title, header.get(field), anchor),
@@ -5002,7 +5070,7 @@ def _build_html_report_dfir(header, events, urls, files, audit_entries, case_not
     parts.append('</body></html>')
     return ''.join(parts)
 
-def _build_html_report_police(header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None):
+def _build_html_report_police(header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None):
     """HTML counterpart to _build_pdf_report_police - same fixed section
     list, same reused data sources, same disclosed Chain-of-Custody-vs-
     Audit-Trail caveat, see that function's docstring."""
@@ -5043,7 +5111,7 @@ def _build_html_report_police(header, events, urls, files, audit_entries, case_n
 
     parts.append(f'<h2 id="sec-evidence-coc">Evidence Collection &amp; Chain of Custody</h2>')
     if events:
-        parts.append(_html_evidence_inventory_table(events, title="Itemized Evidence & Integrity Hashing"))
+        parts.append(_html_evidence_inventory_table(events, title="Itemized Evidence & Integrity Hashing", hash_status_by_event=hash_status_by_event))
     parts.append(_html_audit_trail_block(audit_entries, title="Chain of Custody / Activity Log"))
 
     parts.append(_html_methodology_tools(events, anchor_id='sec-methodology'))
@@ -5065,7 +5133,7 @@ def _build_html_report_police(header, events, urls, files, audit_entries, case_n
     parts.append('</body></html>')
     return ''.join(parts)
 
-def _build_html_report_caseuco(header, events, urls, files, audit_entries, case_notes, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None):
+def _build_html_report_caseuco(header, events, urls, files, audit_entries, case_notes, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, hash_status_by_event=None):
     """HTML counterpart to _build_pdf_report_caseuco - same fixed section
     list, same reused data sources, same disclosed role/provenance
     simplifications, see that function's docstring.
@@ -5116,7 +5184,7 @@ def _build_html_report_caseuco(header, events, urls, files, audit_entries, case_
     parts.append(_html_case_info_block(header, len(events), anchor_id='sec-investigation-overview', title="Investigation Overview"))
     parts.append(_html_narrative_block('Investigation Focus & Scope', header.get('objectives'), 'sec-focus-scope'))
     parts.append(_html_narrative_block('Executive Summary', header.get('executive_summary'), 'sec-exec-summary'))
-    parts.append(_html_evidence_inventory_table(events, title="Observable Objects (Digital Evidence)", anchor_id='sec-observable-objects'))
+    parts.append(_html_evidence_inventory_table(events, title="Observable Objects (Digital Evidence)", anchor_id='sec-observable-objects', hash_status_by_event=hash_status_by_event))
     parts.append(f'<h2 id="sec-investigative-actions">Investigative Actions</h2>')
     parts.append(_html_acquisition_method(events, job_fields))
     parts.append(_html_case_notes_block(case_notes, anchor_id='sec-analysis-findings', title="Analysis & Analytic Results (Case Notes)", exhibit_numbers=exhibit_numbers))
@@ -5347,6 +5415,24 @@ def export_report():
     analysis_by_path = _analysis_results_for_paths(case_folder, sel_files)
     exhibit_numbers = {p: i for i, p in enumerate(attachments.get('files', []), start=1)}
 
+    # Verify All Evidence's own hash-verification status, per acquisition
+    # event - reuses the exact same status-derivation logic Reporting's own
+    # Coverage tab already relies on (compute_case_analysis_coverage(),
+    # which reads last_verification + computed_verification_hashes), so
+    # the Evidence Inventory section can never show a different
+    # verification picture than what the examiner already reviewed
+    # on-screen. Gracefully {} for a legacy/not-yet-consolidated case, or
+    # one with no completed events - _draw_pdf_evidence_inventory/
+    # _html_evidence_inventory_table both fall back to an honest "Not
+    # Checked" for any event with no entry here, same "compute once before
+    # dispatch" pattern as tags_by_path/analysis_by_path/exhibit_numbers
+    # above. DFIR's own template never shows Evidence Inventory at all, so
+    # this is only ever threaded into the Standard/Police/CASE-UCO builders.
+    hash_status_by_event = {
+        item["event_id"]: item["hash_status"]
+        for item in compute_case_analysis_coverage(case_folder)["items"]
+    }
+
     # Geolocation section data (KML files + parsed placemarks) - walked/
     # parsed when the section is either always-on (the caseuco template,
     # which has no opt-out checkbox - Geolocation is a fixed part of its
@@ -5382,25 +5468,31 @@ def export_report():
         elif template == 'police':
             if fmt == 'html':
                 html_content = _build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
-                                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
+                                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers,
+                                                           hash_status_by_event=hash_status_by_event)
             else:
                 _build_pdf_report_police(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
-                                          tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers)
+                                          tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers,
+                                          hash_status_by_event=hash_status_by_event)
         elif template == 'caseuco':
             if fmt == 'html':
                 html_content = _build_html_report_caseuco(header, events, sel_urls, sel_files, audit_entries, case_notes, job_fields, captions=captions,
-                                                            tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data)
+                                                            tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data,
+                                                            hash_status_by_event=hash_status_by_event)
             else:
                 _build_pdf_report_caseuco(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, job_fields, captions=captions,
-                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data)
+                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data,
+                                           hash_status_by_event=hash_status_by_event)
         elif fmt == 'html':
             html_content = _build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
                                                          tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log,
-                                                         case_folder=case_folder, include_timeline_previews=include_timeline_previews, attachment_files=attachments.get('files', []))
+                                                         case_folder=case_folder, include_timeline_previews=include_timeline_previews, attachment_files=attachments.get('files', []),
+                                                         hash_status_by_event=hash_status_by_event)
         else:
             _build_pdf_report_standard(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log,
-                                        case_folder=case_folder, include_timeline_previews=include_timeline_previews, attachment_files=attachments.get('files', []))
+                                        case_folder=case_folder, include_timeline_previews=include_timeline_previews, attachment_files=attachments.get('files', []),
+                                        hash_status_by_event=hash_status_by_event)
 
         if fmt == 'html':
             content_bytes = html_content.encode('utf-8')
