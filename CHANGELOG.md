@@ -21,6 +21,15 @@ file after updating to see what changed.
 
 ---
 
+## [1.87.3] - 2026-09-10
+
+### Fixed
+- Reporting's Overview dashboard could send two different tiles to the same tab - "Evidence Items"
+  and "Analysis Activity" both jumped to Evidence Activity, and "Tagged Items" and "Exhibits
+  Attached" both jumped to Files & Artifacts. Every tab is now linked from exactly one place: the
+  two duplicate pairs are merged into a single two-stat tile each (same numbers, same click target,
+  one card instead of two). Every button on the dashboard was re-checked against its real target tab.
+
 ## [1.87.2] - 2026-09-10
 
 ### Changed

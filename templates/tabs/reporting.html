@@ -91,16 +91,31 @@
                                                          itself calls .click() on the target nav button (not
                                                          bootstrap.Tab(...).show()) so the pane's own onclick-
                                                          driven render fires too, not just the tab switch. -->
+                                                    <!-- Deduplicated 2026-09-10 - every tile below jumps to a
+                                                         DISTINCT tab; no tab is linked from more than one tile.
+                                                         The two pairs that used to share a target (Evidence Items
+                                                         + Analysis Activity both -> Evidence Activity; Tagged
+                                                         Items + Exhibits Attached both -> Files & Artifacts) are
+                                                         now merged into one two-stat tile each - same element ids
+                                                         (dashEvidenceCount/dashAnalysisCount/dashTagCount/
+                                                         dashAttachmentCount and their *Detail siblings), just
+                                                         two stat lines under one card/one onclick instead of two
+                                                         separate cards pointing at the same place. Zero JS
+                                                         changes needed - renderCaseDashboard() (main.js) looks
+                                                         these ids up by id, not by DOM position. -->
                                                     <div class="row g-2" id="caseDashboardGrid">
                                                         <div class="col-md-6 col-lg-4">
                                                             <div class="card home-tile" tabindex="0" role="button" title="Go to Evidence Activity" onclick="jumpToReportingTab('repJobsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repJobsTab');}">
                                                                 <div class="card-body">
                                                                     <div class="d-flex align-items-center gap-3 mb-1">
                                                                         <div class="home-tile-icon"><i class="bi bi-hdd-stack"></i></div>
-                                                                        <div class="fw-bold fs-6" id="dashEvidenceCount">--</div>
+                                                                        <div>
+                                                                            <div class="fw-bold fs-6"><span id="dashEvidenceCount">--</span> <span class="small text-subtle fw-normal">Evidence Items</span></div>
+                                                                            <div class="fw-bold fs-6"><span id="dashAnalysisCount">--</span> <span class="small text-subtle fw-normal">Analysis Activity</span></div>
+                                                                        </div>
                                                                     </div>
-                                                                    <div class="text-subtle small">Evidence Items</div>
                                                                     <div id="dashEvidenceDetail" class="small mt-1"></div>
+                                                                    <div id="dashAnalysisDetail" class="small mt-1"></div>
                                                                 </div>
                                                             </div>
                                                         </div>
@@ -108,23 +123,13 @@
                                                             <div class="card home-tile" tabindex="0" role="button" title="Go to Files &amp; Artifacts" onclick="jumpToReportingTab('repFilesTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repFilesTab');}">
                                                                 <div class="card-body">
                                                                     <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-tags-fill"></i></div>
-                                                                        <div class="fw-bold fs-6" id="dashTagCount">--</div>
+                                                                        <div class="home-tile-icon"><i class="bi bi-paperclip"></i></div>
+                                                                        <div>
+                                                                            <div class="fw-bold fs-6"><span id="dashAttachmentCount">--</span> <span class="small text-subtle fw-normal">Exhibits Attached</span></div>
+                                                                            <div class="fw-bold fs-6"><span id="dashTagCount">--</span> <span class="small text-subtle fw-normal">Tagged Items</span></div>
+                                                                        </div>
                                                                     </div>
-                                                                    <div class="text-subtle small">Tagged Items</div>
                                                                     <div id="dashTagDetail" class="small mt-1"></div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Evidence Activity" onclick="jumpToReportingTab('repJobsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repJobsTab');}">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-search"></i></div>
-                                                                        <div class="fw-bold fs-6" id="dashAnalysisCount">--</div>
-                                                                    </div>
-                                                                    <div class="text-subtle small">Analysis Activity</div>
-                                                                    <div id="dashAnalysisDetail" class="small mt-1"></div>
                                                                 </div>
                                                             </div>
                                                         </div>
@@ -140,17 +145,6 @@
                                                             </div>
                                                         </div>
                                                         <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Files &amp; Artifacts" onclick="jumpToReportingTab('repFilesTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repFilesTab');}">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-paperclip"></i></div>
-                                                                        <div class="fw-bold fs-6" id="dashAttachmentCount">--</div>
-                                                                    </div>
-                                                                    <div class="text-subtle small">Exhibits Attached</div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6 col-lg-4">
                                                             <div class="card home-tile" tabindex="0" role="button" title="Go to Report Narrative" onclick="jumpToReportingTab('repNarrativeTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repNarrativeTab');}">
                                                                 <div class="card-body">
                                                                     <div class="d-flex align-items-center gap-3 mb-1">
@@ -161,11 +155,39 @@
                                                                 </div>
                                                             </div>
                                                         </div>
-                                                        <!-- 7th tile, replacing the old plain "Ready to generate a
-                                                             report?" text link below the grid - same clickable-card
-                                                             pattern as its 6 siblings above rather than a one-off
-                                                             text row, and it belongs in this same grid since it's
-                                                             the identical kind of "jump to a tab" shortcut they are. -->
+                                                        <div class="col-md-6 col-lg-4">
+                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Pattern of Life" onclick="jumpToReportingTab('repContactsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repContactsTab');}">
+                                                                <div class="card-body">
+                                                                    <div class="d-flex align-items-center gap-3 mb-1">
+                                                                        <div class="home-tile-icon"><i class="bi bi-activity"></i></div>
+                                                                        <div class="fw-bold fs-6">Pattern of Life</div>
+                                                                    </div>
+                                                                    <div class="text-subtle small">Contact correlation, activity patterns, and location history from parsed evidence</div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6 col-lg-4">
+                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Geolocation" onclick="jumpToReportingTab('repGeoTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repGeoTab');}">
+                                                                <div class="card-body">
+                                                                    <div class="d-flex align-items-center gap-3 mb-1">
+                                                                        <div class="home-tile-icon"><i class="bi bi-geo-alt"></i></div>
+                                                                        <div class="fw-bold fs-6">Geolocation</div>
+                                                                    </div>
+                                                                    <div class="text-subtle small">GPS points from Takeout imports and attached KML files, grouped by source</div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6 col-lg-4">
+                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Evidence Timeline" onclick="jumpToReportingTab('repTimelineTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repTimelineTab');}">
+                                                                <div class="card-body">
+                                                                    <div class="d-flex align-items-center gap-3 mb-1">
+                                                                        <div class="home-tile-icon"><i class="bi bi-clock-history"></i></div>
+                                                                        <div class="fw-bold fs-6">Evidence Timeline</div>
+                                                                    </div>
+                                                                    <div class="text-subtle small">Every MACB and parsed-artifact timestamp merged into one filterable timeline</div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
                                                         <div class="col-md-6 col-lg-4">
                                                             <div class="card home-tile" tabindex="0" role="button" title="Go to Export" onclick="jumpToReportingTab('repExportTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repExportTab');}">
                                                                 <div class="card-body">
@@ -268,139 +290,180 @@
                                                     <!-- Merged in from its own former tab (2026-09-09) - a
                                                          second, genuinely distinct examiner-authored journal
                                                          living in the same pane rather than its own nav item;
-                                                         every id/onclick below is unchanged. -->
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-people-fill me-1"></i>Physical Custody Log</h6>
-                                                    <div class="small text-subtle mb-2">
-                                                        A record of physical evidence handoffs between people (e.g. field examiner &rarr; evidence locker) - distinct from the investigative Case Notes journal above and the software's Case Activity Log, which only records actions taken in this application. Append-only: a correction is logged as a new entry, matching real physical chain-of-custody practice.
-                                                    </div>
-                                                    <div class="row g-2 mb-2">
-                                                        <div class="col-md-6"><input type="text" id="newCustodyFrom" class="form-control form-control-sm" placeholder="From (custodian)"></div>
-                                                        <div class="col-md-6"><input type="text" id="newCustodyTo" class="form-control form-control-sm" placeholder="To (custodian)"></div>
-                                                    </div>
-                                                    <div class="row g-2 mb-2">
-                                                        <div class="col-md-6"><input type="text" id="newCustodyReason" class="form-control form-control-sm" placeholder="Reason (e.g. transport to lab)"></div>
-                                                        <div class="col-md-6">
-                                                            <select id="newCustodyMethod" class="form-select form-select-sm">
-                                                                <option value="In-Person">In-Person</option>
-                                                                <option value="Evidence Locker">Evidence Locker</option>
-                                                                <option value="Shipped">Shipped</option>
-                                                                <option value="Other">Other</option>
-                                                            </select>
+                                                         every id/onclick below is unchanged. Wrapped in a card
+                                                         with its own paragraph moved to a hover/click info icon,
+                                                         same pattern as Overview's two condensed cards. -->
+                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3">
+                                                        <h6 class="text-success fw-bold fs-6 mb-2">
+                                                            <i class="bi bi-people-fill me-1"></i>Physical Custody Log
+                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                               title="A record of physical evidence handoffs between people (e.g. field examiner -&gt; evidence locker) - distinct from the investigative Case Notes journal above and the software's Case Activity Log, which only records actions taken in this application. Append-only: a correction is logged as a new entry, matching real physical chain-of-custody practice."></i>
+                                                        </h6>
+                                                        <div class="row g-2 mb-2">
+                                                            <div class="col-md-6"><input type="text" id="newCustodyFrom" class="form-control form-control-sm" placeholder="From (custodian)"></div>
+                                                            <div class="col-md-6"><input type="text" id="newCustodyTo" class="form-control form-control-sm" placeholder="To (custodian)"></div>
                                                         </div>
-                                                    </div>
-                                                    <textarea id="newCustodyNotes" class="form-control form-control-sm mb-2" rows="2" placeholder="Notes (optional)"></textarea>
-                                                    <div class="mb-2">
-                                                        <label class="telemetry-grid-label d-block mb-1">Which Exhibit(s) Changed Hands (optional):</label>
-                                                        <div id="newCustodyLinkedFiles" class="small" style="max-height: 100px; overflow-y: auto;">
-                                                            <span class="text-subtle small italic">No exhibits attached yet - see the Files &amp; Artifacts tab.</span>
+                                                        <div class="row g-2 mb-2">
+                                                            <div class="col-md-6"><input type="text" id="newCustodyReason" class="form-control form-control-sm" placeholder="Reason (e.g. transport to lab)"></div>
+                                                            <div class="col-md-6">
+                                                                <select id="newCustodyMethod" class="form-select form-select-sm">
+                                                                    <option value="In-Person">In-Person</option>
+                                                                    <option value="Evidence Locker">Evidence Locker</option>
+                                                                    <option value="Shipped">Shipped</option>
+                                                                    <option value="Other">Other</option>
+                                                                </select>
+                                                            </div>
                                                         </div>
-                                                    </div>
-                                                    <button class="btn btn-sm btn-success fw-bold" onclick="addCustodyEntry()"><i class="bi bi-plus-lg me-1"></i>Log Custody Transfer</button>
-                                                    <div id="custodyAddStatus" class="small mt-1"></div>
-                                                    <hr class="border-secondary my-3">
-                                                    <div id="custodyLogContainer" class="mb-3 bg-app-dark border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
-                                                        <span class="text-subtle small italic">No custody log entries recorded yet.</span>
+                                                        <textarea id="newCustodyNotes" class="form-control form-control-sm mb-2" rows="2" placeholder="Notes (optional)"></textarea>
+                                                        <div class="mb-2">
+                                                            <label class="telemetry-grid-label d-block mb-1">Which Exhibit(s) Changed Hands (optional):</label>
+                                                            <div id="newCustodyLinkedFiles" class="small" style="max-height: 100px; overflow-y: auto;">
+                                                                <span class="text-subtle small italic">No exhibits attached yet - see the Files &amp; Artifacts tab.</span>
+                                                            </div>
+                                                        </div>
+                                                        <button class="btn btn-sm btn-success fw-bold" onclick="addCustodyEntry()"><i class="bi bi-plus-lg me-1"></i>Log Custody Transfer</button>
+                                                        <div id="custodyAddStatus" class="small mt-1"></div>
+                                                        <hr class="border-secondary my-3">
+                                                        <div id="custodyLogContainer" class="mb-0 bg-dark border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
+                                                            <span class="text-subtle small italic">No custody log entries recorded yet.</span>
+                                                        </div>
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repNarrativePane" role="tabpanel">
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-flag-fill me-1"></i>Case Status</h6>
-                                                    <div class="small text-subtle mb-2">Where this case stands in its own lifecycle - shown in the Case Manager list and included in exported reports. New cases start Open.</div>
-                                                    <div class="mb-3" style="max-width: 260px;">
-                                                        <select id="editCaseStatus" class="form-select form-select-sm">
-                                                            <option value="Open">Open</option>
-                                                            <option value="In Review">In Review</option>
-                                                            <option value="On Hold">On Hold</option>
-                                                            <option value="Closed">Closed</option>
-                                                            <option value="Archived">Archived</option>
-                                                        </select>
-                                                    </div>
-                                                    <hr class="border-secondary my-3">
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-people-fill me-1"></i>Examiners</h6>
-                                                    <div class="small text-subtle mb-2">Everyone who worked this case, for chain-of-custody attribution in exported reports. The examiner of record (set once at case creation, from whoever was logged in) is pre-added below - add or remove additional examiners as more than one analyst works the case. Saved via "Save Report Changes" in the header above.</div>
-                                                    <div id="examinersContainer" class="mb-3"></div>
-                                                    <hr class="border-secondary my-3">
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-info-circle me-1"></i>Case Details</h6>
-                                                    <div class="small text-subtle mb-2">Station-configured extra fields (Settings &gt; Case &amp; Reporting) for this case. Saved via "Save Report Changes" in the header above.</div>
-                                                    <div id="customFieldsContainer" class="row g-2 mb-3"></div>
-                                                    <hr class="border-secondary my-3">
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-file-text me-1"></i>Report Narrative</h6>
-                                                    <div class="alert alert-info small py-2 px-3 mb-2">
-                                                        Examiner-authored narrative for the exported report - filled in once analysis is complete, distinct from the running Case Notes journal.
-                                                        <div class="mt-1"><i class="bi bi-arrow-right-short"></i>Logging what you did/observed as you go instead? See <a href="#" onclick="new bootstrap.Tab(document.getElementById('repCaseNotesTab')).show(); return false;">Case Notes</a>.</div>
-                                                    </div>
-                                                    <div class="mb-2">
-                                                        <label class="telemetry-grid-label d-block mb-1">Executive Summary</label>
-                                                        <textarea id="editExecSummary" class="form-control form-control-sm" rows="3" placeholder="High-level summary of the case, scope, and outcome for a non-technical reader..."></textarea>
-                                                    </div>
-                                                    <div class="mb-2">
-                                                        <label class="telemetry-grid-label d-block mb-1">Objectives</label>
-                                                        <textarea id="editObjectives" class="form-control form-control-sm" rows="2" placeholder="What was this examination asked to determine?"></textarea>
-                                                    </div>
-                                                    <div class="mb-2">
-                                                        <label class="telemetry-grid-label d-block mb-1">Relevant Findings</label>
-                                                        <textarea id="editFindingsSummary" class="form-control form-control-sm" rows="3" placeholder="Findings most relevant to the objectives above..."></textarea>
-                                                    </div>
-                                                    <div class="mb-2">
-                                                        <label class="telemetry-grid-label d-block mb-1">Limitations &amp; Statement of Uncertainty</label>
-                                                        <textarea id="editLimitations" class="form-control form-control-sm" rows="2" placeholder="Anything that limits confidence in these findings (partial acquisition, damaged media, tool limitations)..."></textarea>
-                                                    </div>
-                                                    <div class="mb-2">
-                                                        <label class="telemetry-grid-label d-block mb-1">Conclusion</label>
-                                                        <textarea id="editConclusion" class="form-control form-control-sm" rows="2" placeholder="Closing statement..."></textarea>
-                                                    </div>
-                                                    <div class="mb-2">
-                                                        <label class="telemetry-grid-label d-block mb-1">Indicators of Compromise</label>
-                                                        <div class="text-warning small mb-1"><i class="bi bi-exclamation-triangle me-1"></i>Only appears in a DFIR export by default - not included in Standard, Forensics (Police), or CASE/UCO reports (can be added to a custom Report Template in Settings).</div>
-                                                        <textarea id="editIocs" class="form-control form-control-sm" rows="2" placeholder="IPs, domains, file hashes, file paths, or other IOCs discovered during the investigation..."></textarea>
-                                                    </div>
-                                                    <div class="mb-2">
-                                                        <label class="telemetry-grid-label d-block mb-1">Recommendations / Next Steps</label>
-                                                        <div class="text-warning small mb-1"><i class="bi bi-exclamation-triangle me-1"></i>Only appears in a DFIR or Forensics (Police) export by default - not included in Standard or CASE/UCO reports (can be added to a custom Report Template in Settings).</div>
-                                                        <textarea id="editRecommendations" class="form-control form-control-sm" rows="2" placeholder="Containment/eradication actions taken, remaining follow-up work, or evidence-handling recommendations..."></textarea>
-                                                    </div>
-                                                    <div class="small text-subtle">Saved via "Save Report Changes" in the header above.</div>
-                                                </div>
-                                                <div class="tab-pane fade" id="repFilesPane" role="tabpanel">
-                                                    <div class="d-flex justify-content-between align-items-center mb-2">
-                                                        <h6 class="text-success fw-bold fs-6 mb-0"><i class="bi bi-paperclip me-1"></i>Files &amp; Artifacts</h6>
-                                                        <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-folder2-open me-1"></i>Browse Elsewhere...</button>
-                                                    </div>
-                                                    <div class="small text-subtle mb-3">Organized by kind - check a file to attach it as a report exhibit; files already found in this case's folder are listed automatically. Right-click a file in File Explorer and choose "Attach to Case" to add it from there instead.</div>
-
-                                                    <div class="mb-3">
-                                                        <div class="small fw-bold text-bright mb-1"><i class="bi bi-bookmark-star me-1"></i>Exhibits (Attached)</div>
-                                                        <div class="text-subtle small mb-1">Exhibit numbers reflect current order below and may shift if an exhibit is added or removed.</div>
-                                                        <div id="reportExhibitsList" class="bg-app-dark border border-secondary p-2 rounded-2" style="max-height: 260px; overflow-y: auto;">
-                                                            <span class="text-subtle small italic">Loading...</span>
+                                                    <!-- Case Status/Examiners condensed into a side-by-side card
+                                                         row (both compact), matching Overview's own two-card row -
+                                                         each heading's paragraph moved to a hover/click info icon. -->
+                                                    <div class="row g-2 mb-3">
+                                                        <div class="col-md-6">
+                                                            <div class="bg-app-dark border border-secondary rounded-2 p-3 h-100">
+                                                                <h6 class="text-success fw-bold fs-6 mb-2">
+                                                                    <i class="bi bi-flag-fill me-1"></i>Case Status
+                                                                    <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                                       title="Where this case stands in its own lifecycle - shown in the Case Manager list and included in exported reports. New cases start Open."></i>
+                                                                </h6>
+                                                                <div style="max-width: 260px;">
+                                                                    <select id="editCaseStatus" class="form-select form-select-sm">
+                                                                        <option value="Open">Open</option>
+                                                                        <option value="In Review">In Review</option>
+                                                                        <option value="On Hold">On Hold</option>
+                                                                        <option value="Closed">Closed</option>
+                                                                        <option value="Archived">Archived</option>
+                                                                    </select>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <div class="bg-app-dark border border-secondary rounded-2 p-3 h-100">
+                                                                <h6 class="text-success fw-bold fs-6 mb-2">
+                                                                    <i class="bi bi-people-fill me-1"></i>Examiners
+                                                                    <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                                       title="Everyone who worked this case, for chain-of-custody attribution in exported reports. The examiner of record (set once at case creation, from whoever was logged in) is pre-added below - add or remove additional examiners as more than one analyst works the case. Saved via &quot;Save Report Changes&quot; in the header above."></i>
+                                                                </h6>
+                                                                <div id="examinersContainer"></div>
+                                                            </div>
                                                         </div>
                                                     </div>
-
-                                                    <div class="mb-3">
-                                                        <div class="small fw-bold text-bright mb-1"><i class="bi bi-images me-1"></i>Found in Case Folder</div>
-                                                        <div id="reportDiscoveredGroups" class="report-file-groups"></div>
+                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3 mb-3">
+                                                        <h6 class="text-success fw-bold fs-6 mb-2">
+                                                            <i class="bi bi-info-circle me-1"></i>Case Details
+                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                               title="Station-configured extra fields (Settings &gt; Case &amp; Reporting) for this case. Saved via &quot;Save Report Changes&quot; in the header above."></i>
+                                                        </h6>
+                                                        <div id="customFieldsContainer" class="row g-2"></div>
                                                     </div>
-
-                                                    <div class="mb-3">
-                                                        <div class="small fw-bold text-bright mb-1"><i class="bi bi-gear me-1"></i>Case-Generated Artifacts</div>
-                                                        <div id="reportArtifactGroups" class="report-file-groups"></div>
+                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3">
+                                                        <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-file-text me-1"></i>Report Narrative</h6>
+                                                        <div class="alert alert-info small py-2 px-3 mb-2">
+                                                            Examiner-authored narrative for the exported report - filled in once analysis is complete, distinct from the running Case Notes journal.
+                                                            <div class="mt-1"><i class="bi bi-arrow-right-short"></i>Logging what you did/observed as you go instead? See <a href="#" onclick="new bootstrap.Tab(document.getElementById('repCaseNotesTab')).show(); return false;">Case Notes</a>.</div>
+                                                        </div>
+                                                        <div class="mb-2">
+                                                            <label class="telemetry-grid-label d-block mb-1">Executive Summary</label>
+                                                            <textarea id="editExecSummary" class="form-control form-control-sm" rows="3" placeholder="High-level summary of the case, scope, and outcome for a non-technical reader..."></textarea>
+                                                        </div>
+                                                        <div class="mb-2">
+                                                            <label class="telemetry-grid-label d-block mb-1">Objectives</label>
+                                                            <textarea id="editObjectives" class="form-control form-control-sm" rows="2" placeholder="What was this examination asked to determine?"></textarea>
+                                                        </div>
+                                                        <div class="mb-2">
+                                                            <label class="telemetry-grid-label d-block mb-1">Relevant Findings</label>
+                                                            <textarea id="editFindingsSummary" class="form-control form-control-sm" rows="3" placeholder="Findings most relevant to the objectives above..."></textarea>
+                                                        </div>
+                                                        <div class="mb-2">
+                                                            <label class="telemetry-grid-label d-block mb-1">Limitations &amp; Statement of Uncertainty</label>
+                                                            <textarea id="editLimitations" class="form-control form-control-sm" rows="2" placeholder="Anything that limits confidence in these findings (partial acquisition, damaged media, tool limitations)..."></textarea>
+                                                        </div>
+                                                        <div class="mb-2">
+                                                            <label class="telemetry-grid-label d-block mb-1">Conclusion</label>
+                                                            <textarea id="editConclusion" class="form-control form-control-sm" rows="2" placeholder="Closing statement..."></textarea>
+                                                        </div>
+                                                        <div class="mb-2">
+                                                            <label class="telemetry-grid-label d-block mb-1">Indicators of Compromise</label>
+                                                            <div class="text-warning small mb-1"><i class="bi bi-exclamation-triangle me-1"></i>Only appears in a DFIR export by default - not included in Standard, Forensics (Police), or CASE/UCO reports (can be added to a custom Report Template in Settings).</div>
+                                                            <textarea id="editIocs" class="form-control form-control-sm" rows="2" placeholder="IPs, domains, file hashes, file paths, or other IOCs discovered during the investigation..."></textarea>
+                                                        </div>
+                                                        <div class="mb-2">
+                                                            <label class="telemetry-grid-label d-block mb-1">Recommendations / Next Steps</label>
+                                                            <div class="text-warning small mb-1"><i class="bi bi-exclamation-triangle me-1"></i>Only appears in a DFIR or Forensics (Police) export by default - not included in Standard or CASE/UCO reports (can be added to a custom Report Template in Settings).</div>
+                                                            <textarea id="editRecommendations" class="form-control form-control-sm" rows="2" placeholder="Containment/eradication actions taken, remaining follow-up work, or evidence-handling recommendations..."></textarea>
+                                                        </div>
+                                                        <div class="small text-subtle">Saved via "Save Report Changes" in the header above.</div>
                                                     </div>
+                                                </div>
+                                                <div class="tab-pane fade" id="repFilesPane" role="tabpanel">
+                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3">
+                                                        <div class="d-flex justify-content-between align-items-center mb-2">
+                                                            <h6 class="text-success fw-bold fs-6 mb-0">
+                                                                <i class="bi bi-paperclip me-1"></i>Files &amp; Artifacts
+                                                                <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                                   title="Organized by kind - check a file to attach it as a report exhibit; files already found in this case's folder are listed automatically. Right-click a file in File Explorer and choose &quot;Attach to Case&quot; to add it from there instead."></i>
+                                                            </h6>
+                                                            <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-folder2-open me-1"></i>Browse Elsewhere...</button>
+                                                        </div>
 
-                                                    <div class="mb-3" id="reportWebArtifactsWrap" style="display:none;">
-                                                        <div class="small fw-bold text-bright mb-1"><i class="bi bi-globe2 me-1"></i>Parsed Artifacts</div>
-                                                        <div class="small text-subtle mb-1">Browser history, bookmarks, downloads and cookies already parsed for this case (File Explorer &gt; right-click a folder or an acquired image &gt; "Parse Browser Artifacts") - reference data, not attachable as an exhibit itself.</div>
-                                                        <div id="reportWebArtifactGroups" class="report-file-groups"></div>
-                                                    </div>
+                                                        <div class="mb-3">
+                                                            <div class="small fw-bold text-bright mb-1"><i class="bi bi-bookmark-star me-1"></i>Exhibits (Attached)</div>
+                                                            <div class="text-subtle small mb-1">Exhibit numbers reflect current order below and may shift if an exhibit is added or removed.</div>
+                                                            <div id="reportExhibitsList" class="bg-dark border border-secondary p-2 rounded-2" style="max-height: 260px; overflow-y: auto;">
+                                                                <span class="text-subtle small italic">Loading...</span>
+                                                            </div>
+                                                        </div>
 
-                                                    <div>
-                                                        <div class="small fw-bold text-bright mb-1"><i class="bi bi-link-45deg me-1"></i>Reference URLs / Links</div>
-                                                        <div id="reportUrlGroups" class="report-file-groups"></div>
+                                                        <div class="mb-3">
+                                                            <div class="small fw-bold text-bright mb-1"><i class="bi bi-images me-1"></i>Found in Case Folder</div>
+                                                            <div id="reportDiscoveredGroups" class="report-file-groups"></div>
+                                                        </div>
+
+                                                        <div class="mb-3">
+                                                            <div class="small fw-bold text-bright mb-1"><i class="bi bi-gear me-1"></i>Case-Generated Artifacts</div>
+                                                            <div id="reportArtifactGroups" class="report-file-groups"></div>
+                                                        </div>
+
+                                                        <div class="mb-3" id="reportWebArtifactsWrap" style="display:none;">
+                                                            <div class="small fw-bold text-bright mb-1">
+                                                                <i class="bi bi-globe2 me-1"></i>Parsed Artifacts
+                                                                <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.75rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                                   title="Browser history, bookmarks, downloads and cookies already parsed for this case (File Explorer &gt; right-click a folder or an acquired image &gt; &quot;Parse Browser Artifacts&quot;) - reference data, not attachable as an exhibit itself."></i>
+                                                            </div>
+                                                            <div id="reportWebArtifactGroups" class="report-file-groups"></div>
+                                                        </div>
+
+                                                        <div>
+                                                            <div class="small fw-bold text-bright mb-1"><i class="bi bi-link-45deg me-1"></i>Reference URLs / Links</div>
+                                                            <div id="reportUrlGroups" class="report-file-groups"></div>
+                                                        </div>
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repGeoPane" role="tabpanel">
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-geo-alt me-1"></i>Geolocation</h6>
-                                                    <div class="small text-subtle mb-2">GPS locations extracted from this case's evidence - every already-indexed Google Takeout location-history point, plus every KML file attached to the case or found in its case folder, grouped by source below. Generate a KML via File Explorer's "Extract Geolocation (KML)" action on a folder of photos, or the geo-pin icon in the Sleuth Kit image toolbar when browsing an acquired image; import a Takeout archive via File Explorer's "Import Google Takeout Archive" action.</div>
-                                                    <div id="reportGeoContainer">
-                                                        <span class="text-subtle small italic">Loading...</span>
+                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3">
+                                                        <h6 class="text-success fw-bold fs-6 mb-2">
+                                                            <i class="bi bi-geo-alt me-1"></i>Geolocation
+                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                               title="GPS locations extracted from this case's evidence - every already-indexed Google Takeout location-history point, plus every KML file attached to the case or found in its case folder, grouped by source below. Generate a KML via File Explorer's &quot;Extract Geolocation (KML)&quot; action on a folder of photos, or the geo-pin icon in the Sleuth Kit image toolbar when browsing an acquired image; import a Takeout archive via File Explorer's &quot;Import Google Takeout Archive&quot; action."></i>
+                                                        </h6>
+                                                        <div id="reportGeoContainer">
+                                                            <span class="text-subtle small italic">Loading...</span>
+                                                        </div>
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repContactsPane" role="tabpanel">
@@ -408,94 +471,118 @@
 
                                                     <div id="patternOfLifeHighlights" class="d-flex flex-wrap gap-2 align-items-center mb-3 p-2 rounded-2" style="background: rgba(0, 242, 254, 0.06); border: 1px solid rgba(0, 242, 254, 0.18);"></div>
 
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-bar-chart-line-fill me-1"></i>Communication Activity Pattern</h6>
-                                                    <div class="small text-subtle mb-2">How often this device sent/received a text, call, or app message (WhatsApp, etc.), grouped by time of day or day of week - a classic pattern-of-life signal (sleep/waking hours, a regular weekday routine, unusual late-night activity). Optionally fold in web browsing and/or calendar activity via the checkboxes below - both are already parsed and on the Evidence Timeline, but excluded from this chart's default view since neither is a two-way communication. Times are shown in this browser's own local time zone, matching every other timestamp display in this app - the device's own configured time zone at the moment of each event isn't reliably knowable.</div>
-                                                    <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
-                                                        <div class="btn-group btn-group-sm" role="group">
-                                                            <button type="button" class="btn btn-outline-info active" id="polGranHourBtn" onclick="setPatternOfLifeActivityGranularity('hour')">By Hour of Day</button>
-                                                            <button type="button" class="btn btn-outline-info" id="polGranDowBtn" onclick="setPatternOfLifeActivityGranularity('dow')">By Day of Week</button>
-                                                            <button type="button" class="btn btn-outline-info" id="polGranHeatmapBtn" onclick="setPatternOfLifeActivityGranularity('heatmap')" title="A 2D hour-of-day x day-of-week grid - reveals a pattern neither 1D view shows alone, e.g. 'active every Tuesday night' rather than just 'active at night' overall."><i class="bi bi-grid-3x3-gap-fill me-1"></i>Heatmap</button>
+                                                    <!-- Each section below is now its own card, with its heading's
+                                                         paragraph moved to a hover/click info icon - same pattern
+                                                         as Overview's condensed cards, applied consistently to
+                                                         every h6-labeled section in this pane. -->
+                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3 mb-3">
+                                                        <h6 class="text-success fw-bold fs-6 mb-2">
+                                                            <i class="bi bi-bar-chart-line-fill me-1"></i>Communication Activity Pattern
+                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                               title="How often this device sent/received a text, call, or app message (WhatsApp, etc.), grouped by time of day or day of week - a classic pattern-of-life signal (sleep/waking hours, a regular weekday routine, unusual late-night activity). Optionally fold in web browsing and/or calendar activity via the checkboxes below - both are already parsed and on the Evidence Timeline, but excluded from this chart's default view since neither is a two-way communication. Times are shown in this browser's own local time zone, matching every other timestamp display in this app - the device's own configured time zone at the moment of each event isn't reliably knowable."></i>
+                                                        </h6>
+                                                        <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
+                                                            <div class="btn-group btn-group-sm" role="group">
+                                                                <button type="button" class="btn btn-outline-info active" id="polGranHourBtn" onclick="setPatternOfLifeActivityGranularity('hour')">By Hour of Day</button>
+                                                                <button type="button" class="btn btn-outline-info" id="polGranDowBtn" onclick="setPatternOfLifeActivityGranularity('dow')">By Day of Week</button>
+                                                                <button type="button" class="btn btn-outline-info" id="polGranHeatmapBtn" onclick="setPatternOfLifeActivityGranularity('heatmap')" title="A 2D hour-of-day x day-of-week grid - reveals a pattern neither 1D view shows alone, e.g. 'active every Tuesday night' rather than just 'active at night' overall."><i class="bi bi-grid-3x3-gap-fill me-1"></i>Heatmap</button>
+                                                            </div>
+                                                            <label class="small text-subtle mb-0" title="Off by default - a web page visit isn't a two-way communication the way a text/call/app message is, so it's kept out of this chart's default view. Turn on to fold browser history/downloads/bookmarks/cookies into the same hour/day breakdown alongside communications."><input type="checkbox" class="form-check-input me-1" id="polIncludeWebActivityCheck" onchange="onPatternOfLifeIncludeWebToggle(this.checked)">+ Web Browsing</label>
+                                                            <label class="small text-subtle mb-0" title="Off by default - a calendar entry's own timestamp can be a future-scheduled event, not evidence the device was actually in use at that moment, so it's kept out of this chart's default view. Turn on to fold parsed calendar events/reminders into the same hour/day breakdown."><input type="checkbox" class="form-check-input me-1" id="polIncludeCalendarCheck" onchange="onPatternOfLifeIncludeCalendarToggle(this.checked)">+ Calendar</label>
                                                         </div>
-                                                        <label class="small text-subtle mb-0" title="Off by default - a web page visit isn't a two-way communication the way a text/call/app message is, so it's kept out of this chart's default view. Turn on to fold browser history/downloads/bookmarks/cookies into the same hour/day breakdown alongside communications."><input type="checkbox" class="form-check-input me-1" id="polIncludeWebActivityCheck" onchange="onPatternOfLifeIncludeWebToggle(this.checked)">+ Web Browsing</label>
-                                                        <label class="small text-subtle mb-0" title="Off by default - a calendar entry's own timestamp can be a future-scheduled event, not evidence the device was actually in use at that moment, so it's kept out of this chart's default view. Turn on to fold parsed calendar events/reminders into the same hour/day breakdown."><input type="checkbox" class="form-check-input me-1" id="polIncludeCalendarCheck" onchange="onPatternOfLifeIncludeCalendarToggle(this.checked)">+ Calendar</label>
+                                                        <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
+                                                            <label class="small text-subtle mb-0" for="polActivityDateFrom">From</label>
+                                                            <input type="date" class="form-control form-control-sm" id="polActivityDateFrom" style="width:auto;" onchange="onPatternOfLifeActivityDateRangeChange()">
+                                                            <label class="small text-subtle mb-0" for="polActivityDateTo">To</label>
+                                                            <input type="date" class="form-control form-control-sm" id="polActivityDateTo" style="width:auto;" onchange="onPatternOfLifeActivityDateRangeChange()">
+                                                            <button type="button" class="btn btn-outline-secondary btn-xs" id="polActivityDateClearBtn" onclick="clearPatternOfLifeActivityDateRange()" style="display:none;" title="Chart every event again, regardless of date.">Clear Date Filter</button>
+                                                            <span id="patternOfLifeActivitySummary" class="small text-subtle"></span>
+                                                        </div>
+                                                        <div class="text-subtle small mb-1" style="display:none;" id="polActivityBarClickHint"><i class="bi bi-hand-index-thumb me-1"></i>Tap a bar to see which events it's made of.</div>
+                                                        <div class="border border-secondary rounded-2 mb-2 p-2" id="patternOfLifeActivityChartWrap" style="height: 180px; background-color:#090b10; position:relative;"><canvas id="patternOfLifeActivityChart"></canvas><div id="patternOfLifeActivityHeatmap" style="display:none; overflow:auto; height:100%;"></div></div>
+                                                        <div id="patternOfLifeActivityEmpty" class="text-subtle small" style="display:none;">No timestamped communications (SMS, calls, WhatsApp, or similar) parsed for this case yet.</div>
                                                     </div>
-                                                    <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
-                                                        <label class="small text-subtle mb-0" for="polActivityDateFrom">From</label>
-                                                        <input type="date" class="form-control form-control-sm" id="polActivityDateFrom" style="width:auto;" onchange="onPatternOfLifeActivityDateRangeChange()">
-                                                        <label class="small text-subtle mb-0" for="polActivityDateTo">To</label>
-                                                        <input type="date" class="form-control form-control-sm" id="polActivityDateTo" style="width:auto;" onchange="onPatternOfLifeActivityDateRangeChange()">
-                                                        <button type="button" class="btn btn-outline-secondary btn-xs" id="polActivityDateClearBtn" onclick="clearPatternOfLifeActivityDateRange()" style="display:none;" title="Chart every event again, regardless of date.">Clear Date Filter</button>
-                                                        <span id="patternOfLifeActivitySummary" class="small text-subtle"></span>
-                                                    </div>
-                                                    <div class="text-subtle small mb-1" style="display:none;" id="polActivityBarClickHint"><i class="bi bi-hand-index-thumb me-1"></i>Tap a bar to see which events it's made of.</div>
-                                                    <div class="border border-secondary rounded-2 mb-3 p-2" id="patternOfLifeActivityChartWrap" style="height: 180px; background-color:#090b10; position:relative;"><canvas id="patternOfLifeActivityChart"></canvas><div id="patternOfLifeActivityHeatmap" style="display:none; overflow:auto; height:100%;"></div></div>
-                                                    <div id="patternOfLifeActivityEmpty" class="text-subtle small mb-3" style="display:none;">No timestamped communications (SMS, calls, WhatsApp, or similar) parsed for this case yet.</div>
 
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-person-lines-fill me-1"></i>Contact Correlation &amp; Relationship Graph</h6>
-                                                    <div class="small text-subtle mb-2">Cross-references every parsed contact (phone, iOS backup, Google Takeout, or WhatsApp) against every parsed SMS/call/WhatsApp message in this case, resolving a raw number to a real name wherever the two agree - the most-contacted people surface first. A number independently named by more than one contact source is stronger corroboration.</div>
-                                                    <div class="d-flex align-items-center gap-2 mb-2">
-                                                        <div class="btn-group btn-group-sm" role="group">
-                                                            <button type="button" class="btn btn-outline-info active" id="polContactViewGraphBtn" onclick="setPatternOfLifeContactView('graph')"><i class="bi bi-diagram-3 me-1"></i>Graph View</button>
-                                                            <button type="button" class="btn btn-outline-info" id="polContactViewTableBtn" onclick="setPatternOfLifeContactView('table')"><i class="bi bi-table me-1"></i>Table View</button>
-                                                        </div>
-                                                    </div>
-                                                    <div class="row g-2 mb-2" id="relationshipGraphRow">
-                                                        <div class="col-lg-3" id="relationshipGraphSidebar">
-                                                            <div class="bg-app-dark border border-secondary rounded-2 p-2 h-100">
-                                                                <div id="relationshipGraphSearchWrap" class="mb-2" style="display:none;">
-                                                                    <input type="text" class="form-control form-control-sm" id="relationshipGraphSearchInput" placeholder="Find a contact..." oninput="filterRelationshipGraph(this.value)">
-                                                                </div>
-                                                                <button type="button" class="btn btn-outline-secondary btn-xs w-100 mb-2" id="polContactMetricBtn" onclick="togglePatternOfLifeGraphMetric()" title="Switch the graph's line thickness between raw communication count and total call duration (only meaningful where call duration was captured)." style="display:none;">Weighted by: Frequency</button>
-                                                                <div class="mb-2" id="relationshipGraphVolumeWrap" style="display:none;">
-                                                                    <label class="small text-subtle mb-1 d-block" for="relationshipGraphVolumeSlider" title="Hides a contact from the graph below this many total communications - a quick way to declutter down to just the people this device talked to the most. Doesn't remove anyone from Table View or anywhere else in the app, only from this one graph's own display.">Min. communications: <span class="text-info fw-bold" id="relationshipGraphVolumeLabel">Show all</span></label>
-                                                                    <input type="range" class="form-range" id="relationshipGraphVolumeSlider" min="0" max="1" step="1" value="0" oninput="onRelationshipGraphVolumeThresholdChange(this.value)">
-                                                                </div>
-                                                                <hr class="border-secondary my-2" id="relationshipGraphLegendDivider" style="display:none;">
-                                                                <div class="small text-info fw-bold mb-1" id="relationshipGraphLegendHeading" style="display:none;">Legend</div>
-                                                                <div id="relationshipGraphLegend" class="small text-subtle" style="display:none;"></div>
+                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3 mb-3">
+                                                        <h6 class="text-success fw-bold fs-6 mb-2">
+                                                            <i class="bi bi-person-lines-fill me-1"></i>Contact Correlation &amp; Relationship Graph
+                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                               title="Cross-references every parsed contact (phone, iOS backup, Google Takeout, or WhatsApp) against every parsed SMS/call/WhatsApp message in this case, resolving a raw number to a real name wherever the two agree - the most-contacted people surface first. A number independently named by more than one contact source is stronger corroboration."></i>
+                                                        </h6>
+                                                        <div class="d-flex align-items-center gap-2 mb-2">
+                                                            <div class="btn-group btn-group-sm" role="group">
+                                                                <button type="button" class="btn btn-outline-info active" id="polContactViewGraphBtn" onclick="setPatternOfLifeContactView('graph')"><i class="bi bi-diagram-3 me-1"></i>Graph View</button>
+                                                                <button type="button" class="btn btn-outline-info" id="polContactViewTableBtn" onclick="setPatternOfLifeContactView('table')"><i class="bi bi-table me-1"></i>Table View</button>
                                                             </div>
                                                         </div>
-                                                        <div class="col-lg-9">
-                                                            <div id="relationshipGraphContainer" class="border border-secondary rounded-2" style="height: 480px; background-color:#090b10; position:relative;"></div>
-                                                            <div id="relationshipGraphEmpty" class="text-subtle small mt-2" style="display:none;">No correlated contacts to graph yet - parse contacts and SMS/call/WhatsApp records first, or switch to Table View for the full unfiltered list.</div>
-                                                            <div id="relationshipGraphTruncatedNote" class="text-subtle small mt-2" style="display:none;"></div>
-                                                        </div>
-                                                    </div>
-                                                    <div id="reportContactsContainer" class="mb-3" style="display:none;">
-                                                        <span class="text-subtle small italic">Loading...</span>
-                                                    </div>
-
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-geo-alt me-1"></i>Location Activity</h6>
-                                                    <div class="small text-subtle mb-2">Real GPS points already available for this case - a Google Takeout location-history import, or any KML already attached to/found in the case folder (File Explorer's "Extract Geolocation (KML)" action, or the geo-pin icon in the Sleuth Kit image toolbar). No new export needed - this reads what's already indexed. Grouped into "frequent locations" - places visited more than once, within roughly a city-block radius - the same most-visited-first idea Contact Correlation above applies to people instead of places.</div>
-                                                    <div id="patternOfLifeGeoSummary" class="small text-subtle mb-2"></div>
-                                                    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
-                                                        <label class="small text-subtle mb-0" for="polGeoDateFrom">From</label>
-                                                        <input type="date" class="form-control form-control-sm" id="polGeoDateFrom" style="width:auto;" onchange="onPatternOfLifeGeoDateRangeChange()">
-                                                        <label class="small text-subtle mb-0" for="polGeoDateTo">To</label>
-                                                        <input type="date" class="form-control form-control-sm" id="polGeoDateTo" style="width:auto;" onchange="onPatternOfLifeGeoDateRangeChange()">
-                                                        <button type="button" class="btn btn-outline-secondary btn-xs" id="polGeoDateClearBtn" onclick="clearPatternOfLifeGeoDateRange()" style="display:none;" title="Show every location point again, regardless of date. A single day, a few days, a week, or a month are all just a From/To range - set both to the same date for one specific day.">Clear (Show All Time)</button>
-                                                    </div>
-                                                    <div class="form-check form-check-inline mb-2">
-                                                        <input class="form-check-input" type="checkbox" id="patternOfLifeGeoShowPath" onchange="_recomputeAndRenderGeoActivity()">
-                                                        <label class="form-check-label small text-subtle" for="patternOfLifeGeoShowPath" title="Draws a line connecting every timestamped location point in time order - a rough travel path, not a real route (it does not know what path was taken between two points, only where the device was at each recorded moment).">Show travel path (time-ordered)</label>
-                                                    </div>
-                                                    <div id="patternOfLifeGeoMap" class="border border-secondary rounded-2 mb-2" style="height: 360px; background-color:#090b10;"></div>
-                                                    <div id="patternOfLifeGeoEmpty" class="text-subtle small mb-3" style="display:none;">No GPS data found for this case yet - import a Google Takeout location-history export, or generate/attach a KML file, then reopen this tab.</div>
-                                                    <div id="patternOfLifeGeoFrequentList" class="mb-3"></div>
-
-                                                    <h6 class="text-success fw-bold fs-6 mb-2"><i class="bi bi-phone me-1"></i>Device Profile: Apps &amp; Accounts</h6>
-                                                    <div class="small text-subtle mb-2">Captured automatically during any Android `adb pull` acquisition (no root needed) - the installed-app inventory and the signed-in account list at the moment of the pull.</div>
-                                                    <div class="row g-2">
-                                                        <div class="col-md-6">
-                                                            <div class="small fw-bold text-subtle mb-1">Recently Installed / Updated Apps</div>
-                                                            <div id="patternOfLifeAppsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 240px; overflow-y: auto; background-color:#090b10;">
-                                                                <span class="text-subtle">Loading...</span>
+                                                        <div class="row g-2 mb-2" id="relationshipGraphRow">
+                                                            <div class="col-lg-3" id="relationshipGraphSidebar">
+                                                                <div class="bg-dark border border-secondary rounded-2 p-2 h-100">
+                                                                    <div id="relationshipGraphSearchWrap" class="mb-2" style="display:none;">
+                                                                        <input type="text" class="form-control form-control-sm" id="relationshipGraphSearchInput" placeholder="Find a contact..." oninput="filterRelationshipGraph(this.value)">
+                                                                    </div>
+                                                                    <button type="button" class="btn btn-outline-secondary btn-xs w-100 mb-2" id="polContactMetricBtn" onclick="togglePatternOfLifeGraphMetric()" title="Switch the graph's line thickness between raw communication count and total call duration (only meaningful where call duration was captured)." style="display:none;">Weighted by: Frequency</button>
+                                                                    <div class="mb-2" id="relationshipGraphVolumeWrap" style="display:none;">
+                                                                        <label class="small text-subtle mb-1 d-block" for="relationshipGraphVolumeSlider" title="Hides a contact from the graph below this many total communications - a quick way to declutter down to just the people this device talked to the most. Doesn't remove anyone from Table View or anywhere else in the app, only from this one graph's own display.">Min. communications: <span class="text-info fw-bold" id="relationshipGraphVolumeLabel">Show all</span></label>
+                                                                        <input type="range" class="form-range" id="relationshipGraphVolumeSlider" min="0" max="1" step="1" value="0" oninput="onRelationshipGraphVolumeThresholdChange(this.value)">
+                                                                    </div>
+                                                                    <hr class="border-secondary my-2" id="relationshipGraphLegendDivider" style="display:none;">
+                                                                    <div class="small text-info fw-bold mb-1" id="relationshipGraphLegendHeading" style="display:none;">Legend</div>
+                                                                    <div id="relationshipGraphLegend" class="small text-subtle" style="display:none;"></div>
+                                                                </div>
+                                                            </div>
+                                                            <div class="col-lg-9">
+                                                                <div id="relationshipGraphContainer" class="border border-secondary rounded-2" style="height: 480px; background-color:#090b10; position:relative;"></div>
+                                                                <div id="relationshipGraphEmpty" class="text-subtle small mt-2" style="display:none;">No correlated contacts to graph yet - parse contacts and SMS/call/WhatsApp records first, or switch to Table View for the full unfiltered list.</div>
+                                                                <div id="relationshipGraphTruncatedNote" class="text-subtle small mt-2" style="display:none;"></div>
                                                             </div>
                                                         </div>
-                                                        <div class="col-md-6">
-                                                            <div class="small fw-bold text-subtle mb-1">Configured Accounts</div>
-                                                            <div id="patternOfLifeAccountsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 240px; overflow-y: auto; background-color:#090b10;">
-                                                                <span class="text-subtle">Loading...</span>
+                                                        <div id="reportContactsContainer" class="mb-0" style="display:none;">
+                                                            <span class="text-subtle small italic">Loading...</span>
+                                                        </div>
+                                                    </div>
+
+                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3 mb-3">
+                                                        <h6 class="text-success fw-bold fs-6 mb-2">
+                                                            <i class="bi bi-geo-alt me-1"></i>Location Activity
+                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                               title="Real GPS points already available for this case - a Google Takeout location-history import, or any KML already attached to/found in the case folder (File Explorer's &quot;Extract Geolocation (KML)&quot; action, or the geo-pin icon in the Sleuth Kit image toolbar). No new export needed - this reads what's already indexed. Grouped into &quot;frequent locations&quot; - places visited more than once, within roughly a city-block radius - the same most-visited-first idea Contact Correlation above applies to people instead of places."></i>
+                                                        </h6>
+                                                        <div id="patternOfLifeGeoSummary" class="small text-subtle mb-2"></div>
+                                                        <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                                                            <label class="small text-subtle mb-0" for="polGeoDateFrom">From</label>
+                                                            <input type="date" class="form-control form-control-sm" id="polGeoDateFrom" style="width:auto;" onchange="onPatternOfLifeGeoDateRangeChange()">
+                                                            <label class="small text-subtle mb-0" for="polGeoDateTo">To</label>
+                                                            <input type="date" class="form-control form-control-sm" id="polGeoDateTo" style="width:auto;" onchange="onPatternOfLifeGeoDateRangeChange()">
+                                                            <button type="button" class="btn btn-outline-secondary btn-xs" id="polGeoDateClearBtn" onclick="clearPatternOfLifeGeoDateRange()" style="display:none;" title="Show every location point again, regardless of date. A single day, a few days, a week, or a month are all just a From/To range - set both to the same date for one specific day.">Clear (Show All Time)</button>
+                                                        </div>
+                                                        <div class="form-check form-check-inline mb-2">
+                                                            <input class="form-check-input" type="checkbox" id="patternOfLifeGeoShowPath" onchange="_recomputeAndRenderGeoActivity()">
+                                                            <label class="form-check-label small text-subtle" for="patternOfLifeGeoShowPath" title="Draws a line connecting every timestamped location point in time order - a rough travel path, not a real route (it does not know what path was taken between two points, only where the device was at each recorded moment).">Show travel path (time-ordered)</label>
+                                                        </div>
+                                                        <div id="patternOfLifeGeoMap" class="border border-secondary rounded-2 mb-2" style="height: 360px; background-color:#090b10;"></div>
+                                                        <div id="patternOfLifeGeoEmpty" class="text-subtle small" style="display:none;">No GPS data found for this case yet - import a Google Takeout location-history export, or generate/attach a KML file, then reopen this tab.</div>
+                                                        <div id="patternOfLifeGeoFrequentList"></div>
+                                                    </div>
+
+                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3">
+                                                        <h6 class="text-success fw-bold fs-6 mb-2">
+                                                            <i class="bi bi-phone me-1"></i>Device Profile: Apps &amp; Accounts
+                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                               title="Captured automatically during any Android adb pull acquisition (no root needed) - the installed-app inventory and the signed-in account list at the moment of the pull."></i>
+                                                        </h6>
+                                                        <div class="row g-2">
+                                                            <div class="col-md-6">
+                                                                <div class="small fw-bold text-subtle mb-1">Recently Installed / Updated Apps</div>
+                                                                <div id="patternOfLifeAppsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 240px; overflow-y: auto; background-color:#090b10;">
+                                                                    <span class="text-subtle">Loading...</span>
+                                                                </div>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                <div class="small fw-bold text-subtle mb-1">Configured Accounts</div>
+                                                                <div id="patternOfLifeAccountsContainer" class="font-monospace small border border-secondary rounded-2 p-2" style="max-height: 240px; overflow-y: auto; background-color:#090b10;">
+                                                                    <span class="text-subtle">Loading...</span>
+                                                                </div>
                                                             </div>
                                                         </div>
                                                     </div>
