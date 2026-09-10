@@ -660,6 +660,23 @@
                 </div>
             </div>
 
+            <!-- Station-wide stat row (Total Cases, etc.) - examiner-selected (Settings >
+                 Case & Reporting), one card per enabled stat. Moved here (2026-09-10) from
+                 Reporting's own card-header - it was already deliberately station-wide, not
+                 case-scoped (stays visible with no case selected), so it belongs next to the
+                 rest of this app's persistent global chrome, not buried in one specific tab.
+                 loadReportingStats()/renderReportingStatCard() in main.js are unchanged;
+                 loadReportingStats() also hides this whole row (via a real !important
+                 display:none, not a plain style reset - see the function itself) whenever the
+                 examiner has nothing enabled, so it never shows up as an empty strip. -->
+            <!-- The plain style="display:none" here needs the explicit !important - this
+                 element also carries Bootstrap's d-flex utility (display:flex !important),
+                 which otherwise beats a non-important inline style regardless of source
+                 order and would flash the row visible-but-empty for a moment before JS
+                 ever runs. Same gotcha this app has already hit (and fixed) more than once
+                 elsewhere for exactly this class/inline-style combination. -->
+            <div id="reportingStatsRow" class="top-telemetry-bar d-flex flex-wrap align-items-center gap-3 text-nowrap" style="display:none !important;"></div>
+
             <div class="container-fluid px-4">
                 <div class="tab-content" id="forensicTabContent">
 {% include 'tabs/home.html' %}

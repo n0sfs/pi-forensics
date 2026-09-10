@@ -338,16 +338,27 @@ function renderReportingStatCard(stat) {
 
 async function loadReportingStats() {
     const rowEl = document.getElementById('reportingStatsRow');
-    if (!rowEl) return; // Reporting tab isn't in the DOM (shouldn't happen, but don't throw if so)
+    if (!rowEl) return; // Shouldn't happen - it's static global chrome, not tab-gated - but don't throw if so
 
     try {
         const res = await fetch('/api/reporting/stats');
         const data = await res.json();
         rowEl.innerHTML = '';
-        if (!data.success || !data.stats || !data.stats.length) return;
+        if (!data.success || !data.stats || !data.stats.length) {
+            // Now a persistent global row (not scoped inside one tab), so an empty
+            // result needs to actually hide it rather than leave a bare, empty
+            // padded strip visible across every tab. d-flex's own !important beats
+            // a plain style.display reset, so this has to win the same way -
+            // matches the same setProperty(..., 'important') pattern this app
+            // already uses elsewhere for exactly this class of conflict.
+            rowEl.style.setProperty('display', 'none', 'important');
+            return;
+        }
         data.stats.forEach(stat => rowEl.appendChild(renderReportingStatCard(stat)));
+        rowEl.style.removeProperty('display');
     } catch (err) {
         rowEl.innerHTML = '';
+        rowEl.style.setProperty('display', 'none', 'important');
     }
 }
 
@@ -15322,7 +15333,10 @@ async function runCaseSearch() {
 
     const query = (document.getElementById("repSearchInput")?.value || '').trim().toLowerCase();
     if (!query) {
-        container.innerHTML = '<span class="text-subtle">Type a keyword above to search.</span>';
+        // Blank, not a "type a keyword" placeholder - the static markup no
+        // longer shows one either (see reporting.html), so clearing the box
+        // shouldn't bring one back either.
+        container.innerHTML = '';
         return;
     }
     if (!currentLoadedReportData) {
