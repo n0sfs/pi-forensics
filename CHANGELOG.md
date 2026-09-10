@@ -21,6 +21,14 @@ file after updating to see what changed.
 
 ---
 
+## [1.87.4] - 2026-09-10
+
+### Fixed
+- The Quick Search info tooltip (Reporting > Overview) could pop up in the middle of the screen
+  instead of next to the label. Its trigger was a full-width block element, so Popper centered the
+  tooltip on that whole invisible row rather than the actual "Quick Search" text - it now hugs its
+  own content, and the tooltip lands right next to it as expected.
+
 ## [1.87.3] - 2026-09-10
 
 ### Fixed
