@@ -13099,10 +13099,16 @@ function renderReportHeaderCaseSummary() {
     // row and reverts the title to its fallback text in both of those cases.
     const numEl = document.getElementById('reportHeaderCaseNum');
     const metaWrap = document.getElementById('reportHeaderCaseMeta');
+    // Save Report Changes/the Unsaved-changes badge (2026-09-11) - was the
+    // one part of this header still visible/clickable with no case loaded,
+    // a live dead-click into a "select a case first" toast. Gated the same
+    // way as metaWrap now.
+    const saveControls = document.getElementById('reportHeaderSaveControls');
     if (!numEl) return;
     if (!currentLoadedReportData) {
         numEl.textContent = 'Case Report';
         if (metaWrap) metaWrap.style.display = 'none';
+        if (saveControls) saveControls.style.display = 'none';
         return;
     }
     const isConsolidated = Array.isArray(currentLoadedReportData.events);
@@ -13111,6 +13117,7 @@ function renderReportHeaderCaseSummary() {
         : (currentLoadedReportData.case_metadata || {}).case_number;
     numEl.textContent = caseNum || '--';
     if (metaWrap) metaWrap.style.display = 'flex';
+    if (saveControls) saveControls.style.display = 'flex';
 }
 
 function renderExaminersList() {
@@ -13719,13 +13726,22 @@ async function loadCaseForEditing() {
             // when the active case itself changed to one that isn't
             // migrated yet, a transition already gated by
             // confirmDiscardUnsavedReportingChanges() before this function
-            // is ever reached with a different case active.
+            // is ever reached with a different case active. A 403 is a
+            // distinct, newer case (added alongside /api/report/load's own
+            // permission gate) - a user whose group lacks 'reporting' still
+            // sees the tab and still has this function fire on every case
+            // switch (it's the shared funnel every applyActiveCaseToFields()
+            // caller uses, not Reporting-tab-specific), so this needs its
+            // own message rather than the misleading "hasn't been migrated"
+            // one below.
             clearReportingDirty();
             currentReportPath = null;
             currentLoadedReportData = null;
             renderReportHeaderCaseSummary();
             if (noCaseIcon) noCaseIcon.className = 'bi bi-exclamation-triangle fs-3 d-block mb-2';
-            if (noCaseMsg) noCaseMsg.textContent = `This case ("${activeCase.case_number}") hasn't been migrated to the consolidated report format yet - migrate it via the Case Manager.`;
+            if (noCaseMsg) noCaseMsg.textContent = res.status === 403
+                ? "Your account's user group doesn't have permission to view Reporting."
+                : `This case ("${activeCase.case_number}") hasn't been migrated to the consolidated report format yet - migrate it via the Case Manager.`;
             if (noCaseEl) noCaseEl.style.display = 'block';
             if (loadedEl) loadedEl.style.display = 'none';
             return;
@@ -14152,7 +14168,16 @@ async function renderCaseDashboard() {
             if (analysisDetailEl) analysisDetailEl.textContent = data.has_analysis_activity
                 ? 'Tools have been run against this case' : 'No analysis tools run yet';
         }
-    } catch (err) {}
+    } catch (err) {
+        // Left at whatever they were showing before (usually the template's
+        // "--" placeholder) otherwise - not wrong, just silently stale with
+        // no indication anything failed. A network hiccup here shouldn't
+        // block the rest of the dashboard (evidence/notes/attachments/age
+        // above all still rendered from data already in hand), so this is
+        // a soft failure indicator, not a toast.
+        if (tagDetailEl) tagDetailEl.textContent = 'Could not load - try again.';
+        if (analysisDetailEl) analysisDetailEl.textContent = 'Could not load - try again.';
+    }
 }
 
 // --- Case-wide "Verify All Evidence" (A4) -------------------------------------------------
@@ -16419,7 +16444,9 @@ async function attachSelectedFileToCase() {
         } else {
             showToast(`Attach to case failed: ${data.error}`, 'danger');
         }
-    } catch (err) {}
+    } catch (err) {
+        showToast('Attach to case failed: request error.', 'danger');
+    }
 }
 
 // --- Evidence Hash Verifier (context-menu action, scoped to the selected file) ---
@@ -17448,11 +17475,14 @@ async function migrateCase(c) {
 // exact case first.
 async function setCaseStatus(c, newStatus) {
     const archiving = newStatus === 'Archived';
-    const confirmMsg = archiving
-        ? `Archive case "${c.case_number}"?\n\nIt will be hidden from the default "Active" list but never deleted or otherwise touched - switch the status filter to "Archived" here any time to find and re-open it.`
-        : `Re-open case "${c.case_number}"?\n\nIts status will be restored to "${newStatus}"${newStatus === 'Open' && !c.status_before_archive ? ' (its status from before archiving isn\'t known - defaulting to "Open")' : ' - its status from right before it was archived'}.`;
-    if (!confirm(confirmMsg)) return;
-
+    // No confirm() dialog here (removed 2026-09-11, was on both directions) -
+    // both directions are fully reversible one-click actions (Archive never
+    // deletes or touches case data, just hides it from the default "Active"
+    // list; Re-open restores the prior status), and this is already a
+    // dedicated button click on a specific case row, not something
+    // incidentally triggered - a confirmation step added friction without
+    // guarding against anything actually destructive. The success toast
+    // below still confirms exactly what happened either way.
     try {
         const res = await fetch('/api/cases/set_status', {
             method: 'POST',
@@ -17498,7 +17528,14 @@ async function selectCase(c) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ case_number: c.case_number, case_folder: c.case_folder })
         });
-    } catch (err) {}
+    } catch (err) {
+        // Best-effort audit-log write, backgrounded after the case switch
+        // itself already completed above - a toast here would fire on every
+        // ordinary case switch during a transient network blip and imply
+        // the switch failed when it didn't. console.error keeps a silently-
+        // failing audit trail at least discoverable in devtools.
+        console.error('Failed to log case selection to the audit trail:', err);
+    }
 }
 
 function clearActiveCase() {
