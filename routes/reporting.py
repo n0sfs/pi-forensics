@@ -599,6 +599,7 @@ def report_examiner_names():
 
 @reporting_bp.route('/api/report/load', methods=['POST'])
 @requires_auth
+@requires_permission('reporting')
 def load_report_json():
     req = request.get_json() or {}
     report_file = safe_path(req.get('report_path'))
@@ -699,6 +700,7 @@ def _read_coc_entries(limit=None):
 
 @reporting_bp.route('/api/coc/log', methods=['GET'])
 @requires_auth
+@requires_permission('settings')
 def get_chain_of_custody_log():
     limit = request.args.get('limit', 200, type=int)
     try:
@@ -730,6 +732,7 @@ def _case_history_entries(case_number, limit=200):
 
 @reporting_bp.route('/api/coc/case_history', methods=['GET'])
 @requires_auth
+@requires_permission('reporting')
 def get_case_history():
     case_number = request.args.get('case_number', '').strip()
     limit = request.args.get('limit', 200, type=int)
@@ -743,6 +746,7 @@ def get_case_history():
 
 @reporting_bp.route('/api/coc/export_csv', methods=['GET'])
 @requires_auth
+@requires_permission('settings')
 def export_chain_of_custody_csv():
     # Unlike /api/coc/log above (capped to the most recent `limit` entries
     # for the on-screen view), an export is expected to be the complete
@@ -1961,6 +1965,8 @@ def _hash_note_content(text, attachment_paths):
             pass
     return h.hexdigest()
 
+CASE_NOTE_ATTACHMENT_MAX_BYTES = 25_000_000
+
 @reporting_bp.route('/api/cases/notes/add', methods=['POST'])
 @requires_auth
 @requires_permission('reporting')
@@ -2003,6 +2009,24 @@ def add_case_note():
     saved_attachments = []
     uploaded_files = request.files.getlist('files')
     if uploaded_files and any(f.filename for f in uploaded_files):
+        # No extension allowlist here (unlike upload_report_logo() above) -
+        # a note attachment is deliberately any file kind (the 'other' kind
+        # below exists for exactly that), just classified for display, not
+        # restricted. A per-file size cap is still worth having though -
+        # unlike the logo upload this had none at all, so an examiner
+        # dragging in an oversized file (a whole video, a full disk image)
+        # by mistake had no guardrail. Checked for every file BEFORE any of
+        # them are saved, so a rejection never leaves a partial attachment
+        # set on disk.
+        for uf in uploaded_files:
+            if not uf.filename:
+                continue
+            uf.seek(0, os.SEEK_END)
+            size = uf.tell()
+            uf.seek(0)
+            if size > CASE_NOTE_ATTACHMENT_MAX_BYTES:
+                return jsonify({"success": False, "error": f"'{uf.filename}' is too large ({size} bytes) - max {CASE_NOTE_ATTACHMENT_MAX_BYTES} bytes per attachment."}), 400
+
         note_dir = safe_path(os.path.join(os.path.dirname(report_file), "case_notes_attachments", note_id))
         if not note_dir:
             return jsonify({"success": False, "error": "Could not resolve a safe attachment directory for this note."}), 500
@@ -2116,6 +2140,10 @@ def edit_case_note():
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not save note edit: {e}"}), 500
 
+    # Same reasoning as add_case_note() above - editing a note is genuine
+    # case work too, missed when that fix went in (2026-09-11).
+    ensure_examiner_recorded(os.path.dirname(report_file), getattr(g, 'forensic_user', None))
+
     log_chain_of_custody("case_note_edit", {"report_path": report_file, "note_id": note_id})
     return jsonify({"success": True, "note": note})
 
@@ -2174,6 +2202,10 @@ def set_case_note_status():
             json.dump(data, f, indent=2)
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not save note status: {e}"}), 500
+
+    # Same reasoning as add_case_note() above - resolving/reassigning a note
+    # is genuine case work too, missed when that fix went in (2026-09-11).
+    ensure_examiner_recorded(os.path.dirname(report_file), getattr(g, 'forensic_user', None))
 
     log_chain_of_custody("case_note_status_changed", {
         "report_path": report_file, "note_id": note_id,

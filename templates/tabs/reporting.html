@@ -46,7 +46,13 @@
                                                 </div>
                                             </div>
                                         </div>
-                                        <div class="d-flex flex-wrap align-items-center gap-2">
+                                        <!-- Hidden until a case actually loads, same gate as #reportHeaderCaseMeta
+                                             to its left (toggled together in renderReportHeaderCaseSummary(),
+                                             main.js) - this used to stay visible/clickable with no case loaded at
+                                             all, the one part of this header that didn't match #reportHeaderCaseMeta's
+                                             own already-correct behavior. Clicking it live-dead-clicked into a
+                                             "select a case first" toast; now it just isn't there to click. -->
+                                        <div id="reportHeaderSaveControls" class="d-flex flex-wrap align-items-center gap-2" style="display:none;">
                                             <!-- Case Notes/Custody Log/Attach-to-Case/tags all save immediately - only
                                                  Report Narrative, Case Status, Case Details, Examiners, and the Files &
                                                  Artifacts exhibit checklist/captions here wait for an explicit click.

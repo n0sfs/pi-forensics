@@ -12,6 +12,7 @@ import threading
 from flask import request, g
 
 from core.config import EVIDENCE_ROOT, COC_LOG_FILE
+from core.auth import _effective_client_ip
 
 coc_log_lock = threading.Lock()
 
@@ -145,11 +146,21 @@ def log_chain_of_custody(action, details=None, source_ip=None, user=None):
     # thread that never received the HTTP request itself. Every existing
     # call site is unaffected (both default to None, falling back to the
     # live request context exactly as before).
+    #
+    # The fallback here must go through _effective_client_ip(), not a raw
+    # request.headers.get('X-Real-IP', request.remote_addr) read - that
+    # unconditional-trust pattern is exactly the critical, already-fixed
+    # kiosk-bypass/lockout-evasion vulnerability described in core/auth.py's
+    # _effective_client_ip() docstring (X-Real-IP is only trustworthy once
+    # remote_addr is confirmed loopback), and this logging helper had never
+    # been updated to use the fixed helper - every unattributed chain-of-
+    # custody entry station-wide was still recording a spoofable IP on any
+    # station where the optional TLS/nginx setup was skipped.
     entry = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "action": action,
         "details": details or {},
-        "source_ip": source_ip if source_ip is not None else (request.headers.get('X-Real-IP', request.remote_addr) if request else None),
+        "source_ip": source_ip if source_ip is not None else (_effective_client_ip() if request else None),
         "user": user if user is not None else getattr(g, 'forensic_user', None),
     }
     with coc_log_lock:
