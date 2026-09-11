@@ -107,177 +107,194 @@
                                                          The explanatory paragraph that used to sit here as its own
                                                          line was condensed into a hover/click info icon instead -
                                                          same text, just on-demand rather than always-on-screen.
-                                                         Condensed further (2026-09-11): this used to be a full-width
-                                                         .form-control (stretches edge-to-edge across the whole
-                                                         Overview pane, not just a narrow column) with its own label
-                                                         line above it and an always-in-flow results box below it that
-                                                         pushed the tile grid down whenever it had content. Rebuilt to
-                                                         match Settings' own "Search settings..." box exactly
-                                                         (settings.html, #settingsSearchInput): a width-capped
-                                                         position-relative wrapper, an input-group with the search
-                                                         icon (now also the tooltip trigger, so no separate label line
-                                                         is needed) inside the input itself, and a position-absolute
-                                                         results overlay (w-100 relative to the capped wrapper, not
-                                                         the whole pane) so showing results no longer shifts the grid
-                                                         below. Ids/oninput/runCaseSearch() itself are unchanged. -->
-                                                    <div class="mb-3 position-relative" style="max-width: 420px;">
-                                                        <div class="input-group input-group-sm">
-                                                            <span class="input-group-text bg-app-dark border-secondary text-info" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button" style="cursor:help;"
-                                                                  title="Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab."><i class="bi bi-search"></i></span>
-                                                            <input type="text" id="repSearchInput" class="form-control bg-app-dark text-light border-secondary" placeholder="Quick search this case..." oninput="runCaseSearch()">
+                                                         Rebuilt into a real two-column layout (2026-09-11, second
+                                                         pass): a same-day earlier fix had already capped the input
+                                                         itself at 420px with results as a position-absolute overlay
+                                                         (so results at least didn't push the grid down), but the
+                                                         search box and the tile grid still stacked as two full-width
+                                                         sections, one above the other - the user's own follow-up ask
+                                                         was to put search in a real left column with its results
+                                                         populating in-flow underneath it there, and the tiles
+                                                         condensed into a right column beside it, so the search box
+                                                         is never sitting alone across the page's own full width
+                                                         either. Search input/results moved into col-repSearchCol,
+                                                         tile grid into col-repTileCol, both inside one shared row -
+                                                         the position-absolute/w-100/shadow/z-index overlay styling
+                                                         from the same-day earlier pass is gone since results now
+                                                         have their own dedicated column space to grow into
+                                                         in-flow, not content they'd otherwise cover. Ids/oninput/
+                                                         runCaseSearch()/jumpToReportingTab()/renderCaseDashboard()
+                                                         are all unchanged - only which column each element sits in,
+                                                         and the tile grid's own column classes (col-sm-6 col-xl-4
+                                                         instead of col-md-6 col-lg-4, and a p-2 override added to
+                                                         every .card-body) to keep tiles legible at the narrower
+                                                         width the right-hand column now actually has, since
+                                                         Bootstrap's col-lg-4 breakpoint reacts to viewport width,
+                                                         not this nested row's own narrower rendered width. -->
+                                                    <div class="row g-3">
+                                                        <div class="col-lg-3 col-md-4">
+                                                            <div class="input-group input-group-sm mb-2">
+                                                                <span class="input-group-text bg-app-dark border-secondary text-info" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button" style="cursor:help;"
+                                                                      title="Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab."><i class="bi bi-search"></i></span>
+                                                                <input type="text" id="repSearchInput" class="form-control bg-app-dark text-light border-secondary" placeholder="Quick search this case..." oninput="runCaseSearch()">
+                                                            </div>
+                                                            <!-- Hidden by default (no d-flex/Bootstrap display utility on this
+                                                                 element, so a plain style.display toggle in runCaseSearch()
+                                                                 works with no !important needed) - only shown once there's
+                                                                 something to put in it, so an empty query never leaves a
+                                                                 bare bordered/padded strip with nothing in it visible. Now
+                                                                 in-flow (this column has nothing below it to cover), capped
+                                                                 to the same height as before rather than growing unbounded
+                                                                 alongside a potentially much taller right-hand tile grid. -->
+                                                            <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2" style="display:none; max-height: 420px; overflow-y: auto; overflow-x: hidden; background-color:#090b10;"></div>
                                                         </div>
-                                                        <!-- Hidden by default (no d-flex/Bootstrap display utility on this
-                                                             element, so a plain style.display toggle in runCaseSearch()
-                                                             works with no !important needed) - only shown once there's
-                                                             something to put in it, so an empty query never leaves a
-                                                             bare bordered/padded strip with nothing in it visible. -->
-                                                        <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2 position-absolute w-100 shadow" style="display:none; max-height: 260px; overflow-y: auto; overflow-x: hidden; background-color:#090b10; z-index: 1050;"></div>
-                                                    </div>
-                                                    <hr class="border-secondary my-3">
-                                                    <!-- Every tile below is clickable (2026-09-09) - jumps
-                                                         to whichever tab actually shows that number's own
-                                                         detail. Reuses jumpToReportingTab() (main.js), which
-                                                         itself calls .click() on the target nav button (not
-                                                         bootstrap.Tab(...).show()) so the pane's own onclick-
-                                                         driven render fires too, not just the tab switch. -->
-                                                    <!-- Deduplicated 2026-09-10 - every tile below jumps to a
-                                                         DISTINCT tab; no tab is linked from more than one tile.
-                                                         The two pairs that used to share a target (Evidence Items
-                                                         + Analysis Activity both -> Evidence Activity; Tagged
-                                                         Items + Exhibits Attached both -> Files & Artifacts) are
-                                                         now merged into one two-stat tile each - same element ids
-                                                         (dashEvidenceCount/dashAnalysisCount/dashTagCount/
-                                                         dashAttachmentCount and their *Detail siblings), just
-                                                         two stat lines under one card/one onclick instead of two
-                                                         separate cards pointing at the same place. Zero JS
-                                                         changes needed - renderCaseDashboard() (main.js) looks
-                                                         these ids up by id, not by DOM position. -->
-                                                    <div class="row g-2" id="caseDashboardGrid">
-                                                        <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Evidence Activity" onclick="jumpToReportingTab('repJobsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repJobsTab');}">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-hdd-stack"></i></div>
-                                                                        <div>
-                                                                            <div class="fw-bold fs-6"><span id="dashEvidenceCount">--</span> <span class="small text-subtle fw-normal">Evidence Items</span></div>
-                                                                            <div class="fw-bold fs-6"><span id="dashAnalysisCount">--</span> <span class="small text-subtle fw-normal">Analysis Activity</span></div>
+                                                        <div class="col-lg-9 col-md-8">
+                                                            <!-- Every tile below is clickable (2026-09-09) - jumps
+                                                                 to whichever tab actually shows that number's own
+                                                                 detail. Reuses jumpToReportingTab() (main.js), which
+                                                                 itself calls .click() on the target nav button (not
+                                                                 bootstrap.Tab(...).show()) so the pane's own onclick-
+                                                                 driven render fires too, not just the tab switch. -->
+                                                            <!-- Deduplicated 2026-09-10 - every tile below jumps to a
+                                                                 DISTINCT tab; no tab is linked from more than one tile.
+                                                                 The two pairs that used to share a target (Evidence Items
+                                                                 + Analysis Activity both -> Evidence Activity; Tagged
+                                                                 Items + Exhibits Attached both -> Files & Artifacts) are
+                                                                 now merged into one two-stat tile each - same element ids
+                                                                 (dashEvidenceCount/dashAnalysisCount/dashTagCount/
+                                                                 dashAttachmentCount and their *Detail siblings), just
+                                                                 two stat lines under one card/one onclick instead of two
+                                                                 separate cards pointing at the same place. Zero JS
+                                                                 changes needed - renderCaseDashboard() (main.js) looks
+                                                                 these ids up by id, not by DOM position. -->
+                                                            <div class="row g-2" id="caseDashboardGrid">
+                                                                <div class="col-sm-6 col-xl-4">
+                                                                    <div class="card home-tile" tabindex="0" role="button" title="Go to Evidence Activity" onclick="jumpToReportingTab('repJobsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repJobsTab');}">
+                                                                        <div class="card-body p-2">
+                                                                            <div class="d-flex align-items-center gap-2 mb-1">
+                                                                                <div class="home-tile-icon"><i class="bi bi-hdd-stack"></i></div>
+                                                                                <div>
+                                                                                    <div class="fw-bold fs-6"><span id="dashEvidenceCount">--</span> <span class="small text-subtle fw-normal">Evidence Items</span></div>
+                                                                                    <div class="fw-bold fs-6"><span id="dashAnalysisCount">--</span> <span class="small text-subtle fw-normal">Analysis Activity</span></div>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div id="dashEvidenceDetail" class="small mt-1"></div>
+                                                                            <div id="dashAnalysisDetail" class="small mt-1"></div>
                                                                         </div>
                                                                     </div>
-                                                                    <div id="dashEvidenceDetail" class="small mt-1"></div>
-                                                                    <div id="dashAnalysisDetail" class="small mt-1"></div>
                                                                 </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Files &amp; Artifacts" onclick="jumpToReportingTab('repFilesTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repFilesTab');}">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-paperclip"></i></div>
-                                                                        <div>
-                                                                            <div class="fw-bold fs-6"><span id="dashAttachmentCount">--</span> <span class="small text-subtle fw-normal">Exhibits Attached</span></div>
-                                                                            <div class="fw-bold fs-6"><span id="dashTagCount">--</span> <span class="small text-subtle fw-normal">Tagged Items</span></div>
+                                                                <div class="col-sm-6 col-xl-4">
+                                                                    <div class="card home-tile" tabindex="0" role="button" title="Go to Files &amp; Artifacts" onclick="jumpToReportingTab('repFilesTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repFilesTab');}">
+                                                                        <div class="card-body p-2">
+                                                                            <div class="d-flex align-items-center gap-2 mb-1">
+                                                                                <div class="home-tile-icon"><i class="bi bi-paperclip"></i></div>
+                                                                                <div>
+                                                                                    <div class="fw-bold fs-6"><span id="dashAttachmentCount">--</span> <span class="small text-subtle fw-normal">Exhibits Attached</span></div>
+                                                                                    <div class="fw-bold fs-6"><span id="dashTagCount">--</span> <span class="small text-subtle fw-normal">Tagged Items</span></div>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div id="dashTagDetail" class="small mt-1"></div>
                                                                         </div>
                                                                     </div>
-                                                                    <div id="dashTagDetail" class="small mt-1"></div>
                                                                 </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Case Notes &amp; Custody Log" onclick="jumpToReportingTab('repCaseNotesTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repCaseNotesTab');}">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-clipboard2-pulse"></i></div>
-                                                                        <div class="fw-bold fs-6" id="dashNotesCount">--</div>
-                                                                    </div>
-                                                                    <div class="text-subtle small">Case Notes</div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Report Narrative" onclick="jumpToReportingTab('repNarrativeTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repNarrativeTab');}">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-calendar3"></i></div>
-                                                                        <div class="fw-bold fs-6" id="dashCaseAge">--</div>
-                                                                    </div>
-                                                                    <div class="text-subtle small">Case Age</div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Pattern of Life" onclick="jumpToReportingTab('repContactsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repContactsTab');}">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-activity"></i></div>
-                                                                        <div class="fw-bold fs-6">Pattern of Life</div>
-                                                                    </div>
-                                                                    <div class="text-subtle small">Contact correlation, activity patterns, and location history from parsed evidence</div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Geolocation" onclick="jumpToReportingTab('repGeoTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repGeoTab');}">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-geo-alt"></i></div>
-                                                                        <div class="fw-bold fs-6">Geolocation</div>
-                                                                    </div>
-                                                                    <div class="text-subtle small">GPS points from Takeout imports and attached KML files, grouped by source</div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Evidence Timeline" onclick="jumpToReportingTab('repTimelineTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repTimelineTab');}">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-clock-history"></i></div>
-                                                                        <div class="fw-bold fs-6">Evidence Timeline</div>
-                                                                    </div>
-                                                                    <div class="text-subtle small">Every MACB and parsed-artifact timestamp merged into one filterable timeline</div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div class="col-md-6 col-lg-4">
-                                                            <div class="card home-tile" tabindex="0" role="button" title="Go to Export" onclick="jumpToReportingTab('repExportTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repExportTab');}">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-1">
-                                                                        <div class="home-tile-icon"><i class="bi bi-file-earmark-arrow-down-fill"></i></div>
-                                                                        <div class="fw-bold fs-6">Export Report</div>
-                                                                    </div>
-                                                                    <div class="text-subtle small">Generate a PDF, HTML, JSON, or CSV report from this case's data</div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <!-- 9th tile (2026-09-10, completes the 3x3 grid - was previously
-                                                             its own visually-mismatched block below, styled with a plain
-                                                             bg-app-dark div instead of a real .card like every tile above
-                                                             it). Not a click-to-navigate tile like its 8 siblings (it has
-                                                             its own real button/progress/result inside, so the whole card
-                                                             doesn't get role=button/onclick/the hover-lift .home-tile
-                                                             affordance - that would wrongly imply "click anywhere to go
-                                                             somewhere") - just the same .card + .home-tile-icon visual
-                                                             treatment for consistency. Case Bundle Export (the sibling
-                                                             this used to sit beside) moved to its own section on the
-                                                             Export tab - see #repExportPane below. -->
-                                                        <div class="col-md-6 col-lg-4">
-                                                            <div class="card">
-                                                                <div class="card-body">
-                                                                    <div class="d-flex align-items-center gap-3 mb-2">
-                                                                        <div class="home-tile-icon"><i class="bi bi-patch-check-fill"></i></div>
-                                                                        <div class="fw-bold fs-6">
-                                                                            Case-wide Integrity Check
-                                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
-                                                                               title="Re-hashes every completed acquisition's own output file and compares it against the hashes recorded at acquisition time - the case-wide equivalent of File Explorer's single-file &quot;Verify Image Hash&quot; action. Runs as a background job and uses the one station-wide job slot, so it will block a new acquisition/recovery job from starting until it finishes."></i>
+                                                                <div class="col-sm-6 col-xl-4">
+                                                                    <div class="card home-tile" tabindex="0" role="button" title="Go to Case Notes &amp; Custody Log" onclick="jumpToReportingTab('repCaseNotesTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repCaseNotesTab');}">
+                                                                        <div class="card-body p-2">
+                                                                            <div class="d-flex align-items-center gap-2 mb-1">
+                                                                                <div class="home-tile-icon"><i class="bi bi-clipboard2-pulse"></i></div>
+                                                                                <div class="fw-bold fs-6" id="dashNotesCount">--</div>
+                                                                            </div>
+                                                                            <div class="text-subtle small">Case Notes</div>
                                                                         </div>
                                                                     </div>
-                                                                    <button class="btn btn-sm btn-warning fw-bold" id="btnVerifyAllEvidence" onclick="startVerifyAllEvidence()"><i class="bi bi-patch-check me-1"></i>Verify All Evidence</button>
-                                                                    <div id="verifyAllEvidenceProgress" style="display:none;" class="mt-2">
-                                                                        <div id="verifyAllEvidenceStatus" class="small text-info mb-1">Status: --</div>
-                                                                        <div class="progress" style="height: 6px;">
-                                                                            <div id="verifyAllEvidenceBar" class="progress-bar bg-warning" style="width: 0%;"></div>
+                                                                </div>
+                                                                <div class="col-sm-6 col-xl-4">
+                                                                    <div class="card home-tile" tabindex="0" role="button" title="Go to Report Narrative" onclick="jumpToReportingTab('repNarrativeTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repNarrativeTab');}">
+                                                                        <div class="card-body p-2">
+                                                                            <div class="d-flex align-items-center gap-2 mb-1">
+                                                                                <div class="home-tile-icon"><i class="bi bi-calendar3"></i></div>
+                                                                                <div class="fw-bold fs-6" id="dashCaseAge">--</div>
+                                                                            </div>
+                                                                            <div class="text-subtle small">Case Age</div>
                                                                         </div>
                                                                     </div>
-                                                                    <div id="verifyAllEvidenceLastResult" class="small mt-2"></div>
+                                                                </div>
+                                                                <div class="col-sm-6 col-xl-4">
+                                                                    <div class="card home-tile" tabindex="0" role="button" title="Go to Pattern of Life" onclick="jumpToReportingTab('repContactsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repContactsTab');}">
+                                                                        <div class="card-body p-2">
+                                                                            <div class="d-flex align-items-center gap-2 mb-1">
+                                                                                <div class="home-tile-icon"><i class="bi bi-activity"></i></div>
+                                                                                <div class="fw-bold fs-6">Pattern of Life</div>
+                                                                            </div>
+                                                                            <div class="text-subtle small">Contact correlation, activity patterns, and location history from parsed evidence</div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                                <div class="col-sm-6 col-xl-4">
+                                                                    <div class="card home-tile" tabindex="0" role="button" title="Go to Geolocation" onclick="jumpToReportingTab('repGeoTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repGeoTab');}">
+                                                                        <div class="card-body p-2">
+                                                                            <div class="d-flex align-items-center gap-2 mb-1">
+                                                                                <div class="home-tile-icon"><i class="bi bi-geo-alt"></i></div>
+                                                                                <div class="fw-bold fs-6">Geolocation</div>
+                                                                            </div>
+                                                                            <div class="text-subtle small">GPS points from Takeout imports and attached KML files, grouped by source</div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                                <div class="col-sm-6 col-xl-4">
+                                                                    <div class="card home-tile" tabindex="0" role="button" title="Go to Evidence Timeline" onclick="jumpToReportingTab('repTimelineTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repTimelineTab');}">
+                                                                        <div class="card-body p-2">
+                                                                            <div class="d-flex align-items-center gap-2 mb-1">
+                                                                                <div class="home-tile-icon"><i class="bi bi-clock-history"></i></div>
+                                                                                <div class="fw-bold fs-6">Evidence Timeline</div>
+                                                                            </div>
+                                                                            <div class="text-subtle small">Every MACB and parsed-artifact timestamp merged into one filterable timeline</div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                                <div class="col-sm-6 col-xl-4">
+                                                                    <div class="card home-tile" tabindex="0" role="button" title="Go to Export" onclick="jumpToReportingTab('repExportTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repExportTab');}">
+                                                                        <div class="card-body p-2">
+                                                                            <div class="d-flex align-items-center gap-2 mb-1">
+                                                                                <div class="home-tile-icon"><i class="bi bi-file-earmark-arrow-down-fill"></i></div>
+                                                                                <div class="fw-bold fs-6">Export Report</div>
+                                                                            </div>
+                                                                            <div class="text-subtle small">Generate a PDF, HTML, JSON, or CSV report from this case's data</div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                                <!-- 9th tile (2026-09-10, completes the 3x3 grid - was previously
+                                                                     its own visually-mismatched block below, styled with a plain
+                                                                     bg-app-dark div instead of a real .card like every tile above
+                                                                     it). Not a click-to-navigate tile like its 8 siblings (it has
+                                                                     its own real button/progress/result inside, so the whole card
+                                                                     doesn't get role=button/onclick/the hover-lift .home-tile
+                                                                     affordance - that would wrongly imply "click anywhere to go
+                                                                     somewhere") - just the same .card + .home-tile-icon visual
+                                                                     treatment for consistency. Case Bundle Export (the sibling
+                                                                     this used to sit beside) moved to its own section on the
+                                                                     Export tab - see #repExportPane below. -->
+                                                                <div class="col-sm-6 col-xl-4">
+                                                                    <div class="card">
+                                                                        <div class="card-body p-2">
+                                                                            <div class="d-flex align-items-center gap-2 mb-2">
+                                                                                <div class="home-tile-icon"><i class="bi bi-patch-check-fill"></i></div>
+                                                                                <div class="fw-bold fs-6">
+                                                                                    Case-wide Integrity Check
+                                                                                    <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                                                       title="Re-hashes every completed acquisition's own output file and compares it against the hashes recorded at acquisition time - the case-wide equivalent of File Explorer's single-file &quot;Verify Image Hash&quot; action. Runs as a background job and uses the one station-wide job slot, so it will block a new acquisition/recovery job from starting until it finishes."></i>
+                                                                                </div>
+                                                                            </div>
+                                                                            <button class="btn btn-sm btn-warning fw-bold" id="btnVerifyAllEvidence" onclick="startVerifyAllEvidence()"><i class="bi bi-patch-check me-1"></i>Verify All Evidence</button>
+                                                                            <div id="verifyAllEvidenceProgress" style="display:none;" class="mt-2">
+                                                                                <div id="verifyAllEvidenceStatus" class="small text-info mb-1">Status: --</div>
+                                                                                <div class="progress" style="height: 6px;">
+                                                                                    <div id="verifyAllEvidenceBar" class="progress-bar bg-warning" style="width: 0%;"></div>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div id="verifyAllEvidenceLastResult" class="small mt-2"></div>
+                                                                        </div>
+                                                                    </div>
                                                                 </div>
                                                             </div>
                                                         </div>
