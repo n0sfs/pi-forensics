@@ -83,6 +83,12 @@ mount_history.json
 *.swp
 .DS_Store
 
-# Local Claude Code context (not for the repo)
+# Local Claude Code context (not for the repo) - split 2026-09-11 from one oversized CLAUDE.md
+# into these five files specifically so the auto-loaded one (CLAUDE.md) stays small; see its own
+# "Session continuity" section for what each file is for.
 CLAUDE.md
+context.md
+tasks.md
+plan.md
+docs/DEVELOPMENT_LOG.md
 .claude/

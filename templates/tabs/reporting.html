@@ -106,28 +106,32 @@
                                                          from the old Search tab, see runCaseSearch() in main.js.
                                                          The explanatory paragraph that used to sit here as its own
                                                          line was condensed into a hover/click info icon instead -
-                                                         same text, just on-demand rather than always-on-screen. -->
-                                                    <div class="mb-3">
-                                                        <!-- d-inline-block, not d-block - this label doubles as the tooltip
-                                                             trigger. d-block stretched its bounding box across the whole
-                                                             card (its parent has no other inline content to constrain it
-                                                             to), so Popper centered the tooltip on that full-width invisible
-                                                             box instead of the actual "Quick Search" text+icon - it visibly
-                                                             landed near screen-center rather than next to the label. The
-                                                             following <input> is still block-level on its own, so it still
-                                                             lands on its own line below regardless of the label's display. -->
-                                                        <label class="telemetry-grid-label d-inline-block mb-1" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button" style="cursor:help;"
-                                                               title="Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab.">
-                                                            <i class="bi bi-search me-1"></i>Quick Search
-                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem;"></i>
-                                                        </label>
-                                                        <input type="text" id="repSearchInput" class="form-control form-control-sm mb-2" placeholder="Search keyword..." oninput="runCaseSearch()">
+                                                         same text, just on-demand rather than always-on-screen.
+                                                         Condensed further (2026-09-11): this used to be a full-width
+                                                         .form-control (stretches edge-to-edge across the whole
+                                                         Overview pane, not just a narrow column) with its own label
+                                                         line above it and an always-in-flow results box below it that
+                                                         pushed the tile grid down whenever it had content. Rebuilt to
+                                                         match Settings' own "Search settings..." box exactly
+                                                         (settings.html, #settingsSearchInput): a width-capped
+                                                         position-relative wrapper, an input-group with the search
+                                                         icon (now also the tooltip trigger, so no separate label line
+                                                         is needed) inside the input itself, and a position-absolute
+                                                         results overlay (w-100 relative to the capped wrapper, not
+                                                         the whole pane) so showing results no longer shifts the grid
+                                                         below. Ids/oninput/runCaseSearch() itself are unchanged. -->
+                                                    <div class="mb-3 position-relative" style="max-width: 420px;">
+                                                        <div class="input-group input-group-sm">
+                                                            <span class="input-group-text bg-app-dark border-secondary text-info" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button" style="cursor:help;"
+                                                                  title="Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab."><i class="bi bi-search"></i></span>
+                                                            <input type="text" id="repSearchInput" class="form-control bg-app-dark text-light border-secondary" placeholder="Quick search this case..." oninput="runCaseSearch()">
+                                                        </div>
                                                         <!-- Hidden by default (no d-flex/Bootstrap display utility on this
                                                              element, so a plain style.display toggle in runCaseSearch()
                                                              works with no !important needed) - only shown once there's
                                                              something to put in it, so an empty query never leaves a
                                                              bare bordered/padded strip with nothing in it visible. -->
-                                                        <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2" style="display:none; max-height: 260px; overflow-y: auto; background-color:#090b10;"></div>
+                                                        <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2 position-absolute w-100 shadow" style="display:none; max-height: 260px; overflow-y: auto; overflow-x: hidden; background-color:#090b10; z-index: 1050;"></div>
                                                     </div>
                                                     <hr class="border-secondary my-3">
                                                     <!-- Every tile below is clickable (2026-09-09) - jumps
