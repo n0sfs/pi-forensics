@@ -24,7 +24,18 @@
                                             <span class="fs-6 fw-bold text-info text-nowrap">
                                                 <i class="bi bi-journal-richtext me-2"></i><span id="reportHeaderCaseNum">Case Report</span>
                                             </span>
-                                            <div id="reportHeaderCaseMeta" class="d-flex flex-wrap align-items-center gap-3" style="display:none;">
+                                            <!-- No d-flex class here (found live 2026-09-11, a real pre-existing bug
+                                                 while verifying the header controls actually hide) - Bootstrap's
+                                                 utility classes carry !important, so a permanent d-flex class
+                                                 silently overrode this element's own JS-toggled inline
+                                                 style.display = 'none'/'flex' (renderReportHeaderCaseSummary(),
+                                                 main.js) - it never actually hid with no case loaded, despite
+                                                 every comment above claiming it did and despite the inline style
+                                                 attribute genuinely reading "none" in the DOM. flex-wrap/
+                                                 align-items-center/gap-3 alone don't force a display value, so
+                                                 they're harmless without d-flex; the inline style now fully
+                                                 controls display in both states with nothing fighting it. -->
+                                            <div id="reportHeaderCaseMeta" class="flex-wrap align-items-center gap-3" style="display:none;">
                                                 <div class="d-flex align-items-center gap-1">
                                                     <i class="bi bi-flag-fill text-subtle"></i>
                                                     <select id="editCaseStatus" class="form-select form-select-sm" style="width:118px;">
@@ -52,7 +63,10 @@
                                              all, the one part of this header that didn't match #reportHeaderCaseMeta's
                                              own already-correct behavior. Clicking it live-dead-clicked into a
                                              "select a case first" toast; now it just isn't there to click. -->
-                                        <div id="reportHeaderSaveControls" class="d-flex flex-wrap align-items-center gap-2" style="display:none;">
+                                        <!-- No d-flex class here either - see the matching comment on
+                                             #reportHeaderCaseMeta above, the same !important-vs-inline-style
+                                             bug this element would otherwise have inherited verbatim. -->
+                                        <div id="reportHeaderSaveControls" class="flex-wrap align-items-center gap-2" style="display:none;">
                                             <!-- Case Notes/Custody Log/Attach-to-Case/tags all save immediately - only
                                                  Report Narrative, Case Status, Case Details, Examiners, and the Files &
                                                  Artifacts exhibit checklist/captions here wait for an explicit click.
