@@ -39,16 +39,63 @@
                                         </div>
                                         <div class="col-md-6 d-flex flex-column">
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-download me-1"></i>Import Collection Results</div>
-                                            <div class="small text-subtle mb-2">Read-only against the USB - safe to run any time.</div>
-                                            <select id="liveCollectionImportDriveSelect" class="form-select form-select-sm mb-2">
+                                            <!-- "any time" softened (2026-09-12, a review pass) - true against
+                                                 the drive itself (read-only), but scanning the exact device
+                                                 currently mid-Build will still just fail its mount attempt -
+                                                 the previous wording overstated independence between the two
+                                                 panels. -->
+                                            <div class="small text-subtle mb-2">Read-only against the USB - safe to run whenever this drive isn't the one currently being built.</div>
+                                            <!-- onchange added (2026-09-12) - switching drives after a scan
+                                                 used to leave the PREVIOUS drive's discovered runs checked and
+                                                 selectable; clicking Import then sent that drive's relative
+                                                 paths against the newly-selected device, which the backend's
+                                                 own re-discovery correctly rejects, but with a generic "none
+                                                 of the selected runs were found" error that doesn't explain
+                                                 why. Also now shows Model/Serial/Size, matching Build's own
+                                                 selection feedback - previously the only way to confirm the
+                                                 right drive was selected was the raw /dev/sdX string. -->
+                                            <select id="liveCollectionImportDriveSelect" class="form-select form-select-sm mb-2" onchange="onLiveCollectionImportDriveSelect()">
                                                 <option value="">-- Select USB Drive --</option>
                                             </select>
-                                            <button class="btn btn-outline-info btn-sm w-100 mb-2" onclick="scanLiveCollectionResults()"><i class="bi bi-search me-1"></i>Scan for Collection Results</button>
+                                            <div id="liveCollectionImportDriveInfo" class="small text-warning mb-2"></div>
+                                            <button id="btnLiveCollectionScan" class="btn btn-outline-info btn-sm w-100 mb-2" onclick="scanLiveCollectionResults()"><i class="bi bi-search me-1"></i>Scan for Collection Results</button>
+                                            <!-- No d-flex class (caught immediately while writing this, having
+                                                 already found and fixed this exact bug 3 times elsewhere this
+                                                 session) - d-flex is !important and would silently override
+                                                 this element's own JS style.display toggle in
+                                                 renderLiveCollectionRunsChecklist() (main.js), which now sets
+                                                 'flex'/'none' directly instead. -->
+                                            <div class="justify-content-between align-items-center mb-1" id="liveCollectionRunsBulkRow" style="display:none;">
+                                                <span class="text-subtle small">Result runs found:</span>
+                                                <span class="small">
+                                                    <a href="#" onclick="setAllLiveCollectionRunsChecked(true); return false;">All</a> /
+                                                    <a href="#" onclick="setAllLiveCollectionRunsChecked(false); return false;">None</a>
+                                                </span>
+                                            </div>
                                             <div id="liveCollectionRunsList" class="mb-2" style="max-height: 160px; overflow-y: auto;">
                                                 <div class="text-subtle small">Scan a drive to see its result runs here.</div>
                                             </div>
                                             <label class="visually-hidden" for="liveCollectionEvidenceId">Evidence ID</label>
                                             <input type="text" id="liveCollectionEvidenceId" class="form-control form-control-sm mb-2" placeholder="Evidence ID (e.g. LIVECOLLECT-01)">
+                                            <!-- Hash checkboxes added (2026-09-12) - this import used to hash
+                                                 with sha256 only, hardcoded, unlike every other acquisition/
+                                                 recovery flow in this app (see #hashRow on the Acquisition tab,
+                                                 mirrored here with distinct ids since both tab-panes share one
+                                                 DOM). startImportLiveCollection() (main.js) already just needs
+                                                 to read these instead of a literal ['sha256'] - the backend
+                                                 route already accepts and validates a hash list. -->
+                                            <div id="liveCollectionHashRow" class="mb-2">
+                                                <span class="telemetry-grid-label d-inline me-2">Verification Hashes:</span>
+                                                <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="liveCollectionHashMd5" value="md5"><label class="form-check-label small text-light" for="liveCollectionHashMd5">MD5</label></div>
+                                                <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="liveCollectionHashSha1" value="sha1"><label class="form-check-label small text-light" for="liveCollectionHashSha1">SHA1</label></div>
+                                                <div class="form-check form-check-inline mb-0"><input class="form-check-input" type="checkbox" id="liveCollectionHashSha256" value="sha256" checked><label class="form-check-label small text-light" for="liveCollectionHashSha256">SHA256</label></div>
+                                            </div>
+                                            <!-- Destination/case feedback added (2026-09-12) - previously showed
+                                                 nothing about where an import would land, unlike Build's own
+                                                 Model/Serial/Size line. With no active case, this silently fell
+                                                 back to writing straight into EVIDENCE_ROOT with "UNASSIGNED" as
+                                                 the case number and no on-screen warning at all. -->
+                                            <div id="liveCollectionImportDestInfo" class="small text-subtle mb-2"></div>
                                             <button id="btnLiveCollectionImport" class="btn btn-primary btn-sm w-100 fw-bold mt-auto" onclick="startImportLiveCollection()">
                                                 <i class="bi bi-file-earmark-arrow-down me-1"></i>Import Selected Results
                                             </button>

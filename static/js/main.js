@@ -19136,11 +19136,68 @@ async function startBuildCollectionUsb() {
 
 let liveCollectionDiscoveredRuns = [];
 
+// Clears the previous drive's discovered runs/checklist and shows the newly
+// selected drive's Model/Serial/Size (2026-09-12, a review pass) - switching
+// drives after a scan used to leave the PREVIOUS drive's runs checked and
+// selectable, so clicking Import could send drive A's relative paths against
+// newly-selected drive B; the backend's own re-discovery correctly rejects
+// that, but with a generic "none of the selected runs were found" error that
+// doesn't explain why a rescan is needed.
+function onLiveCollectionImportDriveSelect() {
+    const sel = document.getElementById('liveCollectionImportDriveSelect');
+    const opt = sel && sel.selectedOptions[0];
+    const infoEl = document.getElementById('liveCollectionImportDriveInfo');
+    liveCollectionDiscoveredRuns = [];
+    renderLiveCollectionRunsChecklist();
+    refreshLiveCollectionImportDestInfo();
+    if (!opt || !opt.value) {
+        if (infoEl) infoEl.innerHTML = '';
+        return;
+    }
+    if (infoEl) {
+        infoEl.innerHTML = `<strong>Model:</strong> ${escapeHtmlForPopup(opt.dataset.model || 'Unknown')} &nbsp; ` +
+            `<strong>Serial:</strong> ${escapeHtmlForPopup(opt.dataset.serial || 'Unknown')} &nbsp; ` +
+            `<strong>Size:</strong> ${escapeHtmlForPopup(opt.dataset.size || 'Unknown')}`;
+    }
+}
+
+// Resolved destination/case feedback (2026-09-12) - previously showed
+// nothing at all about where an import would land. Reads the exact same
+// activeCase/#destPath/#caseNum fallback logic startImportLiveCollection()
+// itself uses, so what's displayed here always matches what a click on
+// Import would actually send - not a second, potentially-drifting copy of
+// that logic, just its result rendered before the click instead of after.
+function refreshLiveCollectionImportDestInfo() {
+    const el = document.getElementById('liveCollectionImportDestInfo');
+    if (!el) return;
+    if (activeCase) {
+        el.innerHTML = `<i class="bi bi-folder-check me-1"></i>Will import into case <strong>${escapeHtmlForPopup(activeCase.case_number)}</strong>.`;
+        el.className = 'small text-subtle mb-2';
+    } else {
+        const destPath = document.getElementById('destPath')?.value || '/mnt';
+        el.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1"></i>No active case - will import into ` +
+            `<strong>${escapeHtmlForPopup(destPath)}</strong> as an unassigned evidence item. Select or create a case first if this should be tied to one.`;
+        el.className = 'small text-warning mb-2';
+    }
+}
+
+function setAllLiveCollectionRunsChecked(checked) {
+    document.querySelectorAll('.live-collection-run-check').forEach((c) => { c.checked = checked; });
+}
+
 async function scanLiveCollectionResults() {
     const sel = document.getElementById('liveCollectionImportDriveSelect');
     if (!sel || !sel.value) return showToast('Select the USB drive to scan first.', 'warning');
     const listEl = document.getElementById('liveCollectionRunsList');
     if (listEl) listEl.innerHTML = '<div class="text-subtle small">Scanning...</div>';
+    // Disabled for the duration of the request (found in a review pass) -
+    // this route has no job-slot claim or lock of its own (a scan is a
+    // quick read-only mount, not a background job), so a fast double-click
+    // could send two overlapping requests racing mount/unmount of the same
+    // shared scan mountpoint, surfacing a raw "could not mount" error
+    // instead of the request just... not being sent twice.
+    const scanBtn = document.getElementById('btnLiveCollectionScan');
+    if (scanBtn) scanBtn.disabled = true;
     try {
         const res = await fetch('/api/live_collection/scan', {
             method: 'POST',
@@ -19157,16 +19214,24 @@ async function scanLiveCollectionResults() {
         renderLiveCollectionRunsChecklist();
     } catch (err) {
         showToast('Scan request failed: ' + err.message, 'danger');
+    } finally {
+        if (scanBtn) scanBtn.disabled = false;
     }
 }
 
 function renderLiveCollectionRunsChecklist() {
     const listEl = document.getElementById('liveCollectionRunsList');
+    const bulkRow = document.getElementById('liveCollectionRunsBulkRow');
     if (!listEl) return;
     if (!liveCollectionDiscoveredRuns.length) {
         listEl.innerHTML = '<div class="text-subtle small">No result runs found on this drive yet - use the collector scripts on a target machine first.</div>';
+        if (bulkRow) bulkRow.style.display = 'none';
         return;
     }
+    // 'flex', not '' - #liveCollectionRunsBulkRow has no d-flex class (see
+    // its own dated comment in live_collection.html for why), so this is
+    // the only thing that turns its row layout on.
+    if (bulkRow) bulkRow.style.display = 'flex';
     listEl.innerHTML = '';
     liveCollectionDiscoveredRuns.forEach((run, i) => {
         const row = document.createElement('div');
@@ -19190,9 +19255,22 @@ async function startImportLiveCollection() {
     const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById('destPath')?.value || '/mnt');
     const metadata = {
         case_number: activeCase ? activeCase.case_number : (document.getElementById('caseNum')?.value || 'UNASSIGNED'),
-        examiner: activeCase ? activeCase.examiner : (document.getElementById('examinerName')?.value || ''),
+        // Was #examinerName, an id that doesn't exist anywhere in this app
+        // (found in a review pass) - a silently-unreachable dead fallback
+        // that always evaluated to ''. The real Acquisition-tab field this
+        // was clearly meant to borrow from (matching the destPath/caseNum
+        // fallbacks right next to it) is #examiner.
+        examiner: activeCase ? activeCase.examiner : (document.getElementById('examiner')?.value || ''),
         evidence_id: document.getElementById('liveCollectionEvidenceId')?.value || 'LIVECOLLECT-01',
     };
+    // Reads the same checkboxes now offered in the UI (2026-09-12) - this
+    // used to hardcode ['sha256'] regardless of what the backend route
+    // already accepted, the only acquisition/recovery flow in this app that
+    // didn't expose a hash-algorithm choice.
+    const hashes = ['liveCollectionHashMd5', 'liveCollectionHashSha1', 'liveCollectionHashSha256']
+        .map((id) => document.getElementById(id))
+        .filter((el) => el && el.checked)
+        .map((el) => el.value);
     const statusEl = document.getElementById('liveCollectionStatus');
     if (statusEl) statusEl.innerText = 'Status: Starting...';
     try {
@@ -19203,7 +19281,7 @@ async function startImportLiveCollection() {
                 device: sel.value,
                 selected_relative_paths: selected,
                 destination: destinationDir,
-                hashes: ['sha256'],
+                hashes,
                 metadata,
             }),
         });
@@ -22155,6 +22233,22 @@ async function fetchProgress() {
             if (data.active) {
                 liveCollectionBuildBtn.disabled = true;
             } else {
+                // Clears the type-to-confirm text on the exact active->inactive
+                // transition for this job format (found in a review pass, a real
+                // safety regression) - nothing else ever cleared it after a build
+                // actually finished, only onLiveCollectionBuildDriveSelect() on a
+                // drive-SELECTION change. With the same drive still selected right
+                // after a build completes, the still-matching "WIPE <device>" text
+                // silently re-enabled this button with zero retyping required -
+                // one accidental click would re-wipe the same drive, defeating the
+                // whole point of a materially stronger confirm gate. Checked via
+                // lastImageJobActiveByFormat BEFORE it's updated to the current
+                // value further below, so this only fires once, right on the
+                // transition, not on every idle poll after.
+                if (lastImageJobActiveByFormat['live_collection_build']) {
+                    const confirmInput = document.getElementById('liveCollectionBuildConfirmText');
+                    if (confirmInput) confirmInput.value = '';
+                }
                 checkLiveCollectionBuildConfirmText();
             }
         }
