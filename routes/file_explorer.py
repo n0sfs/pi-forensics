@@ -27,7 +27,7 @@ import uuid
 
 from flask import Blueprint, jsonify, request, send_file, g
 
-from core.auth import requires_auth, requires_permission
+from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role, format_epoch
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, INSTALL_DIR, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets, ALEAPP_DIR, ALEAPP_VENV_PYTHON, ILEAPP_DIR, ILEAPP_VENV_PYTHON
 import yara
@@ -928,7 +928,7 @@ def start_takeout_import():
     update_job(format="takeout_import", status="Initializing...", progress_percent=0.0,
                log="[*] Initializing Google Takeout import...")
 
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(
@@ -1037,7 +1037,7 @@ def start_apple_export_import():
     update_job(format="apple_export_import", status="Initializing...", progress_percent=0.0,
                log="[*] Initializing Apple Data & Privacy export import...")
 
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(
@@ -2985,7 +2985,7 @@ def start_memory_forensics_scan():
     # Captured now, in the real request thread - the worker runs in a
     # background daemon thread with no Flask request context (request/g
     # would raise RuntimeError if touched directly there).
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(
@@ -3173,7 +3173,7 @@ def start_leapp_scan():
         log=f"[*] Initializing {info['label']} scan of {input_path}..."
     )
 
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(
@@ -3614,7 +3614,7 @@ def start_auto_analyze_mobile():
     # already enforces everywhere else in this file).
     dest_dir = case_folder or os.path.dirname(path.rstrip(os.sep))
 
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(
@@ -3811,7 +3811,7 @@ def start_mquire_scan():
     # would raise RuntimeError if touched directly there) - the same
     # capture-before-spawn treatment this project has already hit and fixed
     # more than once for other background-thread log calls.
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(

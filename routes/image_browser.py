@@ -32,7 +32,7 @@ import threading
 import pytsk3
 from flask import Blueprint, jsonify, request, g
 
-from core.auth import requires_auth, requires_permission
+from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path, classify_extension,
     is_valid_block_device_or_partition,
@@ -855,7 +855,7 @@ def start_image_geolocation_kml():
     # gotcha the image triage scan job's own log_chain_of_custody() call hit
     # once already, before it was fixed the same way as network config's
     # delayed-revert thread).
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(
@@ -3587,7 +3587,7 @@ def start_image_triage_scan():
     # background daemon thread with no Flask request context, where
     # request/g would raise RuntimeError if touched directly (the same
     # gotcha network config's delayed-revert thread already hit once).
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(
@@ -3689,7 +3689,7 @@ def start_materialize_shadow_copy():
         log=f"[*] Materializing shadow copy {store_index} of {image_path}..."
     )
 
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(
@@ -4797,7 +4797,7 @@ def start_auto_analyze_image():
     # rather than scattered at the evidence root).
     dest_dir = case_folder or os.path.dirname(image_path)
 
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(
