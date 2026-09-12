@@ -18,7 +18,7 @@ import threading
 from flask import Blueprint, jsonify, request
 
 from core.auth import requires_auth, requires_permission
-from core.paths import safe_path, log_chain_of_custody, is_valid_block_device
+from core.paths import safe_path, log_chain_of_custody, is_valid_block_device, sanitize_case_slug
 from core.config import EVIDENCE_ROOT, SCALPEL_CONF_PATH
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
@@ -575,8 +575,12 @@ def start_photorec():
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    # sanitize_case_slug(), not a raw metadata.get() - see the matching
+    # comment in routes/acquisition.py's start_logical_acquisition() for why
+    # (a review pass found this exact unguarded pattern at 9 call sites
+    # across both files, all fixed the same way).
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_photorec"
     job_dest_dir = os.path.join(dest_path, base_name)
 
@@ -644,8 +648,8 @@ def start_extundelete():
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_extundelete"
     job_dest_dir = os.path.join(dest_path, base_name)
 
@@ -716,8 +720,8 @@ def start_foremost():
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_foremost"
     job_dest_dir = os.path.join(dest_path, base_name)
     # Deliberately NOT pre-created - foremost refuses to run if its output
@@ -793,8 +797,8 @@ def start_scalpel():
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_scalpel"
     job_dest_dir = os.path.join(dest_path, base_name)
     # Deliberately NOT pre-created - same reason as foremost above.
@@ -863,8 +867,8 @@ def start_triage_scan():
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_triagescan"
     job_dest_dir = os.path.join(dest_path, base_name)
 
