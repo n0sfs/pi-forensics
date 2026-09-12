@@ -38,6 +38,7 @@ import hashlib
 import textwrap
 import subprocess
 import threading
+import shutil
 import zipfile
 import fnmatch
 # defusedxml, not the bare stdlib xml.etree.ElementTree - _parse_kml_placemarks()
@@ -2500,22 +2501,41 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
                    transferred_bytes=0, total_bytes=0)
         append_log(f"[*] Enumerating {case_folder} for a case bundle export...")
 
-        candidates = []  # (abs_path, arcname, size)
+        candidates = []  # (abs_path, arcname, size, is_raw_image)
         total_size = 0
         for root, dirs, files in os.walk(case_folder):
             for fname in files:
                 if fnmatch.fnmatch(fname, self_pattern):
                     continue
                 ext = os.path.splitext(fname)[1].lower()
-                if not include_images and ext in ATTACHMENT_EXCLUDE_EXT:
+                is_raw_image = ext in ATTACHMENT_EXCLUDE_EXT
+                if not include_images and is_raw_image:
                     continue
                 fpath = os.path.join(root, fname)
                 try:
                     size = os.path.getsize(fpath)
                 except OSError:
                     continue
-                candidates.append((fpath, os.path.relpath(fpath, case_folder), size))
+                candidates.append((fpath, os.path.relpath(fpath, case_folder), size, is_raw_image))
                 total_size += size
+
+        # Pre-flight storage check (found in a review pass, matching the one
+        # start_imaging()/start_ddrescue() already do) - the zip is written
+        # into case_folder alongside the files it's archiving, not in-place,
+        # so including raw acquisition images means roughly doubling the
+        # space those images already occupy, transiently, for the run's
+        # duration. Compared against total_size as an upper-bound estimate
+        # of the finished zip's size (a reasonable one now that raw images -
+        # by far the largest candidates when included - are stored, not
+        # compressed, below).
+        dest_disk_usage = shutil.disk_usage(case_folder)
+        if total_size > 0 and dest_disk_usage.free < total_size:
+            free_gb = round(dest_disk_usage.free / (1024**3), 2)
+            required_gb = round(total_size / (1024**3), 2)
+            update_job(status="Failed")
+            append_log(f"[-] Pre-flight storage check failed: this volume has only {free_gb} GB free, "
+                       f"but the bundle needs approximately {required_gb} GB.")
+            return
 
         update_job(status="Building bundle...", total_bytes=total_size)
         append_log(f"[*] {len(candidates)} file(s), {total_size / (1024**2):.1f} MB total, will be included "
@@ -2525,13 +2545,23 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
         errored = 0
         bytes_done = 0
         last_update = time.time()
+        # Raw acquisition images are the one candidate type never worth
+        # running through DEFLATE (found in a review pass): they're either
+        # already high-entropy real data or, for E01, already compressed by
+        # the acquisition tool itself - so compressing them again spends a
+        # full CPU-bound pass over the whole image for close to zero size
+        # reduction, on top of this bundle's own "blocks new jobs for
+        # longer" cost. ZIP_STORED per-file for those, ZIP_DEFLATED (the
+        # ZipFile-level default) still applies normally to everything else
+        # (notes, exports, small text/images), which DOES compress
+        # meaningfully.
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-            for fpath, arcname, size in candidates:
+            for fpath, arcname, size, is_raw_image in candidates:
                 if snapshot_job()["status"] == "Stopped":
                     append_log("[-] Stopped by user - bundle contains only what was added before the stop.")
                     break
                 try:
-                    zf.write(fpath, arcname=arcname)
+                    zf.write(fpath, arcname=arcname, compress_type=zipfile.ZIP_STORED if is_raw_image else zipfile.ZIP_DEFLATED)
                     written += 1
                 except Exception as e:
                     errored += 1
