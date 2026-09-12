@@ -14378,7 +14378,12 @@ function renderCaseCompositionChart(counts) {
     const card = document.getElementById('caseCompositionCard');
     const canvas = document.getElementById('caseCompositionChart');
     if (!card || !canvas) return;
-    card.style.display = '';
+    // 'flex', not '' (which would resolve to the CSS default of 'block') -
+    // #caseCompositionCard has no d-flex class (see the dated comment on it
+    // in reporting.html for why), so this is the only thing that actually
+    // turns on its own flex-column layout - without it, flex-grow-1 on the
+    // canvas wrapper below would have no flex container to grow within.
+    card.style.display = 'flex';
 
     const labels = CASE_COMPOSITION_BARS.map((b) => b.label);
     const values = CASE_COMPOSITION_BARS.map((b) => counts[b.key] || 0);
