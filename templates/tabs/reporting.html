@@ -752,38 +752,70 @@
                                                     </div>
                                                 </div>
                                                 <div class="tab-pane fade" id="repExportPane" role="tabpanel">
-                                                    <div class="row g-2 mb-1">
+                                                    <!-- Case Bundle Export sits beside this column, not stacked below the
+                                                         whole pane (2026-09-12) - the two are still visually distinct
+                                                         (its own bordered card, own explanatory line) so it doesn't read
+                                                         as one more Export Report format, but paired against just this
+                                                         top row/bar rather than the full Customize-contents+Preview
+                                                         block below, which is much taller and would leave a large empty
+                                                         gap beside the short Case Bundle card. -->
+                                                    <div class="row g-3 mb-1">
+                                                        <div class="col-md-8">
+                                                            <div class="row g-2 mb-1">
+                                                                <div class="col-md-4">
+                                                                    <label class="telemetry-grid-label d-block mb-1">Export Format</label>
+                                                                    <select id="exportFormatSelect" class="form-select form-select-sm" onchange="onExportFormatChange()">
+                                                                        <option value="pdf">PDF Document (.pdf)</option>
+                                                                        <option value="html">HTML Report (.html)</option>
+                                                                        <option value="json">Raw JSON (.json)</option>
+                                                                        <option value="csv">Evidence Inventory (.csv)</option>
+                                                                    </select>
+                                                                </div>
+                                                                <div class="col-md-8" id="exportTemplateGroup">
+                                                                    <label class="telemetry-grid-label d-block mb-1">Report Template</label>
+                                                                    <select id="exportTemplateSelect" class="form-select form-select-sm mb-1" onchange="onExportTemplateChange()">
+                                                                        <option value="standard">Standard - configurable sections</option>
+                                                                        <option value="dfir">DFIR Report - fixed incident-response structure</option>
+                                                                        <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
+                                                                        <option value="caseuco">CASE/UCO Report - fixed structure aligned with the CASE/UCO forensic ontology</option>
+                                                                    </select>
+                                                                    <div id="exportTemplateHint" class="small text-subtle mb-1" style="display:none;"></div>
+                                                                    <button type="button" id="exportEditTemplateBtn" class="btn btn-xs btn-outline-info py-0 px-2" style="display:none;" onclick="openReportTemplateBuilder(currentExportCustomTemplateId)"><i class="bi bi-pencil-square me-1"></i>Edit this template</button>
+                                                                </div>
+                                                            </div>
+                                                            <!-- Export action moved up here (was previously below the Sections/
+                                                                 Items/Files columns) so it's reachable without opening the
+                                                                 "Customize contents" disclosure below - the defaults already
+                                                                 checked in that section produce a complete report on their own. -->
+                                                            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 my-2 py-2 px-2 bg-app-dark border border-secondary rounded-2">
+                                                                <span class="small text-subtle">The checkboxes below already default to a complete report - export now, or open "Customize contents" first to change what's included.</span>
+                                                                <button type="button" class="btn btn-sm btn-outline-info fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
+                                                            </div>
+                                                            <div id="exportReportStatus" class="small text-subtle mb-2"></div>
+                                                            <div id="exportMismatchWarning" class="small alert alert-warning py-2 px-3 mb-2" style="display:none;"></div>
+                                                        </div>
                                                         <div class="col-md-4">
-                                                            <label class="telemetry-grid-label d-block mb-1">Export Format</label>
-                                                            <select id="exportFormatSelect" class="form-select form-select-sm" onchange="onExportFormatChange()">
-                                                                <option value="pdf">PDF Document (.pdf)</option>
-                                                                <option value="html">HTML Report (.html)</option>
-                                                                <option value="json">Raw JSON (.json)</option>
-                                                                <option value="csv">Evidence Inventory (.csv)</option>
-                                                            </select>
-                                                        </div>
-                                                        <div class="col-md-8" id="exportTemplateGroup">
-                                                            <label class="telemetry-grid-label d-block mb-1">Report Template</label>
-                                                            <select id="exportTemplateSelect" class="form-select form-select-sm mb-1" onchange="onExportTemplateChange()">
-                                                                <option value="standard">Standard - configurable sections</option>
-                                                                <option value="dfir">DFIR Report - fixed incident-response structure</option>
-                                                                <option value="police">Forensics Report - fixed law-enforcement examination structure</option>
-                                                                <option value="caseuco">CASE/UCO Report - fixed structure aligned with the CASE/UCO forensic ontology</option>
-                                                            </select>
-                                                            <div id="exportTemplateHint" class="small text-subtle mb-1" style="display:none;"></div>
-                                                            <button type="button" id="exportEditTemplateBtn" class="btn btn-xs btn-outline-info py-0 px-2" style="display:none;" onclick="openReportTemplateBuilder(currentExportCustomTemplateId)"><i class="bi bi-pencil-square me-1"></i>Edit this template</button>
+                                                            <div class="bg-app-dark border border-secondary rounded-2 p-3 h-100">
+                                                                <h6 class="text-success fw-bold fs-6 mb-2">
+                                                                    <i class="bi bi-file-earmark-zip-fill me-1"></i>Case Bundle Export (Full Archive)
+                                                                    <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
+                                                                       title="Zips the entire case folder for archival or handoff to another examiner - everything a case actually contains, not just the exported report above. Uses the one station-wide job slot; a bundle that includes raw acquisition images will block a new acquisition/recovery job from starting for as long as it runs."></i>
+                                                                </h6>
+                                                                <div class="small text-subtle mb-2">A different kind of export from the report above - a zip of the whole case folder as it sits on disk (raw images, exhibits, notes, everything), not a generated document.</div>
+                                                                <div class="form-check mb-2">
+                                                                    <input type="checkbox" class="form-check-input" id="bundleIncludeImages">
+                                                                    <label class="form-check-label small" for="bundleIncludeImages">Include raw acquisition images (can be very large - blocks new jobs for longer)</label>
+                                                                </div>
+                                                                <button class="btn btn-sm btn-outline-info fw-bold" id="btnCaseBundleExport" onclick="startCaseBundleExport()"><i class="bi bi-file-earmark-zip me-1"></i>Export Case Bundle</button>
+                                                                <div id="caseBundleExportProgress" style="display:none;" class="mt-2">
+                                                                    <div id="caseBundleExportStatus" class="small text-info mb-1">Status: --</div>
+                                                                    <div class="progress" style="height: 6px;">
+                                                                        <div id="caseBundleExportBar" class="progress-bar bg-info" style="width: 0%;"></div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                    <!-- Export action moved up here (was previously below the Sections/
-                                                         Items/Files columns) so it's reachable without opening the
-                                                         "Customize contents" disclosure below - the defaults already
-                                                         checked in that section produce a complete report on their own. -->
-                                                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 my-2 py-2 px-2 bg-app-dark border border-secondary rounded-2">
-                                                        <span class="small text-subtle">The checkboxes below already default to a complete report - export now, or open "Customize contents" first to change what's included.</span>
-                                                        <button type="button" class="btn btn-sm btn-outline-info fw-bold" onclick="runExportReport()"><i class="bi bi-download me-1"></i>Export</button>
-                                                    </div>
-                                                    <div id="exportReportStatus" class="small text-subtle mb-2"></div>
-                                                    <div id="exportMismatchWarning" class="small alert alert-warning py-2 px-3 mb-2" style="display:none;"></div>
                                                     <details class="mb-2" id="exportPdfHtmlOptionsRow">
                                                         <summary class="small fw-bold text-bright" style="cursor:pointer;"><i class="bi bi-sliders me-1"></i>Customize contents (sections, evidence items, files)</summary>
                                                     <div class="row g-3 mt-1">
@@ -892,32 +924,6 @@
                                                     <div id="exportJsonPreviewGroup" class="mt-3" style="display:none;">
                                                         <div class="small text-subtle mb-2">Live raw JSON structure of the case report - auto-updates on load/save. Export downloads exactly this.</div>
                                                         <pre id="jsonPreview" class="log-window mb-0" style="height: clamp(180px, 40vh, 420px);">[Select or create a case above to view raw structured JSON data]</pre>
-                                                    </div>
-                                                    <hr class="border-secondary my-3">
-                                                    <!-- Moved here from Overview (2026-09-10) - a genuinely different
-                                                         kind of export from everything above (a curated report
-                                                         document): this zips the whole case FOLDER, raw acquisition
-                                                         images and all, not a generated document. Kept visually
-                                                         distinct (its own bordered block, own explanatory line) so it
-                                                         doesn't read as one more Export Report format option. -->
-                                                    <div class="bg-app-dark border border-secondary rounded-2 p-3">
-                                                        <h6 class="text-success fw-bold fs-6 mb-2">
-                                                            <i class="bi bi-file-earmark-zip-fill me-1"></i>Case Bundle Export (Full Archive)
-                                                            <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
-                                                               title="Zips the entire case folder for archival or handoff to another examiner - everything a case actually contains, not just the exported report above. Uses the one station-wide job slot; a bundle that includes raw acquisition images will block a new acquisition/recovery job from starting for as long as it runs."></i>
-                                                        </h6>
-                                                        <div class="small text-subtle mb-2">A different kind of export from the report above - a zip of the whole case folder as it sits on disk (raw images, exhibits, notes, everything), not a generated document.</div>
-                                                        <div class="form-check mb-2">
-                                                            <input type="checkbox" class="form-check-input" id="bundleIncludeImages">
-                                                            <label class="form-check-label small" for="bundleIncludeImages">Include raw acquisition images (can be very large - blocks new jobs for longer)</label>
-                                                        </div>
-                                                        <button class="btn btn-sm btn-outline-info fw-bold" id="btnCaseBundleExport" onclick="startCaseBundleExport()"><i class="bi bi-file-earmark-zip me-1"></i>Export Case Bundle</button>
-                                                        <div id="caseBundleExportProgress" style="display:none;" class="mt-2">
-                                                            <div id="caseBundleExportStatus" class="small text-info mb-1">Status: --</div>
-                                                            <div class="progress" style="height: 6px;">
-                                                                <div id="caseBundleExportBar" class="progress-bar bg-info" style="width: 0%;"></div>
-                                                            </div>
-                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
