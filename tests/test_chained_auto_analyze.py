@@ -28,7 +28,11 @@ def _base_report_data():
 def test_completed_windows_profile_chains_into_auto_analyze_and_never_releases_the_slot_itself():
     report_data = _base_report_data()
 
-    def fake_execution_worker(cmd, fmt, total_bytes, out_file, report_target, rd, hashes):
+    # **kwargs absorbs dc3dd_log_file/dcfldd_hash_log_files (added 2026-09-11,
+    # a review pass) - this mock only cares about the positional args it's
+    # actually testing, not every keyword execution_worker_chained_auto_analyze()
+    # happens to forward through to the real execution_worker().
+    def fake_execution_worker(cmd, fmt, total_bytes, out_file, report_target, rd, hashes, **kwargs):
         rd["acquisition_status"] = "COMPLETED"
 
     with mock.patch.object(acquisition, "execution_worker", side_effect=fake_execution_worker) as m_worker, \
@@ -62,7 +66,7 @@ def test_completed_windows_profile_chains_into_auto_analyze_and_never_releases_t
 def test_completed_linux_profile_uses_the_linux_default_steps():
     report_data = _base_report_data()
 
-    def fake_execution_worker(cmd, fmt, total_bytes, out_file, report_target, rd, hashes):
+    def fake_execution_worker(cmd, fmt, total_bytes, out_file, report_target, rd, hashes, **kwargs):
         rd["acquisition_status"] = "COMPLETED"
 
     with mock.patch.object(acquisition, "execution_worker", side_effect=fake_execution_worker), \
@@ -89,7 +93,7 @@ def test_completed_linux_profile_uses_the_linux_default_steps():
 def test_non_completed_acquisition_never_chains_and_releases_the_slot_itself(final_status):
     report_data = _base_report_data()
 
-    def fake_execution_worker(cmd, fmt, total_bytes, out_file, report_target, rd, hashes):
+    def fake_execution_worker(cmd, fmt, total_bytes, out_file, report_target, rd, hashes, **kwargs):
         rd["acquisition_status"] = final_status
 
     with mock.patch.object(acquisition, "execution_worker", side_effect=fake_execution_worker), \
@@ -118,7 +122,7 @@ def test_non_completed_acquisition_never_chains_and_releases_the_slot_itself(fin
 def test_undetermined_profile_is_a_disclosed_skip_not_a_silent_guess():
     report_data = _base_report_data()
 
-    def fake_execution_worker(cmd, fmt, total_bytes, out_file, report_target, rd, hashes):
+    def fake_execution_worker(cmd, fmt, total_bytes, out_file, report_target, rd, hashes, **kwargs):
         rd["acquisition_status"] = "COMPLETED"
 
     for undetermined_profile in ["unknown", "mixed", "ambiguous", None]:
