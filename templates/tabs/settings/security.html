@@ -61,7 +61,14 @@
                                         </div>
                                     </div>
                                 </div>
-                                <div class="accordion-item bg-dark border-secondary">
+                                <!-- id added (2026-09-12, a review pass) - this accordion item needs the
+                                     same manage_users permission server-side as User Accounts/User Groups
+                                     right above it (routes/settings.py's config_backup()/config_restore())
+                                     but, unlike them, was never included in applyUserMgmtPermissionGating()'s
+                                     visibility check - a group with settings:true, manage_users:false (a
+                                     plausible real role split) saw a fully interactive backup/restore form
+                                     that always 403s. -->
+                                <div class="accordion-item bg-dark border-secondary" id="configBackupAccordionItem">
                                     <h2 class="accordion-header">
                                         <button class="accordion-button collapsed bg-dark text-light fw-bold" type="button" data-bs-toggle="collapse" data-bs-target="#secConfigBackup"><i class="bi bi-box-seam-fill me-2"></i>Configuration Backup &amp; Restore</button>
                                     </h2>
@@ -69,8 +76,9 @@
                                         <div class="accordion-body">
                                             <div class="small text-subtle mb-3">
                                                 A single encrypted file capturing this station's own configuration - user accounts, groups,
-                                                custom report templates, custom case fields, report branding, and saved network share
-                                                credentials. Useful before an OS reinstall/SD card swap, or to clone accounts/templates onto a
+                                                custom report templates, custom case fields, report branding, saved network share
+                                                credentials, and the real contents of every saved Hash Set and URL List (not just their
+                                                name/count). Useful before an OS reinstall/SD card swap, or to clone accounts/templates onto a
                                                 second station. Does <strong>not</strong> include the TLS private key (never leaves this
                                                 station - see HTTPS Certificate above) or any case/evidence data.
                                             </div>
