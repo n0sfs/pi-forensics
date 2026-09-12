@@ -29,7 +29,7 @@ import signal
 
 from flask import Blueprint, jsonify, request, g
 
-from core.auth import requires_auth, requires_permission
+from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.paths import (
     safe_path, log_chain_of_custody, is_valid_block_device,
     is_valid_block_device_or_partition, _DEVICE_RE, classify_usb_port,
@@ -1094,7 +1094,8 @@ def parse_ddrescue_mapfile(map_path):
     return summary
 
 
-def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data, hashes=None):
+def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_data, hashes=None,
+                      dc3dd_log_file=None, dcfldd_hash_log_files=None):
     log_history = []
     hashes = hashes or []
     
@@ -1173,11 +1174,19 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
         if fmt == 'e01':
             computed_hashes = parse_ewf_hashes(snapshot_job()["log"])
         elif fmt in ['raw', 'dd']:
-            dc3dd_log = out_file.replace('.dd', '_dc3dd.log')
+            # Prefers the exact path start_imaging() already built and
+            # passed in over re-deriving it here via out_file.replace('.dd',
+            # ...) (found in a review pass) - that re-derivation rewrites the
+            # FIRST occurrence of ".dd" anywhere in the path, not necessarily
+            # the real extension, and could silently pick the wrong file if
+            # a case/evidence ID happens to contain ".dd". Falls back to the
+            # old derivation only for a caller that doesn't pass it.
+            dc3dd_log = dc3dd_log_file or out_file.replace('.dd', '_dc3dd.log')
             computed_hashes = parse_dc3dd_hashes(dc3dd_log)
         elif fmt == 'dcfldd':
             for h in hashes:
-                val = read_hash_log_file(out_file.replace('.dd', f'_{h}.log'), h)
+                log_path = (dcfldd_hash_log_files or {}).get(h) or out_file.replace('.dd', f'_{h}.log')
+                val = read_hash_log_file(log_path, h)
                 if val:
                     computed_hashes[h] = val
         elif fmt == 'plain_dd':
@@ -1244,7 +1253,8 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
         update_job(active=False)
         clear_active_proc()
 
-def execution_worker_chained_auto_analyze(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes, case_folder, source_ip, user):
+def execution_worker_chained_auto_analyze(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes, case_folder, source_ip, user,
+                                           dc3dd_log_file=None, dcfldd_hash_log_files=None):
     """Guided Workflow automation Tier 2 (2026-08-27) - wraps execution_worker()
     with an opt-in hand-off into Auto Analyze's own step sequence once
     acquisition genuinely COMPLETEs. Only ever spawned by start_imaging()
@@ -1269,7 +1279,8 @@ def execution_worker_chained_auto_analyze(cmd, fmt, total_bytes, out_file, repor
     chained_into_analyze = False
     begin_suppress_active_false()
     try:
-        execution_worker(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes)
+        execution_worker(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes,
+                          dc3dd_log_file=dc3dd_log_file, dcfldd_hash_log_files=dcfldd_hash_log_files)
         if report_data.get("acquisition_status") != "COMPLETED":
             return  # failed, or stopped mid-run - nothing valid to analyze
 
@@ -3264,6 +3275,13 @@ def start_imaging():
     notes = metadata.get('notes', 'None')
     base_name = f"{case_num}_{evidence_id}"
 
+    # Explicit log-file paths, threaded through to execution_worker() below
+    # instead of it re-deriving them itself (found in a review pass) - only
+    # ever set in the branches that actually need them (dc3dd/dcfldd), None
+    # everywhere else (e01/plain_dd/aff/ddrescue don't use either).
+    dc3dd_log_file = None
+    dcfldd_hash_log_files = None
+
     if fmt == 'e01':
         ewf_hash_type = "sha256" if "sha256" in hashes else ("sha1" if "sha1" in hashes else "md5")
         out_file = f"{dest_path}/{base_name}.E01"
@@ -3291,8 +3309,19 @@ def start_imaging():
         ]
         if hashes:
             cmd.append(f"hash={','.join(hashes)}")
+            # Built from base_name directly, not out_file.replace('.dd', ...)
+            # (found in a review pass, a real bug not just in how
+            # execution_worker() re-derived this path afterward, but in the
+            # actual argument dcfldd itself receives here): str.replace()
+            # rewrites the FIRST occurrence of ".dd" in the whole path, not
+            # necessarily the real extension - an evidence_id containing
+            # ".dd" anywhere (nothing here sanitizes it) silently produced a
+            # wrong hash-log path AND left of='s own out_file oddly intact,
+            # with no error surfaced anywhere - just an empty
+            # computed_verification_hashes in the final report.
+            dcfldd_hash_log_files = {h: f"{dest_path}/{base_name}_{h}.log" for h in hashes}
             for h in hashes:
-                cmd.append(f"{h}log={out_file.replace('.dd', f'_{h}.log')}")
+                cmd.append(f"{h}log={dcfldd_hash_log_files[h]}")
 
     elif fmt == 'plain_dd':
         out_file = f"{dest_path}/{base_name}.dd"
@@ -3406,17 +3435,24 @@ def start_imaging():
         # capture-before-spawn discipline every other background-thread
         # log_chain_of_custody() call in this app already needs, since
         # request/g are request-context-bound proxies that raise off-thread.
-        chain_requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+        # _effective_client_ip(), not a raw X-Real-IP header read (found in a
+        # review pass, the same unconditional-trust gap already fixed in
+        # core/paths.py's log_chain_of_custody() default - this call site
+        # was a second, separate instance of the identical spoofable-IP
+        # pattern, never swept when that fix went in).
+        chain_requester_ip = _effective_client_ip()
         chain_requester_user = getattr(g, 'forensic_user', None)
         thread = threading.Thread(
             target=execution_worker_chained_auto_analyze,
             args=(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes,
-                  chain_case_folder, chain_requester_ip, chain_requester_user)
+                  chain_case_folder, chain_requester_ip, chain_requester_user),
+            kwargs={"dc3dd_log_file": dc3dd_log_file, "dcfldd_hash_log_files": dcfldd_hash_log_files}
         )
     else:
         thread = threading.Thread(
             target=execution_worker,
-            args=(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes)
+            args=(cmd, fmt, total_bytes, out_file, report_target, report_data, hashes),
+            kwargs={"dc3dd_log_file": dc3dd_log_file, "dcfldd_hash_log_files": dcfldd_hash_log_files}
         )
     thread.daemon = True
     thread.start()

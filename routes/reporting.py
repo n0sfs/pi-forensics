@@ -57,7 +57,7 @@ import urllib.request
 
 from flask import Blueprint, jsonify, request, g, send_file, Response
 
-from core.auth import requires_auth, requires_permission, get_current_user_permissions
+from core.auth import requires_auth, requires_permission, get_current_user_permissions, _effective_client_ip
 from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path,
     classify_extension, classify_case_role, sanitize_case_slug, format_epoch,
@@ -2445,7 +2445,7 @@ def start_verify_all_evidence():
     # background daemon thread with no Flask request context (the same
     # capture-before-spawn gotcha this codebase has already hit and fixed
     # twice before for other background-thread log calls).
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(
@@ -2598,7 +2598,7 @@ def start_case_bundle_export():
 
     # Captured now, in the real request thread - same capture-before-spawn
     # requirement as every other background-thread log call in this app.
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     thread = threading.Thread(

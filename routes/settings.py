@@ -45,7 +45,7 @@ from core.auth import (
     requires_auth, requires_permission, check_auth,
     find_user, find_group, get_user_groups, get_user_group_id,
     get_current_user_permissions, get_current_user_role,
-    caller_reauth_ok, _normalize_permissions,
+    caller_reauth_ok, _normalize_permissions, _effective_client_ip,
 )
 from core.paths import safe_path, log_chain_of_custody, is_valid_block_device
 import core.config as config
@@ -2623,7 +2623,7 @@ def apply_network_config():
     # Captured now, in the real request thread - delayed_revert() below runs
     # in a background daemon thread with no Flask request context, where
     # request/g would raise RuntimeError if touched directly.
-    requester_ip = request.headers.get('X-Real-IP', request.remote_addr)
+    requester_ip = _effective_client_ip()
     requester_user = getattr(g, 'forensic_user', None)
 
     def delayed_apply():
