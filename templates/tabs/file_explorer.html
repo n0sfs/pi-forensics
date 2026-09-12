@@ -133,6 +133,17 @@
                     <div id="fileContextMenu" class="dropdown-menu dropdown-menu-dark" style="display:none; position:fixed; z-index:2000; max-height: calc(100vh - 16px); overflow-y: auto;">
                         <div id="ctxMenuRealActions">
                             <button id="btnAutoAnalyze" class="dropdown-item fw-bold text-info" onclick="openAutoAnalyzeModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Detects what this evidence item is (Windows/Linux disk image, memory image, or mobile backup) and runs a curated set of the tools above automatically, as one background job - the fast default path. Every step also stays available individually below."><i class="bi bi-lightning-fill me-2"></i>Auto Analyze...</button>
+                            <!-- Copy/Delete moved here (2026-09-11, a review pass's own top finding) - they
+                                 used to be the LAST items of a "File Operations" section, one of 9 collapsible
+                                 sections that all fully re-collapse on every right-click (resetCtxMenuSections(),
+                                 main.js) - despite these being, per this file's own prior comment, "always
+                                 relevant to any selection," reaching them cost 2 extra clicks (expand the
+                                 section, then click) on literally every single use. Standalone/no dedicated
+                                 section now, the same treatment btnAutoAnalyze above already gets (section:
+                                 null in CTX_MENU_REAL_FS_ITEMS, main.js) - always visible/reachable with zero
+                                 clicks spent re-expanding anything. -->
+                            <button id="btnCopyFile" class="dropdown-item" onclick="promptCopySelected()" disabled><i class="bi bi-copy me-2"></i>Copy to...</button>
+                            <button id="btnDeleteFile" class="dropdown-item text-danger" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-2"></i>Delete</button>
                             <div class="dropdown-divider"></div>
                             <button type="button" class="ctx-menu-section-toggle" data-ctx-section="ctxSecImageCase" onclick="toggleCtxMenuSection('ctxSecImageCase')"><span>Image &amp; Case</span><i class="bi bi-chevron-down"></i></button>
                             <div id="ctxSecImageCase" class="ctx-menu-section" style="display:none;">
@@ -242,11 +253,6 @@
                             <button id="btnRunMvtAndroid" class="dropdown-item" onclick="runSelectedMvtScan('android')" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Best-effort spyware/IOC scan of an Android backup folder (adb pull/bugreport output) using MVT - errors clearly if the format doesn't match. For a real .ab Android Backup file, use 'Parse/Scan Android Backup (.ab)' instead - MVT accepts that format directly."><i class="bi bi-phone me-2"></i>MVT Scan (Android Backup Folder)</button>
                             <button id="btnAndroidBackupFile" class="dropdown-item" onclick="openAndroidBackupModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Parses or MVT-scans a real .ab Android Backup file (this app's own Mobile Forensics 'Backup' mode, or any other real `adb backup` output) - the non-root counterpart to Mobile Forensics' rooted-only native SMS/MMS parser. Optionally password-protected, matching a password set on the device at backup time."><i class="bi bi-file-earmark-lock2 me-2"></i>Parse/Scan Android Backup (.ab)...</button>
                             <button id="btnMemoryForensics" class="dropdown-item" onclick="openMemoryForensicsModal()" disabled data-bs-toggle="tooltip" data-bs-placement="left" title="Analyzes an already-captured Windows RAM image (.raw/.mem/.vmem/.dmp/.lime) with Volatility3 - process list, network connections, command lines, and more. Windows only; needs internet the first time each Windows build is analyzed, to fetch its matching symbol table."><i class="bi bi-memory me-2"></i>Memory Forensics...</button>
-                            </div>
-                            <button type="button" class="ctx-menu-section-toggle" data-ctx-section="ctxSecFileOps" onclick="toggleCtxMenuSection('ctxSecFileOps')"><span>File Operations</span><i class="bi bi-chevron-down"></i></button>
-                            <div id="ctxSecFileOps" class="ctx-menu-section" style="display:none;">
-                            <button id="btnCopyFile" class="dropdown-item" onclick="promptCopySelected()" disabled><i class="bi bi-copy me-2"></i>Copy to...</button>
-                            <button id="btnDeleteFile" class="dropdown-item text-danger" onclick="deleteSelectedFile()" disabled><i class="bi bi-trash-fill me-2"></i>Delete</button>
                             </div>
                         </div>
                         <div id="ctxMenuImageActions" style="display:none;">

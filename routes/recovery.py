@@ -724,6 +724,17 @@ def start_foremost():
     # directory already exists. The report lives in the parent dest_path
     # instead, since job_dest_dir won't exist until foremost itself creates it.
 
+    # Pre-check the exact collision this can't avoid otherwise (found
+    # missing in a review pass) - start_logical_acquisition()/
+    # start_image_conversion() (routes/acquisition.py) both already check
+    # for this same class of collision and return a clear 409 before ever
+    # starting a job; foremost/scalpel instead let the job start, let
+    # foremost itself refuse a few seconds later, and surface only its own
+    # raw stderr line buried in the job log.
+    if os.path.exists(job_dest_dir):
+        update_job(active=False)
+        return jsonify({"error": f"{job_dest_dir} already exists - foremost refuses to run with a pre-existing output directory. Rename/remove it, or change the Evidence ID, before starting."}), 409
+
     update_job(
         format="foremost", progress_percent=0.0, speed_mbps=0.0,
         transferred_bytes=0, total_bytes=0, status="Initializing...",
@@ -787,6 +798,11 @@ def start_scalpel():
     base_name = f"{case_num}_{evidence_id}_scalpel"
     job_dest_dir = os.path.join(dest_path, base_name)
     # Deliberately NOT pre-created - same reason as foremost above.
+
+    # Same pre-check as start_foremost() above - see its comment for why.
+    if os.path.exists(job_dest_dir):
+        update_job(active=False)
+        return jsonify({"error": f"{job_dest_dir} already exists - scalpel refuses to run with a pre-existing output directory. Rename/remove it, or change the Evidence ID, before starting."}), 409
 
     update_job(
         format="scalpel", progress_percent=0.0, speed_mbps=0.0,
