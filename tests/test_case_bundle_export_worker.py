@@ -169,6 +169,39 @@ class TestExecutionWorkerCaseBundleExport:
         assert job["status"] == "Failed"
         assert "simulated failure" in job["log"]
 
+    def test_raw_images_are_stored_not_compressed_but_other_files_still_are(self, tmp_path):
+        # Regression test for a review-pass fix: DEFLATE was previously
+        # applied to every file including raw acquisition images, which are
+        # either already high-entropy real data or (E01) already compressed
+        # by the acquisition tool itself - a wasted CPU-bound pass for
+        # near-zero size benefit. Raw images now use ZIP_STORED specifically
+        # while everything else still gets the ZipFile-level ZIP_DEFLATED
+        # default, verified here via each entry's own compress_type rather
+        # than just checking the bundle still contains the right names.
+        case_folder = self._seed_case(tmp_path)
+        job, mock_tag = self._run(case_folder, include_images=True)
+        assert job["status"] == "Completed Successfully"
+        zip_path = mock_tag.call_args[0][1]
+        with zipfile.ZipFile(zip_path) as zf:
+            assert zf.getinfo("evidence.dd").compress_type == zipfile.ZIP_STORED
+            assert zf.getinfo("notes.txt").compress_type == zipfile.ZIP_DEFLATED
+
+    def test_preflight_storage_check_fails_the_job_without_writing_a_zip(self, tmp_path):
+        # Regression test for a review-pass fix: this worker never checked
+        # free space before writing, unlike start_imaging()/start_ddrescue()
+        # - since the zip lands inside case_folder alongside the files it's
+        # archiving (not in-place), including raw images can need roughly
+        # double their own size in free space, transiently.
+        case_folder = self._seed_case(tmp_path)
+        # Only .free is ever read by the code under test.
+        with mock.patch("shutil.disk_usage", return_value=mock.Mock(free=1)):
+            job, mock_tag = self._run(case_folder, include_images=True)
+        assert job["status"] == "Failed"
+        assert "Pre-flight storage check failed" in job["log"]
+        mock_tag.assert_not_called()
+        # No half-written zip left behind either.
+        assert not any(f.endswith(".zip") for f in os.listdir(case_folder))
+
     def test_cleanup_always_sets_active_false_regardless_of_outcome(self, tmp_path):
         for i, side_effect in enumerate((None, RuntimeError("boom"))):
             # Each iteration needs its own real case folder - reusing the
