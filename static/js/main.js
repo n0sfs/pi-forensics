@@ -18323,6 +18323,14 @@ async function startLogicalAcquisition() {
         notes: document.getElementById("notes")?.value || "None",
     };
 
+    // Same double-click guard startAcquisition() gives every other format
+    // (found in a review pass) - this branch used to skip it entirely since
+    // it returns before startAcquisition() ever reaches its own disable
+    // call, leaving a fast double-click free to fire two overlapping
+    // /api/start_logical_acquisition requests.
+    const startBtn = document.getElementById("startBtn");
+    if (startBtn) startBtn.disabled = true;
+
     try {
         const res = await fetch('/api/start_logical_acquisition', {
             method: 'POST',
@@ -18338,11 +18346,14 @@ async function startLogicalAcquisition() {
         const data = await res.json();
         if (!data.success) {
             showToast(`Logical acquisition failed to start: ${data.error}`, 'danger');
+            if (startBtn) startBtn.disabled = false;
             return;
         }
+        if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = false;
         showToast('Logical acquisition started - see the Output console for live progress.', 'success');
     } catch (err) {
         showToast('Request failed - see console.', 'danger');
+        if (startBtn) startBtn.disabled = false;
     }
 }
 
@@ -19363,9 +19374,26 @@ async function checkSmartTelemetry() {
             if (document.getElementById("lblReallocated")) document.getElementById("lblReallocated").innerText = data.reallocated_sectors !== undefined ? data.reallocated_sectors : "0";
             if (document.getElementById("lblPending")) document.getElementById("lblPending").innerText = data.pending_sectors !== undefined ? data.pending_sectors : "0";
             if (document.getElementById("lblPowerHours")) document.getElementById("lblPowerHours").innerText = data.power_on_hours ? `${data.power_on_hours} hrs` : "N/A";
+        } else {
+            // Distinguish "the check itself failed" from "never checked yet"
+            // (found in a review pass) - smart_check() was deliberately
+            // hardened to honestly report failure instead of fabricating a
+            // healthy result, but the badge used to just stay UNCHECKED on
+            // failure, indistinguishable from a drive nobody ever scanned.
+            if (healthBadge) {
+                healthBadge.className = "badge bg-warning text-dark";
+                healthBadge.innerHTML = "CHECK FAILED";
+            }
+            showToast(`SMART check failed: ${data.error || 'unknown error'}`, 'warning');
         }
         fetchSystemInfo();
-    } catch (err) {}
+    } catch (err) {
+        if (healthBadge) {
+            healthBadge.className = "badge bg-warning text-dark";
+            healthBadge.innerHTML = "CHECK FAILED";
+        }
+        showToast('SMART check failed - see console.', 'warning');
+    }
 }
 
 // --- BitLocker pre-acquisition unlock (dislocker) ---
@@ -20376,8 +20404,12 @@ async function stopAcquisition() {
             if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = true;
             if (document.getElementById("btnRecoveryStart")) document.getElementById("btnRecoveryStart").disabled = false;
             if (document.getElementById("btnRecoveryStop")) document.getElementById("btnRecoveryStop").disabled = true;
+        } else {
+            showToast(`Stop failed: ${data.error}`, 'danger');
         }
-    } catch (err) {}
+    } catch (err) {
+        showToast('Stop failed - see console.', 'danger');
+    }
 }
 
 // ===================== MOBILE FORENSICS =====================

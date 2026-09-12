@@ -1424,7 +1424,7 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
         update_job(status="Phase 2/2: Converting to AFF...", progress_percent=50.0)
         append_log(f"[*] Phase 2/2: Converting {raw_file} -> {aff_file}")
 
-        cmd2 = ["affconvert", "-o", aff_file, raw_file]
+        cmd2 = ["/usr/bin/affconvert", "-o", aff_file, raw_file]
         append_log(f"[*] Command: {' '.join(cmd2)}")
 
         def on_line_phase2(clean_line):
@@ -2788,7 +2788,7 @@ def smart_check():
 
         capacity_str = f"{round(total_bytes / (1024**3), 2)} GB" if total_bytes > 0 else "N/A"
 
-        res = subprocess.run(['sudo', 'smartctl', '-a', '-j', drive], capture_output=True, text=True, timeout=15)
+        res = subprocess.run(['sudo', '/usr/sbin/smartctl', '-a', '-j', drive], capture_output=True, text=True, timeout=15)
         data = json.loads(res.stdout) if res.stdout else {}
         
         healthy = data.get('smart_status', {}).get('passed', True)
@@ -3280,7 +3280,7 @@ def start_imaging():
             # a service restart. The existing except Exception below already
             # absorbs a TimeoutExpired the same as any other smartctl
             # failure, falling back to no SMART data.
-            res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True, timeout=15)
+            res_smart = subprocess.run(['sudo', '/usr/sbin/smartctl', '-a', '-j', source], capture_output=True, text=True, timeout=15)
             if res_smart.stdout:
                 smart_data = json.loads(res_smart.stdout)
         except Exception:
@@ -3417,7 +3417,7 @@ def start_imaging():
         # via the generic execution_worker thread below.
         out_file = f"{dest_path}/{base_name}.aff"
         dc3dd_cmd_preview = ["sudo", "/usr/bin/dc3dd", f"if={source}", f"of={dest_path}/{base_name}.raw"] + [f"hash={h}" for h in hashes]
-        affconvert_cmd_preview = ["affconvert", "-o", out_file, f"{dest_path}/{base_name}.raw"]
+        affconvert_cmd_preview = ["/usr/bin/affconvert", "-o", out_file, f"{dest_path}/{base_name}.raw"]
         cmd = dc3dd_cmd_preview + ["&&"] + affconvert_cmd_preview
 
     else:  # 'dd' / 'raw' -> dc3dd (original default engine)
@@ -3524,7 +3524,12 @@ def start_imaging():
     # already-large, multi-caller function; thread.join() here blocks only
     # this cleanup thread, not the request that already returned above.
     if mount_meta:
-        requester_ip = request.remote_addr
+        # _effective_client_ip(), not a raw request.remote_addr/X-Real-IP read -
+        # a 14th instance of the exact spoofable-IP pattern the review-pass
+        # sweep fixed at 13 other call sites (never caught here since this
+        # capture-before-spawn happens inside start_imaging() itself, not one
+        # of the chain_auto_analyze paths that sweep specifically grepped for).
+        requester_ip = _effective_client_ip()
         requester_user = getattr(g, 'forensic_user', None)
         lock_fn = DECRYPTED_SOURCE_LOCK_FN[mount_meta["kind"]]
         log_action = f"{mount_meta['kind']}_lock"
@@ -3736,6 +3741,13 @@ def start_ddrescue():
 
 @acquisition_bp.route('/api/stop_imaging', methods=['POST'])
 @requires_auth
+# Found in a review pass - this had no permission gate at all beyond login,
+# unlike every /api/start_* route in this file. Gated on every permission
+# whose own tab can populate the single shared current_job (acquisition,
+# recovery, mobile, file_explorer, reporting all call update_job()
+# somewhere) rather than just 'acquisition', since a Recovery-only or
+# Mobile-only user still needs to be able to stop their own job here.
+@requires_permission('acquisition', 'recovery', 'mobile', 'file_explorer', 'reporting')
 def stop_imaging():
     if current_job["active"]:
         try:
@@ -3811,6 +3823,14 @@ def stop_imaging():
 
 @acquisition_bp.route('/api/progress', methods=['GET'])
 @requires_auth
+# Deliberately NOT @requires_permission-gated (considered in the same review
+# pass that added the gate to stop_imaging() above) - fetchProgress() polls
+# this globally every 1s regardless of which tab is active or even open, so
+# any account without acquisition/recovery/mobile/file_explorer/reporting
+# (e.g. a settings-only/manage_users-only admin-lite group, a real
+# permission combination this app allows) would get a 403 on every poll.
+# Read-only job status is a materially lower-risk thing to expose than
+# stop_imaging()'s ability to terminate someone else's running job.
 def get_progress():
     job = snapshot_job()
     return jsonify({
