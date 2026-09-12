@@ -14248,6 +14248,8 @@ function renderCaseJobs() {
 // File Explorer right now - every query in that route has zero image_path filter) for tags/analysis
 // activity. No new backend route needed. Complements Help's Guided Workflow (that answers
 // "have I done X/Y/Z"; this answers "here's everything that's happened in this case").
+let caseCompositionChart = null;
+
 async function renderCaseDashboard() {
     if (!currentLoadedReportData || !activeCase) return;
 
@@ -14332,6 +14334,15 @@ async function renderCaseDashboard() {
             if (analysisCountEl) analysisCountEl.textContent = data.has_analysis_activity ? String(analysisTotal) : '0';
             if (analysisDetailEl) analysisDetailEl.textContent = data.has_analysis_activity
                 ? 'Tools have been run against this case' : 'No analysis tools run yet';
+
+            renderCaseCompositionChart({
+                evidenceItems: events.length,
+                exhibits: files.length,
+                notes: caseNotes.length,
+                taggedItems,
+                parsedArtifacts: parsedArtifactTotal,
+                keywordHits: (data.keyword_hits || {}).total || 0,
+            });
         }
     } catch (err) {
         // Left at whatever they were showing before (usually the template's
@@ -14343,6 +14354,65 @@ async function renderCaseDashboard() {
         if (tagDetailEl) tagDetailEl.textContent = 'Could not load - try again.';
         if (analysisDetailEl) analysisDetailEl.textContent = 'Could not load - try again.';
     }
+}
+
+// One horizontal bar per Overview tile's own number (2026-09-12) - reuses
+// exactly the counts renderCaseDashboard() already computed above (zero new
+// fetches), so relative case size/shape reads at a glance instead of
+// tile-by-tile. Each bar jumps to the same tab its matching tile's onclick
+// already does (jumpToReportingTab() - main.js, reused verbatim, not
+// reimplemented), so this is a second way to reach those tabs, not a
+// competing one. counts is always a fully-shaped object (renderCaseDashboard()
+// only calls this from inside its own data.success branch), so no per-field
+// guarding is needed here the way the tile-number code above needs it.
+const CASE_COMPOSITION_BARS = [
+    { key: 'evidenceItems', label: 'Evidence Items', color: '#00f2fe', tab: 'repJobsTab' },
+    { key: 'exhibits', label: 'Exhibits Attached', color: '#38bdf8', tab: 'repFilesTab' },
+    { key: 'taggedItems', label: 'Tagged Items', color: '#f59e0b', tab: 'repFilesTab' },
+    { key: 'notes', label: 'Case Notes', color: '#a78bfa', tab: 'repCaseNotesTab' },
+    { key: 'parsedArtifacts', label: 'Parsed Artifacts', color: '#34d399', tab: 'repJobsTab' },
+    { key: 'keywordHits', label: 'Keyword Hits', color: '#f87171', tab: 'repJobsTab' },
+];
+
+function renderCaseCompositionChart(counts) {
+    const card = document.getElementById('caseCompositionCard');
+    const canvas = document.getElementById('caseCompositionChart');
+    if (!card || !canvas) return;
+    card.style.display = '';
+
+    const labels = CASE_COMPOSITION_BARS.map((b) => b.label);
+    const values = CASE_COMPOSITION_BARS.map((b) => counts[b.key] || 0);
+    const colors = CASE_COMPOSITION_BARS.map((b) => b.color);
+
+    if (caseCompositionChart) {
+        caseCompositionChart.data.datasets[0].data = values;
+        caseCompositionChart.update();
+        return;
+    }
+
+    caseCompositionChart = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: { labels, datasets: [{ data: values, backgroundColor: colors, hoverBackgroundColor: colors }] },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            scales: {
+                x: { beginAtZero: true, ticks: { color: '#94a3b8', precision: 0 }, grid: { color: 'rgba(255,255,255,0.06)' } },
+                y: { ticks: { color: '#94a3b8', font: { size: 11 } }, grid: { display: false } },
+            },
+            plugins: { legend: { display: false } },
+            onClick: (evt, elements) => {
+                if (!elements.length) return;
+                const bar = CASE_COMPOSITION_BARS[elements[0].index];
+                if (bar) jumpToReportingTab(bar.tab);
+            },
+            onHover: (evt, elements) => {
+                canvas.style.cursor = elements.length ? 'pointer' : 'default';
+            },
+        },
+    });
 }
 
 // --- Case-wide "Verify All Evidence" (A4) -------------------------------------------------
