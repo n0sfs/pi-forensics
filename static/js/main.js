@@ -2223,6 +2223,27 @@ function renderExplorerTreeNode(node, adapter, ancestorPath) {
         expanded = true;
     };
 
+    // Forces this node's own children back out of cache and, if it was
+    // already expanded, rebuilds them fresh - exposed the same way _expand()
+    // is, for refreshExplorerTreeNodeAt() below to call after a copy/delete/
+    // extract changes this exact folder's contents (found in a review pass:
+    // the tree's own cached children previously went stale after any of
+    // those actions until manually collapsed and re-expanded - a deleted
+    // file's tree entry, or a group count like "Files (18)", could keep
+    // showing pre-change state indefinitely).
+    li._refresh = async function () {
+        delete adapter.cache[adapter.key(node)];
+        if (childrenUl) {
+            li.removeChild(childrenUl);
+            childrenUl = null;
+        }
+        const wasExpanded = expanded;
+        expanded = false;
+        toggle.classList.remove('no-children');
+        toggle.innerHTML = '<i class="bi bi-caret-right-fill"></i>';
+        if (wasExpanded) await li._expand();
+    };
+
     toggle.onclick = async (ev) => {
         ev.stopPropagation();
         if (toggle.classList.contains('no-children')) return;
@@ -4519,6 +4540,32 @@ async function syncExplorerTreeSelection(path) {
     if (row) row.classList.add('active');
 }
 
+// Refreshes the tree node for `path` (invalidating and, if currently
+// expanded, rebuilding its cached children) - called after copy/delete/
+// extract so the tree doesn't go stale alongside the listing they already
+// repaint via loadExplorer(). Unlike syncExplorerTreeSelection() above, this
+// deliberately does NOT call _expand() on ancestors along the way - only an
+// already-rendered node (one the examiner has actually opened) can be stale
+// in the first place, so a walk that stops at the first not-yet-rendered
+// ancestor is correct, not a bug: there's nothing to refresh below it yet.
+async function refreshExplorerTreeNodeAt(path) {
+    const container = document.getElementById('explorerTreeContainer');
+    if (!container) return;
+    const rootLi = container.querySelector('li');
+    if (!rootLi || !rootLi.dataset.treeKey || !path.startsWith(rootLi.dataset.treeKey)) return;
+
+    let currentLi = rootLi;
+    let currentPath = rootLi.dataset.treeKey;
+    const remainder = path.slice(currentPath.length).split('/').filter(Boolean);
+    for (const segment of remainder) {
+        currentPath = currentPath.replace(/\/$/, '') + '/' + segment;
+        const childLi = currentLi.querySelector(`:scope > ul > li[data-tree-key="${CSS.escape(currentPath)}"]`);
+        if (!childLi) { currentLi = null; break; }
+        currentLi = childLi;
+    }
+    if (currentLi && currentLi._refresh) await currentLi._refresh();
+}
+
 // Same idea for image mode - explorerImagePathStack already IS the full
 // ancestor-plus-current-directory chain by the time loadExplorerImageDir()
 // finishes (see its own comment), so no separate path param is needed here.
@@ -4564,9 +4611,55 @@ function resyncExplorerRootToActiveCase() {
     loadExplorer(newRoot);
 }
 
+// #explorerPath used to just be a plain non-interactive text label (found in
+// a review pass) - the only way to move up was the single-level "Up
+// Directory" row loadExplorer() synthesizes below, one click per level.
+// Each path segment is now its own clickable crumb jumping straight there,
+// same idea as any file manager's own address bar. The last segment (the
+// folder you're actually looking at) stays plain text, not a link - clicking
+// it would just reload the same listing. No client-side floor enforcement
+// for a case's own root or EVIDENCE_ROOT (unlike "Up Directory", which stops
+// at a case's floor) - clicking a crumb above either boundary hits the exact
+// same safe_path()/case-folder rejection loadExplorer()'s own error handling
+// already recovers from gracefully (falls back to the last known-good path),
+// so this doesn't need its own separate guard.
+function renderExplorerPathBreadcrumb(path) {
+    const pathLabel = document.getElementById('explorerPath');
+    if (!pathLabel) return;
+    pathLabel.innerHTML = '';
+    const parts = path.split('/').filter(Boolean);
+    if (parts.length === 0) {
+        pathLabel.textContent = '/';
+        return;
+    }
+    let cumulative = '';
+    parts.forEach((part, i) => {
+        cumulative += '/' + part;
+        const isLast = i === parts.length - 1;
+        const target = cumulative;
+        const seg = document.createElement('span');
+        seg.textContent = part; // untrusted path segment - text node only
+        if (isLast) {
+            seg.className = 'text-info fw-bold';
+        } else {
+            seg.className = 'text-info';
+            seg.style.cursor = 'pointer';
+            seg.style.textDecoration = 'underline';
+            seg.title = `Go to ${target}`;
+            seg.onclick = () => loadExplorer(target);
+        }
+        pathLabel.appendChild(seg);
+        if (!isLast) {
+            const sep = document.createElement('span');
+            sep.textContent = ' / ';
+            sep.className = 'text-subtle';
+            pathLabel.appendChild(sep);
+        }
+    });
+}
+
 async function loadExplorer(path) {
     const container = document.getElementById('explorerContainer');
-    const pathLabel = document.getElementById('explorerPath');
     if (!container) return;
 
     try {
@@ -4597,7 +4690,7 @@ async function loadExplorer(path) {
         }
 
         explorerPath = data.path;
-        if (pathLabel) pathLabel.innerText = data.path;
+        renderExplorerPathBreadcrumb(data.path);
 
         // With a case active, the case folder is the effective floor for "Up Directory" - stepping
         // out of it landed the examiner in /mnt with no indication they'd left the case at all
@@ -5573,6 +5666,14 @@ async function performCopyTo(sourcePath, destDir) {
             // extractExplorerImageSelected(), already toasts both ways).
             showToast(`Copied ${sourcePath.split('/').pop()} to ${destDir}.`, 'success');
             loadExplorer(explorerPath);
+            // Refreshes the DESTINATION folder's tree node, not the source's
+            // (found in a review pass, alongside deleteSelectedFile()'s
+            // identical gap below) - a copy doesn't change the source
+            // folder's own contents, only the destination's, which is a
+            // different node than whatever explorerPath/loadExplorer() above
+            // just repainted whenever destDir isn't the folder being viewed
+            // right now (the common case - the whole point of "Copy to...").
+            refreshExplorerTreeNodeAt(destDir);
         } else {
             showToast(`Copy failed: ${data.error}`, 'danger');
         }
@@ -5610,6 +5711,11 @@ async function deleteSelectedFile() {
             }
             switchExplorerRightView('preview');
             loadExplorer(explorerPath);
+            // Tree pane didn't refresh alongside the listing (found in a
+            // review pass) - a deleted file's own tree entry, or a group
+            // count like "Files (18)", could keep showing pre-delete state
+            // until the node was manually collapsed and re-expanded.
+            refreshExplorerTreeNodeAt(explorerPath);
         } else {
             showToast(`Delete failed: ${data.error}`, 'danger');
         }
@@ -18816,7 +18922,16 @@ async function refreshDrives() {
             // examiner who moves a drive to a new port and clicks Refresh
             // wants to see its updated port, not lose their selection.
             const prevValue = selectEl.value;
-            selectEl.innerHTML = '<option value="">-- Choose Target Source Drive --</option>';
+            // Per-select placeholder (found in a review pass) - this used to
+            // be one hardcoded "Choose Target Source Drive" string for every
+            // .drive-select, including Recovery's own source dropdown and
+            // Drive Management's eject dropdown, neither of which is
+            // choosing a "target" of anything. Each select now names its own
+            // wording via data-placeholder (see acquisition.html/
+            // recovery.html/drive_management.html), falling back to the
+            // original text for any select that doesn't set one.
+            const placeholderText = selectEl.dataset.placeholder || '-- Choose Target Source Drive --';
+            selectEl.innerHTML = `<option value="">${placeholderText}</option>`;
             currentDrivesList.forEach(dev => {
                 const opt = document.createElement("option");
                 opt.value = dev.device;

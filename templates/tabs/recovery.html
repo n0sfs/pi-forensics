@@ -19,7 +19,18 @@
 
                                             <div id="recoverySourceRow" class="mb-2">
                                                 <label class="telemetry-grid-label d-block mb-1">Source (device or acquired image path)</label>
-                                                <select id="recoverySourceDrive" class="form-select form-select-sm drive-select"></select>
+                                                <!-- Scan button added (2026-09-11, a review pass) - Acquisition's
+                                                     equivalent #driveSelect has always had one right next to it, but
+                                                     this dropdown had no way to refresh itself at all outside a full
+                                                     page reload or a visit to Settings > Drive Management (which
+                                                     auto-refreshes on a timer only while that specific pane is
+                                                     visible). A drive plugged in after page load was invisible here
+                                                     until one of those two workarounds - calls the same shared
+                                                     refreshDrives() every other drive-select already uses. -->
+                                                <div class="input-group input-group-sm mb-1">
+                                                    <select id="recoverySourceDrive" class="form-select form-select-sm drive-select" data-placeholder="-- Choose Source Drive --"></select>
+                                                    <button class="btn btn-outline-info fw-bold" type="button" onclick="refreshDrives()" title="Re-scan for connected drives"><i class="bi bi-arrow-clockwise"></i></button>
+                                                </div>
                                                 <div class="input-group input-group-sm mt-1">
                                                     <input type="text" id="recoverySourcePath" class="form-control font-monospace" placeholder="Or type/browse to an image path, e.g. /mnt/CASE_ITEM-01.dd">
                                                     <button class="btn btn-outline-info fw-bold" onclick="openFilePickerModal('recoverySource')" title="Browse to an image file"><i class="bi bi-folder2-open me-1"></i>Browse</button>
