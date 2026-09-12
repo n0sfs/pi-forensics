@@ -165,7 +165,16 @@
                                                          Bootstrap's col-lg-4 breakpoint reacts to viewport width,
                                                          not this nested row's own narrower rendered width. -->
                                                     <div class="row g-3">
-                                                        <div class="col-lg-3 col-md-4">
+                                                        <!-- d-flex flex-column added (2026-09-12, a cleanup pass) - Bootstrap's
+                                                             .row already stretches both columns to equal height (flexbox's
+                                                             default align-items:stretch), but this column's own CONTENT
+                                                             (search + chart) just sat at the top of that stretched space,
+                                                             leaving a visibly shorter block than the tile grid beside it
+                                                             once the grid has 3 full rows. flex-column here + flex-grow-1
+                                                             on #caseCompositionCard below makes the chart itself absorb
+                                                             the leftover height instead, so this column's bottom edge
+                                                             actually lines up with the tile grid's. -->
+                                                        <div class="col-lg-3 col-md-4 d-flex flex-column">
                                                             <div class="input-group input-group-sm mb-2">
                                                                 <span class="input-group-text bg-app-dark border-secondary text-info" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button" style="cursor:help;"
                                                                       title="Searches this case's Report Narrative (including Case Details), Jobs, Case Notes, Files, and Case Activity Log - client-side, against what's already loaded - plus a live server-side search of every Parsed Artifact, Tagged Item, and resolved Contact indexed for this case. Click a result to jump to its tab."><i class="bi bi-search"></i></span>
@@ -194,9 +203,18 @@
                                                                  bar is clickable, same jumpToReportingTab() targets as
                                                                  the matching tile - visualization AND fewer clicks, not
                                                                  either/or. Hidden until a case loads (no data to plot). -->
-                                                            <div id="caseCompositionCard" class="mt-2" style="display:none;">
+                                                            <!-- No d-flex class here (would repeat the exact !important-
+                                                                 vs-inline-style bug documented twice elsewhere in this
+                                                                 file) - renderCaseCompositionChart() (main.js) sets
+                                                                 style.display = 'flex' directly instead, so flex-column's
+                                                                 own layout only ever applies once this element is
+                                                                 genuinely meant to be visible. flex-grow-1 is unaffected
+                                                                 either way - it only governs how this element behaves as
+                                                                 a flex ITEM within its parent's row (the .d-flex.flex-column
+                                                                 column above), not its own display type. -->
+                                                            <div id="caseCompositionCard" class="mt-2 flex-column flex-grow-1" style="display:none; min-height:0;">
                                                                 <label class="telemetry-grid-label d-block mb-1">Case Composition</label>
-                                                                <div style="position: relative; height: 200px;">
+                                                                <div style="position: relative; flex: 1; min-height: 200px;">
                                                                     <canvas id="caseCompositionChart"></canvas>
                                                                 </div>
                                                             </div>
