@@ -5283,9 +5283,13 @@ document.addEventListener('DOMContentLoaded', () => {
 // hiding those would read as "wrong tool" when it's really "right tool,
 // missing a prerequisite."
 const CTX_MENU_REAL_FS_ITEMS = [
-    // File Operations - always relevant to any selection.
-    { id: 'btnCopyFile', section: 'ctxSecFileOps', visible: () => true },
-    { id: 'btnDeleteFile', section: 'ctxSecFileOps', visible: () => true },
+    // Copy/Delete - always relevant to any selection. section: null (moved
+    // out of the old "File Operations" collapsible section 2026-09-11,
+    // matching btnAutoAnalyze's own standalone treatment below) - these no
+    // longer live inside a `.ctx-menu-section` div at all, so there's
+    // nothing for autoHideEmptyCtxMenuSections() to hide them alongside.
+    { id: 'btnCopyFile', section: null, visible: () => true },
+    { id: 'btnDeleteFile', section: null, visible: () => true },
     // Image & Case
     { id: 'btnBrowseImage', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnUnlockEncVolImage', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
@@ -5525,6 +5529,35 @@ function promptCopySelected() {
     openFolderModal('copyDestination');
 }
 
+// Copy silently overwrote a same-named destination entry with zero warning
+// (found in a review pass) - shutil.copy2()/copytree(dirs_exist_ok=True)
+// on the backend, and neither side ever checked for a collision first. A
+// fresh listing of destDir (not the folder modal's own already-rendered
+// DOM, which could be a stale render if the destination was navigated to a
+// moment ago) decides whether to interpose a confirm() before the real
+// copy call - in a forensics tool, silently clobbering an existing
+// evidence copy or manifest is a real integrity risk worth one extra
+// network round trip to avoid.
+async function confirmAndCopyTo(sourcePath, destDir) {
+    const fileName = sourcePath.split('/').pop();
+    try {
+        const res = await fetch('/api/files/browse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: destDir })
+        });
+        const data = await res.json();
+        const collision = data.success && (data.items || []).some(i => i.name === fileName);
+        if (collision && !confirm(`"${fileName}" already exists in ${destDir}.\n\nOverwrite it?`)) return;
+    } catch (err) {
+        // Collision check itself failed (network blip) - fall through to
+        // the real copy rather than blocking the whole action over a
+        // failed pre-check; performCopyTo() has its own error handling for
+        // the copy call itself.
+    }
+    performCopyTo(sourcePath, destDir);
+}
+
 async function performCopyTo(sourcePath, destDir) {
     try {
         const res = await fetch('/api/files/copy', {
@@ -5534,18 +5567,31 @@ async function performCopyTo(sourcePath, destDir) {
         });
         const data = await res.json();
         if (data.success) {
+            // Copy used to give zero positive confirmation - silently
+            // refreshed the listing on success, only ever toasting on
+            // failure (found in a review pass; every sibling action, e.g.
+            // extractExplorerImageSelected(), already toasts both ways).
+            showToast(`Copied ${sourcePath.split('/').pop()} to ${destDir}.`, 'success');
             loadExplorer(explorerPath);
         } else {
             showToast(`Copy failed: ${data.error}`, 'danger');
         }
     } catch (err) {
-        console.error("Error copying file:", err);
+        showToast('Copy failed: request error.', 'danger');
     }
 }
 
 async function deleteSelectedFile() {
     if (!activeSelectedFile) return;
-    if (!confirm(`Are you sure you want to delete ${activeSelectedFile}?`)) return;
+    // Folders get a materially stronger warning than a single file (found
+    // in a review pass) - the backend does a recursive shutil.rmtree() for
+    // a directory, but this used to show the identical one-line confirm()
+    // regardless, understating what "delete" actually does to a folder
+    // full of evidence.
+    const confirmMsg = activeSelectedIsDir
+        ? `Delete "${activeSelectedFile}"?\n\nThis will permanently delete the FOLDER AND EVERYTHING INSIDE IT. This cannot be undone.`
+        : `Are you sure you want to delete ${activeSelectedFile}?`;
+    if (!confirm(confirmMsg)) return;
 
     try {
         const res = await fetch('/api/files/delete', {
@@ -5555,6 +5601,7 @@ async function deleteSelectedFile() {
         });
         const data = await res.json();
         if (data.success) {
+            showToast(`Deleted ${activeSelectedFile.split('/').pop()}.`, 'success');
             activeSelectedFile = null;
             const preview = document.getElementById('explorerPreview');
             if (preview) {
@@ -5566,7 +5613,9 @@ async function deleteSelectedFile() {
         } else {
             showToast(`Delete failed: ${data.error}`, 'danger');
         }
-    } catch (err) {}
+    } catch (err) {
+        showToast('Delete failed: request error.', 'danger');
+    }
 }
 
 // --- File Metadata Viewer (ExifTool) ---
@@ -6142,6 +6191,14 @@ async function runSelectedStrings() {
 
 async function runSelectedVideoContactSheet() {
     if (!activeSelectedFile) return;
+    // Unlike every sibling single-file tool (Binwalk/ClamAV/Strings/OCR all
+    // call showToolOutputModal() first, which shows "Running..." before the
+    // fetch even starts), this gave zero feedback until the - potentially
+    // multi-second, ffmpeg-driven - request resolved, risking a confused
+    // re-click (found in a review pass). A toast modal isn't the right fit
+    // here (the eventual result is a toast, not open-ended text output), so
+    // a quick "in progress" toast first is the minimal fix.
+    showToast('Generating video contact sheet...', 'info');
     try {
         const res = await fetch('/api/files/video_contact_sheet', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -6158,6 +6215,8 @@ async function runSelectedVideoContactSheet() {
 async function runImageVideoContactSheet() {
     if (!explorerImageSelected) return;
     const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    // Same missing-feedback issue as runSelectedVideoContactSheet() above.
+    showToast('Generating video contact sheet...', 'info');
     try {
         const res = await fetch('/api/image/video_contact_sheet', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -17975,7 +18034,7 @@ function navigateFolderUp() {
 function selectCurrentFolder() {
     if (modalPickerMode === 'copyDestination') {
         if (folderModalInstance) folderModalInstance.hide();
-        if (activeSelectedFile) performCopyTo(activeSelectedFile, currentBrowsePath);
+        if (activeSelectedFile) confirmAndCopyTo(activeSelectedFile, currentBrowsePath);
         return;
     }
     if (modalPickerMode === 'logicalAcqFolder') {
@@ -18078,6 +18137,24 @@ async function startLogicalAcquisition() {
 
 // --- Telemetry & Drives ---
 function getActiveTargetDrive() {
+    // Recovery has its own source-drive dropdown (#recoverySourceDrive),
+    // independent of Acquisition's #driveSelect (found in a review pass) -
+    // this is polled every 2s by fetchSystemInfo() to drive the always-
+    // visible write-blocker badge, and used to only ever consult
+    // #driveSelect regardless of which tab was actually active. An examiner
+    // working purely from File Recovery against a different physical drive
+    // than whatever (or nothing) happened to be selected on Acquisition saw
+    // the wrong device's write-block status - the one indicator this app
+    // leans on hardest for forensic integrity. Falls back to #driveSelect
+    // when Recovery isn't the active tab, matching this function's own
+    // existing "|| /dev/sda" harmless-default posture (a badge, not a
+    // destructive action - see startDevicePreview()'s comment above for why
+    // that one deliberately does NOT use this helper).
+    const recoveryTabActive = document.getElementById('ddrescue-tab')?.classList.contains('active');
+    if (recoveryTabActive) {
+        const recoveryDrive = document.getElementById('recoverySourceDrive')?.value;
+        if (recoveryDrive) return recoveryDrive;
+    }
     return document.getElementById("driveSelect")?.value || "/dev/sda";
 }
 
@@ -18696,7 +18773,12 @@ async function toggleWriteBlockForSelectedDrive() {
             showToast(`Write blocker toggle failed: ${data.error}`, 'danger');
         }
     } catch (err) {
-        console.error("Write blocker toggle error:", err);
+        // Was console.error-only (found in a review pass) - for a write-
+        // blocker toggle specifically, a silently-failed request is worse
+        // than most: the examiner has no on-screen indication the flip
+        // didn't happen, which matters for a control this app leans on
+        // hardest for forensic integrity.
+        showToast('Write blocker toggle failed: request error.', 'danger');
     }
 }
 
@@ -19686,6 +19768,16 @@ async function startAcquisition() {
         showToast(`ddrescue does not support the unlocked ${ENC_VOL_TYPE_LABELS[encVolActiveType] || 'encrypted'} volume - it will image the raw encrypted device directly.`, 'warning');
     }
 
+    // Disabled immediately, not just inside the success branch below (found
+    // in a review pass) - on a slow connection, a double-click before the
+    // response returns could fire two overlapping start requests. The
+    // backend's job_lock would reject the second one, but that 400 used to
+    // land in the empty catch below with zero feedback either way. Re-
+    // enabled on any failure path (both branches below) since the job never
+    // actually started in that case.
+    const startBtn = document.getElementById("startBtn");
+    if (startBtn) startBtn.disabled = true;
+
     try {
         const res = await fetch(endpoint, {
             method: 'POST',
@@ -19695,15 +19787,20 @@ async function startAcquisition() {
         const data = await res.json();
 
         if (data.success) {
-            if (document.getElementById("startBtn")) document.getElementById("startBtn").disabled = true;
             if (document.getElementById("stopBtn")) document.getElementById("stopBtn").disabled = false;
             // The backend keeps the dislocker/cryptsetup mount alive for the
             // whole job and unmounts it automatically once the job finishes -
             // mirror that transition in fetchProgress() so the UI doesn't
             // keep offering "Lock / Cleanup" for a mount that's already gone.
             if (useUnlockedSource) encVolMountConsumedByJob = true;
-        } else showToast(`Start failed: ${data.error}`, 'danger');
-    } catch (err) {}
+        } else {
+            showToast(`Start failed: ${data.error}`, 'danger');
+            if (startBtn) startBtn.disabled = false;
+        }
+    } catch (err) {
+        showToast(`Start failed: ${err.message}`, 'danger');
+        if (startBtn) startBtn.disabled = false;
+    }
 }
 
 // The right-hand pane shows either the live terminal (background jobs,
@@ -19885,7 +19982,7 @@ async function startRecoveryTool() {
             showToast(`Start failed: ${data.error}`, 'danger');
         }
     } catch (err) {
-        console.error(`Error starting ${tool}:`, err);
+        showToast(`Start failed: ${err.message}`, 'danger');
     }
 }
 

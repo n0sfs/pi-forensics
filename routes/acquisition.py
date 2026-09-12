@@ -2719,7 +2719,7 @@ def smart_check():
 
         capacity_str = f"{round(total_bytes / (1024**3), 2)} GB" if total_bytes > 0 else "N/A"
 
-        res = subprocess.run(['sudo', 'smartctl', '-a', '-j', drive], capture_output=True, text=True)
+        res = subprocess.run(['sudo', 'smartctl', '-a', '-j', drive], capture_output=True, text=True, timeout=15)
         data = json.loads(res.stdout) if res.stdout else {}
         
         healthy = data.get('smart_status', {}).get('passed', True)
@@ -2766,19 +2766,20 @@ def smart_check():
             "power_on_hours": power_on
         })
 
-    except Exception:
-        return jsonify({
-            "success": True,
-            "healthy": True,
-            "vendor_model": "Generic Media Device",
-            "media_type": "USB / Storage Media",
-            "capacity": "N/A",
-            "serial": "N/A",
-            "temperature": None,
-            "reallocated_sectors": 0,
-            "pending_sectors": 0,
-            "power_on_hours": None
-        })
+    except Exception as e:
+        # Used to return success: True / healthy: True (a fully green-
+        # looking PASSED payload) on ANY failure here - a timeout, a
+        # malformed smartctl JSON response, smartctl missing entirely -
+        # fabricating a health check that never actually happened (found in
+        # a review pass, and a real contradiction of this app's own
+        # "disclose, don't silently promise" posture used everywhere else,
+        # e.g. _detect_veracrypt()'s honest non-answer). success: False
+        # here is a no-op for the frontend's own checkSmartTelemetry() -
+        # it only updates the health badge/labels when success is true, so
+        # this now correctly leaves the badge at its default "UNCHECKED"
+        # state instead of falsely claiming a drive passed a check that
+        # never completed.
+        return jsonify({"success": False, "error": f"SMART check failed: {e}"})
 
 @acquisition_bp.route('/api/toggle_write_block', methods=['POST'])
 @requires_auth
@@ -3199,7 +3200,18 @@ def start_imaging():
     smart_data = {}
     if source_kind == 'real_device':
         try:
-            res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True)
+            # timeout= added (2026-09-11, a review pass) - this call sits
+            # between update_job(active=True) above (already claiming the
+            # one station-wide job slot) and active_proc actually getting
+            # assigned a few lines later, so an unbounded hang here (a real,
+            # documented smartctl behavior against some flaky USB-SATA
+            # bridges) couldn't be recovered by the Stop button at all -
+            # get_active_proc() would still be None, and the whole station
+            # would stay locked out of every acquisition/recovery job until
+            # a service restart. The existing except Exception below already
+            # absorbs a TimeoutExpired the same as any other smartctl
+            # failure, falling back to no SMART data.
+            res_smart = subprocess.run(['sudo', 'smartctl', '-a', '-j', source], capture_output=True, text=True, timeout=15)
             if res_smart.stdout:
                 smart_data = json.loads(res_smart.stdout)
         except Exception:
@@ -3571,6 +3583,20 @@ def start_ddrescue():
             total_bytes = int(res.stdout.strip())
     except Exception:
         pass
+
+    # Pre-flight free-space check (found missing in a review pass) -
+    # start_imaging() already does exactly this a few hundred lines above,
+    # but it was never copied over here. ddrescue specifically exists for
+    # large/failing drives and can run for hours across multiple passes -
+    # discovering "destination ran out of space" mid-run is a far worse
+    # outcome here than for a routine dd, making this check more valuable
+    # for this format, not less.
+    dest_disk_usage = shutil.disk_usage(dest_path)
+    if total_bytes > 0 and dest_disk_usage.free < total_bytes:
+        free_gb = round(dest_disk_usage.free / (1024**3), 2)
+        required_gb = round(total_bytes / (1024**3), 2)
+        update_job(active=False)
+        return jsonify({"error": f"Pre-flight storage check failed: Destination has only {free_gb} GB free, but source requires {required_gb} GB."}), 400
 
     update_job(
         format="ddrescue",
