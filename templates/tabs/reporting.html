@@ -180,6 +180,26 @@
                                                                  to the same height as before rather than growing unbounded
                                                                  alongside a potentially much taller right-hand tile grid. -->
                                                             <div id="repSearchResults" class="font-monospace small border border-secondary rounded-2 p-2" style="display:none; max-height: 420px; overflow-y: auto; overflow-x: hidden; background-color:#090b10;"></div>
+                                                            <!-- Case Composition chart (2026-09-12) - the left column had
+                                                                 nothing below search most of the time, and this whole tab's
+                                                                 own stated purpose ("everything that's happened in this
+                                                                 case at a glance") was, until now, purely numeric tiles -
+                                                                 no actual visualization anywhere on it. Plots the exact
+                                                                 same counts the tile grid already shows (zero new fetches -
+                                                                 renderCaseCompositionChart() reads the same
+                                                                 currentLoadedReportData/case_index/summary response
+                                                                 renderCaseDashboard() already has in hand) as one
+                                                                 horizontal bar per category, so relative case size/shape
+                                                                 is visible at a glance instead of read tile-by-tile. Each
+                                                                 bar is clickable, same jumpToReportingTab() targets as
+                                                                 the matching tile - visualization AND fewer clicks, not
+                                                                 either/or. Hidden until a case loads (no data to plot). -->
+                                                            <div id="caseCompositionCard" class="mt-2" style="display:none;">
+                                                                <label class="telemetry-grid-label d-block mb-1">Case Composition</label>
+                                                                <div style="position: relative; height: 200px;">
+                                                                    <canvas id="caseCompositionChart"></canvas>
+                                                                </div>
+                                                            </div>
                                                         </div>
                                                         <div class="col-lg-9 col-md-8">
                                                             <!-- Every tile below is clickable (2026-09-09) - jumps
