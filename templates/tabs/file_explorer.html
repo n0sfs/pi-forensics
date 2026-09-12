@@ -20,7 +20,17 @@
                                                     <span class="telemetry-grid-label">Listing</span>
                                                     <span id="explorerPath" class="font-monospace small text-info fw-bold text-truncate" style="max-width: 70%;">/mnt</span>
                                                 </div>
-                                                <div id="explorerBatchToolbar" class="d-flex justify-content-between align-items-center py-1 px-2 mb-1 bg-app-dark border border-info rounded" style="display:none;">
+                                                <!-- No d-flex class (found 2026-09-11 during a sweep for this exact
+                                                     bug class after finding it in Reporting's header) - Bootstrap's
+                                                     d-flex utility carries !important, which silently overrode this
+                                                     element's own JS-toggled style.display ('none'/'flex' in
+                                                     updateExplorerBatchToolbar(), main.js) - the batch toolbar could
+                                                     never actually hide once first shown (and likely rendered
+                                                     visible from page load with "0 files selected", since the
+                                                     initial inline display:none below was equally overridden).
+                                                     justify-content-between/align-items-center/etc. don't force a
+                                                     display value on their own, so nothing else changes. -->
+                                                <div id="explorerBatchToolbar" class="justify-content-between align-items-center py-1 px-2 mb-1 bg-app-dark border border-info rounded" style="display:none;">
                                                     <span id="explorerBatchCount" class="small fw-bold text-info"></span>
                                                     <div class="d-flex gap-1 flex-wrap">
                                                         <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="batchAttachSelectedFilesToCase()" title="Attach every selected file to the active case as an exhibit"><i class="bi bi-paperclip me-1"></i>Attach to Case</button>
