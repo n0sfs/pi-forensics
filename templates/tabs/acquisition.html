@@ -27,6 +27,7 @@
                                             </div>
                                             <div class="row g-2 align-items-center mb-2">
                                                 <div class="col-md-6">
+                                                    <label class="visually-hidden" for="driveSelect">Target Source Drive</label>
                                                     <select id="driveSelect" class="form-select form-select-sm drive-select" data-placeholder="-- Choose Target Source Drive --" onchange="checkSmartTelemetry()">
                                                         <option value="">-- Choose Target Source Drive --</option>
                                                     </select>
@@ -74,6 +75,7 @@
                                                         <option value="veracrypt">VeraCrypt</option>
                                                     </select>
                                                 </div>
+                                                <label class="visually-hidden" for="encVolCredential">Recovery Key / Password</label>
                                                 <input type="password" id="encVolCredential" class="form-control form-control-sm mb-1" placeholder="Recovery Key / Password (optional)">
                                                 <div id="encVolCredentialHelp" class="small text-subtle mb-2">Recorded in the case report as documentation only - imaging still captures the source exactly as found (encrypted); not used to decrypt anything unless "Also unlock this volume now" below is checked.</div>
                                                 <div class="form-check form-switch mb-1">
@@ -102,6 +104,7 @@
 
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder2-open me-1"></i>Destination Directory</div>
                                             <div class="input-group input-group-sm mb-1">
+                                                <label class="visually-hidden" for="destPath">Destination Directory</label>
                                                 <input type="text" id="destPath" class="form-control" value="/mnt">
                                                 <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'destPath')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                             </div>
