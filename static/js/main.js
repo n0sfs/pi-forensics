@@ -114,22 +114,22 @@ function clearReportingDirty() {
 // populating fresh case data) never fires input/change, so this can't
 // mistake a case reload for a real edit.
 //
-// #editCaseStatus (2026-09-10) moved out of #repNarrativePane into
-// Reporting's own persistent header alongside Examiners - it's a plain
-// static <select> with no onchange handler of its own, so it needs its own
-// explicit id check here rather than relying on the pane-scoped delegation
-// above. Examiners' own add/remove controls deliberately AREN'T included -
-// renderExaminersList()'s own add/remove buttons already call
-// markReportingDirty() explicitly (matching renderReportUrlRows()'s
-// identical convention, since a button click never fires input/change on
-// its own), and including the add-select/add-input here too would mark
-// the report dirty the instant someone merely opens that dropdown, before
-// they've actually added anyone.
+// #editCaseStatus used to be included in this delegation too (2026-09-10,
+// when it moved out of #repNarrativePane into Reporting's own persistent
+// header) - removed 2026-09-11, now that it saves immediately via its own
+// onchange (handleCaseStatusDropdownChange(), same /api/cases/set_status
+// endpoint the Case Manager list's Archive/Re-open button already uses)
+// instead of staging behind Save Report Changes. Examiners' own add/remove
+// controls were already, deliberately never included here for the same
+// "saves immediately, isn't part of the staged group" reason -
+// renderExaminersList()'s own add/remove buttons call markReportingDirty()
+// explicitly where THEY still need it (nothing to do with Status), matching
+// renderReportUrlRows()'s identical convention.
 document.addEventListener('input', (ev) => {
-    if (ev.target.closest && (ev.target.closest('#repNarrativePane') || ev.target.id === 'editCaseStatus')) markReportingDirty();
+    if (ev.target.closest && ev.target.closest('#repNarrativePane')) markReportingDirty();
 });
 document.addEventListener('change', (ev) => {
-    if (ev.target.closest && (ev.target.closest('#repNarrativePane') || ev.target.id === 'editCaseStatus')) markReportingDirty();
+    if (ev.target.closest && ev.target.closest('#repNarrativePane')) markReportingDirty();
 });
 
 // beforeunload only guards a real navigation/refresh/tab-close - switching
@@ -15701,6 +15701,14 @@ async function saveReportMetadata() {
     const customFieldValues = gatherCustomFieldValues();
 
     const narrativeFields = {
+        // Redundant-but-harmless as of 2026-09-11 - #editCaseStatus now saves
+        // itself immediately on change (handleCaseStatusDropdownChange()),
+        // so by the time this full-report save round-trips, it's just
+        // re-writing the same value already persisted. Left in rather than
+        // stripped out - a no-op read is simpler and safer than reasoning
+        // through whether every other narrativeFields consumer downstream
+        // (the PDF/HTML export path in particular) still expects this key
+        // present in the saved JSON.
         case_status: document.getElementById("editCaseStatus")?.value || "Open",
         executive_summary: document.getElementById("editExecSummary")?.value || "",
         objectives: document.getElementById("editObjectives")?.value || "",
@@ -17511,6 +17519,40 @@ async function setCaseStatus(c, newStatus) {
         loadExistingCases();
     } catch (err) {
         showToast(`Request failed: ${err.message}`, 'danger');
+    }
+}
+
+// Reporting header's own Status <select> onchange (2026-09-11) - saves
+// immediately through the same /api/cases/set_status endpoint setCaseStatus()
+// above already uses from the Case Manager list, rather than staging behind
+// Save Report Changes the way it used to. Not just a thin call to
+// setCaseStatus() itself - that function's own success path already keeps
+// this exact <select> in sync (see above), but its FAILURE path only toasts,
+// leaving the dropdown showing whatever the user just picked even though
+// nothing was actually written - fine for the Case Manager list (no
+// persistent control there to desync), not fine for a <select> that stays
+// on screen. Reverts it back on failure instead.
+async function handleCaseStatusDropdownChange(selectEl) {
+    if (!activeCase) return;
+    const newStatus = selectEl.value;
+    const previousStatus = (currentLoadedReportData && currentLoadedReportData.case_status) || 'Open';
+    try {
+        const res = await fetch('/api/cases/set_status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder, status: newStatus })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(`Could not update case status: ${data.error}`, 'danger');
+            selectEl.value = previousStatus;
+            return;
+        }
+        showToast(`Case status set to "${newStatus}".`, 'success');
+        if (currentLoadedReportData) currentLoadedReportData.case_status = newStatus;
+    } catch (err) {
+        showToast('Could not update case status: request failed.', 'danger');
+        selectEl.value = previousStatus;
     }
 }
 

@@ -38,7 +38,20 @@
                                             <div id="reportHeaderCaseMeta" class="flex-wrap align-items-center gap-3" style="display:none;">
                                                 <div class="d-flex align-items-center gap-1">
                                                     <i class="bi bi-flag-fill text-subtle"></i>
-                                                    <select id="editCaseStatus" class="form-select form-select-sm" style="width:118px;">
+                                                    <!-- Saves immediately via handleCaseStatusDropdownChange() (main.js),
+                                                         the same /api/cases/set_status endpoint the Case Manager list's
+                                                         own Archive/Re-open button already uses (2026-09-11) - this
+                                                         dropdown used to be staged behind "Save Report Changes" like
+                                                         Report Narrative/Case Details, the one genuine inconsistency a
+                                                         review pass found: the identical status value could be changed
+                                                         two different ways with two different save semantics
+                                                         (instant from the list, staged from here) with only a small
+                                                         badge distinguishing them. set_status's own docstring already
+                                                         argues for exactly this - a status change is "a quick
+                                                         lifecycle action, not a reporting-specific one," genuinely
+                                                         different from editing the narrative you're actively working
+                                                         on - this dropdown just hadn't been wired to it yet. -->
+                                                    <select id="editCaseStatus" class="form-select form-select-sm" style="width:118px;" onchange="handleCaseStatusDropdownChange(this)">
                                                         <option value="Open">Open</option>
                                                         <option value="In Progress">In Progress</option>
                                                         <option value="In Review">In Review</option>
