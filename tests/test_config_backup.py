@@ -181,6 +181,51 @@ def test_backup_and_restore_round_trip_a_report_logo_stays_inside_the_test_insta
     assert logo_path.read_bytes() == logo_bytes
 
 
+def test_backup_and_restore_round_trip_the_real_hash_and_url_list_contents(client, runtime_config_file, mount_key_file, hash_lists_dir, tmp_path, monkeypatch):
+    # Regression test for a real gap found in a review pass: the manifest
+    # only ever carried each hash/URL list's runtime_config METADATA
+    # (name/algorithm/hash_count) - never the actual file holding the real
+    # hash/URL values, so a restored list reappeared with the right name
+    # and count but zero real entries, silently matching nothing on any
+    # later scan.
+    import core.config as config
+    url_lists_dir = tmp_path / "url_lists"
+    monkeypatch.setattr(config, "URL_LISTS_DIR", str(url_lists_dir))
+
+    _save_user("admin_test", "pw", "admin")
+    _login(client, "admin_test")
+
+    cfg = config.load_runtime_config()
+    cfg["hash_lists"] = [{"id": "hl1", "name": "Known Bad", "label": "known_bad", "algorithm": "sha256", "hash_count": 2}]
+    cfg["url_lists"] = [{"id": "ul1", "name": "Malicious URLs", "url_count": 1}]
+    config.save_runtime_config(cfg)
+    os.makedirs(hash_lists_dir, exist_ok=True)
+    with open(config.hash_list_file_path("hl1"), "w") as f:
+        f.write("aaaa\nbbbb\n")
+    os.makedirs(url_lists_dir, exist_ok=True)
+    with open(config.url_list_file_path("ul1"), "w") as f:
+        f.write("http://evil.example/\n")
+
+    backup_bytes = client.post("/api/settings/config_backup", json={"passphrase": "correcthorsebattery"}).data
+
+    # Simulate a fresh station: neither list file exists until restore
+    # recreates them.
+    os.remove(config.hash_list_file_path("hl1"))
+    os.remove(config.url_list_file_path("ul1"))
+
+    restore_res = client.post(
+        "/api/settings/config_restore",
+        data={"passphrase": "correcthorsebattery", "backup_file": (io.BytesIO(backup_bytes), "backup.pfback")},
+        content_type="multipart/form-data",
+    )
+    assert restore_res.status_code == 200
+
+    with open(config.hash_list_file_path("hl1")) as f:
+        assert f.read() == "aaaa\nbbbb\n"
+    with open(config.url_list_file_path("ul1")) as f:
+        assert f.read() == "http://evil.example/\n"
+
+
 def test_restore_carries_the_mount_key_forward_so_saved_shares_still_decrypt(client, runtime_config_file, mount_key_file, tmp_path, monkeypatch):
     _save_user("admin_test", "pw", "admin")
     _login(client, "admin_test")

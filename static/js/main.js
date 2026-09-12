@@ -106,6 +106,33 @@ function clearReportingDirty() {
     if (indicator) indicator.style.display = 'none';
 }
 
+// Settings > Case & Reporting's own unsaved-changes guard (added 2026-09-12,
+// a review pass) - Report Configuration/Reporting Header Stats/Custom Case
+// Fields all sit behind one manual "Save Settings" button with no dirty-
+// tracking at all, unlike Reporting's own Report Narrative tab (the pattern
+// mirrored here) and unlike this SAME settings pane's other sections (Tags/
+// Keyword/Hash/URL Lists/YARA/MalwareBazaar key), which all auto-save
+// immediately per action and genuinely don't need this. Scoped to
+// #secReportConfig/#secCustomFields specifically (not the whole Case &
+// Reporting pane) so it never fires for those already-auto-saving siblings.
+let caseReportingSettingsDirty = false;
+
+function markCaseReportingSettingsDirty() {
+    caseReportingSettingsDirty = true;
+}
+
+document.addEventListener('input', (ev) => {
+    if (ev.target.closest && ev.target.closest('#secReportConfig, #secCustomFields')) markCaseReportingSettingsDirty();
+});
+document.addEventListener('change', (ev) => {
+    if (ev.target.closest && ev.target.closest('#secReportConfig, #secCustomFields')) markCaseReportingSettingsDirty();
+});
+window.addEventListener('beforeunload', (ev) => {
+    if (!caseReportingSettingsDirty) return;
+    ev.preventDefault();
+    ev.returnValue = '';
+});
+
 // Delegated rather than one listener per field: #repNarrativePane holds
 // Case Details (renderCustomFieldsForCase() rebuilds its own inputs on
 // every case load, so a per-field listener would need re-attaching every
@@ -13684,7 +13711,7 @@ function renderCustomFieldDefsEditor() {
         delBtn.className = 'btn btn-sm btn-outline-danger';
         delBtn.type = 'button';
         delBtn.innerHTML = '<i class="bi bi-trash3"></i>';
-        delBtn.onclick = () => { caseReportingFieldsEditing.splice(idx, 1); renderCustomFieldDefsEditor(); };
+        delBtn.onclick = () => { caseReportingFieldsEditing.splice(idx, 1); renderCustomFieldDefsEditor(); markCaseReportingSettingsDirty(); };
         row.appendChild(input);
         row.appendChild(defaultInput);
         row.appendChild(delBtn);
@@ -13698,11 +13725,13 @@ function moveCustomFieldDefRow(idx, direction) {
     const [row] = caseReportingFieldsEditing.splice(idx, 1);
     caseReportingFieldsEditing.splice(target, 0, row);
     renderCustomFieldDefsEditor();
+    markCaseReportingSettingsDirty();
 }
 
 function addCustomFieldDefRow() {
     caseReportingFieldsEditing.push({ key: '', label: '', default_value: '' });
     renderCustomFieldDefsEditor();
+    markCaseReportingSettingsDirty();
 }
 
 async function saveCaseReportingSettings() {
@@ -13757,6 +13786,7 @@ async function saveCaseReportingSettings() {
             statusEl.innerText = data.success ? 'Settings saved.' : data.error;
         }
         if (data.success) {
+            caseReportingSettingsDirty = false;
             // Refresh the shared cache Reporting reads, and reload this
             // card's own editor from the server-confirmed (deduplicated,
             // key-assigned) result rather than trusting the local working copy.
@@ -18769,11 +18799,17 @@ async function renderUsbPortDiagram(selectedDevicePath) {
         wrap.style.display = 'none';
         // No diagram to share the row with (a non-Pi-4 board) - let the
         // controls column use the full row width instead of leaving half
-        // of it empty.
-        if (controlsCol) { controlsCol.classList.remove('col-md-6'); controlsCol.classList.add('col-md-12'); }
+        // of it empty. Was toggling 'col-md-6' (found in a review pass) -
+        // #driveMgmtControlsCol's real base class in the template is
+        // col-md-7 (the diagram wrapper next to it is col-md-5, summing to
+        // 12), so removing 'col-md-6' was always a no-op and this only
+        // ever rendered correctly because col-md-12 happens to come later
+        // in Bootstrap's own compiled CSS than col-md-7, winning the
+        // cascade by source order rather than by this code's own logic.
+        if (controlsCol) { controlsCol.classList.remove('col-md-7'); controlsCol.classList.add('col-md-12'); }
         return;
     }
-    if (controlsCol) { controlsCol.classList.remove('col-md-12'); controlsCol.classList.add('col-md-6'); }
+    if (controlsCol) { controlsCol.classList.remove('col-md-12'); controlsCol.classList.add('col-md-7'); }
     wrap.style.display = '';
     // Fetched alongside the diagram itself, before an examiner has tried
     // (or even selected) any drive at all - the whole point of this
@@ -19861,7 +19897,7 @@ async function loadNetworkConfig() {
 
         if (data.pending_revert && !data.pending_revert.confirmed) {
             networkRevertToken = data.pending_revert.revert_token;
-            showNetworkRevertBanner(data.pending_revert.device, data.pending_revert.revert_at);
+            showNetworkRevertBanner(data.pending_revert.device, data.pending_revert.revert_at, data.pending_revert.apply_error);
         } else {
             hideNetworkRevertBanner();
         }
@@ -19923,13 +19959,29 @@ async function confirmNetworkConfig() {
     }
 }
 
-function showNetworkRevertBanner(device, revertAt) {
+function showNetworkRevertBanner(device, revertAt, applyError) {
     const banner = document.getElementById('networkRevertBanner');
     const text = document.getElementById('networkRevertBannerText');
     if (!banner || !text) return;
     banner.style.display = '';
 
     if (networkRevertCountdownInterval) clearInterval(networkRevertCountdownInterval);
+
+    // applyError surfaced (2026-09-12, a review pass) - a failed nmcli
+    // modify/up (bad gateway, busy interface, etc.) used to be completely
+    // invisible: the countdown/banner below looked identical whether the
+    // apply actually succeeded or silently failed outright, until the
+    // harmless auto-revert quietly fired later with no explanation. The
+    // auto-revert itself still isn't skipped here - a failed apply still
+    // needs reverting the same as a successful-but-unwanted one, this only
+    // changes what the banner SAYS while that's pending.
+    if (applyError) {
+        banner.className = 'alert alert-danger small mb-3';
+        text.textContent = `Applying the new settings to ${device} failed: ${applyError} - reverting to the previous settings shortly.`;
+        return;
+    }
+    banner.className = 'alert alert-warning small mb-3';
+
     const tick = () => {
         const remaining = Math.max(0, Math.ceil(revertAt - (Date.now() / 1000)));
         if (remaining <= 0) {
@@ -21076,8 +21128,17 @@ function applyUserMgmtPermissionGating() {
     const canManage = !!currentUserPermissions.manage_users;
     const accountsItem = document.getElementById("userAccountsAccordionItem");
     const groupsItem = document.getElementById("userGroupsAccordionItem");
+    // Config Backup & Restore added here (found in a review pass) - its own
+    // backend routes (config_backup()/config_restore(), routes/settings.py)
+    // already require this exact same manage_users permission, but this
+    // accordion item was never included in the visibility check the way its
+    // two siblings right above it already were - a group with settings
+    // access but not manage_users saw a fully interactive form that always
+    // 403s on submit.
+    const configBackupItem = document.getElementById("configBackupAccordionItem");
     if (accountsItem) accountsItem.style.display = canManage ? '' : 'none';
     if (groupsItem) groupsItem.style.display = canManage ? '' : 'none';
+    if (configBackupItem) configBackupItem.style.display = canManage ? '' : 'none';
 }
 
 // userListContainer is the <tbody> of the User Accounts table (columns:
@@ -21190,6 +21251,12 @@ async function createUser() {
         if (data.success) {
             document.getElementById("newUserUsername").value = '';
             document.getElementById("newUserPassword").value = '';
+            // Refocus added (2026-09-12, a review pass) - provisioning
+            // several accounts back-to-back meant re-clicking into the
+            // username field every time; the group dropdown deliberately
+            // keeps its last value rather than resetting to 'analyst', in
+            // case the next few accounts share the same group.
+            document.getElementById("newUserUsername")?.focus();
             loadUserList();
         }
     } catch (err) {
@@ -21503,6 +21570,27 @@ async function loadTlsStatus() {
             const valueSpan = document.createElement('span');
             valueSpan.className = 'text-info text-break ms-2';
             valueSpan.textContent = value || '--';
+            // Expiry color-coding added (2026-09-12, a review pass) - this
+            // used to render "Valid Until" as plain text, no different from
+            // any other field, so an expired/about-to-expire cert looked
+            // identical to a fresh one. Matches this app's own established
+            // pattern of color-coding risk elsewhere (SMART health badges,
+            // USB port health warnings). openssl's own "Jan  1 00:00:00
+            // 2027 GMT"-style -dates output parses fine via a plain
+            // `new Date()` - no extra parsing needed.
+            if (label === 'Valid Until' && value) {
+                const expiresAt = new Date(value);
+                if (!isNaN(expiresAt.getTime())) {
+                    const daysLeft = Math.floor((expiresAt.getTime() - Date.now()) / 86400000);
+                    if (daysLeft < 0) {
+                        valueSpan.className = 'text-danger fw-bold text-break ms-2';
+                        valueSpan.textContent = `${value} (EXPIRED)`;
+                    } else if (daysLeft <= 30) {
+                        valueSpan.className = 'text-warning fw-bold text-break ms-2';
+                        valueSpan.textContent = `${value} (${daysLeft} day${daysLeft === 1 ? '' : 's'} left)`;
+                    }
+                }
+            }
             row.appendChild(labelSpan);
             row.appendChild(valueSpan);
             container.appendChild(row);
@@ -21667,8 +21755,19 @@ async function submitConfigRestore() {
             const confirmEl = document.getElementById('configRestoreConfirmText');
             if (confirmEl) confirmEl.value = '';
             checkConfigRestoreConfirmText(); // re-disables the button now that the typed phrase is cleared
-            loadUserList();
-            loadUserGroups();
+            // Was just loadUserList()/loadUserGroups() (found in a review
+            // pass) - a restore overwrites the ENTIRE runtime_config.json
+            // (kiosk mode, keyword/hash/URL/YARA lists, network auto-mount
+            // shares, Case & Reporting defaults, custom fields, report
+            // templates - not just accounts/groups), so every other
+            // already-rendered panel on this open page kept showing
+            // pre-restore values until the examiner happened to navigate
+            // away and back. A full reload is the only way to guarantee
+            // every panel reflects the new config - delayed briefly so the
+            // success message above is actually visible first.
+            if (statusEl) statusEl.textContent = (data.message || 'Restore complete.') + ' Reloading...';
+            setTimeout(() => location.reload(), 1500);
+            return;
         }
     } catch (err) {
         if (statusEl) { statusEl.className = 'small text-danger'; statusEl.textContent = 'Request failed.'; }
@@ -21786,6 +21885,19 @@ async function loadToolVersions() {
                 upToDate.className = 'text-subtle';
                 upToDate.textContent = 'Up to date';
                 actionCell.appendChild(upToDate);
+            } else if (!t.installed && !t.package) {
+                // Was a blank cell with zero guidance (found in a review
+                // pass) - a tool with no `package` mapping has no Install
+                // button by design (it's one of the ~15 pip-installed-into-
+                // this-app's-own-venv tools, not an apt package this button
+                // family knows how to install), but "Not Installed" next to
+                // an empty cell gave no hint that fixing it means
+                // reinstalling via the venv/requirements.txt, not clicking
+                // something here.
+                const hint = document.createElement('span');
+                hint.className = 'text-subtle small';
+                hint.textContent = 'pip-installed - reinstall via the app\'s venv';
+                actionCell.appendChild(hint);
             }
 
             row.appendChild(nameCell);
@@ -21842,9 +21954,18 @@ async function ejectTargetDrive() {
 }
 
 async function purgeConsoleLogs() {
+    // Gave zero feedback either way (found in a review pass) - every
+    // sibling button in this same Diagnostics card reports through
+    // diagRunning()/diagResult(); this one silently fired the request and
+    // swallowed both the response and any error.
+    diagRunning("Purge Terminal Log Buffer");
     try {
-        await fetch('/api/system/maintenance/purge_logs', { method: 'POST' });
-    } catch (err) {}
+        const res = await fetch('/api/system/maintenance/purge_logs', { method: 'POST' });
+        const data = await res.json();
+        diagResult("Purge Terminal Log Buffer", data.message || data.error || "[REQUEST FAILED]");
+    } catch (err) {
+        diagResult("Purge Terminal Log Buffer", "[REQUEST FAILED]");
+    }
 }
 
 async function restartForensicService() {

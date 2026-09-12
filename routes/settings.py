@@ -58,7 +58,7 @@ from core.config import (
     _get_or_create_mount_key, _encrypt_secret, _decrypt_secret,
     get_app_version,
 )
-from core.jobs import job_lock, current_job, update_job
+from core.jobs import job_lock, current_job, update_job, snapshot_job
 from core.case_index_db import check_regex_pattern_for_redos
 import yara
 
@@ -2048,12 +2048,15 @@ def config_backup():
     if len(passphrase) < 8:
         return jsonify({"success": False, "error": "Choose a backup passphrase of at least 8 characters - you'll need it again to restore this file."}), 400
 
+    runtime_config = load_runtime_config()
     manifest = {
         "version": 1,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "runtime_config": load_runtime_config(),
+        "runtime_config": runtime_config,
         "mount_key": None,
         "report_logo": None,
+        "hash_lists_data": {},
+        "url_lists_data": {},
     }
 
     if os.path.exists(config.MOUNT_KEY_FILE):
@@ -2067,6 +2070,30 @@ def config_backup():
                 "filename": os.path.basename(logo_matches[0]),
                 "data_b64": base64.b64encode(f.read()).decode(),
             }
+
+    # hash_lists_data/url_lists_data added (found in a review pass) - the
+    # manifest above only ever included runtime_config's own metadata for
+    # these (name/algorithm/hash_count), never the actual hash/URL values,
+    # which each live in their own flat file (config.hash_list_file_path()/
+    # url_list_file_path()) - the same "large blob gets its own file, only
+    # metadata stored inline" precedent report_logo already follows, just
+    # never extended to these two. A restored Hash Set/URL List used to
+    # reappear with the right name and count but zero real entries, and any
+    # scan against it would silently match nothing - not disclosed in this
+    # card's own copy either. A missing/unreadable list file is skipped,
+    # matching load_hash_list_sets()'s own tolerance for the same case.
+    for record in runtime_config.get('hash_lists', []):
+        try:
+            with open(config.hash_list_file_path(record['id']), 'rb') as f:
+                manifest["hash_lists_data"][record['id']] = base64.b64encode(f.read()).decode()
+        except OSError:
+            continue
+    for record in runtime_config.get('url_lists', []):
+        try:
+            with open(config.url_list_file_path(record['id']), 'rb') as f:
+                manifest["url_lists_data"][record['id']] = base64.b64encode(f.read()).decode()
+        except OSError:
+            continue
 
     salt = secrets.token_bytes(16)
     key = _derive_backup_key(passphrase, salt)
@@ -2130,6 +2157,23 @@ def config_restore():
         with open(os.path.join(config.INSTALL_DIR, os.path.basename(logo["filename"])), 'wb') as f:
             f.write(base64.b64decode(logo["data_b64"]))
 
+    # Writes back the real hash/URL list content a newer backup carries
+    # (see config_backup()'s own comment for why this was missing) - a
+    # backup made before this fix simply has no "hash_lists_data"/
+    # "url_lists_data" key at all, so .get(..., {}) here is what makes
+    # restoring an OLDER backup file still work exactly as it always did,
+    # just without this extra step, rather than erroring out on it.
+    if manifest.get("hash_lists_data"):
+        os.makedirs(config.HASH_LISTS_DIR, exist_ok=True)
+        for list_id, data_b64 in manifest["hash_lists_data"].items():
+            with open(config.hash_list_file_path(list_id), 'wb') as f:
+                f.write(base64.b64decode(data_b64))
+    if manifest.get("url_lists_data"):
+        os.makedirs(config.URL_LISTS_DIR, exist_ok=True)
+        for list_id, data_b64 in manifest["url_lists_data"].items():
+            with open(config.url_list_file_path(list_id), 'wb') as f:
+                f.write(base64.b64decode(data_b64))
+
     log_chain_of_custody("config_restored", {"backup_created_at": manifest.get("created_at")})
     return jsonify({
         "success": True,
@@ -2148,6 +2192,16 @@ def config_restore():
 def system_power_control():
     req = request.get_json() or {}
     action = req.get('action')
+
+    # Server-side guard added (found in a review pass) - the only
+    # protection here used to be the client's own confirm() dialog text
+    # ("any running acquisition will be interrupted"), trivially bypassed
+    # by clicking through it. A reboot/poweroff mid-acquisition is a real,
+    # unrecoverable interruption of whatever's using the one shared job
+    # slot - matches this app's own "forensic integrity first" posture to
+    # refuse outright rather than merely warn.
+    if snapshot_job()["active"]:
+        return jsonify({"success": False, "error": "An acquisition/recovery job is currently running - stop it or wait for it to finish before rebooting or powering off."}), 409
 
     if action == 'reboot':
         subprocess.Popen(['sudo', '/sbin/reboot'])
@@ -2384,6 +2438,18 @@ def eject_usb_drive():
     if not is_valid_block_device(drive):
         return jsonify({"success": False, "error": f"'{drive}' is not a recognized whole-disk device."}), 400
 
+    # Server-side guard added (found in a review pass) - same reasoning as
+    # system_power_control() above: the only protection was the client's
+    # own confirm() text ("only do this once any acquisition has
+    # finished"), trivially bypassed by picking the wrong drive in the
+    # dropdown or just clicking through. Blocks ANY eject while ANY job is
+    # active (not just an eject of the exact drive in use) - simpler and
+    # more conservative than trying to identify which specific device a
+    # running job is using, matching this app's own single-shared-job-slot
+    # model where only one acquisition/recovery can be in flight anyway.
+    if snapshot_job()["active"]:
+        return jsonify({"success": False, "error": "An acquisition/recovery job is currently running - stop it or wait for it to finish before ejecting a drive."}), 409
+
     try:
         subprocess.run(['sync'], timeout=30)
         for part in sorted(glob.glob(f"{drive}*")):
@@ -2564,6 +2630,7 @@ def get_network_config():
                 "revert_token": pending_network_revert["token"],
                 "revert_at": pending_network_revert["revert_at"],
                 "confirmed": pending_network_revert["confirmed"],
+                "apply_error": pending_network_revert.get("apply_error"),
             }
 
     return jsonify({"success": True, "devices": devices, "pending_revert": pending, "revert_window_seconds": REVERT_WINDOW_SECONDS})
@@ -2627,8 +2694,26 @@ def apply_network_config():
     requester_user = getattr(g, 'forensic_user', None)
 
     def delayed_apply():
+        # Return codes were previously discarded entirely (found in a
+        # review pass) - if nmcli modify/up failed outright (bad gateway,
+        # busy interface, etc.), the examiner saw only "Applying new
+        # settings..." and the countdown, with zero indication anything
+        # went wrong, until the harmless auto-revert quietly fired later.
+        # Logged unconditionally either way (chain-of-custody already
+        # records the ATTEMPT above; this records the real outcome) and
+        # also stashed on pending_network_revert so GET /api/network/config's
+        # own pending_revert payload can surface it to the client while the
+        # revert window is still open.
         time.sleep(1)
-        _apply_network_ipv4(conn_name, method, address, prefix, gateway, dns_list)
+        res_modify, res_up = _apply_network_ipv4(conn_name, method, address, prefix, gateway, dns_list)
+        if res_modify.returncode != 0 or res_up.returncode != 0:
+            error_text = (res_modify.stderr or res_up.stderr or '').strip() or "nmcli reported a failure with no error output."
+            log_chain_of_custody("network_config_apply_failed", {
+                "device": device, "connection": conn_name, "error": error_text,
+            }, source_ip=requester_ip, user=requester_user)
+            with network_config_lock:
+                if pending_network_revert and pending_network_revert["token"] == token:
+                    pending_network_revert["apply_error"] = error_text
     threading.Thread(target=delayed_apply, daemon=True).start()
 
     def delayed_revert():
