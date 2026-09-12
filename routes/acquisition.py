@@ -33,7 +33,7 @@ from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.paths import (
     safe_path, log_chain_of_custody, is_valid_block_device,
     is_valid_block_device_or_partition, _DEVICE_RE, classify_usb_port,
-    describe_usb_port,
+    describe_usb_port, sanitize_case_slug,
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists,
@@ -118,14 +118,20 @@ def _relock_device_for_list_drives(device_path):
     safe replacement for its old unconditional `blockdev --setro`. Skips
     the relock entirely (under the same lock a build job's own unlock
     step uses) if this exact device is currently, legitimately unlocked
-    by this app's own Live Collection USB build job."""
+    by this app's own Live Collection USB build job.
+
+    Returns True if it actually relocked the device, False if it skipped
+    (legitimately in use) - _live_collection_startup_reconciliation() below
+    needs to tell the two apart so it never logs a false "found writable,
+    auto-relocked" entry for a device it correctly left alone."""
     with device_write_lock:
         if device_path in active_write_unlocked_devices:
-            return
+            return False
         try:
             subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path], capture_output=True)
         except Exception:
             pass
+        return True
 
 
 def _unlock_device_for_write(device_path):
@@ -225,15 +231,32 @@ def _live_collection_startup_reconciliation():
             continue
         if chk.stdout.strip() == '1':
             continue  # already read-only, nothing to reconcile
-        subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path], capture_output=True)
-        log_chain_of_custody(
-            "live_collection_device_auto_relocked_at_startup",
-            {"device": device_path,
-             "note": "Found writable at process startup, not explained by this process's own state "
-                     "(active_write_unlocked_devices is always empty at a fresh start) - likely left "
-                     "unlocked by a prior crash mid-build. Automatically re-locked."},
-            source_ip=None, user="system-startup",
-        )
+        # Routed through the same lock-guarded helper list_drives() already
+        # uses (found in a review pass) - this used to call `blockdev
+        # --setro` directly, never checking device_write_lock/
+        # active_write_unlocked_devices the way _relock_device_for_list_drives()
+        # does. A Build job's own unlock can race this exact startup check
+        # (systemd's Restart=always/RestartSec=3 means this thread starts
+        # within seconds of every restart, and a real HTTP-triggered build
+        # can begin unlocking a device in that same window) - without the
+        # registry check, this thread could forcibly relock a device a
+        # genuinely in-progress build just unlocked, corrupting the write
+        # mid-flight. _relock_device_for_list_drives() already skips
+        # exactly that case. Only log below if it actually relocked
+        # something - a skip means this exact device is legitimately
+        # unlocked by a real, currently-running build job, not a crash
+        # orphan, and logging the "found writable, auto-relocked" message
+        # anyway would be a false audit-trail entry describing something
+        # that didn't happen.
+        if _relock_device_for_list_drives(device_path):
+            log_chain_of_custody(
+                "live_collection_device_auto_relocked_at_startup",
+                {"device": device_path,
+                 "note": "Found writable at process startup, not explained by this process's own state "
+                         "(active_write_unlocked_devices is always empty at a fresh start) - likely left "
+                         "unlocked by a prior crash mid-build. Automatically re-locked."},
+                source_ip=None, user="system-startup",
+            )
 
 threading.Thread(target=_live_collection_startup_reconciliation, daemon=True).start()
 
@@ -1985,8 +2008,23 @@ def start_logical_acquisition():
         update_job(active=False)
         return jsonify({"success": False, "error": f"Unsupported hash algorithm(s): {sorted(invalid_hashes)}. Use any of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
 
-    case_num = metadata.get('case_number') or 'UNASSIGNED'
-    evidence_id = metadata.get('evidence_id') or 'ITEM-01'
+    # sanitize_case_slug() (core/paths.py), not a raw metadata.get() (found in
+    # a review pass) - this exact unguarded f-string pattern (case_num/
+    # evidence_id straight from client-supplied metadata into a filename)
+    # repeats at 9 call sites across this file and routes/recovery.py, all
+    # fixed the same way here. sanitize_case_slug() already exists and is
+    # already used for the identical problem at case creation
+    # (routes/case_management.py) - a whitelist (core/paths.py's
+    # _CASE_SLUG_INVALID_RE) rather than a blacklist, so it can't be tricked
+    # into producing '..' or an absolute-path-looking result the way a
+    # blacklist-style fix might miss an unanticipated character. This is
+    # defense-in-depth, not the real sandboxing boundary - safe_path()
+    # confirming dest_path itself stays inside EVIDENCE_ROOT is what
+    # actually matters - but a case_number/evidence_id containing '/' or
+    # '..' could otherwise smuggle its own path segments into an output
+    # filename built on top of that already-validated prefix.
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}"
     output_root = os.path.join(dest_path, f"{base_name}_logical")
 
@@ -2103,8 +2141,28 @@ def execution_worker_build_collection_usb(device, device_info, source_ip=None, u
 
             try:
                 mnt = LIVE_COLLECTION_BUILD_MOUNTPOINT
-                os.makedirs(os.path.join(mnt, "uac", "output"), exist_ok=True)
-                os.makedirs(os.path.join(mnt, "windows", "results"), exist_ok=True)
+                output_dir = os.path.join(mnt, "uac", "output")
+                results_dir = os.path.join(mnt, "windows", "results")
+                # Reusing an already-prepared drive never cleared prior result
+                # runs (found in a review pass) - the fast path above only
+                # skips wipefs/sfdisk/mkfs, but this makedirs(exist_ok=True) +
+                # the tooling copy below ran unconditionally either way,
+                # leaving old uac/output|windows/results content from a
+                # PREVIOUS target machine's collection sitting on the drive
+                # untouched. "Erases the selected drive entirely" (the
+                # button's own copy) was only true at the block-device level
+                # on a full wipe - on the fast path nothing was erased at the
+                # data level at all. A later Scan then lists stale runs
+                # mixed in with new ones, distinguishable only by hostname/
+                # timestamp text in a small checklist - a real risk of
+                # importing stale data into the wrong case. Only the RESULTS
+                # directories are cleared here, never the tooling itself
+                # (that's copied fresh immediately below regardless).
+                if fast_path["already_prepared"]:
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                    shutil.rmtree(results_dir, ignore_errors=True)
+                os.makedirs(output_dir, exist_ok=True)
+                os.makedirs(results_dir, exist_ok=True)
 
                 if os.path.isdir(LIVE_COLLECTION_UAC_DIR):
                     uac_dest = os.path.join(mnt, "uac")
@@ -2590,8 +2648,8 @@ def start_import_live_collection():
         update_job(active=False)
         return jsonify({"success": False, "error": f"Unsupported hash algorithm(s): {sorted(invalid_hashes)}. Use any of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
 
-    case_num = metadata.get('case_number') or 'UNASSIGNED'
-    evidence_id = metadata.get('evidence_id') or 'LIVECOLLECT-01'
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'LIVECOLLECT-01'
     base_name = f"{case_num}_{evidence_id}"
 
     report_data = {
@@ -3269,8 +3327,8 @@ def start_imaging():
         "pending_sectors": pending
     }
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     examiner = metadata.get('examiner', 'UNSPECIFIED')
     notes = metadata.get('notes', 'None')
     base_name = f"{case_num}_{evidence_id}"
@@ -3574,8 +3632,8 @@ def start_ddrescue():
             update_job(active=False)
             return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
 
-    case_num = metadata.get('case_number', 'RECOVERY')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'RECOVERY'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_ddrescue"
     
     out_file = os.path.join(dest_path, f"{base_name}.dd")
