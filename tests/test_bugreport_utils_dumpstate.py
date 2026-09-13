@@ -46,6 +46,29 @@ def test_parse_bugreport_zip_with_no_dumpstate_member_returns_clean_error(tmp_pa
     assert 'dumpstate-*' in result['error']
 
 
+def test_parse_bugreport_recognizes_the_modern_bugreport_prefixed_member(tmp_path):
+    # Regression test for a real gap found live 2026-09-13 against a genuine
+    # adb bugreport from a real Pixel 8a: the original member check only
+    # looked for a name containing "dumpstate-" (mirroring dumpstate-py's
+    # own reference main.app() entrypoint verbatim), but real current
+    # Android bugreports don't ship a member named that way anymore - the
+    # one interesting top-level member is bugreport-<device>-<build>-
+    # <timestamp>.txt instead. Before this fix, a completely genuine, valid
+    # bugreport archive was rejected outright with "not a recognized adb
+    # bugreport archive" - confirmed live, then fixed to check both names.
+    modern_zip = tmp_path / 'modern_bugreport.zip'
+    with zipfile.ZipFile(modern_zip, 'w') as zf:
+        zf.writestr('bugreport-akita-CP2A.260805.005-2026-09-13-09-39-18.txt', 'not real dumpstate content')
+        zf.writestr('dumpstate_log.txt', 'also not the member this should pick')
+    result = br.parse_bugreport(str(modern_zip))
+    # Recognized and actually attempted (dumpstate-py's own parse() never
+    # raises on content it can't make sense of, per the module's own
+    # docstring/test above) - the point here is it got PAST the pre-check,
+    # not that this placeholder content produces meaningful sections.
+    assert result['success'] is True
+    assert isinstance(result['sections'], dict)
+
+
 def test_parse_bugreport_corrupt_zip_returns_clean_error(tmp_path):
     corrupt = tmp_path / 'corrupt.zip'
     corrupt.write_bytes(b'PK\x03\x04' + b'not actually a valid zip structure')
