@@ -117,28 +117,58 @@ from core.f2fs_utils import detect_f2fs
 
 file_explorer_bp = Blueprint('file_explorer', __name__)
 
-def _resolve_analysis_output_dir(requested_dest, source_dir):
+def _resolve_analysis_output_dir(requested_dest, source_dir, allow_same_as_source=False):
     """Validates and returns the real output directory an analysis tool
     (hashdeep, Geolocation Export, MVT scan, ...) should write its generated
-    file(s)/folder into - never source_dir itself, and never anything nested
-    inside it. This app's own culture is that acquired evidence, including a
-    folder's own contents, must never be modified by a later analysis step
-    (found live, 2026-08-30: real Geolocation KML and MVT scan output had
-    both been written directly inside a real acquired Android pull folder -
-    each tool independently defaulted its output path to the very folder it
-    was scanning). requested_dest is normally the active case's folder
+    file(s)/folder into - never nested inside source_dir, and (unless
+    allow_same_as_source) never source_dir itself either. This app's own
+    culture is that acquired evidence, including a folder's own contents,
+    must never be modified by a later analysis step (found live, 2026-08-30:
+    real Geolocation KML and MVT scan output had both been written directly
+    inside a real acquired Android pull folder - each tool independently
+    defaulted its output path to the very folder it was scanning, which a
+    LATER re-scan of that same folder would then pick back up as if it were
+    more evidence). requested_dest is normally the active case's folder
     (frontend already computes this the same way every other properly-
     designed tool in this app does - Memory Forensics, Logical Acquisition,
     ALEAPP/iLEAPP); if omitted, falls back to source_dir's own parent
-    directory, which is still never source_dir itself. Returns None (never
-    source_dir, and never a path under it) on any invalid/missing/nested-in-
-    source destination - the caller should treat that as a 400."""
+    directory, which is still never source_dir itself regardless of
+    allow_same_as_source (a parent can never equal its own child, so this
+    fallback path never needs the relaxation below).
+
+    allow_same_as_source=True (found in a review pass, 2026-09-13) exists for
+    the single-FILE analysis tools (source_dir is one specific file's own
+    os.path.dirname(), never itself recursively walked) - $MFT/$UsnJrnl/
+    SQLite Dissect/APK/WhatsApp-decrypt/bugreport-parse/backup-extract/video-
+    contact-sheet. For these, dest_dir == source_dir is genuinely harmless:
+    there is no directory walk of source_dir happening at all, so a sibling
+    output file dropped next to the source can never get swept up by a
+    future re-scan the way it could for a real folder-scan tool. This
+    mattered for real: bugreport/backup acquisition (routes/mobile.py) write
+    their .zip/.ab flat into the destination directory (unlike pull mode,
+    which makes its own subfolder), so source_dir IS the case folder itself
+    whenever one was captured with the default destination - the exact,
+    very common case the frontend's own default `destinationDir =
+    activeCase.case_folder` (static/js/main.js) produces. Before this
+    parameter existed, Deep-Parse Bugreport was hard-broken for that entire
+    common case, confirmed live against a real captured bugreport archive.
+    Genuine folder-scan tools (hashdeep -r, Geolocation Export's exiftool
+    -r, Thumbcache's os.walk, MVT's whole-backup-folder mode) must keep
+    allow_same_as_source=False (the default) - dest_dir == source_dir is
+    exactly the real, previously-shipped bug this guard exists to prevent
+    for those.
+
+    Returns None (never nested under source_dir, and never source_dir itself
+    unless allow_same_as_source) on any invalid/missing/disallowed
+    destination - the caller should treat that as a 400."""
     dest = safe_path(requested_dest) if requested_dest else safe_path(os.path.dirname(source_dir.rstrip(os.sep)))
     if not dest or not os.path.isdir(dest):
         return None
     real_dest = os.path.realpath(dest)
     real_source = os.path.realpath(source_dir)
-    if real_dest == real_source or real_dest.startswith(real_source + os.sep):
+    if real_dest.startswith(real_source + os.sep):
+        return None
+    if real_dest == real_source and not allow_same_as_source:
         return None
     return dest
 
@@ -1867,7 +1897,7 @@ def extract_android_backup():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
 
-    dest_parent = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    dest_parent = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_parent:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
@@ -1925,7 +1955,7 @@ def analyze_mft():
     if not result["success"]:
         return jsonify(result), 500
 
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
@@ -1973,7 +2003,7 @@ def parse_usnjrnl():
 
     records = parse_usnjrnl_file(file_path)
 
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
@@ -2253,7 +2283,7 @@ def run_sqlite_dissect_route():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
 
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
@@ -2303,7 +2333,7 @@ def run_apk_analyze():
     case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if dest_dir:
         base_name = os.path.splitext(os.path.basename(file_path))[0]
         output_path = os.path.join(dest_dir, f"{base_name}_apk_analysis.json")
@@ -2334,7 +2364,7 @@ def run_whatsapp_decrypt():
     if not key_path or not os.path.isfile(key_path):
         return jsonify({"success": False, "error": "Key file not found or outside the permitted evidence directory."}), 400
 
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(crypt_path))
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(crypt_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
@@ -2508,7 +2538,7 @@ def run_bugreport_parse():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
 
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
@@ -2566,7 +2596,7 @@ def run_video_contact_sheet():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
 
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path))
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
@@ -2805,8 +2835,15 @@ def run_mvt_scan():
     if platform not in ('ios', 'android'):
         return jsonify({"success": False, "error": "platform must be 'ios' or 'android'."}), 400
 
-    source_for_dest_guard = target_path if os.path.isdir(target_path) else os.path.dirname(target_path)
-    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), source_for_dest_guard)
+    # allow_same_as_source only for the single-.ab-file target (found in a
+    # review pass alongside the identical bugreport-parse bug): the
+    # directory-target mode genuinely recursively scans target_path itself
+    # (mvt check-backup walks the whole folder) - that's the real hazard
+    # this guard exists for, and must stay strict. A single .ab file has no
+    # such walk, so writing the scan's own output alongside it is safe.
+    is_dir_target = os.path.isdir(target_path)
+    source_for_dest_guard = target_path if is_dir_target else os.path.dirname(target_path)
+    dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), source_for_dest_guard, allow_same_as_source=not is_dir_target)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
 
