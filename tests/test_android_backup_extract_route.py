@@ -119,12 +119,47 @@ def test_extract_android_backup_refuses_to_overwrite_a_prior_extraction(client, 
     assert second.get_json()["success"] is False
 
 
-def test_extract_android_backup_rejects_a_destination_nested_inside_the_source_folder(client, evidence_root):
+def test_extract_android_backup_allows_a_destination_equal_to_the_source_folder(client, evidence_root):
+    # Regression test for a real bug found live 2026-09-13 (the identical
+    # class of bug fixed the same day for Deep-Parse Bugreport): this route
+    # analyzes one specific .ab FILE, never a directory walk of the folder
+    # it sits in - unlike hashdeep/Geolocation Export/MVT's real folder-scan
+    # hazard, there is no risk of a future re-scan of that folder picking
+    # the extracted output back up as evidence, since nothing here ever
+    # recursively walks the .ab's own containing directory. Mobile
+    # Forensics' own backup acquisition (routes/mobile.py) writes the .ab
+    # flat into the destination directory (unlike pull mode's own
+    # subfolder), so this exact "same folder" case is this route's own most
+    # common real usage, not an edge case - this test used to assert the
+    # opposite (400) before the fix.
     ab_path = os.path.join(evidence_root, "backup.ab")
     _write_plain_ab(ab_path, {"a_file.txt": b"hello"})
 
     res = client.post("/api/files/extract_android_backup", json={
         "path": ab_path, "destination_dir": evidence_root,  # same folder the .ab itself sits in
+    })
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    output_dir = data["output_dir"]
+    assert output_dir == os.path.join(evidence_root, "backup_android_backup_extracted")
+    with open(os.path.join(output_dir, "a_file.txt"), "rb") as f:
+        assert f.read() == b"hello"
+
+
+def test_extract_android_backup_rejects_a_destination_nested_inside_the_source_folder(client, evidence_root):
+    # The "same as source" relaxation above is narrowly "dest may EQUAL
+    # source_dir" - a genuinely deeper, nested destination is still
+    # correctly rejected.
+    source_folder = os.path.join(evidence_root, "case_folder")
+    os.makedirs(source_folder, exist_ok=True)
+    ab_path = os.path.join(source_folder, "backup.ab")
+    _write_plain_ab(ab_path, {"a_file.txt": b"hello"})
+    nested_dest = os.path.join(source_folder, "some_subfolder")
+    os.makedirs(nested_dest, exist_ok=True)
+
+    res = client.post("/api/files/extract_android_backup", json={
+        "path": ab_path, "destination_dir": nested_dest,
     })
     assert res.status_code == 400
     assert res.get_json()["success"] is False
