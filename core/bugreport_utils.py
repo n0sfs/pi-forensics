@@ -240,19 +240,32 @@ def parse_bugreport(path):
 
     logging.getLogger('dumpstate-py').setLevel(logging.CRITICAL)
 
-    # Mirrors dumpstate-py's own main.app() entrypoint exactly: an `adb
-    # bugreport` output is a zip whose one interesting member is named
-    # dumpstate-*; a plain flat dumpstate text file (e.g. one already
-    # extracted, or pulled by an older adb) is handled directly too.
+    # Originally mirrored dumpstate-py's own main.app() entrypoint exactly
+    # (member name contains "dumpstate-") - confirmed live 2026-09-13 against
+    # a genuine adb bugreport from a real Pixel 8a that this narrower check
+    # is itself stale relative to real modern `adb bugreport` output: current
+    # Android versions name the zip's one interesting top-level member
+    # bugreport-<device>-<build>-<timestamp>.txt (the "dumpstate-" naming
+    # dumpstate-py's own reference implementation checks for appears to be a
+    # legacy/older-Android convention, or perhaps an internal marker within
+    # that file rather than a zip member name in current bugreports - either
+    # way, real bugreports haven't shipped a member literally named
+    # "dumpstate-*" for a long time). Checks both, "bugreport-" first since
+    # that's what every genuinely current device actually produces; a plain
+    # flat dumpstate text file (e.g. one already extracted, or pulled by a
+    # much older adb) is handled directly too, unchanged.
     try:
         with open(path, 'rb') as f:
             head = f.read(4)
         if head == b'PK\x03\x04':
             with zipfile.ZipFile(path, 'r') as zf:
-                member = next((n for n in zf.namelist() if "dumpstate-" in n), None)
+                names = zf.namelist()
+                member = next((n for n in names if n.endswith('.txt') and "bugreport-" in n), None) \
+                    or next((n for n in names if "dumpstate-" in n), None)
                 if not member:
                     return {"success": False, "error": "This zip does not contain a "
-                            "dumpstate-* member - not a recognized adb bugreport archive.",
+                            "bugreport-*.txt or dumpstate-* member - not a recognized adb "
+                            "bugreport archive.",
                             "sections": None, "artifact_records": None}
                 raw_bytes = zf.read(member)
         else:
