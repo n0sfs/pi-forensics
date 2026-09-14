@@ -1766,6 +1766,27 @@ GEO_ACTIVITY_VISIT_GAP_SECONDS = 900
 GEO_ACTIVITY_MIN_DWELL_SECONDS = 60
 
 
+def _format_location_visits(loc):
+    """The exported reports' equivalent of main.js's _formatVisitCount() - one
+    place deciding how a location's visit figure reads, so the PDF, the HTML
+    export and the screen cannot drift into describing the same place
+    differently. An undated cluster has no derivable visit count and must not
+    render its Python None into a report cell."""
+    visits = loc.get("visit_count")
+    samples = loc.get("sample_count") or 0
+    if visits is None:
+        return f"{samples} recording(s), undated"
+    dwell = loc.get("total_dwell_seconds") or 0
+    text = f"{visits} visit" + ("" if visits == 1 else "s")
+    if dwell >= 60:
+        text += f", {int(dwell // 60)} min"
+    elif dwell:
+        text += f", {int(dwell)}s"
+    if samples > visits:
+        text += f" ({samples} recordings)"
+    return text
+
+
 def _count_visits_and_dwell(timestamps):
     """Turns one location's sample times into (visit_count, total_dwell_seconds).
 
@@ -3751,7 +3772,7 @@ def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: C
                 y = 750
                 y = _draw_loc_header_row(y)
             row = [
-                f"{loc['lat']:.5f}", f"{loc['lon']:.5f}", str(loc['visit_count']),
+                f"{loc['lat']:.5f}", f"{loc['lon']:.5f}", _format_location_visits(loc),
                 format_epoch(loc.get('first_seen')) or 'N/A',
                 format_epoch(loc.get('last_seen')) or 'N/A',
             ]
@@ -4830,10 +4851,10 @@ def _html_pattern_of_life_block(case_folder, title="Pattern of Life: Contact Cor
     if not frequent_locations:
         parts.append('<p class="muted">No location was returned to or stayed at long enough to list for this case.</p>')
     else:
-        parts.append('<table><tr><th>Latitude</th><th>Longitude</th><th>Visits</th><th>First Seen</th><th>Last Seen</th></tr>')
+        parts.append('<table><tr><th>Latitude</th><th>Longitude</th><th>Visits / time spent</th><th>First Seen</th><th>Last Seen</th></tr>')
         for loc in frequent_locations:
             parts.append(
-                f'<tr><td>{loc["lat"]:.5f}</td><td>{loc["lon"]:.5f}</td><td>{loc["visit_count"]}</td>'
+                f'<tr><td>{loc["lat"]:.5f}</td><td>{loc["lon"]:.5f}</td><td>{esc(_format_location_visits(loc))}</td>'
                 f'<td>{esc(format_epoch(loc.get("first_seen")) or "N/A")}</td>'
                 f'<td>{esc(format_epoch(loc.get("last_seen")) or "N/A")}</td></tr>'
             )

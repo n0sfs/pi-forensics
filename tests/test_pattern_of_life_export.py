@@ -122,7 +122,9 @@ def test_html_export_shows_frequent_location_cluster(client, evidence_root):
     assert "37.77500" in html_out
     assert "-122.41900" in html_out
     # visit_count column - exactly 2 real points folded into 1 cluster.
-    assert "<td>2</td>" in html_out
+    # Two samples 100s apart are one visit; the cell now says so and keeps the
+    # raw recording count alongside rather than passing it off as visits.
+    assert "1 visit" in html_out and "2 recordings" in html_out
 
 
 def test_pdf_export_also_renders_real_data(client, evidence_root):
@@ -198,7 +200,9 @@ def test_frequent_locations_uses_the_passed_attachment_files_not_a_stale_disk_re
     # identical assertions for the takeout-sourced equivalent).
     assert "37.77500" in html_out
     assert "-122.41900" in html_out
-    assert "<td>2</td>" in html_out
+    # Two samples 100s apart are one visit; the cell now says so and keeps the
+    # raw recording count alongside rather than passing it off as visits.
+    assert "1 visit" in html_out and "2 recordings" in html_out
 
     buf = io.BytesIO()
     c = canvas.Canvas(buf)
