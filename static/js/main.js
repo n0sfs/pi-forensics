@@ -12356,7 +12356,7 @@ function updatePatternOfLifeHighlights() {
             items.push({ icon: 'bi-house-door-fill', text: `Likely home: ${homeEntry[0]}` });
         } else {
             const top = patternOfLifeGeoActivityData.frequent_locations[0];
-            items.push({ icon: 'bi-geo-alt-fill', text: `Most visited location: ${top.lat.toFixed(3)}, ${top.lon.toFixed(3)} (${top.visit_count} visits)` });
+            items.push({ icon: 'bi-geo-alt-fill', text: `Most visited location: ${top.lat.toFixed(3)}, ${top.lon.toFixed(3)} (${_formatVisitCount(top)})` });
         }
     }
 
@@ -12518,6 +12518,35 @@ function classifyHomeWorkLocations(points, frequentLocations) {
 const GEO_ACTIVITY_CLIENT_CLUSTER_PRECISION = 3;
 const GEO_ACTIVITY_CLIENT_MIN_FREQUENT_VISITS = 2;
 const GEO_ACTIVITY_CLIENT_MAX_FREQUENT_LOCATIONS = 20;
+// Must stay in step with GEO_ACTIVITY_VISIT_GAP_SECONDS (routes/reporting.py) -
+// this is the client-side re-clustering used when a date filter is applied, and
+// the two producing different visit counts for the same place would be worse
+// than either being wrong on its own. See that constant's own comment for why a
+// visit is a gap-separated session rather than a raw sample count.
+const GEO_ACTIVITY_CLIENT_VISIT_GAP_SECONDS = 900;
+
+// One formatter for every place a location's visit figure is shown (the
+// highlight chip, the map popup, the Frequent Locations table), so they can
+// never drift into saying different things about the same place.
+//
+// Deliberately states BOTH numbers when they differ. "2 visits" alone hides
+// that the device recorded 2,252 positions there, which is what tells an
+// examiner this was a continuous track rather than two brief stops; "2,252"
+// alone was the original bug. Dwell time is included because it is usually the
+// figure someone actually wanted when they read a big number here.
+function _formatVisitCount(loc) {
+    const samples = loc.sample_count;
+    if (loc.visit_count === null || loc.visit_count === undefined) {
+        // No timestamps, so visits genuinely cannot be derived - say so rather
+        // than letting a sample count be read as a visit count.
+        return `${samples} recording(s), no timestamps to group into visits`;
+    }
+    const dwell = _formatDurationShort(loc.total_dwell_seconds);
+    let text = `${loc.visit_count} visit${loc.visit_count === 1 ? '' : 's'}`;
+    if (dwell) text += `, ${dwell} spent here`;
+    if (samples > loc.visit_count) text += ` (${samples.toLocaleString()} position recordings)`;
+    return text;
+}
 function _clusterGeoPoints(points) {
     const clusters = {};
     (points || []).forEach((p) => {
@@ -12525,17 +12554,42 @@ function _clusterGeoPoints(points) {
         const c = clusters[key] || (clusters[key] = {
             lat: parseFloat(p.lat.toFixed(GEO_ACTIVITY_CLIENT_CLUSTER_PRECISION)),
             lon: parseFloat(p.lon.toFixed(GEO_ACTIVITY_CLIENT_CLUSTER_PRECISION)),
-            visit_count: 0, first_seen: null, last_seen: null,
+            sample_count: 0, timestamps: [], first_seen: null, last_seen: null,
         });
-        c.visit_count++;
+        c.sample_count++;
         if (typeof p.timestamp === 'number') {
+            c.timestamps.push(p.timestamp);
             if (c.first_seen === null || p.timestamp < c.first_seen) c.first_seen = p.timestamp;
             if (c.last_seen === null || p.timestamp > c.last_seen) c.last_seen = p.timestamp;
         }
     });
+    Object.values(clusters).forEach((c) => {
+        const times = c.timestamps.sort((a, b) => a - b);
+        delete c.timestamps;
+        if (!times.length) {
+            c.visit_count = null;       // no times, so no visit count can honestly be derived
+            c.total_dwell_seconds = null;
+            return;
+        }
+        let visits = 1, dwell = 0, start = times[0], prev = times[0];
+        for (let i = 1; i < times.length; i++) {
+            if (times[i] - prev >= GEO_ACTIVITY_CLIENT_VISIT_GAP_SECONDS) {
+                dwell += prev - start;
+                visits++;
+                start = times[i];
+            }
+            prev = times[i];
+        }
+        dwell += prev - start;
+        c.visit_count = visits;
+        c.total_dwell_seconds = Math.round(dwell * 10) / 10;
+    });
     return Object.values(clusters)
-        .filter(c => c.visit_count >= GEO_ACTIVITY_CLIENT_MIN_FREQUENT_VISITS)
-        .sort((a, b) => b.visit_count - a.visit_count)
+        .filter(c => (c.visit_count !== null ? c.visit_count : c.sample_count) >= GEO_ACTIVITY_CLIENT_MIN_FREQUENT_VISITS)
+        .sort((a, b) => (b.visit_count !== null) - (a.visit_count !== null)
+            || (b.visit_count || 0) - (a.visit_count || 0)
+            || (b.total_dwell_seconds || 0) - (a.total_dwell_seconds || 0)
+            || b.sample_count - a.sample_count)
         .slice(0, GEO_ACTIVITY_CLIENT_MAX_FREQUENT_LOCATIONS);
 }
 
@@ -12692,7 +12746,11 @@ function _recomputeAndRenderGeoActivity() {
         }
         const table = document.createElement('table');
         table.className = 'table table-sm table-dark table-hover small mb-0';
-        table.innerHTML = '<thead><tr><th>Coordinates</th><th>Type</th><th>Visits</th><th>First Seen</th><th>Last Seen</th><th></th></tr></thead>';
+        table.innerHTML = '<thead><tr><th>Coordinates</th><th>Type</th>'
+            + '<th title="A visit is a stay at this location with no gap longer than 15 minutes. '
+            + 'A continuously-recorded track logs many positions during a single visit, so the '
+            + 'recording count is shown alongside it rather than in place of it.">Visits / time spent</th>'
+            + '<th>First Seen</th><th>Last Seen</th><th></th></tr></thead>';
         const tbody = document.createElement('tbody');
         frequentLocations.forEach(loc => {
             const key = _geoLocationKey(loc.lat, loc.lon);
@@ -12710,7 +12768,7 @@ function _recomputeAndRenderGeoActivity() {
                 typeCell.appendChild(badge);
             }
             const visitCell = document.createElement('td');
-            visitCell.textContent = loc.visit_count;
+            visitCell.textContent = _formatVisitCount(loc);
             const firstCell = document.createElement('td');
             firstCell.textContent = _formatContactCorrelationTimestamp(loc.first_seen);
             const lastCell = document.createElement('td');
@@ -12890,7 +12948,8 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
                     : { color: '#f59e0b', weight: 2, fillOpacity: 0.35 })
                 : { color: '#ff4d4f', weight: 2, fillOpacity: 0.2 };
             const marker = L.circleMarker([loc.lat, loc.lon], { radius, ...style }).addTo(map);
-            const parts = [homeWork ? `<b>${escapeHtmlForPopup(homeWork.label)}</b>` : '<b>Frequent location</b>', `Visited ${loc.visit_count} time(s)`];
+            const parts = [homeWork ? `<b>${escapeHtmlForPopup(homeWork.label)}</b>` : '<b>Frequent location</b>',
+                escapeHtmlForPopup(_formatVisitCount(loc))];
             if (homeWork) parts.push(escapeHtmlForPopup(homeWork.detail));
             if (loc.first_seen) parts.push(`First: ${_formatContactCorrelationTimestamp(loc.first_seen)}`);
             if (loc.last_seen) parts.push(`Last: ${_formatContactCorrelationTimestamp(loc.last_seen)}`);

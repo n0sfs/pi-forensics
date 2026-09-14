@@ -28,6 +28,7 @@ from werkzeug.security import generate_password_hash
 
 import core.config as config
 from routes.reporting import reporting_bp
+import routes.reporting as reporting
 from core.case_index_db import _record_parsed_artifacts
 from tests.conftest import RemoteTestClient, login_user_session
 
@@ -224,3 +225,72 @@ def test_co_occurrence_pair_rendered_in_html_export(client, evidence_root):
     html_out = _export_preview(client, case_file)
     assert "Jane Doe" in html_out and "Bob Smith" in html_out
     assert "shared communication(s)" in html_out
+
+
+# --- 2026-09-14: a visit is a gap-separated session, not a raw sample count.
+# "visit_count" used to be simply the number of GPS samples landing in a grid
+# cell. For sparse sources (a Takeout history, a few geotagged photos) one
+# sample really is roughly one visit, which is why it went unnoticed. For a
+# continuously-recorded track it is wildly wrong: a real DJI flight log hovering
+# in one spot produced 2,252 samples across 89 minutes, reported as "Visited
+# 2252 time(s)". Those samples are 2 genuine visits - an overstatement of about
+# 1,100x, and a claim about behaviour the data never supported. ---
+def test_a_continuous_run_of_samples_is_one_visit():
+    base = 1700000000
+    # 600 samples a second apart: one unbroken 10-minute stay.
+    visits, dwell = reporting._count_visits_and_dwell([base + i for i in range(600)])
+    assert visits == 1
+    assert dwell == 599.0  # the real time spent, which the old sample count could never express
+
+
+def test_samples_separated_by_a_long_gap_are_separate_visits():
+    base = 1700000000
+    gap = reporting.GEO_ACTIVITY_VISIT_GAP_SECONDS
+    times = [base, base + 60, base + 120]                       # first stay
+    times += [base + 120 + gap + 1, base + 180 + gap + 1]       # came back later
+    visits, dwell = reporting._count_visits_and_dwell(times)
+    assert visits == 2
+    assert dwell == 180.0  # 120s + 60s actually spent there, not the idle gap between
+
+
+def test_a_brief_dropout_does_not_count_as_leaving_and_returning():
+    # The reason the threshold is forgiving: a short signal loss, a walk round
+    # the building or a wait at lights must not read as a new visit.
+    base = 1700000000
+    visits, _ = reporting._count_visits_and_dwell(
+        [base, base + 60, base + 60 + (reporting.GEO_ACTIVITY_VISIT_GAP_SECONDS - 1), base + 900])
+    assert visits == 1
+
+
+def test_a_single_sample_is_one_visit_with_no_measurable_dwell():
+    visits, dwell = reporting._count_visits_and_dwell([1700000000])
+    assert (visits, dwell) == (1, 0.0)
+
+
+def test_undated_points_claim_no_visit_count_at_all():
+    # Undated points genuinely cannot be grouped into visits, so none is
+    # asserted - the UI says "no timestamps to group into visits" rather than
+    # letting a sample count be read as a visit count.
+    assert reporting._count_visits_and_dwell([]) == (None, None)
+    assert reporting._count_visits_and_dwell([None, None]) == (None, None)
+
+
+def test_out_of_order_samples_are_handled():
+    base = 1700000000
+    visits, dwell = reporting._count_visits_and_dwell([base + 120, base, base + 60])
+    assert (visits, dwell) == (1, 120.0)
+
+
+def test_visit_gap_constant_is_shared_with_the_client_side_clusterer():
+    """The client re-clusters when a date filter is applied. If the two used
+    different gaps, the same place would report different visit counts
+    depending on whether a filter happened to be active - worse than either
+    being wrong on its own."""
+    import re
+    js_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "static", "js", "main.js")
+    with open(js_path, encoding="utf-8") as f:
+        js = f.read()
+    m = re.search(r"GEO_ACTIVITY_CLIENT_VISIT_GAP_SECONDS\s*=\s*(\d+)", js)
+    assert m, "client-side visit gap constant not found"
+    assert int(m.group(1)) == reporting.GEO_ACTIVITY_VISIT_GAP_SECONDS

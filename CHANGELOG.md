@@ -21,6 +21,95 @@ file after updating to see what changed.
 
 ---
 
+## [1.90.0] - 2026-09-14
+
+### Security
+- **Fixed a gap where a client could claim a trusted IP address.** A further sweep of every place
+  the application reads the caller's address found routes still trusting a header a remote client
+  can set freely, rather than the connection's real address. All of them now use the same checked
+  helper the kiosk-bypass fix introduced. Only ever exploitable on a station installed without the
+  optional TLS/nginx step; unaffected if you accepted TLS during install.
+- **Added a missing permission check** on an Acquisition-tab action that could be triggered by any
+  logged-in account regardless of its assigned role.
+
+### Added
+- **Maps can now use USGS National Map imagery as well as OpenStreetMap.** A layer switcher on both
+  the Geolocation and Pattern of Life maps offers USGS Topo, USGS Aerial Imagery, and a combined
+  Imagery+Topo view alongside the existing default. The USGS layers are US-only and are public-domain
+  US government imagery, which also means aerial photography - useful for seeing what is actually at
+  a set of coordinates, which OpenStreetMap does not provide. They stop at zoom 16; the map keeps
+  zooming past that by scaling the last available tile rather than going blank.
+- **Locations far outside the main cluster are now flagged on the map.** A notice above the map says
+  how many points sit well away from everything else and how far out they are. It is deliberately
+  worded as a note about the shape of the data rather than a finding, because distance on its own
+  cannot tell genuine travel apart from a GPS error. An opt-in tick box zooms the map to the main
+  cluster so a single stray point does not squash everything else into a dot - nothing is removed,
+  and every point stays plotted, listed and exported.
+- **Impossible travel speeds between timestamped locations are now reported.** Where consecutive
+  points carry times, any movement implying a speed no ordinary travel can account for is called out
+  with the distance, the time, and the resulting speed. Unlike the distance notice above, this does
+  support a conclusion: at least one of the two positions, or one of their timestamps, is wrong. The
+  threshold sits well above airliner cruising speed, so a phone on a real flight is never flagged.
+- **A new "Over Time" view on the Communication Activity Pattern chart.** The existing By Hour of
+  Day, By Day of Week and Heatmap views all fold the whole selected date range into one typical
+  recurring pattern, which cannot show whether activity rose, fell or spiked. Over Time plots the
+  range chronologically instead, choosing hourly, daily, weekly or monthly bars automatically to suit
+  how wide the range is. Clicking a bar still lists the events behind it.
+- **The Relationship Graph now shows each device separately when a case has more than one.** Instead
+  of a single "This Device" hub, each device appears as its own labelled node with its own lines to
+  the contacts that device's data actually shows contact with, so it is clear which device a
+  relationship came from. A case with one device looks exactly as it did before.
+- **A new "Privacy & Anonymity Indicators" section in Pattern of Life** lists any VPN, Tor or
+  anonymity-network apps installed on the device, and any `.onion` address appearing anywhere in the
+  parsed evidence - not only browser history, but messages and notes too. It states plainly what it
+  cannot tell you: whether a VPN was actually connected at any past moment, which a phone does not
+  record. It also notes that a VPN never changes a GPS position, only a location worked out from an
+  IP address. Apps that ship with the phone are listed separately from ones the user installed.
+
+### Changed
+- **The offline map cache now downloads from USGS rather than OpenStreetMap.** OpenStreetMap's usage
+  policy forbids bulk-downloading tiles for offline use, which is why this optional install step
+  never once completed successfully - it was being blocked, correctly. USGS National Map imagery is
+  public domain with no such restriction, so the offline cache now works for the first time. Coverage
+  is the United States and its territories.
+- **Analysis Coverage now tells "never tried" apart from "tried and failed".** A tool that was run
+  and reported an error shows a red "Failed" badge, with the recorded error on hover, instead of
+  looking identical to a tool that was never attempted - so it is clear when re-running something
+  will simply fail again. Steps that do not apply to an evidence item show as "N/A".
+- **Analysis Coverage now credits work done from the right-click menu.** Previously only the Auto
+  Analyze sequence counted, so tools run individually against a file or folder still showed as "Not
+  yet run" even though they had genuinely been run. All the standard analysis steps now count
+  whichever way you ran them.
+- Evidence Timeline now includes ALEAPP/iLEAPP findings that carry their own timestamps. Previously
+  every one of these was treated as undated and left out of the timeline entirely, even when the
+  underlying report clearly had a time for each entry.
+- Exported KML files now carry a real timestamp on each point instead of burying it in the
+  description text. Google Earth and similar tools can use these for their time slider, and the
+  application can read the times back when a KML is re-imported.
+
+### Fixed
+- **Map imagery showing "Access blocked" instead of a map.** A security header the installer adds
+  was also stripping the information OpenStreetMap uses to identify which application is asking for
+  tiles, so it refused to serve them. Tile requests now identify the station while every other
+  request from the application continues to send nothing, and no case name or file path is ever
+  included.
+- A single stray GPS point thousands of miles from the rest of a track no longer forces the map to
+  zoom all the way out to fit it.
+- **Location maps and lists no longer freeze the browser on a dense GPS track.** A recorded track of
+  several thousand points now draws as a single path with start and end markers rather than thousands
+  of overlapping pins, and the table below it is capped with a clear note.
+- **"Deep-Parse Bugreport" and several other single-file analysis tools rejected their own default
+  destination**, refusing to run with a message about not modifying evidence. These tools write
+  alongside the file they are analysing, which is exactly what the check was rejecting.
+- Bugreport parsing now recognises the file name modern Android bugreports actually use. A genuine,
+  valid bugreport archive was previously rejected outright as unrecognised.
+- Case Bundle Export no longer tries to compress raw disk images (which cannot meaningfully compress,
+  and made large exports take far longer than necessary), and now checks there is enough free space
+  before starting rather than failing part-way through.
+- Case Status now saves immediately when changed, rather than silently requiring a separate save.
+- Several sections of Reporting that were meant to hide when no case is loaded now actually do.
+- Runtime hash-list and URL-list storage is no longer eligible to be committed to source control.
+
 ## [1.89.0] - 2026-09-10
 
 ### Added
