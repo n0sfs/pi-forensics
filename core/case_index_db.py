@@ -2533,15 +2533,52 @@ def compute_case_analysis_coverage(case_folder):
             continue  # e.g. a companion-app extraction event - nothing walkable to report coverage for
 
         is_image = bool(image_path)
+        # Three outcomes, not one (2026-09-14). This previously kept only
+        # status == 'ok' and discarded everything else, which made a step that
+        # was genuinely ATTEMPTED AND FAILED indistinguishable from one never
+        # tried - directly contradicting the UI's own stated promise that a
+        # gray "Not yet run" badge means exactly "never been tried against this
+        # item". Confirmed live against ITEM-BUGREPORT-02, whose bugreport
+        # parse really was run and really did fail (on dumpstate-py's own
+        # upstream bug, not this app's), yet showed as never attempted - so an
+        # examiner had no signal that re-running it would fail the same way.
+        #
+        # The data was always there: both Auto Analyze workers already log
+        # per-step results with status ok/error/skipped/not_applicable. Only
+        # the reader was throwing it away.
+        #
+        # coc_entries are read in file order, which is append order, which is
+        # chronological - so a later attempt naturally overwrites an earlier
+        # one below. A step that has EVER succeeded stays "completed" even if a
+        # later attempt failed: the output it produced genuinely exists, which
+        # is a stronger fact about coverage than the latest attempt's outcome.
         completed_steps = set()
+        failed_steps = {}
+        not_applicable_steps = set()
         for entry in coc_entries:
             details = entry.get('details', {})
             entry_path = details.get('image_path') if is_image else details.get('path')
             if entry_path != target_path:
                 continue
             for r in details.get('results', []):
-                if r.get('status') == 'ok':
-                    completed_steps.add(r.get('step'))
+                step = r.get('step')
+                status = r.get('status')
+                if status == 'ok':
+                    completed_steps.add(step)
+                    failed_steps.pop(step, None)
+                    not_applicable_steps.discard(step)
+                elif status == 'error':
+                    # Kept as a short string: the raw detail can be a whole
+                    # result dict, and this is a badge tooltip, not a log view.
+                    failed_steps[step] = str(r.get('detail') or 'no detail recorded')[:300]
+                    not_applicable_steps.discard(step)
+                elif status == 'not_applicable':
+                    not_applicable_steps.add(step)
+                    failed_steps.pop(step, None)
+        # Success wins over a failure recorded in the same or an earlier run.
+        for step in completed_steps:
+            failed_steps.pop(step, None)
+            not_applicable_steps.discard(step)
 
         recorded_hashes = event.get('computed_verification_hashes') or {}
         lv = lv_by_event.get(event.get('event_id'))
@@ -2562,6 +2599,11 @@ def compute_case_analysis_coverage(case_folder):
             "kind": "disk_image" if is_image else "mobile_or_folder",
             "target_path": target_path,
             "steps_completed": sorted(completed_steps),
+            # {step: short error text} - a step attempted at least once that
+            # has never succeeded. Distinct from a step simply absent from all
+            # three lists, which genuinely means never tried.
+            "steps_failed": dict(sorted(failed_steps.items())),
+            "steps_not_applicable": sorted(not_applicable_steps),
             "hash_status": hash_status,
             "tag_count": tag_count,
         })

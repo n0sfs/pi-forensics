@@ -2102,6 +2102,110 @@ def test_analysis_coverage_disk_image_steps_completed_from_real_coc_log(case_fol
     assert item["kind"] == "disk_image"
     assert item["target_path"] == image_path
     assert item["steps_completed"] == ["hash_manifest", "registry"]
+    # 2026-09-14: the errored step is no longer silently dropped - it was
+    # genuinely attempted, which is a different state from never tried.
+    assert list(item["steps_failed"]) == ["prefetch"]
+
+
+# --- 2026-09-14: attempted-and-failed is its own state. This previously kept
+# only status == 'ok' and discarded the rest, so a step that really was run and
+# really did fail rendered identically to one never tried - contradicting the
+# UI's own promise that "Not yet run" means never attempted. Confirmed live
+# against a real bugreport parse that failed on dumpstate-py's upstream bug. ---
+def test_analysis_coverage_reports_a_failed_step_with_its_recorded_error(case_folder, coc_log_file):
+    image_path = os.path.join(case_folder, "USBDrive-1.dd")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "USBDrive-1"},
+         "acquisition_parameters": {"output_image_path": image_path}},
+    ])
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": image_path,
+        "results": [{"step": "prefetch", "status": "error",
+                     "detail": "IndexError('pop from empty list')"}],
+    })
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == []
+    # The reason is carried through, so an examiner can see re-running is futile.
+    assert "IndexError" in item["steps_failed"]["prefetch"]
+
+
+def test_analysis_coverage_a_later_success_clears_an_earlier_failure(case_folder, coc_log_file):
+    # Whatever went wrong was fixed and the step then produced real output -
+    # the artifact exists, so it is covered, not failed.
+    image_path = os.path.join(case_folder, "USBDrive-1.dd")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "USBDrive-1"},
+         "acquisition_parameters": {"output_image_path": image_path}},
+    ])
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": image_path,
+        "results": [{"step": "registry", "status": "error", "detail": "hive locked"}]})
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": image_path,
+        "results": [{"step": "registry", "status": "ok"}]})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == ["registry"]
+    assert item["steps_failed"] == {}
+
+
+def test_analysis_coverage_a_success_is_not_undone_by_a_later_failure(case_folder, coc_log_file):
+    # The inverse: a step that already produced real output stays covered even
+    # if a later re-run errored - the earlier artifact genuinely exists, which
+    # is the stronger fact about coverage.
+    image_path = os.path.join(case_folder, "USBDrive-1.dd")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "USBDrive-1"},
+         "acquisition_parameters": {"output_image_path": image_path}},
+    ])
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": image_path, "results": [{"step": "registry", "status": "ok"}]})
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": image_path,
+        "results": [{"step": "registry", "status": "error", "detail": "transient"}]})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == ["registry"]
+    assert item["steps_failed"] == {}
+
+
+def test_analysis_coverage_reports_not_applicable_separately_from_failed(case_folder, coc_log_file):
+    path = os.path.join(case_folder, "phone_pull")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_pull",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _append_coc_entry(coc_log_file, "auto_analyze_mobile_complete", {
+        "path": path,
+        "results": [{"step": "ios_backup_parse", "status": "not_applicable"},
+                    {"step": "aleapp_scan", "status": "error", "detail": "boom"}]})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_not_applicable"] == ["ios_backup_parse"]
+    assert list(item["steps_failed"]) == ["aleapp_scan"]
+
+
+def test_analysis_coverage_a_never_attempted_step_appears_in_no_outcome_list(case_folder, coc_log_file):
+    # The whole point: absence from all three lists is what "never tried"
+    # means, and it must stay distinguishable from the other states.
+    image_path = os.path.join(case_folder, "USBDrive-1.dd")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "USBDrive-1"},
+         "acquisition_parameters": {"output_image_path": image_path}},
+    ])
+    _append_coc_entry(coc_log_file, "auto_analyze_complete", {
+        "image_path": image_path, "results": [{"step": "registry", "status": "ok"}]})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == ["registry"]
+    assert item["steps_failed"] == {}
+    assert item["steps_not_applicable"] == []
 
 
 def test_analysis_coverage_unions_steps_across_multiple_runs(case_folder, coc_log_file):
