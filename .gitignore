@@ -96,6 +96,16 @@ mount_history.json
 *.swp
 .DS_Store
 
+# Real-data test fixtures (2026-09-14). The committed tests use synthetic values
+# throughout, on purpose - this repo is public, and a privacy audit found real
+# evidence (GPS coordinates at centimetre precision) had been used as a test
+# fixture and needed scrubbing from history. Some things are only genuinely
+# testable against real tool output though - a real ALEAPP TSV, a real adb
+# bugreport, a real SRUM database - so those live here and never leave the
+# machine. See tests/conftest.py::local_fixture(): a test that wants one asks
+# for it by name and SKIPS if it is absent, so a clean checkout stays green.
+tests/fixtures/local/
+
 # Local Claude Code context (not for the repo) - split 2026-09-11 from one oversized CLAUDE.md
 # into these five files specifically so the auto-loaded one (CLAUDE.md) stays small; see its own
 # "Session continuity" section for what each file is for.

@@ -387,3 +387,38 @@ def test_all_artifact_types_constant_matches_actual_curated_values():
     # produce" set the regression test in test_parsed_artifact_type_
     # labels.py imports directly) drifting apart.
     assert leapp.LEAPP_TSV_ALL_ARTIFACT_TYPES == set(leapp.CURATED_LEAPP_MODULES.values()) | {"leapp_module_finding"}
+
+
+# --- Real-data test (2026-09-14). Everything above uses hand-built synthetic
+# TSVs, which is right for a public repo - but the fallback timestamp detection
+# exists precisely because REAL module output does things a hand-written fixture
+# never would, and that is only provable against the genuine article. Drop a
+# real ALEAPP "_TSV Exports" folder's .tsv file at the path below and this runs;
+# without it, it skips. tests/fixtures/local/ is gitignored in full, so nothing
+# real is ever committed. ---
+def test_real_aleapp_tsv_parses_with_timestamps_if_a_sample_is_present(local_fixture):
+    path = local_fixture("aleapp/sample_module.tsv")
+
+    import shutil, tempfile
+    tmp = tempfile.mkdtemp()
+    try:
+        tsv_dir = os.path.join(tmp, "_TSV Exports")
+        os.makedirs(tsv_dir)
+        shutil.copy(path, os.path.join(tsv_dir, os.path.basename(path)))
+        records, files_found, _ = leapp.parse_leapp_tsv_exports(tsv_dir, "aleapp")
+        assert files_found == 1
+        assert records, "a real ALEAPP TSV should yield at least one record"
+        # Every record must carry the module's real name, and any timestamp
+        # present must be a real epoch float - never a fabricated value.
+        for r in records:
+            assert r["extra"]["leapp_module"]
+            assert r["timestamp"] is None or isinstance(r["timestamp"], float)
+        # If the detector claimed a timestamp column, it must name a real header.
+        dated = [r for r in records if r["timestamp"] is not None]
+        if dated:
+            col = dated[0]["extra"].get("leapp_timestamp_column")
+            if col:
+                assert col in dated[0]["extra"]["row"], \
+                    "the disclosed timestamp column must be a real column of this file"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
