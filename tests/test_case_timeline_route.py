@@ -362,9 +362,13 @@ def test_geo_activity_skips_a_row_with_no_real_lat_lon(client, evidence_root):
 def test_geo_activity_clusters_nearby_points_into_a_frequent_location(client, evidence_root):
     # Three real, distinct timestamps at effectively the same real-world
     # spot (well within the ~111m grid cell) must collapse into ONE
-    # frequent_locations entry, ranked by visit_count, with a correctly
-    # computed first_seen/last_seen span - not three separate points each
-    # counted once.
+    # frequent_locations entry, with a correctly computed first_seen/last_seen
+    # span.
+    # Updated 2026-09-14: these three samples are 100 seconds apart, which is
+    # ONE visit of 200 seconds - not three. This test previously asserted
+    # visit_count == 3, which was the old meaning of that field: the raw number
+    # of GPS samples in the cell, not visits at all. See
+    # GEO_ACTIVITY_VISIT_GAP_SECONDS for why that distinction matters.
     case_folder = _make_real_case(evidence_root)
     _record_parsed_artifacts(case_folder, {"source_type": "real_fs", "path": os.path.join(case_folder, "Takeout", "Records.json")}, [
         {"artifact_type": "takeout_location_history", "title": "Location", "url": "", "value": "Home",
@@ -379,7 +383,9 @@ def test_geo_activity_clusters_nearby_points_into_a_frequent_location(client, ev
     assert len(data["points"]) == 3
     assert len(data["frequent_locations"]) == 1
     cluster = data["frequent_locations"][0]
-    assert cluster["visit_count"] == 3
+    assert cluster["visit_count"] == 1          # one continuous stay, not three visits
+    assert cluster["sample_count"] == 3         # the raw positions are still reported
+    assert cluster["total_dwell_seconds"] == 200.0
     assert cluster["first_seen"] == 1786784100.0
     assert cluster["last_seen"] == 1786784300.0
 
@@ -403,9 +409,15 @@ def test_geo_activity_excludes_single_visit_points_from_frequent_locations(clien
     ])
     res = client.get(f"/api/cases/geo_activity?case_folder={case_folder}")
     data = res.get_json()
-    assert len(data["points"]) == 3  # the single-visit point is still a real point
-    assert len(data["frequent_locations"]) == 1  # but not a "frequent location"
-    assert data["frequent_locations"][0]["visit_count"] == 2
+    assert len(data["points"]) == 3  # the one-off point is still a real point
+    # The two clustered samples are 100 seconds apart - one visit, but a stay
+    # long enough to be notable (>= GEO_ACTIVITY_MIN_DWELL_SECONDS). The lone
+    # point elsewhere is a single instantaneous fix with no dwell at all, so it
+    # still does not qualify - which is what this test has always been about.
+    assert len(data["frequent_locations"]) == 1
+    assert data["frequent_locations"][0]["visit_count"] == 1
+    assert data["frequent_locations"][0]["sample_count"] == 2
+    assert data["frequent_locations"][0]["total_dwell_seconds"] == 100.0
 
 
 def test_geo_activity_includes_kml_derived_points_alongside_takeout(client, evidence_root):

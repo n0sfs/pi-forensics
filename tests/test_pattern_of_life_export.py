@@ -81,7 +81,7 @@ def test_empty_case_renders_clean_no_data_messages_not_a_crash(client, evidence_
     case_folder, case_file = _make_real_case(evidence_root)
     html_out = _export_preview(client, case_file)
     assert "No correlated contacts found for this case." in html_out
-    assert "No location visited more than once was found for this case." in html_out
+    assert "No location was returned to or stayed at long enough to list for this case." in html_out
 
 
 def test_html_export_shows_real_correlated_contact_and_tier(client, evidence_root):
