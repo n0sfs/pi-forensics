@@ -12356,7 +12356,9 @@ function updatePatternOfLifeHighlights() {
             items.push({ icon: 'bi-house-door-fill', text: `Likely home: ${homeEntry[0]}` });
         } else {
             const top = patternOfLifeGeoActivityData.frequent_locations[0];
-            items.push({ icon: 'bi-geo-alt-fill', text: `Most visited location: ${top.lat.toFixed(3)}, ${top.lon.toFixed(3)} (${_formatVisitCount(top)})` });
+            // No wrapping parens here - _formatVisitCount() already supplies its
+            // own for the recording count, and nesting them read badly.
+            items.push({ icon: 'bi-geo-alt-fill', text: `Most visited location: ${top.lat.toFixed(3)}, ${top.lon.toFixed(3)} - ${_formatVisitCount(top)}` });
         }
     }
 
