@@ -25,6 +25,7 @@ from core.case_index_db import (
     _backfill_case_artifact_tags, KEYWORD_CATEGORY_PREFIX, resolve_scan_category_label,
     has_case_analysis_activity, cross_case_hash_search, correlate_contacts,
     compute_case_analysis_coverage, ensure_examiner_recorded,
+    detect_privacy_tools,
 )
 
 case_index_bp = Blueprint('case_index', __name__)
@@ -581,6 +582,25 @@ def case_index_contact_correlation():
     fresh on every request, same as /api/cases/timeline, no new schema."""
     req = request.get_json() or {}
     result = correlate_contacts(req.get('case_folder'))
+    return jsonify({"success": True, **result})
+
+@case_index_bp.route('/api/case_index/privacy_tools', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def case_index_privacy_tools():
+    """Privacy/anonymity tooling indicators (core/case_index_db.py::detect_
+    privacy_tools()) - which VPN/Tor/anonymity clients are installed, and
+    whether any .onion address appears anywhere in the indexed artifacts.
+    Read-only against already-indexed parsed_artifacts, runs fresh per request,
+    no new schema - same shape as the contact-correlation route above.
+
+    Deliberately does NOT answer "was a VPN connected at time X": Android keeps
+    no durable user-accessible VPN connection history, so that question cannot
+    be answered from this data at all. See that function's own comment for the
+    full scope, including why a stock com.android.vpndialogs must never be
+    reported as a VPN finding."""
+    req = request.get_json() or {}
+    result = detect_privacy_tools(req.get('case_folder'))
     return jsonify({"success": True, **result})
 
 @case_index_bp.route('/api/case_index/analysis_coverage', methods=['POST'])

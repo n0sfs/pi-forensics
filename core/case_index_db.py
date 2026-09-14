@@ -2567,3 +2567,152 @@ def compute_case_analysis_coverage(case_folder):
         })
 
     return {"items": items}
+
+
+# --- Privacy / anonymity tooling indicators (2026-09-14) ---
+#
+# Answers a question that came up against real evidence: "was a VPN or Tor in
+# use?" What a non-rooted Android extraction can actually support is narrower
+# than that question implies, and this is deliberately scoped to what the data
+# genuinely shows rather than what an examiner might wish it showed:
+#
+#   - Which privacy/anonymity CLIENTS are installed. Real, checkable, and
+#     already captured (android_installed_app).
+#   - Whether any .onion address appears anywhere in the indexed artifacts - a
+#     browser history entry, but equally an SMS or a note, so this searches
+#     every artifact type rather than browser rows only.
+#
+# What it explicitly does NOT claim, because the data cannot support it:
+# whether a VPN was CONNECTED at any particular past moment. Android keeps no
+# durable, user-accessible VPN connection history; dumpsys/bugreport shows
+# current state only, and per-app VPN logs sit in app-private storage needing
+# root. The one real way to answer "at the time" for Tor is checking an
+# observed IP against Tor's own ExoneraTor service
+# (metrics.torproject.org/exonerator.html) - a deliberate examiner action
+# against an external service, not something this offline appliance does.
+#
+# The false positive that shaped the structure here: a naive package-name
+# search for "vpn" against a real 544-app inventory returned exactly one hit,
+# com.android.vpndialogs - a STOCK Android system component (the "allow this
+# app to set up a VPN connection?" dialog) present on every Android device
+# whether or not a VPN was ever used. Reporting that as "VPN detected" would
+# have been actively misleading. Matches are therefore classified by whether
+# the app is genuinely user-installed, determined structurally (see
+# _app_is_user_installed). System/preloaded matches are still REPORTED, in
+# their own bucket, rather than silently dropped - a carrier-preloaded VPN is
+# a real thing and hiding it would be its own kind of error.
+#
+# This list is curated and explicitly NOT exhaustive. Absence of a hit is not
+# proof of absence: a sideloaded, renamed, or since-uninstalled client would
+# not appear, and new products ship constantly. It is worth periodic review.
+PRIVACY_TOOL_PACKAGES = {
+    # Tor - the strongest single signal here.
+    "org.torproject.android": ("Orbot (Tor proxy)", "tor"),
+    "org.torproject.torbrowser": ("Tor Browser", "tor"),
+    "org.torproject.torservices": ("Tor Services", "tor"),
+    # Other anonymity / circumvention networks.
+    "net.i2p.android.router": ("I2P Router", "anonymity_network"),
+    "com.psiphon3": ("Psiphon", "anonymity_network"),
+    "com.psiphon3.subscription": ("Psiphon (subscription)", "anonymity_network"),
+    "org.outline.android.client": ("Outline", "anonymity_network"),
+    # Commercial / self-hosted VPN clients.
+    "com.nordvpn.android": ("NordVPN", "vpn"),
+    "com.expressvpn.vpn": ("ExpressVPN", "vpn"),
+    "ch.protonvpn.android": ("Proton VPN", "vpn"),
+    "net.mullvad.mullvadvpn": ("Mullvad VPN", "vpn"),
+    "com.surfshark.vpnclient.android": ("Surfshark", "vpn"),
+    "de.mobileconcepts.cyberghost": ("CyberGhost", "vpn"),
+    "com.privateinternetaccess.android": ("Private Internet Access", "vpn"),
+    "com.windscribe.vpn": ("Windscribe", "vpn"),
+    "com.tunnelbear.android": ("TunnelBear", "vpn"),
+    "hotspotshield.android.vpn": ("Hotspot Shield", "vpn"),
+    "com.ipvanish.android": ("IPVanish", "vpn"),
+    "net.openvpn.openvpn": ("OpenVPN Connect", "vpn"),
+    "de.blinkt.openvpn": ("OpenVPN for Android", "vpn"),
+    "com.wireguard.android": ("WireGuard", "vpn"),
+    "org.strongswan.android": ("strongSwan IPsec", "vpn"),
+    # Privacy-focused browsers. Deliberately a SEPARATE, weaker category -
+    # DuckDuckGo or Brave being installed is unremarkable on an ordinary
+    # device and must never read like finding Orbot.
+    "com.duckduckgo.mobile.android": ("DuckDuckGo Browser", "privacy_browser"),
+    "com.brave.browser": ("Brave Browser", "privacy_browser"),
+    "org.mozilla.focus": ("Firefox Focus", "privacy_browser"),
+}
+
+PRIVACY_TOOL_ONION_MAX_ROWS = 200
+
+
+def _app_is_user_installed(extra):
+    """True only when an installed-app record looks genuinely user-installed.
+    Requires BOTH the non-system flag and a /data/app/ code path: the flag
+    alone was observed unreliable on real hardware (OEM preloads under
+    /system_ext carrying is_system_app=false), so requiring both is the
+    conservative read."""
+    if extra.get("is_system_app") is True:
+        return False
+    return str(extra.get("code_path") or "").startswith("/data/app/")
+
+
+def detect_privacy_tools(case_folder):
+    """Privacy/anonymity tooling indicators for a case - see this section's
+    own comment above for exactly what this does and does not claim.
+
+    Returns app_inventory_present/artifacts_present alongside the findings so a
+    caller can tell "looked, found nothing" apart from "never looked" - a
+    distinction that matters far more than usual for a negative finding like
+    this one. Returns a correctly-shaped empty result (never None/raises) for a
+    case that was never indexed, matching this module's own convention."""
+    result = {
+        "user_installed": [], "system_or_preloaded": [], "onion_references": [],
+        "onion_truncated": False, "app_inventory_present": False,
+        "artifacts_present": False, "apps_scanned": 0,
+    }
+    conn = _case_index_open_readonly(case_folder)
+    if not conn:
+        return result
+    try:
+        result["artifacts_present"] = bool(
+            conn.execute("SELECT 1 FROM parsed_artifacts LIMIT 1").fetchone())
+
+        for title, extra_json in conn.execute(
+                "SELECT title, extra_json FROM parsed_artifacts "
+                "WHERE artifact_type='android_installed_app'"):
+            result["app_inventory_present"] = True
+            result["apps_scanned"] += 1
+            try:
+                extra = json.loads(extra_json) if extra_json else {}
+            except (TypeError, ValueError):
+                extra = {}
+            package = extra.get("package") or title
+            spec = PRIVACY_TOOL_PACKAGES.get(package)
+            if not spec:
+                continue
+            label, category = spec
+            entry = {
+                "package": package, "label": label, "category": category,
+                "version": extra.get("version_name"),
+                "code_path": extra.get("code_path"),
+                "last_update_timestamp": extra.get("last_update_timestamp"),
+            }
+            bucket = "user_installed" if _app_is_user_installed(extra) else "system_or_preloaded"
+            result[bucket].append(entry)
+
+        # Any .onion address, in any artifact type - a browser history row is
+        # the obvious case, but one arriving by SMS or sitting in a note is
+        # just as real, and this app already indexes both.
+        rows = conn.execute(
+            "SELECT artifact_type, title, url, value, timestamp FROM parsed_artifacts "
+            "WHERE url LIKE '%.onion%' OR value LIKE '%.onion%' OR title LIKE '%.onion%' "
+            "ORDER BY timestamp DESC LIMIT ?", (PRIVACY_TOOL_ONION_MAX_ROWS + 1,)).fetchall()
+        result["onion_truncated"] = len(rows) > PRIVACY_TOOL_ONION_MAX_ROWS
+        for artifact_type, title, url, value, timestamp in rows[:PRIVACY_TOOL_ONION_MAX_ROWS]:
+            result["onion_references"].append({
+                "artifact_type": artifact_type, "title": title,
+                "url": url, "value": value, "timestamp": timestamp,
+            })
+
+        result["user_installed"].sort(key=lambda e: (e["category"], e["label"]))
+        result["system_or_preloaded"].sort(key=lambda e: (e["category"], e["label"]))
+        return result
+    finally:
+        conn.close()
