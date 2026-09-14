@@ -43,6 +43,16 @@ static/vendor/osm_tiles/
 /android_companion/pif_companion_src/app/build/
 /android_companion/pif_companion_src/build/
 
+# Runtime hash-list/URL-list storage (Settings > Case & Reporting) - created
+# on the target device by routes/settings.py when an examiner uploads/builds
+# a Hash Set or URL List (core/config.py's HASH_LISTS_DIR/URL_LISTS_DIR, both
+# INSTALL_DIR-relative); never something this repo ships or builds from
+# source, same class as /leapp//pysim/ above. Found untracked-but-uncommitted
+# on the real deployed station 2026-09-13 - a real gitignore gap, not case
+# data, but never should have been committable either.
+/hash_lists/
+/url_lists/
+
 # Evidence & Data Files (DO NOT PUSH EVIDENCE TO GITHUB)
 *.dd
 *.raw
