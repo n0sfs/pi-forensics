@@ -4836,18 +4836,53 @@ function _createGeoTileLayer() {
     // (zoom controls aren't restricted by what happens to be cached) - tiles beyond the offline
     // cache's own max_zoom just render blank if both the live fetch and the fallback come up empty,
     // same graceful-degradation the placemark table below the map already covers.
-    const onlineUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+    // 2026-09-14: two real, confirmed-live fixes to how these tiles are requested.
+    //
+    // (1) The URL is now the plain `tile.openstreetmap.org` host, not the old
+    //     `{s}.tile.openstreetmap.org` (a/b/c) subdomain-sharding form. OSM's own
+    //     current tile usage policy names the plain host as THE correct URL - the
+    //     sharded form is a leftover from the HTTP/1.1 era's 6-connections-per-host
+    //     limit, and OSM's servers speak HTTP/2 now (confirmed directly: a real tile
+    //     fetch from the station returns `HTTP/2 200`), where sharding actively hurts
+    //     by defeating connection reuse.
+    //
+    // (2) referrerPolicy is set explicitly, and this is what actually un-blocked the
+    //     map. install.py's generated nginx config sends `Referrer-Policy: no-referrer`
+    //     station-wide (a deliberate, sensible hardening default for an appliance that
+    //     shouldn't leak evidence URLs to third parties), which also stripped the Referer
+    //     from these tile requests. OSM's policy requires a request to identify itself
+    //     either by a User-Agent naming the app - impossible from a browser, which always
+    //     sends its own - or by a valid Referer from the web page using the tiles. With
+    //     no-referrer applied, our tiles had NEITHER, so OSM correctly served its
+    //     "Access blocked" placeholder instead of real imagery. Proved directly against
+    //     the real station before changing anything: same tile, browser UA + no Referer
+    //     came back 6,987 bytes with `cache-control: no-cache` (the block placeholder),
+    //     while browser UA + a real Referer came back 12,391 bytes of genuine tile. This
+    //     per-element policy overrides the document-level header for these image requests
+    //     ONLY (the spec's own designed mechanism for exactly this), so every other
+    //     request from this app still sends no referrer at all. strict-origin-when-cross-
+    //     origin sends only the bare origin (e.g. `https://<this-station>/`) cross-origin,
+    //     never a path or query - so this can never leak a case name/path/evidence ID,
+    //     only the fact that some station asked for a map tile.
+    const onlineUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
     const attribution = '&copy; OpenStreetMap contributors';
+    const referrerPolicy = 'strict-origin-when-cross-origin';
     const offlineInfo = (typeof window.OFFLINE_TILES !== 'undefined') ? window.OFFLINE_TILES : null;
 
     if (!offlineInfo || !offlineInfo.max_zoom) {
-        return L.tileLayer(onlineUrl, { attribution, maxZoom: 19 });
+        return L.tileLayer(onlineUrl, { attribution, maxZoom: 19, referrerPolicy });
     }
 
     const offlineMaxZoom = offlineInfo.max_zoom;
     const OfflineFallbackTileLayer = L.TileLayer.extend({
         createTile: function (coords, done) {
             const tile = document.createElement('img');
+            // This branch hand-builds its own <img> rather than going through
+            // L.TileLayer's own createTile(), so the layer's referrerPolicy
+            // option above never reaches it - set directly here, or this
+            // fallback path alone would still send no Referer and still get
+            // OSM's "Access blocked" placeholder (see the long note above).
+            tile.referrerPolicy = referrerPolicy;
             const localUrl = coords.z <= offlineMaxZoom
                 ? L.Util.template('/static/vendor/osm_tiles/{z}/{x}/{y}.png', coords)
                 : null;
@@ -4864,7 +4899,7 @@ function _createGeoTileLayer() {
             return tile;
         }
     });
-    return new OfflineFallbackTileLayer(onlineUrl, { attribution, maxZoom: 19 });
+    return new OfflineFallbackTileLayer(onlineUrl, { attribution, maxZoom: 19, referrerPolicy });
 }
 
 function renderVol3ResultTable(container, jsonText, truncated) {

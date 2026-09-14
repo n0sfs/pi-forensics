@@ -4631,8 +4631,20 @@ def _html_geolocation_block(kml_data, title="Geolocation / GPS Evidence", anchor
             f'var mapDiv=document.getElementById("{map_id}");'
             'if(!mapDiv||typeof L==="undefined"||!pts.length)return;'
             'var map=L.map(mapDiv);'
-            'L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",'
-            '{attribution:"&copy; OpenStreetMap contributors",maxZoom:19}).addTo(map);'
+            # Plain tile.openstreetmap.org host (not the deprecated {s}. sharded
+            # form) per OSM's own current tile usage policy, matching the live
+            # app's own _createGeoTileLayer(). referrerPolicy is set for the same
+            # reason it is there - see that function's own note in main.js. Note
+            # this exported report still can't guarantee real imagery: opened from
+            # a file:// path it sends no Referer at all regardless of this policy,
+            # and a browser can't send a User-Agent naming this app, so OSM may
+            # legitimately serve its "Access blocked" placeholder. The placemark
+            # table rendered alongside every map in this export carries the real
+            # coordinates either way, so the evidence itself never depends on
+            # whether third-party imagery loaded.
+            'L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",'
+            '{attribution:"&copy; OpenStreetMap contributors",maxZoom:19,'
+            'referrerPolicy:"strict-origin-when-cross-origin"}).addTo(map);'
             'var bounds=[];'
             'pts.forEach(function(p){'
             'var m=L.circleMarker([p.lat,p.lon],{radius:7,color:"#c0392b",weight:2,fillColor:"#e74c3c",fillOpacity:0.9}).addTo(map);'
