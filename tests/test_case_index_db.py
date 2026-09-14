@@ -2317,6 +2317,107 @@ def test_analysis_coverage_merges_coc_and_tool_run_evidence(case_folder, coc_log
     assert item["steps_completed"] == ["hash_manifest", "mvt_scan"]
 
 
+# --- 2026-09-14: the third record of analysis work. The ~21 individual
+# "*_parsed" right-click routes write neither an analysis_results row nor an
+# auto_analyze_* entry - just their own chain-of-custody action - so they were
+# invisible to coverage even after the tool-label bridge. Read directly here,
+# which closes it for all of them without editing a single route. ---
+def test_analysis_coverage_credits_an_individually_logged_parse_action(case_folder, coc_log_file):
+    path = os.path.join(case_folder, "mount")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _append_coc_entry(coc_log_file, "registry_hives_parsed",
+                      {"directory": path, "files_parsed": 4})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == ["registry"]
+
+
+def test_analysis_coverage_credits_a_parse_run_against_a_subfolder_of_the_item(case_folder, coc_log_file):
+    # The common real shape: an examiner right-clicks a folder INSIDE the
+    # evidence item, not its root. Analysis of something within the item is
+    # genuinely coverage of that item, so exact equality alone would miss
+    # almost all real usage.
+    path = os.path.join(case_folder, "mount")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _append_coc_entry(coc_log_file, "prefetch_files_parsed",
+                      {"directory": os.path.join(path, "Windows", "Prefetch")})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == ["prefetch"]
+
+
+def test_analysis_coverage_does_not_credit_a_parse_run_outside_the_item(case_folder, coc_log_file):
+    # A sibling path that merely shares a prefix string must not be credited -
+    # this is what the separator check in _path_is_within exists for.
+    path = os.path.join(case_folder, "mount")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _append_coc_entry(coc_log_file, "registry_hives_parsed", {"directory": path + "_other"})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == []
+
+
+def test_analysis_coverage_reads_the_path_key_for_single_file_parse_actions(case_folder, coc_log_file):
+    # The folder-scanning routes log "directory"; the single-file ones log
+    # "path". Both have to be understood.
+    path = os.path.join(case_folder, "backup.ab")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_backup",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _append_coc_entry(coc_log_file, "android_backup_parsed", {"path": path, "encrypted": False})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == ["android_backup_parse"]
+
+
+def test_analysis_coverage_ignores_a_parse_action_with_no_auto_analyze_step(case_folder, coc_log_file):
+    # Thumbcache/sticky notes/LNK/USN have no standard step - absent from the
+    # map on purpose, same reasoning as Strings and OCR.
+    path = os.path.join(case_folder, "mount")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _append_coc_entry(coc_log_file, "thumbcache_parsed", {"directory": path})
+    _append_coc_entry(coc_log_file, "sticky_notes_parsed", {"directory": path})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == []
+
+
+def test_analysis_coverage_all_three_records_merge(case_folder, coc_log_file):
+    # Auto Analyze, an analysis_results tool run, and an individually-logged
+    # parse - three independent records, all crediting different real work.
+    path = os.path.join(case_folder, "phone_pull")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_pull",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _append_coc_entry(coc_log_file, "auto_analyze_mobile_complete", {
+        "path": path, "results": [{"step": "hash_manifest", "status": "ok"}]})
+    _record_tool_run(case_folder, path, "ALEAPP (Android)", "scan complete")
+    _append_coc_entry(coc_log_file, "bugreport_parsed", {"path": path, "summary": "12 sections"})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == ["aleapp_scan", "bugreport_parse", "hash_manifest"]
+
+
 def test_analysis_coverage_unions_steps_across_multiple_runs(case_folder, coc_log_file):
     """A real, common scenario: an early Auto Analyze pass covered a few
     steps, a later pass covered more - both runs' successes should be
