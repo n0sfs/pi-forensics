@@ -2208,6 +2208,115 @@ def test_analysis_coverage_a_never_attempted_step_appears_in_no_outcome_list(cas
     assert item["steps_not_applicable"] == []
 
 
+# --- 2026-09-14: bridging analysis_results into coverage. This app kept two
+# independent records of analysis work - COC auto_analyze_* entries keyed by
+# STEP KEY, and the analysis_results table keyed by human-readable TOOL LABEL -
+# and coverage read only the first. An examiner who worked from the right-click
+# menu instead of Auto Analyze saw "Not yet run" for work they had really done.
+# Confirmed on real data first: the mobile sweep case had an 'ALEAPP (Android)'
+# row against exactly the path whose coverage entry showed zero steps. ---
+def _record_tool_run(case_folder, path, tool, summary):
+    # run_by is passed explicitly for the same reason the real background
+    # workers pass it: without it the recorder reads g, which raises outside a
+    # Flask request context (see _record_analysis_result's own docstring).
+    case_index_db._record_analysis_result(
+        case_folder, {"source_type": "real_fs", "path": path, "name": os.path.basename(path)},
+        tool, summary, "", run_by="tester")
+
+
+def test_analysis_coverage_credits_a_right_click_tool_run_with_no_auto_analyze(case_folder, coc_log_file):
+    path = os.path.join(case_folder, "phone_pull")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_pull",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _record_tool_run(case_folder, path, "ALEAPP (Android)", "scan complete - 3 HTML report file(s)")
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == ["aleapp_scan"]
+
+
+def test_analysis_coverage_reads_a_failed_tool_run_via_the_FAILED_summary_convention(case_folder, coc_log_file):
+    # The convention the Volatility3/mquire routes already used, now also
+    # written by the bugreport and LEAPP paths.
+    path = os.path.join(case_folder, "bugreport.zip")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_bugreport",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _record_tool_run(case_folder, path, "Bugreport Deep Parse (dumpstate-py)",
+                     "FAILED - IndexError('pop from empty list')")
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == []
+    assert "IndexError" in item["steps_failed"]["bugreport_parse"]
+
+
+def test_analysis_coverage_a_tool_run_success_outranks_an_earlier_failure(case_folder, coc_log_file):
+    path = os.path.join(case_folder, "phone_pull")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_pull",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _record_tool_run(case_folder, path, "ALEAPP (Android)", "FAILED - exited with code 1")
+    _record_tool_run(case_folder, path, "ALEAPP (Android)", "scan complete - 3 HTML report file(s)")
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == ["aleapp_scan"]
+    assert item["steps_failed"] == {}
+
+
+def test_analysis_coverage_ignores_a_tool_with_no_auto_analyze_equivalent(case_folder, coc_log_file):
+    # Strings/OCR/Binwalk are real work but are not one of the standard steps
+    # the grid asks about - force-fitting them would answer a different
+    # question. They stay visible on the file itself, not here.
+    path = os.path.join(case_folder, "phone_pull")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_pull",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _record_tool_run(case_folder, path, "Strings", "12 strings extracted")
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == []
+    assert item["steps_failed"] == {}
+
+
+def test_analysis_coverage_only_credits_a_tool_run_against_the_matching_path(case_folder, coc_log_file):
+    path = os.path.join(case_folder, "phone_pull")
+    other = os.path.join(case_folder, "some_other_item")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_pull",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _record_tool_run(case_folder, other, "ALEAPP (Android)", "scan complete")
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == []
+
+
+def test_analysis_coverage_merges_coc_and_tool_run_evidence(case_folder, coc_log_file):
+    # The two records each know about work the other doesn't, so coverage is
+    # their union - not one replacing the other.
+    path = os.path.join(case_folder, "phone_pull")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "android_pull",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _append_coc_entry(coc_log_file, "auto_analyze_mobile_complete", {
+        "path": path, "results": [{"step": "hash_manifest", "status": "ok"}]})
+    _record_tool_run(case_folder, path, "MVT (Mobile Verification Toolkit)", "scan complete")
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["steps_completed"] == ["hash_manifest", "mvt_scan"]
+
+
 def test_analysis_coverage_unions_steps_across_multiple_runs(case_folder, coc_log_file):
     """A real, common scenario: an early Auto Analyze pass covered a few
     steps, a later pass covered more - both runs' successes should be

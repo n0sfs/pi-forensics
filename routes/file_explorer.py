@@ -2479,7 +2479,7 @@ def run_ipa_analyze():
     return jsonify(result)
 
 # --- dumpstate-py: Deep-Parse an adb bugreport Archive ---
-def _bugreport_parse_body(file_path, dest_dir, case_folder):
+def _bugreport_parse_body(file_path, dest_dir, case_folder, run_by=None):
     """The actual dumpstate-py parse + JSON write + auto-tag + analysis-
     result/parsed-artifact recording, factored out of run_bugreport_parse()
     so Auto Analyze's mobile-folder orchestrator (below) can call it
@@ -2490,8 +2490,21 @@ def _bugreport_parse_body(file_path, dest_dir, case_folder):
     2026-09-04's artifact-record indexing was written to key off it
     directly, matching the original route's own exact behavior. Returns a
     plain dict; the caller does its own log_chain_of_custody()."""
+    # A failed attempt is itself part of the examination record (2026-09-14).
+    # This used to return silently, leaving no trace anywhere that the tool had
+    # been run at all - so Analysis Coverage showed "Not yet run" for an item
+    # whose bugreport parse had genuinely been attempted and had genuinely
+    # failed, and an examiner had no way to know re-running it was futile. This
+    # is the exact real case that prompted the whole item: a real Pixel 8a
+    # bugreport that fails on dumpstate-py's own upstream IndexError, not on
+    # anything wrong here. Recorded with the "FAILED" summary convention the
+    # Volatility3 and mquire routes already established.
     result = parse_bugreport(file_path)
     if not result["success"]:
+        identity = {"source_type": "real_fs", "path": file_path, "name": os.path.basename(file_path)}
+        _record_analysis_result(case_folder, identity, "Bugreport Deep Parse (dumpstate-py)",
+                                f"FAILED - {result.get('error') or 'no detail reported'}", "",
+                                run_by=run_by)
         return result
 
     base_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -2501,6 +2514,9 @@ def _bugreport_parse_body(file_path, dest_dir, case_folder):
             json.dump(result["sections"], f, indent=2)
         _auto_tag_case_artifact(case_folder or dest_dir, output_path)
     except OSError as e:
+        identity = {"source_type": "real_fs", "path": file_path, "name": os.path.basename(file_path)}
+        _record_analysis_result(case_folder, identity, "Bugreport Deep Parse (dumpstate-py)",
+                                f"FAILED - could not write output: {e}", "", run_by=run_by)
         return {"success": False, "error": f"Parsed successfully but could not write output: {e}"}
 
     section_count = len(result["sections"])
@@ -2511,7 +2527,7 @@ def _bugreport_parse_body(file_path, dest_dir, case_folder):
 
     identity = {"source_type": "real_fs", "path": file_path, "name": os.path.basename(file_path)}
     _record_analysis_result(case_folder, identity, "Bugreport Deep Parse (dumpstate-py)", summary,
-                             json.dumps(result["sections"], indent=2)[:20000])
+                             json.dumps(result["sections"], indent=2)[:20000], run_by=run_by)
 
     # 2026-09-04, Android pattern-of-life item 6: the genuinely record-
     # shaped sections (package install/delete events, GPS fixes, crash
@@ -3126,6 +3142,15 @@ def execution_worker_leapp_scan(tool_key, input_path, dest_dir, source_ip=None, 
         if proc.returncode != 0:
             update_job(status="Failed")
             append_log(f"[-] {info['label']} exited with code {proc.returncode}.")
+            # Recorded, not just logged to the job console (2026-09-14) - a
+            # non-zero exit left no durable trace, so Analysis Coverage could
+            # not tell this apart from never having been run. Same "FAILED"
+            # summary convention the Volatility3/mquire routes established.
+            identity = {"source_type": "real_fs", "path": input_path,
+                        "name": os.path.basename(input_path.rstrip(os.sep))}
+            _record_analysis_result(dest_dir, identity, info["label"],
+                                    f"FAILED - {info['label']} exited with code {proc.returncode}",
+                                    "\n".join(log_history)[-20000:], run_by=user)
             return
 
         after = set(os.listdir(tool_output_dir))
@@ -3469,7 +3494,11 @@ def _auto_analyze_mobile_step_bugreport_parse(path, dest_dir, source_ip=None, us
     # the same overloaded meaning execution_worker_auto_analyze_image()'s
     # own step functions already give their own "case_folder" parameter -
     # see the orchestrator's own dest_dir-resolution comment below.
-    result = _bugreport_parse_body(path, dest_dir, dest_dir if case_consolidated_path(dest_dir) else None)
+    # run_by passed explicitly - this step runs in a background thread, where
+    # the recorder's fallback read of Flask's `g` raises and its own
+    # best-effort except would silently record nothing.
+    result = _bugreport_parse_body(path, dest_dir,
+                                   dest_dir if case_consolidated_path(dest_dir) else None, run_by=user)
     if not result["success"]:
         return {"success": False, "error": result.get("error")}
     log_chain_of_custody("bugreport_parsed", {"path": path, "output_path": result["output_path"],
