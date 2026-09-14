@@ -88,6 +88,17 @@ file after updating to see what changed.
   application can read the times back when a KML is re-imported.
 
 ### Fixed
+- **"Frequent Locations" was counting GPS recordings, not visits.** A place the device recorded a
+  position at 2,252 times during a single continuous track was reported as "Visited 2252 time(s)" -
+  in reality two visits, across an hour and a half. For sparse sources (a Takeout history, a few
+  geotagged photos) one recording really is roughly one visit, which is why this went unnoticed; for
+  a continuously-recorded track it overstated reality by a factor of about a thousand, and it was
+  presenting a claim about someone's behaviour that the data never supported. A visit is now a stay
+  with no gap longer than 15 minutes, shown together with the time actually spent there and the
+  underlying recording count. The section is retitled **Notable Locations (returned to, or stayed
+  at)**, since somewhere the device sat for three hours straight is worth listing even though it was
+  only visited once. Locations with no timestamps say so rather than letting a recording count pass
+  for a visit count.
 - **Map imagery showing "Access blocked" instead of a map.** A security header the installer adds
   was also stripping the information OpenStreetMap uses to identify which application is asking for
   tiles, so it refused to serve them. Tile requests now identify the station while every other
