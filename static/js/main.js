@@ -4795,6 +4795,30 @@ function escapeHtmlForPopup(str) {
     return div.innerHTML;
 }
 
+// A single wild outlier point - confirmed live 2026-09-14 against a real
+// DJI drone flight's own GPS track, which had one point thousands of miles
+// from the flight itself (almost certainly a GPS-lock-loss glitch at
+// startup, a known category of issue in real flight logs) - can force a
+// plain fitBounds() to compute an extremely low zoom level to fit it
+// alongside the real, tightly-clustered data. OSM's own tile server
+// specifically flags/blocks exactly that near-world-view zoom-level
+// request pattern (see tasks.md's documented 0/0/0-tile finding) even
+// though every other real tile request at a normal zoom succeeds - so one
+// bad point was silently costing the whole map its map imagery. Used in
+// place of a bare map.fitBounds() call anywhere real (not synthetic/
+// hand-built-fixture) coordinate data is being fit, so a single outlier
+// can no longer drag the whole map's own tile requests into the pattern
+// OSM blocks - it simply sits off-screen until the user manually zooms/
+// pans out to it, same as it always could.
+const GEO_MAP_MIN_ZOOM_AFTER_FIT = 5;
+
+function fitBoundsWithMinZoom(map, bounds, options) {
+    map.fitBounds(bounds, options);
+    if (map.getZoom() < GEO_MAP_MIN_ZOOM_AFTER_FIT) {
+        map.setZoom(GEO_MAP_MIN_ZOOM_AFTER_FIT);
+    }
+}
+
 // Renders a Leaflet map (one marker per placemark, fit to bounds) into
 // `container`, plus a plain placemark table underneath that's always shown
 // regardless of whether the map itself could render - this app already
@@ -4978,7 +5002,7 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
             if (bounds.length === 1) {
                 map.setView(bounds[0], 14);
             } else {
-                map.fitBounds(bounds, { padding: [20, 20] });
+                fitBoundsWithMinZoom(map, bounds, { padding: [20, 20] });
             }
             // A map created while its container is still mid-transition (e.g.
             // inside a Bootstrap modal that's still fading in) can compute the
@@ -12221,7 +12245,7 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
         if (bounds.length === 1) {
             map.setView(bounds[0], 14);
         } else if (bounds.length > 1) {
-            map.fitBounds(bounds, { padding: [20, 20] });
+            fitBoundsWithMinZoom(map, bounds, { padding: [20, 20] });
         }
         // Same mid-transition-container fix renderKmlViewer() already uses -
         // a map created before its container has settled its real layout
