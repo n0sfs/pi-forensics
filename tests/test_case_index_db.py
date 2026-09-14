@@ -890,7 +890,8 @@ def test_correlate_contacts_returns_the_empty_shape_for_a_case_never_indexed(cas
                        "unresolved_communication_count": 0,
                        "truncated": False, "contacts": [], "frequent_contact_count": 0,
                        "frequent_cumulative_share_threshold": case_index_db.CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE,
-                       "co_occurrences": [], "co_occurrences_truncated": False}
+                       "co_occurrences": [], "co_occurrences_truncated": False,
+                       "devices": []}
 
 
 # --- 2026-09-05 fixes: companion-app + .ab-backup-sourced Android types
@@ -1827,6 +1828,88 @@ def test_correlate_contacts_samples_carry_a_real_content_preview(case_folder):
     samples_by_type = {s["artifact_type"]: s for s in result["contacts"][0]["samples"]}
     assert samples_by_type["android_sms_message"]["content_preview"] == "hello"  # _comm_record's own fixed body text
     assert samples_by_type["android_call_log"]["content_preview"] is None  # a call has no message content
+
+
+# --- 2026-09-14: per-device attribution (device_communications / devices) -
+# the Relationship Graph's multi-device redesign. A real_fs-sourced row
+# (companion-app extraction, MTP pull, recovery tools) resolves back to the
+# evidence_id that produced it via _build_evidence_id_resolvers(), matching
+# parsed_artifacts.source_path against that acquisition's own
+# acquisition_parameters.output_destination - see that helper's own
+# docstring. ---
+def _write_case_events(case_folder, events):
+    case_file = case_index_db.case_consolidated_path(case_folder)
+    with open(case_file, 'r') as f:
+        data = json.load(f)
+    data['events'] = events
+    with open(case_file, 'w') as f:
+        json.dump(data, f)
+
+
+def _completed_event(evidence_id, output_destination):
+    return {
+        "event_id": evidence_id, "acquisition_status": "COMPLETED",
+        "case_metadata": {"evidence_id": evidence_id},
+        "acquisition_parameters": {"output_destination": output_destination},
+    }
+
+
+def test_correlate_contacts_attributes_communications_to_the_device_that_produced_them(case_folder):
+    device_a_out = os.path.join(case_folder, "device_a_output")
+    device_b_out = os.path.join(case_folder, "device_b_output")
+    _write_case_events(case_folder, [
+        _completed_event("ITEM-01", device_a_out),
+        _completed_event("ITEM-02", device_b_out),
+    ])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, device_a_out),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"]),
+         _comm_record("android_sms_message", "address", "+15551234567")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, device_b_out),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"]),
+         _comm_record("android_sms_message", "address", "+15551234567", timestamp=1700000001.0)])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["devices"] == ["ITEM-01", "ITEM-02"]
+    assert len(result["contacts"]) == 1  # same real person, contacted from both devices
+    contact = result["contacts"][0]
+    assert contact["device_communications"] == {"ITEM-01": 1, "ITEM-02": 1}
+    assert contact["total_communications"] == 2
+
+
+def test_correlate_contacts_devices_empty_when_nothing_resolves(case_folder):
+    # No consolidated events at all (the case_folder fixture's own default)
+    # - every comm row's source_path is a bare filename that can't match
+    # any acquisition's own output_destination. Must never guess a device;
+    # device_communications stays an empty dict, devices stays empty.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551234567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["devices"] == []
+    assert result["contacts"][0]["device_communications"] == {}
+
+
+def test_correlate_contacts_device_attribution_survives_the_phone_email_merge(case_folder):
+    # The Pass 3 auto-merge (same-row phone+email) must carry the email
+    # side's own device_communications into the final merged phone entry,
+    # not silently drop them.
+    device_out = os.path.join(case_folder, "device_output")
+    _write_case_events(case_folder, [_completed_event("ITEM-01", device_out)])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, device_out),
+        [_contact_record_with_email("android_contact", "Jane Doe",
+                                     phones=["+15551234567"], emails=["jane@example.com"]),
+         _email_message_record("jane@example.com")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert len(result["contacts"]) == 1
+    assert result["contacts"][0]["device_communications"] == {"ITEM-01": 1}
 
 
 # --- compute_case_analysis_coverage (2026-09-09, item 6 of the DFIR-
