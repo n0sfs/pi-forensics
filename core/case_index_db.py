@@ -2484,6 +2484,80 @@ def correlate_contacts(case_folder):
 # route) for the Auto Analyze modal's own checklist and reuses that same
 # cached data here to label/diff against - no duplicate Python-side copy
 # of either dict to let drift out of sync a third time.
+# Bridges the two "has this been run" vocabularies (2026-09-14).
+#
+# This app grew two independent records of analysis work, which were never
+# designed to line up:
+#   - COC `auto_analyze_*` entries, keyed by Auto Analyze STEP KEY
+#     ("aleapp_scan"), which is all compute_case_analysis_coverage() read.
+#   - The case index's `analysis_results` table, keyed by a human-readable
+#     TOOL LABEL ("ALEAPP (Android)"), written by every individual right-click
+#     analysis action and read by File Explorer's own per-file "already run"
+#     checkmarks.
+# The consequence was a coverage grid that told an examiner "Not yet run" for
+# work they had genuinely done, purely because they did it from the right-click
+# menu instead of Auto Analyze. Confirmed on real data before writing this: the
+# mobile sweep case has an 'ALEAPP (Android)' row in analysis_results against
+# exactly the path ITEM-MTP-03's coverage entry reports, while that entry showed
+# zero completed steps.
+#
+# Only labels with a genuine one-to-one Auto Analyze equivalent appear here.
+# A tool with no corresponding step (Strings, OCR, Binwalk, a Volatility3
+# plugin) is deliberately absent rather than force-fitted: the coverage grid
+# asks "which of the standard steps has this item had", and inventing a step
+# for a tool that isn't one of them would answer a different question. Those
+# runs remain visible where they already were, on the file itself.
+ANALYSIS_RESULT_TOOL_TO_STEP = {
+    "ALEAPP (Android)": "aleapp_scan",
+    "iLEAPP (iOS)": "aleapp_scan",
+    "MVT (Mobile Verification Toolkit)": "mvt_scan",
+    "WhatsApp Backup Decryption (wadecrypt)": "whatsapp_decrypt_parse",
+    "Bugreport Deep Parse (dumpstate-py)": "bugreport_parse",
+    "YARA": "yara_sweep",
+}
+
+# The established convention for a recorded failure, already used by the
+# Volatility3 and mquire routes before this: summary is the literal string
+# "FAILED". Matched case-insensitively and on the leading word so a route that
+# writes "FAILED - <reason>" is read the same way.
+ANALYSIS_RESULT_FAILED_MARKER = "failed"
+
+
+def _analysis_result_is_failure(summary):
+    return str(summary or '').strip().lower().startswith(ANALYSIS_RESULT_FAILED_MARKER)
+
+
+def _analysis_results_by_step(case_folder, target_path):
+    """Reads the case index's analysis_results rows for one evidence path and
+    folds them into the same {step: outcome} vocabulary the COC log uses.
+    Returns (completed_steps, failed_steps) - failed carries the recorded
+    summary so the reason survives. Best-effort: an unreadable index just
+    means no extra coverage, never an error."""
+    completed, failed = set(), {}
+    conn = _case_index_open_readonly(case_folder)
+    if not conn:
+        return completed, failed
+    try:
+        rows = conn.execute(
+            "SELECT tool, summary, path, image_path FROM analysis_results ORDER BY run_at").fetchall()
+    except Exception:
+        return completed, failed
+    finally:
+        conn.close()
+    for tool, summary, path, image_path in rows:
+        step = ANALYSIS_RESULT_TOOL_TO_STEP.get(tool)
+        if not step:
+            continue
+        if (path or image_path) != target_path:
+            continue
+        if _analysis_result_is_failure(summary):
+            failed[step] = str(summary)[:300]
+        else:
+            completed.add(step)
+            failed.pop(step, None)
+    return completed, failed
+
+
 def compute_case_analysis_coverage(case_folder):
     """For every COMPLETED acquisition event in this case with a walkable
     output path, returns which Auto Analyze steps have actually succeeded
@@ -2575,6 +2649,16 @@ def compute_case_analysis_coverage(case_folder):
                 elif status == 'not_applicable':
                     not_applicable_steps.add(step)
                     failed_steps.pop(step, None)
+        # Fold in the individually-run analysis actions (2026-09-14) - see
+        # ANALYSIS_RESULT_TOOL_TO_STEP for why these were invisible here until
+        # now. Merged rather than replacing: the COC log and analysis_results
+        # each know about work the other doesn't.
+        ar_completed, ar_failed = _analysis_results_by_step(case_folder, target_path)
+        completed_steps |= ar_completed
+        for step, detail in ar_failed.items():
+            if step not in completed_steps:
+                failed_steps[step] = detail
+
         # Success wins over a failure recorded in the same or an earlier run.
         for step in completed_steps:
             failed_steps.pop(step, None)
