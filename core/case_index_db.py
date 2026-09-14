@@ -1782,6 +1782,60 @@ def _record_row_co_occurrences(store, resolved_keys, channel):
             entry["channels"].add(channel)
 
 
+def _build_evidence_id_resolvers(case_folder):
+    """Reads the case's own consolidated JSON file directly (a self-
+    contained, 5-line re-implementation of core/jobs.py's _read_case_file()
+    rather than importing that module - core/jobs.py needs POSIX (pwd/
+    fcntl) at import time, and this module is imported unconditionally by
+    a wide swath of the test suite on this project's non-POSIX Windows dev
+    machine too, so pulling it in here would break test collection there;
+    see tests/conftest.py's own docstring for the established convention
+    this avoids violating) and returns two dicts used to attribute a
+    parsed_artifacts row back to the evidence_id that produced it:
+    image_path_to_evidence_id (keyed by each completed acquisition's own
+    resolved output_image_path - identical resolution to routes/
+    reporting.py's _build_enriched_case_timeline(), just duplicated here
+    rather than imported, for the same import-direction/POSIX reason) and
+    source_path_to_evidence_id (keyed by output_destination - the field
+    name every real_fs-sourced tool's own acquisition_parameters uses,
+    confirmed against routes/mobile.py's companion-app extraction, MTP
+    pull, and iOS backup, and routes/recovery.py's PhotoRec/extundelete/
+    foremost/scalpel/triage-scan routes - for a source whose own
+    parsed_artifacts.source_path was set to that SAME acquisition's output
+    path, e.g. android_companion_extraction's main SMS/Contacts/CallLog/
+    Calendar/Photos/Video record). Returns ({}, {}) for a case with no
+    consolidated file yet - never raises, matching this module's own
+    established "nothing indexed yet" convention."""
+    image_map = {}
+    source_map = {}
+    case_file = case_consolidated_path(case_folder)
+    if not case_file:
+        return image_map, source_map
+    try:
+        with open(case_file, 'r') as f:
+            data = json.load(f)
+    except Exception:
+        return image_map, source_map
+    for event in data.get('events', []):
+        if event.get('acquisition_status') != 'COMPLETED':
+            continue
+        evidence_id = event.get('case_metadata', {}).get('evidence_id')
+        if not evidence_id:
+            continue
+        params = event.get('acquisition_parameters') or {}
+        image_raw = params.get('output_image_path')
+        if image_raw:
+            resolved = safe_path(image_raw)
+            if resolved:
+                image_map[resolved] = evidence_id
+        source_raw = params.get('output_destination')
+        if source_raw:
+            resolved = safe_path(source_raw)
+            if resolved:
+                source_map[resolved] = evidence_id
+    return image_map, source_map
+
+
 def correlate_contacts(case_folder):
     """Builds a case-wide contact correlation report, now spanning TWO
     identity spaces (2026-09-07) - phone numbers (the original scope) and
@@ -1858,16 +1912,37 @@ def correlate_contacts(case_folder):
     An ordinary 1:1 row contributes nothing here; only a row naming 2+
     resolved participants does. Never a confirmed relationship claim, only
     a disclosed "seen together in the same thread/meeting" signal - the
-    Relationship Graph's own UI is responsible for labeling it as such."""
+    Relationship Graph's own UI is responsible for labeling it as such.
+
+    Also returns devices (2026-09-14) - a sorted list of every evidence_id
+    this case's own completed acquisitions produced communications for, and
+    each contact carries device_communications ({evidence_id: count}) -
+    which of those devices' own data actually shows a link to this contact,
+    and how many resolved communications came from each. Built via
+    _build_evidence_id_resolvers() below: an image-based comm row resolves
+    through its own image_path (mirroring routes/reporting.py's established
+    image_path_to_evidence_id pattern), a real_fs-sourced row (companion-app
+    extraction, MTP pull, recovery tools) resolves through its source_path
+    against each completed acquisition's own acquisition_parameters.
+    output_destination. A row that can't be confidently resolved to one
+    acquisition (an older case predating this feature, or a real_fs source
+    whose parsed_artifacts.source_path doesn't exactly match its own
+    acquisition's output_destination) simply isn't counted toward any
+    device - disclosed by omission, never guessed - so device_communications
+    is an empty dict for a contact/case with nothing resolvable, and the
+    Relationship Graph falls back to its original single-device rendering
+    in that case."""
     result = {"contacts_indexed_count": 0, "email_identities_indexed_count": 0,
               "unresolved_communication_count": 0,
               "truncated": False, "contacts": [],
               "frequent_contact_count": 0,
               "frequent_cumulative_share_threshold": CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE,
-              "co_occurrences": [], "co_occurrences_truncated": False}
+              "co_occurrences": [], "co_occurrences_truncated": False,
+              "devices": []}
     conn = _case_index_open_readonly(case_folder)
     if not conn:
         return result
+    image_path_evidence_map, source_path_evidence_map = _build_evidence_id_resolvers(case_folder)
     try:
         # Pass 1: every known contact source -> known[normalized_phone] /
         # known_emails[normalized_email], each {names: set, sources: set}.
@@ -1993,11 +2068,13 @@ def correlate_contacts(case_folder):
         comm_types = tuple(CONTACT_CORRELATION_COMM_TYPES.keys()) + tuple(LEAPP_COMM_TYPES.keys())
         placeholders = ",".join("?" * len(comm_types))
         cur = conn.execute(
-            f"SELECT artifact_type, title, value, timestamp, source_path, extra_json "
+            f"SELECT artifact_type, title, value, timestamp, source_path, image_path, extra_json "
             f"FROM parsed_artifacts WHERE artifact_type IN ({placeholders}) "
             f"ORDER BY timestamp DESC LIMIT ?",
             comm_types + (CONTACT_CORRELATION_MAX_ROWS_PER_TYPE * len(comm_types),))
-        for artifact_type, title, value, timestamp, source_path, extra_json in cur:
+        for artifact_type, title, value, timestamp, source_path, image_path, extra_json in cur:
+            row_evidence_id = (image_path_evidence_map.get(image_path) if image_path else None) \
+                or (source_path_evidence_map.get(source_path) if source_path else None)
             is_leapp = artifact_type in LEAPP_COMM_TYPES
             spec = LEAPP_COMM_TYPES[artifact_type] if is_leapp else CONTACT_CORRELATION_COMM_TYPES[artifact_type]
             try:
@@ -2026,9 +2103,12 @@ def correlate_contacts(case_folder):
                     "total_duration_seconds": 0.0,
                     "first_seen": timestamp, "last_seen": timestamp,
                     "total_communications": 0, "samples": [],
+                    "device_communications": {},
                 })
                 entry["communication_counts"][spec["channel"]] = entry["communication_counts"].get(spec["channel"], 0) + 1
                 entry["total_communications"] += 1
+                if row_evidence_id:
+                    entry["device_communications"][row_evidence_id] = entry["device_communications"].get(row_evidence_id, 0) + 1
                 direction = _classify_leapp_comm_direction(spec, row) if is_leapp else _classify_comm_direction(spec, extra)
                 if direction:
                     entry["direction_counts"][direction] += 1
@@ -2077,11 +2157,13 @@ def correlate_contacts(case_folder):
         email_comm_types = tuple(CONTACT_CORRELATION_EMAIL_COMM_TYPES.keys())
         placeholders = ",".join("?" * len(email_comm_types))
         cur = conn.execute(
-            f"SELECT artifact_type, title, value, timestamp, source_path, extra_json "
+            f"SELECT artifact_type, title, value, timestamp, source_path, image_path, extra_json "
             f"FROM parsed_artifacts WHERE artifact_type IN ({placeholders}) "
             f"ORDER BY timestamp DESC LIMIT ?",
             email_comm_types + (CONTACT_CORRELATION_MAX_ROWS_PER_TYPE * len(email_comm_types),))
-        for artifact_type, title, value, timestamp, source_path, extra_json in cur:
+        for artifact_type, title, value, timestamp, source_path, image_path, extra_json in cur:
+            row_evidence_id = (image_path_evidence_map.get(image_path) if image_path else None) \
+                or (source_path_evidence_map.get(source_path) if source_path else None)
             channel = CONTACT_CORRELATION_EMAIL_COMM_TYPES[artifact_type]
             try:
                 extra = json.loads(extra_json) if extra_json else {}
@@ -2104,9 +2186,12 @@ def correlate_contacts(case_folder):
                     "total_duration_seconds": 0.0,
                     "first_seen": timestamp, "last_seen": timestamp,
                     "total_communications": 0, "samples": [],
+                    "device_communications": {},
                 })
                 entry["communication_counts"][channel] = entry["communication_counts"].get(channel, 0) + 1
                 entry["total_communications"] += 1
+                if row_evidence_id:
+                    entry["device_communications"][row_evidence_id] = entry["device_communications"].get(row_evidence_id, 0) + 1
                 if timestamp is not None:
                     if entry["last_seen"] is None or timestamp > entry["last_seen"]:
                         entry["last_seen"] = timestamp
@@ -2161,6 +2246,8 @@ def correlate_contacts(case_folder):
                 for channel, count in email_entry["communication_counts"].items():
                     target["communication_counts"][channel] = target["communication_counts"].get(channel, 0) + count
                 target["total_communications"] += email_entry["total_communications"]
+                for evidence_id, count in email_entry["device_communications"].items():
+                    target["device_communications"][evidence_id] = target["device_communications"].get(evidence_id, 0) + count
                 target["direction_counts"]["incoming"] += email_entry["direction_counts"]["incoming"]
                 target["direction_counts"]["outgoing"] += email_entry["direction_counts"]["outgoing"]
                 target["total_duration_seconds"] += email_entry["total_duration_seconds"]
@@ -2207,6 +2294,8 @@ def correlate_contacts(case_folder):
             for channel, count in merged_entry["communication_counts"].items():
                 target["communication_counts"][channel] = target["communication_counts"].get(channel, 0) + count
             target["total_communications"] += merged_entry["total_communications"]
+            for evidence_id, count in merged_entry["device_communications"].items():
+                target["device_communications"][evidence_id] = target["device_communications"].get(evidence_id, 0) + count
             target["direction_counts"]["incoming"] += merged_entry["direction_counts"]["incoming"]
             target["direction_counts"]["outgoing"] += merged_entry["direction_counts"]["outgoing"]
             target["total_duration_seconds"] += merged_entry["total_duration_seconds"]
@@ -2338,6 +2427,15 @@ def correlate_contacts(case_folder):
         final_contact_keys = {(c["normalized_number"] or c["normalized_email"]) for c in contacts}
         result["co_occurrences"] = [e for e in co_occurrences if e["contacts"][0] in final_contact_keys and e["contacts"][1] in final_contact_keys]
         result["co_occurrences_truncated"] = co_occurrences_truncated
+        # Sorted union of every evidence_id any returned contact's own
+        # device_communications resolved to - the Relationship Graph's own
+        # multi-device rendering (2026-09-14) uses this as its exact device
+        # roster, rather than re-deriving it by scanning every contact
+        # itself. A case with nothing resolvable (see this function's own
+        # docstring) correctly returns an empty list here, not a guess.
+        result["devices"] = sorted({
+            evidence_id for c in contacts for evidence_id in c["device_communications"]
+        })
         return result
     finally:
         conn.close()

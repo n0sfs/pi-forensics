@@ -10590,6 +10590,25 @@ const RELATIONSHIP_CO_OCCURRENCE_COLOR = '#6b7280'; // a deliberately muted gray
 const RELATIONSHIP_GRAPH_FONT = '-apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 const RELATIONSHIP_TIER_LABELS = { frequent: 'Frequent Contact', regular: 'Regular Contact', one_off: 'One-off Contact' };
 
+// Multi-device Relationship Graph (2026-09-14) - correlate_contacts() (core/
+// case_index_db.py) now returns devices[] (every evidence_id its own
+// device_communications actually resolved to) alongside each contact's own
+// device_communications ({evidence_id: count}). A case with fewer than 2
+// resolved devices renders EXACTLY as before (the single '__device__' star
+// hub, one spoke edge per contact) - this only activates once there's a
+// real second device to actually distinguish, so the vast majority of
+// (single-device) cases see zero visual change. RELATIONSHIP_GRAPH_DEVICE_
+// NODE_PREFIX namespaces a per-device node id away from any real contact
+// key (a normalized phone is all-digits, a normalized email contains "@" -
+// neither can ever start with this), and _isRelationshipGraphDeviceNodeId()
+// is the one shared check every device-vs-contact branch below (click
+// handler, search filter, volume filter) uses, so the legacy single-hub id
+// and the new per-device ids are always recognized identically.
+const RELATIONSHIP_GRAPH_DEVICE_NODE_PREFIX = '__device__:';
+function _isRelationshipGraphDeviceNodeId(id) {
+    return id === '__device__' || (typeof id === 'string' && id.startsWith(RELATIONSHIP_GRAPH_DEVICE_NODE_PREFIX));
+}
+
 // The two identity spaces (phone/email, 2026-09-07 - see correlate_
 // contacts()'s own docstring in core/case_index_db.py) can never collide
 // (a normalized phone is all-digits, a normalized email always contains
@@ -10616,6 +10635,13 @@ function _relationshipGraphNodeTooltip(contact) {
     if ((dc.incoming || 0) + (dc.outgoing || 0) > 0) lines.push(`Direction: ${dc.incoming || 0} incoming / ${dc.outgoing || 0} outgoing`);
     const dur = _formatDurationShort(contact.total_duration_seconds);
     if (dur) lines.push(`Total call time: ${dur}`);
+    // Only worth stating explicitly once there's more than one resolved
+    // device to distinguish - see RELATIONSHIP_GRAPH_DEVICE_NODE_PREFIX's
+    // own comment for why a single-device case never reaches this branch.
+    const deviceEntries = Object.entries(contact.device_communications || {});
+    if (deviceEntries.length > 1) {
+        lines.push(`Devices: ${deviceEntries.map(([id, count]) => `${id} (${count})`).join(', ')}`);
+    }
     lines.push(`First seen: ${_formatContactCorrelationTimestamp(contact.first_seen)}`);
     lines.push(`Last seen: ${_formatContactCorrelationTimestamp(contact.last_seen)}`);
     return lines.join('\n');
@@ -10745,7 +10771,26 @@ function renderRelationshipGraph(data) {
     // label was genuinely near-invisible (near-black text on a near-black
     // background), not just hard to read. Fixed to match every other
     // node's own light-gray-with-a-dark-stroke-outline label styling.
-    const nodes = [{
+    // multiDevice only activates with a real second device to distinguish -
+    // see RELATIONSHIP_GRAPH_DEVICE_NODE_PREFIX's own comment above for why
+    // a single-device (or pre-2026-09-14, never-attributed) case renders
+    // through the untouched legacy '__device__' hub path instead.
+    const deviceIds = data.devices || [];
+    const multiDevice = deviceIds.length >= 2;
+    const nodes = multiDevice ? deviceIds.map((evidenceId) => ({
+        id: RELATIONSHIP_GRAPH_DEVICE_NODE_PREFIX + evidenceId,
+        label: evidenceId, shape: 'star', size: 34,
+        color: { background: '#22d3ee', border: '#0e7490', highlight: { background: '#22d3ee', border: '#ffffff' } },
+        font: { color: '#e2e8f0', size: 13, bold: 'bold', face: RELATIONSHIP_GRAPH_FONT, strokeWidth: 3, strokeColor: LABEL_OUTLINE },
+        shadow: { enabled: true, color: 'rgba(34,211,238,0.35)', size: 12, x: 0, y: 0 },
+        // Unlike the single legacy hub below, deliberately left on physics
+        // (no `physics: false`) - forceAtlas2Based naturally spreads
+        // multiple device nodes apart based on which contacts each one
+        // does/doesn't share edges with, exactly like it already does for
+        // contact nodes; a fixed/unpositioned physics:false node with no
+        // explicit x/y would instead have every device stack at the same
+        // default origin.
+    })) : [{
         id: '__device__', label: 'This Device', shape: 'star', size: 40,
         color: { background: '#22d3ee', border: '#0e7490', highlight: { background: '#22d3ee', border: '#ffffff' } },
         font: { color: '#e2e8f0', size: 14, bold: 'bold', face: RELATIONSHIP_GRAPH_FONT, strokeWidth: 3, strokeColor: LABEL_OUTLINE },
@@ -10771,12 +10816,41 @@ function renderRelationshipGraph(data) {
             shadow: { enabled: true, color: 'rgba(0,0,0,0.45)', size: 6, x: 2, y: 2 },
             title: _relationshipGraphNodeTooltip(c),
         });
-        edges.push({
-            from: '__device__', to: key,
-            width: 1 + (metricValue(c) / maxMetric) * 9,
-            color: { color, opacity: 0.55, highlight: color },
-            smooth: { type: 'continuous', roundness: 0.35 },
-        });
+        if (multiDevice) {
+            // One edge per device this contact's own device_communications
+            // actually resolved to (2026-09-14) - "one line each from a
+            // device to the contact", never a single line fanned out from
+            // an ambiguous shared hub. Each device's edge is weighted by
+            // ITS OWN share of this contact's total_communications (not the
+            // device's raw count against every other contact's own max),
+            // so the sum of a contact's per-device edge widths reproduces
+            // the exact same total visual weight the single-hub edge below
+            // would have shown for the same contact. A contact with no
+            // resolved device_communications at all (an older/unattributed
+            // source - see correlate_contacts()'s own docstring) correctly
+            // gets NO device edge here rather than a guessed one; it still
+            // renders as a node (reachable via search/table/co-occurrence
+            // edges), just with no device link drawn.
+            const totalMetric = metricValue(c);
+            Object.entries(c.device_communications || {}).forEach(([evidenceId, count]) => {
+                if (!deviceIds.includes(evidenceId)) return;  // devices[] is the authoritative roster; never draw an edge to a stale/unknown id
+                const share = c.total_communications > 0 ? (count / c.total_communications) : 0;
+                edges.push({
+                    from: RELATIONSHIP_GRAPH_DEVICE_NODE_PREFIX + evidenceId, to: key,
+                    width: 1 + (totalMetric * share / maxMetric) * 9,
+                    color: { color, opacity: 0.55, highlight: color },
+                    smooth: { type: 'continuous', roundness: 0.35 },
+                    title: `${count} communication(s) resolved to ${evidenceId}`,
+                });
+            });
+        } else {
+            edges.push({
+                from: '__device__', to: key,
+                width: 1 + (metricValue(c) / maxMetric) * 9,
+                color: { color, opacity: 0.55, highlight: color },
+                smooth: { type: 'continuous', roundness: 0.35 },
+            });
+        }
     });
 
     // Contact-to-contact co-occurrence edges (2026-09-08) - a SEPARATE
@@ -10817,7 +10891,7 @@ function renderRelationshipGraph(data) {
         }
     );
     relationshipGraphNetwork.on('click', (params) => {
-        if (params.nodes && params.nodes.length && params.nodes[0] !== '__device__') {
+        if (params.nodes && params.nodes.length && !_isRelationshipGraphDeviceNodeId(params.nodes[0])) {
             showRelationshipGraphNodeActionsPopup(params.nodes[0]);
         } else {
             hideRelationshipGraphNodeActionsPopup();
@@ -10919,19 +10993,20 @@ function filterRelationshipGraph(query) {
 
     relationshipGraphNodesDataSet.update(
         relationshipGraphNodesDataSet.getIds().map((id) => ({
-            id, opacity: (id === '__device__' || contactMatches(id)) ? 1 : 0.12,
+            id, opacity: (_isRelationshipGraphDeviceNodeId(id) || contactMatches(id)) ? 1 : 0.12,
         }))
     );
     relationshipGraphEdgesDataSet.update(
         relationshipGraphEdgesDataSet.get().map((edge) => {
-            // A device-spoke edge's own "from" is always the literal
-            // device node, which trivially isn't a real contact search
+            // A device-spoke edge's own "from" is always a device node
+            // (the legacy single hub, or one of several per-device nodes -
+            // 2026-09-14), which trivially isn't a real contact search
             // target - relevance for that kind of edge depends only on
             // its contact end. A co-occurrence edge has no device end at
             // all, so either endpoint matching keeps it visible (shows
             // who a matched contact was grouped with, even if that other
             // person's own name doesn't match the query).
-            const isDeviceSpoke = edge.from === '__device__';
+            const isDeviceSpoke = _isRelationshipGraphDeviceNodeId(edge.from);
             const fullOpacity = edge.dashes ? 0.6 : 0.55;
             const relevant = isDeviceSpoke ? contactMatches(edge.to) : (contactMatches(edge.from) || contactMatches(edge.to));
             return { id: edge.id, color: { ...edge.color, opacity: relevant ? fullOpacity : 0.04 } };
@@ -10956,14 +11031,14 @@ function onRelationshipGraphVolumeThresholdChange(value) {
 
 function applyRelationshipGraphVolumeFilter() {
     if (!relationshipGraphNodesDataSet || !relationshipGraphEdgesDataSet) return;
-    const passes = (id) => id === '__device__' || (relationshipGraphNodeVolume[id] || 0) >= relationshipGraphVolumeThreshold;
+    const passes = (id) => _isRelationshipGraphDeviceNodeId(id) || (relationshipGraphNodeVolume[id] || 0) >= relationshipGraphVolumeThreshold;
     relationshipGraphNodesDataSet.update(
         relationshipGraphNodesDataSet.getIds().map((id) => ({ id, hidden: !passes(id) }))
     );
     relationshipGraphEdgesDataSet.update(
         relationshipGraphEdgesDataSet.get().map((edge) => ({
             id: edge.id,
-            hidden: edge.from === '__device__' ? !passes(edge.to) : !(passes(edge.from) && passes(edge.to)),
+            hidden: _isRelationshipGraphDeviceNodeId(edge.from) ? !passes(edge.to) : !(passes(edge.from) && passes(edge.to)),
         }))
     );
 }
