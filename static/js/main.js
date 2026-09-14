@@ -4828,27 +4828,41 @@ function fitBoundsWithMinZoom(map, bounds, options) {
 // to South America, and nothing on screen said "that far end is almost
 // certainly a GPS lock-loss glitch, not travel."
 //
-// Deliberately conservative, because a false positive here is much worse than a
-// false negative: wrongly implying real evidence of travel is bogus is a
-// materially worse error than leaving an examiner to spot an obvious outlier
-// themselves. Three guards enforce that:
+// This deliberately reports GEOMETRY, not a cause. An earlier draft called these
+// "likely GPS errors" - running it against the real 2,826-point DJI track proved
+// that framing wrong and worth correcting here permanently: 489 points (17%) sit
+// more than 100km out, as far as 6,448km. That is not the single lock-loss
+// glitch it was designed for, it is a sustained run of them. More importantly,
+// distance from the main cluster ALONE genuinely cannot tell a GPS fault from a
+// real trip - a device that mostly sits in one town and once flew to another
+// country produces the exact same shape. Speed would distinguish them, but KML
+// placemarks carry no timestamps (the table beside this map says so on every
+// row), so that signal does not exist for this data. Rather than guess, the
+// notice states the ambiguity and lets the examiner decide - which is also why
+// the map-fit toggle is useful either way: whether those points are error or
+// travel, an examiner still needs to see the dense cluster without them.
+//
+// Two guards, both about keeping the statement meaningful rather than about
+// guessing a cause:
 //   - An absolute floor (GEO_OUTLIER_MIN_DISTANCE_KM). Nothing closer than this
-//     is ever flagged no matter how tight the rest of the cluster is, so a
-//     device that never left one building doesn't get its own normal spread
-//     flagged as anomalous.
-//   - A multiple of the data's OWN typical spread, measured with medians rather
-//     than means throughout (a mean is dragged by the very outliers being looked
-//     for - the median center and median distance are not).
-//   - A share cap (GEO_OUTLIER_MAX_SHARE). If the rule wants to flag more than
-//     this fraction of all points, the data is probably genuinely multi-modal -
-//     someone really did travel between two places - so nothing is flagged at
-//     all rather than labeling half a real itinerary an error.
+//     is ever called distant, no matter how tight the rest of the cluster is, so
+//     a device that never left one building doesn't get its own normal spread
+//     called out.
+//   - A multiple of the data's OWN spread, measured with medians rather than
+//     means throughout (a mean is dragged by the very points being measured -
+//     the median center and median distance are not). This is what correctly
+//     stays silent on genuinely two-centred data: points split evenly between
+//     two cities produce a huge median spread, so the threshold rises far above
+//     any real separation and nothing is called distant.
+// GEO_OUTLIER_MAX_SHARE remains only as a sanity valve for the degenerate case
+// where points are scattered so widely that "the main cluster" isn't a
+// meaningful idea at all - not, as before, to second-guess the threshold.
 // NOTHING is ever removed from the evidence by this: it only produces a
 // disclosed list plus an opt-in map-fit exclusion. The table, the exports, and
 // the underlying KML/records are untouched.
 const GEO_OUTLIER_MIN_DISTANCE_KM = 100;
 const GEO_OUTLIER_SPREAD_MULTIPLIER = 20;
-const GEO_OUTLIER_MAX_SHARE = 0.10;
+const GEO_OUTLIER_MAX_SHARE = 0.40;
 const GEO_OUTLIER_MIN_POINTS = 5;  // below this there's no meaningful "typical spread" to compare against
 
 function _median(sortedNumbers) {
@@ -4907,13 +4921,16 @@ function buildGeoOutlierNotice(points, outliers, onToggle) {
     const n = outliers.indexes.size;
     const headline = document.createElement('div');
     headline.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>';
+    const share = (100 * n / points.length);
     const headlineText = document.createElement('span');
     headlineText.textContent =
-        `${n} point${n === 1 ? '' : 's'} sit${n === 1 ? 's' : ''} far outside the main cluster `
-        + `(more than ${_formatOutlierDistance(outliers.thresholdKm)} from the median location, `
-        + `where the typical spread is ${_formatOutlierDistance(outliers.medianSpreadKm)}). `
-        + `That pattern is commonly a GPS lock-loss glitch rather than real travel - but it is only `
-        + `a flag, not a finding. Nothing has been removed: every point is still plotted, listed, and exported.`;
+        `${n.toLocaleString()} of ${points.length.toLocaleString()} point${points.length === 1 ? '' : 's'} `
+        + `(${share < 0.1 ? '<0.1' : share.toFixed(1)}%) sit more than `
+        + `${_formatOutlierDistance(outliers.thresholdKm)} from where most of this source's points are, `
+        + `the furthest ${_formatOutlierDistance(Math.max(...[...outliers.indexes].map(i => outliers.distancesKm[i])))} out. `
+        + `This is a note about the shape of the data, NOT a finding: distance alone cannot tell real travel `
+        + `apart from GPS error, and these placemarks carry no timestamps to check speed against. `
+        + `Nothing has been removed - every point is still plotted, listed, and exported.`;
     headline.appendChild(headlineText);
     wrap.appendChild(headline);
 
@@ -4939,7 +4956,7 @@ function buildGeoOutlierNotice(points, outliers, onToggle) {
     cb.className = 'form-check-input mt-0';
     cb.onchange = () => onToggle(cb.checked);
     const cbText = document.createElement('span');
-    cbText.textContent = 'Exclude these from the map view (data itself is unchanged)';
+    cbText.textContent = 'Zoom the map to the main cluster only (data itself is unchanged)';
     label.appendChild(cb);
     label.appendChild(cbText);
     wrap.appendChild(label);
@@ -5296,9 +5313,10 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
         if (outliers && outliers.indexes.has(i)) {
             const badge = document.createElement('span');
             badge.className = 'badge bg-warning text-dark ms-2';
-            badge.textContent = 'far outlier';
+            badge.textContent = 'distant';
             badge.title = `${_formatOutlierDistance(outliers.distancesKm[i])} from the median of all `
-                + `points for this source - flagged as a likely GPS error, not removed or altered.`;
+                + `points for this source. A note about distance only - not a claim that this point `
+                + `is wrong. Nothing has been removed or altered.`;
             coordCell.appendChild(badge);
         }
         const descCell = document.createElement('td');
@@ -12563,8 +12581,9 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
             const parts = [`<b>${escapeHtmlForPopup(p.name || '(unnamed)')}</b>`, escapeHtmlForPopup(p.source)];
             if (p.timestamp) parts.push(_formatContactCorrelationTimestamp(p.timestamp));
             if (outliers && outliers.indexes.has(i)) {
-                parts.push(`<span class="text-warning">Flagged as a likely GPS outlier - `
-                    + `${_formatOutlierDistance(outliers.distancesKm[i])} from the median of all points.</span>`);
+                parts.push(`<span class="text-warning">`
+                    + `${_formatOutlierDistance(outliers.distancesKm[i])} from the median of all points `
+                    + `for this source - distance only, not a claim this point is wrong.</span>`);
             }
             marker.bindPopup(parts.join('<br>'));
             bounds.push([p.lat, p.lon]);
