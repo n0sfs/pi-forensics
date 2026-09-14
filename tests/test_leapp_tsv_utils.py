@@ -245,9 +245,84 @@ def test_empty_timestamp_cell_stays_none(tmp_path):
     assert records[0]["timestamp"] is None
 
 
-def test_uncurated_module_never_gets_a_timestamp():
-    # leapp_module_finding is deliberately absent from LEAPP_TIMESTAMP_COLUMNS
+def test_uncurated_module_has_no_curated_timestamp_mapping():
+    # leapp_module_finding is deliberately absent from LEAPP_TIMESTAMP_COLUMNS.
+    # Since 2026-09-14 that no longer means it can never carry a timestamp -
+    # see the fallback-detection tests below - only that it has no
+    # source-confirmed column mapping and must earn one from its own data.
     assert "leapp_module_finding" not in leapp.LEAPP_TIMESTAMP_COLUMNS
+
+
+# --- 2026-09-14: fallback timestamp detection for uncurated modules. Written
+# against the real DJI flight-track module's actual TSV, which carries a column
+# named "Timestamp" holding "2026-02-21 16:16:31+00:00" - 2,826 genuinely
+# timestamped GPS points that were being dropped to None and never reaching the
+# Evidence Timeline. ---
+def test_fallback_detects_a_real_timestamp_column_on_an_uncurated_module(tmp_path):
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "DJI Drone - Flight GPS Track (MCDatFlightRecords).tsv"),
+               ["Timestamp", "Latitude", "Longitude"],
+               [["2026-02-21 16:16:31+00:00", "37.7749000", "-122.4194000"],
+                ["2026-02-21 16:16:32+00:00", "37.7749010", "-122.4194010"],
+                ["2026-02-21 16:16:33+00:00", "37.7749020", "-122.4194020"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert records and records[0]["artifact_type"] == "leapp_module_finding"
+    assert all(r["timestamp"] is not None for r in records)
+    # The basis for the timestamp must be disclosed, not an invisible inference.
+    assert records[0]["extra"]["leapp_timestamp_column"] == "Timestamp"
+
+
+def test_fallback_rejects_a_temporal_looking_column_whose_values_do_not_parse(tmp_path):
+    # The guard that makes this evidence-based rather than a guess: the name
+    # looks right, the content is not a timestamp, so nothing is claimed.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "Some Uncurated Module.tsv"),
+               ["Date", "Thing"],
+               [["not a date", "a"], ["also not", "b"], ["nope", "c"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert records and all(r["timestamp"] is None for r in records)
+    assert "leapp_timestamp_column" not in records[0]["extra"]
+
+
+def test_fallback_ignores_a_module_with_no_temporal_column_at_all(tmp_path):
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "walStrings.tsv"), ["Report", "Location"],
+               [["map_cache.db-wal", "Android/data/x/cache"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert records and records[0]["timestamp"] is None
+
+
+def test_fallback_prefers_the_column_actually_named_timestamp_over_a_lesser_match(tmp_path):
+    # Name tiers exist so a module carrying both a real event time and some
+    # incidental other date doesn't silently pick whichever came first.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "Two Date Columns.tsv"),
+               ["Install Date", "Timestamp", "Thing"],
+               [["2020-01-01 00:00:00+00:00", "2026-02-21 16:16:31+00:00", "a"],
+                ["2020-01-01 00:00:00+00:00", "2026-02-21 16:16:32+00:00", "b"],
+                ["2020-01-01 00:00:00+00:00", "2026-02-21 16:16:33+00:00", "c"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert records[0]["extra"]["leapp_timestamp_column"] == "Timestamp"
+    # 2026, not 2020 - it took the event time, not the incidental one.
+    assert records[0]["timestamp"] > 1700000000
+
+
+def test_fallback_never_overrides_a_curated_modules_confirmed_column(tmp_path):
+    # The curated path is source-confirmed and must keep precedence; a curated
+    # row also never carries the disclosure key, which is how the two are told
+    # apart downstream.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "SMS Messages.tsv"),
+               ["Date", "Body"], [["2026-02-21 16:16:31+00:00", "hello"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert records[0]["artifact_type"] != "leapp_module_finding"
+    assert records[0]["timestamp"] is not None
+    assert "leapp_timestamp_column" not in records[0]["extra"]
 
 
 def test_installed_app_timestamp_parsed_from_vending_and_library_real_module_headers(tmp_path):
