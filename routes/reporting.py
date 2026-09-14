@@ -1736,6 +1736,47 @@ GEO_ACTIVITY_MAX_POINTS = 5000            # a bit above CASE_TIMELINE_MAX_TOTAL_
 GEO_ACTIVITY_CLUSTER_PRECISION = 3        # lat/lon rounded to 3 decimal places - roughly a 111m grid cell at the equator, a "same neighborhood" granularity
 GEO_ACTIVITY_MAX_FREQUENT_LOCATIONS = 20  # matches RELATIONSHIP_GRAPH_MAX_NODES's own "cap the ranked list, not the underlying data" precedent
 GEO_ACTIVITY_MIN_FREQUENT_VISITS = 2      # a single-visit point isn't a "frequent" location by any reasonable definition - excluded from frequent_locations entirely, still present in points
+# What actually separates one visit from the next (2026-09-14).
+#
+# "visit_count" used to be nothing of the sort: it was the raw number of GPS
+# SAMPLES that landed in a grid cell. For sparse sources (a Takeout history, a
+# handful of geotagged photos) one sample really is roughly one visit, which is
+# why it went unnoticed. For a continuously-recorded track it is wildly wrong -
+# a drone logging a point per second while hovering in one spot for an hour and
+# a half produced 2,252 samples, which this reported as "Visited 2252 time(s)"
+# against a first/last-seen span of 89 minutes. Confirmed against that real
+# track: those 2,252 samples are 2 genuine visits, so the figure an examiner was
+# being shown overstated reality by about 1,100x - and "visited 2,252 times" is
+# a claim about behaviour, which is exactly the kind of thing this app must not
+# assert from data that does not support it.
+#
+# A visit is now a run of samples at one location with no gap longer than this
+# between them; a longer gap means the device left and came back. 15 minutes is
+# deliberately forgiving - it keeps a brief signal dropout, a walk around the
+# building, or a stop at traffic lights from being counted as a fresh visit.
+GEO_ACTIVITY_VISIT_GAP_SECONDS = 900
+
+
+def _count_visits_and_dwell(timestamps):
+    """Turns one location's sample times into (visit_count, total_dwell_seconds).
+
+    A visit is a run of samples with no gap of GEO_ACTIVITY_VISIT_GAP_SECONDS or
+    more between consecutive ones; dwell is the time actually spent there,
+    summed across visits. Returns (None, None) when there are no timestamps at
+    all - visits genuinely cannot be derived from undated points, so none is
+    claimed rather than letting a sample count pass for one."""
+    times = sorted(t for t in (timestamps or []) if t is not None)
+    if not times:
+        return None, None
+    visits, dwell, start, prev = 1, 0.0, times[0], times[0]
+    for t in times[1:]:
+        if t - prev >= GEO_ACTIVITY_VISIT_GAP_SECONDS:
+            dwell += prev - start
+            visits += 1
+            start = t
+        prev = t
+    dwell += prev - start
+    return visits, round(dwell, 1)
 
 
 def _collect_case_geo_activity(case_folder, attachment_files):
@@ -1816,16 +1857,35 @@ def _collect_case_geo_activity(case_folder, attachment_files):
     clusters = {}
     for point in points:
         key = (round(point["lat"], GEO_ACTIVITY_CLUSTER_PRECISION), round(point["lon"], GEO_ACTIVITY_CLUSTER_PRECISION))
-        cluster = clusters.setdefault(key, {"lat": key[0], "lon": key[1], "visit_count": 0,
-                                             "first_seen": None, "last_seen": None})
-        cluster["visit_count"] += 1
+        cluster = clusters.setdefault(key, {"lat": key[0], "lon": key[1], "sample_count": 0,
+                                             "timestamps": [], "first_seen": None, "last_seen": None})
+        cluster["sample_count"] += 1
         if point["timestamp"] is not None:
+            cluster["timestamps"].append(point["timestamp"])
             if cluster["first_seen"] is None or point["timestamp"] < cluster["first_seen"]:
                 cluster["first_seen"] = point["timestamp"]
             if cluster["last_seen"] is None or point["timestamp"] > cluster["last_seen"]:
                 cluster["last_seen"] = point["timestamp"]
-    frequent_locations = [c for c in clusters.values() if c["visit_count"] >= GEO_ACTIVITY_MIN_FREQUENT_VISITS]
-    frequent_locations.sort(key=lambda c: c["visit_count"], reverse=True)
+
+    for cluster in clusters.values():
+        visits, dwell = _count_visits_and_dwell(cluster.pop("timestamps"))
+        cluster["visit_count"] = visits
+        cluster["total_dwell_seconds"] = dwell
+
+    # Ranked by real visits, with dwell time breaking ties: two places visited
+    # the same number of times are not equally significant if one held the
+    # device for an hour and the other for a minute. An untimestamped cluster
+    # can only be ranked on samples, so it sorts below anything with real
+    # visit data rather than being silently interleaved with it.
+    frequent_locations = [
+        c for c in clusters.values()
+        if (c["visit_count"] if c["visit_count"] is not None else c["sample_count"])
+        >= GEO_ACTIVITY_MIN_FREQUENT_VISITS
+    ]
+    frequent_locations.sort(
+        key=lambda c: (c["visit_count"] is not None, c["visit_count"] or 0,
+                       c["total_dwell_seconds"] or 0, c["sample_count"]),
+        reverse=True)
     frequent_locations = frequent_locations[:GEO_ACTIVITY_MAX_FREQUENT_LOCATIONS]
 
     return points, frequent_locations, truncated
