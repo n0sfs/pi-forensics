@@ -12736,7 +12736,7 @@ function _recomputeAndRenderGeoActivity() {
     if (listEl && frequentLocations.length) {
         const label = document.createElement('div');
         label.className = 'small fw-bold text-subtle mb-1';
-        label.textContent = 'Frequent Locations (visited more than once)';
+        label.textContent = 'Notable Locations (returned to, or stayed at)';
         listEl.appendChild(label);
         if (Object.keys(homeWorkByKey).length > 0) {
             const disclosure = document.createElement('div');
