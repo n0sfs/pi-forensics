@@ -1217,64 +1217,93 @@ def _tile_range_for_bbox(min_lon, min_lat, max_lon, max_lat, zoom):
     return min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2)
 
 
+# Source for the offline cache, replacing tile.openstreetmap.org (2026-09-14).
+#
+# This step used to pre-download OSM tiles, which was an outright violation of
+# OpenStreetMap's own tile usage policy - it forbids, in its own words, "Bulk
+# download ('scrape') tiles or offer prefetch features", "Pre-seeding large
+# areas or multiple zoom levels in advance", and states plainly that "Offline
+# use is not permitted on tile.openstreetmap.org". That is exactly what this
+# function did, and it is why the step never once completed successfully on a
+# real install: OSM was correctly blocking it every time.
+#
+# USGS's National Map is used instead. Its terms are the opposite situation:
+# the data is a US government work, explicitly "free and in the public domain"
+# with "no restrictions" on use or download, so caching it locally is precisely
+# what it is published for. Attribution is still credited in the UI, per USGS's
+# requested form ("U.S. Geological Survey, National Geospatial Program"). The
+# per-request delay below is kept anyway - being a polite client of a public
+# service is worth doing whether or not a policy compels it.
+#
+# Two real differences from the OSM scheme, both confirmed against the live
+# service rather than assumed:
+#   - The request path is /tile/{z}/{y}/{x} - ROW before COLUMN, ArcGIS's own
+#     convention, the reverse of the {z}/{x}/{y} an OSM-style service uses.
+#     Tiles are still STORED as {z}/{x}/{y} on disk, the layout the frontend
+#     and the PDF exporter already read, so only the fetch order differs.
+#   - Coverage stops at zoom 16. z16 returns real imagery; z17 and beyond
+#     return a hard 404 (verified across 14/15/16/17/18/19).
+USGS_OFFLINE_TILE_SERVICE = "USGSTopo"
+USGS_OFFLINE_TILE_MAX_ZOOM = 16
+
+
 def _download_tile_set(base_dir, tiles, user_agent, delay_seconds):
-    """Download (z, x, y) tiles to base_dir/{z}/{x}/{y}.png, skipping ones already on disk.
-    A single failed/blocked tile is counted and skipped, never raised - a flaky connection mid-run
+    """Download (z, x, y) tiles to base_dir/{z}/{x}/{y}.jpg, skipping ones already on disk.
+    A single failed tile is counted and skipped, never raised - a flaky connection mid-run
     shouldn't abort the whole install, matching the MVT IOC download's non-fatal precedent above.
 
-    An outright BLOCK from the tile server is a different situation and is NOT treated as a
-    per-tile failure to just skip past: tile.openstreetmap.org returns a real HTTP 200 with a
-    generic placeholder image and an `X-Blocked` response header when it has denied a source
-    (confirmed live during development - a request from a flagged/shared-hosting IP got exactly
-    this, a real 200 OK carrying `X-Blocked: Access denied...` and a byte-identical placeholder
-    PNG for every distinct tile URL requested). Silently writing that placeholder to disk under
-    every tile's real filename would corrupt the whole cache into a pile of identical fake tiles
-    while claiming success - detected via the header and treated as an immediate stop instead."""
+    Returns (downloaded, skipped_existing, failed, gave_up). `gave_up` is set when a long
+    unbroken run of consecutive failures suggests the network - not one bad tile - is the
+    problem, so a station with no route to the service doesn't sit through thousands of
+    pointless timeouts before the install can continue."""
     downloaded = skipped_existing = failed = 0
-    blocked = False
+    consecutive_failures = 0
+    gave_up = False
     total = len(tiles)
     for i, (z, x, y) in enumerate(tiles):
-        if blocked:
+        if gave_up:
             failed += 1
             continue
         out_dir = os.path.join(base_dir, str(z), str(x))
-        out_path = os.path.join(out_dir, f"{y}.png")
+        out_path = os.path.join(out_dir, f"{y}.jpg")
         if os.path.exists(out_path):
             skipped_existing += 1
         else:
-            url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+            # Note the y/x order here - see USGS_OFFLINE_TILE_SERVICE's comment above.
+            url = (f"https://basemap.nationalmap.gov/arcgis/rest/services/"
+                   f"{USGS_OFFLINE_TILE_SERVICE}/MapServer/tile/{z}/{y}/{x}")
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": user_agent})
                 with urllib.request.urlopen(req, timeout=10) as resp:
-                    if resp.headers.get("X-Blocked"):
-                        blocked = True
-                        failed += 1
-                        continue
                     data = resp.read()
                 os.makedirs(out_dir, exist_ok=True)
                 with open(out_path, "wb") as f:
                     f.write(data)
                 downloaded += 1
+                consecutive_failures = 0
             except Exception:
                 failed += 1
-        if blocked:
-            print(f"    ... stopped at tile {i + 1}/{total} - tile.openstreetmap.org returned "
-                  f"'X-Blocked: Access denied' for this network. See "
-                  f"https://operations.osmfoundation.org/policies/tiles/ - this can happen on "
-                  f"shared/hosting/VPN IPs; a normal home/office internet connection is usually fine.")
+                consecutive_failures += 1
+                if consecutive_failures >= 25:
+                    gave_up = True
+        if gave_up:
+            print(f"    ... stopped at tile {i + 1}/{total} - 25 consecutive failures, which "
+                  f"points at this station's own connectivity to basemap.nationalmap.gov rather "
+                  f"than any one bad tile. Whatever downloaded before this point is still saved "
+                  f"and usable.")
         elif (i + 1) % 200 == 0 or (i + 1) == total:
             print(f"    ... {i + 1}/{total} tiles processed ({downloaded} downloaded, "
                   f"{skipped_existing} already cached, {failed} failed)")
         time.sleep(delay_seconds)
-    return downloaded, skipped_existing, failed, blocked
+    return downloaded, skipped_existing, failed, gave_up
 
 
 def download_offline_tiles(install_dir):
-    tiles_dir = os.path.join(install_dir, "static", "vendor", "osm_tiles")
+    tiles_dir = os.path.join(install_dir, "static", "vendor", "offline_tiles")
     os.makedirs(tiles_dir, exist_ok=True)
-    # A real, honest User-Agent and a per-request delay are both required/expected by
-    # OpenStreetMap's tile usage policy (operations.osmfoundation.org/policies/tiles/) - this
-    # stays a deliberately small, one-time cache, not a scripted bulk-download tool.
+    # An honest, identifying User-Agent and a per-request delay - not required by USGS's own
+    # public-domain terms the way OSM's policy demanded them, but correct behavior toward any
+    # public service, and it keeps this a small one-time cache rather than a scraping tool.
     user_agent = "PiForensicsSuite/1.0 (offline tile cache; +https://github.com/n0sfs/pi-forensics)"
     delay = 0.2
 
@@ -1283,19 +1312,19 @@ def download_offline_tiles(install_dir):
     # of where evidence coordinates turn out to be from.
     print("\n[*] Downloading global overview tiles (zoom 0-5, 1,365 tiles, a few minutes)...")
     overview_tiles = [(z, x, y) for z in range(0, 6) for x in range(2 ** z) for y in range(2 ** z)]
-    d, s, f, overview_blocked = _download_tile_set(tiles_dir, overview_tiles, user_agent, delay)
+    d, s, f, overview_gave_up = _download_tile_set(tiles_dir, overview_tiles, user_agent, delay)
     print(f"[+] Global overview: {d} downloaded, {s} already cached, {f} failed.")
     max_zoom_achieved = 5
 
     if d + s == 0:
-        print("\n[!] No tiles were actually obtained (blocked or unreachable) - not writing an "
+        print("\n[!] No tiles were actually obtained (unreachable) - not writing an "
               "offline tile cache. The Geolocation Viewer will behave exactly as it did before "
               "this step: pins with no map background when this station has no internet.")
         return
 
-    if overview_blocked:
-        print("\n[!] tile.openstreetmap.org blocked further requests partway through - skipping "
-              "the optional regional download (it would be blocked too). What was already "
+    if overview_gave_up:
+        print("\n[!] Gave up partway through the overview download - skipping "
+              "the optional regional download too. What was already "
               "downloaded/cached above is still saved and usable.")
     else:
         # Optional second tier: deeper zoom for one specific region, for stations that know
@@ -1305,6 +1334,8 @@ def download_offline_tiles(install_dir):
         print("    If you know roughly where this station will be used, you can also cache more")
         print("    detailed tiles (city/street level) for just that area. Get a bounding box from")
         print("    a site like bboxfinder.com (draw a box there, copy the 4 numbers it shows).")
+        print("    Note: USGS coverage is the United States and its territories - a box outside")
+        print("    that will download tiles that are simply blank at these zoom levels.")
         bbox_input = input("    Bounding box as 'min_lon,min_lat,max_lon,max_lat' (blank to skip): ").strip()
 
         if not bbox_input:
@@ -1317,10 +1348,11 @@ def download_offline_tiles(install_dir):
             except Exception:
                 print("[!] Could not parse that bounding box - skipping regional tile download.")
             else:
-                zoom_input = input("    Max zoom for this region (6-16, higher = more detail/tiles) "
-                                    "[default: 13]: ").strip()
+                zoom_input = input(f"    Max zoom for this region (6-{USGS_OFFLINE_TILE_MAX_ZOOM}, "
+                                   f"higher = more detail/tiles) [default: 13]: ").strip()
                 try:
-                    requested_max_zoom = max(6, min(16, int(zoom_input))) if zoom_input else 13
+                    requested_max_zoom = (max(6, min(USGS_OFFLINE_TILE_MAX_ZOOM, int(zoom_input)))
+                                          if zoom_input else 13)
                 except ValueError:
                     requested_max_zoom = 13
 
@@ -1347,13 +1379,13 @@ def download_offline_tiles(install_dir):
                     est_minutes = round(len(region_tiles) * delay / 60, 1)
                     print(f"\n[*] Downloading regional tiles (zoom 6-{achieved_zoom}, "
                           f"{len(region_tiles)} tiles, ~{est_minutes} min)...")
-                    d, s, f, region_blocked = _download_tile_set(tiles_dir, region_tiles, user_agent, delay)
+                    d, s, f, region_gave_up = _download_tile_set(tiles_dir, region_tiles, user_agent, delay)
                     print(f"[+] Regional coverage: {d} downloaded, {s} already cached, {f} failed.")
-                    if region_blocked:
-                        print("[!] Blocked partway through the regional download - the manifest will "
+                    if region_gave_up:
+                        print("[!] Gave up partway through the regional download - the manifest will "
                               "still only credit the global overview's zoom level, to stay honest "
                               "about what's confirmed fully present (whatever regional tiles did "
-                              "download before the block are still saved and will still be used).")
+                              "download before that point are still saved and will still be used).")
                     else:
                         max_zoom_achieved = achieved_zoom
 
@@ -1364,15 +1396,18 @@ def download_offline_tiles(install_dir):
     with open(os.path.join(tiles_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
     print(f"\n[+] Offline tile cache ready (max zoom {max_zoom_achieved}). The Geolocation Viewer "
-          f"will fall back to it automatically whenever a live OpenStreetMap tile can't be reached.")
+          f"will fall back to it automatically whenever a live map tile can't be reached.")
 
 
 print("\n[?] Offline Map Imagery for Geolocation Viewer")
 print("    If this station will have NO internet access after setup, you can pre-download a")
-print("    small cache of OpenStreetMap tile imagery now, while online, so the Geolocation")
-print("    Viewer still shows real map backgrounds later (not just placemark pins on a blank grid).")
-print("    Note: OpenStreetMap's tile usage policy discourages bulk downloading from its free")
-print("    public server, so this stays deliberately small by default. Skip if unsure.")
+print("    small cache of USGS National Map topographic imagery now, while online, so the")
+print("    Geolocation Viewer still shows real map backgrounds later (not just placemark pins")
+print("    on a blank grid).")
+print("    This uses USGS's National Map, which is a US government work in the public domain")
+print("    with no restrictions on download - unlike OpenStreetMap's tile server, whose usage")
+print("    policy forbids exactly this kind of pre-download. Coverage is the US and its")
+print("    territories. Skip if unsure; live online maps are unaffected either way.")
 tiles_choice = input("    Download offline map imagery now? [y/N]: ").strip().lower()
 if tiles_choice in ('y', 'yes'):
     download_offline_tiles(INSTALL_DIR)

@@ -194,7 +194,7 @@ def get_offline_tiles_info():
     Returns {'max_zoom': N} or None - a tiny file, read fresh per page load rather than cached at
     process start, since re-running install.py's tile step (or a future manual refresh) shouldn't
     need a service restart to be picked up."""
-    manifest_path = os.path.join(current_app.static_folder, 'vendor', 'osm_tiles', 'manifest.json')
+    manifest_path = os.path.join(current_app.static_folder, 'vendor', 'offline_tiles', 'manifest.json')
     try:
         with open(manifest_path) as f:
             data = json.load(f)
