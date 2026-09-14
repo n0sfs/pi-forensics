@@ -367,7 +367,7 @@ def test_parse_journald_extracts_curated_event_kinds_and_real_timestamp(tmp_path
     p = tmp_path / "system.journal"
     p.write_bytes(b"")
     entries = [
-        {"MESSAGE": "sshd[1234]: Accepted publickey for nospi from 10.0.2.15 port 21662 ssh2",
+        {"MESSAGE": "sshd[1234]: Accepted publickey for testuser from 10.0.2.15 port 21662 ssh2",
          "__REALTIME_TIMESTAMP": "1787708799712997", "_SYSTEMD_UNIT": "ssh.service",
          "_HOSTNAME": "testhost", "SYSLOG_IDENTIFIER": "sshd"},
         {"MESSAGE": "some unrelated kernel message with no curated pattern match",
@@ -392,7 +392,7 @@ def test_parse_journald_caps_matches_and_stops_at_the_limit(tmp_path, monkeypatc
     monkeypatch.setattr(la, "JOURNALD_MAX_MATCHES_PER_FILE", 2)
     p = tmp_path / "system.journal"
     p.write_bytes(b"")
-    entries = [{"MESSAGE": f"sudo: nospi : TTY=pts/0 ; PWD=/home ; USER=root ; COMMAND=/bin/ls{i}",
+    entries = [{"MESSAGE": f"sudo: testuser : TTY=pts/0 ; PWD=/home ; USER=root ; COMMAND=/bin/ls{i}",
                 "__REALTIME_TIMESTAMP": "1787708799712997"} for i in range(5)]
     with patch("core.linux_artifacts.subprocess.run", return_value=_mock_journalctl_result(entries)):
         records = la.parse_linux_journald_file(str(p))

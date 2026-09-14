@@ -4835,7 +4835,7 @@ function fitBoundsWithMinZoom(map, bounds, options) {
 // The companion fix to GEO_MAP_MIN_ZOOM_AFTER_FIT above. That one stops a wild
 // point from wrecking the map's zoom; this one tells the examiner the point is
 // there and why it looks wrong, which the zoom clamp alone never did - the real
-// DJI drone track in 2026-CASE-EXAMPLE draws a line from North Carolina
+// DJI drone track in a real test case drew a line from its own launch point
 // to South America, and nothing on screen said "that far end is almost
 // certainly a GPS lock-loss glitch, not travel."
 //
