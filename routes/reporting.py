@@ -1658,12 +1658,34 @@ def _parse_kml_placemarks(kml_text):
             continue
         name_el = _kml_find_local(elem, 'name')
         desc_el = _kml_find_local(elem, 'description')
+        # KML's own <TimeStamp><when> (2026-09-14). This app now writes it
+        # (core/geo_utils.py::_build_geo_kml), and it is standard KML that a
+        # third-party file may well carry too, so reading it recovers a real
+        # per-point time that previously died in the round trip. Absent or
+        # unparseable stays None - never a guessed time.
+        when_el = _kml_find_local(elem, 'when')
         placemarks.append({
             "name": (name_el.text or '').strip() if name_el is not None else '',
             "description": (desc_el.text or '').strip() if desc_el is not None else '',
             "lat": lat, "lon": lon,
+            "timestamp": _parse_kml_when(when_el.text if when_el is not None else None),
         })
     return placemarks
+
+
+def _parse_kml_when(text):
+    """Parses a KML <when> value into a Unix epoch float, or None. KML
+    specifies ISO 8601; the trailing 'Z' that form uses is normalized to the
+    +00:00 offset datetime.fromisoformat() accepts on this project's Python.
+    A date-only value (also legal KML) is read as midnight UTC."""
+    if not text or not str(text).strip():
+        return None
+    raw = str(text).strip()
+    try:
+        return datetime.datetime.fromisoformat(
+            raw[:-1] + '+00:00' if raw.endswith('Z') else raw).timestamp()
+    except (ValueError, TypeError):
+        return None
 
 
 def _collect_case_kml_files(case_folder, attachment_files):
@@ -1778,7 +1800,13 @@ def _collect_case_geo_activity(case_folder, attachment_files):
 
     for kml_entry in _collect_case_geolocation(case_folder, attachment_files):
         for placemark in kml_entry["placemarks"]:
-            points.append({"lat": placemark["lat"], "lon": placemark["lon"], "timestamp": None,
+            # Was hard-coded to None on the (then-true) basis that a KML
+            # placemark carries no structured time. It can: _parse_kml_
+            # placemarks() now reads KML's own <TimeStamp><when>, and this
+            # app's own exporter now writes it. Still None for a placemark
+            # that genuinely has none, which is most third-party KML.
+            points.append({"lat": placemark["lat"], "lon": placemark["lon"],
+                            "timestamp": placemark.get("timestamp"),
                             "name": placemark["name"] or kml_entry["name"], "source": kml_entry["name"]})
 
     truncated = len(points) > GEO_ACTIVITY_MAX_POINTS

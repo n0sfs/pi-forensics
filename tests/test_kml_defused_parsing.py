@@ -79,3 +79,35 @@ def test_rejects_genuinely_malformed_xml_returns_empty_list():
 
 def test_rejects_empty_string_returns_empty_list():
     assert reporting._parse_kml_placemarks("") == []
+
+
+# --- 2026-09-14: reading KML's own <TimeStamp><when>. The write side lives in
+# core/geo_utils.py (see tests/test_geo_utils.py); this is the half that
+# recovers the value, which is what lets a KML-sourced track reach the
+# implausible-speed check at all. ---
+_KML_WITH_TIMESTAMP = """<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+<Placemark><name>dated</name><description>d</description>
+<TimeStamp><when>2026-02-21T16:16:31Z</when></TimeStamp>
+<Point><coordinates>-122.4194000,37.7749000,0</coordinates></Point></Placemark>
+<Placemark><name>undated</name><description>d</description>
+<Point><coordinates>-81.7,35.6,0</coordinates></Point></Placemark>
+</Document></kml>"""
+
+
+def test_parse_kml_placemarks_reads_a_real_timestamp_element():
+    pms = reporting._parse_kml_placemarks(_KML_WITH_TIMESTAMP)
+    assert len(pms) == 2
+    assert pms[0]["timestamp"] == 1771690591.0
+    # An undated placemark stays undated - never defaulted to anything.
+    assert pms[1]["timestamp"] is None
+
+
+def test_parse_kml_when_handles_the_z_suffix_and_offset_forms_alike():
+    assert reporting._parse_kml_when("2026-02-21T16:16:31Z") == 1771690591.0
+    assert reporting._parse_kml_when("2026-02-21T16:16:31+00:00") == 1771690591.0
+
+
+def test_parse_kml_when_returns_none_rather_than_guessing_on_junk():
+    for bad in (None, "", "   ", "not a date", "2026-13-45T99:99:99Z"):
+        assert reporting._parse_kml_when(bad) is None

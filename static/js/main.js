@@ -4771,10 +4771,21 @@ function parseKmlPlacemarks(kmlText) {
             const lon = parseFloat(parts[0]);
             const lat = parseFloat(parts[1]);
             if (!isFinite(lat) || !isFinite(lon)) return;
+            // KML's own <TimeStamp><when> (2026-09-14) - standard KML that
+            // this app now writes and third-party files may carry. Recovering
+            // it is what lets the implausible-speed check run on a KML-sourced
+            // track at all; a placemark without one stays undated, never
+            // guessed. Mirrors _parse_kml_when() in routes/reporting.py.
+            const whenText = pm.querySelector('TimeStamp > when')?.textContent?.trim();
+            let timestamp = null;
+            if (whenText) {
+                const ms = Date.parse(whenText);
+                if (isFinite(ms)) timestamp = ms / 1000;
+            }
             placemarks.push({
                 name: pm.querySelector('name')?.textContent?.trim() || '',
                 description: pm.querySelector('description')?.textContent?.trim() || '',
-                lat, lon,
+                lat, lon, timestamp,
             });
         });
     } catch (err) {
