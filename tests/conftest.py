@@ -186,3 +186,39 @@ def login_user_session(client, username):
     with client.session_transaction() as sess:
         sess["username"] = username
         sess["last_activity"] = time.time()
+
+
+# --- Real-data fixtures kept off GitHub (2026-09-14) ---
+#
+# The committed tests use synthetic values throughout, deliberately: this repo
+# is public, and a 2026-09-14 privacy audit found real evidence had been used as
+# a test fixture - genuine GPS coordinates at centimetre precision, which had to
+# be scrubbed from history. Synthetic values are the default and must stay so.
+#
+# But some things are only really testable against genuine tool output - the
+# exact shape of an ALEAPP TSV, a real adb bugreport archive, a real SRUM
+# database. This gives those a home that never leaves the machine: drop the file
+# under tests/fixtures/local/ (gitignored in full), and a test that wants it
+# asks for it by name. If it isn't there, the test SKIPS rather than fails -
+# matching how this suite already handles POSIX-only and
+# sample-dependent modules, so a clean checkout stays green for everyone.
+LOCAL_FIXTURE_DIR = os.path.join(os.path.dirname(__file__), 'fixtures', 'local')
+
+
+@pytest.fixture
+def local_fixture():
+    """Returns a lookup function: local_fixture("aleapp/sample.tsv") gives the
+    absolute path, or skips the test if that file isn't present.
+
+    A fixture returning a function rather than a path directly, so one test can
+    ask for several files, and so the skip message names the exact file the
+    reader needs to supply."""
+    def _lookup(relative_name):
+        path = os.path.join(LOCAL_FIXTURE_DIR, relative_name)
+        if not os.path.exists(path):
+            pytest.skip(
+                f"real-data fixture not present: tests/fixtures/local/{relative_name} "
+                f"- drop a genuine sample there to exercise this test (the directory "
+                f"is gitignored, so nothing real is ever committed)")
+        return path
+    return _lookup
