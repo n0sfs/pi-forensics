@@ -14884,7 +14884,12 @@ async function loadAnalysisCoverage() {
             const labels = item.kind === 'disk_image' ? imageLabels : mobileLabels;
             const allSteps = item.kind === 'disk_image' ? imageAllSteps : mobileAllSteps;
             const completed = new Set(item.steps_completed || []);
-            const outstanding = allSteps.filter(s => !completed.has(s));
+            // A step that was attempted and failed, or that doesn't apply to
+            // this item, is no longer lumped in with "never tried" (2026-09-14).
+            const failed = item.steps_failed || {};
+            const notApplicable = new Set(item.steps_not_applicable || []);
+            const outstanding = allSteps.filter(
+                s => !completed.has(s) && !(s in failed) && !notApplicable.has(s));
             coverageOutstandingCache.push({
                 evidence_id: item.evidence_id || '--', tool: item.tool || '--',
                 outstanding_labels: outstanding.map(s => labels[s] || s),
@@ -14926,13 +14931,35 @@ async function loadAnalysisCoverage() {
                 b.textContent = labels[s] || s;
                 stepsRow.appendChild(b);
             });
+            // Attempted and failed - the state that previously rendered
+            // identically to "never tried", leaving an examiner no signal that
+            // re-running would predictably fail again. The recorded error is
+            // put in the tooltip so the reason is one hover away.
+            Object.entries(failed).forEach(([s, detail]) => {
+                const b = document.createElement('span');
+                b.className = 'badge bg-danger bg-opacity-25 text-danger border border-danger me-1 mb-1';
+                b.textContent = 'Failed: ' + (labels[s] || s);
+                b.title = `This step was run against this item and reported an error, so it is not `
+                    + `"not yet tried" - re-running it will likely fail the same way until the cause `
+                    + `is addressed.\n\nRecorded error: ${detail}`;
+                stepsRow.appendChild(b);
+            });
+            notApplicable.forEach(s => {
+                const b = document.createElement('span');
+                b.className = 'badge bg-secondary bg-opacity-25 text-subtle border border-secondary me-1 mb-1';
+                b.textContent = 'N/A: ' + (labels[s] || s);
+                b.title = 'This step was reached but does not apply to this evidence item - not a '
+                    + 'failure, and not something left to do.';
+                stepsRow.appendChild(b);
+            });
             outstanding.forEach(s => {
                 const b = document.createElement('span');
                 b.className = 'badge bg-secondary bg-opacity-25 text-subtle border border-secondary me-1 mb-1';
                 b.textContent = 'Not yet run: ' + (labels[s] || s);
                 stepsRow.appendChild(b);
             });
-            if (!(item.steps_completed || []).length && !outstanding.length) {
+            if (!(item.steps_completed || []).length && !outstanding.length
+                && !Object.keys(failed).length && !notApplicable.size) {
                 const none = document.createElement('span');
                 none.className = 'text-subtle';
                 none.textContent = 'No known steps for this item type.';
