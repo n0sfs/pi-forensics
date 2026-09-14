@@ -10896,10 +10896,19 @@ async function renderReportGeolocationList() {
         block.appendChild(mapHolder);
         container.appendChild(block);
 
+        // timestamp is carried through, not just rendered into the description
+        // (2026-09-14) - renderPointMap()'s implausible-speed check needs the
+        // real value, and dropping it here was silently making that check
+        // impossible for every KML-sourced track even once the points genuinely
+        // had times. The old fallback text also claimed KML placemarks can
+        // never carry a timestamp, which stopped being true once this app began
+        // writing real <TimeStamp> elements.
         const placemarks = points.map(p => ({
             name: p.name || '(unnamed)',
-            description: p.timestamp ? `Recorded: ${_formatContactCorrelationTimestamp(p.timestamp)}` : '(no timestamp - KML placemarks never carry one)',
-            lat: p.lat, lon: p.lon,
+            description: p.timestamp
+                ? `Recorded: ${_formatContactCorrelationTimestamp(p.timestamp)}`
+                : '(no timestamp recorded for this point)',
+            lat: p.lat, lon: p.lon, timestamp: p.timestamp,
         }));
         renderPointMap(mapHolder, placemarks, 'clamp(300px, 50vh, 600px)');
     }
