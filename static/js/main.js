@@ -12365,7 +12365,7 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
 // the right tool for those.
 let patternOfLifeActivityAllRows = null;   // cached UNFILTERED rows, so neither the granularity nor the category toggle ever re-fetches
 let patternOfLifeActivityRows = null;      // the currently-filtered subset actually charted
-let patternOfLifeActivityGranularity = 'hour'; // 'hour' | 'dow' | 'heatmap'
+let patternOfLifeActivityGranularity = 'hour'; // 'hour' | 'dow' | 'heatmap' | 'overtime'
 let patternOfLifeActivityIncludeWeb = false;
 let patternOfLifeActivityIncludeCalendar = false;
 let patternOfLifeActivityChart = null;
@@ -12488,9 +12488,11 @@ function setPatternOfLifeActivityGranularity(mode) {
     const hourBtn = document.getElementById('polGranHourBtn');
     const dowBtn = document.getElementById('polGranDowBtn');
     const heatmapBtn = document.getElementById('polGranHeatmapBtn');
+    const overTimeBtn = document.getElementById('polGranOverTimeBtn');
     if (hourBtn) hourBtn.classList.toggle('active', mode === 'hour');
     if (dowBtn) dowBtn.classList.toggle('active', mode === 'dow');
     if (heatmapBtn) heatmapBtn.classList.toggle('active', mode === 'heatmap');
+    if (overTimeBtn) overTimeBtn.classList.toggle('active', mode === 'overtime');
     hidePatternOfLifeActivityPopup();  // a stale popup's bucket index means something different once granularity changes
     renderPatternOfLifeActivityChart();
 }
@@ -12625,22 +12627,52 @@ function renderPatternOfLifeActivityChart() {
     canvas.style.display = '';
     if (heatmapEl) { heatmapEl.style.display = 'none'; heatmapEl.innerHTML = ''; }
 
-    const bucketCount = patternOfLifeActivityGranularity === 'dow' ? 7 : 24;
-    const counts = new Array(bucketCount).fill(0);
-    patternOfLifeActivityBucketRows = Array.from({ length: bucketCount }, () => []);
-    const bucketOf = (e) => patternOfLifeActivityGranularity === 'dow'
-        ? new Date(e.timestamp * 1000).getDay()
-        : new Date(e.timestamp * 1000).getHours();
-    rows.forEach((e) => {
-        const b = bucketOf(e);
-        counts[b] += 1;
-        patternOfLifeActivityBucketRows[b].push(e);
-    });
-    const labels = patternOfLifeActivityGranularity === 'dow' ? PATTERN_OF_LIFE_DOW_LABELS
-        : counts.map((_, h) => {
-            const d = new Date(); d.setHours(h, 0, 0, 0);
-            return d.toLocaleTimeString(undefined, { hour: 'numeric' });
+    let counts, labels;
+    if (patternOfLifeActivityGranularity === 'overtime') {
+        // Chronological, not a recurring pattern (2026-09-14) - the Hour-of-
+        // Day/Day-of-Week views deliberately collapse the WHOLE selected
+        // range into one composite "typical day"/"typical week", which
+        // means there's no way to see whether activity actually rose,
+        // fell, or spiked at a specific point in time, or even which real
+        // dates are being looked at. This reuses the Evidence Timeline
+        // density chart's own adaptive bucketing (pickTimelineGranularity/
+        // timelineBucketStart/timelineBucketEnd/timelineBucketLabel,
+        // defined above alongside caseTimelineChart) rather than a second,
+        // independent day/week/month-picking implementation - same "a
+        // couple of days gets hourly bars, years gets monthly ones" logic,
+        // so this chart's bar count stays readable across the same range
+        // of case sizes that one already handles correctly.
+        const timestamps = rows.map((e) => e.timestamp);
+        const overTimeGranularity = pickTimelineGranularity(Math.min(...timestamps), Math.max(...timestamps));
+        const bucketMap = new Map(); // bucket-start epoch ms -> {label, rows: []}
+        rows.forEach((e) => {
+            const start = timelineBucketStart(e.timestamp * 1000, overTimeGranularity);
+            const key = start.getTime();
+            if (!bucketMap.has(key)) bucketMap.set(key, { start, label: timelineBucketLabel(start, overTimeGranularity), rows: [] });
+            bucketMap.get(key).rows.push(e);
         });
+        const buckets = [...bucketMap.values()].sort((a, b) => a.start - b.start);
+        labels = buckets.map((b) => b.label);
+        counts = buckets.map((b) => b.rows.length);
+        patternOfLifeActivityBucketRows = buckets.map((b) => b.rows);
+    } else {
+        const bucketCount = patternOfLifeActivityGranularity === 'dow' ? 7 : 24;
+        counts = new Array(bucketCount).fill(0);
+        patternOfLifeActivityBucketRows = Array.from({ length: bucketCount }, () => []);
+        const bucketOf = (e) => patternOfLifeActivityGranularity === 'dow'
+            ? new Date(e.timestamp * 1000).getDay()
+            : new Date(e.timestamp * 1000).getHours();
+        rows.forEach((e) => {
+            const b = bucketOf(e);
+            counts[b] += 1;
+            patternOfLifeActivityBucketRows[b].push(e);
+        });
+        labels = patternOfLifeActivityGranularity === 'dow' ? PATTERN_OF_LIFE_DOW_LABELS
+            : counts.map((_, h) => {
+                const d = new Date(); d.setHours(h, 0, 0, 0);
+                return d.toLocaleTimeString(undefined, { hour: 'numeric' });
+            });
+    }
 
     if (patternOfLifeActivityChart) {
         patternOfLifeActivityChart.data.labels = labels;
