@@ -4911,6 +4911,110 @@ function _formatOutlierDistance(km) {
     return km >= 10 ? `${Math.round(km).toLocaleString()} km` : `${km.toFixed(1)} km`;
 }
 
+// --- Implausible-speed detection (2026-09-14) ---
+//
+// The signal detectGeoOutliers() above deliberately CANNOT provide. Distance
+// from a cluster is ambiguous - a far point is equally consistent with a real
+// trip and with a GPS fault. Speed is not ambiguous in the same way: if two
+// consecutive timestamped positions imply a velocity nothing civilian can
+// achieve, at least one of them is wrong, and that IS a defensible finding
+// rather than a note about shape. This only ever runs where the points carry
+// real timestamps (Takeout location history, companion-app data); a KML-sourced
+// set has none, so it correctly produces nothing there.
+//
+// The threshold sits deliberately above ordinary air travel rather than at it.
+// A phone on a commercial flight legitimately moves at ~900 km/h, and flagging
+// that would be exactly the kind of false positive that teaches an examiner to
+// ignore the warning. GEO_SPEED_IMPLAUSIBLE_KMH is set beyond any civil
+// aviation cruise speed, so a hit means "no ordinary travel explains this",
+// not "this was fast".
+//
+// Two guards stop GPS jitter from manufacturing huge speeds out of noise:
+//   - A minimum segment distance. Two fixes a few metres apart from normal
+//     receiver scatter, timestamped a second apart, arithmetically imply
+//     hundreds of km/h; below this distance the movement isn't real enough to
+//     reason about, so it's skipped entirely.
+//   - A minimum time gap, which also keeps the division well-conditioned when
+//     two records share a timestamp or sit a fraction of a second apart.
+const GEO_SPEED_IMPLAUSIBLE_KMH = 1200;
+const GEO_SPEED_MIN_SEGMENT_KM = 10;
+const GEO_SPEED_MIN_SECONDS = 5;
+
+// Returns null when nothing qualifies, else {segments: [...], maxKmh} where each
+// segment is {fromIndex, toIndex, km, seconds, kmh} - indexes point back into
+// the ORIGINAL points array, not the time-sorted working copy, so a caller can
+// tie a finding to the same point the map and table show.
+function detectImplausibleSpeeds(points) {
+    if (!points || points.length < 2) return null;
+    const timed = points
+        .map((p, i) => ({ p, i }))
+        .filter(e => e.p.timestamp !== null && e.p.timestamp !== undefined && isFinite(e.p.timestamp))
+        .sort((a, b) => a.p.timestamp - b.p.timestamp);
+    if (timed.length < 2) return null;
+
+    const segments = [];
+    for (let k = 1; k < timed.length; k++) {
+        const prev = timed[k - 1], cur = timed[k];
+        const seconds = cur.p.timestamp - prev.p.timestamp;
+        if (seconds < GEO_SPEED_MIN_SECONDS) continue;
+        const km = _haversineKm(prev.p.lat, prev.p.lon, cur.p.lat, cur.p.lon);
+        if (km < GEO_SPEED_MIN_SEGMENT_KM) continue;
+        const kmh = km / (seconds / 3600);
+        if (kmh > GEO_SPEED_IMPLAUSIBLE_KMH) {
+            segments.push({ fromIndex: prev.i, toIndex: cur.i, km, seconds, kmh });
+        }
+    }
+    if (segments.length === 0) return null;
+    return { segments, maxKmh: Math.max(...segments.map(s => s.kmh)) };
+}
+
+function _formatSpeedDuration(seconds) {
+    if (seconds < 90) return `${Math.round(seconds)} seconds`;
+    if (seconds < 5400) return `${Math.round(seconds / 60)} minutes`;
+    return `${(seconds / 3600).toFixed(1)} hours`;
+}
+
+// Rendered as its own block, separate from the distance notice, and worded
+// more strongly on purpose - see detectImplausibleSpeeds()'s note above for why
+// this signal supports a conclusion the distance one does not.
+function buildGeoSpeedNotice(points, speeds) {
+    const wrap = document.createElement('div');
+    wrap.className = 'alert alert-danger py-2 px-2 mb-2 small';
+
+    const n = speeds.segments.length;
+    const head = document.createElement('div');
+    head.innerHTML = '<i class="bi bi-speedometer2 me-1"></i>';
+    const headText = document.createElement('span');
+    headText.textContent =
+        `${n.toLocaleString()} movement${n === 1 ? '' : 's'} between consecutive timestamped points `
+        + `imply${n === 1 ? '' : ''} a speed no ordinary travel accounts for `
+        + `(over ${GEO_SPEED_IMPLAUSIBLE_KMH.toLocaleString()} km/h; fastest `
+        + `${Math.round(speeds.maxKmh).toLocaleString()} km/h). Unlike distance alone, this cannot be `
+        + `explained by a genuine trip - at least one position in each pair below is wrong, or its `
+        + `timestamp is. Common causes are a GPS fix taken before satellite lock, a cached or default `
+        + `location, or a device clock that was reset. Nothing has been removed or altered.`;
+    head.appendChild(headText);
+    wrap.appendChild(head);
+
+    const list = document.createElement('div');
+    list.className = 'font-monospace mt-1';
+    speeds.segments.slice(0, 5).forEach((s) => {
+        const a = points[s.fromIndex], b = points[s.toIndex];
+        const line = document.createElement('div');
+        line.textContent = `${a.lat.toFixed(5)}, ${a.lon.toFixed(5)} -> ${b.lat.toFixed(5)}, ${b.lon.toFixed(5)}  `
+            + `(${_formatOutlierDistance(s.km)} in ${_formatSpeedDuration(s.seconds)} = `
+            + `${Math.round(s.kmh).toLocaleString()} km/h)`;
+        list.appendChild(line);
+    });
+    if (n > 5) {
+        const more = document.createElement('div');
+        more.textContent = `... and ${n - 5} more`;
+        list.appendChild(more);
+    }
+    wrap.appendChild(list);
+    return wrap;
+}
+
 // Builds the disclosure banner + opt-in "exclude from map view" toggle. The
 // toggle only ever re-fits the map's bounds - it never removes a marker, a
 // table row, or anything from the underlying data.
@@ -5207,12 +5311,16 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
 
     const isDenseTrack = placemarks.length > POINT_MAP_DENSE_THRESHOLD;
     const outliers = detectGeoOutliers(placemarks);
+    const speeds = detectImplausibleSpeeds(placemarks);
 
     if (typeof L !== 'undefined') {
         const mapDiv = document.createElement('div');
         mapDiv.style.height = mapHeightCss || '280px';
         mapDiv.style.width = '100%';
         mapDiv.className = 'mb-2 rounded';
+        // Speed notice first - it supports a real conclusion, where the distance
+        // notice below it is explicitly only a note about shape.
+        if (speeds) container.appendChild(buildGeoSpeedNotice(placemarks, speeds));
         if (outliers) {
             // Banner goes ABOVE the map, so it can't be missed by someone who
             // screenshots just the map for a report.
@@ -12368,6 +12476,9 @@ function _recomputeAndRenderGeoActivity() {
     const outlierNoticeEl = document.getElementById('patternOfLifeGeoOutlierNotice');
     if (outlierNoticeEl) {
         outlierNoticeEl.innerHTML = '';
+        if (geoRender && geoRender.speeds) {
+            outlierNoticeEl.appendChild(buildGeoSpeedNotice(geoRender.points, geoRender.speeds));
+        }
         if (geoRender && geoRender.outliers) {
             outlierNoticeEl.appendChild(buildGeoOutlierNotice(
                 geoRender.points, geoRender.outliers, (excluded) => {
@@ -12576,6 +12687,7 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
         // only ever left out of the optional bounds list the notice's toggle
         // fits to.
         const outliers = detectGeoOutliers(points);
+        const speeds = detectImplausibleSpeeds(points);
         points.forEach((p, i) => {
             const marker = L.circleMarker([p.lat, p.lon], { radius: 4, color: '#38bdf8', weight: 1, fillOpacity: 0.6 }).addTo(map);
             const parts = [`<b>${escapeHtmlForPopup(p.name || '(unnamed)')}</b>`, escapeHtmlForPopup(p.source)];
@@ -12620,7 +12732,7 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
         // Handed back so the caller can render the disclosure banner into its
         // own dedicated element ABOVE this map - this function's own container
         // IS the Leaflet map div, so the notice can't be appended in here.
-        return { outliers, points, allBounds: bounds, boundsExcludingOutliers };
+        return { outliers, speeds, points, allBounds: bounds, boundsExcludingOutliers };
     } catch (err) {
         // A failure PART-WAY through (a marker call throwing after L.map()
         // itself already succeeded) still leaves the container's own
