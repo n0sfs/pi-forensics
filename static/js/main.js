@@ -4827,8 +4827,10 @@ function fitBoundsWithMinZoom(map, bounds, options) {
 // just another instance of the same one, and the raw coordinate data stays
 // accessible either way.
 function _createGeoTileLayer() {
-    // If install.py's optional offline OSM tile cache step was run and found tiles
-    // (window.OFFLINE_TILES set from app.py's manifest read), prefer live OpenStreetMap tiles when
+    // If install.py's optional offline tile cache step was run and found tiles
+    // (window.OFFLINE_TILES set from app.py's manifest read - the cache itself is USGS National
+    // Map imagery, public domain, since OSM's own policy forbids pre-downloading its tiles),
+    // prefer live OpenStreetMap tiles when
     // reachable but silently fall back to the local cache per-tile on a load error - this is what
     // makes the map still show real imagery on a station that's actually offline, while still
     // showing fresher/wider live tiles whenever a connection IS available (e.g. a laptop reviewing
@@ -4884,7 +4886,7 @@ function _createGeoTileLayer() {
             // OSM's "Access blocked" placeholder (see the long note above).
             tile.referrerPolicy = referrerPolicy;
             const localUrl = coords.z <= offlineMaxZoom
-                ? L.Util.template('/static/vendor/osm_tiles/{z}/{x}/{y}.png', coords)
+                ? L.Util.template('/static/vendor/offline_tiles/{z}/{x}/{y}.jpg', coords)
                 : null;
             tile.onload = function () { done(null, tile); };
             tile.onerror = function () {

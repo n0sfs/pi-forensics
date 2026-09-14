@@ -3334,7 +3334,7 @@ def _fetch_osm_tile(z, x, y):
     # Flask's default static_folder is <app root>/static - computed directly
     # via INSTALL_DIR rather than importing the app object itself (which
     # would be a circular import: app.py -> routes.reporting -> app.py).
-    local_path = os.path.join(INSTALL_DIR, 'static', 'vendor', 'osm_tiles', str(z), str(x), f"{y}.png")
+    local_path = os.path.join(INSTALL_DIR, 'static', 'vendor', 'offline_tiles', str(z), str(x), f"{y}.jpg")
     if os.path.exists(local_path):
         try:
             with open(local_path, 'rb') as f:
@@ -4585,7 +4585,7 @@ def _html_geolocation_block(kml_data, title="Geolocation / GPS Evidence", anchor
     """HTML counterpart to _draw_pdf_geolocation_block - a real interactive
     Leaflet map (live OSM tiles only; no offline-cache fallback attempt,
     since this exported file may be reopened completely disconnected from
-    this app's own server, where a /static/vendor/osm_tiles/... URL
+    this app's own server, where a /static/vendor/offline_tiles/... URL
     wouldn't resolve anyway) per KML file, followed by the same
     Name/Latitude/Longitude/Description placemark table PDF renders.
     Placemark name/description are untrusted KML content (an examiner can
