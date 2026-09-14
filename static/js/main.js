@@ -4819,6 +4819,134 @@ function fitBoundsWithMinZoom(map, bounds, options) {
     }
 }
 
+// --- Likely-GPS-outlier detection (2026-09-14) ---
+//
+// The companion fix to GEO_MAP_MIN_ZOOM_AFTER_FIT above. That one stops a wild
+// point from wrecking the map's zoom; this one tells the examiner the point is
+// there and why it looks wrong, which the zoom clamp alone never did - the real
+// DJI drone track in 2026-CASE-EXAMPLE draws a line from North Carolina
+// to South America, and nothing on screen said "that far end is almost
+// certainly a GPS lock-loss glitch, not travel."
+//
+// Deliberately conservative, because a false positive here is much worse than a
+// false negative: wrongly implying real evidence of travel is bogus is a
+// materially worse error than leaving an examiner to spot an obvious outlier
+// themselves. Three guards enforce that:
+//   - An absolute floor (GEO_OUTLIER_MIN_DISTANCE_KM). Nothing closer than this
+//     is ever flagged no matter how tight the rest of the cluster is, so a
+//     device that never left one building doesn't get its own normal spread
+//     flagged as anomalous.
+//   - A multiple of the data's OWN typical spread, measured with medians rather
+//     than means throughout (a mean is dragged by the very outliers being looked
+//     for - the median center and median distance are not).
+//   - A share cap (GEO_OUTLIER_MAX_SHARE). If the rule wants to flag more than
+//     this fraction of all points, the data is probably genuinely multi-modal -
+//     someone really did travel between two places - so nothing is flagged at
+//     all rather than labeling half a real itinerary an error.
+// NOTHING is ever removed from the evidence by this: it only produces a
+// disclosed list plus an opt-in map-fit exclusion. The table, the exports, and
+// the underlying KML/records are untouched.
+const GEO_OUTLIER_MIN_DISTANCE_KM = 100;
+const GEO_OUTLIER_SPREAD_MULTIPLIER = 20;
+const GEO_OUTLIER_MAX_SHARE = 0.10;
+const GEO_OUTLIER_MIN_POINTS = 5;  // below this there's no meaningful "typical spread" to compare against
+
+function _median(sortedNumbers) {
+    const n = sortedNumbers.length;
+    if (n === 0) return 0;
+    const mid = Math.floor(n / 2);
+    return n % 2 ? sortedNumbers[mid] : (sortedNumbers[mid - 1] + sortedNumbers[mid]) / 2;
+}
+
+// Great-circle distance in km. Plain haversine - accurate to well under a
+// percent at any distance this is used for, and the comparison here is against
+// a threshold of 100km+, so ellipsoidal precision would be meaningless.
+function _haversineKm(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const toRad = (d) => d * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2
+        + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+// Returns null when there's nothing to flag (the common case), else
+// {indexes: Set<int>, thresholdKm, medianSpreadKm, center: {lat, lon},
+//  distancesKm: number[]} - distancesKm is index-aligned with `points` so a
+// caller can state how far a specific flagged point actually is.
+function detectGeoOutliers(points) {
+    if (!points || points.length < GEO_OUTLIER_MIN_POINTS) return null;
+    const lats = points.map(p => p.lat).sort((a, b) => a - b);
+    const lons = points.map(p => p.lon).sort((a, b) => a - b);
+    const center = { lat: _median(lats), lon: _median(lons) };
+
+    const distancesKm = points.map(p => _haversineKm(center.lat, center.lon, p.lat, p.lon));
+    const medianSpreadKm = _median([...distancesKm].sort((a, b) => a - b));
+    const thresholdKm = Math.max(GEO_OUTLIER_MIN_DISTANCE_KM,
+                                 medianSpreadKm * GEO_OUTLIER_SPREAD_MULTIPLIER);
+
+    const indexes = new Set();
+    distancesKm.forEach((d, i) => { if (d > thresholdKm) indexes.add(i); });
+    if (indexes.size === 0) return null;
+    if (indexes.size > points.length * GEO_OUTLIER_MAX_SHARE) return null;  // multi-modal, not anomalous - see the note above
+    return { indexes, thresholdKm, medianSpreadKm, center, distancesKm };
+}
+
+function _formatOutlierDistance(km) {
+    return km >= 10 ? `${Math.round(km).toLocaleString()} km` : `${km.toFixed(1)} km`;
+}
+
+// Builds the disclosure banner + opt-in "exclude from map view" toggle. The
+// toggle only ever re-fits the map's bounds - it never removes a marker, a
+// table row, or anything from the underlying data.
+function buildGeoOutlierNotice(points, outliers, onToggle) {
+    const wrap = document.createElement('div');
+    wrap.className = 'alert alert-warning py-2 px-2 mb-2 small';
+
+    const n = outliers.indexes.size;
+    const headline = document.createElement('div');
+    headline.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>';
+    const headlineText = document.createElement('span');
+    headlineText.textContent =
+        `${n} point${n === 1 ? '' : 's'} sit${n === 1 ? 's' : ''} far outside the main cluster `
+        + `(more than ${_formatOutlierDistance(outliers.thresholdKm)} from the median location, `
+        + `where the typical spread is ${_formatOutlierDistance(outliers.medianSpreadKm)}). `
+        + `That pattern is commonly a GPS lock-loss glitch rather than real travel - but it is only `
+        + `a flag, not a finding. Nothing has been removed: every point is still plotted, listed, and exported.`;
+    headline.appendChild(headlineText);
+    wrap.appendChild(headline);
+
+    const list = document.createElement('div');
+    list.className = 'font-monospace mt-1';
+    [...outliers.indexes].slice(0, 5).forEach((i) => {
+        const line = document.createElement('div');
+        line.textContent = `${points[i].lat.toFixed(6)}, ${points[i].lon.toFixed(6)} `
+            + `(${_formatOutlierDistance(outliers.distancesKm[i])} away)`;
+        list.appendChild(line);
+    });
+    if (outliers.indexes.size > 5) {
+        const more = document.createElement('div');
+        more.textContent = `... and ${outliers.indexes.size - 5} more`;
+        list.appendChild(more);
+    }
+    wrap.appendChild(list);
+
+    const label = document.createElement('label');
+    label.className = 'd-inline-flex align-items-center gap-1 mt-2 mb-0';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'form-check-input mt-0';
+    cb.onchange = () => onToggle(cb.checked);
+    const cbText = document.createElement('span');
+    cbText.textContent = 'Exclude these from the map view (data itself is unchanged)';
+    label.appendChild(cb);
+    label.appendChild(cbText);
+    wrap.appendChild(label);
+
+    return wrap;
+}
+
 // Renders a Leaflet map (one marker per placemark, fit to bounds) into
 // `container`, plus a plain placemark table underneath that's always shown
 // regardless of whether the map itself could render - this app already
@@ -5061,17 +5189,36 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
     }
 
     const isDenseTrack = placemarks.length > POINT_MAP_DENSE_THRESHOLD;
+    const outliers = detectGeoOutliers(placemarks);
 
     if (typeof L !== 'undefined') {
         const mapDiv = document.createElement('div');
         mapDiv.style.height = mapHeightCss || '280px';
         mapDiv.style.width = '100%';
         mapDiv.className = 'mb-2 rounded';
+        if (outliers) {
+            // Banner goes ABOVE the map, so it can't be missed by someone who
+            // screenshots just the map for a report.
+            container.appendChild(buildGeoOutlierNotice(placemarks, outliers, (excluded) => {
+                const useBounds = excluded ? boundsExcludingOutliers : allBounds;
+                if (!useBounds.length) return;
+                if (useBounds.length === 1) mapRef.setView(useBounds[0], 14);
+                else fitBoundsWithMinZoom(mapRef, useBounds, { padding: [20, 20] });
+            }));
+        }
         container.appendChild(mapDiv);
+        let mapRef = null;
+        const allBounds = [];
+        const boundsExcludingOutliers = [];
         try {
             const map = L.map(mapDiv);
+            mapRef = map;
             _addGeoBaseLayers(map);
-            const bounds = [];
+            const bounds = allBounds;
+            // Every point is plotted either way - an outlier is only ever left
+            // out of the OPTIONAL bounds list the "exclude from map view"
+            // toggle fits to, never out of the map itself.
+            const isOutlier = (i) => !!outliers && outliers.indexes.has(i);
             if (isDenseTrack) {
                 const latlngs = placemarks.map(p => [p.lat, p.lon]);
                 L.polyline(latlngs, { color: '#38bdf8', weight: 3 }).addTo(map);
@@ -5081,11 +5228,13 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
                 L.marker([end.lat, end.lon]).addTo(map)
                     .bindPopup(`<b>End</b><br>${escapeHtmlForPopup(end.name || '(unnamed)')}<br>${escapeHtmlForPopup(end.description)}`);
                 bounds.push(...latlngs);
+                latlngs.forEach((ll, i) => { if (!isOutlier(i)) boundsExcludingOutliers.push(ll); });
             } else {
-                placemarks.forEach(p => {
+                placemarks.forEach((p, i) => {
                     const marker = L.marker([p.lat, p.lon]).addTo(map);
                     marker.bindPopup(`<b>${escapeHtmlForPopup(p.name || '(unnamed)')}</b><br>${escapeHtmlForPopup(p.description)}`);
                     bounds.push([p.lat, p.lon]);
+                    if (!isOutlier(i)) boundsExcludingOutliers.push([p.lat, p.lon]);
                 });
             }
             if (bounds.length === 1) {
@@ -5134,7 +5283,9 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
     const table = document.createElement('table');
     table.className = 'table table-sm table-dark table-striped mb-0';
     const tbody = document.createElement('tbody');
-    rowsToRender.forEach(p => {
+    // rowsToRender is always a leading slice of placemarks, so its own index
+    // is the original index the outlier set is keyed by.
+    rowsToRender.forEach((p, i) => {
         const row = document.createElement('tr');
         const nameCell = document.createElement('td');
         nameCell.className = 'text-info fw-bold text-nowrap';
@@ -5142,6 +5293,14 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
         const coordCell = document.createElement('td');
         coordCell.className = 'font-monospace text-nowrap';
         coordCell.textContent = `${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}`;
+        if (outliers && outliers.indexes.has(i)) {
+            const badge = document.createElement('span');
+            badge.className = 'badge bg-warning text-dark ms-2';
+            badge.textContent = 'far outlier';
+            badge.title = `${_formatOutlierDistance(outliers.distancesKm[i])} from the median of all `
+                + `points for this source - flagged as a likely GPS error, not removed or altered.`;
+            coordCell.appendChild(badge);
+        }
         const descCell = document.createElement('td');
         descCell.className = 'text-subtle small';
         descCell.textContent = p.description; // untrusted KML content - text node only
@@ -12187,7 +12346,20 @@ function _recomputeAndRenderGeoActivity() {
 
     const homeWorkByKey = classifyHomeWorkLocations(points, frequentLocations);
     const showPathCb = document.getElementById('patternOfLifeGeoShowPath');
-    renderGeoActivityMap(mapEl, points, frequentLocations, homeWorkByKey, showPathCb && showPathCb.checked);
+    const geoRender = renderGeoActivityMap(mapEl, points, frequentLocations, homeWorkByKey, showPathCb && showPathCb.checked);
+    const outlierNoticeEl = document.getElementById('patternOfLifeGeoOutlierNotice');
+    if (outlierNoticeEl) {
+        outlierNoticeEl.innerHTML = '';
+        if (geoRender && geoRender.outliers) {
+            outlierNoticeEl.appendChild(buildGeoOutlierNotice(
+                geoRender.points, geoRender.outliers, (excluded) => {
+                    const useBounds = excluded ? geoRender.boundsExcludingOutliers : geoRender.allBounds;
+                    if (!useBounds.length || !patternOfLifeGeoMapInstance) return;
+                    if (useBounds.length === 1) patternOfLifeGeoMapInstance.setView(useBounds[0], 14);
+                    else fitBoundsWithMinZoom(patternOfLifeGeoMapInstance, useBounds, { padding: [20, 20] });
+                }));
+        }
+    }
     // Location<->Contact cross-linking (2026-09-08): if contact data
     // already finished loading BEFORE this function's own frequent-
     // locations table is about to be built below, that table already
@@ -12348,6 +12520,7 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
         patternOfLifeGeoMapInstance = map;
         _addGeoBaseLayers(map);
         const bounds = [];
+        const boundsExcludingOutliers = [];
         if (showPath) {
             // A rough, disclosed "time-ordered path," not a real route -
             // this app only knows where the device was at each recorded
@@ -12380,12 +12553,22 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
                     .bindPopup(`<b>Path end</b><br>${_formatContactCorrelationTimestamp(last.timestamp)}`).addTo(map);
             }
         }
-        points.forEach(p => {
+        // Same disclosed-outlier treatment the Geolocation tab's own map gets
+        // (see detectGeoOutliers()) - every point is still drawn; an outlier is
+        // only ever left out of the optional bounds list the notice's toggle
+        // fits to.
+        const outliers = detectGeoOutliers(points);
+        points.forEach((p, i) => {
             const marker = L.circleMarker([p.lat, p.lon], { radius: 4, color: '#38bdf8', weight: 1, fillOpacity: 0.6 }).addTo(map);
             const parts = [`<b>${escapeHtmlForPopup(p.name || '(unnamed)')}</b>`, escapeHtmlForPopup(p.source)];
             if (p.timestamp) parts.push(_formatContactCorrelationTimestamp(p.timestamp));
+            if (outliers && outliers.indexes.has(i)) {
+                parts.push(`<span class="text-warning">Flagged as a likely GPS outlier - `
+                    + `${_formatOutlierDistance(outliers.distancesKm[i])} from the median of all points.</span>`);
+            }
             marker.bindPopup(parts.join('<br>'));
             bounds.push([p.lat, p.lon]);
+            if (!(outliers && outliers.indexes.has(i))) boundsExcludingOutliers.push([p.lat, p.lon]);
         });
         (frequentLocations || []).forEach(loc => {
             const homeWork = (homeWorkByKey || {})[_geoLocationKey(loc.lat, loc.lon)];
@@ -12415,6 +12598,10 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
         // a map created before its container has settled its real layout
         // size can compute the wrong dimensions and render blank/broken.
         requestAnimationFrame(() => setTimeout(() => map.invalidateSize(), 50));
+        // Handed back so the caller can render the disclosure banner into its
+        // own dedicated element ABOVE this map - this function's own container
+        // IS the Leaflet map div, so the notice can't be appended in here.
+        return { outliers, points, allBounds: bounds, boundsExcludingOutliers };
     } catch (err) {
         // A failure PART-WAY through (a marker call throwing after L.map()
         // itself already succeeded) still leaves the container's own
