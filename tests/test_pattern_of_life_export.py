@@ -200,9 +200,10 @@ def test_frequent_locations_uses_the_passed_attachment_files_not_a_stale_disk_re
     # identical assertions for the takeout-sourced equivalent).
     assert "37.77500" in html_out
     assert "-122.41900" in html_out
-    # Two samples 100s apart are one visit; the cell now says so and keeps the
-    # raw recording count alongside rather than passing it off as visits.
-    assert "1 visit" in html_out and "2 recordings" in html_out
+    # This KML carries no <TimeStamp>, so visits genuinely cannot be derived -
+    # the cell says how many positions were recorded and that they are undated,
+    # rather than letting a recording count be read as a visit count.
+    assert "2 recording(s), undated" in html_out
 
     buf = io.BytesIO()
     c = canvas.Canvas(buf)
