@@ -4922,6 +4922,20 @@ function renderKmlViewer(container, kmlText, mapHeightCss) {
 // KML-text-only renderKmlViewer(). Takes the same {name, description, lat,
 // lon} shape parseKmlPlacemarks() already produces - renderKmlViewer()
 // itself is now a thin wrapper: parse KML text, then call this.
+// Above this many points, one L.marker()+popup per point (the plain-KML-
+// import case this function was written for, usually a few dozen points at
+// most) makes both the map and the table below it genuinely unusable -
+// found live 2026-09-13 against a real dense GPS track (a DJI drone flight
+// log surfaced via ALEAPP, 2,826 points recorded roughly every second):
+// 2,826 individual markers/popups/table rows produced a ~2.4MB DOM that
+// visibly froze the tab's own renderer (a direct CDP eval call timed out at
+// 45s). A track this dense is also better read as a connected path than as
+// thousands of overlapping pins anyway - drawn as an L.polyline() instead,
+// with just a start/end marker for context, matching how every mapping tool
+// renders a GPS trace. Sparse KML imports (Takeout, geotagged photos) stay
+// completely unaffected - they're always well under this threshold.
+const POINT_MAP_DENSE_THRESHOLD = 150;
+
 function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
     container.innerHTML = '';
 
@@ -4933,6 +4947,8 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
         return;
     }
 
+    const isDenseTrack = placemarks.length > POINT_MAP_DENSE_THRESHOLD;
+
     if (typeof L !== 'undefined') {
         const mapDiv = document.createElement('div');
         mapDiv.style.height = mapHeightCss || '280px';
@@ -4943,11 +4959,22 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
             const map = L.map(mapDiv);
             _createGeoTileLayer().addTo(map);
             const bounds = [];
-            placemarks.forEach(p => {
-                const marker = L.marker([p.lat, p.lon]).addTo(map);
-                marker.bindPopup(`<b>${escapeHtmlForPopup(p.name || '(unnamed)')}</b><br>${escapeHtmlForPopup(p.description)}`);
-                bounds.push([p.lat, p.lon]);
-            });
+            if (isDenseTrack) {
+                const latlngs = placemarks.map(p => [p.lat, p.lon]);
+                L.polyline(latlngs, { color: '#38bdf8', weight: 3 }).addTo(map);
+                const start = placemarks[0], end = placemarks[placemarks.length - 1];
+                L.marker([start.lat, start.lon]).addTo(map)
+                    .bindPopup(`<b>Start</b><br>${escapeHtmlForPopup(start.name || '(unnamed)')}<br>${escapeHtmlForPopup(start.description)}`);
+                L.marker([end.lat, end.lon]).addTo(map)
+                    .bindPopup(`<b>End</b><br>${escapeHtmlForPopup(end.name || '(unnamed)')}<br>${escapeHtmlForPopup(end.description)}`);
+                bounds.push(...latlngs);
+            } else {
+                placemarks.forEach(p => {
+                    const marker = L.marker([p.lat, p.lon]).addTo(map);
+                    marker.bindPopup(`<b>${escapeHtmlForPopup(p.name || '(unnamed)')}</b><br>${escapeHtmlForPopup(p.description)}`);
+                    bounds.push([p.lat, p.lon]);
+                });
+            }
             if (bounds.length === 1) {
                 map.setView(bounds[0], 14);
             } else {
@@ -4973,10 +5000,28 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
         container.appendChild(noLeaflet);
     }
 
+    // Same dense-track problem as the map above applies here too - a full
+    // row per point turned 2,826 real GPS-track points into a table that
+    // itself contributed most of that ~2.4MB DOM. Capped with a clear
+    // disclosure (this project's established pattern for a large real
+    // result - see e.g. SRUM_MAX_RECORDS_PER_TABLE/ATTACHMENT_DISCOVERY_
+    // MAX_FILES on the backend) rather than either silently truncating or
+    // rendering every row regardless of count.
+    const TABLE_ROW_CAP = 200;
+    const rowsToRender = isDenseTrack ? placemarks.slice(0, TABLE_ROW_CAP) : placemarks;
+    if (isDenseTrack) {
+        const note = document.createElement('div');
+        note.className = 'text-warning small mb-1';
+        note.textContent = `Showing the first ${TABLE_ROW_CAP} of ${placemarks.length} points ` +
+            `(rendered above as a path, not individual pins, since this many points is a dense track) ` +
+            `- the source KML file on disk has the complete list.`;
+        container.appendChild(note);
+    }
+
     const table = document.createElement('table');
     table.className = 'table table-sm table-dark table-striped mb-0';
     const tbody = document.createElement('tbody');
-    placemarks.forEach(p => {
+    rowsToRender.forEach(p => {
         const row = document.createElement('tr');
         const nameCell = document.createElement('td');
         nameCell.className = 'text-info fw-bold text-nowrap';
