@@ -4987,7 +4987,7 @@ function buildGeoSpeedNotice(points, speeds) {
     const headText = document.createElement('span');
     headText.textContent =
         `${n.toLocaleString()} movement${n === 1 ? '' : 's'} between consecutive timestamped points `
-        + `imply${n === 1 ? '' : ''} a speed no ordinary travel accounts for `
+        + `${n === 1 ? 'implies' : 'imply'} a speed no ordinary travel accounts for `
         + `(over ${GEO_SPEED_IMPLAUSIBLE_KMH.toLocaleString()} km/h; fastest `
         + `${Math.round(speeds.maxKmh).toLocaleString()} km/h). Unlike distance alone, this cannot be `
         + `explained by a genuine trip - at least one position in each pair below is wrong, or its `
