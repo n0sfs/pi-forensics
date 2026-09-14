@@ -92,3 +92,48 @@ def test_geo_points_from_leapp_records_feeds_build_geo_kml_unchanged():
 
 def test_build_geo_kml_returns_none_for_zero_points():
     assert geo._build_geo_kml([], "Empty") is None
+
+
+# --- 2026-09-14: real KML <TimeStamp><when> elements. Until now a point's time
+# was written ONLY into the free-text <description>, so every reader got it back
+# as an undated point and the Geolocation view reported "no timestamp - KML
+# placemarks never carry one". They can, and the round trip below is the whole
+# point: a time written here has to survive being read back. ---
+def _point(lat, lon, timestamp=None, name="p", directory="d", alt=None):
+    return {"name": name, "directory": directory, "lat": lat, "lon": lon,
+            "alt": alt, "timestamp": timestamp}
+
+
+def test_build_geo_kml_writes_a_real_timestamp_element():
+    kml = geo._build_geo_kml([_point(37.7749, -122.4194, timestamp=1771690591.0)], "T")
+    assert "<TimeStamp><when>2026-02-21T16:16:31Z</when></TimeStamp>" in kml
+
+
+def test_build_geo_kml_omits_the_element_entirely_for_an_undated_point():
+    # A missing time must be absent, never defaulted to an epoch or "now".
+    kml = geo._build_geo_kml([_point(37.7749, -122.4194, timestamp=None)], "T")
+    assert "<TimeStamp>" not in kml
+
+
+def test_kml_timestamp_when_rejects_unusable_values_rather_than_guessing():
+    assert geo._kml_timestamp_when(None) is None
+    assert geo._kml_timestamp_when("") is None
+    assert geo._kml_timestamp_when(float("nan")) is None
+
+
+def test_kml_timestamp_when_passes_through_an_already_formatted_string():
+    assert geo._kml_timestamp_when("2026-02-21T16:16:31Z") == "2026-02-21T16:16:31Z"
+
+
+def test_leapp_record_timestamp_reaches_the_written_kml_end_to_end():
+    # The chain this change exists to close: an ALEAPP row's own timestamp ->
+    # geo point -> a real KML element a reader can recover.
+    recs = [_leapp_record("leapp_module_finding", "DJI point",
+                          {"Timestamp": "2026-02-21 16:16:31+00:00",
+                           "Latitude": "37.7749000", "Longitude": "-122.4194000"},
+                          timestamp=1771690591.0,
+                          module="DJI Drone - Flight GPS Track (MCDatFlightRecords)")]
+    points = geo._geo_points_from_leapp_records(recs)
+    assert points and points[0]["timestamp"] == 1771690591.0
+    kml = geo._build_geo_kml(points, "DJI")
+    assert "<when>2026-02-21T16:16:31Z</when>" in kml

@@ -9,6 +9,7 @@ extracted out of an unmounted image).
 Part of the app.py -> core/ + routes/ split. See the dated CLAUDE.md
 entry for this refactor.
 """
+import datetime
 import html
 import re
 
@@ -105,6 +106,25 @@ def _geo_points_from_leapp_records(records):
     return points
 
 
+def _kml_timestamp_when(value):
+    """Formats a point's timestamp as KML's own <when> value (ISO 8601 UTC).
+    Accepts the epoch float this app's parsers produce, or an already-formatted
+    string passed straight through from a source that had one. Returns None for
+    anything absent or unparseable - a missing time is written as no element at
+    all rather than a guessed one, matching how every other timestamp in this
+    codebase is treated."""
+    if value is None or value == '':
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.datetime.fromtimestamp(
+                float(value), datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(value).strip()
+    return text or None
+
+
 def _build_geo_kml(points, doc_title):
     """Builds a KML document from a list of {name, directory, lat, lon, alt,
     timestamp} points - built in Python rather than exiftool's own -kml/
@@ -118,12 +138,27 @@ def _build_geo_kml(points, doc_title):
     for p in points:
         alt_str = f"{p['alt']:.1f} m" if p['alt'] is not None else "Unknown"
         desc = f"File: {p['name']}\nPath: {p['directory']}\nCaptured: {p['timestamp'] or 'Unknown'}\nAltitude: {alt_str}"
+        # A real KML <TimeStamp> element, not just the free-text description
+        # above (2026-09-14). Until now a point's own time was written ONLY
+        # into that human-readable blob, so every reader - this app's own KML
+        # parsers included - got it back as an untimestamped point, and the
+        # Geolocation view honestly but needlessly reported "no timestamp -
+        # KML placemarks never carry one". They can: <TimeStamp><when> is
+        # standard KML, and writing it also gives Google Earth its time slider
+        # on an exported file for free. Emitted only when a real timestamp
+        # exists - never a fabricated or defaulted one - so a genuinely
+        # undated point still round-trips as undated.
+        time_el = ''
+        when = _kml_timestamp_when(p.get('timestamp'))
+        if when:
+            time_el = f"<TimeStamp><when>{when}</when></TimeStamp>"
         # KML <coordinates> order is lon,lat,alt - the reverse of how
         # latitude/longitude are normally said out loud, easy to get backwards.
         placemarks.append(
             "<Placemark>"
             f"<name>{_kml_escape(p['name'])}</name>"
             f"<description>{_kml_escape(desc)}</description>"
+            f"{time_el}"
             f"<Point><coordinates>{p['lon']:.7f},{p['lat']:.7f},{p['alt'] or 0}</coordinates></Point>"
             "</Placemark>"
         )
