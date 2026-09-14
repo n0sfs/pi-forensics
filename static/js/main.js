@@ -4902,6 +4902,58 @@ function _createGeoTileLayer() {
     return new OfflineFallbackTileLayer(onlineUrl, { attribution, maxZoom: 19, referrerPolicy });
 }
 
+// USGS National Map basemaps (2026-09-14) - offered alongside OpenStreetMap
+// rather than replacing it, via the layer switcher below.
+//
+// Why these specifically, for a forensics tool: they're PUBLIC DOMAIN (a US
+// government work - no ODbL attribution obligation to carry into an exported
+// report the way OSM imagery brings), they're government-run rather than
+// volunteer-funded so there's no tile-usage-policy tightrope to walk, and
+// USGSImageryOnly gives real aerial imagery, which OSM has none of at all -
+// genuinely useful when the question is "what is actually at the coordinates
+// this device reported," not just "what road is it near."
+//
+// Two real constraints, both confirmed directly against the live services from
+// the station rather than assumed:
+//   - Tile path order is /tile/{z}/{y}/{x} - row before column, ArcGIS's own
+//     convention, NOT the {z}/{x}/{y} every OSM-style XYZ service uses. Getting
+//     this backwards silently returns tiles for the wrong place rather than an
+//     error, so it's worth being explicit about.
+//   - They stop at zoom 16: z16 returns real imagery, z17+ returns a hard 404
+//     (verified at 14/15/16/17/18/19). maxNativeZoom pins tile REQUESTS at 16
+//     while maxZoom 19 still lets the examiner zoom in - Leaflet upscales the
+//     z16 tile instead of showing blank squares or hammering the service with
+//     404s, which is the correct behavior for a basemap that simply doesn't
+//     have deeper detail.
+// Coverage is the US and its territories only; labeled as such in the switcher
+// so a blank map outside that reads as "this layer doesn't cover here," not as
+// a broken map.
+const USGS_BASEMAP_ATTRIBUTION = 'Imagery: <a href="https://www.usgs.gov/programs/national-geospatial-program/national-map">USGS The National Map</a> (public domain)';
+const USGS_BASEMAP_LAYERS = [
+    { key: 'USGSTopo', label: 'USGS Topo (US only)' },
+    { key: 'USGSImageryOnly', label: 'USGS Aerial Imagery (US only)' },
+    { key: 'USGSImageryTopo', label: 'USGS Imagery + Topo (US only)' },
+];
+
+function _addGeoBaseLayers(map) {
+    const osmLayer = _createGeoTileLayer();
+    osmLayer.addTo(map);  // OpenStreetMap stays the default - worldwide, and what every existing case was reviewed against
+
+    const baseLayers = { 'OpenStreetMap': osmLayer };
+    USGS_BASEMAP_LAYERS.forEach((spec) => {
+        baseLayers[spec.label] = L.tileLayer(
+            `https://basemap.nationalmap.gov/arcgis/rest/services/${spec.key}/MapServer/tile/{z}/{y}/{x}`,
+            {
+                attribution: USGS_BASEMAP_ATTRIBUTION,
+                maxNativeZoom: 16,
+                maxZoom: 19,
+                referrerPolicy: 'strict-origin-when-cross-origin',
+            });
+    });
+    L.control.layers(baseLayers).addTo(map);
+    return osmLayer;
+}
+
 function renderVol3ResultTable(container, jsonText, truncated) {
     container.innerHTML = '';
     let rows;
@@ -5016,7 +5068,7 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
         container.appendChild(mapDiv);
         try {
             const map = L.map(mapDiv);
-            _createGeoTileLayer().addTo(map);
+            _addGeoBaseLayers(map);
             const bounds = [];
             if (isDenseTrack) {
                 const latlngs = placemarks.map(p => [p.lat, p.lon]);
@@ -12292,7 +12344,7 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
     try {
         const map = L.map(container);
         patternOfLifeGeoMapInstance = map;
-        _createGeoTileLayer().addTo(map);
+        _addGeoBaseLayers(map);
         const bounds = [];
         if (showPath) {
             // A rough, disclosed "time-ordered path," not a real route -
