@@ -12145,6 +12145,155 @@ function loadPatternOfLife() {
     loadPatternOfLifeActivityChart();
     loadPatternOfLifeGeoActivity();
     loadPatternOfLifeAppsAccounts();
+    loadPatternOfLifePrivacyTools();
+}
+
+// Privacy/anonymity indicators (2026-09-14). The backend does the judging -
+// see detect_privacy_tools() in core/case_index_db.py for exactly what this
+// claims and, more importantly, what it refuses to claim. This renderer's own
+// job is mostly to make a NEGATIVE result readable: "544 apps checked, none
+// found" is a genuinely useful forensic statement, and is a completely
+// different statement from "no app inventory has been parsed for this case",
+// so the two never collapse into the same empty box.
+const PRIVACY_TOOL_CATEGORY_LABELS = {
+    tor: 'Tor',
+    anonymity_network: 'Anonymity / circumvention network',
+    vpn: 'VPN client',
+    privacy_browser: 'Privacy-focused browser',
+};
+// Tor and the other anonymity networks are genuinely notable on an ordinary
+// device; a privacy browser is not, and colouring them the same would train an
+// examiner to discount all of it.
+const PRIVACY_TOOL_CATEGORY_CLASS = {
+    tor: 'bg-danger',
+    anonymity_network: 'bg-danger',
+    vpn: 'bg-warning text-dark',
+    privacy_browser: 'bg-secondary',
+};
+
+function _renderPrivacyToolList(parent, entries, headingText, mutedHeading) {
+    const heading = document.createElement('div');
+    heading.className = `small fw-bold ${mutedHeading ? 'text-subtle' : 'text-light'} mt-2 mb-1`;
+    heading.textContent = headingText;
+    parent.appendChild(heading);
+    entries.forEach((e) => {
+        const row = document.createElement('div');
+        row.className = 'd-flex align-items-center gap-2 mb-1 flex-wrap';
+        const badge = document.createElement('span');
+        badge.className = `badge ${PRIVACY_TOOL_CATEGORY_CLASS[e.category] || 'bg-secondary'}`;
+        badge.textContent = PRIVACY_TOOL_CATEGORY_LABELS[e.category] || e.category;
+        const name = document.createElement('span');
+        name.className = 'fw-bold';
+        name.textContent = e.label;  // from this app's own curated table, but kept a text node like every other rendered value
+        const pkg = document.createElement('span');
+        pkg.className = 'font-monospace text-subtle';
+        pkg.textContent = e.package + (e.version ? ` (v${e.version})` : '');
+        row.appendChild(badge);
+        row.appendChild(name);
+        row.appendChild(pkg);
+        if (e.last_update_timestamp) {
+            const when = document.createElement('span');
+            when.className = 'text-subtle';
+            when.textContent = `last updated ${_formatContactCorrelationTimestamp(e.last_update_timestamp)}`;
+            row.appendChild(when);
+        }
+        parent.appendChild(row);
+    });
+}
+
+async function loadPatternOfLifePrivacyTools() {
+    const container = document.getElementById('patternOfLifePrivacyToolsContainer');
+    if (!container) return;
+    container.innerHTML = '<span class="text-subtle">Loading...</span>';
+    const caseFolder = activeCase ? activeCase.case_folder : '';
+    if (!caseFolder) { container.innerHTML = '<span class="text-subtle">Select a case first.</span>'; return; }
+
+    let data;
+    try {
+        const res = await fetch('/api/case_index/privacy_tools', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: caseFolder })
+        });
+        data = await res.json();
+    } catch (err) {
+        container.innerHTML = '<span class="text-danger">Request failed.</span>';
+        return;
+    }
+    if (!data || !data.success) {
+        container.innerHTML = '';
+        const e = document.createElement('span');
+        e.className = 'text-danger';
+        e.textContent = (data && data.error) || 'Failed to load privacy indicators.';
+        container.appendChild(e);
+        return;
+    }
+
+    container.innerHTML = '';
+    const users = data.user_installed || [];
+    const preloaded = data.system_or_preloaded || [];
+    const onion = data.onion_references || [];
+
+    if (!data.app_inventory_present) {
+        // The "never looked" case, kept deliberately distinct from "looked and
+        // found nothing" - an examiner must never read this section's silence
+        // as a clean bill of health when no inventory was ever captured.
+        const none = document.createElement('div');
+        none.className = 'text-subtle';
+        none.textContent = 'No Android installed-app inventory has been parsed for this case, so nothing can be '
+            + 'said about installed VPN/Tor clients either way. An adb pull or Companion-App Extraction captures it.';
+        container.appendChild(none);
+    } else if (users.length === 0 && preloaded.length === 0) {
+        const ok = document.createElement('div');
+        ok.className = 'text-success';
+        ok.textContent = `No VPN, Tor or anonymity-network client found among the `
+            + `${data.apps_scanned.toLocaleString()} installed apps captured for this case.`;
+        container.appendChild(ok);
+    } else {
+        if (users.length) _renderPrivacyToolList(container, users, 'User-installed', false);
+        if (preloaded.length) {
+            _renderPrivacyToolList(container, preloaded, 'System / preloaded (shipped with the device or by a carrier - much weaker signal than a user install)', true);
+        }
+    }
+
+    const onionHeading = document.createElement('div');
+    onionHeading.className = 'small fw-bold text-light mt-3 mb-1';
+    onionHeading.textContent = '.onion addresses in indexed artifacts';
+    container.appendChild(onionHeading);
+    if (!data.artifacts_present) {
+        const n = document.createElement('div');
+        n.className = 'text-subtle';
+        n.textContent = 'Nothing has been parsed into this case index yet, so no artifacts have been searched.';
+        container.appendChild(n);
+    } else if (onion.length === 0) {
+        const n = document.createElement('div');
+        n.className = 'text-success';
+        n.textContent = 'None found in any parsed artifact (browser history, messages, notes and every other indexed type were searched).';
+        container.appendChild(n);
+    } else {
+        onion.forEach((o) => {
+            const row = document.createElement('div');
+            row.className = 'font-monospace mb-1';
+            // Evidence-derived text - always a text node, never innerHTML.
+            row.textContent = `[${o.artifact_type}] ${o.url || o.value || o.title || ''}`
+                + (o.timestamp ? `  ${_formatContactCorrelationTimestamp(o.timestamp)}` : '');
+            container.appendChild(row);
+        });
+        if (data.onion_truncated) {
+            const more = document.createElement('div');
+            more.className = 'text-warning';
+            more.textContent = 'More matches exist than are shown here - see Files & Artifacts for the full set.';
+            container.appendChild(more);
+        }
+    }
+
+    const caveat = document.createElement('div');
+    caveat.className = 'text-subtle mt-3 pt-2 border-top border-secondary';
+    caveat.textContent = 'Scope: this reports which clients are installed and where .onion addresses appear. '
+        + 'It cannot show whether a VPN was connected at any particular past moment - Android keeps no durable, '
+        + 'user-accessible VPN connection history. A VPN also never changes a GPS position; it only affects '
+        + 'location derived from an IP address. The client list is curated and not exhaustive, so a sideloaded, '
+        + 'renamed or since-uninstalled app would not appear here.';
+    container.appendChild(caveat);
 }
 
 // "Case Highlights" strip (2026-09-09) - a quick, plain-English "what's the
