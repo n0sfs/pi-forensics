@@ -252,6 +252,78 @@ def _find_timestamp_column_index(headers, artifact_type):
     return None
 
 
+# Fallback timestamp detection for UNCURATED modules (2026-09-14).
+#
+# The curated path above is unchanged and still takes precedence: for an
+# artifact_type in LEAPP_TIMESTAMP_COLUMNS, the column name was confirmed by
+# reading that module's real ALEAPP source, and that remains the strongest
+# possible basis. This adds a second, weaker-but-still-evidence-based path for
+# everything landing in the generic `leapp_module_finding` bucket, which until
+# now was hard-coded to stay timestamp-less forever on the reasoning that its
+# column shape is "unknown by definition".
+#
+# That reasoning turned out to be too pessimistic against real output. The DJI
+# flight-track module - genuinely uncurated, one of 1000+ - writes a column
+# named literally "Timestamp" carrying "2026-02-21 16:16:31+00:00": the exact
+# unambiguous shape ilapfuncs.py's own tsv() writer produces for every module.
+# 2,842 real rows in this project's own case, including 2,826 GPS points with
+# genuine per-point times, were being dropped to timestamp: None and therefore
+# never reaching the Evidence Timeline at all.
+#
+# This is still not guessing, because a candidate column is only accepted once
+# its REAL VALUES have been shown to parse via _parse_leapp_datetime_str() -
+# the same strict parser the curated path uses, which accepts only that one
+# known shape. A name that looks temporal but whose values don't parse is
+# rejected, exactly as before. Two further guards:
+#   - Name tiers, most specific first. A column actually called "timestamp"
+#     beats one merely containing "date", so a module carrying both a real
+#     event time and some incidental other date doesn't silently pick whichever
+#     came first in the header row.
+#   - The chosen column name is recorded on every row it timestamps
+#     (extra["leapp_timestamp_column"]), so the basis for the timestamp is
+#     visible to an examiner and auditable, rather than being an invisible
+#     inference. Curated rows do not carry it, which is itself the signal that
+#     they came from the stronger, source-confirmed path.
+_LEAPP_FALLBACK_TS_NAME_TIERS = (
+    lambda h: h == 'timestamp',
+    lambda h: h in ('date', 'time', 'datetime', 'date/time', 'date time'),
+    lambda h: 'timestamp' in h,
+    lambda h: re.search(r'\b(date|time)\b', h) is not None,
+)
+# How many non-empty values must be seen parsing before a column is trusted.
+# One would be a coincidence away from wrong; requiring a few means a column of
+# genuinely temporal data, while staying tolerant of the many blank cells real
+# ALEAPP output contains.
+_LEAPP_FALLBACK_TS_MIN_PARSED = 3
+_LEAPP_FALLBACK_TS_SAMPLE_ROWS = 50
+
+
+def _detect_fallback_timestamp_column(headers, rows):
+    """For an uncurated module, finds a column whose name looks temporal AND
+    whose real values actually parse. Returns (index, header_name) or
+    (None, None). See this section's own comment for why this is evidence-
+    based rather than a guess."""
+    lowered = [h.strip().lower() for h in headers]
+    sample = rows[:_LEAPP_FALLBACK_TS_SAMPLE_ROWS]
+    for matches in _LEAPP_FALLBACK_TS_NAME_TIERS:
+        for idx, name in enumerate(lowered):
+            if not name or not matches(name):
+                continue
+            parsed = 0
+            for row in sample:
+                if idx < len(row) and _parse_leapp_datetime_str(row[idx]) is not None:
+                    parsed += 1
+                    if parsed >= _LEAPP_FALLBACK_TS_MIN_PARSED:
+                        return idx, headers[idx].strip()
+            # A short file can legitimately hold fewer rows than the minimum -
+            # accept it only if EVERY non-empty value in it parsed, which is a
+            # stronger condition than the count, not a weaker one.
+            non_empty = [r[idx] for r in sample if idx < len(r) and r[idx].strip()]
+            if non_empty and parsed == len(non_empty):
+                return idx, headers[idx].strip()
+    return None, None
+
+
 def _parse_leapp_datetime_str(value):
     """Parses ALEAPP/iLEAPP's own real timestamp string shape - see the
     module docstring's TIMESTAMP PARSING section for exactly how this
@@ -280,11 +352,22 @@ def _parse_one_tsv(path, tool_key):
             except StopIteration:
                 return records  # empty file (header-only or truly empty)
             ts_col_idx = _find_timestamp_column_index(headers, artifact_type)
+            ts_col_name = None
+            # Buffered rather than streamed so an uncurated module's timestamp
+            # column can be validated against its own real values before any
+            # row is built - detection has to see the data to be evidence-based
+            # rather than a guess. Bounded by the same per-file row cap that
+            # already applied, so this reads no more than it ever did.
+            data_rows = []
             for i, row in enumerate(reader):
                 if i >= LEAPP_TSV_MAX_ROWS_PER_FILE:
                     break
                 if not row or not any(cell.strip() for cell in row):
                     continue
+                data_rows.append(row)
+            if ts_col_idx is None:
+                ts_col_idx, ts_col_name = _detect_fallback_timestamp_column(headers, data_rows)
+            for row in data_rows:
                 # Pair headers with the row defensively - ALEAPP TSVs are
                 # not guaranteed to have exactly len(headers) cells per
                 # row (a value containing a literal tab, or a short/
@@ -294,12 +377,18 @@ def _parse_one_tsv(path, tool_key):
                 title = row[0].strip() if row and row[0].strip() else stem
                 timestamp = (_parse_leapp_datetime_str(row[ts_col_idx])
                              if ts_col_idx is not None and ts_col_idx < len(row) else None)
+                extra = {"leapp_tool": tool_key, "leapp_module": stem, "row": dict(pairs)}
+                # Only present on a fallback-detected timestamp, never on a
+                # curated one - its absence is how a reader tells the stronger,
+                # source-confirmed path from this weaker inferred one.
+                if ts_col_name and timestamp is not None:
+                    extra["leapp_timestamp_column"] = ts_col_name
                 records.append({
                     "artifact_type": artifact_type,
                     "title": title if artifact_type != "leapp_module_finding" else f"[{stem}] {title}",
                     "url": "", "value": value_text or "(no non-empty columns)",
                     "timestamp": timestamp,
-                    "extra": {"leapp_tool": tool_key, "leapp_module": stem, "row": dict(pairs)},
+                    "extra": extra,
                 })
     except (OSError, csv.Error, UnicodeDecodeError):
         return []
