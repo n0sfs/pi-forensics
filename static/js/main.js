@@ -5029,7 +5029,7 @@ function buildGeoSpeedNotice(points, speeds) {
 // Builds the disclosure banner + opt-in "exclude from map view" toggle. The
 // toggle only ever re-fits the map's bounds - it never removes a marker, a
 // table row, or anything from the underlying data.
-function buildGeoOutlierNotice(points, outliers, onToggle) {
+function buildGeoOutlierNotice(points, outliers, onToggle, speedsChecked) {
     const wrap = document.createElement('div');
     wrap.className = 'alert alert-warning py-2 px-2 mb-2 small';
 
@@ -5044,7 +5044,14 @@ function buildGeoOutlierNotice(points, outliers, onToggle) {
         + `${_formatOutlierDistance(outliers.thresholdKm)} from where most of this source's points are, `
         + `the furthest ${_formatOutlierDistance(Math.max(...[...outliers.indexes].map(i => outliers.distancesKm[i])))} out. `
         + `This is a note about the shape of the data, NOT a finding: distance alone cannot tell real travel `
-        + `apart from GPS error, and these placemarks carry no timestamps to check speed against. `
+        + `apart from GPS error. `
+        // Whether speed COULD be checked depends on the data, so saying so
+        // unconditionally was wrong the moment KML placemarks started carrying
+        // real timestamps - it left this notice asserting there was nothing to
+        // check speed against directly underneath a notice doing exactly that.
+        + (speedsChecked
+            ? `Where these points carry timestamps, the speed check above is the stronger signal - read that first. `
+            : `These points carry no timestamps, so speed - which could separate the two - cannot be checked here. `)
         + `Nothing has been removed - every point is still plotted, listed, and exported.`;
     headline.appendChild(headlineText);
     wrap.appendChild(headline);
@@ -5340,7 +5347,7 @@ function renderPointMap(container, placemarks, mapHeightCss, emptyMessage) {
                 if (!useBounds.length) return;
                 if (useBounds.length === 1) mapRef.setView(useBounds[0], 14);
                 else fitBoundsWithMinZoom(mapRef, useBounds, { padding: [20, 20] });
-            }));
+            }, !!speeds));
         }
         container.appendChild(mapDiv);
         let mapRef = null;
@@ -12655,7 +12662,7 @@ function _recomputeAndRenderGeoActivity() {
                     if (!useBounds.length || !patternOfLifeGeoMapInstance) return;
                     if (useBounds.length === 1) patternOfLifeGeoMapInstance.setView(useBounds[0], 14);
                     else fitBoundsWithMinZoom(patternOfLifeGeoMapInstance, useBounds, { padding: [20, 20] });
-                }));
+                }, !!geoRender.speeds));
         }
     }
     // Location<->Contact cross-linking (2026-09-08): if contact data
