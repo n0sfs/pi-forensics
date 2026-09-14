@@ -1755,6 +1755,15 @@ GEO_ACTIVITY_MIN_FREQUENT_VISITS = 2      # a single-visit point isn't a "freque
 # deliberately forgiving - it keeps a brief signal dropout, a walk around the
 # building, or a stop at traffic lights from being counted as a fresh visit.
 GEO_ACTIVITY_VISIT_GAP_SECONDS = 900
+# Correcting visit counting exposed that the "visited more than once" filter was
+# itself a proxy for significance that only held while one sample meant one
+# visit. Under real visit semantics a device that sat somewhere for three hours
+# straight registers ONE visit and would have been dropped from the list
+# entirely, while the question this section actually answers is "where did this
+# device spend its time". So a location qualifies on either count: genuinely
+# returned to, OR stayed at long enough to matter. A minute is the floor for
+# "stayed" - below that is a pass-through or a stray fix, not a presence.
+GEO_ACTIVITY_MIN_DWELL_SECONDS = 60
 
 
 def _count_visits_and_dwell(timestamps):
@@ -1877,11 +1886,16 @@ def _collect_case_geo_activity(case_folder, attachment_files):
     # device for an hour and the other for a minute. An untimestamped cluster
     # can only be ranked on samples, so it sorts below anything with real
     # visit data rather than being silently interleaved with it.
-    frequent_locations = [
-        c for c in clusters.values()
-        if (c["visit_count"] if c["visit_count"] is not None else c["sample_count"])
-        >= GEO_ACTIVITY_MIN_FREQUENT_VISITS
-    ]
+    def _is_significant(c):
+        if c["visit_count"] is None:
+            # Undated points: sample count is the only signal there is, and for
+            # the sparse sources that produce them it remains a fair proxy -
+            # exactly the original behaviour, kept for exactly that case.
+            return c["sample_count"] >= GEO_ACTIVITY_MIN_FREQUENT_VISITS
+        return (c["visit_count"] >= GEO_ACTIVITY_MIN_FREQUENT_VISITS
+                or (c["total_dwell_seconds"] or 0) >= GEO_ACTIVITY_MIN_DWELL_SECONDS)
+
+    frequent_locations = [c for c in clusters.values() if _is_significant(c)]
     frequent_locations.sort(
         key=lambda c: (c["visit_count"] is not None, c["visit_count"] or 0,
                        c["total_dwell_seconds"] or 0, c["sample_count"]),
@@ -3713,7 +3727,7 @@ def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: C
     if not frequent_locations:
         c.setFont("Helvetica-Oblique", 9)
         c.setFillColorRGB(0.5, 0.5, 0.5)
-        c.drawString(50, y, "No location visited more than once was found for this case.")
+        c.drawString(50, y, "No location was returned to or stayed at long enough to list for this case.")
         c.setFillColorRGB(0, 0, 0)
         y -= 14
     else:
@@ -4814,7 +4828,7 @@ def _html_pattern_of_life_block(case_folder, title="Pattern of Life: Contact Cor
     parts.append('<h3>Frequent Locations</h3>')
     _, frequent_locations, _ = _collect_case_geo_activity(case_folder, attachment_files or [])
     if not frequent_locations:
-        parts.append('<p class="muted">No location visited more than once was found for this case.</p>')
+        parts.append('<p class="muted">No location was returned to or stayed at long enough to list for this case.</p>')
     else:
         parts.append('<table><tr><th>Latitude</th><th>Longitude</th><th>Visits</th><th>First Seen</th><th>Last Seen</th></tr>')
         for loc in frequent_locations:
