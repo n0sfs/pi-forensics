@@ -1912,6 +1912,109 @@ def test_correlate_contacts_device_attribution_survives_the_phone_email_merge(ca
     assert result["contacts"][0]["device_communications"] == {"ITEM-01": 1}
 
 
+# --- 2026-09-14: detect_privacy_tools() - VPN/Tor/anonymity indicators. The
+# false positive these tests exist to prevent is a real one, found against a
+# genuine 544-app Pixel 8a inventory: a naive package-name search for "vpn"
+# matched com.android.vpndialogs, a stock Android system component present on
+# every device whether or not a VPN was ever used. ---
+def _installed_app_record(package, is_system_app=False, code_path=None, version="1.0"):
+    return {"artifact_type": "android_installed_app", "title": package, "url": "",
+            "value": f"Version: {version}", "timestamp": None,
+            "extra": {"package": package, "version_name": version,
+                      "code_path": code_path if code_path is not None else f"/data/app/{package}-x==",
+                      "is_system_app": is_system_app}}
+
+
+def test_detect_privacy_tools_finds_a_user_installed_tor_client(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "apps"),
+        [_installed_app_record("org.torproject.android"),
+         _installed_app_record("com.amazon.mShop.android.shopping")])
+
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert result["app_inventory_present"] is True
+    assert result["apps_scanned"] == 2
+    assert [e["package"] for e in result["user_installed"]] == ["org.torproject.android"]
+    assert result["user_installed"][0]["category"] == "tor"
+    assert result["system_or_preloaded"] == []
+
+
+def test_detect_privacy_tools_never_reports_the_stock_vpndialogs_system_package(case_folder):
+    # The exact real-world false positive this function was shaped around -
+    # com.android.vpndialogs is on every Android device and means nothing.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "apps"),
+        [_installed_app_record("com.android.vpndialogs", is_system_app=True,
+                               code_path="/system/priv-app/VpnDialogs")])
+
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert result["apps_scanned"] == 1
+    assert result["user_installed"] == []
+    assert result["system_or_preloaded"] == []
+
+
+def test_detect_privacy_tools_buckets_a_preloaded_vpn_separately_rather_than_hiding_it(case_folder):
+    # A carrier-preloaded VPN is real and must still be reported - just not as
+    # a user install, which is a materially stronger signal.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "apps"),
+        [_installed_app_record("com.nordvpn.android", is_system_app=True,
+                               code_path="/system_ext/priv-app/NordVPN")])
+
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert result["user_installed"] == []
+    assert [e["package"] for e in result["system_or_preloaded"]] == ["com.nordvpn.android"]
+
+
+def test_detect_privacy_tools_treats_a_non_system_flag_under_a_system_path_as_preloaded(case_folder):
+    # Observed on real hardware: OEM preloads under /system_ext carrying
+    # is_system_app=false. The flag alone is not trustworthy, so a /data/app/
+    # code path is required too.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "apps"),
+        [_installed_app_record("com.wireguard.android", is_system_app=False,
+                               code_path="/system_ext/priv-app/WireGuard")])
+
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert result["user_installed"] == []
+    assert [e["package"] for e in result["system_or_preloaded"]] == ["com.wireguard.android"]
+
+
+def test_detect_privacy_tools_reports_a_clean_negative_distinctly_from_never_looking(case_folder):
+    # "Looked at 1 app, found nothing" must be distinguishable from "no
+    # inventory was ever parsed" - the whole point of app_inventory_present.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "apps"),
+        [_installed_app_record("com.amazon.mShop.android.shopping")])
+
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert result["app_inventory_present"] is True
+    assert result["user_installed"] == [] and result["system_or_preloaded"] == []
+
+
+def test_detect_privacy_tools_empty_case_reports_nothing_was_looked_at(case_folder):
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert result["app_inventory_present"] is False
+    assert result["artifacts_present"] is False
+    assert result["user_installed"] == []
+    assert result["onion_references"] == []
+
+
+def test_detect_privacy_tools_finds_onion_addresses_in_any_artifact_type(case_folder):
+    # Deliberately NOT browser-history-only - an .onion arriving by SMS is
+    # just as real, and this app indexes both.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms"),
+        [{"artifact_type": "android_companion_sms_message", "title": "msg", "url": "",
+          "value": "check http://abcdefghijklmnop.onion/ later", "timestamp": 1700000000.0,
+          "extra": {"address": "+15551234567"}}])
+
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert len(result["onion_references"]) == 1
+    assert result["onion_references"][0]["artifact_type"] == "android_companion_sms_message"
+    assert ".onion" in result["onion_references"][0]["value"]
+
+
 # --- compute_case_analysis_coverage (2026-09-09, item 6 of the DFIR-
 # comparison backlog - "what's been run against each evidence item, what
 # hasn't") ---
