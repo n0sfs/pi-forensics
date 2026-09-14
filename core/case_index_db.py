@@ -2516,6 +2516,61 @@ ANALYSIS_RESULT_TOOL_TO_STEP = {
     "YARA": "yara_sweep",
 }
 
+# The third record of analysis work (2026-09-14). The ~21 individual
+# "*_parsed" right-click routes in routes/file_explorer.py write neither an
+# analysis_results row nor an auto_analyze_* entry - they log their own
+# `<thing>_parsed` chain-of-custody action and nothing else. So a registry-hive
+# or prefetch parse run from the right-click menu was invisible to coverage
+# even after ANALYSIS_RESULT_TOOL_TO_STEP above closed the gap for the tools
+# that DO write analysis_results.
+#
+# Reading those COC actions directly closes it for all of them without touching
+# a single route. That matters: the alternative was ~21 near-identical edits
+# across differently-shaped handlers, which is exactly where an inconsistent
+# change slips through unnoticed.
+#
+# Only actions with a genuine Auto Analyze step equivalent are mapped. Several
+# have none (thumbcache, sticky notes, USN journal, LNK, macOS launchd, email,
+# Windows activity) and are deliberately absent rather than force-fitted, for
+# the same reason the tool-label map above excludes Strings and OCR.
+COC_ACTION_TO_STEP = {
+    "browser_artifacts_parsed": "browser_artifacts",
+    "registry_hives_parsed": "registry",
+    "evtx_files_parsed": "evtx",
+    "prefetch_files_parsed": "prefetch",
+    "recyclebin_files_parsed": "recyclebin",
+    "jumplists_parsed": "jumplists",
+    "linux_artifacts_parsed": "linux_artifacts",
+    "srum_files_parsed": "srum",
+    "powershell_history_parsed": "powershell_history",
+    "firewall_log_parsed": "firewall_log",
+    "winsearch_parsed": "winsearch",
+    "webcache_parsed": "webcache",
+    "bits_parsed": "bits",
+    "rdp_bitmap_cache_parsed": "rdp_bitmap_cache",
+    "mobile_artifacts_parsed": "android_artifacts",
+    "android_backup_parsed": "android_backup_parse",
+    "bugreport_parsed": "bugreport_parse",
+}
+
+# Whichever of these a given action happens to use for the thing it analyzed -
+# confirmed by reading all 27 call sites, which use "directory" for the
+# folder-scanning routes and "path" for the single-file ones.
+COC_ACTION_PATH_KEYS = ("directory", "path", "image_path")
+
+
+def _path_is_within(candidate, root):
+    """True when `candidate` IS `root` or sits underneath it. A right-click
+    parse is usually pointed at a subfolder of an evidence item rather than its
+    root, and analysis done on something inside an item genuinely is coverage
+    of that item - so exact equality alone would miss most real usage."""
+    if not candidate or not root:
+        return False
+    if candidate == root:
+        return True
+    return candidate.startswith(root.rstrip(os.sep) + os.sep)
+
+
 # The established convention for a recorded failure, already used by the
 # Volatility3 and mquire routes before this: summary is the literal string
 # "FAILED". Matched case-insensitively and on the leading word so a route that
@@ -2582,6 +2637,7 @@ def compute_case_analysis_coverage(case_folder):
     lv_by_event = {r.get('event_id'): r for r in last_verification.get('results', [])}
 
     coc_entries = []
+    individual_coc_entries = []  # the per-action right-click parses - see COC_ACTION_TO_STEP
     try:
         if os.path.exists(config.COC_LOG_FILE):
             with open(config.COC_LOG_FILE, 'r') as f:
@@ -2590,8 +2646,11 @@ def compute_case_analysis_coverage(case_folder):
                         entry = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if entry.get('action') in ('auto_analyze_complete', 'auto_analyze_mobile_complete'):
+                    action = entry.get('action')
+                    if action in ('auto_analyze_complete', 'auto_analyze_mobile_complete'):
                         coc_entries.append(entry)
+                    elif action in COC_ACTION_TO_STEP:
+                        individual_coc_entries.append(entry)
     except Exception:
         pass  # a missing/unreadable COC log just means "no steps known covered yet", not a hard failure
 
@@ -2653,6 +2712,17 @@ def compute_case_analysis_coverage(case_folder):
         # ANALYSIS_RESULT_TOOL_TO_STEP for why these were invisible here until
         # now. Merged rather than replacing: the COC log and analysis_results
         # each know about work the other doesn't.
+        # The individually-logged right-click parses (2026-09-14). These only
+        # ever log on success, so reaching one here means the step really ran.
+        for entry in individual_coc_entries:
+            step = COC_ACTION_TO_STEP.get(entry.get('action'))
+            if not step:
+                continue
+            details = entry.get('details') or {}
+            logged = next((details.get(k) for k in COC_ACTION_PATH_KEYS if details.get(k)), None)
+            if _path_is_within(logged, target_path):
+                completed_steps.add(step)
+
         ar_completed, ar_failed = _analysis_results_by_step(case_folder, target_path)
         completed_steps |= ar_completed
         for step, detail in ar_failed.items():
