@@ -2156,7 +2156,7 @@ def correlate_contacts(case_folder):
                     "direction_counts": {"incoming": 0, "outgoing": 0},
                     "total_duration_seconds": 0.0,
                     "first_seen": timestamp, "last_seen": timestamp,
-                    "total_communications": 0, "samples": [],
+                    "total_communications": 0, "samples": [], "samples_truncated": False,
                     "device_communications": {},
                 })
                 entry["communication_counts"][spec["channel"]] = entry["communication_counts"].get(spec["channel"], 0) + 1
@@ -2177,8 +2177,23 @@ def correlate_contacts(case_folder):
                     entry["samples"].append({
                         "artifact_type": artifact_type, "title": title, "value": value,
                         "timestamp": timestamp, "source_path": source_path,
+                        # WHICH DEVICE this communication came off (2026-09-15).
+                        # Pattern of Life's contact<->location cross-linking
+                        # compares a communication's time against a location
+                        # point's time; without this it could pair one device's
+                        # messages with another device's GPS and present the
+                        # result as co-location nothing recorded.
+                        "evidence_id": row_evidence_id,
                         "content_preview": _comm_content_preview(artifact_type, value, extra),
                     })
+                else:
+                    # The samples list is a fixed-size SAMPLE, not the contact's
+                    # full history - anything built from it (the cross-linking
+                    # below, in particular) is reasoning about at most 8
+                    # communications out of possibly thousands. Flagged so the
+                    # UI can say so instead of presenting "nothing found" as if
+                    # everything had been looked at.
+                    entry["samples_truncated"] = True
             if not resolved_any:
                 unresolved += 1
                 if len(unresolved_communications) < UNRESOLVED_COMM_MAX_RECORDS * 4:
@@ -2244,7 +2259,7 @@ def correlate_contacts(case_folder):
                     "direction_counts": {"incoming": 0, "outgoing": 0},
                     "total_duration_seconds": 0.0,
                     "first_seen": timestamp, "last_seen": timestamp,
-                    "total_communications": 0, "samples": [],
+                    "total_communications": 0, "samples": [], "samples_truncated": False,
                     "device_communications": {},
                 })
                 entry["communication_counts"][channel] = entry["communication_counts"].get(channel, 0) + 1
@@ -2260,8 +2275,23 @@ def correlate_contacts(case_folder):
                     entry["samples"].append({
                         "artifact_type": artifact_type, "title": title, "value": value,
                         "timestamp": timestamp, "source_path": source_path,
+                        # WHICH DEVICE this communication came off (2026-09-15).
+                        # Pattern of Life's contact<->location cross-linking
+                        # compares a communication's time against a location
+                        # point's time; without this it could pair one device's
+                        # messages with another device's GPS and present the
+                        # result as co-location nothing recorded.
+                        "evidence_id": row_evidence_id,
                         "content_preview": _comm_content_preview(artifact_type, value, extra),
                     })
+                else:
+                    # The samples list is a fixed-size SAMPLE, not the contact's
+                    # full history - anything built from it (the cross-linking
+                    # below, in particular) is reasoning about at most 8
+                    # communications out of possibly thousands. Flagged so the
+                    # UI can say so instead of presenting "nothing found" as if
+                    # everything had been looked at.
+                    entry["samples_truncated"] = True
             if not resolved_any:
                 unresolved += 1
                 if len(unresolved_communications) < UNRESOLVED_COMM_MAX_RECORDS * 4:
