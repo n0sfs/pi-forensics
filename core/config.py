@@ -250,6 +250,24 @@ def get_custom_case_fields():
 def get_keyword_lists():
     return load_runtime_config().get('keyword_lists', [])
 
+# Keyword lists SHIPPED WITH THE REPO, as opposed to the examiner-authored
+# ones above (2026-09-15). Read-only reference data an examiner can import
+# into their own station with one click - drug slang, credential patterns,
+# sanctioned cryptocurrency addresses, anti-forensics tooling.
+#
+# Vendored rather than fetched on demand, deliberately: this appliance is
+# routinely used on an air-gapped station, and a feature that only works with
+# internet access is not much of a feature here. The tradeoff is that a
+# bundled snapshot goes stale, so every list carries its own source URL,
+# licence and retrieval date, and states its own caveats - see the "caveats"
+# key, which the UI shows before an import rather than burying in a README.
+#
+# Located via this module's own __file__, not INSTALL_DIR, for the same reason
+# VERSION is (see _REPO_ROOT below): it has to resolve both in production and
+# in a bare dev checkout that never set FORENSIC_INSTALL_DIR.
+BUNDLED_KEYWORD_LISTS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bundled_keyword_lists")
+
 # Station-wide known-good/known-bad hash lists (Settings > Case &
 # Reporting) - checked at scan time by File Explorer's "Check Against
 # Hash Lists" action and by Hash Manifest. Unlike keyword_lists/custom_

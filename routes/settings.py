@@ -56,7 +56,7 @@ from core.config import (
     EVIDENCE_ROOT, ALLOWED_HASH_ALGOS,
     load_runtime_config, save_runtime_config, get_active_admin_pass,
     _get_or_create_mount_key, _encrypt_secret, _decrypt_secret,
-    get_app_version,
+    get_app_version, BUNDLED_KEYWORD_LISTS_DIR,
 )
 from core.jobs import job_lock, current_job, update_job, snapshot_job
 from core.case_index_db import check_regex_pattern_for_redos
@@ -641,6 +641,140 @@ def keyword_lists():
     save_runtime_config(cfg)
     log_chain_of_custody("keyword_list_created", {"id": list_id, "name": record['name'], "term_count": len(record['terms'])})
     return jsonify({"success": True, "list": record})
+
+# --- Bundled keyword lists (2026-09-15) ---------------------------------
+# Read-only reference lists shipped with the repo (see
+# BUNDLED_KEYWORD_LISTS_DIR in core/config.py for why they are vendored rather
+# than fetched). These routes only ever READ the bundled files and WRITE into
+# the station's own keyword_lists - a bundled file is never modified, so an
+# examiner can always re-import a clean copy after editing their own.
+
+
+def _read_bundled_keyword_lists():
+    """Every bundled list on disk, newest-format-first. Returns a list of
+    (filename, payload) - a file that is missing, unreadable or malformed is
+    skipped rather than breaking the whole listing, since one bad file must not
+    make the others unreachable."""
+    out = []
+    try:
+        names = sorted(os.listdir(BUNDLED_KEYWORD_LISTS_DIR))
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(BUNDLED_KEYWORD_LISTS_DIR, name), encoding='utf-8') as f:
+                payload = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict) or not payload.get('terms'):
+            continue
+        out.append((name, payload))
+    return out
+
+
+@settings_bp.route('/api/settings/keyword_lists/bundled', methods=['GET'])
+@requires_auth
+def bundled_keyword_lists():
+    """Lists what is available to import, WITHOUT the terms themselves - a
+    bundled list can run to hundreds of entries and the picker only needs to
+    show what each one is, where it came from, and what it cannot do."""
+    installed_sources = {
+        r.get('bundled_from') for r in load_runtime_config().get('keyword_lists', [])
+        if r.get('bundled_from')
+    }
+    available = []
+    for name, payload in _read_bundled_keyword_lists():
+        available.append({
+            "file": name,
+            "name": payload.get('name') or name,
+            "description": payload.get('description') or '',
+            "is_regex": bool(payload.get('is_regex')),
+            "term_count": len(payload.get('terms') or []),
+            "source": payload.get('source') or {},
+            "caveats": payload.get('caveats') or [],
+            "already_imported": name in installed_sources,
+        })
+    return jsonify({"success": True, "available": available})
+
+
+@settings_bp.route('/api/settings/keyword_lists/bundled/<path:file_name>', methods=['POST'])
+@requires_auth
+@requires_permission('settings')
+def import_bundled_keyword_list(file_name):
+    """Copies one bundled list into this station's own keyword lists.
+
+    Splits into numbered parts when the list exceeds KEYWORD_LIST_MAX_TERMS,
+    rather than truncating it or raising the cap. Several of these lists are
+    genuinely larger than the per-list limit an examiner-authored list is held
+    to (the DEA stimulants slang runs past 700 terms), and silently keeping the
+    first 200 would be the worst option available - the examiner would believe
+    they had imported a complete list.
+    """
+    # The bundled directory is fixed and its contents are ours, but the name
+    # still arrives from the client, so refuse anything that is not a plain
+    # filename sitting directly in that directory.
+    if file_name != os.path.basename(file_name) or not file_name.endswith('.json'):
+        return jsonify({"success": False, "error": "Not a bundled keyword list."}), 400
+
+    payload = None
+    for name, candidate in _read_bundled_keyword_lists():
+        if name == file_name:
+            payload = candidate
+            break
+    if payload is None:
+        return jsonify({"success": False, "error": "No such bundled keyword list."}), 404
+
+    terms = [t for t in (payload.get('terms') or []) if isinstance(t, str) and t.strip()]
+    if not terms:
+        return jsonify({"success": False, "error": "That bundled list has no usable terms."}), 400
+
+    chunks = [terms[i:i + KEYWORD_LIST_MAX_TERMS]
+              for i in range(0, len(terms), KEYWORD_LIST_MAX_TERMS)]
+    cfg = load_runtime_config()
+    lists = cfg.setdefault('keyword_lists', [])
+    if len(lists) + len(chunks) > KEYWORD_LIST_MAX_LISTS:
+        return jsonify({"success": False, "error":
+                        f"Importing this list needs {len(chunks)} list slot(s) and the station "
+                        f"is limited to {KEYWORD_LIST_MAX_LISTS}. Delete a list first."}), 400
+
+    base_name = (payload.get('name') or file_name)[:KEYWORD_LIST_NAME_MAX]
+    created = []
+    for i, chunk in enumerate(chunks, start=1):
+        name = base_name if len(chunks) == 1 else f"{base_name} ({i} of {len(chunks)})"
+        record, error = _keyword_list_from_payload({
+            "name": name, "terms": chunk, "is_regex": bool(payload.get('is_regex')),
+        })
+        if error:
+            # A bundled list failing our OWN validation is a packaging bug, not
+            # examiner error - say which part and stop, leaving earlier parts
+            # in place rather than half-reverting.
+            return jsonify({"success": False, "error":
+                            f"Bundled list part {i} was rejected by this station's own "
+                            f"validation: {error}"}), 400
+        base_id = re.sub(r'[^a-z0-9_]+', '_', record['name'].lower()).strip('_') or 'keywords'
+        existing_ids = {r['id'] for r in lists}
+        list_id, n = base_id, 2
+        while list_id in existing_ids:
+            list_id = f"{base_id}_{n}"
+            n += 1
+        record['id'] = list_id
+        record['created_at'] = record['updated_at']
+        # Remembers which bundled file this came from, so the picker can show
+        # what is already installed and an examiner can tell an imported list
+        # from one they wrote.
+        record['bundled_from'] = file_name
+        lists.append(record)
+        created.append(record)
+
+    save_runtime_config(cfg)
+    log_chain_of_custody("keyword_list_imported_bundled", {
+        "file": file_name, "name": base_name,
+        "lists_created": len(created), "term_count": len(terms),
+    })
+    return jsonify({"success": True, "lists": created, "term_count": len(terms)})
+
 
 @settings_bp.route('/api/settings/keyword_lists/<list_id>', methods=['PUT', 'DELETE'])
 @requires_auth

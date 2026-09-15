@@ -1,0 +1,30 @@
+{
+ "schema": 1,
+ "name": "DEA Drug Slang - Anabolic Steroids & Inhalants",
+ "description": "Slang terms and code words the DEA associates with anabolic steroids & inhalants, from its own 2018 reference for law enforcement. Matched as whole words.",
+ "is_regex": true,
+ "source": {
+  "title": "DEA Intelligence Report DEA-HOU-DIR-022-18, 'Slang Terms and Code Words: A Reference for Law Enforcement Personnel'",
+  "publisher": "US Drug Enforcement Administration",
+  "published": "2018-07",
+  "url": "https://www.dea.gov/documents/2018/2018-07/2018-07-01/drug-slang-code-words",
+  "licence": "Public domain - a work of the United States Government, 17 U.S.C. 105. Marked UNCLASSIFIED in the original.",
+  "retrieved": "2026-09-15"
+ },
+ "caveats": [
+  "This is a July 2018 snapshot. Drug slang moves quickly, and terms for substances that became common after 2018 will not be here.",
+  "Many entries are ordinary English words used as slang (Ice, Boy, Pot, Work, Bars). Each term is matched as a whole word, but no pattern can tell the slang sense from the innocent one - expect false positives and prune the list to your case.",
+  "A hit is a lead, not a finding. The DEA compiled these from law-enforcement and open sources; presence of a word is not evidence of an offence."
+ ],
+ "terms": [
+  "\\bArnolds\\b",
+  "\\bCaballo\\b",
+  "\\bGear\\b",
+  "\\bGym\\ Candy\\b",
+  "\\bJungle\\ Juice\\b",
+  "\\bPumpers\\b",
+  "\\bRoids\\b",
+  "\\bStackers\\b",
+  "\\bWeight\\ Gainers\\b"
+ ]
+}
