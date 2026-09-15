@@ -15264,10 +15264,26 @@ async function openEvidenceItemInFileExplorer(item) {
     try {
         if (item.kind === 'disk_image') {
             await enterExplorerImageFor({ path, name: path.split('/').pop() || path });
-        } else {
-            await loadExplorer(path);
+            showToast('Right-click a file in File Explorer to run an analysis step against it.', 'info');
+            return;
         }
-        showToast('Right-click the item in File Explorer to run an analysis step against it.', 'info');
+        // A "mobile_or_folder" target is often a FILE (an .ab backup, a
+        // bugreport .zip), not a directory - loadExplorer() falls back to the
+        // parent for those, which lands the examiner in a folder of 16 items
+        // with no indication which one they came here for. Select the row too,
+        // reusing the same real .click() the file tree's own selectFile()
+        // already uses rather than a second selection code path.
+        const parentDir = path.split('/').slice(0, -1).join('/') || '/';
+        await loadExplorer(path);
+        if (explorerPath !== path) {
+            if (explorerPath !== parentDir) await loadExplorer(parentDir);
+            const row = document.querySelector(`#explorerListBody tr[data-item-path="${CSS.escape(path)}"]`);
+            if (row) {
+                row.click();
+                row.scrollIntoView({ block: 'center' });
+            }
+        }
+        showToast('Right-click the selected item in File Explorer to run an analysis step against it.', 'info');
     } catch (err) {
         showToast(`Could not open ${path} in File Explorer - see console.`, 'warning');
     }
