@@ -4900,6 +4900,76 @@ function _haversineKm(lat1, lon1, lat2, lon2) {
 // {indexes: Set<int>, thresholdKm, medianSpreadKm, center: {lat, lon},
 //  distancesKm: number[]} - distancesKm is index-aligned with `points` so a
 // caller can state how far a specific flagged point actually is.
+// Runs a detector PER SOURCE and merges the results (2026-09-15).
+//
+// Pattern of Life's map merges every source into one view - a phone's Takeout
+// history and a drone's KML can sit in the same point array. Both detectors
+// were handed that merged array, so detectImplausibleSpeeds() time-sorted
+// across sources and measured consecutive pairs belonging to DIFFERENT
+// devices. Two devices legitimately in different places at overlapping times
+// then produced a segment implying thousands of km/h, which the red notice
+// asserts as a finding: "at least one position in each pair below is wrong".
+// Both positions were correct. That is the worst kind of false positive here,
+// because this is the one geolocation signal worded as a conclusion.
+//
+// detectGeoOutliers() had the milder version of the same fault: its median
+// centre was computed across mixed sources, while the notice it feeds says
+// "more than X from where most of THIS SOURCE's points are". Per-source makes
+// that sentence true.
+//
+// Indexes are mapped back to the original array so every caller - map markers,
+// table badges, the bounds toggle - keeps working unchanged.
+function _detectPerSource(points, detector, mergeFn) {
+    const bySource = new Map();
+    (points || []).forEach((p, i) => {
+        const key = p.source || '(unknown source)';
+        if (!bySource.has(key)) bySource.set(key, []);
+        bySource.get(key).push(i);
+    });
+    const perSource = [];
+    for (const indexes of bySource.values()) {
+        const subset = indexes.map(i => points[i]);
+        const result = detector(subset);
+        if (result) perSource.push({ result, indexes });
+    }
+    return perSource.length ? mergeFn(perSource) : null;
+}
+
+function detectGeoOutliersPerSource(points) {
+    return _detectPerSource(points, detectGeoOutliers, (perSource) => {
+        const indexes = new Set();
+        const distancesKm = [];
+        let thresholdKm = 0, medianSpreadKm = 0, mostFlagged = -1;
+        perSource.forEach(({ result, indexes: map }) => {
+            result.indexes.forEach(localIdx => indexes.add(map[localIdx]));
+            map.forEach((originalIdx, localIdx) => { distancesKm[originalIdx] = result.distancesKm[localIdx]; });
+            // The notice quotes ONE threshold, but each source now has its own.
+            // Quote the source that flagged the most points - that's the one
+            // actually driving the finding the examiner is reading about.
+            if (result.indexes.size > mostFlagged) {
+                mostFlagged = result.indexes.size;
+                thresholdKm = result.thresholdKm;
+                medianSpreadKm = result.medianSpreadKm;
+            }
+        });
+        return indexes.size ? { indexes, thresholdKm, medianSpreadKm, distancesKm } : null;
+    });
+}
+
+function detectImplausibleSpeedsPerSource(points) {
+    return _detectPerSource(points, detectImplausibleSpeeds, (perSource) => {
+        const segments = [];
+        perSource.forEach(({ result, indexes: map }) => {
+            result.segments.forEach(s => segments.push({
+                ...s, fromIndex: map[s.fromIndex], toIndex: map[s.toIndex],
+            }));
+        });
+        if (!segments.length) return null;
+        segments.sort((a, b) => b.kmh - a.kmh);
+        return { segments, maxKmh: segments[0].kmh };
+    });
+}
+
 function detectGeoOutliers(points) {
     if (!points || points.length < GEO_OUTLIER_MIN_POINTS) return null;
     const lats = points.map(p => p.lat).sort((a, b) => a - b);
@@ -4998,6 +5068,7 @@ function buildGeoSpeedNotice(points, speeds) {
     const headText = document.createElement('span');
     headText.textContent =
         `${n.toLocaleString()} movement${n === 1 ? '' : 's'} between consecutive timestamped points `
+        + `from the same source `
         + `${n === 1 ? 'implies' : 'imply'} a speed no ordinary travel accounts for `
         + `(over ${GEO_SPEED_IMPLAUSIBLE_KMH.toLocaleString()} km/h; fastest `
         + `${Math.round(speeds.maxKmh).toLocaleString()} km/h). Unlike distance alone, this cannot be `
@@ -5037,11 +5108,19 @@ function buildGeoOutlierNotice(points, outliers, onToggle, speedsChecked) {
     const headline = document.createElement('div');
     headline.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>';
     const share = (100 * n / points.length);
+    // Pattern of Life merges sources into one map, and the detectors now run
+    // per source (see _detectPerSource) - so with more than one source there
+    // isn't a single threshold to quote. Say so rather than presenting one
+    // source's number as if it governed every point listed below.
+    const sourceCount = new Set((points || []).map(p => p.source || '(unknown source)')).size;
     const headlineText = document.createElement('span');
     headlineText.textContent =
         `${n.toLocaleString()} of ${points.length.toLocaleString()} point${points.length === 1 ? '' : 's'} `
-        + `(${share < 0.1 ? '<0.1' : share.toFixed(1)}%) sit more than `
-        + `${_formatOutlierDistance(outliers.thresholdKm)} from where most of this source's points are, `
+        + `(${share < 0.1 ? '<0.1' : share.toFixed(1)}%) sit far from the rest of their own source's points `
+        + (sourceCount > 1
+            ? `(each source is measured separately; the largest group's threshold was `
+              + `${_formatOutlierDistance(outliers.thresholdKm)}), `
+            : `- more than ${_formatOutlierDistance(outliers.thresholdKm)} out - `)
         + `the furthest ${_formatOutlierDistance(Math.max(...[...outliers.indexes].map(i => outliers.distancesKm[i])))} out. `
         + `This is a note about the shape of the data, NOT a finding: distance alone cannot tell real travel `
         + `apart from GPS error. `
@@ -12531,8 +12610,9 @@ function classifyHomeWorkLocations(points, frequentLocations) {
 // Communication Activity Pattern chart's own "cache the full dataset once,
 // recompute on every filter change" pattern right above). Deliberately
 // kept in exact lockstep with routes/reporting.py's own case_geo_activity()
-// - same 3-decimal rounding (~111m cells), same 2-visit minimum, same
-// 20-location cap, same sort order - so "All Time" here always matches
+// - same 3-decimal rounding (~111m cells), same significance rule (2 visits
+// OR 60s dwell), same 20-location cap, same sort order - so "All Time" here
+// always matches
 // what a fresh, unfiltered fetch of the same case would show; only the
 // underlying point set (full vs. date-filtered) ever differs.
 const GEO_ACTIVITY_CLIENT_CLUSTER_PRECISION = 3;
@@ -12544,6 +12624,9 @@ const GEO_ACTIVITY_CLIENT_MAX_FREQUENT_LOCATIONS = 20;
 // than either being wrong on its own. See that constant's own comment for why a
 // visit is a gap-separated session rather than a raw sample count.
 const GEO_ACTIVITY_CLIENT_VISIT_GAP_SECONDS = 900;
+// Same pairing for GEO_ACTIVITY_MIN_DWELL_SECONDS (routes/reporting.py) - a
+// place held once for a long stretch is significant even at one visit.
+const GEO_ACTIVITY_CLIENT_MIN_DWELL_SECONDS = 60;
 
 // One formatter for every place a location's visit figure is shown (the
 // highlight chip, the map popup, the Frequent Locations table), so they can
@@ -12604,8 +12687,19 @@ function _clusterGeoPoints(points) {
         c.visit_count = visits;
         c.total_dwell_seconds = Math.round(dwell * 10) / 10;
     });
+    // Must mirror routes/reporting.py's _is_significant() EXACTLY. It didn't
+    // (fixed 2026-09-15): the backend also qualifies a cluster on dwell time,
+    // this only checked the visit count. A place the device sat at once for an
+    // hour therefore appeared in the unfiltered view and in the exported PDF,
+    // then vanished from the table the instant a date filter was applied - the
+    // report and the screen disagreeing about which locations are significant,
+    // with nothing on screen saying why.
+    const isSignificant = (c) => (c.visit_count === null
+        ? c.sample_count >= GEO_ACTIVITY_CLIENT_MIN_FREQUENT_VISITS
+        : (c.visit_count >= GEO_ACTIVITY_CLIENT_MIN_FREQUENT_VISITS
+           || (c.total_dwell_seconds || 0) >= GEO_ACTIVITY_CLIENT_MIN_DWELL_SECONDS));
     return Object.values(clusters)
-        .filter(c => (c.visit_count !== null ? c.visit_count : c.sample_count) >= GEO_ACTIVITY_CLIENT_MIN_FREQUENT_VISITS)
+        .filter(isSignificant)
         .sort((a, b) => (b.visit_count !== null) - (a.visit_count !== null)
             || (b.visit_count || 0) - (a.visit_count || 0)
             || (b.total_dwell_seconds || 0) - (a.total_dwell_seconds || 0)
@@ -12914,9 +13008,22 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
             // a confirmed track. Untimestamped points (KML-only, no
             // reliable timestamp) are excluded - there's no way to order
             // them relative to anything else.
-            const timedPoints = points.filter(p => p.timestamp !== null && p.timestamp !== undefined)
-                .slice().sort((a, b) => a.timestamp - b.timestamp);
-            if (timedPoints.length >= 2) {
+            //
+            // ONE PATH PER SOURCE (2026-09-15). This previously sorted every
+            // source's points into a single time-ordered line, so a case
+            // holding two devices got one polyline zig-zagging between them -
+            // drawn in the same style that says "this device went here, then
+            // here". No device made that journey. Grouping by source keeps
+            // each line an actual claim about one device.
+            const bySource = new Map();
+            points.filter(p => p.timestamp !== null && p.timestamp !== undefined).forEach(p => {
+                const key = p.source || '(unknown source)';
+                if (!bySource.has(key)) bySource.set(key, []);
+                bySource.get(key).push(p);
+            });
+            for (const [sourceName, sourcePoints] of bySource) {
+                const timedPoints = sourcePoints.slice().sort((a, b) => a.timestamp - b.timestamp);
+                if (timedPoints.length < 2) continue;
                 // A bright, saturated magenta at a heavier weight/opacity -
                 // the original pale blue (#38bdf8) was the exact same color
                 // as the regular point markers drawn right after it, AND
@@ -12926,22 +13033,30 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
                 // occur anywhere in OSM's default tile palette, so it reads
                 // as a deliberate overlay at any zoom level.
                 L.polyline(timedPoints.map(p => [p.lat, p.lon]),
-                    { color: '#e91e9e', weight: 3.5, opacity: 0.9, dashArray: '8 5' }).addTo(map);
+                    { color: '#e91e9e', weight: 3.5, opacity: 0.9, dashArray: '8 5' })
+                    .bindPopup(`<b>Time-ordered path</b><br>${escapeHtmlForPopup(sourceName)}`).addTo(map);
                 // Start/end markers so the direction of travel is legible
-                // at a glance, not just implied by the line itself.
+                // at a glance, not just implied by the line itself. Named by
+                // source, since there can now be more than one of each.
                 const first = timedPoints[0], last = timedPoints[timedPoints.length - 1];
                 L.circleMarker([first.lat, first.lon], { radius: 6, color: '#22c55e', weight: 2, fillColor: '#22c55e', fillOpacity: 0.9 })
-                    .bindPopup(`<b>Path start</b><br>${_formatContactCorrelationTimestamp(first.timestamp)}`).addTo(map);
+                    .bindPopup(`<b>Path start</b><br>${escapeHtmlForPopup(sourceName)}<br>${_formatContactCorrelationTimestamp(first.timestamp)}`).addTo(map);
                 L.circleMarker([last.lat, last.lon], { radius: 6, color: '#e91e9e', weight: 2, fillColor: '#e91e9e', fillOpacity: 0.9 })
-                    .bindPopup(`<b>Path end</b><br>${_formatContactCorrelationTimestamp(last.timestamp)}`).addTo(map);
+                    .bindPopup(`<b>Path end</b><br>${escapeHtmlForPopup(sourceName)}<br>${_formatContactCorrelationTimestamp(last.timestamp)}`).addTo(map);
             }
         }
         // Same disclosed-outlier treatment the Geolocation tab's own map gets
         // (see detectGeoOutliers()) - every point is still drawn; an outlier is
         // only ever left out of the optional bounds list the notice's toggle
         // fits to.
-        const outliers = detectGeoOutliers(points);
-        const speeds = detectImplausibleSpeeds(points);
+        //
+        // PER SOURCE, unlike the Geolocation tab's map. That map draws one map
+        // per source, so it can hand the raw detectors a single-source array.
+        // This one deliberately merges every source into one view, so the raw
+        // detectors would compare a phone's fixes against a drone's - see
+        // _detectPerSource() for what that produced.
+        const outliers = detectGeoOutliersPerSource(points);
+        const speeds = detectImplausibleSpeedsPerSource(points);
         points.forEach((p, i) => {
             const marker = L.circleMarker([p.lat, p.lon], { radius: 4, color: '#38bdf8', weight: 1, fillOpacity: 0.6 }).addTo(map);
             const parts = [`<b>${escapeHtmlForPopup(p.name || '(unnamed)')}</b>`, escapeHtmlForPopup(p.source)];
