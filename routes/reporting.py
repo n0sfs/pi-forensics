@@ -1702,6 +1702,11 @@ ATTACHMENT_IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
 ATTACHMENT_TEXT_EXT = {'.txt', '.log', '.md', '.csv', '.json', '.eml', '.msg', '.rtf', '.xml', '.yaml', '.yml'}
 ATTACHMENT_EXCLUDE_EXT = {'.dd', '.e01', '.aff', '.001', '.raw', '.img'}
 ATTACHMENT_MAX_TEXT_EMBED_BYTES = 100_000
+# Was an unnamed literal 400 inline in the PDF attachment renderer, and
+# undisclosed - a 900-line exhibit ended at line 400 with the next exhibit's
+# heading right after it, reading as a complete file. Named here so both the
+# cap and the notice that reports it come from one place (2026-09-15).
+ATTACHMENT_MAX_TEXT_EMBED_LINES = 400
 ATTACHMENT_MAX_IMAGE_EMBED_BYTES = 8_000_000
 ATTACHMENT_DISCOVERY_MAX_FILES = 200
 def _discover_case_files(case_folder):
@@ -3108,18 +3113,51 @@ def _embed_file_into_pdf(c, y, file_path, caption=None, exhibit_number=None, cat
         y -= 14
         y = _draw_meta(y)
         c.setFont("Courier", 7.5)
+        byte_capped = False
         try:
             with open(file_path, 'r', errors='replace') as tf:
                 text_content = tf.read(ATTACHMENT_MAX_TEXT_EMBED_BYTES)
+                byte_capped = bool(tf.read(1))
         except OSError as e:
             text_content = f"(could not read file: {e})"
-        for line in text_content.splitlines()[:400]:
+        # Both caps are DISCLOSED (2026-09-15). This embedded the first 400
+        # lines and stopped, with the next exhibit's heading immediately after
+        # - so a 900-line keyword-hit CSV attached as Exhibit 3 read as a
+        # complete exhibit that happened to end at line 400. The byte cap was
+        # undisclosed the same way; only the size-based fallback to the
+        # "Document:" path below was ever honest about not embedding.
+        all_lines = text_content.splitlines()
+        shown_lines = all_lines[:ATTACHMENT_MAX_TEXT_EMBED_LINES]
+        widest = 130
+        line_capped = False
+        for line in shown_lines:
             if y < 50:
                 c.showPage()
                 y = 750
                 c.setFont("Courier", 7.5)
-            c.drawString(55, y, line[:130])
+            if len(line) > widest:
+                line_capped = True
+            c.drawString(55, y, _pdf_cell(line, widest))
             y -= 9
+        notes = []
+        if len(all_lines) > len(shown_lines):
+            notes.append(f"only the first {len(shown_lines):,} of {len(all_lines):,} lines are shown")
+        if byte_capped:
+            notes.append(f"the file is larger than the {ATTACHMENT_MAX_TEXT_EMBED_BYTES:,}-byte embed limit, "
+                         f"so it was read only that far")
+        if line_capped:
+            notes.append(f"lines longer than {widest} characters are cut (marked with an ellipsis)")
+        if notes:
+            if y < 60:
+                c.showPage()
+                y = 750
+            c.setFont("Helvetica-Bold", 7.5)
+            c.setFillColorRGB(0.75, 0.0, 0.05)
+            y = _draw_pdf_wrapped_text(
+                c, y, "NOT THE COMPLETE FILE - " + "; ".join(notes)
+                      + ". The original is unmodified on disk at the path above.",
+                x=55, width_chars=120, font="Helvetica-Bold", size=7.5)
+            c.setFillColorRGB(0, 0, 0)
         y -= 10
         c.setFont("Helvetica", 10)
     else:
@@ -3334,6 +3372,23 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_
         c.drawString(xpos[6], y, status_meta["pdf_label"])
         c.setFillColorRGB(0, 0, 0)
         y -= 11
+        # ACQUISITION status, stated for every row (2026-09-15). The inventory
+        # listed a FAILED or user-Stopped acquisition in exactly the same
+        # style as a completed one - same evidence id, same device, same
+        # columns - so an incomplete image read as a finished exhibit. Shown
+        # on every row rather than only the bad ones, because an absent marker
+        # is ambiguous: a reader cannot tell "this one is fine" from "this
+        # version of the report does not report that".
+        acq_status = str(event.get('acquisition_status') or 'UNKNOWN')
+        failed = acq_status.upper() not in ('COMPLETED',)
+        c.setFont("Helvetica-Bold" if failed else "Helvetica", 7)
+        c.setFillColorRGB(0.75, 0.0, 0.05) if failed else c.setFillColorRGB(0.35, 0.35, 0.35)
+        c.drawString(60, y, f"Acquisition: {acq_status}"
+                     + ("  - this image is INCOMPLETE and must not be treated as a full copy of the source."
+                        if failed else ""))
+        c.setFillColorRGB(0, 0, 0)
+        c.setFont("Helvetica", 7.5)
+        y -= 9
         if verified_at:
             c.setFont("Helvetica", 6.5)
             c.setFillColorRGB(0.35, 0.35, 0.35)
@@ -4755,19 +4810,22 @@ def _build_pdf_report_dfir(pdf_path, header, events, urls, files, audit_entries,
 
     c.save()
 
-def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None):
+def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None, custody_log=None):
     """Fixed-structure Forensics (Police) Report, modeled on the reference
     law-enforcement examination report. Reuses the same low-level drawing
     helpers as the other two templates - see the plan's field-mapping table
     for what's reused vs. genuinely new.
 
-    One disclosed gap: the reference report's "Chain of Custody Log" is
-    about physical evidence handoffs between people (officer to analyst to
-    evidence vault) - this app has no concept of that. Reusing this app's
-    Audit Trail (a log of actions taken in the software) under that heading
-    is the closest real fit, not a literal personnel custody-transfer log -
-    labeled "Chain of Custody / Activity Log" rather than silently passed
-    off as the real thing."""
+    The gap this docstring used to disclose is CLOSED (2026-09-15). It said
+    the reference report's "Chain of Custody Log" - physical evidence handoffs
+    between people, officer to analyst to evidence vault - was something "this
+    app has no concept of", so the software Audit Trail stood in for it. That
+    stopped being true when the Physical Evidence Custody Log was added: the
+    app has had the real thing all along, wired into the standard and custom
+    builders, and the one template an actual custody log matters most to was
+    the one still substituting an activity log for it. Both are now drawn,
+    each under its own accurate heading, so a reader can tell a person-to-
+    person handoff from an action taken in this software."""
     from reportlab.lib.pagesizes import letter
 
     c = _numbered_canvas_class()(pdf_path, pagesize=letter)
@@ -4817,7 +4875,9 @@ def _build_pdf_report_police(pdf_path, header, events, urls, files, audit_entrie
     c.bookmarkPage('evidence_coc')
     c.addOutlineEntry("Evidence Collection & Chain of Custody", 'evidence_coc', level=0)
     y = _draw_pdf_evidence_inventory(c, y, events, title="Itemized Evidence & Integrity Hashing", hash_status_by_event=hash_status_by_event)
-    y = _draw_pdf_audit_trail(c, y, audit_entries, title="Chain of Custody / Activity Log")
+    y = _draw_pdf_custody_log_block(c, y, custody_log or [], title="Physical Evidence Custody Log",
+                                    exhibit_numbers=exhibit_numbers)
+    y = _draw_pdf_audit_trail(c, y, audit_entries, title="Software Activity Log (actions taken in this application)")
 
     c.bookmarkPage('methodology')
     c.addOutlineEntry("Forensic Methodology & Tools", 'methodology', level=0)
@@ -5018,12 +5078,19 @@ def _embed_file_into_html(file_path, caption=None, exhibit_number=None, category
         except OSError as e:
             return f'<div class="attach-item"><h3>{heading}</h3>{meta_html}<p class="muted">Could not read image: {esc(str(e))}</p></div>'
     elif ext in ATTACHMENT_TEXT_EXT and size <= ATTACHMENT_MAX_TEXT_EMBED_BYTES:
+        byte_capped = False
         try:
             with open(file_path, 'r', errors='replace') as tf:
                 text_content = tf.read(ATTACHMENT_MAX_TEXT_EMBED_BYTES)
+                byte_capped = bool(tf.read(1))
         except OSError as e:
             text_content = f"(could not read file: {e})"
-        return f'<div class="attach-item"><h3>{heading}</h3>{meta_html}<pre>{esc(text_content)}</pre></div>'
+        # Disclosed, matching the PDF renderer - see its own note. HTML has no
+        # line cap (a <pre> scrolls), so only the byte cap can bite here.
+        cap_html = (f'<p class="hash-mismatch">NOT THE COMPLETE FILE - larger than the '
+                    f'{ATTACHMENT_MAX_TEXT_EMBED_BYTES:,}-byte embed limit, so it was read only that far. '
+                    f'The original is unmodified on disk at the path above.</p>') if byte_capped else ''
+        return f'<div class="attach-item"><h3>{heading}</h3>{meta_html}<pre>{esc(text_content)}</pre>{cap_html}</div>'
     else:
         size_note = f" ({size:,} bytes)" if size else ""
         return f'<div class="attach-item"><h3>{heading}</h3>{meta_html}<p class="muted mono">{esc(file_path)}{esc(size_note)}</p></div>'
@@ -5397,8 +5464,15 @@ def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id
         # compute_case_analysis_coverage(). A carried-forward result from a
         # stopped run is otherwise indistinguishable from a fresh one.
         when_html = (f'<br><span class="muted">on {esc(str(verified_at))}</span>' if verified_at else '')
+        # Acquisition status on every row - see the PDF renderer's own note.
+        acq_status = str(event.get('acquisition_status') or 'UNKNOWN')
+        acq_failed = acq_status.upper() not in ('COMPLETED',)
+        acq_html = (f'<div class="hash-mismatch"><strong>Acquisition: {esc(acq_status)}</strong> - this image is '
+                    f'INCOMPLETE and must not be treated as a full copy of the source.</div>'
+                    if acq_failed else
+                    f'<div class="muted">Acquisition: {esc(acq_status)}</div>')
         parts.append(
-            f'<tr><td>{esc(str(meta.get("evidence_id", "N/A")))}</td>'
+            f'<tr><td>{esc(str(meta.get("evidence_id", "N/A")))}{acq_html}</td>'
             f'<td>{esc(str(drive.get("device_path", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("vendor_model", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("serial_number", "N/A")))}</td>'
@@ -5757,10 +5831,11 @@ def _build_html_report_dfir(header, events, urls, files, audit_entries, case_not
     parts.append('</body></html>')
     return ''.join(parts)
 
-def _build_html_report_police(header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None):
+def _build_html_report_police(header, events, urls, files, audit_entries, case_notes, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, hash_status_by_event=None, custody_log=None):
     """HTML counterpart to _build_pdf_report_police - same fixed section
-    list, same reused data sources, same disclosed Chain-of-Custody-vs-
-    Audit-Trail caveat, see that function's docstring."""
+    list, same reused data sources, and (since 2026-09-15) the same real
+    Physical Evidence Custody Log alongside the software Activity Log rather
+    than the latter standing in for the former. See that function's docstring."""
     esc = html.escape
     has_exhibits = bool(urls or files)
     toc_entries = [
@@ -5799,7 +5874,9 @@ def _build_html_report_police(header, events, urls, files, audit_entries, case_n
     parts.append(f'<h2 id="sec-evidence-coc">Evidence Collection &amp; Chain of Custody</h2>')
     if events:
         parts.append(_html_evidence_inventory_table(events, title="Itemized Evidence & Integrity Hashing", hash_status_by_event=hash_status_by_event))
-    parts.append(_html_audit_trail_block(audit_entries, title="Chain of Custody / Activity Log"))
+    parts.append(_html_custody_log_block(custody_log or [], title="Physical Evidence Custody Log",
+                                         exhibit_numbers=exhibit_numbers))
+    parts.append(_html_audit_trail_block(audit_entries, title="Software Activity Log (actions taken in this application)"))
 
     parts.append(_html_methodology_tools(events, anchor_id='sec-methodology'))
 
@@ -6160,11 +6237,11 @@ def export_report():
             if fmt == 'html':
                 html_content = _build_html_report_police(header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
                                                            tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers,
-                                                           hash_status_by_event=hash_status_by_event)
+                                                           hash_status_by_event=hash_status_by_event, custody_log=custody_log)
             else:
                 _build_pdf_report_police(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, captions=captions,
                                           tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers,
-                                          hash_status_by_event=hash_status_by_event)
+                                          hash_status_by_event=hash_status_by_event, custody_log=custody_log)
         elif template == 'caseuco':
             if fmt == 'html':
                 html_content = _build_html_report_caseuco(header, events, sel_urls, sel_files, audit_entries, case_notes, job_fields, captions=captions,
