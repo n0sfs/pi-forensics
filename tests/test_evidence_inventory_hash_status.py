@@ -417,7 +417,9 @@ def test_police_template_includes_the_real_physical_custody_log(client, evidence
         data = json.load(f)
     data["custody_log"] = [{
         "entry_id": "c1", "timestamp": "2026-02-01 09:00:00",
-        "from_person": "Field Officer Reyes", "to_person": "Lab Analyst Okafor",
+        # The real field names - _html_custody_log_block reads from_custodian/
+        # to_custodian, not from_person/to_person.
+        "from_custodian": "Field Officer Reyes", "to_custodian": "Lab Analyst Okafor",
         "reason": "Transfer to lab", "method": "Hand delivery", "notes": "Sealed bag 7741",
     }]
     with open(case_file, "w") as f:

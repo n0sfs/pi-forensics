@@ -5516,10 +5516,11 @@ def _html_exhibits_block(urls, files, anchor_id=None, title="Exhibits", captions
 
 def _html_audit_trail_block(audit_entries, anchor_id=None, title="Case Activity Log (Audit Trail)"):
     """HTML counterpart to _draw_pdf_audit_trail - shared by all three
-    templates. The Police template reuses this under a different title
-    ("Chain of Custody / Activity Log") since this app's audit trail is the
-    closest real substitute it has for that section, not a literal personnel
-    custody-transfer log - see _build_pdf_report_police's own comment."""
+    templates. The Police template used to reuse this under the title "Chain
+    of Custody / Activity Log", standing in for a physical custody log this
+    app was said not to have. It does have one, and as of 2026-09-15 the
+    Police template draws BOTH - this block is titled "Software Activity Log"
+    there, and _html_custody_log_block renders the real handoffs beside it."""
     esc = html.escape
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
     parts = [f'<h2{id_attr}>{esc(title)}</h2>']
