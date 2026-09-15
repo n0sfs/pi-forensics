@@ -438,9 +438,10 @@ def _stream_piped_subprocess(upstream_cmd, downstream_cmd, on_line, on_poll=None
 # the 9 job-starting routes below writing its own separate {base}_report.json.
 # No-case-active usage (a destination that isn't a real case folder) keeps
 # writing the old flat per-job file, completely unchanged - see
-# build_report_target(). Existing cases stay on the old scattered-files
-# layout until explicitly migrated (see /api/cases/migrate_preview/_apply);
-# there's no silent auto-upgrade, to avoid a case ending up half-migrated.
+# build_report_target(). Note this no-case flat-file path is NOT legacy and
+# is not going anywhere - it is how a job run without an active case records
+# itself. The genuinely legacy per-case layout (case_info.json plus scattered
+# *_report.json) was removed on 2026-09-15, migration routes included.
 class CaseEventTarget:
     """Marks a report write as 'append/update one event inside a case's
     consolidated file' rather than 'overwrite a standalone _report.json'."""

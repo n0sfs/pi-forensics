@@ -1011,11 +1011,11 @@ def ensure_examiner_recorded(case_folder, username):
     shape _auto_tag_case_artifact()/_record_analysis_result() already use
     elsewhere in this module.
 
-    Resolves the case's marker file the same way list_case_folders() does
-    (consolidated {slug}_case.json first, else a legacy case_info.json),
-    both of which store `examiners` at the top level - confirmed by
-    reading list_case_folders()'s own two branches before writing this,
-    not assumed. Deliberately does its OWN read/write rather than reusing
+    Resolves the case's marker file the same way list_case_folders() does -
+    the consolidated {slug}_case.json, which is now the only case format
+    (the legacy case_info.json fallback was removed 2026-09-15 along with
+    the rest of legacy-case support). Deliberately does its OWN read/write
+    rather than reusing
     core/jobs.py's _read_case_file() - that function's graceful "return an
     empty default shape" behavior on a read failure is correct for its own
     callers (about to overwrite most of the file anyway), but would be
@@ -1040,13 +1040,7 @@ def ensure_examiner_recorded(case_folder, username):
     try:
         marker_path = case_consolidated_path(case_folder)
         if not marker_path:
-            resolved_folder = safe_path(case_folder)
-            if not resolved_folder or not os.path.isdir(resolved_folder):
-                return
-            legacy_path = os.path.join(resolved_folder, 'case_info.json')
-            if not os.path.isfile(legacy_path):
-                return
-            marker_path = legacy_path
+            return
         with open(marker_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         examiners = data.get('examiners')
@@ -1064,9 +1058,15 @@ def ensure_examiner_recorded(case_folder, username):
 
 
 def list_case_folders():
-    """Walks EVIDENCE_ROOT for every real case folder (both the modern
-    consolidated {slug}_case.json schema and the legacy case_info.json one
-    not yet migrated) - factored out of routes/case_management.py's
+    """Walks EVIDENCE_ROOT for every real case folder, identified by its
+    consolidated {slug}_case.json marker.
+
+    The pre-consolidation case_info.json layout is no longer recognised
+    (removed 2026-09-15). It had been supported purely so an old case could
+    be found and migrated; with no such cases left, carrying a second schema
+    through every case-listing consumer bought nothing, and it was the reason
+    total_cases and active_cases disagreed about whether an unmigrated case
+    counted as active. Factored out of routes/case_management.py's
     list_cases() (which now just calls this and jsonify()s the result
     unchanged - pure code motion, zero behavior change) once this became a
     2nd caller (cross_case_hash_search() below), matching this project's
@@ -1133,24 +1133,6 @@ def list_case_folders():
             except (json.JSONDecodeError, OSError):
                 pass
             dirs[:] = []  # a case folder never contains another case folder
-        elif 'case_info.json' in files:
-            try:
-                with open(os.path.join(root, 'case_info.json'), 'r') as f:
-                    data = json.load(f)
-                cases.append({
-                    "case_number": data.get('case_number', '--'),
-                    "examiner": derive_examiner_display(data.get('examiners'), data.get('examiner'), default='--'),
-                    "case_folder": data.get('case_folder', root),
-                    "created_at": data.get('created_at', '--'),
-                    "notes": data.get('notes', ''),
-                    "case_status": data.get('case_status') or 'Open',
-                    "status_before_archive": data.get('status_before_archive'),
-                    "event_count": None,
-                    "schema": "legacy",
-                })
-            except (json.JSONDecodeError, OSError):
-                pass
-            dirs[:] = []
 
     cases.sort(key=lambda c: c.get('created_at', ''), reverse=True)
     return cases
@@ -1175,8 +1157,8 @@ def cross_case_hash_search(hash_value):
         cases = cases[:CROSS_CASE_SEARCH_MAX_CASES]
         truncated = True
     for case in cases:
-        if case.get('schema') != 'consolidated':
-            continue  # legacy single-job reports have their own report JSON shape, out of scope for this pass
+        # No schema guard needed: list_case_folders() only returns cases with a
+        # consolidated marker now (2026-09-15).
         case_file = case_consolidated_path(case['case_folder'])
         if not case_file:
             continue
