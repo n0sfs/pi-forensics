@@ -115,3 +115,16 @@ tasks.md
 plan.md
 docs/DEVELOPMENT_LOG.md
 .claude/
+
+# Source data fetched by tools/bundled_keyword_lists/ when REGENERATING the
+# bundled lists (2026-09-15). Its own README tells you to curl these straight
+# into that directory, so without this a regeneration run leaves several MB of
+# upstream data staged in the repo - the point is to commit the RESULT, not the
+# inputs, which are large and go stale. The generated lists themselves
+# (bundled_keyword_lists/*.json) ARE committed.
+tools/bundled_keyword_lists/gitleaks.toml
+tools/bundled_keyword_lists/gitleaks_rules.json
+tools/bundled_keyword_lists/creds_selected.json
+tools/bundled_keyword_lists/dea_slang.pdf
+tools/bundled_keyword_lists/dea_slang.txt
+tools/bundled_keyword_lists/dea_themes.json

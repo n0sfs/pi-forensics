@@ -158,7 +158,13 @@ zero mount step. The right-click menu is context-aware — only tools that could
 selected file, folder, or image are shown, and a tool already run against the exact selected file
 shows a checkmark with the prior result. Right-click any file for ExifTool metadata, Binwalk, ClamAV, `strings`, `hashdeep`,
 an MVT spyware/IOC scan, YARA rule scanning, and hash-set/known-bad-URL matching against your own
-saved lists (with one-click MalwareBazaar/URLhaus imports). Dedicated artifact parsers recover
+saved lists (with one-click MalwareBazaar/URLhaus imports). Keyword and regex lists are searchable
+against any file or image alongside the built-in email/URL/IP/card/phone/crypto-address categories,
+and the app **ships with reference lists you can import in one click** — DEA drug slang (public
+domain, ~1,800 terms across six themed lists), credential and API-key patterns adapted from
+gitleaks, OFAC-sanctioned cryptocurrency addresses, and anti-forensics/evidence-destruction tooling.
+Each one states its source, licence and limitations before you import it, because every one of them
+over-matches in some way you need to know about before acting on a hit. Dedicated artifact parsers recover
 Windows Registry hives (incl. Amcache, ShellBags, Shimcache/AppCompatCache, UserAssist, BAM/DAM
 program-execution timestamps, RDP connection history — which remote hosts this user connected to
 via Remote Desktop, with the last-used username — Office recent files/folders per application,
@@ -274,7 +280,7 @@ A birds-eye view of how the pieces fit together, from the browser down to the ha
 flowchart TD
     Client["Browser<br/>kiosk touchscreen or remote/LAN"]
     Web["gunicorn &rarr; Flask (app.py)<br/>session auth &middot; RBAC"]
-    App["Application &mdash; 10 Flask Blueprints<br/>routes/*.py"]
+    App["Application &mdash; 11 Flask Blueprints<br/>routes/*.py"]
     Core["Shared Core &mdash; core/*.py<br/>single background-job slot &middot; safe_path() sandbox"]
     Tools["External Tools<br/>dc3dd &middot; PhotoRec &middot; The Sleuth Kit &middot; Volatility3 &middot; MVT &middot; ..."]
     Data[("Data & Storage<br/>/mnt evidence root &middot; runtime_config.json &middot; per-case SQLite index")]
@@ -296,7 +302,8 @@ flowchart TD
 | **Shared Core** | `core/*.py` — anything more than one Blueprint needs. Most notable: `jobs.py`, which holds the **one** shared background-job slot for the whole app (only one acquisition/recovery/analysis job ever runs station-wide, regardless of which tab started it), and `paths.py`, whose `safe_path()` is the single reused path-traversal boundary every filesystem-touching route goes through. |
 | **Privilege boundary** | The service account is unprivileged by design. Every tool that needs to read a raw device is launched via `sudo` with an **exact-match** grant (full absolute binary path, arguments pinned wherever feasible) — never a wildcard on the command itself. |
 | **External Tools** | Real, independently-trusted forensic tools, wired together rather than reimplemented — see [What it does](#what-it-does) above for the full list by category. |
-| **Data & Storage** | No external database. Everything lives under the evidence root (`/mnt`) as plain files or a per-case SQLite index, plus `runtime_config.json` (station config, `0600`) and an append-only `chain_of_custody.log`. |
+| **Data & Storage** | No external database. Everything lives under the evidence root (`/mnt`) as plain files or a per-case SQLite index, plus `runtime_config.json` (station config, `0600`) and an append-only `chain_of_custody.log`. A case is one consolidated `{case}_case.json` per case folder. |
+| **Bundled reference data** | `bundled_keyword_lists/` holds the importable keyword/regex lists described above — vendored rather than fetched on demand, because this appliance is routinely used air-gapped. `tools/bundled_keyword_lists/` holds the generators that produce them, so the data is reproducible and its provenance auditable. |
 | **OS & Hardware** | Raspberry Pi (or similar ARM SBC) running Debian, with a `udev` rule that write-blocks every newly-connected block device and `systemd` managing the service. |
 
 ---
