@@ -752,11 +752,16 @@
                                                     </div>
                                                     <div class="d-flex flex-wrap align-items-center gap-3 mb-2 small">
                                                         <span class="text-subtle">Category:</span>
-                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-category-check" value="Communications" checked onchange="renderCaseTimeline()">Communications</label>
-                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-category-check" value="Web Activity" checked onchange="renderCaseTimeline()">Web Activity</label>
-                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-category-check" value="Social Media" checked onchange="renderCaseTimeline()">Social Media</label>
-                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-category-check" value="Device &amp; System" checked onchange="renderCaseTimeline()">Device &amp; System</label>
-                                                        <label class="text-subtle"><input type="checkbox" class="form-check-input me-1 case-timeline-category-check" value="Filesystem" checked onchange="renderCaseTimeline()">Filesystem</label>
+                                                        <!-- Built from the timeline response's own `categories` list by
+                                                             renderCaseTimelineCategoryFilters() (2026-09-15), not hardcoded
+                                                             here. The five labels that used to live in this markup were a
+                                                             second copy of routes/reporting.py's CASE_TIMELINE_CATEGORIES -
+                                                             exactly the two-independent-copies trap CLAUDE.md calls out and
+                                                             this project has been bitten by twice. A new server-side
+                                                             category would have had no checkbox, so its rows could never be
+                                                             shown; a removed one would have left a checkbox matching
+                                                             nothing. -->
+                                                        <span id="caseTimelineCategoryFilters" style="display:contents;"></span>
                                                         <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setCaseTimelineCategoryFilter(['Communications','Web Activity','Social Media'])">Phone Activity Only</button>
                                                         <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2" onclick="setCaseTimelineCategoryFilter(null)">All Categories</button>
                                                     </div>

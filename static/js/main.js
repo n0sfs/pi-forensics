@@ -16130,6 +16130,7 @@ async function loadCaseTimeline() {
             return;
         }
         caseTimelineCache = data;
+        renderCaseTimelineCategoryFilters(data.categories || []);
         populateCaseTimelineEvidenceFilter(data.events);
         populateCaseTimelineYearFilter(data.events);
         populateCaseTimelineContactFilter(data.contacts || []);
@@ -16137,6 +16138,50 @@ async function loadCaseTimeline() {
     } catch (err) {
         body.innerHTML = '<tr><td colspan="6" class="text-danger p-2">Request failed.</td></tr>';
     }
+}
+
+// Builds the category checkboxes from the timeline response's own
+// `categories` list (2026-09-15). They used to be five hardcoded <label>s in
+// reporting.html - a second, independent copy of routes/reporting.py's
+// CASE_TIMELINE_CATEGORIES, which is exactly the two-copies trap CLAUDE.md
+// warns about and this project has already been bitten by twice. A category
+// added server-side would have had no checkbox at all, so its rows could
+// never be displayed under any filter combination; a removed one would have
+// left a checkbox matching nothing.
+//
+// Preserves what is ticked across a reload OF THE SAME CASE, so re-opening a
+// timeline does not silently re-tick a category the examiner turned off - but
+// resets to all-ticked when the case changes. Carrying a filter across a case
+// switch was its own small bug: an examiner who hid Filesystem on one case
+// opened the next one already hiding it, with no indication that rows were
+// being withheld. A category genuinely new to this response defaults to
+// ticked, the same "show everything until told otherwise" default the
+// hardcoded markup had.
+let caseTimelineCategoryFiltersCase = null;
+
+function renderCaseTimelineCategoryFilters(categories) {
+    const host = document.getElementById('caseTimelineCategoryFilters');
+    if (!host) return;
+    const thisCase = (activeCase && activeCase.case_folder) || null;
+    const sameCase = thisCase !== null && thisCase === caseTimelineCategoryFiltersCase;
+    caseTimelineCategoryFiltersCase = thisCase;
+    const previouslyUnchecked = sameCase ? new Set(
+        [...document.querySelectorAll('.case-timeline-category-check:not(:checked)')].map((el) => el.value)
+    ) : new Set();
+    host.innerHTML = '';
+    (categories || []).forEach((category) => {
+        const label = document.createElement('label');
+        label.className = 'text-subtle me-3';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input me-1 case-timeline-category-check';
+        cb.value = category;
+        cb.checked = !previouslyUnchecked.has(category);
+        cb.onchange = () => renderCaseTimeline();
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(category));  // server-supplied label - text node only
+        host.appendChild(label);
+    });
 }
 
 function populateCaseTimelineContactFilter(contacts) {

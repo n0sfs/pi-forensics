@@ -3005,3 +3005,58 @@ def test_two_genuinely_different_people_on_one_row_both_still_count(case_folder)
     assert sorted(c["total_communications"] for c in result["contacts"]) == [1, 1]
     # And it is still recorded as the two of them appearing together.
     assert len(result["co_occurrences"]) == 1
+
+# --- 2026-09-15: the .onion scan was a bare '%.onion%' SQL substring test, so
+# any word containing that literal sequence - ".onionrings.html" was the real
+# example - was listed under a heading reading ".onion addresses in indexed
+# artifacts". A Tor hidden-service reference is a real finding; a recipe page
+# must not be able to manufacture one. ---
+@pytest.mark.parametrize("text,expected", [
+    ("http://expyuzz4wqqyqhjn.onion/", True),
+    ("http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/", True),
+    ("Visit facebookwkhpilnemxj7asaniu7vnjjbiltxjqhye3mhbshg7kx5tfyd.onion today", True),
+    ("EXPYUZZ4WQQYQHJN.ONION", True),
+    ("see expyuzz4wqqyqhjn.onion.", True),          # sentence-ending period
+    ("https://www.bacon.onionrings.html", False),   # the reported false positive
+    ("my.onionsoup.example.com", False),
+    ("short.onion", False),                         # too short to be a hidden service
+    ("ONIONADDRESS1234.ONION", False),              # '1' and '0' are not base32
+    ("expyuzz4wqqyqhjn.onion.com", False),          # a clearnet host, not a hidden service
+])
+def test_onion_host_pattern_matches_only_real_hidden_services(text, expected):
+    assert bool(case_index_db._ONION_HOST_RE.search(text)) is expected
+
+
+def test_detect_privacy_tools_does_not_report_a_word_containing_dot_onion(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "history"),
+        [{"artifact_type": "chrome_history", "title": "Best Onion Rings",
+          "url": "https://www.bacon.onionrings.html", "value": "", "timestamp": 1700000000.0,
+          "extra": {}}])
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert result["onion_references"] == []
+
+
+def test_detect_privacy_tools_still_reports_a_real_hidden_service(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "history"),
+        [{"artifact_type": "chrome_history", "title": "search",
+          "url": "http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/",
+          "value": "", "timestamp": 1700000000.0, "extra": {}}])
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert len(result["onion_references"]) == 1
+
+
+def test_undated_onion_hits_are_not_the_first_to_be_cut(case_folder):
+    """SQLite sorts NULL below every value, so a plain ORDER BY timestamp DESC
+    put undated rows last - making them the first casualties of the row limit.
+    An undated hit is not less real than a dated one."""
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mixed"),
+        [{"artifact_type": "android_sms_message", "title": "",
+          "url": "", "value": "http://expyuzz4wqqyqhjn.onion/", "timestamp": None, "extra": {}},
+         {"artifact_type": "chrome_history", "title": "",
+          "url": "http://expyuzz4wqqyqhjn.onion/", "value": "", "timestamp": 1700000000.0,
+          "extra": {}}])
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert len(result["onion_references"]) == 2

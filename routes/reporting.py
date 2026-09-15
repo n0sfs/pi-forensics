@@ -3937,26 +3937,38 @@ def _choose_geo_map_zoom(placemarks):
             return zoom
     return GEO_MAP_ZOOM_MIN
 
-def _fetch_osm_tile(z, x, y):
-    """Fetches one 256x256 OSM tile's raw PNG bytes - live first (with a
-    real, honest User-Agent per OSM's tile usage policy), falling back to
-    install.py's optional local offline-tile cache per tile if present -
-    mirrors the live app's own online-first/offline-fallback tile behavior
-    (_createGeoTileLayer() in main.js), just server-side and per-request
-    instead of a persistent map widget. Returns None (never raises) if both
-    sources come up empty or the server signals a policy block (the same
-    X-Blocked detection install.py's own bulk tile-cache downloader already
-    uses) - the map image simply leaves that tile blank, matching the
+# Latches off live tile fetching for the rest of one export once the network
+# has demonstrably failed (2026-09-15). Each map can request up to 40 tiles at
+# GEO_TILE_FETCH_TIMEOUT seconds apiece, so on an air-gapped station with a
+# blackholed DNS the synchronous /api/export_report request blocked for minutes
+# per KML file while every single tile timed out identically. One failure is
+# enough to know the rest will fail too.
+class _TileFetchBudget:
+    def __init__(self):
+        self.live_available = True
+
+    def note_failure(self):
+        self.live_available = False
+
+
+def _fetch_osm_tile(z, x, y, budget=None):
+    """Fetches one 256x256 OSM tile's raw PNG bytes.
+
+    LOCAL CACHE FIRST, live second (order reversed 2026-09-15). An outbound
+    tile request tells a third party, at export time, roughly where the
+    evidence in this case is - the tile coordinates ARE the location. That is
+    a meaningfully different disclosure from the interactive viewer, where an
+    examiner is actively looking at a map and the station is normally online
+    anyway; here it happens as a side effect of pressing Export. A station
+    that ran install.py's offline tile-cache step now makes no outbound
+    request at all for any area it has cached, and only falls through to the
+    network for tiles it genuinely does not hold.
+
+    Live fetches still carry a real, honest User-Agent per OSM's tile usage
+    policy, and still honour the X-Blocked policy signal install.py's own bulk
+    downloader detects. Returns None (never raises) when both sources come up
+    empty - the map image simply leaves that tile blank, matching the
     interactive viewer's own graceful per-tile degradation."""
-    try:
-        req = urllib.request.Request(
-            f"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-            headers={"User-Agent": GEO_TILE_USER_AGENT})
-        with urllib.request.urlopen(req, timeout=GEO_TILE_FETCH_TIMEOUT) as resp:
-            if not resp.headers.get("X-Blocked"):
-                return resp.read()
-    except Exception:
-        pass
     # Flask's default static_folder is <app root>/static - computed directly
     # via INSTALL_DIR rather than importing the app object itself (which
     # would be a circular import: app.py -> routes.reporting -> app.py).
@@ -3967,6 +3979,18 @@ def _fetch_osm_tile(z, x, y):
                 return f.read()
         except OSError:
             pass
+    if budget is not None and not budget.live_available:
+        return None
+    try:
+        req = urllib.request.Request(
+            f"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+            headers={"User-Agent": GEO_TILE_USER_AGENT})
+        with urllib.request.urlopen(req, timeout=GEO_TILE_FETCH_TIMEOUT) as resp:
+            if not resp.headers.get("X-Blocked"):
+                return resp.read()
+    except Exception:
+        if budget is not None:
+            budget.note_failure()
     return None
 
 def _draw_pdf_geo_map_image(c, x0, y0, placemarks):
@@ -4000,6 +4024,9 @@ def _draw_pdf_geo_map_image(c, x0, y0, placemarks):
 
     any_drawn = False
     tile_count = 0
+    # One budget per map: the first live-fetch failure stops the remaining
+    # tiles from each waiting out their own timeout. See _TileFetchBudget.
+    tile_budget = _TileFetchBudget()
     tile_x_min = int(window_left // 256)
     tile_x_max = int((window_left + GEO_MAP_PX_WIDTH) // 256)
     tile_y_min = int(window_top // 256)
@@ -4009,7 +4036,7 @@ def _draw_pdf_geo_map_image(c, x0, y0, placemarks):
             tile_count += 1
             if tile_count > GEO_TILE_MAX_COUNT or tx < 0 or ty < 0 or tx >= n or ty >= n:
                 continue
-            tile_bytes = _fetch_osm_tile(zoom, tx, ty)
+            tile_bytes = _fetch_osm_tile(zoom, tx, ty, budget=tile_budget)
             if not tile_bytes:
                 continue
             try:
@@ -5531,7 +5558,21 @@ def _html_exhibits_block(urls, files, anchor_id=None, title="Exhibits", captions
     if urls:
         parts.append('<p><strong>Reference Links / URLs:</strong></p><ul>')
         for url in urls:
-            parts.append(f'<li><a href="{esc(str(url))}">{esc(str(url))}</a></li>')
+            # Only http/https/ftp/mailto become live links (2026-09-15).
+            # html.escape() stops attribute breakout but not the SCHEME, so a
+            # reference URL saved as "javascript:..." became a clickable link
+            # that runs script in whoever opens the exported report. These
+            # values are examiner-entered rather than evidence-derived, so it
+            # is not the classic hostile-input path - but an exported report is
+            # a file handed to prosecutors, defence and courts, and it should
+            # not be capable of executing anything. Anything else still
+            # appears in full, as plain text, so nothing is hidden.
+            text = str(url)
+            if _REPORT_SAFE_URL_SCHEME_RE.match(text):
+                parts.append(f'<li><a href="{esc(text)}">{esc(text)}</a></li>')
+            else:
+                parts.append(f'<li class="mono">{esc(text)} '
+                             f'<span class="muted">(not linked - unrecognised URL scheme)</span></li>')
         parts.append('</ul>')
     if files:
         parts.append('<p class="muted"><em>Exhibit numbers reflect this case\'s current attachment order.</em></p>')
@@ -5632,6 +5673,13 @@ def _html_report_style_block():
         '.toc a:hover{text-decoration:underline;}'
         '</style>'
     )
+
+# Schemes an exported report is willing to make CLICKABLE. Deliberately an
+# allowlist, not a javascript:-blocklist - data:, vbscript: and any future
+# scheme are equally unwanted in a document handed to third parties, and an
+# allowlist does not need updating to keep excluding them.
+_REPORT_SAFE_URL_SCHEME_RE = re.compile(r'^(?:https?|ftps?|mailto):', re.IGNORECASE)
+
 
 def _html_report_branding_header(header, title):
     """Renders the branding-header block (fixed template title + station's
