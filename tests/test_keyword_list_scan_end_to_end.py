@@ -32,16 +32,23 @@ from tests.conftest import RemoteTestClient
 
 # Deliberately contains one hit for each list plus one built-in-category hit,
 # so a test can tell "the keyword list ran" from "the scan ran at all".
+# The GitHub-token line is ASSEMBLED rather than written literally: a real
+# ghp_-shaped string committed to a public repo trips GitHub's own secret
+# scanning and generates a false-positive alert, even though this one is
+# obviously synthetic. Built here it still matches the rule under test.
+_FAKE_GH_TOKEN = "gh" + "p_" + ("A" * 36)
+
 PROBE_TEXT = """Install log excerpt.
 User ran BleachBit and then sdelete -p 3 on the temp folder.
 A VeraCrypt container was mounted from the desktop.
 export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+token: {token}
 -----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAA
 -----END OPENSSH PRIVATE KEY-----
 Contact: someone@example.com
 Nothing about clean disks here otherwise.
-"""
+""".format(token=_FAKE_GH_TOKEN)
 
 PLAIN_LIST = {
     "id": "af_tools", "name": "Anti-Forensics Tools",
@@ -116,6 +123,7 @@ def test_a_regex_list_finds_real_pattern_matches(client, probe):
     out = data["output"]
     assert "Credentials" in out
     assert "AKIAIOSFODNN7EXAMPLE" in out
+    assert _FAKE_GH_TOKEN in out
     assert "-----BEGIN OPENSSH PRIVATE KEY-----" in out
 
 
@@ -142,7 +150,7 @@ def test_both_lists_together_report_both_categories(client, probe):
     assert "Anti-Forensics Tools" in out
     assert "Credentials" in out
     # One built-in hit (the email) plus three from each list.
-    assert data["total_hits"] == 7
+    assert data["total_hits"] == 7, out
 
 
 def test_an_unknown_list_id_degrades_instead_of_failing_the_scan(client, probe):
