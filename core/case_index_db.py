@@ -1836,6 +1836,38 @@ def _build_evidence_id_resolvers(case_folder):
     return image_map, source_map
 
 
+def _resolve_row_evidence_id(image_path, source_path, image_map, source_map):
+    """Attributes one parsed_artifacts row to the evidence item that produced it.
+
+    image_path is an exact lookup - it IS the acquired image's own path, so
+    equality is the right test. source_path is matched exactly first, then by
+    containment (2026-09-14): a real_fs source records whatever path its own
+    parser was pointed at, which is frequently a file or subfolder INSIDE the
+    acquisition's output rather than the output root. Companion-app extraction
+    happens to record the exact output_destination, which is why exact-only
+    worked when this was written and why the gap went unnoticed - an MTP pull
+    or an ALEAPP-parsed folder records per-file paths underneath it, and every
+    one of those was silently going unattributed.
+
+    Longest match wins, so a nested acquisition inside another's output is
+    credited to the innermost one that actually produced it rather than the
+    outer directory that merely contains it."""
+    if image_path:
+        direct = image_map.get(image_path)
+        if direct:
+            return direct
+    if not source_path:
+        return None
+    exact = source_map.get(source_path)
+    if exact:
+        return exact
+    best, best_len = None, -1
+    for root, evidence_id in source_map.items():
+        if source_path.startswith(root.rstrip(os.sep) + os.sep) and len(root) > best_len:
+            best, best_len = evidence_id, len(root)
+    return best
+
+
 def correlate_contacts(case_folder):
     """Builds a case-wide contact correlation report, now spanning TWO
     identity spaces (2026-09-07) - phone numbers (the original scope) and
@@ -2073,8 +2105,8 @@ def correlate_contacts(case_folder):
             f"ORDER BY timestamp DESC LIMIT ?",
             comm_types + (CONTACT_CORRELATION_MAX_ROWS_PER_TYPE * len(comm_types),))
         for artifact_type, title, value, timestamp, source_path, image_path, extra_json in cur:
-            row_evidence_id = (image_path_evidence_map.get(image_path) if image_path else None) \
-                or (source_path_evidence_map.get(source_path) if source_path else None)
+            row_evidence_id = _resolve_row_evidence_id(
+                image_path, source_path, image_path_evidence_map, source_path_evidence_map)
             is_leapp = artifact_type in LEAPP_COMM_TYPES
             spec = LEAPP_COMM_TYPES[artifact_type] if is_leapp else CONTACT_CORRELATION_COMM_TYPES[artifact_type]
             try:
@@ -2162,8 +2194,8 @@ def correlate_contacts(case_folder):
             f"ORDER BY timestamp DESC LIMIT ?",
             email_comm_types + (CONTACT_CORRELATION_MAX_ROWS_PER_TYPE * len(email_comm_types),))
         for artifact_type, title, value, timestamp, source_path, image_path, extra_json in cur:
-            row_evidence_id = (image_path_evidence_map.get(image_path) if image_path else None) \
-                or (source_path_evidence_map.get(source_path) if source_path else None)
+            row_evidence_id = _resolve_row_evidence_id(
+                image_path, source_path, image_path_evidence_map, source_path_evidence_map)
             channel = CONTACT_CORRELATION_EMAIL_COMM_TYPES[artifact_type]
             try:
                 extra = json.loads(extra_json) if extra_json else {}
@@ -2553,6 +2585,29 @@ COC_ACTION_TO_STEP = {
     "bugreport_parsed": "bugreport_parse",
 }
 
+# Analysis that was genuinely run but has no Auto Analyze step equivalent
+# (2026-09-14). These were previously invisible to the case-wide grid: not
+# wrong, since the grid asks "which of the STANDARD steps has this item had",
+# and inventing a step for a tool that isn't one would answer a different
+# question - but an examiner who parsed an item's LNK files or USN journal
+# still did real work, and nothing case-wide showed it.
+#
+# Reported in their own bucket rather than folded into steps_completed, so the
+# standard-step list keeps meaning "what is left to do on this item" while the
+# work that doesn't fit that model is still credited. If one of these ever
+# becomes a real Auto Analyze step, move it into COC_ACTION_TO_STEP above -
+# the two maps are deliberately disjoint.
+COC_ACTION_OTHER_ANALYSIS_LABELS = {
+    "thumbcache_parsed": "Thumbcache",
+    "sticky_notes_parsed": "Sticky Notes",
+    "usnjrnl_file_parsed": "USN Journal",
+    "lnk_file_parsed": "LNK Shortcuts",
+    "macos_launchd_parsed": "macOS LaunchAgents/Daemons",
+    "email_files_parsed": "Email Files",
+    "windows_activity_files_parsed": "Windows Activity (ActivitiesCache)",
+    "whatsapp_databases_parsed": "WhatsApp Databases",
+}
+
 # Whichever of these a given action happens to use for the thing it analyzed -
 # confirmed by reading all 27 call sites, which use "directory" for the
 # folder-scanning routes and "path" for the single-file ones.
@@ -2649,7 +2704,7 @@ def compute_case_analysis_coverage(case_folder):
                     action = entry.get('action')
                     if action in ('auto_analyze_complete', 'auto_analyze_mobile_complete'):
                         coc_entries.append(entry)
-                    elif action in COC_ACTION_TO_STEP:
+                    elif action in COC_ACTION_TO_STEP or action in COC_ACTION_OTHER_ANALYSIS_LABELS:
                         individual_coc_entries.append(entry)
     except Exception:
         pass  # a missing/unreadable COC log just means "no steps known covered yet", not a hard failure
@@ -2714,14 +2769,21 @@ def compute_case_analysis_coverage(case_folder):
         # each know about work the other doesn't.
         # The individually-logged right-click parses (2026-09-14). These only
         # ever log on success, so reaching one here means the step really ran.
+        other_analysis = set()
         for entry in individual_coc_entries:
-            step = COC_ACTION_TO_STEP.get(entry.get('action'))
-            if not step:
+            action = entry.get('action')
+            step = COC_ACTION_TO_STEP.get(action)
+            other_label = COC_ACTION_OTHER_ANALYSIS_LABELS.get(action)
+            if not step and not other_label:
                 continue
             details = entry.get('details') or {}
             logged = next((details.get(k) for k in COC_ACTION_PATH_KEYS if details.get(k)), None)
-            if _path_is_within(logged, target_path):
+            if not _path_is_within(logged, target_path):
+                continue
+            if step:
                 completed_steps.add(step)
+            else:
+                other_analysis.add(other_label)
 
         ar_completed, ar_failed = _analysis_results_by_step(case_folder, target_path)
         completed_steps |= ar_completed
@@ -2758,6 +2820,9 @@ def compute_case_analysis_coverage(case_folder):
             # three lists, which genuinely means never tried.
             "steps_failed": dict(sorted(failed_steps.items())),
             "steps_not_applicable": sorted(not_applicable_steps),
+            # Real analysis with no standard-step equivalent - see
+            # COC_ACTION_OTHER_ANALYSIS_LABELS for why it is its own bucket.
+            "other_analysis": sorted(other_analysis),
             "hash_status": hash_status,
             "tag_count": tag_count,
         })
