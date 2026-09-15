@@ -1015,6 +1015,22 @@ def _collect_case_timeline(events):
     if total_sources == 0:
         return {"events": [], "notes": notes, "truncated": False}
     per_source_budget = max(TSK_MAX_TIMELINE_ENTRIES // total_sources, TIMELINE_MIN_PER_FS_BUDGET)
+    # The budget SHRINKS as a case grows - 5,000 entries split across every
+    # filesystem and pulled folder, so a second evidence item halves what the
+    # first one contributes. That is a deliberate bound (this walk is the
+    # expensive part of building a timeline, and it streams, so a source's
+    # total is not knowable before its share is already being spent), but it
+    # used to be signalled only by the generic "this timeline was truncated"
+    # line. An examiner who added an evidence item and found the first one's
+    # coverage quietly halved had nothing to tell them why (2026-09-15).
+    #
+    # Each source that actually hits its share now says so by name, with the
+    # arithmetic, so the effect is attributable rather than mysterious.
+    def _budget_note(label):
+        return (f"{label}: stopped at {per_source_budget:,} timeline entries. The "
+                f"{TSK_MAX_TIMELINE_ENTRIES:,}-entry filesystem-timeline budget is shared across "
+                f"{total_sources} source(s) in this case, so each gets {per_source_budget:,}. "
+                f"Adding another evidence item reduces this further.")
 
     all_events = []
     truncated = False
@@ -1045,6 +1061,7 @@ def _collect_case_timeline(events):
                         count += 1
                 if count >= per_source_budget:
                     truncated = True
+                    notes.append(_budget_note(f"{evidence_id} ({fs_info['label']})"))
                     break
             if walk_stats.get("depth_capped"):
                 notes.append(f"{evidence_id} ({fs_info['label']}): directories nested deeper than "
@@ -1114,6 +1131,9 @@ def _collect_case_timeline(events):
                     break
             if walk_capped or count >= per_source_budget:
                 break
+        if count >= per_source_budget:
+            notes.append(_budget_note(evidence_id))
+            truncated = True
         if walk_capped:
             notes.append(f"{evidence_id}: folder contains more than {FOLDER_TIMELINE_MAX_FILES_WALKED} files - "
                          f"only the first {FOLDER_TIMELINE_MAX_FILES_WALKED} were scanned for timeline entries.")
@@ -4367,7 +4387,7 @@ def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: C
     y -= 12
     return y
 
-def _draw_pdf_contents_page(c, resolved_sections, event_count):
+def _draw_pdf_contents_page(c, resolved_sections, event_count, has_exhibits=True):
     """A plain Report Contents listing, not page-number cross-referenced -
     this renderer draws in a single streaming pass with no forward
     knowledge of final page numbers, so a real "Executive Summary ... 4"
@@ -4381,14 +4401,24 @@ def _draw_pdf_contents_page(c, resolved_sections, event_count):
     _resolve_section_order() - this function only decides how to *display*
     each entry (the one special case: acquisition_method gets an evidence-
     item-count suffix here, matching its pre-existing behavior, while its
-    bookmark/on-page label elsewhere stays plain)."""
+    bookmark/on-page label elsewhere stays plain).
+
+    `has_exhibits` skips the attachments entry when the export has nothing
+    attached (2026-09-15). _build_html_toc() has always done this and the HTML
+    draw loop skips the section itself too, so an empty export's HTML simply
+    has no Exhibits; the PDF listed "Exhibits" in Report Contents and then
+    drew an empty section under it. Two formats of the same export disagreeing
+    about which sections exist is the kind of small inconsistency a reader
+    notices and has no way to resolve."""
     y = 700
     c.setFont("Helvetica-Bold", 13)
     c.drawString(50, y, "Report Contents")
     y -= 25
     c.setFont("Helvetica", 10.5)
 
-    for i, entry in enumerate(resolved_sections, start=1):
+    shown = [e for e in resolved_sections
+             if not (e["key"] == "attachments" and not has_exhibits)]
+    for i, entry in enumerate(shown, start=1):
         display = entry["title"]
         if entry["key"] == "acquisition_method" and event_count > 0:
             plural = "s" if event_count != 1 else ""
@@ -4762,7 +4792,8 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
     # title page reads as a title page and the outline reads as an outline,
     # rather than blending into the Case Information that follows.
     c.showPage()
-    _draw_pdf_contents_page(c, resolved_sections, len(events))
+    has_exhibits = bool(urls or files)
+    _draw_pdf_contents_page(c, resolved_sections, len(events), has_exhibits=has_exhibits)
     c.showPage()
     y = 750
 
@@ -4800,6 +4831,11 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
 
     for i, entry in enumerate(resolved_sections):
         key, title = entry["key"], entry["title"]
+        if key == "attachments" and not has_exhibits:
+            # Matches _build_html_toc()/the HTML draw loop - see
+            # _draw_pdf_contents_page()'s note on why the two formats must
+            # agree about which sections exist.
+            continue
         # Some blocks (case_info, acquisition_method) draw at a fixed
         # y/page-fresh position internally and have no pagination guard of
         # their own - safe today only because they're always drawn first,

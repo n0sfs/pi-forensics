@@ -11811,15 +11811,24 @@ async function viewContactInTimeline(contactKey) {
     // to") and Evidence Timeline ("when, exactly, interleaved with
     // everything else on the device") - switches tab, then filters the
     // Timeline down to just this one correlated contact's own activity.
-    // Uses a real .click() (not new bootstrap.Tab(tab).show()) so the tab
-    // button's own onclick - loadCaseTimeline() - actually fires, matching
-    // this app's own established .click()-vs-Tab.show() distinction
-    // elsewhere in this file; a second, explicit await here (redundant
-    // with, but harmless alongside, that onclick's own fire-and-forget
-    // call) is what guarantees caseTimelineCache/the contact <select> are
-    // genuinely populated before this function tries to set a value on it.
+    //
+    // ONE load, not two (2026-09-15). This used to .click() the tab -
+    // firing its onclick's own fire-and-forget loadCaseTimeline() - and then
+    // await a SECOND loadCaseTimeline(). The old comment called that
+    // "redundant with, but harmless alongside". It is not harmless: building
+    // this timeline is the expensive operation in the whole tab (a full MACB
+    // walk plus every parsed artifact), so it ran twice, concurrently, for
+    // one click. Worse, both calls null and then rewrite the same shared
+    // caseTimelineCache, so whichever finishes second wins and the filter
+    // applied below could be applied against a cache the other call was
+    // about to replace.
+    //
+    // Tab.show() switches the tab WITHOUT firing the onclick (the same
+    // bootstrap.Tab(...).show() pattern used elsewhere in this file), and the
+    // single awaited call below is what guarantees caseTimelineCache and the
+    // contact <select> are genuinely populated before a value is set on it.
     const tab = document.getElementById('repTimelineTab');
-    if (tab) tab.click();
+    if (tab) new bootstrap.Tab(tab).show();
     await loadCaseTimeline();
     const sel = document.getElementById('caseTimelineContactSelect');
     if (sel && [...sel.options].some((o) => o.value === contactKey)) {

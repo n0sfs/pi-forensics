@@ -257,3 +257,64 @@ def test_android_pull_with_no_manifest_file_keeps_original_fallback_behavior(evi
     assert "M" in activities and "A" in activities and "C" in activities
     assert all("real filesystem" in e["filesystem"] for e in result["events"] if e["path"] == "/photo.jpg")
     assert any("adb pull does not preserve" in n for n in result["notes"])
+
+
+# --- 2026-09-15: the per-source budget SHRINKS as a case grows -
+# TSK_MAX_TIMELINE_ENTRIES split across every filesystem and pulled folder, so
+# a second evidence item halves what the first contributes. That bound is
+# deliberate (the walk streams, so a source's total is not knowable before its
+# share is already being spent) but it used to be signalled only by the
+# generic "this timeline was truncated" line. An examiner who added an
+# evidence item and found the first one's coverage quietly halved had nothing
+# to tell them why. ---
+def _folder_with_files(evidence_root, name, n):
+    folder = os.path.join(evidence_root, name)
+    os.makedirs(folder, exist_ok=True)
+    for i in range(n):
+        with open(os.path.join(folder, f"f{i}.txt"), "w") as f:
+            f.write("x")
+    return folder
+
+
+def test_a_source_that_hits_its_budget_says_so_by_name(evidence_root, monkeypatch):
+    import routes.reporting as reporting
+    # A budget small enough that a handful of files exceeds it. Each file
+    # contributes several MACB rows, so 6 files comfortably passes 5.
+    monkeypatch.setattr(reporting, "TIMELINE_MIN_PER_FS_BUDGET", 5)
+    monkeypatch.setattr(reporting, "TSK_MAX_TIMELINE_ENTRIES", 5)
+    folder = _folder_with_files(evidence_root, "PULLED-A", 6)
+
+    result = _collect_case_timeline([_make_event("EV-1", "android_pull", output_destination=folder)])
+    assert result["truncated"] is True
+    budget_notes = [n for n in result["notes"] if "budget is shared across" in n]
+    assert budget_notes, f"no budget note in {result['notes']}"
+    # Attributable: names the evidence item, and shows the arithmetic.
+    assert "EV-1" in budget_notes[0]
+    assert "1 source(s)" in budget_notes[0]
+
+
+def test_the_note_states_the_budget_is_split_across_every_source(evidence_root, monkeypatch):
+    """The actual complaint: adding an evidence item reduces the first one's
+    coverage. The note has to make that attributable, so the source count is
+    the part that matters."""
+    import routes.reporting as reporting
+    monkeypatch.setattr(reporting, "TIMELINE_MIN_PER_FS_BUDGET", 2)
+    monkeypatch.setattr(reporting, "TSK_MAX_TIMELINE_ENTRIES", 4)
+    folder_a = _folder_with_files(evidence_root, "PULLED-B", 6)
+    folder_b = _folder_with_files(evidence_root, "PULLED-C", 6)
+
+    result = _collect_case_timeline([
+        _make_event("EV-1", "android_pull", output_destination=folder_a),
+        _make_event("EV-2", "android_pull", output_destination=folder_b),
+    ])
+    budget_notes = [n for n in result["notes"] if "budget is shared across" in n]
+    assert len(budget_notes) == 2, f"expected both sources to report: {result['notes']}"
+    assert all("2 source(s)" in n for n in budget_notes)
+    assert {"EV-1", "EV-2"} <= {tok for n in budget_notes for tok in n.split() if tok.startswith("EV-")}
+
+
+def test_a_source_that_stays_under_budget_adds_no_note(evidence_root):
+    """The note must mean something - it cannot appear on every export."""
+    folder = _folder_with_files(evidence_root, "PULLED-SMALL", 2)
+    result = _collect_case_timeline([_make_event("EV-1", "android_pull", output_destination=folder)])
+    assert not [n for n in result["notes"] if "budget is shared across" in n]
