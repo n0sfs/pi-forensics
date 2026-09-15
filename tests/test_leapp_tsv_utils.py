@@ -422,3 +422,28 @@ def test_real_aleapp_tsv_parses_with_timestamps_if_a_sample_is_present(local_fix
                     "the disclosed timestamp column must be a real column of this file"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_naive_timestamp_is_rejected_not_read_in_server_local_time():
+    """Measured on the real station (EDT): fromisoformat() parses a naive
+    "2026-02-21 16:16:31" happily and .timestamp() then reads it as SERVER
+    local time - a silent 5-hour error presented as a genuine event time.
+    The curated columns are all tz-aware; this only ever reachable via the
+    uncurated fallback, which accepts any column whose values merely parse."""
+    assert leapp._parse_leapp_datetime_str("2026-02-21 16:16:31") is None
+    assert leapp._parse_leapp_datetime_str("2026-02-21") is None      # date-only is legal ISO too
+    # Anything carrying a real offset is still parsed exactly as before.
+    assert leapp._parse_leapp_datetime_str("2026-02-21 16:16:31+00:00") == 1771690591.0
+
+
+def test_fallback_detection_rejects_a_column_of_naive_timestamps(tmp_path):
+    # The column name looks right and the values are real datetimes, but with
+    # no zone they cannot be placed on a timeline - so no timestamp is claimed.
+    tsv_dir = tmp_path / "_TSV Exports"
+    tsv_dir.mkdir()
+    _write_tsv(str(tsv_dir / "Naive Module.tsv"), ["Timestamp", "Thing"],
+               [["2026-02-21 16:16:31", "a"], ["2026-02-21 16:16:32", "b"],
+                ["2026-02-21 16:16:33", "c"]])
+    records, _, _ = leapp.parse_leapp_tsv_exports(str(tsv_dir), "aleapp")
+    assert records and all(r["timestamp"] is None for r in records)
+    assert "leapp_timestamp_column" not in records[0]["extra"]
