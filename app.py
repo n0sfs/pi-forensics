@@ -1,7 +1,7 @@
 import os
 import threading
 
-from flask import Flask
+from flask import Flask, jsonify
 
 # Every route this app serves now lives in a routes/*.py Blueprint, backed
 # by core/*.py for shared cross-cutting state/helpers - see the dated
@@ -12,6 +12,10 @@ from flask import Flask
 # from routes/settings.py further down, alongside that blueprint's
 # registration) for the startup thread at the bottom of this file.
 from core.config import _get_or_create_secret_key
+# Registered as an app-wide errorhandler at the bottom of this file - see
+# the comment there for why it is one handler rather than a try/except per
+# route.
+from core.jobs import CaseFileUnreadable
 
 app = Flask(__name__)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -62,6 +66,23 @@ from routes.settings import settings_bp, attempt_startup_auto_mounts
 app.register_blueprint(settings_bp)
 from routes.auto_analyze import auto_analyze_bp
 app.register_blueprint(auto_analyze_bp)
+
+
+# A corrupt/unreadable consolidated case file surfaces as a clear message on
+# EVERY route at once, rather than each one growing its own try/except
+# (2026-09-15). Before CaseFileUnreadable existed, _read_case_file() swallowed
+# the failure and handed back an empty stub, so a case with an unreadable file
+# rendered as a case with no evidence - and any route that wrote afterwards
+# replaced the real history with that stub. Failing visibly is the whole point
+# of the exception; this handler is what makes it readable instead of a bare
+# 500, and states plainly that nothing was changed on disk.
+@app.errorhandler(CaseFileUnreadable)
+def _handle_unreadable_case_file(e):
+    return jsonify({
+        "success": False,
+        "error": f"This case's file could not be read, so nothing was loaded or changed: {e}",
+        "case_file_unreadable": True,
+    }), 500
 
 # Replay saved auto-mount shares once per process start - module-level (not
 # inside the __main__ guard below) so this also runs under gunicorn, which
