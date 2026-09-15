@@ -460,3 +460,26 @@ def test_an_over_size_text_exhibit_says_it_is_not_the_complete_file(client, evid
     # never silently embedded as if complete.
     assert "keyword_hits.csv" in html_out
     assert "NOT THE COMPLETE FILE" in html_out or "keyword_hits.csv" in html_out
+
+
+def test_exported_html_names_the_timezone_its_timestamps_are_in(client, evidence_root):
+    """format_epoch() renders in the STATION's local time while every screen
+    renders in the VIEWER's browser time, and neither said which - so the same
+    event read as two different wall-clock times depending on where you looked.
+    The report is the artifact that leaves the building, so it states its own
+    zone once, up front (2026-09-15)."""
+    case_folder, case_file = _make_real_case(
+        evidence_root,
+        [_event("evt-1", os.path.join(evidence_root, "img.dd"), computed_hashes={"sha256": "abc"})],
+    )
+    html_out = _export_preview(client, case_file, template="police")
+    assert "All times in this report are this station" in html_out
+    assert reporting._report_timezone_label() in html_out
+
+
+def test_the_timezone_label_is_never_empty():
+    """It has to survive a station where time.strftime('%Z') returns nothing -
+    an unnamed zone must still produce a usable UTC offset."""
+    label = reporting._report_timezone_label()
+    assert label
+    assert "UTC" in label

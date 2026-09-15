@@ -11055,6 +11055,25 @@ async function renderReportGeolocationList() {
 // - shared, tiny helper local to this feature; every other timestamp-
 // formatting helper in this file is tied to a different specific table's
 // own column shape, none of them fit reusing here.
+// The IANA zone this browser is in, e.g. "America/New_York", falling back to
+// a UTC offset when the browser will not name it. Added 2026-09-15: every
+// timestamp on screen is rendered with toLocaleString(), i.e. in the VIEWER's
+// zone, while the exported PDF/HTML renders the same value in the STATION's
+// zone (core/paths.py's format_epoch uses time.localtime()). Two people read
+// the same row as two different wall-clock times, and no column said which
+// zone either was. Naming it costs one header suffix and removes the
+// ambiguity entirely.
+function _browserTimeZoneLabel() {
+    try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (tz) return tz;
+    } catch (err) { /* fall through to the offset form */ }
+    const mins = -new Date().getTimezoneOffset();
+    const sign = mins >= 0 ? '+' : '-';
+    const abs = Math.abs(mins);
+    return `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+}
+
 function _formatContactCorrelationTimestamp(ts) {
     if (ts === null || ts === undefined) return "--";
     try { return new Date(ts * 1000).toLocaleString(); } catch (err) { return "--"; }
@@ -12181,7 +12200,13 @@ function renderContactCorrelationTable(data) {
     const table = document.createElement('table');
     table.className = 'table table-sm table-dark table-hover small mb-0';
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th>Contact</th><th>Number</th><th>Email</th><th>Tier</th><th>Source(s)</th><th>Communications</th><th>Direction</th><th>Talk Time</th><th>First Seen</th><th>Last Seen</th><th></th></tr>';
+    thead.innerHTML = '<tr><th>Contact</th><th>Number</th><th>Email</th><th>Tier</th><th>Source(s)</th><th>Communications</th><th>Direction</th><th>Talk Time</th>'
+        + `<th>First Seen</th><th>Last Seen</th><th></th></tr>`;
+    // Name the zone these times are in - see _browserTimeZoneLabel().
+    const tzHint = document.createElement('caption');
+    tzHint.className = 'small text-subtle caption-top py-0';
+    tzHint.textContent = `Times shown in ${_browserTimeZoneLabel()} (this browser's time zone, not the device's or the station's).`;
+    table.appendChild(tzHint);
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
 
@@ -13079,7 +13104,9 @@ function _recomputeAndRenderGeoActivity() {
             + '<th title="A visit is a stay at this location with no gap longer than 15 minutes. '
             + 'A continuously-recorded track logs many positions during a single visit, so the '
             + 'recording count is shown alongside it rather than in place of it.">Visits / time spent</th>'
-            + '<th>First Seen</th><th>Last Seen</th><th></th></tr></thead>';
+            + '<th>First Seen</th><th>Last Seen</th><th></th></tr></thead>'
+            + `<caption class="small text-subtle caption-top py-0">Times shown in ${escapeHtmlForPopup(_browserTimeZoneLabel())} `
+            + `(this browser's time zone, not the device's or the station's).</caption>`;
         const tbody = document.createElement('tbody');
         frequentLocations.forEach(loc => {
             const key = _geoLocationKey(loc.lat, loc.lon);
@@ -13432,6 +13459,7 @@ let patternOfLifeActivityAllRows = null;   // cached UNFILTERED rows, so neither
 let patternOfLifeActivityRows = null;      // the currently-filtered subset actually charted
 let patternOfLifeActivityTruncated = false;  // see loadPatternOfLifeActivityChart()
 let patternOfLifeActivityGranularity = 'hour'; // 'hour' | 'dow' | 'heatmap' | 'overtime'
+let patternOfLifeActivityDowCoverage = null;  // [7] distinct calendar days per weekday, or null outside 'dow'
 let patternOfLifeActivityIncludeWeb = false;
 let patternOfLifeActivityIncludeCalendar = false;
 let patternOfLifeActivityChart = null;
@@ -13745,17 +13773,33 @@ function renderPatternOfLifeActivityChart() {
         const bucketOf = (e) => patternOfLifeActivityGranularity === 'dow'
             ? new Date(e.timestamp * 1000).getDay()
             : new Date(e.timestamp * 1000).getHours();
+        // How many CALENDAR DAYS of each weekday the data actually spans
+        // (2026-09-15). Raw counts assume every weekday got equal coverage,
+        // and a range rarely does: data covering exactly eight days, Monday
+        // through Monday, contains two Mondays and one of everything else, so
+        // Monday's bar is ~2x every other bar at an identical underlying
+        // rate. The chart's own tooltip sells this view as showing "a regular
+        // weekday routine", so an examiner reads a Monday routine that does
+        // not exist. The bars stay raw counts - that is what the axis says -
+        // but the per-bar average and the coverage warning below make the
+        // distortion visible rather than leaving it to be discovered.
+        const dowDays = Array.from({ length: 7 }, () => new Set());
         rows.forEach((e) => {
             const b = bucketOf(e);
             counts[b] += 1;
             patternOfLifeActivityBucketRows[b].push(e);
+            const d = new Date(e.timestamp * 1000);
+            dowDays[d.getDay()].add(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`);
         });
+        patternOfLifeActivityDowCoverage = patternOfLifeActivityGranularity === 'dow'
+            ? dowDays.map((s) => s.size) : null;
         labels = patternOfLifeActivityGranularity === 'dow' ? PATTERN_OF_LIFE_DOW_LABELS
             : counts.map((_, h) => {
                 const d = new Date(); d.setHours(h, 0, 0, 0);
                 return d.toLocaleTimeString(undefined, { hour: 'numeric' });
             });
     }
+    _renderPatternOfLifeDowCoverageNote();
 
     if (patternOfLifeActivityChart) {
         patternOfLifeActivityChart.data.labels = labels;
@@ -13775,7 +13819,18 @@ function renderPatternOfLifeActivityChart() {
                 x: { ticks: { color: '#94a3b8', maxRotation: 0, autoSkip: true }, grid: { display: false } },
                 y: { beginAtZero: true, ticks: { color: '#94a3b8', precision: 0 }, grid: { color: 'rgba(255,255,255,0.06)' } },
             },
-            plugins: { legend: { display: false } },
+            plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: { afterLabel: (ctx) => {
+                    const cov = patternOfLifeActivityDowCoverage;
+                    if (!cov) return '';
+                    const days = cov[ctx.dataIndex] || 0;
+                    if (!days) return '';
+                    const avg = (ctx.parsed.y / days);
+                    return `across ${days} ${ctx.label}${days === 1 ? '' : 's'} in this range `
+                        + `(about ${avg.toFixed(1)} per day)`;
+                } } },
+            },
             onClick: (evt, elements) => {
                 if (!elements.length) return;
                 const idx = elements[0].index;
@@ -13800,6 +13855,34 @@ function renderPatternOfLifeActivityChart() {
 // a coordinate-anchored popup risks landing partly off-screen or under
 // the examiner's own finger.
 const PATTERN_OF_LIFE_ACTIVITY_POPUP_MAX_ROWS = 8;
+
+// Warns when the selected range does not contain the same number of each
+// weekday, which makes raw day-of-week bars incomparable to each other. Only
+// ever shown for the By Day of Week view - the hour-of-day and heatmap views
+// have their own, different framing - and only when the coverage is actually
+// uneven, so it does not become background noise on a range that is fine.
+function _renderPatternOfLifeDowCoverageNote() {
+    const el = document.getElementById('patternOfLifeDowCoverageNote');
+    if (!el) return;
+    el.innerHTML = '';
+    const cov = patternOfLifeActivityDowCoverage;
+    if (!cov) return;
+    const present = cov.filter((n) => n > 0);
+    if (present.length < 2) return;
+    const lo = Math.min(...present), hi = Math.max(...present);
+    if (lo === hi) return;
+    const worst = PATTERN_OF_LIFE_DOW_LABELS
+        .map((label, i) => ({ label, n: cov[i] }))
+        .filter((d) => d.n === hi)
+        .map((d) => d.label)
+        .join(', ');
+    const note = document.createElement('div');
+    note.className = 'text-warning';
+    note.textContent = `Uneven coverage: this range contains ${hi} ${worst} but as few as ${lo} of another `
+        + `weekday, so the bars are not directly comparable - a taller bar here can simply mean more of that `
+        + `weekday fell inside the range. Hover a bar for its per-day average, which is comparable.`;
+    el.appendChild(note);
+}
 
 function hidePatternOfLifeActivityPopup() {
     const existing = document.getElementById('patternOfLifeActivityPopup');
@@ -16416,6 +16499,14 @@ function renderCaseTimeline() {
     } else if (filterIndicator) {
         filterIndicator.style.display = 'none';
     }
+
+    // Name the zone the Timestamp column is in (2026-09-15). Every row is
+    // rendered with toLocaleString(), i.e. in the VIEWER's browser zone, while
+    // the exported report renders the same values in the STATION's zone - so
+    // the kiosk and a remote analyst's laptop showed different wall-clock
+    // times for the same event, with a bare "Timestamp" header on both.
+    const tzLabelEl = document.getElementById('caseTimelineTzLabel');
+    if (tzLabelEl) tzLabelEl.textContent = `(${_browserTimeZoneLabel()})`;
 
     caseTimelineFilteredRows = rows; // whatever's currently visible in the table - CSV export reads this directly, no separate filter pass
 
