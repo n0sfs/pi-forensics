@@ -15257,6 +15257,24 @@ let coverageOutstandingCache = [];
 // are only reachable through that; a mobile/folder acquisition opens at its
 // own directory. `kind` comes straight from compute_case_analysis_coverage(),
 // which already classified it - no second guess here about which it is.
+// Polls for a File Explorer row by its own data-item-path, up to ~2s. Returns
+// the row, or null if it never appeared (a filtered view, a path outside the
+// listing) - the caller then simply leaves nothing selected rather than
+// throwing.
+function _waitForExplorerRow(path, timeoutMs = 2000) {
+    const sel = `#explorerListBody tr[data-item-path="${CSS.escape(path)}"]`;
+    const deadline = Date.now() + timeoutMs;
+    return new Promise((resolve) => {
+        const tick = () => {
+            const row = document.querySelector(sel);
+            if (row) return resolve(row);
+            if (Date.now() > deadline) return resolve(null);
+            setTimeout(tick, 100);
+        };
+        tick();
+    });
+}
+
 async function openEvidenceItemInFileExplorer(item) {
     const path = item && item.target_path;
     if (!path) return;
@@ -15277,7 +15295,13 @@ async function openEvidenceItemInFileExplorer(item) {
         await loadExplorer(path);
         if (explorerPath !== path) {
             if (explorerPath !== parentDir) await loadExplorer(parentDir);
-            const row = document.querySelector(`#explorerListBody tr[data-item-path="${CSS.escape(path)}"]`);
+            // loadExplorer()'s own fallback for a file path can finish
+            // repainting after its promise resolves (it has a deferred retry
+            // for a not-yet-mounted path), so poll briefly for the row rather
+            // than assuming the listing is already on screen - measured live:
+            // querying immediately found nothing even though the row existed
+            // moments later.
+            const row = await _waitForExplorerRow(path);
             if (row) {
                 row.click();
                 row.scrollIntoView({ block: 'center' });
