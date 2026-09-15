@@ -194,3 +194,25 @@ def test_a_list_with_a_catastrophic_regex_is_dropped_not_run(client, probe):
     data = _scan(client, probe, ["evil"])
     assert "Evil" not in data["output"]
     assert data["total_hits"] == 1   # the built-in email hit only
+
+
+def test_a_short_keyword_term_is_not_silently_discarded(client, evidence_root):
+    """Found live with the bundled DEA drug-slang lists (2026-09-15): the scan
+    workers discarded every match of four characters or fewer, so "ice" and
+    "snow" - real stimulant slang, both present in the file - reported
+    "0 found". Nothing on screen distinguished "the term is not here" from
+    "the term was dropped before it was counted"."""
+    cfg = config.load_runtime_config()
+    cfg["keyword_lists"] = [{"id": "slang", "name": "Slang",
+                             "terms": ["ice", "snow", "DBAN"], "is_regex": False}]
+    config.save_runtime_config(cfg)
+    path = os.path.join(evidence_root, "chat.txt")
+    with open(path, "w") as f:
+        f.write('got that ice and some snow, wiped it with DBAN after\n')
+
+    data = _scan(client, path, ["slang"])
+    out = data["output"]
+    assert "ice" in out
+    assert "snow" in out
+    assert "DBAN" in out
+    assert data["total_hits"] == 3

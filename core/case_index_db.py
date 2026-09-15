@@ -224,6 +224,30 @@ def check_regex_pattern_for_redos(compiled_pattern):
         out_queue.close()
     return None
 
+def scan_match_is_reportable(category, value):
+    """Whether a raw scan match is worth reporting, by category.
+
+    Every triage-scan worker used to apply a flat `len(value) > 4` filter to
+    discard trivial matches. That is right for the five BUILT-IN categories -
+    an email, URL, IP, card-like number or phone number is never four
+    characters, so a short match there is noise from a partial pattern hit.
+
+    It is wrong for a keyword list, and silently so (fixed 2026-09-15, found by
+    a live scan with the bundled DEA drug-slang lists). An examiner who adds
+    "ice", "snow", "meth" or "DBAN" to a list has asked for exactly that
+    string; discarding it reports "0 found" for a term that is present in the
+    evidence, with nothing on screen saying the term was dropped rather than
+    absent. A search tool that silently ignores the shortest search terms is
+    worse than one that finds nothing, because the examiner believes the
+    question was asked.
+
+    A keyword-list term is deliberate by construction, so it is always
+    reportable; the built-in categories keep the filter that suits them.
+    """
+    if category.startswith(KEYWORD_CATEGORY_PREFIX):
+        return True
+    return len(value) > 4
+
 def resolve_scan_category_label(category):
     """Human label for a scan category name, for the report/log lines every
     triage-scan worker already writes - a built-in category (TRIAGE_

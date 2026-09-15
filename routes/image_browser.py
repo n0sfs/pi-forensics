@@ -51,7 +51,7 @@ from core.tsk_utils import (
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
 from core.decrypted_sources import get_decrypted_source_kind
 from core.case_index_db import (
-    build_scan_patterns, resolve_scan_category_label,
+    build_scan_patterns, resolve_scan_category_label, scan_match_is_reportable,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
     _record_parsed_artifacts, carry_over_image_tags_to_extracted_file,
 )
@@ -1268,7 +1268,8 @@ def _run_keyword_scan_body(image_path, dest_dir, case_folder=None):
                                 continue
                             for m in pattern.finditer(data):
                                 val = m.group(0)
-                                if len(val) <= 4:  # skip trivial/near-empty matches, matching Triage Scan's own identical rule
+                                # Per-category - see scan_match_is_reportable().
+                                if not scan_match_is_reportable(name, val):
                                     continue
                                 key = (path, val)
                                 if key in seen[name]:
@@ -3453,7 +3454,8 @@ def execution_worker_image_triage_scan(image_path, dest_dir, source_ip=None, use
                                 continue
                             for m in pattern.finditer(data):
                                 val = m.group(0)
-                                if len(val) <= 4:  # skip trivial/near-empty matches
+                                # Per-category - see scan_match_is_reportable().
+                                if not scan_match_is_reportable(name, val):
                                     continue
                                 key = (path, val)
                                 if key in seen[name]:
