@@ -438,7 +438,7 @@ const GUIDE_SCENARIOS = {
             "Leave the write-blocker switched on (it's on by default) - this guarantees nothing can be written to the original drive. The top-right \"Write Blocker\" badge always shows the state of whichever drive is selected here.",
             "Under \"Format\", the default (Raw / dc3dd) is a safe choice for most cases - hover the format dropdown for what each option means.",
             "Fill in Case #, Evidence ID, and Examiner if you haven't already, then click \"Start Acquisition\" and wait for it to finish.",
-            "Once done, open Reporting - if a case was active, the job's hashes and telemetry are already there under the Evidence Activity tab. Use Export to generate a PDF/HTML report.",
+            "Once done, open Reporting - if a case was active, the job's hashes and telemetry are already there under the Case Activity tab. Use Export to generate a PDF/HTML report.",
         ]
     },
     damaged: {
@@ -602,7 +602,7 @@ const FAQ_GROUPS = [
             },
             {
                 q: "How do I know my acquisition actually completed successfully?",
-                a: "Check the status text and console during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, if the job ran against an active case, open Reporting - its hashes and telemetry are already recorded under the Evidence Activity tab. Otherwise, right-click the resulting image in File Explorer and use \"Verify Image Hash\"."
+                a: "Check the status text and console during the job - it'll say \"Completed Successfully\" or \"Failed\" clearly. Afterward, if the job ran against an active case, open Reporting - its hashes and telemetry are already recorded under the Case Activity tab. Otherwise, right-click the resulting image in File Explorer and use \"Verify Image Hash\"."
             },
             {
                 q: "The drive I need to image is BitLocker, LUKS, or VeraCrypt encrypted - can this station handle that?",
@@ -5097,8 +5097,8 @@ function buildGeoSpeedNotice(points, speeds) {
     // Collapsed by default - the headline (how many, and how fast) stays on
     // screen; the explanation and the per-pair list fold away.
     return _makeGeoNoticeCollapsible(wrap,
-        `${n.toLocaleString()} movement${n === 1 ? '' : 's'} imply a speed no ordinary travel accounts for `
-        + `(fastest ${Math.round(speeds.maxKmh).toLocaleString()} km/h) - show details`);
+        `${n.toLocaleString()} movement${n === 1 ? '' : 's'} ${n === 1 ? 'implies' : 'imply'} a speed no `
+        + `ordinary travel accounts for (fastest ${Math.round(speeds.maxKmh).toLocaleString()} km/h) - show details`);
 }
 
 // Collapses a geolocation notice to a single clickable summary line
@@ -15471,7 +15471,7 @@ async function loadAnalysisCoverage() {
 }
 
 // Coverage -> Limitations quick-fill (2026-09-09) - the Analysis Coverage
-// section (Evidence Activity tab) already
+// section (Case Activity tab) already
 // computes exactly what "Limitations & Statement of Uncertainty" is meant to
 // disclose (what analysis hasn't been run against each evidence item yet),
 // but nothing connected the two before this - closing that gap by inserting
@@ -17146,7 +17146,7 @@ function caseSearchSnippet(text, query) {
 // Shared by both the Overview dashboard tiles and appendCaseSearchGroup()
 // below - a real .click() on the target nav button, not
 // new bootstrap.Tab(tabBtn).show(), since several targets (Case Notes &
-// Custody Log, Evidence Activity, Files & Artifacts, ...) have their own
+// Custody Log, Case Activity, Files & Artifacts, ...) have their own
 // onclick attribute that (re)renders the pane's content from whatever's
 // currently loaded; Tab.show() alone switches the visible pane but skips
 // that render, which would show stale or empty content on a pane never
@@ -17299,7 +17299,7 @@ async function runCaseSearch() {
     if (historyMatches.length > 0) {
         totalMatches += historyMatches.length;
         // 'repJobsTab' (not the old, now-removed 'repHistoryTab') - Case
-        // Activity Log was folded into the same merged Evidence Activity
+        // Activity Log was folded into the same merged Case Activity
         // tab as Jobs/Coverage on 2026-09-09, see reporting.html.
         appendCaseSearchGroup(container, 'Case Activity Log', 'repJobsTab', historyMatches.map(entry => (
             { label: `${entry.timestamp || '--'} · ${entry.action || '--'}${entry.user ? ' · ' + entry.user : ''}`, snippet: null }

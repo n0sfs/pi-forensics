@@ -111,14 +111,22 @@
                                                  journals, form-above-list); Jobs absorbed Coverage and
                                                  Case Activity Log (all 3 are "what's been done to this
                                                  evidence" views, at raw/analysis/audit granularity) and
-                                                 was relabeled "Evidence Activity"; Search was folded
+                                                 was relabeled; Search was folded
                                                  directly into Overview, and Export gained a quick-link
                                                  from there instead of being folded in itself (its own
                                                  sections/items/files checklist is too large to fit
                                                  inside a dashboard tile). Every id below that survives a
                                                  merge is unchanged - only the label/icon/onclick changed,
                                                  per this project's own "rename the label, not the
-                                                 internal id" convention. -->
+                                                 internal id" convention.
+
+                                                 The merged tab's label went "Evidence Activity" ->
+                                                 "Case Activity" on 2026-09-15 (user's call). The old
+                                                 name sat directly above "Evidence Timeline" and the two
+                                                 mean opposite things - work performed ON the case, vs.
+                                                 what the evidence itself contains - so two adjacent
+                                                 "Evidence ..." items were actively misleading about
+                                                 which was which. The internal id stays repJobsTab. -->
                                             <div class="reports-nav list-group" id="reportsNavList" role="tablist">
                                                 <button class="list-group-item list-group-item-action active" id="repOverviewTab" data-bs-toggle="list" data-bs-target="#repOverviewPane" type="button" role="tab"><i class="bi bi-speedometer2"></i>Overview</button>
                                                 <button class="list-group-item list-group-item-action" id="repContactsTab" data-bs-toggle="list" data-bs-target="#repContactsPane" type="button" role="tab" onclick="loadPatternOfLife()"><i class="bi bi-activity"></i>Pattern of Life</button>
@@ -126,7 +134,7 @@
                                                 <button class="list-group-item list-group-item-action" id="repCaseNotesTab" data-bs-toggle="list" data-bs-target="#repCaseNotesPane" type="button" role="tab" onclick="renderCaseNotesList(); renderCustodyLogList();"><i class="bi bi-clipboard2-pulse"></i>Case Notes &amp; Custody Log</button>
                                                 <button class="list-group-item list-group-item-action" id="repFilesTab" data-bs-toggle="list" data-bs-target="#repFilesPane" type="button" role="tab" onclick="renderReportFilesGallery()"><i class="bi bi-paperclip"></i>Files &amp; Artifacts</button>
                                                 <button class="list-group-item list-group-item-action" id="repGeoTab" data-bs-toggle="list" data-bs-target="#repGeoPane" type="button" role="tab" onclick="renderReportGeolocationList()"><i class="bi bi-geo-alt"></i>Geolocation</button>
-                                                <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs(); loadAnalysisCoverage(); loadCaseHistory();"><i class="bi bi-list-task"></i>Evidence Activity</button>
+                                                <button class="list-group-item list-group-item-action" id="repJobsTab" data-bs-toggle="list" data-bs-target="#repJobsPane" type="button" role="tab" onclick="renderCaseJobs(); loadAnalysisCoverage(); loadCaseHistory();"><i class="bi bi-list-task"></i>Case Activity</button>
                                                 <button class="list-group-item list-group-item-action" id="repTimelineTab" data-bs-toggle="list" data-bs-target="#repTimelinePane" type="button" role="tab" onclick="loadCaseTimeline()"><i class="bi bi-clock-history"></i>Evidence Timeline</button>
                                                 <button class="list-group-item list-group-item-action" id="repExportTab" data-bs-toggle="list" data-bs-target="#repExportPane" type="button" role="tab" onclick="prepareExportPane()"><i class="bi bi-file-earmark-arrow-down-fill"></i>Export</button>
                                             </div>
@@ -229,7 +237,7 @@
                                                             <!-- Deduplicated 2026-09-10 - every tile below jumps to a
                                                                  DISTINCT tab; no tab is linked from more than one tile.
                                                                  The two pairs that used to share a target (Evidence Items
-                                                                 + Analysis Activity both -> Evidence Activity; Tagged
+                                                                 + Analysis Activity both -> Case Activity; Tagged
                                                                  Items + Exhibits Attached both -> Files & Artifacts) are
                                                                  now merged into one two-stat tile each - same element ids
                                                                  (dashEvidenceCount/dashAnalysisCount/dashTagCount/
@@ -240,7 +248,7 @@
                                                                  these ids up by id, not by DOM position. -->
                                                             <div class="row g-2" id="caseDashboardGrid">
                                                                 <div class="col-sm-6 col-xl-4">
-                                                                    <div class="card home-tile" tabindex="0" role="button" title="Go to Evidence Activity" onclick="jumpToReportingTab('repJobsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repJobsTab');}">
+                                                                    <div class="card home-tile" tabindex="0" role="button" title="Go to Case Activity" onclick="jumpToReportingTab('repJobsTab')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToReportingTab('repJobsTab');}">
                                                                         <div class="card-body p-2">
                                                                             <div class="d-flex align-items-center gap-2 mb-1">
                                                                                 <div class="home-tile-icon"><i class="bi bi-hdd-stack"></i></div>
