@@ -17713,9 +17713,8 @@ async function runCaseSearch() {
     let totalMatches = 0;
 
     // Report Narrative - searches the live form fields (so it also finds
-    // unsaved edits), the same ids loadCaseForEditing() already populates
-    // for both consolidated and legacy schemas, rather than re-deriving
-    // that split here too. Custom Case Details fields render at the top of
+    // unsaved edits), the same ids loadCaseForEditing() already populates,
+    // rather than re-deriving where each value lives here too. Custom Case Details fields render at the top of
     // this same pane (see the Reporting layout reorg), so they're searched
     // and grouped alongside the narrative fields rather than as a separate
     // source - a match in either one jumps to the one pane that has both.
@@ -19563,12 +19562,6 @@ function renderCaseList() {
         statusBadge.className = `badge ms-2 ${CASE_STATUS_BADGE_CLASS[c.case_status] || 'bg-info text-dark'}`;
         statusBadge.textContent = (c.case_status || 'Open').toUpperCase();
         nameSpan.appendChild(statusBadge);
-        if (c.schema === 'legacy') {
-            const legacyBadge = document.createElement('span');
-            legacyBadge.className = 'badge bg-warning text-dark ms-2';
-            legacyBadge.textContent = 'LEGACY';
-            nameSpan.appendChild(legacyBadge);
-        }
         const dateSpan = document.createElement('small');
         dateSpan.className = 'text-subtle';
         dateSpan.textContent = c.created_at;
@@ -19591,15 +19584,6 @@ function renderCaseList() {
 
         const actionsRow = document.createElement('div');
         actionsRow.className = 'mt-2';
-
-        if (c.schema === 'legacy') {
-            const migrateBtn = document.createElement('button');
-            migrateBtn.type = 'button';
-            migrateBtn.className = 'btn btn-xs btn-outline-warning py-0 px-2 me-2';
-            migrateBtn.innerHTML = '<i class="bi bi-arrow-up-circle me-1"></i>Migrate to Consolidated Format';
-            migrateBtn.onclick = (ev) => { ev.stopPropagation(); migrateCase(c); };
-            actionsRow.appendChild(migrateBtn);
-        }
 
         // Archive/Re-open - a fast, single-field status flip reachable
         // right from this list row (setCaseStatus()), instead of needing
@@ -19628,47 +19612,6 @@ function renderCaseList() {
         btn.appendChild(actionsRow);
         listEl.appendChild(btn);
     });
-}
-
-// Non-destructive: originals are renamed with a ".pre_consolidation_backup"
-// suffix server-side, never deleted (see /api/cases/migrate_apply). Preview
-// first so the examiner sees what will be folded in before committing.
-async function migrateCase(c) {
-    if (!confirm(`Migrate case "${c.case_number}" to the new consolidated one-file-per-case format?\n\nThe original case_info.json and *_report.json files will be renamed with a ".pre_consolidation_backup" suffix - nothing is deleted.`)) {
-        return;
-    }
-    try {
-        const previewRes = await fetch('/api/cases/migrate_preview', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ case_folder: c.case_folder })
-        });
-        const preview = await previewRes.json();
-        if (!preview.success) return showToast(`Migration preview failed: ${preview.error}`, 'danger');
-        if (preview.already_migrated) {
-            showToast('This case is already on the consolidated format.', 'info');
-            loadExistingCases();
-            return;
-        }
-
-        const unreadableNote = preview.unreadable.length ? `, ${preview.unreadable.length} unreadable file(s) will be skipped` : '';
-        if (!confirm(`Found ${preview.reports.length} job report(s) to fold into this case${unreadableNote}.\n\nProceed with migration?`)) {
-            return;
-        }
-
-        const applyRes = await fetch('/api/cases/migrate_apply', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ case_folder: c.case_folder })
-        });
-        const applyData = await applyRes.json();
-        if (!applyData.success) return showToast(`Migration failed: ${applyData.error}`, 'danger');
-
-        showToast(`Migrated ${applyData.events_migrated} job(s) into ${applyData.case_file}.`, 'success');
-        loadExistingCases();
-    } catch (err) {
-        showToast(`Migration request failed: ${err.message}`, 'danger');
-    }
 }
 
 // Writes directly to the case's own marker file (routes/case_management.py

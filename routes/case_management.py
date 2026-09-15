@@ -1,15 +1,18 @@
-"""Case Management: create/discover case folders, and one-shot migration
-of legacy (pre-consolidated-schema) cases into the modern one-file-
-per-case format.
+"""Case Management: create, list and set the status of case folders.
 
-A small, simple cluster - GET/logging routes (list, log_select,
-migrate_preview - all read-only, see each one's own comment) stay
-@requires_auth-only, matching this app's established "reads are open,
-writes are permission-gated" convention. The two genuinely mutating routes
-(create_case, migrate_case_apply) originally had NO permission check at
-all - found during the 2026-08-22 security audit: even a custom group with
-every permission key False could still create case folders and rewrite
-on-disk report files via migration, inconsistent with the near-identical,
+Legacy-case migration lived here until 2026-09-15 and has been removed along
+with the rest of pre-consolidated-schema support - `{slug}_case.json` is now
+the only case format the app recognises, so there is nothing to migrate from.
+The dual-schema handling that remains elsewhere (notably the report exporter's
+`events[]`-or-not branch) is NOT about that: it serves reports written by a
+job run with no active case, which is a current, supported workflow.
+
+A small, simple cluster - GET/logging routes (list, log_select - both
+read-only, see each one's own comment) stay @requires_auth-only, matching this
+app's established "reads are open, writes are permission-gated" convention.
+create_case originally had NO permission check at all - found during the
+2026-08-22 security audit: even a custom group with every permission key False
+could still create case folders, inconsistent with the near-identical,
 already-gated case-notes/attach/discover cluster routes/reporting.py
 absorbs. No server-side "active case" state is kept here - every
 job-starting route already takes `destination` per-request, so selecting a
@@ -21,14 +24,13 @@ entry for this refactor.
 import os
 import json
 import time
-import uuid
 
 from flask import Blueprint, jsonify, request
 
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, sanitize_case_slug
 from core.config import EVIDENCE_ROOT, get_custom_case_fields
-from core.jobs import job_lock, current_job, _write_case_file, _read_case_file
+from core.jobs import _write_case_file, _read_case_file
 from core.case_index_db import list_case_folders
 
 case_management_bp = Blueprint('case_management', __name__)
@@ -101,10 +103,9 @@ def create_case():
 
     try:
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        # New cases go straight onto the consolidated one-file-per-case
-        # format (see "Consolidated Per-Case Reporting" above) - only cases
-        # created before this existed need the explicit migration path
-        # (/api/cases/migrate_preview / _apply) to get folded in.
+        # The consolidated one-file-per-case format is the only case format
+        # (see "Consolidated Per-Case Reporting" above). The pre-consolidation
+        # layout and its migration routes were removed on 2026-09-15.
         case_record = {
             "schema_version": 1,
             "case_number": case_number_raw,
@@ -189,13 +190,11 @@ def set_case_status():
     working it; it's real friction for "I'm looking at a list of 20 old
     cases and want to archive a few" - genuinely different actions.
 
-    Writes directly to the case's own MARKER file ({slug}_case.json, or
-    the legacy case_info.json for a not-yet-migrated case) - both already
-    store case_status as a plain top-level key, confirmed via list_case_
-    folders()'s own identical read pattern for both schemas (the nested
-    case_metadata shape only exists in legacy per-job _report.json files,
-    never the case-level marker itself, so there's no dual-schema branch
-    needed here the way saveReportMetadata()'s full-report save has)."""
+    Writes directly to the case's own MARKER file ({slug}_case.json), which
+    stores case_status as a plain top-level key. The nested case_metadata
+    shape only ever existed in per-job _report.json files, never in the
+    case-level marker, so there is no dual-schema branch needed here the way
+    saveReportMetadata()'s full-report save has."""
     req = request.get_json() or {}
     case_folder = safe_path(req.get('case_folder'))
     status = req.get('status')
@@ -205,13 +204,8 @@ def set_case_status():
         return jsonify({"success": False, "error": f"Invalid status - must be one of: {', '.join(CASE_STATUS_VALUES)}"}), 400
 
     slug = os.path.basename(case_folder.rstrip('/'))
-    consolidated_path = os.path.join(case_folder, f"{slug}_case.json")
-    legacy_path = os.path.join(case_folder, "case_info.json")
-    if os.path.exists(consolidated_path):
-        marker_path = consolidated_path
-    elif os.path.exists(legacy_path):
-        marker_path = legacy_path
-    else:
+    marker_path = os.path.join(case_folder, f"{slug}_case.json")
+    if not os.path.exists(marker_path):
         return jsonify({"success": False, "error": "No case marker file found in this folder."}), 400
 
     try:
@@ -245,154 +239,3 @@ def set_case_status():
         "old_status": old_status, "new_status": status,
     })
     return jsonify({"success": True, "case_status": status})
-
-
-# --- Legacy Case Migration: fold scattered case_info.json + *_report.json
-# files into the new one-file-per-case consolidated schema ---
-# Non-destructive by design: originals are renamed with a
-# ".pre_consolidation_backup" suffix (never deleted), and only after the new
-# consolidated file has been written and confirmed. One-shot per case - if
-# it already has a *_case.json, both routes below refuse rather than risk
-# merging/duplicating; picking up reports created after a migration is a
-# known, documented limitation, not handled here.
-def _scan_case_folder_for_migration(case_dir):
-    """Read-only: returns (case_info_data_or_None, [(path, parsed_report_dict), ...], [unreadable_paths])."""
-    case_info = None
-    case_info_path = os.path.join(case_dir, "case_info.json")
-    if os.path.isfile(case_info_path):
-        try:
-            with open(case_info_path, 'r') as f:
-                case_info = json.load(f)
-        except Exception:
-            pass
-
-    reports = []
-    unreadable = []
-    for root, dirs, files in os.walk(case_dir):
-        for fname in files:
-            if fname.endswith('_report.json'):
-                fpath = os.path.join(root, fname)
-                try:
-                    with open(fpath, 'r') as f:
-                        reports.append((fpath, json.load(f)))
-                except Exception:
-                    unreadable.append(fpath)
-    return case_info, reports, unreadable
-
-
-@case_management_bp.route('/api/cases/migrate_preview', methods=['POST'])
-@requires_auth
-def migrate_case_preview():
-    req = request.get_json() or {}
-    case_dir = safe_path(req.get('case_folder', ''))
-    if not case_dir or not os.path.isdir(case_dir):
-        return jsonify({"success": False, "error": "Case folder not found or outside the permitted evidence directory."}), 404
-
-    slug = os.path.basename(case_dir.rstrip(os.sep))
-    already_migrated = os.path.isfile(os.path.join(case_dir, f"{slug}_case.json"))
-
-    case_info, reports, unreadable = _scan_case_folder_for_migration(case_dir)
-    return jsonify({
-        "success": True,
-        "already_migrated": already_migrated,
-        "case_info_found": case_info is not None,
-        "reports": [{
-            "path": p,
-            "case_number": r.get("case_metadata", {}).get("case_number", "--"),
-            "evidence_id": r.get("case_metadata", {}).get("evidence_id", "--"),
-            "tool": r.get("tool", "--"),
-            "status": r.get("acquisition_status", "--"),
-            "timestamp_start": r.get("timestamp_start", "--"),
-        } for p, r in reports],
-        "unreadable": unreadable,
-    })
-
-
-@case_management_bp.route('/api/cases/migrate_apply', methods=['POST'])
-@requires_auth
-# 'reporting' specifically (narrower than create_case's broad OR above):
-# migration is about rewriting a case's REPORT files into the consolidated
-# format, a report-management concern, not a prerequisite for selecting or
-# using a legacy case for acquisition/recovery/mobile work - those keep
-# working against an unmigrated case regardless of this permission.
-@requires_permission('reporting')
-def migrate_case_apply():
-    req = request.get_json() or {}
-    case_dir = safe_path(req.get('case_folder', ''))
-    if not case_dir or not os.path.isdir(case_dir):
-        return jsonify({"success": False, "error": "Case folder not found or outside the permitted evidence directory."}), 404
-
-    slug = os.path.basename(case_dir.rstrip(os.sep))
-    case_file = os.path.join(case_dir, f"{slug}_case.json")
-    if os.path.isfile(case_file):
-        return jsonify({"success": False, "error": "This case is already on the consolidated format."}), 409
-
-    with job_lock:
-        if current_job["active"]:
-            return jsonify({"success": False, "error": "Wait for the current job to finish before migrating - migration renames files a running job may still be writing to."}), 409
-
-    case_info, reports, unreadable = _scan_case_folder_for_migration(case_dir)
-
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    events = []
-    migrated_paths = []
-    for path, data in reports:
-        event = dict(data)
-        event["event_id"] = uuid.uuid4().hex
-        events.append(event)
-        migrated_paths.append(path)
-    events.sort(key=lambda e: e.get("timestamp_start", ""))
-
-    case_record = {
-        "schema_version": 1,
-        "case_number": (case_info or {}).get("case_number", slug),
-        "case_folder": case_dir,
-        "examiner": (case_info or {}).get("examiner", ""),
-        # Same reasoning as create_case()'s own "examiners" seed above - a
-        # legacy case_info.json never had this key at all, so this is
-        # always a fresh single-entry list from whatever the old singular
-        # field recorded (or empty, if that was blank too).
-        "examiners": [(case_info or {}).get("examiner")] if (case_info or {}).get("examiner") else [],
-        "notes": (case_info or {}).get("notes", ""),
-        # Real bug, fixed 2026-09-09: this is the OTHER place (besides
-        # create_case() above) that produces a brand-new {slug}_case.json
-        # for the first time, but it previously omitted both of these keys
-        # entirely - a migrated case never got a configured custom field's
-        # station-wide default_value seeded the way a freshly-created case
-        # already does, and case_status silently fell back to list_case_
-        # folders()'s own generic "or 'Open'" default rather than preserving
-        # whatever status a legacy case_info.json happened to already record
-        # (a legacy case could genuinely have been marked Closed/Archived
-        # before consolidation ever existed).
-        "case_status": (case_info or {}).get("case_status") or "Open",
-        "created_at": (case_info or {}).get("created_at") or (events[0]["timestamp_start"] if events else now),
-        "updated_at": now,
-        "attachments": {"files": [], "reference_urls": []},
-        "custom_fields": {f["key"]: f.get("default_value", "") for f in get_custom_case_fields()},
-        "events": events,
-    }
-
-    try:
-        _write_case_file(case_file, case_record)
-        if not os.path.isfile(case_file):
-            raise IOError("consolidated file did not appear on disk after write")
-    except Exception as e:
-        return jsonify({"success": False, "error": f"Failed writing consolidated case file - nothing was renamed: {e}"}), 500
-
-    # Only rename originals after the new file is confirmed written - if the
-    # process dies partway through renaming, worst case is duplicate data on
-    # disk (old files still present next to a complete new one), never loss.
-    case_info_path = os.path.join(case_dir, "case_info.json")
-    if case_info is not None and os.path.isfile(case_info_path):
-        try:
-            os.rename(case_info_path, case_info_path + ".pre_consolidation_backup")
-        except Exception:
-            pass
-    for path in migrated_paths:
-        try:
-            os.rename(path, path + ".pre_consolidation_backup")
-        except Exception:
-            pass
-
-    log_chain_of_custody("case_migrate", {"case_folder": case_dir, "events_migrated": len(events), "skipped": len(unreadable)})
-    return jsonify({"success": True, "case_file": case_file, "events_migrated": len(events), "skipped": unreadable})

@@ -121,16 +121,16 @@ def test_total_cases_active_cases_and_evidence_items_share_one_case_list(evidenc
     assert by_key["evidence_items"]["value"] == 6  # 2 + 3 + 1
 
 
-def test_a_legacy_schema_case_is_bucketed_as_legacy_not_its_normalized_open_status(evidence_root, monkeypatch):
-    """Real bug, fixed 2026-09-09: list_case_folders() already normalizes a
-    missing case_status to 'Open' for BOTH schemas (confirmed by reading
-    its own source), so `c.get("case_status") or "Legacy"` in the old
-    _compute_reporting_stats() could never actually fire its own "Legacy"
-    fallback - a not-yet-migrated case just silently got bucketed under
-    "Open" instead. Fixed to key off schema (matching the evidence_items
-    stat's own identical schema == "consolidated" check, and the
-    frontend's own established c.schema === 'legacy' convention) - a
-    legacy case's real, distinct status is what this test now asserts."""
+def test_a_pre_consolidation_folder_is_not_counted_as_a_case_at_all(evidence_root, monkeypatch):
+    """Inverted on 2026-09-15, when legacy-case support was removed.
+
+    This test used to assert that such a case was bucketed as "Legacy (Not
+    Yet Migrated)" in total_cases while ALSO being counted by active_cases -
+    the two stats disagreeing about whether it was active, which is exactly
+    the finding that prompted the removal. With one schema left there is
+    nothing to disagree about: a folder holding only the pre-consolidation
+    case_info.json is not a case, and every stat says the same thing about
+    it, which is nothing."""
     _redirect_evidence_root(monkeypatch, evidence_root)
     case_dir = os.path.join(evidence_root, "2026-CASE-LEGACY")
     os.makedirs(case_dir)
@@ -139,13 +139,10 @@ def test_a_legacy_schema_case_is_bucketed_as_legacy_not_its_normalized_open_stat
 
     stats = _compute_reporting_stats(["total_cases", "active_cases", "evidence_items"])
     by_key = {s["key"]: s for s in stats}
-    assert by_key["total_cases"]["value"] == 1
-    assert by_key["total_cases"]["breakdown"] == {"Legacy (Not Yet Migrated)": 1}
-    # active_cases still correctly counts it (a legacy case is active by
-    # default, matching list_case_folders()'s own normalization) - only the
-    # total_cases breakdown's own bucket LABEL changed, nothing else.
-    assert by_key["active_cases"]["value"] == 1
-    assert by_key["evidence_items"]["value"] == 0  # legacy schema has no events[] to count
+    assert by_key["total_cases"]["value"] == 0
+    assert by_key["total_cases"]["breakdown"] == {}
+    assert by_key["active_cases"]["value"] == 0
+    assert by_key["evidence_items"]["value"] == 0
 
 
 def test_reports_exported_counts_only_report_exported_actions(evidence_root, monkeypatch, tmp_path):
@@ -255,58 +252,6 @@ def test_tags_flagged_shares_one_list_case_folders_walk_not_a_second_of_its_own(
     assert call_count["n"] == 1
 
 
-def test_cases_needing_migration_counts_only_non_consolidated_schema_cases(evidence_root, monkeypatch):
-    _redirect_evidence_root(monkeypatch, evidence_root)
-    _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Open", 1)
-    # A legacy case (case_info.json, no *_case.json marker) - list_case_
-    # folders() reports its schema back as "legacy", never "consolidated".
-    legacy_dir = os.path.join(evidence_root, "2026-CASE-LEGACY")
-    os.makedirs(legacy_dir)
-    with open(os.path.join(legacy_dir, "case_info.json"), 'w') as f:
-        json.dump({"case_number": "2026-CASE-LEGACY", "examiner": "x", "created_at": "2026-01-01"}, f)
-
-    stats = _compute_reporting_stats(["cases_needing_migration"])
-    assert stats[0]["value"] == 1
-
-
-def test_cases_needing_migration_is_zero_when_every_case_is_already_consolidated(evidence_root, monkeypatch):
-    _redirect_evidence_root(monkeypatch, evidence_root)
-    _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Open", 1)
-    _write_consolidated_case(evidence_root, "2026-CASE-B", "2026-CASE-B", "Closed", 0)
-    stats = _compute_reporting_stats(["cases_needing_migration"])
-    assert stats[0]["value"] == 0
-
-
-def test_cases_needing_migration_shares_the_one_list_case_folders_walk(evidence_root, monkeypatch):
-    """Unlike tags_flagged (which needs its own throttle since it opens a
-    per-case SQLite connection per case), cases_needing_migration is free
-    once the shared list_case_folders() walk already ran - every case dict
-    it returns already carries its own `schema` field, no second walk or
-    per-case I/O needed. Proven the same strong way tags_flagged's own
-    duplicate-walk regression test already established: fail loudly on a
-    second call, not just check the end result looks right."""
-    _redirect_evidence_root(monkeypatch, evidence_root)
-    legacy_dir = os.path.join(evidence_root, "2026-CASE-LEGACY")
-    os.makedirs(legacy_dir)
-    with open(os.path.join(legacy_dir, "case_info.json"), 'w') as f:
-        json.dump({"case_number": "2026-CASE-LEGACY", "examiner": "x", "created_at": "2026-01-01"}, f)
-
-    real_list_case_folders = reporting.list_case_folders
-    call_count = {"n": 0}
-
-    def counting_wrapper():
-        call_count["n"] += 1
-        if call_count["n"] > 1:
-            raise AssertionError("list_case_folders() was called a second time in one request")
-        return real_list_case_folders()
-
-    monkeypatch.setattr(reporting, "list_case_folders", counting_wrapper)
-    stats = _compute_reporting_stats(["total_cases", "cases_needing_migration"])
-    by_key = {s["key"]: s for s in stats}
-    assert by_key["cases_needing_migration"]["value"] == 1
-    assert call_count["n"] == 1
-
-
 def test_an_unrecognized_key_is_silently_skipped_not_fatal(evidence_root, monkeypatch):
     _redirect_evidence_root(monkeypatch, evidence_root)
     stats = _compute_reporting_stats(["total_cases", "made_up_stat"])
@@ -327,9 +272,12 @@ def test_registry_route_returns_all_six_definitions(client):
     data = res.get_json()
     assert data["success"] is True
     keys = {d["key"] for d in data["stats"]}
+    # "cases_needing_migration" was removed from the registry on 2026-09-15
+    # with the rest of legacy-case support - there is no second case format
+    # left to migrate from, so the stat could only ever read 0.
     assert keys == {
         "total_cases", "active_cases", "evidence_items", "reports_exported",
-        "tags_flagged", "cases_needing_migration",
+        "tags_flagged",
     }
     # Every definition needs a real label an examiner-facing checkbox can
     # show, not just an internal key.

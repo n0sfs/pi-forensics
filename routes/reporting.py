@@ -223,13 +223,12 @@ REPORTING_STAT_DEFINITIONS = [
                      "every case's own per-case analysis index, station-wide. Only counts cases that already "
                      "have an index (opened the moment anything is first tagged/scanned/triage-run) - a case "
                      "that's never had any of those actions run has no index yet and contributes 0, not an error."},
-    {"key": "cases_needing_migration", "label": "Cases Needing Migration",
-     "description": "Cases created before the consolidated one-JSON-file-per-case format existed, still on the "
-                     "older, per-job case_info.json/*_report.json layout. Migrate them from the Case Manager "
-                     "modal (a 'Migrate to Consolidated Format' button appears next to each one there) - "
-                     "non-destructive, the originals are kept as backups. Originally floated alongside Tags/"
-                     "Notable Items Flagged when that stat shipped (2026-09-05) but not built at the time."},
 ]
+# "Cases Needing Migration" was removed here on 2026-09-15 along with the rest
+# of legacy-case support. A saved station config may still list the key; the
+# loop below already skips an unrecognised key silently, which is exactly the
+# case this was written for ("a stale saved key shouldn't be able to break the
+# whole row") - so a station that had the stat enabled simply stops showing it.
 REPORTING_STAT_KEYS = {d["key"] for d in REPORTING_STAT_DEFINITIONS}
 # Every existing station's saved config predates this feature and has no
 # 'reporting_stats' key at all - defaulting to just total_cases (the one
@@ -302,12 +301,10 @@ def _count_notable_tagged_items_station_wide(cases):
 
 def _compute_reporting_stats(enabled_keys):
     """Computes only the requested stat keys. total_cases/active_cases/
-    evidence_items/tags_flagged/cases_needing_migration all share ONE
-    list_case_folders() walk rather than one per stat (tags_flagged
-    included specifically to fix a real, live-caught duplicate-walk bug -
-    see that function's own docstring; cases_needing_migration is free once
-    the walk is already happening, since every case dict it returns already
-    carries its own `schema` field); reports_exported reads the chain-of-
+    evidence_items/tags_flagged all share ONE list_case_folders() walk
+    rather than one per stat (tags_flagged included specifically to fix a
+    real, live-caught duplicate-walk bug - see that function's own
+    docstring); reports_exported reads the chain-of-
     custody log once, only if actually enabled. tags_flagged additionally
     opens each case's own per-case SQLite index only if actually enabled (a
     real per-case-DB cost the other stats don't have, throttled - see
@@ -317,7 +314,7 @@ def _compute_reporting_stats(enabled_keys):
     row."""
     stats = []
     needs_cases = any(k in enabled_keys for k in (
-        "total_cases", "active_cases", "evidence_items", "tags_flagged", "cases_needing_migration",
+        "total_cases", "active_cases", "evidence_items", "tags_flagged",
     ))
     cases = list_case_folders() if needs_cases else []
 
@@ -327,36 +324,27 @@ def _compute_reporting_stats(enabled_keys):
         definition = next(d for d in REPORTING_STAT_DEFINITIONS if d["key"] == key)
         entry = {"key": key, "label": definition["label"]}
         if key == "total_cases":
+            # One bucketing rule now that every listed case is consolidated
+            # (2026-09-15). This used to special-case an unmigrated case into a
+            # "Legacy (Not Yet Migrated)" bucket while active_cases below
+            # counted the same case as Open - so the two stats disagreed about
+            # whether it was active. Removing the second schema removed the
+            # disagreement rather than papering over it.
             counts = {}
             for c in cases:
-                # Real bug, fixed 2026-09-09: list_case_folders() always
-                # normalizes case_status to a truthy value (`or 'Open'`) for
-                # BOTH schemas, so `c.get("case_status") or "Legacy"` could
-                # never actually fire its own "Legacy" fallback - a
-                # not-yet-migrated case just silently got bucketed under
-                # "Open" instead. schema (not case_status) is the real
-                # signal for "hasn't been migrated yet" - matches the
-                # evidence_items stat's own identical schema == "consolidated"
-                # check a few lines below, and the frontend's own established
-                # c.schema === 'legacy' convention (main.js:15904).
-                if c.get("schema") != "consolidated":
-                    status = "Legacy (Not Yet Migrated)"
-                else:
-                    status = c.get("case_status") or "Open"
+                status = c.get("case_status") or "Open"
                 counts[status] = counts.get(status, 0) + 1
             entry["value"] = len(cases)
             entry["breakdown"] = counts
         elif key == "active_cases":
             entry["value"] = sum(1 for c in cases if (c.get("case_status") or "Open") not in ("Closed", "Archived"))
         elif key == "evidence_items":
-            entry["value"] = sum((c.get("event_count") or 0) for c in cases if c.get("schema") == "consolidated")
+            entry["value"] = sum((c.get("event_count") or 0) for c in cases)
         elif key == "reports_exported":
             coc_entries = _read_coc_entries(limit=None)
             entry["value"] = sum(1 for e in coc_entries if e.get("action") == "report_exported")
         elif key == "tags_flagged":
             entry["value"] = _count_notable_tagged_items_station_wide(cases)
-        elif key == "cases_needing_migration":
-            entry["value"] = sum(1 for c in cases if c.get("schema") != "consolidated")
         stats.append(entry)
     return stats
 
@@ -801,9 +789,10 @@ def export_chain_of_custody_csv():
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
-# /api/cases/create, /api/cases/list, /api/cases/log_select,
-# /api/cases/migrate_preview, and /api/cases/migrate_apply now live in
-# routes/case_management.py (registered as a Blueprint below) - see the
+# /api/cases/create, /api/cases/list and /api/cases/log_select now live in
+# routes/case_management.py (registered as a Blueprint below). The two
+# migration routes that also lived there were removed on 2026-09-15 with the
+# rest of legacy-case support - see the
 # dated CLAUDE.md entry for this refactor. A second, unrelated /api/cases/*
 # cluster (discover_files, attach_file, notes/add, notes/edit) stays inline
 # here for now - it is reporting-permission-gated, not case-management, and

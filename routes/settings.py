@@ -163,9 +163,10 @@ def save_mount_history(entry):
 # the 9 job-starting routes below writing its own separate {base}_report.json.
 # No-case-active usage (a destination that isn't a real case folder) keeps
 # writing the old flat per-job file, completely unchanged - see
-# build_report_target(). Existing cases stay on the old scattered-files
-# layout until explicitly migrated (see /api/cases/migrate_preview/_apply);
-# there's no silent auto-upgrade, to avoid a case ending up half-migrated.
+# build_report_target(). Note this no-case flat-file path is NOT legacy and
+# is not going anywhere - it is how a job run without an active case records
+# itself. The genuinely legacy per-case layout (case_info.json plus scattered
+# *_report.json) was removed on 2026-09-15, migration routes included.
 # CaseEventTarget, case_consolidated_path, _read_case_file/_write_case_file/
 # _case_upsert_event, and build_report_target/write_initial_report/
 # _write_report now live in core/jobs.py and core/paths.py (imported at the

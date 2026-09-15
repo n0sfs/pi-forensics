@@ -2767,20 +2767,25 @@ def test_ensure_examiner_recorded_is_a_no_op_for_the_local_kiosk_sentinel(case_f
     assert "examiners" not in data
 
 
-def test_ensure_examiner_recorded_works_against_a_legacy_case_info_json_schema(evidence_root):
+def test_ensure_examiner_recorded_ignores_a_pre_consolidation_case_info_json(evidence_root):
+    """The inverse of what this test used to assert. Legacy-case support was
+    removed on 2026-09-15, so a folder whose only marker is the old
+    case_info.json is no longer a case at all - and must be left completely
+    untouched rather than half-updated by a function that no longer
+    understands the rest of that format."""
     import pathlib
     folder = pathlib.Path(evidence_root) / "2026-CASE-LEGACY"
     folder.mkdir()
     marker = folder / "case_info.json"
-    marker.write_text(json.dumps({"case_number": "2026-CASE-LEGACY"}))
+    original = json.dumps({"case_number": "2026-CASE-LEGACY"})
+    marker.write_text(original)
 
     case_index_db.ensure_examiner_recorded(str(folder), "Jane Doe")
-    data = json.loads(marker.read_text())
-    assert data["examiners"] == ["Jane Doe"]
+    assert marker.read_text() == original
 
 
 def test_ensure_examiner_recorded_is_a_silent_no_op_for_a_non_case_folder(tmp_path):
-    # Not a real case (no {slug}_case.json or case_info.json marker), and
+    # Not a real case (no {slug}_case.json marker), and
     # outside EVIDENCE_ROOT to boot - must not raise, must not write.
     not_a_case = tmp_path / "just_a_folder"
     not_a_case.mkdir()

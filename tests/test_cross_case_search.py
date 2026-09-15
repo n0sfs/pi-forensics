@@ -44,13 +44,21 @@ def _redirect_evidence_root(monkeypatch, evidence_root):
     monkeypatch.setattr(config, "EVIDENCE_ROOT", evidence_root)
 
 
-def test_list_case_folders_finds_consolidated_and_legacy_cases(evidence_root, monkeypatch):
+def test_list_case_folders_finds_only_consolidated_cases(evidence_root, monkeypatch):
+    """Inverted on 2026-09-15, when legacy-case support was removed. A folder
+    whose only marker is the pre-consolidation case_info.json is no longer a
+    case: carrying a second schema through every case-listing consumer bought
+    nothing once no such cases remained, and it was the reason total_cases and
+    active_cases disagreed about whether an unmigrated case counted as active.
+
+    The legacy folder is still written here on purpose - the assertion that
+    matters is that it is IGNORED, not merely that it is absent."""
     _redirect_evidence_root(monkeypatch, evidence_root)
     _write_consolidated_case(evidence_root, "2026-CASE-A", "2026-CASE-A", "Alice", "2026-01-02 00:00:00", [])
     _write_legacy_case(evidence_root, "2026-CASE-B", "2026-CASE-B")
     cases = case_index_db.list_case_folders()
-    schemas = {c['case_number']: c['schema'] for c in cases}
-    assert schemas == {"2026-CASE-A": "consolidated", "2026-CASE-B": "legacy"}
+    assert {c['case_number'] for c in cases} == {"2026-CASE-A"}
+    assert all(c['schema'] == "consolidated" for c in cases)
 
 
 def test_list_case_folders_surfaces_status_before_archive(evidence_root, monkeypatch):
