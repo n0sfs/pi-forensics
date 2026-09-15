@@ -3619,6 +3619,152 @@ function renderKeywordListsList(lists) {
     listEl.appendChild(table);
 }
 
+// --- Bundled keyword lists (2026-09-15) ---------------------------------
+// Reference lists shipped with the repo, imported into the station's own
+// keyword lists. The picker deliberately leads with each list's SOURCE,
+// LICENCE and CAVEATS rather than its terms: every one of these over-matches
+// in some way an examiner has to know about before acting on a hit, and a
+// README nobody opens is not disclosure.
+let bundledKeywordListsModalInstance = null;
+
+async function openBundledKeywordListsModal() {
+    if (!bundledKeywordListsModalInstance) {
+        bundledKeywordListsModalInstance = new bootstrap.Modal(document.getElementById('bundledKeywordListsModal'));
+    }
+    const container = document.getElementById('bundledKeywordListsContainer');
+    container.innerHTML = '<div class="text-subtle small p-2">Loading...</div>';
+    bundledKeywordListsModalInstance.show();
+
+    let data;
+    try {
+        data = await fetch('/api/settings/keyword_lists/bundled').then(r => r.json());
+    } catch (err) {
+        container.innerHTML = '';
+        const e = document.createElement('div');
+        e.className = 'text-danger small';
+        e.textContent = 'Could not load the bundled lists.';
+        container.appendChild(e);
+        return;
+    }
+    renderBundledKeywordLists(data);
+}
+
+function renderBundledKeywordLists(data) {
+    const container = document.getElementById('bundledKeywordListsContainer');
+    container.innerHTML = '';
+    const available = (data && data.available) || [];
+    if (!data || !data.success || !available.length) {
+        const none = document.createElement('div');
+        none.className = 'text-subtle small p-2';
+        none.textContent = (data && data.error)
+            || 'No bundled keyword lists are installed with this copy of the app.';
+        container.appendChild(none);
+        return;
+    }
+
+    available.forEach((item) => {
+        const card = document.createElement('div');
+        card.className = 'border border-secondary rounded p-2 mb-2';
+
+        const head = document.createElement('div');
+        head.className = 'd-flex justify-content-between align-items-start gap-2';
+        const title = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'fw-bold text-info';
+        name.textContent = item.name;                      // bundled data - text node regardless
+        const meta = document.createElement('div');
+        meta.className = 'small text-subtle';
+        meta.textContent = `${Number(item.term_count).toLocaleString()} term(s)`
+            + (item.is_regex ? ' - regular expressions' : ' - plain terms');
+        title.appendChild(name);
+        title.appendChild(meta);
+        head.appendChild(title);
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = item.already_imported
+            ? 'btn btn-sm btn-outline-secondary flex-shrink-0'
+            : 'btn btn-sm btn-info text-dark fw-bold flex-shrink-0';
+        btn.textContent = item.already_imported ? 'Import again' : 'Import';
+        btn.onclick = () => importBundledKeywordList(item, btn);
+        head.appendChild(btn);
+        card.appendChild(head);
+
+        const desc = document.createElement('div');
+        desc.className = 'small mt-1';
+        desc.textContent = item.description;
+        card.appendChild(desc);
+
+        if (item.already_imported) {
+            const already = document.createElement('div');
+            already.className = 'small text-success mt-1';
+            already.textContent = 'Already imported into this station.';
+            card.appendChild(already);
+        }
+
+        const src = item.source || {};
+        const srcLine = document.createElement('div');
+        srcLine.className = 'small text-subtle mt-1';
+        srcLine.textContent = `Source: ${src.title || 'unknown'}`
+            + (src.publisher ? ` - ${src.publisher}` : '')
+            + (src.retrieved ? ` (retrieved ${src.retrieved})` : '');
+        card.appendChild(srcLine);
+
+        if (src.licence) {
+            const lic = document.createElement('div');
+            lic.className = 'small text-subtle';
+            lic.textContent = `Licence: ${src.licence}`;
+            card.appendChild(lic);
+        }
+        if (src.url) {
+            const link = document.createElement('div');
+            link.className = 'small text-subtle font-monospace';
+            link.textContent = src.url;
+            card.appendChild(link);
+        }
+
+        (item.caveats || []).forEach((c) => {
+            const cav = document.createElement('div');
+            cav.className = 'small text-warning mt-1';
+            cav.textContent = c;
+            card.appendChild(cav);
+        });
+
+        container.appendChild(card);
+    });
+}
+
+async function importBundledKeywordList(item, btn) {
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = 'Importing...';
+    try {
+        const res = await fetch('/api/settings/keyword_lists/bundled/' + encodeURIComponent(item.file),
+                                { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(data.error || 'Import failed.', 'danger');
+            btn.disabled = false;
+            btn.textContent = original;
+            return;
+        }
+        const n = (data.lists || []).length;
+        showToast(
+            `Imported "${item.name}" - ${Number(data.term_count).toLocaleString()} term(s)`
+            + (n > 1 ? ` across ${n} lists (the per-list limit splits it)` : '') + '.',
+            'success');
+        btn.textContent = 'Imported';
+        // Both views the import affects: the picker's own "already imported"
+        // state and the station's keyword-list table behind the modal.
+        loadKeywordListsSection();
+        openBundledKeywordListsModal();
+    } catch (err) {
+        showToast('Import failed - see console.', 'danger');
+        btn.disabled = false;
+        btn.textContent = original;
+    }
+}
+
 function openCreateKeywordListModal() {
     keywordListModalMode = 'create';
     keywordListModalId = null;
