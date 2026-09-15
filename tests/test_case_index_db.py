@@ -2719,3 +2719,101 @@ def test_list_case_folders_falls_back_to_the_singular_field_for_a_case_with_no_e
     cases = case_index_db.list_case_folders()
     by_number = {c["case_number"]: c for c in cases}
     assert by_number[slug]["examiner"] == "Original Examiner"
+
+
+# --- 2026-09-14: device attribution matches a source path by containment, not
+# only exact equality. Companion-app extraction records the exact
+# output_destination, which is why exact-only matching worked when this was
+# written and why the gap went unnoticed - an MTP pull or an ALEAPP-parsed
+# folder records per-file paths UNDERNEATH the acquisition output, and every
+# one of those was silently going unattributed to any device. ---
+def test_device_attribution_credits_a_source_path_inside_the_acquisition_output(case_folder):
+    pull_root = os.path.join(case_folder, "ITEM-01_android_pull")
+    _write_case_events(case_folder, [_completed_event("ITEM-01", pull_root)])
+    # A parser pointed at a file inside the pull, not at the pull root itself.
+    inner = os.path.join(pull_root, "data", "mmssms.db")
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, inner),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"]),
+         _comm_record("android_sms_message", "address", "+15551234567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["devices"] == ["ITEM-01"]
+    assert result["contacts"][0]["device_communications"] == {"ITEM-01": 1}
+
+
+def test_device_attribution_prefers_the_innermost_matching_acquisition(case_folder):
+    # A nested acquisition inside another's output must be credited to the one
+    # that actually produced the row, not the outer directory containing it.
+    outer = os.path.join(case_folder, "outer_pull")
+    inner_acq = os.path.join(outer, "nested_extraction")
+    _write_case_events(case_folder, [
+        _completed_event("ITEM-OUTER", outer),
+        _completed_event("ITEM-INNER", inner_acq),
+    ])
+    row_path = os.path.join(inner_acq, "data", "mmssms.db")
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, row_path),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"]),
+         _comm_record("android_sms_message", "address", "+15551234567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts"][0]["device_communications"] == {"ITEM-INNER": 1}
+
+
+def test_device_attribution_does_not_credit_a_sibling_sharing_a_path_prefix(case_folder):
+    # "..._pull_extra" must not be treated as living inside "..._pull".
+    pull_root = os.path.join(case_folder, "ITEM-01_android_pull")
+    _write_case_events(case_folder, [_completed_event("ITEM-01", pull_root)])
+    sibling = pull_root + "_extra"
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, os.path.join(sibling, "mmssms.db")),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"]),
+         _comm_record("android_sms_message", "address", "+15551234567")])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["devices"] == []
+    assert result["contacts"][0]["device_communications"] == {}
+
+
+# --- 2026-09-14: analysis with no standard-step equivalent gets its own bucket
+# rather than being invisible. The grid asks "which of the STANDARD steps has
+# this item had", so these must NOT be counted as steps - but an examiner who
+# parsed an item's LNK files still did real work the case-wide view should
+# show. ---
+def test_analysis_coverage_reports_non_step_analysis_separately(case_folder, coc_log_file):
+    path = os.path.join(case_folder, "mount")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _append_coc_entry(coc_log_file, "thumbcache_parsed", {"directory": path})
+    _append_coc_entry(coc_log_file, "lnk_file_parsed", {"path": os.path.join(path, "x.lnk")})
+    _append_coc_entry(coc_log_file, "registry_hives_parsed", {"directory": path})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    # The standard step is still a step...
+    assert item["steps_completed"] == ["registry"]
+    # ...and the other two are credited without pretending to be steps.
+    assert item["other_analysis"] == ["LNK Shortcuts", "Thumbcache"]
+
+
+def test_non_step_analysis_respects_the_same_path_scoping(case_folder, coc_log_file):
+    path = os.path.join(case_folder, "mount")
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "dd",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {"output_destination": path}},
+    ])
+    _append_coc_entry(coc_log_file, "thumbcache_parsed", {"directory": path + "_other"})
+
+    item = case_index_db.compute_case_analysis_coverage(case_folder)["items"][0]
+    assert item["other_analysis"] == []
+
+
+def test_step_and_other_analysis_maps_stay_disjoint():
+    """If an action ever appears in both, one of them is wrong - it would be
+    counted as a standard step AND listed as extra work."""
+    overlap = set(case_index_db.COC_ACTION_TO_STEP) & set(case_index_db.COC_ACTION_OTHER_ANALYSIS_LABELS)
+    assert overlap == set(), f"action(s) in both maps: {overlap}"

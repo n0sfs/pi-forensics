@@ -15019,8 +15019,21 @@ async function loadAnalysisCoverage() {
                 b.textContent = 'Not yet run: ' + (labels[s] || s);
                 stepsRow.appendChild(b);
             });
+            // Real analysis with no standard-step equivalent (Thumbcache, LNK,
+            // USN journal, ...). Shown in its own style so it reads as extra
+            // work done rather than as one of the standard steps - the
+            // "Not yet run" list above has to keep meaning "what is left".
+            (item.other_analysis || []).forEach(label => {
+                const b = document.createElement('span');
+                b.className = 'badge bg-info bg-opacity-25 text-info border border-info me-1 mb-1';
+                b.textContent = 'Also run: ' + label;
+                b.title = 'This analysis was run against this item. It is not one of the standard '
+                    + 'Auto Analyze steps, so it is listed separately rather than counted as one.';
+                stepsRow.appendChild(b);
+            });
             if (!(item.steps_completed || []).length && !outstanding.length
-                && !Object.keys(failed).length && !notApplicable.size) {
+                && !Object.keys(failed).length && !notApplicable.size
+                && !(item.other_analysis || []).length) {
                 const none = document.createElement('span');
                 none.className = 'text-subtle';
                 none.textContent = 'No known steps for this item type.';
