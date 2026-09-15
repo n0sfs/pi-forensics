@@ -890,6 +890,16 @@ def test_correlate_contacts_returns_the_empty_shape_for_a_case_never_indexed(cas
                        "unresolved_communication_count": 0,
                        "truncated": False, "contacts": [], "frequent_contact_count": 0,
                        "frequent_cumulative_share_threshold": case_index_db.CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE,
+                       # Added 2026-09-15 so the Relationship Graph legend can
+                       # state the share the frequent group ACTUALLY holds, and
+                       # name the denominator it is a share of, instead of
+                       # printing the threshold as though it were a result over
+                       # "this device's total communication volume" - which
+                       # excludes every unresolved counterpart.
+                       "frequent_min_count": case_index_db.CONTACT_CORRELATION_FREQUENT_MIN_COUNT,
+                       "frequent_communication_count": 0,
+                       "resolved_communication_count": 0,
+                       "frequent_share_of_resolved": 0.0,
                        "co_occurrences": [], "co_occurrences_truncated": False,
                        "devices": []}
 
@@ -1227,6 +1237,52 @@ def test_correlate_contacts_tiers_a_frequent_contact_covering_the_cumulative_sha
     assert tiers_by_name == {"Alice": "frequent", "Bob": "frequent", "Carol": "regular"}
     assert result["frequent_contact_count"] == 2
     assert result["frequent_cumulative_share_threshold"] == 0.80
+    # The share the frequent group ACTUALLY holds, added 2026-09-15. The
+    # legend used to print the 0.80 threshold above as though it were this
+    # measurement; here the real figure is 80/85 = 94%, not 80%.
+    assert result["resolved_communication_count"] == 85
+    assert result["frequent_communication_count"] == 80
+    assert round(result["frequent_share_of_resolved"], 4) == round(80 / 85, 4)
+
+
+def test_correlate_contacts_reports_no_frequent_share_when_the_min_count_floor_empties_the_group(case_folder):
+    """The absurd output this fixes: with every contact under the min-count
+    floor, the legend rendered "0 of N contact(s) - together account for ~80%
+    of this device's total communication volume" - an empty group accounting
+    for most of the traffic. frequent_share_of_resolved must be 0 so the UI
+    can say plainly that nothing met the threshold."""
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Alice", phones=["+15551111111"]),
+         _contact_record("android_contact", "Bob", phones=["+15552222222"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551111111", t) for t in range(2)] +
+        [_comm_record("android_sms_message", "address", "+15552222222", t) for t in range(2)])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["frequent_contact_count"] == 0
+    assert result["frequent_communication_count"] == 0
+    assert result["frequent_share_of_resolved"] == 0.0
+    assert result["resolved_communication_count"] == 4
+
+
+def test_correlate_contacts_resolved_total_excludes_unresolved_traffic(case_folder):
+    """Names the denominator the legend now has to quote. A counterpart that
+    is not in the address book is not a contact here, so it cannot appear in
+    resolved_communication_count - which is exactly why calling that number
+    "this device's total communication volume" was wrong."""
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts2.db"),
+        [_contact_record("android_contact", "Alice", phones=["+15551111111"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "sms.db"),
+        [_comm_record("android_sms_message", "address", "+15551111111", t) for t in range(4)] +
+        [_comm_record("android_sms_message", "address", "+15559999999", t) for t in range(6)])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["resolved_communication_count"] == 4
+    assert result["unresolved_communication_count"] == 6
 
 
 def test_correlate_contacts_tiers_exactly_one_communication_as_one_off(case_folder):
@@ -1992,11 +2048,71 @@ def test_detect_privacy_tools_reports_a_clean_negative_distinctly_from_never_loo
     assert result["user_installed"] == [] and result["system_or_preloaded"] == []
 
 
+# --- 2026-09-15: the scan read only android_installed_app, while the Apps
+# list rendered directly above this panel merges leapp_installed_app too. A
+# case holding a clean adb pull plus an iLEAPP-parsed iPhone with Onion
+# Browser therefore rendered a GREEN "No VPN, Tor or anonymity-network client
+# found among the 150 installed apps captured for this case" with Onion
+# Browser listed immediately above it. ---
+def _leapp_installed_app_record(row):
+    """A LEAPP row as core/leapp_tsv_utils.py really writes one: a generic TSV
+    row whose extra["row"] is the module's own column->value dict. Which
+    column holds the identifier differs per module, which is why the scan
+    matches any cell rather than naming a column."""
+    return {"artifact_type": "leapp_installed_app", "title": list(row.values())[0],
+            "url": "", "value": " | ".join(f"{k}: {v}" for k, v in row.items()),
+            "timestamp": None,
+            "extra": {"leapp_tool": "aleapp", "leapp_module": "installedappsVending", "row": dict(row)}}
+
+
+def test_detect_privacy_tools_finds_a_tor_client_in_a_leapp_inventory(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "leapp_apps"),
+        [_leapp_installed_app_record({"Bundle ID": "org.torproject.android", "Version": "13.0"}),
+         _leapp_installed_app_record({"Bundle ID": "com.amazon.mShop.android.shopping", "Version": "1.2"})])
+
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert result["app_inventory_present"] is True
+    assert result["apps_scanned"] == 2
+    assert [e["package"] for e in result["install_source_unknown"]] == ["org.torproject.android"]
+    assert result["install_source_unknown"][0]["category"] == "tor"
+    # A LEAPP export records no system/user install flag, so the bucket that
+    # would ASSERT one must stay empty rather than guessing either way.
+    assert result["user_installed"] == []
+    assert result["system_or_preloaded"] == []
+
+
+def test_detect_privacy_tools_scans_both_inventories_in_one_case(case_folder):
+    """The exact reported scenario: a clean Android pull alongside a LEAPP
+    inventory that is not clean. The green "none found" must not render."""
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "android_apps"),
+        [_installed_app_record("com.amazon.mShop.android.shopping")])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "leapp_apps"),
+        [_leapp_installed_app_record({"Bundle ID": "org.torproject.android"})])
+
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert result["apps_scanned"] == 2
+    assert [e["package"] for e in result["install_source_unknown"]] == ["org.torproject.android"]
+
+
+def test_detect_privacy_tools_leapp_row_with_no_known_package_reports_nothing(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "leapp_apps"),
+        [_leapp_installed_app_record({"Bundle ID": "com.example.notatool", "App Name": "Notes"})])
+
+    result = case_index_db.detect_privacy_tools(case_folder)
+    assert result["app_inventory_present"] is True
+    assert result["install_source_unknown"] == []
+
+
 def test_detect_privacy_tools_empty_case_reports_nothing_was_looked_at(case_folder):
     result = case_index_db.detect_privacy_tools(case_folder)
     assert result["app_inventory_present"] is False
     assert result["artifacts_present"] is False
     assert result["user_installed"] == []
+    assert result["install_source_unknown"] == []
     assert result["onion_references"] == []
 
 
