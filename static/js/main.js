@@ -12165,7 +12165,25 @@ function renderContactCorrelationTable(data) {
 // loadCaseForEditing()'s own fire-and-forget calls into renderCaseNotesList()/
 // renderCaseJobs()/loadCaseHistory()) - a slow section never blocks a fast
 // one from showing its own data first.
+// Clears every Pattern of Life cache (2026-09-15). These were assigned only
+// on SUCCESS and never cleared on failure, so switching to a case whose API
+// errors - or one with no consolidated file - left the PREVIOUS case's
+// contacts, locations and events still driving the highlight chips, the
+// contact<->location cross-linking, and any later date-range recompute. In a
+// forensics tool, showing case A's evidence while case B is open is about the
+// worst display bug available, so state is dropped up front rather than only
+// replaced on a good response.
+function _resetPatternOfLifeCaches() {
+    patternOfLifeContactData = null;
+    patternOfLifeGeoActivityData = null;
+    patternOfLifeActivityAllRows = null;
+    patternOfLifeActivityRows = [];
+    patternOfLifeActivityTruncated = false;
+    patternOfLifeActivityContactLabel = {};
+}
+
 function loadPatternOfLife() {
+    _resetPatternOfLifeCaches();
     const highlightsEl = document.getElementById('patternOfLifeHighlights');
     if (highlightsEl) highlightsEl.innerHTML = '<span class="text-subtle small italic">Loading...</span>';
     loadContactCorrelation();
@@ -13009,6 +13027,7 @@ function renderGeoActivityMap(container, points, frequentLocations, homeWorkByKe
 // the right tool for those.
 let patternOfLifeActivityAllRows = null;   // cached UNFILTERED rows, so neither the granularity nor the category toggle ever re-fetches
 let patternOfLifeActivityRows = null;      // the currently-filtered subset actually charted
+let patternOfLifeActivityTruncated = false;  // see loadPatternOfLifeActivityChart()
 let patternOfLifeActivityGranularity = 'hour'; // 'hour' | 'dow' | 'heatmap' | 'overtime'
 let patternOfLifeActivityIncludeWeb = false;
 let patternOfLifeActivityIncludeCalendar = false;
@@ -13045,6 +13064,14 @@ async function loadPatternOfLifeActivityChart() {
             return;
         }
         patternOfLifeActivityAllRows = data.events || [];
+        // The timeline API caps its response, and it keeps the NEWEST rows
+        // (routes/reporting.py sorts descending before slicing). So on a busy
+        // case this chart is built from recent activity only, and its
+        // "typical hour of day" pattern systematically omits the earliest
+        // period - while still stating a confident "N event(s) analyzed".
+        // The Evidence Timeline already discloses this; this chart did not
+        // even read the flag (2026-09-15).
+        patternOfLifeActivityTruncated = !!data.truncated;
         patternOfLifeActivityContactLabel = {};
         (data.contacts || []).forEach((c) => {
             patternOfLifeActivityContactLabel[c.key] = c.display_names && c.display_names.length ? c.display_names.join(' / ') : c.key;
@@ -13118,9 +13145,18 @@ function _recomputePatternOfLifeActivityRows() {
         if (patternOfLifeActivityIncludeWeb) extras.push('web browsing');
         if (patternOfLifeActivityIncludeCalendar) extras.push('calendar/reminders');
         const dateNote = (patternOfLifeActivityDateFrom || patternOfLifeActivityDateTo) ? ', date-filtered' : '';
+        // Stated plainly rather than left implicit: a capped set means this
+        // chart describes recent activity only, so its "typical" pattern is
+        // not the whole case. Styled as a warning so it is not read past.
+        const truncNote = patternOfLifeActivityTruncated
+            ? ' - NOTE: this case has more events than the timeline returns, and the newest were'
+              + ' kept, so the earliest activity is not represented here'
+            : '';
+        summaryEl.className = patternOfLifeActivityTruncated ? 'small text-warning' : 'small text-subtle';
         summaryEl.textContent = patternOfLifeActivityRows.length
             ? `${patternOfLifeActivityRows.length} event(s) analyzed`
-                + (extras.length ? ` (communications + ${extras.join(' + ')})` : ' (communications)') + dateNote
+                + (extras.length ? ` (communications + ${extras.join(' + ')})` : ' (communications)')
+                + dateNote + truncNote
             : '';
     }
     renderPatternOfLifeActivityChart();
@@ -15452,6 +15488,13 @@ async function loadCaseTimeline() {
     const body = document.getElementById('caseTimelineBody');
     if (!body || !activeCase) return;
     body.innerHTML = '<tr><td colspan="6" class="text-subtle p-2">Building timeline...</td></tr>';
+    // Dropped up front, not merely replaced on success (2026-09-15): these
+    // were only reassigned on a good response, so a failed load left the
+    // PREVIOUS case's rows in place - and exportCaseTimelineCsv() names its
+    // file from the CURRENT case, producing a download labelled case B
+    // containing case A's evidence.
+    caseTimelineCache = null;
+    caseTimelineFilteredRows = [];
     caseTimelineBucketFilter = null;   // a fresh case load shouldn't carry over a stale drill-down from a previous case
     caseTimelineEvidenceFilter = '__all__';
     caseTimelineYearFilter = '__all__';
@@ -15919,10 +15962,20 @@ function exportCaseTimelineCsv() {
         return;
     }
     const csvCell = (val) => {
-        const s = (val === null || val === undefined) ? '' : String(val);
+        let s = (val === null || val === undefined) ? '' : String(val);
+        // Evidence text ends up in a file someone opens in Excel or Sheets,
+        // which execute a leading =, +, - or @ as a formula. A filename on a
+        // suspect drive is attacker-controlled content, so it is neutralised
+        // with a leading apostrophe - the standard defence, and it keeps the
+        // original text visible rather than altering or dropping it.
+        if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
         return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ['Timestamp', 'Source', 'Category', 'Activity', 'Detail', 'Contact(s)', 'Content Preview', 'Evidence ID', 'Deleted', 'Suspicious', 'Device Time'];
+    // Both an unambiguous UTC value and the readable local one. This carried
+    // only a browser-locale string with no zone, so the same row read
+    // differently to an analyst elsewhere and could not be interpreted with
+    // certainty from the file alone.
+    const header = ['Timestamp (UTC)', 'Timestamp (Local)', 'Source', 'Category', 'Activity', 'Detail', 'Contact(s)', 'Content Preview', 'Evidence ID', 'Deleted', 'Suspicious', 'Device Time'];
     const lines = [header];
     caseTimelineFilteredRows.forEach((e) => {
         const activityLabel = e.source === 'macb' ? (MACB_ACTIVITY_LABEL[e.activity] || e.activity)
@@ -15930,6 +15983,7 @@ function exportCaseTimelineCsv() {
         const contactLabel = (e.counterparts && e.counterparts.length)
             ? e.counterparts.map((k) => caseTimelineContactLabel[k] || k).join(' / ') : '';
         lines.push([
+            new Date(e.timestamp * 1000).toISOString(),
             new Date(e.timestamp * 1000).toLocaleString(),
             CASE_TIMELINE_SOURCE_LABEL[e.source] || e.source,
             e.category || '',
@@ -15938,7 +15992,15 @@ function exportCaseTimelineCsv() {
             e.real_device_timestamp ? 'Yes' : 'No',
         ]);
     });
-    const csvText = lines.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+    let csvText = lines.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+    // An exported timeline looked complete even when the case has more events
+    // than the API returns - and the rows kept are the NEWEST, so the earliest
+    // activity is exactly what is missing. Disclosed in the file itself, since
+    // the file is what gets handed on.
+    if (caseTimelineCache && caseTimelineCache.truncated) {
+        csvText += csvCell('NOTE: this case has more events than the timeline returns. The newest '
+            + 'were kept, so the earliest activity is NOT included in this export.') + '\r\n';
+    }
     const blob = new Blob([csvText], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
