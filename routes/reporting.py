@@ -2719,6 +2719,21 @@ def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=No
             "results": results + carried,
             "skipped": skipped,
         }
+        # Bump updated_at like every other case-mutating path does
+        # (_case_upsert_event, set_case_status, attach_file_to_case,
+        # add_case_note, ensure_examiner_recorded). Added 2026-09-15.
+        #
+        # save_report_json()'s optimistic-concurrency check compares ONLY
+        # updated_at, so leaving it untouched here meant a "Save Report
+        # Changes" from a tab whose snapshot predates this verification passed
+        # the conflict check and wrote back the stale (or absent)
+        # last_verification - silently erasing a recorded MISMATCH, which then
+        # falls back to an amber "Not Yet Re-Verified" in the next export.
+        # That is the same quiet downgrade of a detected mismatch the
+        # carry-forward above exists to prevent, arriving by a different door,
+        # and the guard written to stop it could not fire because this write
+        # was invisible to it.
+        fresh['updated_at'] = run_at
         _write_case_file(case_file, fresh)
         if carried:
             append_log(f"[i] Kept {len(carried)} earlier result(s) for evidence this run did "
@@ -3116,6 +3131,17 @@ def _pdf_cell(value, width):
 
 _HASH_DISPLAY_PRIORITY = ('sha256', 'sha1', 'md5')
 
+def _hash_status_entry(entry):
+    """Unpacks a hash_status_by_event value into (status, verified_at).
+
+    The map used to hold a bare status string and now holds a
+    (status, verified_at) pair. Tolerates the old shape so a caller this
+    change missed degrades to "no date shown" rather than raising mid-export
+    or, worse, unpacking a status string into two characters."""
+    if isinstance(entry, tuple):
+        return entry[0], (entry[1] if len(entry) > 1 else None)
+    return entry, None
+
 def _pick_display_hash(hashes):
     """Evidence Inventory's summary table shows one hash per item - picking
     silently via next(iter(hashes.values())) (the old behavior) shows a bare,
@@ -3233,11 +3259,19 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_
         # app's already-established "a mismatch gets elevated visibility"
         # posture (execution_worker_verify_all_evidence's own dedicated,
         # higher-visibility chain-of-custody entry for the same real case).
-        status_meta = _HASH_STATUS_META.get(hash_status_by_event.get(event.get('event_id')), _HASH_STATUS_UNKNOWN)
+        status, verified_at = _hash_status_entry(hash_status_by_event.get(event.get('event_id')))
+        status_meta = _HASH_STATUS_META.get(status, _HASH_STATUS_UNKNOWN)
         c.setFillColorRGB(*status_meta["pdf_color"])
         c.drawString(xpos[6], y, status_meta["pdf_label"])
         c.setFillColorRGB(0, 0, 0)
         y -= 11
+        if verified_at:
+            c.setFont("Helvetica", 6.5)
+            c.setFillColorRGB(0.35, 0.35, 0.35)
+            c.drawString(xpos[6], y, f"on {verified_at}")
+            c.setFillColorRGB(0, 0, 0)
+            c.setFont("Helvetica", 7.5)
+            y -= 9
         # The full, untruncated digest on its own line beneath the row
         # (2026-09-15). The Acquisition Hash column is 100pt wide and a
         # SHA-256 digest is 64 hex characters, so the cell could only ever
@@ -5265,7 +5299,12 @@ def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id
         meta = event.get('case_metadata', {})
         drive = event.get('source_drive_telemetry', {})
         hash_display = _pick_display_hash(event.get('computed_verification_hashes', {}))
-        status_meta = _HASH_STATUS_META.get(hash_status_by_event.get(event.get('event_id')), _HASH_STATUS_UNKNOWN)
+        status, verified_at = _hash_status_entry(hash_status_by_event.get(event.get('event_id')))
+        status_meta = _HASH_STATUS_META.get(status, _HASH_STATUS_UNKNOWN)
+        # The date is part of the finding, not decoration - see the note in
+        # compute_case_analysis_coverage(). A carried-forward result from a
+        # stopped run is otherwise indistinguishable from a fresh one.
+        when_html = (f'<br><span class="muted">on {esc(str(verified_at))}</span>' if verified_at else '')
         parts.append(
             f'<tr><td>{esc(str(meta.get("evidence_id", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("device_path", "N/A")))}</td>'
@@ -5273,7 +5312,7 @@ def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id
             f'<td>{esc(str(drive.get("serial_number", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("capacity_gb", "N/A")))} GB</td>'
             f'<td class="mono">{esc(str(hash_display))}</td>'
-            f'<td><span class="{esc(status_meta["html_class"])}">{esc(status_meta["html_label"])}</span></td></tr>'
+            f'<td><span class="{esc(status_meta["html_class"])}">{esc(status_meta["html_label"])}</span>{when_html}</td></tr>'
         )
     parts.append('</table>')
     return ''.join(parts)
@@ -5984,8 +6023,12 @@ def export_report():
     # dispatch" pattern as tags_by_path/analysis_by_path/exhibit_numbers
     # above. DFIR's own template never shows Evidence Inventory at all, so
     # this is only ever threaded into the Standard/Police/CASE-UCO builders.
+    # Now carries WHEN each result was produced, not only what it said - a
+    # verification carried forward from an earlier run is otherwise
+    # indistinguishable in the report from one minutes old. See the note in
+    # compute_case_analysis_coverage().
     hash_status_by_event = {
-        item["event_id"]: item["hash_status"]
+        item["event_id"]: (item["hash_status"], item.get("hash_verified_at"))
         for item in compute_case_analysis_coverage(case_folder)["items"]
     }
 

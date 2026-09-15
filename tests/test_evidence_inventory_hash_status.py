@@ -283,6 +283,54 @@ def test_missing_file_is_distinguishable_from_no_usable_algorithms(tmp_path):
     assert reporting._verify_recompute_hashes(str(real), ["not_a_real_algo"]) == {}
 
 
+def test_html_dates_each_verification_result(client, evidence_root):
+    """execution_worker_verify_all_evidence stamps every result with its own
+    verified_at and carries forward results a stopped run did not re-check,
+    explicitly "so a carried-forward finding is never mistaken for a fresh
+    one" - but nothing ever rendered that field, so the protection was
+    discarded at render time. An item verified in January sat next to items
+    verified minutes ago, both a flat green VERIFIED (2026-09-15)."""
+    case_folder, case_file = _make_real_case(
+        evidence_root,
+        [_event("evt-1", os.path.join(evidence_root, "img.dd"), computed_hashes={"sha256": "abc"})],
+        last_verification={"timestamp": "2026-03-01 09:00:00", "results": [
+            {"event_id": "evt-1", "evidence_id": "USBDrive-1", "status": "match",
+             "verified_at": "2026-01-04 11:22:33", "current_hashes": {"sha256": "abc"}},
+        ]},
+    )
+    html_out = _export_preview(client, case_file)
+    assert "Hash Verified" in html_out
+    # The result's OWN date, not the run's - that is the whole distinction.
+    assert "2026-01-04 11:22:33" in html_out
+
+
+def test_html_omits_the_date_when_a_result_carries_none(client, evidence_root):
+    """A pre-2026-09-14 case file has results with no verified_at at all.
+    Showing the enclosing run's timestamp for those would re-create exactly
+    the confusion this fixes, so show nothing."""
+    case_folder, case_file = _make_real_case(
+        evidence_root,
+        [_event("evt-1", os.path.join(evidence_root, "img.dd"), computed_hashes={"sha256": "abc"})],
+        last_verification={"timestamp": "2026-03-01 09:00:00", "results": [
+            {"event_id": "evt-1", "evidence_id": "USBDrive-1", "status": "match",
+             "current_hashes": {"sha256": "abc"}},
+        ]},
+    )
+    html_out = _export_preview(client, case_file)
+    assert "Hash Verified" in html_out
+    assert "2026-03-01 09:00:00" not in html_out
+
+
+def test_hash_status_entry_tolerates_the_old_bare_string_shape():
+    """hash_status_by_event went from {event_id: status} to
+    {event_id: (status, verified_at)}. A caller this change missed must
+    degrade to "no date", never unpack a status string into two characters."""
+    assert reporting._hash_status_entry(("match", "2026-01-04")) == ("match", "2026-01-04")
+    assert reporting._hash_status_entry(("match",)) == ("match", None)
+    assert reporting._hash_status_entry("match") == ("match", None)
+    assert reporting._hash_status_entry(None) == (None, None)
+
+
 def test_read_error_has_its_own_label_and_is_not_coloured_as_tampering():
     meta = reporting._HASH_STATUS_META["read_error"]
     assert meta["pdf_label"] == "COULD NOT READ"

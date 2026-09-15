@@ -15579,13 +15579,23 @@ function renderVerifyAllEvidenceLastResult() {
     const skipped = lv.skipped || [];
     const mismatches = results.filter((r) => r.status === 'mismatch').length;
     const matches = results.filter((r) => r.status === 'match').length;
-    const unverifiable = results.filter((r) => r.status === 'unverifiable' || r.status === 'missing_file').length;
+    // "File missing" is its own line, not folded into "unverifiable"
+    // (2026-09-15). Evidence that is GONE - deleted, or on a share that is no
+    // longer mounted - is not the same as evidence this tool cannot check,
+    // and the exported report already treats it as its own state, rendering
+    // "FILE MISSING" in red. On screen it was absorbed into a neutral grey
+    // "unverifiable" count, so a case whose three images had vanished read as
+    // a routine "can't check these" - the screen understating exactly what the
+    // report escalates.
+    const missing = results.filter((r) => r.status === 'missing_file').length;
+    const unverifiable = results.filter((r) => r.status === 'unverifiable').length;
     // Counted and stated separately from both match and mismatch: a file this
     // app could not read is not evidence of alteration, and folding it into
     // either number would misrepresent the verification run.
     const unreadable = results.filter((r) => r.status === 'read_error').length;
-    el.className = mismatches > 0 ? 'small mt-2 text-danger fw-bold' : 'small mt-2 text-subtle';
+    el.className = (mismatches > 0 || missing > 0) ? 'small mt-2 text-danger fw-bold' : 'small mt-2 text-subtle';
     el.textContent = `Last verified ${lv.timestamp || '--'}: ${matches} match(es), ${mismatches} mismatch(es), `
+        + (missing ? `${missing} FILE MISSING, ` : '')
         + `${unverifiable} unverifiable, `
         + (unreadable ? `${unreadable} could not be read, ` : '')
         + `${skipped.length} not checkable by this tool.`; // static/derived text only
@@ -17645,23 +17655,56 @@ function setExportFileCheckboxes(checked) {
     updateExportMismatchWarning();
 }
 
+// Reads the case JSON as it currently stands ON DISK, for the two export
+// formats this app builds client-side (2026-09-15). See the JSON branch in
+// runExportReport() for why the in-memory copy is not safe to export.
+// Returns null (and reports the reason in `statusEl`) on any failure, so a
+// caller never silently falls back to exporting something else.
+async function _fetchReportJsonFromDisk(reportPath, statusEl) {
+    const fail = (msg) => {
+        if (statusEl) { statusEl.textContent = msg; statusEl.className = 'small text-danger'; }
+        return null;
+    };
+    if (!reportPath) return fail('No case data loaded.');
+    try {
+        const res = await fetch('/api/report/load', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report_path: reportPath })
+        });
+        const data = await res.json();
+        if (!data.success || !data.report) {
+            return fail(data.error || 'Could not read the case file from disk.');
+        }
+        return data.report;
+    } catch (err) {
+        return fail(`Could not read the case file from disk: ${err.message}`);
+    }
+}
+
 async function runExportReport() {
     const reportPath = currentReportPath;
     if (!reportPath) return showToast("Select an active case first.", 'warning');
 
     const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
 
-    // Raw JSON never touches /api/export_report - it's just the case file
-    // already loaded client-side (the same data jsonPreview already shows),
-    // downloaded directly as a Blob. No template/sections/job_fields
-    // filtering applies to a raw dump.
+    // Raw JSON never touches /api/export_report - it's the case file read
+    // FRESH FROM DISK (2026-09-15), not the in-memory currentLoadedReportData.
+    //
+    // saveReportMetadata() writes the form's values into that object BEFORE
+    // the round-trip, and deliberately leaves them there when the save is
+    // rejected - a 409 conflict, or a network error - so the examiner does not
+    // lose what they typed. Correct for the form; wrong for an export, which
+    // then handed over a document containing text that is not, and may never
+    // be, on disk. This pane's own contract (see the comment above
+    // EXPORT_FIXED_TEMPLATE_HINTS) says "Export always reads whatever is
+    // currently on disk ... unsaved edits in the form are not silently
+    // included" - only the PDF/HTML path actually honoured it.
     if (format === 'json') {
         const statusEl = document.getElementById("exportReportStatus");
-        if (!currentLoadedReportData) {
-            if (statusEl) { statusEl.textContent = 'No case data loaded.'; statusEl.className = 'small text-danger'; }
-            return;
-        }
-        const blob = new Blob([JSON.stringify(currentLoadedReportData, null, 2)], { type: 'application/json' });
+        const onDisk = await _fetchReportJsonFromDisk(reportPath, statusEl);
+        if (!onDisk) return;
+        const blob = new Blob([JSON.stringify(onDisk, null, 2)], { type: 'application/json' });
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -17681,11 +17724,9 @@ async function runExportReport() {
     // such array and is treated as its own single event.
     if (format === 'csv') {
         const statusEl = document.getElementById("exportReportStatus");
-        if (!currentLoadedReportData) {
-            if (statusEl) { statusEl.textContent = 'No case data loaded.'; statusEl.className = 'small text-danger'; }
-            return;
-        }
-        const data = currentLoadedReportData;
+        // On-disk, for the same reason as the JSON branch above.
+        const data = await _fetchReportJsonFromDisk(reportPath, statusEl);
+        if (!data) return;
         const events = Array.isArray(data.events) ? data.events : [data];
         const csvCell = (val) => {
             const s = (val === null || val === undefined) ? '' : String(val);

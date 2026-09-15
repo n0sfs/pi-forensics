@@ -2848,8 +2848,19 @@ def compute_case_analysis_coverage(case_folder):
 
         recorded_hashes = event.get('computed_verification_hashes') or {}
         lv = lv_by_event.get(event.get('event_id'))
+        hash_verified_at = None
         if lv:
             hash_status = lv.get('status', 'unverifiable')
+            # WHEN this result was produced (2026-09-15).
+            # execution_worker_verify_all_evidence deliberately stamps every
+            # result with its own verified_at and carries forward results a
+            # stopped run did not re-check, precisely "so a carried-forward
+            # finding is never mistaken for a fresh one" - but neither the
+            # report renderers nor the Coverage tab ever read that field, so
+            # the protection was discarded at render time. An item verified in
+            # January sat next to items verified minutes ago, both a flat
+            # green VERIFIED, with nothing to tell them apart.
+            hash_verified_at = lv.get('verified_at')
         elif recorded_hashes:
             hash_status = 'not_yet_reverified'
         else:
@@ -2874,6 +2885,7 @@ def compute_case_analysis_coverage(case_folder):
             # COC_ACTION_OTHER_ANALYSIS_LABELS for why it is its own bucket.
             "other_analysis": sorted(other_analysis),
             "hash_status": hash_status,
+            "hash_verified_at": hash_verified_at,
             "tag_count": tag_count,
         })
 

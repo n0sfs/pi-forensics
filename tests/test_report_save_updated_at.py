@@ -209,3 +209,54 @@ def test_save_skips_the_conflict_check_when_the_on_disk_file_predates_updated_at
     with open(report_path) as f:
         on_disk = json.load(f)
     assert on_disk["notes"] == "edited"
+
+
+# --- 2026-09-15: execution_worker_verify_all_evidence's own write was the
+# remaining case-mutating path that did NOT bump updated_at. Because the
+# conflict check above compares only that field, a "Save Report Changes" from
+# a tab whose snapshot predated the verification passed the check and wrote
+# back the stale (or absent) last_verification - silently erasing a recorded
+# MISMATCH, which then falls back to an amber "Not Yet Re-Verified" in the
+# next export. Exactly the quiet downgrade of a detected mismatch the
+# carry-forward logic exists to prevent, arriving by a different door. ---
+def test_a_stale_save_cannot_erase_a_recorded_mismatch(client, evidence_root):
+    report_path = _make_real_case(evidence_root, slug="2026-CASE-VERIFY-CLOBBER")
+
+    # The tab loads the case BEFORE any verification has run.
+    with open(report_path) as f:
+        stale_snapshot = json.load(f)
+
+    # Verify All Evidence then runs and records a mismatch, writing
+    # last_verification and - the fix - bumping updated_at with it.
+    with open(report_path) as f:
+        fresh = json.load(f)
+    fresh["last_verification"] = {
+        "timestamp": "2026-02-02 10:00:00", "run_completed": True, "skipped": [],
+        "results": [{"event_id": "evt-1", "evidence_id": "USBDrive-1", "status": "mismatch",
+                     "verified_at": "2026-02-02 10:00:00"}],
+    }
+    fresh["updated_at"] = "2026-02-02 10:00:00"
+    with open(report_path, 'w') as f:
+        json.dump(fresh, f)
+
+    # The examiner now saves from the stale tab. It must be REJECTED, not
+    # allowed to write back a payload with no last_verification in it.
+    stale_snapshot["notes"] = "an edit made before the verification ran"
+    res = client.post("/api/report/save",
+                      json={"report_path": report_path, "report_data": stale_snapshot})
+    assert res.status_code == 409
+    assert res.get_json().get("conflict") is True
+
+    with open(report_path) as f:
+        on_disk = json.load(f)
+    assert on_disk["last_verification"]["results"][0]["status"] == "mismatch", \
+        "a stale save silently erased a recorded hash mismatch"
+
+
+def test_the_verify_worker_writes_updated_at_alongside_last_verification():
+    """Pins the specific line, so the bump cannot be dropped again without a
+    test failing - the behaviour above is only protective because of it."""
+    import inspect
+    import routes.reporting as reporting
+    src = inspect.getsource(reporting.execution_worker_verify_all_evidence)
+    assert "fresh['updated_at'] = run_at" in src
