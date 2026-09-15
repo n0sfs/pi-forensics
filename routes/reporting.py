@@ -1115,10 +1115,20 @@ def _collect_case_timeline(events):
                          f"timestamp (added to the device after the timestamp capture ran, most likely) and "
                          f"fall back to copy time for those specific entries.")
 
+    # `truncated` above is set by the per-source budget and the folder-walk
+    # cap, both of which stop the walk WHERE IT HAPPENS TO BE - depth-first
+    # traversal order, not time. Reporting that as "the newest were kept" (as
+    # the CSV export did) is not a softening of the truth, it is the opposite
+    # of it: on a 500 GB Windows image the budget fills inside /Windows/WinSxS
+    # and /Users/<suspect>/Documents is never reached at all, while the
+    # surviving rows still span 2019-2026 so nothing looks missing. Kept
+    # separate from the recency cut below so each can be stated accurately.
+    by_walk_order = truncated
     all_events.sort(key=lambda e: e['timestamp'], reverse=True)
-    if len(all_events) > TSK_MAX_TIMELINE_ENTRIES:
-        truncated = True
-    return {"events": all_events[:TSK_MAX_TIMELINE_ENTRIES], "notes": notes, "truncated": truncated}
+    by_recency = len(all_events) > TSK_MAX_TIMELINE_ENTRIES
+    return {"events": all_events[:TSK_MAX_TIMELINE_ENTRIES], "notes": notes,
+            "truncated": by_walk_order or by_recency,
+            "by_walk_order": by_walk_order, "by_recency": by_recency}
 
 
 CASE_TIMELINE_MAX_TOTAL_ENTRIES = 6000  # a bit above TSK_MAX_TIMELINE_ENTRIES (5000) to leave room for the parsed_artifacts contribution without starving the MACB one
@@ -1327,6 +1337,10 @@ def _build_enriched_case_timeline(case_folder, events):
 
     combined.sort(key=lambda r: r["timestamp"], reverse=True)
     truncated = macb["truncated"] or len(combined) > CASE_TIMELINE_MAX_TOTAL_ENTRIES
+    truncation_reasons = {
+        "by_walk_order": bool(macb.get("by_walk_order")),
+        "by_recency": bool(macb.get("by_recency")) or len(combined) > CASE_TIMELINE_MAX_TOTAL_ENTRIES,
+    }
     # A trimmed contact directory for the frontend's own "Filter by contact"
     # dropdown - deliberately NOT the full correlate_contacts() payload
     # (samples/communication_counts/direction_counts, up to
@@ -1343,7 +1357,8 @@ def _build_enriched_case_timeline(case_folder, events):
          "tier": c.get("tier")}
         for c in correlation.get("contacts", [])
     ]
-    return combined[:CASE_TIMELINE_MAX_TOTAL_ENTRIES], truncated, macb["notes"], contacts_summary
+    return (combined[:CASE_TIMELINE_MAX_TOTAL_ENTRIES], truncated, macb["notes"],
+            contacts_summary, truncation_reasons)
 
 
 @reporting_bp.route('/api/cases/timeline', methods=['GET'])
@@ -1367,10 +1382,14 @@ def case_timeline():
     data = _read_case_file(case_file)
     events = data.get('events', [])
 
-    combined, truncated, notes, contacts_summary = _build_enriched_case_timeline(case_folder, events)
+    combined, truncated, notes, contacts_summary, truncation_reasons = _build_enriched_case_timeline(case_folder, events)
     return jsonify({
         "success": True, "events": combined,
         "notes": notes, "truncated": truncated,
+        # WHY rows are missing, not just that some are. The two mechanisms
+        # drop completely different rows, and only one of them keeps the
+        # newest - see the comment in the MACB collector.
+        "truncation_reasons": truncation_reasons,
         # The real, authoritative category list, not a second frontend-side
         # copy - static/js/main.js builds its filter checkboxes from this,
         # matching the "single source of truth" pattern already used for
@@ -1704,18 +1723,41 @@ def _parse_kml_placemarks(kml_text):
 
 
 def _parse_kml_when(text):
-    """Parses a KML <when> value into a Unix epoch float, or None. KML
-    specifies ISO 8601; the trailing 'Z' that form uses is normalized to the
-    +00:00 offset datetime.fromisoformat() accepts on this project's Python.
-    A date-only value (also legal KML) is read as midnight UTC."""
+    """Parses a KML <when> value into a Unix epoch float, or None.
+
+    KML specifies ISO 8601 / XML Schema dateTime, where a value carrying no
+    timezone designator means "local time" in a zone the document never
+    states. This used to hand such a value straight to
+    datetime.fromisoformat().timestamp(), which resolves a naive datetime
+    against the SERVER's TZ - so `<when>2026-03-14T22:15:00</when>` landed at
+    22:15Z on a station left at the Raspberry Pi OS default Etc/UTC and at
+    03:15Z the next day on one set to America/New_York. The same evidence
+    file produced different answers on two stations, and the docstring here
+    claimed UTC while the code did neither.
+
+    A timestamp that is wrong is worse than one that is absent: these values
+    feed the visit/dwell counting, the implausible-speed check and the
+    Home/Work inference, so a silently shifted one does not just mislabel a
+    row, it manufactures a conclusion. Naive values are therefore rejected
+    outright, exactly as core/leapp_tsv_utils._parse_leapp_datetime_str()
+    already does for the same reason. The point still plots and still
+    exports; it is simply undated, which the UI already states plainly
+    ("N recording(s), no timestamps to group into visits").
+
+    This costs nothing on KML this app generates itself - core/geo_utils.py's
+    _kml_timestamp_when() always writes a 'Z'-suffixed UTC value.
+    """
     if not text or not str(text).strip():
         return None
     raw = str(text).strip()
     try:
-        return datetime.datetime.fromisoformat(
-            raw[:-1] + '+00:00' if raw.endswith('Z') else raw).timestamp()
+        parsed = datetime.datetime.fromisoformat(
+            raw[:-1] + '+00:00' if raw.endswith('Z') else raw)
     except (ValueError, TypeError):
         return None
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        return None
+    return parsed.timestamp()
 
 
 def _collect_case_kml_files(case_folder, attachment_files):
@@ -1885,7 +1927,14 @@ def _collect_case_geo_activity(case_folder, attachment_files):
             # been dropped by the SQL LIMIT itself).
             for value, timestamp, extra_json in conn.execute(
                     "SELECT value, timestamp, extra_json FROM parsed_artifacts "
-                    "WHERE artifact_type = 'takeout_location_history' LIMIT ?",
+                    "WHERE artifact_type = 'takeout_location_history' "
+                    # Newest first, so the retained window is DEFINED when the
+                    # cap bites. Without this the surviving rows were whatever
+                    # rowid order happened to produce - not "the most recent",
+                    # despite that being what the UI's truncation note implies.
+                    # SQLite sorts NULLs last under DESC, so dated rows are
+                    # preferred over undated ones, which is also what we want.
+                    "ORDER BY timestamp DESC LIMIT ?",
                     (GEO_ACTIVITY_MAX_POINTS + 1,)):
                 try:
                     extra = json.loads(extra_json) if extra_json else {}
@@ -1910,9 +1959,46 @@ def _collect_case_geo_activity(case_folder, attachment_files):
                             "timestamp": placemark.get("timestamp"),
                             "name": placemark["name"] or kml_entry["name"], "source": kml_entry["name"]})
 
+    # FAIR SHARE PER SOURCE, not a head-slice of the concatenated list
+    # (2026-09-15). Takeout rows are appended first and KML placemarks second,
+    # so `points[:5000]` meant a case with 5,200 Takeout rows plus a 30-point
+    # EXIF photo KML kept 5,000 Takeout rows and ZERO photo pins - an entire
+    # evidence source deleted from the map, from Frequent Locations, from
+    # Home/Work and from the exported report, under a note reading "list
+    # truncated - too many points to show all", which reads as a display
+    # limit rather than a dropped source.
+    #
+    # Smallest-source-first allocation: each source is offered an equal share
+    # of what is left, and whatever a small source does not need flows to the
+    # larger ones. A source that fits entirely is never touched, so the photo
+    # KML above keeps all 30 points and Takeout absorbs the whole remainder.
     truncated = len(points) > GEO_ACTIVITY_MAX_POINTS
-    points = points[:GEO_ACTIVITY_MAX_POINTS]
-
+    truncation_detail = []
+    if truncated:
+        by_source = {}
+        for point in points:
+            by_source.setdefault(point["source"], []).append(point)
+        remaining, left = GEO_ACTIVITY_MAX_POINTS, len(by_source)
+        keep_counts = {}
+        for source in sorted(by_source, key=lambda s: len(by_source[s])):
+            share = remaining // left if left else 0
+            keep_counts[source] = min(len(by_source[source]), share)
+            remaining -= keep_counts[source]
+            left -= 1
+        kept = []
+        for source, source_points in by_source.items():
+            n = keep_counts[source]
+            if n < len(source_points):
+                truncation_detail.append({"source": source, "kept": n, "available": len(source_points)})
+                # Newest first within the source, matching the SQL ORDER BY
+                # above and the Evidence Timeline's own disclosed rule.
+                source_points = sorted(
+                    source_points,
+                    key=lambda p: (p["timestamp"] is not None, p["timestamp"] or 0),
+                    reverse=True)
+            kept.extend(source_points[:n])
+        points = kept
+    
     clusters = {}
     for point in points:
         key = (round(point["lat"], GEO_ACTIVITY_CLUSTER_PRECISION), round(point["lon"], GEO_ACTIVITY_CLUSTER_PRECISION))
@@ -1952,7 +2038,7 @@ def _collect_case_geo_activity(case_folder, attachment_files):
         reverse=True)
     frequent_locations = frequent_locations[:GEO_ACTIVITY_MAX_FREQUENT_LOCATIONS]
 
-    return points, frequent_locations, truncated
+    return points, frequent_locations, truncated, truncation_detail
 
 
 @reporting_bp.route('/api/cases/geo_activity', methods=['GET'])
@@ -1970,8 +2056,14 @@ def case_geo_activity():
     data = _read_case_file(case_file)
     attachment_files = data.get('attachments', {}).get('files', [])
 
-    points, frequent_locations, truncated = _collect_case_geo_activity(case_folder, attachment_files)
-    return jsonify({"success": True, "points": points, "frequent_locations": frequent_locations, "truncated": truncated})
+    points, frequent_locations, truncated, truncation_detail = _collect_case_geo_activity(case_folder, attachment_files)
+    return jsonify({"success": True, "points": points, "frequent_locations": frequent_locations,
+                    "truncated": truncated,
+                    # Which source lost points, and how many. "truncated" alone
+                    # could not distinguish "the list is capped for display"
+                    # from "an entire evidence source was dropped" - and it was
+                    # the second one that was actually happening.
+                    "truncation_detail": truncation_detail})
 
 
 @reporting_bp.route('/api/cases/discover_files', methods=['GET'])
@@ -3432,7 +3524,7 @@ def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)", c
     y -= 18
 
     if case_folder:
-        timeline_events, truncated, notes, contacts_summary = _build_enriched_case_timeline(case_folder, events)
+        timeline_events, truncated, notes, contacts_summary, _ = _build_enriched_case_timeline(case_folder, events)
     else:
         macb = _collect_case_timeline(events)
         timeline_events = [
@@ -3938,7 +4030,7 @@ def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: C
     c.drawString(50, y, "Frequent Locations")
     y -= 14
 
-    _, frequent_locations, _ = _collect_case_geo_activity(case_folder, attachment_files or [])
+    _, frequent_locations, _, _ = _collect_case_geo_activity(case_folder, attachment_files or [])
 
     if not frequent_locations:
         c.setFont("Helvetica-Oblique", 9)
@@ -4819,7 +4911,7 @@ def _html_timeline_block(events, title="Filesystem Timeline (MACB)", anchor_id=N
     id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
 
     if case_folder:
-        timeline_events, truncated, notes, contacts_summary = _build_enriched_case_timeline(case_folder, events)
+        timeline_events, truncated, notes, contacts_summary, _ = _build_enriched_case_timeline(case_folder, events)
     else:
         macb = _collect_case_timeline(events)
         timeline_events = [
@@ -5062,7 +5154,7 @@ def _html_pattern_of_life_block(case_folder, title="Pattern of Life: Contact Cor
             parts.append('<p class="muted">Contact list truncated - not every correlated contact fit within the report\'s size limits.</p>')
 
     parts.append('<h3>Frequent Locations</h3>')
-    _, frequent_locations, _ = _collect_case_geo_activity(case_folder, attachment_files or [])
+    _, frequent_locations, _, _ = _collect_case_geo_activity(case_folder, attachment_files or [])
     if not frequent_locations:
         parts.append('<p class="muted">No location was returned to or stayed at long enough to list for this case.</p>')
     else:
