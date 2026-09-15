@@ -13023,6 +13023,43 @@ function _recomputeAndRenderGeoActivity() {
 // to the grid-based location clustering above (a real, simple rule over
 // an opaque one). A location point with no timestamp (KML-only) can never
 // participate in this - there's nothing to compare it against.
+// The geo points currently in scope for the Location Activity date filter -
+// the same set the Frequent Locations table is re-clustered from. The
+// cross-linking helpers below read this rather than the raw cached response,
+// so an expander can never surface an event outside the selected window.
+function _patternOfLifeGeoPointsInRange() {
+    const all = (patternOfLifeGeoActivityData && patternOfLifeGeoActivityData.points) || [];
+    if (!patternOfLifeGeoDateFrom && !patternOfLifeGeoDateTo) return all;
+    const from = patternOfLifeGeoDateFrom ? new Date(patternOfLifeGeoDateFrom + 'T00:00:00').getTime() / 1000 : null;
+    const to = patternOfLifeGeoDateTo ? new Date(patternOfLifeGeoDateTo + 'T23:59:59.999').getTime() / 1000 : null;
+    return all.filter((p) => {
+        if (p.timestamp === null || p.timestamp === undefined) return false;
+        if (from !== null && p.timestamp < from) return false;
+        if (to !== null && p.timestamp > to) return false;
+        return true;
+    });
+}
+
+// Shown INSTEAD of rendering nothing, when the contact data that was searched
+// is a capped sample. See _buildLocationNearbyContactsRow()'s own note.
+function _buildSampledNothingFoundRow() {
+    const tr = document.createElement('tr');
+    tr.style.display = 'none';
+    tr.dataset.sampledNothingFound = '1';
+    const td = document.createElement('td');
+    td.colSpan = 6;
+    td.className = 'bg-app-dark';
+    const msg = document.createElement('div');
+    msg.className = 'small text-warning my-1';
+    msg.textContent = 'No match found - but this comparison only sees a limited sample of the '
+        + 'MOST RECENT communications for each contact, not their full history. For an event well before the extraction date '
+        + 'there may be no sample anywhere near it, so this is not evidence that nobody was in contact while '
+        + 'the device was here. Use the Evidence Timeline, filtered to this time range, to check properly.';
+    td.appendChild(msg);
+    tr.appendChild(td);
+    return tr;
+}
+
 function _pointsNearTimestamp(points, targetTs, windowSeconds) {
     if (targetTs === null || targetTs === undefined) return [];
     return (points || []).filter(p => p.timestamp !== null && p.timestamp !== undefined
@@ -13036,7 +13073,12 @@ function _pointsNearTimestamp(points, targetTs, windowSeconds) {
 function _buildLocationNearbyContactsRow(loc) {
     const contacts = (patternOfLifeContactData && patternOfLifeContactData.contacts) || [];
     if (contacts.length === 0) return null;
-    const geoPoints = (patternOfLifeGeoActivityData && patternOfLifeGeoActivityData.points) || [];
+    // Date-filtered, matching the table this row expands under (2026-09-15).
+    // `loc` comes from the client-side re-cluster of the FILTERED points, but
+    // this read the unfiltered set - so with the range set to 1-7 Jan, the
+    // expander could surface "Jane Doe - android_sms at 2026-03-14", an event
+    // outside the selected window entirely.
+    const geoPoints = _patternOfLifeGeoPointsInRange();
     // Every raw point belonging to this exact cluster cell (grid-rounded
     // to the same precision the backend already used to build `loc`) -
     // a cluster can be fed by more than one real visit's own timestamp.
@@ -13046,17 +13088,37 @@ function _buildLocationNearbyContactsRow(loc) {
     if (clusterPoints.length === 0) return null;
 
     const matchesByContact = new Map(); // key -> {contact, sample, point} (first match only, per contact)
+    let anyTruncated = false;
     contacts.forEach(contact => {
+        if (contact.samples_truncated) anyTruncated = true;
         for (const sample of (contact.samples || [])) {
             if (sample.timestamp === null || sample.timestamp === undefined) continue;
-            const nearPoint = clusterPoints.find(p => Math.abs(p.timestamp - sample.timestamp) <= LOCATION_CONTACT_LINK_WINDOW_SECONDS);
+            const nearPoint = clusterPoints.find(p => Math.abs(p.timestamp - sample.timestamp) <= LOCATION_CONTACT_LINK_WINDOW_SECONDS
+                // Same device on both sides of the comparison. A case holding
+                // a suspect's and a victim's phone would otherwise list the
+                // SUSPECT's contacts against the VICTIM's GPS cluster,
+                // implying a co-location no device recorded - the same
+                // cross-source merge already fixed for the travel path and
+                // the anomaly detectors. Only enforced when both sides
+                // actually know their device; an unattributed row is compared
+                // as before rather than silently dropped.
+                && !(sample.evidence_id && p.evidence_id && sample.evidence_id !== p.evidence_id));
             if (nearPoint) {
                 matchesByContact.set(_contactCorrelationKey(contact), { contact, sample, point: nearPoint });
                 break; // one match is enough to list this contact once
             }
         }
     });
-    if (matchesByContact.size === 0) return null;
+    // "Nothing matched" used to render NOTHING AT ALL - no button, no row - so
+    // an examiner expanding a crime-scene cluster and finding no expander read
+    // it as "no one was in contact while the device was here". Each contact
+    // contributes at most CONTACT_CORRELATION_MAX_SAMPLES_PER_CONTACT of its
+    // MOST RECENT communications, so on a device messaged daily for months,
+    // an incident six months back has no sample anywhere near it. Absence here
+    // is not evidence of absence, and now says so.
+    if (matchesByContact.size === 0) {
+        return anyTruncated ? _buildSampledNothingFoundRow() : null;
+    }
 
     const tr = document.createElement('tr');
     tr.style.display = 'none';
@@ -13068,6 +13130,13 @@ function _buildLocationNearbyContactsRow(loc) {
     heading.className = 'small fw-bold text-subtle mt-1 mb-1';
     heading.textContent = `Contact(s) with a communication within ${Math.round(LOCATION_CONTACT_LINK_WINDOW_SECONDS / 60)} minutes of a visit here (time proximity only - not a confirmed link)`;
     td.appendChild(heading);
+    if (anyTruncated) {
+        const sampled = document.createElement('div');
+        sampled.className = 'small text-warning mb-1';
+        sampled.textContent = 'Searched a limited sample of the most recent communications for each contact, not their '
+            + 'full history - a contact absent from this list may still have been in contact at the time.';
+        td.appendChild(sampled);
+    }
 
     [...matchesByContact.values()].forEach(({ contact, sample, point }) => {
         const line = document.createElement('div');

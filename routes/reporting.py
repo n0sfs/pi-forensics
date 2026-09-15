@@ -1940,6 +1940,12 @@ def _collect_case_geo_activity(case_folder, attachment_files):
     case_geo_activity()'s own JSON response already exposed before this
     refactor."""
     points = []
+    # Which device each point came off (2026-09-15), so Pattern of Life's
+    # contact<->location cross-linking can require both sides of a comparison
+    # to belong to the SAME device. Without it, a case holding a suspect's and
+    # a victim's phone could list the suspect's contacts against the victim's
+    # GPS cluster and present it as co-location nothing recorded.
+    image_map, source_map = _build_evidence_id_resolvers(case_folder)
     conn = _case_index_open_readonly(case_folder)
     if conn:
         try:
@@ -1951,8 +1957,8 @@ def _collect_case_geo_activity(case_folder, attachment_files):
             # len(points) landing at exactly the cap, never over it, so
             # truncated would silently read False despite real data having
             # been dropped by the SQL LIMIT itself).
-            for value, timestamp, extra_json in conn.execute(
-                    "SELECT value, timestamp, extra_json FROM parsed_artifacts "
+            for value, timestamp, extra_json, image_path, source_path in conn.execute(
+                    "SELECT value, timestamp, extra_json, image_path, source_path FROM parsed_artifacts "
                     "WHERE artifact_type = 'takeout_location_history' "
                     # Newest first, so the retained window is DEFINED when the
                     # cap bites. Without this the surviving rows were whatever
@@ -1970,7 +1976,9 @@ def _collect_case_geo_activity(case_folder, attachment_files):
                 if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
                     continue
                 points.append({"lat": lat, "lon": lon, "timestamp": timestamp,
-                                "name": value or '(unnamed location)', "source": "Google Takeout Location History"})
+                                "name": value or '(unnamed location)',
+                                "source": "Google Takeout Location History",
+                                "evidence_id": _resolve_row_evidence_id(image_path, source_path, image_map, source_map)})
         finally:
             conn.close()
 
@@ -1983,7 +1991,8 @@ def _collect_case_geo_activity(case_folder, attachment_files):
             # that genuinely has none, which is most third-party KML.
             points.append({"lat": placemark["lat"], "lon": placemark["lon"],
                             "timestamp": placemark.get("timestamp"),
-                            "name": placemark["name"] or kml_entry["name"], "source": kml_entry["name"]})
+                            "name": placemark["name"] or kml_entry["name"], "source": kml_entry["name"],
+                            "evidence_id": _resolve_row_evidence_id(None, kml_entry.get("path"), image_map, source_map)})
 
     # FAIR SHARE PER SOURCE, not a head-slice of the concatenated list
     # (2026-09-15). Takeout rows are appended first and KML placemarks second,
