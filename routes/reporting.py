@@ -81,7 +81,8 @@ from core.case_index_db import (
     compute_case_analysis_coverage, ensure_examiner_recorded,
     _build_evidence_id_resolvers, _resolve_row_evidence_id,
 )
-from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
+from core.tsk_utils import (_tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs,
+                            TSK_MAX_TIMELINE_ENTRIES, TSK_MAX_WALK_DEPTH, TSK_MAX_WALK_DIRS)
 
 reporting_bp = Blueprint('reporting', __name__)
 
@@ -1037,7 +1038,13 @@ def _collect_case_timeline(events):
                 notes.append(f"{evidence_id} ({fs_info['label']}): could not open filesystem - {e}")
                 continue
             count = 0
-            for entry, path in _tsk_walk(fs):
+            # The walk has its OWN caps (directories visited, recursion depth)
+            # separate from per_source_budget, and they used to stop it in
+            # silence - a deeply nested real path was simply never reached, and
+            # nothing in the response said so. Depth is the one that bites in
+            # practice. See _tsk_walk()'s `stats` parameter (2026-09-15).
+            walk_stats = {}
+            for entry, path in _tsk_walk(fs, stats=walk_stats):
                 if entry['is_virtual']:
                     continue  # TSK's own $MBR/$FAT1/$FAT2/$OrphanFiles pseudo-entries, not real evidence
                 for ts_field, label in (('mtime', 'M'), ('atime', 'A'), ('ctime', 'C'), ('crtime', 'B')):
@@ -1050,6 +1057,16 @@ def _collect_case_timeline(events):
                 if count >= per_source_budget:
                     truncated = True
                     break
+            if walk_stats.get("depth_capped"):
+                notes.append(f"{evidence_id} ({fs_info['label']}): directories nested deeper than "
+                             f"{TSK_MAX_WALK_DEPTH} levels were not walked, so files below that depth "
+                             f"are absent from this timeline entirely.")
+                truncated = True
+            if walk_stats.get("dirs_capped"):
+                notes.append(f"{evidence_id} ({fs_info['label']}): the walk stopped after "
+                             f"{TSK_MAX_WALK_DIRS} directories (a guard against reused-inode loops), "
+                             f"so later directories were not reached.")
+                truncated = True
 
     for dest_path, info in folder_candidates.items():
         event = info["event"]
@@ -2770,6 +2787,31 @@ def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=No
                 append_log(f"[!] {evidence_id}: output file no longer exists at {image_path}.")
             else:
                 algos = [a for a in recorded_hashes if a in ALLOWED_HASH_ALGOS]
+                if not algos:
+                    # Hashes WERE recorded, but in no algorithm this station can
+                    # compute - so there is nothing to compare against. Without
+                    # this branch _verify_recompute_hashes() returns {} (its "no
+                    # usable algorithms" answer, distinct from None for "could
+                    # not read"), `bool({})` makes is_match False, and the event
+                    # is reported as a MISMATCH with an
+                    # evidence_verification_mismatch entry written to the chain
+                    # of custody - an accusation that evidence was altered,
+                    # raised because we did not recognise an algorithm name.
+                    #
+                    # Not reachable today: every writer of
+                    # computed_verification_hashes constrains its keys to
+                    # md5/sha1/sha256. Guarded anyway, because it is one new
+                    # algorithm away from re-creating exactly the
+                    # "unreadable reported as altered" bug the read_error state
+                    # was added to fix (2026-09-15).
+                    results.append({"event_id": event_id, "evidence_id": evidence_id,
+                                     "status": "unverifiable", "current_hashes": {}})
+                    append_log(f"[!] {evidence_id}: hashes were recorded, but only as "
+                               f"{', '.join(sorted(recorded_hashes))} - this station cannot recompute "
+                               f"that, so the file can be neither confirmed nor called altered.")
+                    update_job(transferred_bytes=i + 1,
+                               progress_percent=round(((i + 1) / len(candidates)) * 100, 1) if candidates else 100.0)
+                    continue
                 current_hashes = _verify_recompute_hashes(image_path, algos)
                 if current_hashes is None:
                     # Could not read it. NOT a mismatch - see
@@ -5438,7 +5480,11 @@ def _html_pattern_of_life_block(case_folder, title="Pattern of Life: Contact Cor
         parts.append('<table><tr><th>Latitude</th><th>Longitude</th><th>Visits / time spent</th><th>First Seen</th><th>Last Seen</th></tr>')
         for loc in frequent_locations:
             parts.append(
-                f'<tr><td>{loc["lat"]:.5f}</td><td>{loc["lon"]:.5f}</td><td>{esc(_format_location_visits(loc))}</td>'
+                # 3 decimals, not 5: this is the centre of a ~111m grid cell
+                # (GEO_ACTIVITY_CLUSTER_PRECISION), and printing five implied
+                # roughly metre precision the value does not have. Matches the
+                # PDF renderer, which was fixed first.
+                f'<tr><td>{loc["lat"]:.3f}</td><td>{loc["lon"]:.3f}</td><td>{esc(_format_location_visits(loc))}</td>'
                 f'<td>{esc(format_epoch(loc.get("first_seen")) or "N/A")}</td>'
                 f'<td>{esc(format_epoch(loc.get("last_seen")) or "N/A")}</td></tr>'
             )

@@ -16502,7 +16502,40 @@ function renderCaseTimelineChart(rows) {
         bucket.counts[e.source] = (bucket.counts[e.source] || 0) + 1;
         if (e.suspicious) bucket.suspiciousCount += 1;
     });
-    caseTimelineBuckets = [...bucketMap.values()].sort((a, b) => a.start - b.start);
+    // EMPTY BUCKETS ARE FILLED IN (2026-09-15). bucketMap only ever held
+    // periods that contained a row, so a case with activity in January,
+    // February and December rendered three ADJACENT bars - the ten silent
+    // months in between simply did not exist on the axis. A density chart
+    // whose x-axis is not proportional to time is not a density chart; it
+    // showed a case with one burst of activity and a long quiet period as a
+    // case with steady activity throughout.
+    //
+    // Capped, because an hour-granularity chart over a wide range could
+    // otherwise generate an unbounded number of empty buckets. The cap is far
+    // above any range pickTimelineGranularity() would choose that granularity
+    // for, so in practice it never bites; it is here so a pathological
+    // timestamp cannot hang the browser.
+    const present = [...bucketMap.values()].sort((a, b) => a.start - b.start);
+    const MAX_BUCKETS = 600;
+    if (present.length > 1) {
+        const filled = [];
+        let cursor = new Date(present[0].start);
+        const lastStart = present[present.length - 1].start.getTime();
+        const byStart = new Map(present.map((b) => [b.start.getTime(), b]));
+        while (cursor.getTime() <= lastStart && filled.length < MAX_BUCKETS) {
+            const key = cursor.getTime();
+            filled.push(byStart.get(key) || {
+                start: new Date(cursor), end: timelineBucketEnd(cursor, granularity),
+                label: timelineBucketLabel(cursor, granularity), counts: {}, suspiciousCount: 0,
+            });
+            cursor = timelineBucketEnd(cursor, granularity);
+        }
+        // If the cap bit, fall back to the gap-free view rather than showing a
+        // silently cut time axis - a wrong axis is worse than a sparse one.
+        caseTimelineBuckets = filled.length < MAX_BUCKETS ? filled : present;
+    } else {
+        caseTimelineBuckets = present;
+    }
 
     const labels = caseTimelineBuckets.map((b) => b.label);
     const datasets = CASE_TIMELINE_SOURCES.map((src) => ({
@@ -16514,6 +16547,11 @@ function renderCaseTimelineChart(rows) {
     if (caseTimelineChart) {
         caseTimelineChart.data.labels = labels;
         caseTimelineChart.data.datasets = datasets;
+        // Refreshed on reuse - the chart object outlives a case switch, and a
+        // stale "Incomplete" banner on a complete case is its own small lie.
+        if (caseTimelineChart.options.plugins && caseTimelineChart.options.plugins.title) {
+            caseTimelineChart.options.plugins.title.display = !!(caseTimelineCache && caseTimelineCache.truncated);
+        }
         caseTimelineChart.update();
         return;
     }
@@ -16531,6 +16569,21 @@ function renderCaseTimelineChart(rows) {
             },
             plugins: {
                 legend: { labels: { color: '#cbd5e1', boxWidth: 12, font: { size: 11 } } },
+                // The truncation warning belongs ON the chart, not only in a
+                // text line below it (2026-09-15). For a truncated case these
+                // bar heights are partly a function of which rows survived the
+                // cap - directory-walk order for filesystem entries - rather
+                // than of real activity, and "activity spikes in March,
+                // nothing before January" read straight off the chart is then
+                // an artefact of the walk. Whoever reads the picture has to
+                // see the caveat in the picture.
+                title: {
+                    display: !!(caseTimelineCache && caseTimelineCache.truncated),
+                    text: 'Incomplete - not every event in this case is plotted (see the note below the table)',
+                    color: '#fbbf24',
+                    font: { size: 11, weight: 'normal' },
+                    padding: { top: 0, bottom: 6 },
+                },
                 tooltip: {
                     callbacks: {
                         title: (items) => (items[0] ? caseTimelineBuckets[items[0].dataIndex]?.label : '') || '',
