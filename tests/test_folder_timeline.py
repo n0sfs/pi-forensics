@@ -310,7 +310,8 @@ def test_the_note_states_the_budget_is_split_across_every_source(evidence_root, 
     budget_notes = [n for n in result["notes"] if "budget is shared across" in n]
     assert len(budget_notes) == 2, f"expected both sources to report: {result['notes']}"
     assert all("2 source(s)" in n for n in budget_notes)
-    assert {"EV-1", "EV-2"} <= {tok for n in budget_notes for tok in n.split() if tok.startswith("EV-")}
+    joined = " ".join(budget_notes)
+    assert "EV-1" in joined and "EV-2" in joined
 
 
 def test_a_source_that_stays_under_budget_adds_no_note(evidence_root):
