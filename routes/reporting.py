@@ -1563,6 +1563,28 @@ def _draw_pdf_acquisition_method(c, y, events, job_fields, title="Acquisition Me
         y = _draw_pdf_job_section(c, y, event, job_fields)
     return y
 
+def _report_timezone_label():
+    """Names the timezone every timestamp in an exported report is rendered in.
+
+    Added 2026-09-15. core/paths.py's format_epoch() uses time.localtime(), so
+    a report's wall-clock times are the STATION's local time - while the app's
+    own screens render the same values with JavaScript's toLocaleString(), i.e.
+    the VIEWER's browser time. With the Pi at the Raspberry Pi OS default
+    Etc/UTC and an analyst's laptop in America/Chicago, one cluster's Last Seen
+    read 19:40:00 in the PDF and 2:40:00 PM on screen, and neither said which
+    zone it was. The PDF is the artifact that leaves the building, so it is the
+    one that most needs to say."""
+    try:
+        name = time.strftime('%Z') or ''
+    except ValueError:
+        name = ''
+    offset = -(time.altzone if time.daylight and time.localtime().tm_isdst else time.timezone)
+    sign = '+' if offset >= 0 else '-'
+    hours, minutes = divmod(abs(offset) // 60, 60)
+    utc = f"UTC{sign}{hours:02d}:{minutes:02d}"
+    return f"{name} ({utc})" if name and name != utc else utc
+
+
 def _draw_pdf_header(c, header, title="Case Information"):
     c.setFont("Helvetica-Bold", 12)
     y = 730
@@ -1586,6 +1608,15 @@ def _draw_pdf_header(c, header, title="Case Information"):
     # ellipsis, silently reducing a two-sentence intake note to its first ~85
     # characters in every PDF export. _draw_pdf_wrapped_text exists for exactly
     # this and was simply not used here.
+    # One statement covering every timestamp in the document - see
+    # _report_timezone_label() for why the report has to name its own zone.
+    c.setFont("Helvetica-Oblique", 8)
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.drawString(50, y, f"All times in this report are this station's local time ({_report_timezone_label()}), "
+                        f"not the device's and not the reader's.")
+    c.setFillColorRGB(0, 0, 0)
+    c.setFont("Helvetica", 10)
+    y -= 18
     c.drawString(50, y, "Notes:")
     y -= 14
     # _draw_pdf_wrapped_text already splits lines and paginates; it also leaves
@@ -5626,6 +5657,12 @@ def _html_report_branding_header(header, title):
     header_text = (branding.get('header_text') or '').strip()
     if header_text:
         parts.append(f'<div class="branding-subtitle">{esc(header_text)}</div>')
+    # One statement covering every timestamp in the document, in every HTML
+    # template at once (this block is shared by all three) - see
+    # _report_timezone_label() for why the report has to name its own zone.
+    parts.append('<p class="muted">All times in this report are this station&rsquo;s local time ('
+                 + esc(_report_timezone_label())
+                 + '), not the device&rsquo;s and not the reader&rsquo;s.</p>')
     return ''.join(parts)
 
 def _html_case_info_block(header, event_count, anchor_id=None, title="Case Information"):
