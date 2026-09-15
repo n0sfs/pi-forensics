@@ -84,24 +84,51 @@ def _tsk_list_dir(fs, inode_num):
             continue  # one corrupt/unreadable directory entry shouldn't fail the whole listing
     return entries
 
-def _tsk_walk(fs, start_inode_num=None, max_dirs=TSK_MAX_WALK_DIRS, max_depth=TSK_MAX_WALK_DEPTH):
+def _tsk_walk(fs, start_inode_num=None, max_dirs=TSK_MAX_WALK_DIRS, max_depth=TSK_MAX_WALK_DEPTH,
+              stats=None):
     """Recursively walks a filesystem from start_inode_num (or root),
     yielding (entry_dict, path) for every entry found - shared by search and
     timeline below. Deliberately does not recurse into deleted directories:
     a deleted directory's inode may already have been reallocated to
     something unrelated, and walking it can loop or return garbage on a live
     evidence filesystem. Capped on both directories visited and depth as a
-    safety net against reused-inode loops."""
+    safety net against reused-inode loops.
+
+    `stats`, if given, is a dict this function WRITES into so a caller can tell
+    whether either cap actually bit (added 2026-09-15):
+
+        {"dirs_visited": int, "dirs_capped": bool, "depth_capped": bool}
+
+    Both caps used to stop the walk silently. Depth 25 is the one that bites in
+    practice - deeply nested real paths (node_modules trees, mail stores,
+    per-user cache hierarchies) simply were not walked, so their files were
+    absent from search results and from the timeline with no disclosure
+    anywhere. That is a different and worse thing than the per-source budget,
+    which at least sets a truncated flag. A caller that passes no `stats` keeps
+    exactly the old behaviour.
+    """
     visited = [0]
+    if stats is not None:
+        stats.setdefault("dirs_visited", 0)
+        stats.setdefault("dirs_capped", False)
+        stats.setdefault("depth_capped", False)
 
     def _walk(inode_num, path, depth):
-        if visited[0] >= max_dirs or depth > max_depth:
+        if visited[0] >= max_dirs:
+            if stats is not None:
+                stats["dirs_capped"] = True
+            return
+        if depth > max_depth:
+            if stats is not None:
+                stats["depth_capped"] = True
             return
         try:
             entries = _tsk_list_dir(fs, inode_num)
         except Exception:
             return
         visited[0] += 1
+        if stats is not None:
+            stats["dirs_visited"] = visited[0]
         for d in entries:
             entry_path = f"{path}/{d['name']}"
             yield d, entry_path
