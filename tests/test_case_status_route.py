@@ -202,19 +202,24 @@ def test_set_status_re_archiving_an_already_archived_case_never_clobbers_the_rec
     assert on_disk["status_before_archive"] == "Closed"  # still the real original value
 
 
-def test_set_status_works_against_a_legacy_case_marker_too(client, runtime_config_file, evidence_root):
-    """Confirms the route targets case_info.json (not just {slug}_case.json)
-    for a not-yet-migrated case, matching list_case_folders()'s own
-    identical top-level-key read for both schemas."""
+def test_set_status_refuses_a_pre_consolidation_folder(client, runtime_config_file, evidence_root):
+    """Inverted on 2026-09-15 with the removal of legacy-case support. This
+    route used to fall back to case_info.json when there was no
+    {slug}_case.json; now such a folder is not a case at all, so the route
+    must refuse it AND leave the file untouched rather than half-writing a
+    status into a format nothing else understands any more."""
     case_dir = _make_legacy_case(evidence_root)
+    marker = os.path.join(case_dir, "case_info.json")
+    with open(marker) as f:
+        before = f.read()
     _login_as_operational_user(client, evidence_root, "legacy")
 
     res = client.post("/api/cases/set_status", json={"case_folder": case_dir, "status": "Archived"})
-    assert res.get_json()["success"] is True
+    assert res.status_code == 400
+    assert res.get_json()["success"] is False
 
-    with open(os.path.join(case_dir, "case_info.json")) as f:
-        on_disk = json.load(f)
-    assert on_disk["case_status"] == "Archived"
+    with open(marker) as f:
+        assert f.read() == before
 
 
 def test_set_status_rejects_an_invalid_status_value(client, runtime_config_file, evidence_root):
