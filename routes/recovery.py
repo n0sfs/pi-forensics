@@ -28,7 +28,7 @@ from core.jobs import (
 )
 from core.case_index_db import (
     TRIAGE_PATTERNS, TRIAGE_MAX_MATCHES_PER_CATEGORY,
-    build_scan_patterns, resolve_scan_category_label,
+    build_scan_patterns, resolve_scan_category_label, scan_match_is_reportable,
 )
 
 recovery_bp = Blueprint('recovery', __name__)
@@ -473,7 +473,9 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                         continue
                     for m in pattern.finditer(data):
                         val = m.group(0)
-                        if len(val) > 4:  # skip trivial/near-empty matches
+                        # Per-category: a keyword-list term is deliberate, so a
+                        # short one is reportable. See scan_match_is_reportable().
+                        if scan_match_is_reportable(name, val):
                             results[name].add(val)
                             if len(results[name]) >= TRIAGE_MAX_MATCHES_PER_CATEGORY:
                                 truncated[name] = True

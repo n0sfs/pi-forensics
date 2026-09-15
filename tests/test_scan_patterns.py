@@ -103,3 +103,42 @@ def test_resolve_label_for_a_deleted_keyword_list_is_still_meaningful(monkeypatc
 
 def test_resolve_label_for_an_unrecognized_category_falls_back_to_itself():
     assert case_index_db.resolve_scan_category_label("something_else") == "something_else"
+
+
+# --- 2026-09-15: every triage-scan worker applied a flat `len(value) > 4`
+# filter to discard trivial matches. Right for the five built-in categories -
+# an email, URL, IP, card-like number or phone number is never four characters
+# - and silently WRONG for a keyword list. Found by a live scan with the
+# bundled DEA drug-slang lists: "ice" and "snow" are real stimulant slang,
+# both are present in the probe file, and all four list parts reported
+# "0 found". A search tool that silently ignores the shortest search terms is
+# worse than one that finds nothing, because the examiner believes the
+# question was asked. ---
+def test_a_short_keyword_list_match_is_reportable():
+    """The whole point: an examiner who searches for "ice" asked for "ice"."""
+    cat = case_index_db.KEYWORD_CATEGORY_PREFIX + "drugs"
+    assert case_index_db.scan_match_is_reportable(cat, b"ice") is True
+    assert case_index_db.scan_match_is_reportable(cat, b"snow") is True
+    assert case_index_db.scan_match_is_reportable(cat, b"DBAN") is True
+    # A single character is still a deliberate term if someone typed it.
+    assert case_index_db.scan_match_is_reportable(cat, b"x") is True
+
+
+def test_a_short_built_in_match_is_still_discarded():
+    """The filter stays where it belongs. A four-character "email" is a
+    partial pattern hit, not an address."""
+    for built_in in case_index_db.TRIAGE_PATTERNS:
+        assert case_index_db.scan_match_is_reportable(built_in, b"a@b") is False
+        assert case_index_db.scan_match_is_reportable(built_in, b"1234") is False
+
+
+def test_a_long_built_in_match_is_reportable():
+    for built_in in case_index_db.TRIAGE_PATTERNS:
+        assert case_index_db.scan_match_is_reportable(built_in, b"someone@example.com") is True
+
+
+def test_an_unknown_category_keeps_the_conservative_built_in_rule():
+    """A category this function has never heard of must not silently become
+    permissive - only the keyword-list prefix opts in."""
+    assert case_index_db.scan_match_is_reportable("something_new", b"abc") is False
+    assert case_index_db.scan_match_is_reportable("something_new", b"abcdef") is True

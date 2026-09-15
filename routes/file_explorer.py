@@ -32,7 +32,7 @@ from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, 
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, INSTALL_DIR, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets, ALEAPP_DIR, ALEAPP_VENV_PYTHON, ILEAPP_DIR, ILEAPP_VENV_PYTHON
 import yara
 from core.case_index_db import (
-    build_scan_patterns, resolve_scan_category_label,
+    build_scan_patterns, resolve_scan_category_label, scan_match_is_reportable,
     case_index_db_path, _case_index_connect, _case_index_open_readonly, _record_analysis_result,
     _auto_tag_case_artifact, _record_parsed_artifacts,
 )
@@ -2711,7 +2711,9 @@ def quick_triage_scan():
                         continue
                     for m in pattern.finditer(data):
                         val = m.group(0)
-                        if len(val) > 4:  # skip trivial/near-empty matches
+                        # Per-category: a keyword-list term is deliberate, so a
+                        # short one is reportable. See scan_match_is_reportable().
+                        if scan_match_is_reportable(name, val):
                             results[name].add(val)
                             if len(results[name]) >= QUICK_TRIAGE_MAX_MATCHES_PER_CATEGORY:
                                 truncated[name] = True
