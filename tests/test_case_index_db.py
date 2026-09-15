@@ -2817,3 +2817,75 @@ def test_step_and_other_analysis_maps_stay_disjoint():
     counted as a standard step AND listed as extra work."""
     overlap = set(case_index_db.COC_ACTION_TO_STEP) & set(case_index_db.COC_ACTION_OTHER_ANALYSIS_LABELS)
     assert overlap == set(), f"action(s) in both maps: {overlap}"
+
+
+# --- 2026-09-15: one row counts once per person. Found by a review sweep and
+# confirmed directly: _extract_email_counterparts() appends attendees AND the
+# organizer, and Android's Attendees table normally contains the organizer, so
+# a single calendar event counted twice. The phone side had the same shape via
+# two formats of one number normalizing to the same key. ---
+def test_a_calendar_event_naming_someone_twice_counts_once(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts.db"),
+        [_contact_record_with_email("takeout_contact", "Jane Doe", emails=["jane@example.com"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "calendar.json"),
+        [{"artifact_type": "android_companion_calendar_event", "title": "Team Sync", "url": "",
+          "value": "Team Sync", "timestamp": 1700000000.0,
+          # Jane is both an attendee and the organizer - the normal Android shape.
+          "extra": {"attendees": [{"email": "jane@example.com"}],
+                    "organizer": "jane@example.com"}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    contact = result["contacts"][0]
+    assert contact["total_communications"] == 1, "one event must not count as two"
+    assert contact["communication_counts"] == {"Calendar Invite": 1}
+
+
+def test_one_number_in_two_formats_on_a_row_counts_once(case_folder):
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mms.db"),
+        [{"artifact_type": "android_mms_message", "title": "msg", "url": "", "value": "hi",
+          "timestamp": 1700000000.0,
+          # The same real person, written two ways on one row.
+          "extra": {"counterpart": "+1 555 123 4567, 5551234567"}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts"][0]["total_communications"] == 1
+
+
+def test_call_duration_is_not_doubled_by_a_duplicate_counterpart(case_folder):
+    # The most damaging version: a duplicated key added the call's duration
+    # twice, so "total call time" reported double the real length.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "calls.db"),
+        [{"artifact_type": "android_call_log", "title": "call", "url": "", "value": "",
+          "timestamp": 1700000000.0,
+          "extra": {"number": "+1 555 123 4567, 5551234567", "duration_seconds": 30}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert result["contacts"][0]["total_duration_seconds"] == 30.0
+
+
+def test_two_genuinely_different_people_on_one_row_both_still_count(case_folder):
+    # The dedup must not suppress a real group conversation.
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "contacts.db"),
+        [_contact_record("android_contact", "Jane Doe", phones=["+15551234567"]),
+         _contact_record("android_contact", "Bob Roe", phones=["+15559876543"])])
+    case_index_db._record_parsed_artifacts(
+        case_folder, _identity(case_folder, "mms.db"),
+        [{"artifact_type": "android_mms_message", "title": "msg", "url": "", "value": "hi",
+          "timestamp": 1700000000.0,
+          "extra": {"counterpart": "+15551234567, +15559876543"}}])
+
+    result = case_index_db.correlate_contacts(case_folder)
+    assert sorted(c["total_communications"] for c in result["contacts"]) == [1, 1]
+    # And it is still recorded as the two of them appearing together.
+    assert len(result["co_occurrences"]) == 1

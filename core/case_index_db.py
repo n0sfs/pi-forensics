@@ -2120,12 +2120,27 @@ def correlate_contacts(case_folder):
                 raw_candidates = _extract_raw_counterpart_candidates(extra.get(spec["counterpart_key"]))
             resolved_any = False
             resolved_keys_this_row = set()
+            counted_this_row = set()
             for raw_counterpart in raw_candidates:
                 normalized = normalize_phone_number(raw_counterpart)
                 if not normalized or normalized not in known:
                     continue
                 resolved_any = True
                 resolved_keys_this_row.add(normalized)
+                # One ROW must count once per person, however many times it
+                # names them (2026-09-15). Android's Attendees table normally
+                # contains the organizer too, so a calendar event listed Jane
+                # as attendee AND organizer and counted 2 communications for
+                # 1 event; an MMS naming one number as both "+1 555 123 4567"
+                # and "5551234567" normalizes to the same key twice; an
+                # address in both To and Cc does the same. That inflated
+                # total_communications, the per-channel counts, direction
+                # counts, device attribution, the tier, the graph node size,
+                # the "Most contacted" highlight - and total_duration_seconds,
+                # which double-counted a call's real length.
+                if normalized in counted_this_row:
+                    continue
+                counted_this_row.add(normalized)
                 entry = by_contact.setdefault(normalized, {
                     "normalized_number": normalized, "normalized_email": None,
                     "display_names": sorted(known[normalized]["names"]),
@@ -2204,11 +2219,16 @@ def correlate_contacts(case_folder):
             candidates = _extract_email_counterparts(artifact_type, value, extra)
             resolved_any = False
             resolved_keys_this_row = set()
+            counted_this_row = set()
             for normalized_email in candidates:
                 if normalized_email not in known_emails:
                     continue
                 resolved_any = True
                 resolved_keys_this_row.add(normalized_email)
+                # Same one-row-counts-once rule as the phone pass above.
+                if normalized_email in counted_this_row:
+                    continue
+                counted_this_row.add(normalized_email)
                 entry = by_email_contact.setdefault(normalized_email, {
                     "normalized_number": None, "normalized_email": normalized_email,
                     "display_names": sorted(known_emails[normalized_email]["names"]),
