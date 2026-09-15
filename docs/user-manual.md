@@ -42,10 +42,15 @@ Click **Case** in the top bar to create or select a case. Once one is active:
 **This is entirely optional.** Every tool works exactly the same with no case selected — you just
 fill in Case Number/Examiner/Destination by hand each time instead.
 
-A case created before this consolidated-file format existed (an older station, or one migrated from
-an earlier version) can still be used normally; a **Migrate to Consolidated Format** button appears
-next to it in the Case Manager if you want to bring it up to the current format. Migration is
-non-destructive — the original files are kept, renamed with a backup suffix, never deleted.
+The consolidated one-file-per-case format is the only case format. An older layout existed before
+it — a `case_info.json` plus scattered per-job report files — along with a button to convert such a
+case; both were removed. If you have a case folder in that older shape it will not appear in the
+Case Manager at all. Nothing on disk is touched, so the files are still there, but this version of
+the app will not read them.
+
+Note this is separate from running a job with **no case selected**, which is still fully supported:
+that writes a plain per-job report file next to the output, exactly as before, and you can export a
+report from it.
 
 ---
 
@@ -881,6 +886,30 @@ station wants to track; manage the tags available for tagging evidence; and, und
 IOC Lists**, define custom keyword/regex lists that Triage Scan can use in addition to its five
 built-in categories, plus the **Hash Sets**, **URL Lists**, and **YARA Rulesets** described in
 [Hash Sets, URL Lists, and YARA rules](#hash-sets-url-lists-and-yara-rules) above.
+
+**Import Bundled List** (next to *New List*) copies one of the reference keyword lists shipped with
+the app into your own lists, where you can edit or delete it like any you wrote yourself — the
+bundled copy is never changed, so you can always re-import a clean one. What ships:
+
+| List | What it is |
+|---|---|
+| **DEA Drug Slang** (6 themed lists) | ~1,800 slang terms and code words from the DEA's own 2018 reference for law enforcement, split by substance category. |
+| **Credentials & API Keys** | Cloud, source-hosting, payment and messaging credentials left in files — AWS and GCP keys, GitHub and GitLab tokens, Slack and Stripe tokens, private keys, JWTs. |
+| **OFAC Sanctioned Addresses** (3 lists) | Cryptocurrency addresses on the US Treasury sanctions list. Unlike the built-in Bitcoin/Ethereum categories, which match anything address-*shaped*, these are exact attributed addresses. |
+| **Anti-Forensics & Evidence Destruction** | Disk and free-space wipers, trace cleaners, timestamp manipulation, log clearing, steganography, anonymity tooling. |
+
+Every list shows its **source, licence and caveats before you import it**, and you should read them:
+each one over-matches in some way that matters. The drug slang is a 2018 snapshot and many of its
+terms are ordinary English words (*Ice*, *Boy*, *Pot*, *Work*); the credential patterns match
+documentation samples as readily as real secrets; the sanctions list goes stale within a day of the
+snapshot date. A hit from any of these is a lead to check, never a finding on its own.
+
+A list longer than the 200-terms-per-list limit is imported as several numbered parts rather than
+being cut short — the DEA stimulants slang alone is over 700 terms.
+
+Terms are matched as **whole words**, which is why these ship as regular expressions rather than
+plain text: a literal `Ice` would otherwise match inside *device*, *service* and *nice*, and bury the
+list's own real hits.
 
 **Cross-Case Hash Lookup**, its own section here rather than inside any one case's Reporting tab (since
 it deliberately isn't scoped to one), checks whether a specific hash has shown up in *any* case on
