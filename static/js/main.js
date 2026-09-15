@@ -11166,8 +11166,27 @@ function renderRelationshipGraphLegend(data) {
     };
     const dotHtml = (color) => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background-color:${color};"></span>`;
 
-    addRow(dotHtml(RELATIONSHIP_TIER_COLORS.frequent), 'Frequent Contact',
-        `${data.frequent_contact_count} of ${data.contacts.length} contact(s) - together account for ~${sharePct}% of this device's total communication volume`);
+    // Describes the group that is ACTUALLY drawn, against a denominator that
+    // is actually named (2026-09-15). This used to print the cumulative-share
+    // THRESHOLD as if it were a measurement, over "this device's total
+    // communication volume" - which grand_total is not, because it counts
+    // resolved contacts only. See the note in core/case_index_db.py.
+    const resolvedTotal = data.resolved_communication_count || 0;
+    const unresolvedTotal = data.unresolved_communication_count || 0;
+    const measuredPct = Math.round((data.frequent_share_of_resolved || 0) * 100);
+    let frequentDesc;
+    if (!data.frequent_contact_count) {
+        frequentDesc = `No contact meets the frequent threshold in this case (needs to be in the top `
+            + `${sharePct}% of traffic and have at least ${data.frequent_min_count || 3} communications)`;
+    } else {
+        frequentDesc = `${data.frequent_contact_count} of ${data.contacts.length} contact(s) - together `
+            + `${measuredPct}% of the ${resolvedTotal.toLocaleString()} communication(s) attributed to a named contact`;
+        if (unresolvedTotal) {
+            frequentDesc += `; a further ${unresolvedTotal.toLocaleString()} could not be matched to any contact `
+                + `and are NOT counted in that percentage`;
+        }
+    }
+    addRow(dotHtml(RELATIONSHIP_TIER_COLORS.frequent), 'Frequent Contact', frequentDesc);
     addRow(dotHtml(RELATIONSHIP_TIER_COLORS.regular), 'Regular Contact',
         '2+ communications, not in the frequent group above');
     addRow(dotHtml(RELATIONSHIP_TIER_COLORS.one_off), 'One-off Contact',
@@ -12355,6 +12374,9 @@ async function loadPatternOfLifePrivacyTools() {
     container.innerHTML = '';
     const users = data.user_installed || [];
     const preloaded = data.system_or_preloaded || [];
+    // ALEAPP/iLEAPP inventory hits, where install provenance is unknowable
+    // from the source data - see detect_privacy_tools()'s own note.
+    const unknownSource = data.install_source_unknown || [];
     const onion = data.onion_references || [];
 
     if (!data.app_inventory_present) {
@@ -12363,10 +12385,11 @@ async function loadPatternOfLifePrivacyTools() {
         // as a clean bill of health when no inventory was ever captured.
         const none = document.createElement('div');
         none.className = 'text-subtle';
-        none.textContent = 'No Android installed-app inventory has been parsed for this case, so nothing can be '
-            + 'said about installed VPN/Tor clients either way. An adb pull or Companion-App Extraction captures it.';
+        none.textContent = 'No installed-app inventory has been parsed for this case, so nothing can be '
+            + 'said about installed VPN/Tor clients either way. An adb pull, Companion-App Extraction, or an '
+            + 'ALEAPP/iLEAPP run captures it.';
         container.appendChild(none);
-    } else if (users.length === 0 && preloaded.length === 0) {
+    } else if (users.length === 0 && preloaded.length === 0 && unknownSource.length === 0) {
         const ok = document.createElement('div');
         ok.className = 'text-success';
         ok.textContent = `No VPN, Tor or anonymity-network client found among the `
@@ -12376,6 +12399,10 @@ async function loadPatternOfLifePrivacyTools() {
         if (users.length) _renderPrivacyToolList(container, users, 'User-installed', false);
         if (preloaded.length) {
             _renderPrivacyToolList(container, preloaded, 'System / preloaded (shipped with the device or by a carrier - much weaker signal than a user install)', true);
+        }
+        if (unknownSource.length) {
+            _renderPrivacyToolList(container, unknownSource,
+                'Found in an ALEAPP/iLEAPP inventory (that export records no system/user install flag, so whether the user installed it cannot be determined here)', true);
         }
     }
 
@@ -12416,7 +12443,9 @@ async function loadPatternOfLifePrivacyTools() {
         + 'It cannot show whether a VPN was connected at any particular past moment - Android keeps no durable, '
         + 'user-accessible VPN connection history. A VPN also never changes a GPS position; it only affects '
         + 'location derived from an IP address. The client list is curated and not exhaustive, so a sideloaded, '
-        + 'renamed or since-uninstalled app would not appear here.';
+        + 'renamed or since-uninstalled app would not appear here. Matching is by known package/bundle '
+        + 'identifier, which is Android-oriented: an iOS app whose bundle id is not in the list will be '
+        + 'missed even when its inventory was parsed.';
     container.appendChild(caveat);
 }
 
@@ -12443,7 +12472,33 @@ function updatePatternOfLifeHighlights() {
         const top = patternOfLifeContactData.contacts[0];
         const name = top.display_names && top.display_names.length ? top.display_names.join(' / ') : (_contactCorrelationKey(top) || '(unknown)');
         const n = top.total_communications;
-        items.push({ icon: 'bi-person-lines-fill', text: `Most contacted: ${name} (${n} communication${n === 1 ? '' : 's'})` });
+        // Two qualifications this chip used to assert past (2026-09-15).
+        //
+        // A tie: contacts[0] comes from a stable descending sort, so with two
+        // contacts on the same count the winner is whichever the indexer
+        // happened to insert first - re-index the case in a different order
+        // and the chip names someone else. classifyHomeWorkLocations()
+        // already refuses to pick on a tie; this did not.
+        //
+        // And unresolved traffic: a number that was never saved in the
+        // address book is not a contact here at all, so a number texted 500
+        // times cannot appear, and "most contacted" means "most contacted
+        // among named contacts". Say which, rather than letting the shorter
+        // claim stand.
+        const tied = patternOfLifeContactData.contacts.filter(c => c.total_communications === n).length;
+        const unresolved = patternOfLifeContactData.unresolved_communication_count || 0;
+        let text;
+        if (tied > 1) {
+            text = `Most contacted: ${tied} contacts tied at ${n} communication${n === 1 ? '' : 's'} `
+                + `(including ${name}) - no single most-contacted contact`;
+        } else {
+            text = `Most contacted: ${name} (${n} communication${n === 1 ? '' : 's'})`;
+        }
+        if (unresolved) {
+            text += ` - of named contacts only; ${unresolved.toLocaleString()} communication(s) `
+                + `could not be matched to a contact`;
+        }
+        items.push({ icon: 'bi-person-lines-fill', text });
     }
 
     if (patternOfLifeGeoActivityData && patternOfLifeGeoActivityData.frequent_locations && patternOfLifeGeoActivityData.frequent_locations.length) {
@@ -12465,9 +12520,19 @@ function updatePatternOfLifeHighlights() {
         let maxHour = 0, maxCount = 0;
         hourCounts.forEach((c, h) => { if (c > maxCount) { maxCount = c; maxHour = h; } });
         if (maxCount > 0) {
-            const d = new Date(); d.setHours(maxHour, 0, 0, 0);
-            const label = d.toLocaleTimeString(undefined, { hour: 'numeric' });
-            items.push({ icon: 'bi-clock-fill', text: `Most active around: ${label} (${maxCount} of ${patternOfLifeActivityRows.length} event${patternOfLifeActivityRows.length === 1 ? '' : 's'})` });
+            // `c > maxCount` silently resolved a tie to the LOWEST hour index,
+            // so 31 events at 9 AM and 31 at 9 PM produced a confident
+            // "Most active around: 9 AM" with no hint the evening peak was
+            // identical. Name every tied hour instead (2026-09-15).
+            const peakHours = [];
+            hourCounts.forEach((c, h) => { if (c === maxCount) peakHours.push(h); });
+            const labelFor = (h) => { const d = new Date(); d.setHours(h, 0, 0, 0); return d.toLocaleTimeString(undefined, { hour: 'numeric' }); };
+            const labels = peakHours.map(labelFor).join(' and ');
+            const total = patternOfLifeActivityRows.length;
+            items.push({ icon: 'bi-clock-fill',
+                text: peakHours.length > 1
+                    ? `Most active around: ${labels} - tied at ${maxCount} of ${total} event${total === 1 ? '' : 's'} each`
+                    : `Most active around: ${labels} (${maxCount} of ${total} event${total === 1 ? '' : 's'})` });
         }
     }
 

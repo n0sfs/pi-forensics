@@ -78,6 +78,7 @@ from core.case_index_db import (
     _extract_raw_counterpart_candidates, _extract_email_counterparts, normalize_phone_number,
     _comm_content_preview, tagged_real_fs_paths_for_case, derive_examiner_display,
     compute_case_analysis_coverage, ensure_examiner_recorded,
+    _build_evidence_id_resolvers, _resolve_row_evidence_id,
 )
 from core.tsk_utils import _tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs, TSK_MAX_TIMELINE_ENTRIES
 
@@ -1206,6 +1207,27 @@ CASE_TIMELINE_ACTIVITY_CATEGORY = {
     "leapp_snapchat_message": "Social Media", "leapp_facebook_messenger_message": "Social Media",
     "leapp_telegram_message": "Social Media", "leapp_signal_message": "Social Media",
     "leapp_tiktok_message": "Social Media", "leapp_reddit_message": "Social Media",
+    # Added 2026-09-15 after a review pass found five types falling through to
+    # the "Device & System" catch-all where an examiner would never look for
+    # them. The catch-all is a safe default for types that genuinely have no
+    # home in a phone-oriented timeline; it is not safe for types that plainly
+    # belong to an existing category, because the category filter then HIDES
+    # them from the examiner who narrowed to exactly that category.
+    #
+    # webcache_entry is WebCacheV01.dat - Legacy IE / Edge browsing history.
+    # The map covered Chrome, Firefox and Safari but not the Microsoft
+    # equivalent, so an examiner ticking only "Web Activity" on a Windows
+    # image saw nothing and could reasonably conclude the machine had no
+    # browser history at all.
+    "webcache_entry": "Web Activity",
+    # Typed URLs are the user's own keyboard input into the address bar -
+    # among the strongest web-activity signals the registry holds.
+    "registry_typed_urls": "Web Activity",
+    # The richest filesystem timeline an NTFS image offers. Ticking only
+    # "Filesystem" hid all of them, which is the exact opposite of what that
+    # checkbox promises.
+    "mft_file_record": "Filesystem", "usnjrnl_change_record": "Filesystem",
+    "recyclebin_deleted_file": "Filesystem",
 }
 
 
@@ -1273,23 +1295,26 @@ def _build_enriched_case_timeline(case_folder, events):
     # image_browser concern that function has no other reason to know about.
     # A real-fs-sourced artifact (never inside an acquired image) correctly
     # resolves to no evidence_id at all, not a guessed one.
-    image_path_to_evidence_id = {}
-    for event in events:
-        if event.get('acquisition_status') != 'COMPLETED':
-            continue
-        raw_path = event.get('acquisition_parameters', {}).get('output_image_path')
-        if not raw_path:
-            continue
-        resolved = safe_path(raw_path)
-        if resolved:
-            image_path_to_evidence_id[resolved] = event.get('case_metadata', {}).get('evidence_id', 'N/A')
+    # Now uses core/case_index_db's own resolver, which ALSO matches on
+    # source_path (2026-09-15). Resolving by image_path alone meant every row
+    # produced from a folder-based acquisition - an adb pull, a Logical
+    # Acquisition, anything File Explorer's "Parse..." actions ran against a
+    # real filesystem - carried image_path NULL and therefore evidence_id
+    # None. Picking a specific evidence item in the timeline's dropdown then
+    # dropped every SMS, call log and browser row from BOTH phones in a
+    # two-phone case, leaving only folder-walk MACB rows; and in the
+    # unfiltered view a message could not be attributed to a device at all.
+    # _resolve_row_evidence_id() was written for exactly this gap on
+    # 2026-09-14 but only correlate_contacts() had been converted to it.
+    image_path_to_evidence_id, source_path_to_evidence_id = _build_evidence_id_resolvers(case_folder)
 
     conn = _case_index_open_readonly(case_folder)
     if conn:
         try:
             for row in conn.execute(
-                    "SELECT artifact_type, title, value, timestamp, image_path, extra_json FROM parsed_artifacts WHERE timestamp IS NOT NULL"):
-                artifact_type, title, value, ts, image_path, extra_json = row
+                    "SELECT artifact_type, title, value, timestamp, image_path, source_path, extra_json "
+                    "FROM parsed_artifacts WHERE timestamp IS NOT NULL"):
+                artifact_type, title, value, ts, image_path, source_path, extra_json = row
                 try:
                     extra = json.loads(extra_json) if extra_json else {}
                 except (json.JSONDecodeError, TypeError, AttributeError):
@@ -1325,7 +1350,8 @@ def _build_enriched_case_timeline(case_folder, events):
                 combined.append({
                     "timestamp": ts, "source": "parsed_artifact",
                     "activity": artifact_type, "detail": title or value or '',
-                    "evidence_id": image_path_to_evidence_id.get(image_path) if image_path else None,
+                    "evidence_id": _resolve_row_evidence_id(
+                        image_path, source_path, image_path_to_evidence_id, source_path_to_evidence_id),
                     "deleted": is_deleted,
                     "suspicious": artifact_type in CASE_TIMELINE_SUSPICIOUS_ARTIFACT_TYPES,
                     "category": _timeline_row_category("parsed_artifact", artifact_type),

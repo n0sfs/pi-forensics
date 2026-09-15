@@ -1969,6 +1969,13 @@ def correlate_contacts(case_folder):
               "truncated": False, "contacts": [],
               "frequent_contact_count": 0,
               "frequent_cumulative_share_threshold": CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE,
+              # Both halves of the tiering rule come from here, so the legend
+              # never keeps a second copy of either - the two-independent-
+              # copies trap CLAUDE.md calls out.
+              "frequent_min_count": CONTACT_CORRELATION_FREQUENT_MIN_COUNT,
+              "frequent_communication_count": 0,
+              "resolved_communication_count": 0,
+              "frequent_share_of_resolved": 0.0,
               "co_occurrences": [], "co_occurrences_truncated": False,
               "devices": []}
     conn = _case_index_open_readonly(case_folder)
@@ -2448,14 +2455,37 @@ def correlate_contacts(case_folder):
             else:
                 frequent_cutoff_index = len(contacts)
         actual_frequent_count = 0
+        frequent_communications = 0
         for i, c in enumerate(contacts):
             if i < frequent_cutoff_index and c["total_communications"] >= CONTACT_CORRELATION_FREQUENT_MIN_COUNT:
                 c["tier"] = "frequent"
                 actual_frequent_count += 1
+                frequent_communications += c["total_communications"]
             elif c["total_communications"] == 1:
                 c["tier"] = "one_off"
             else:
                 c["tier"] = "regular"
+        # The share the frequent group ACTUALLY holds, and the denominator it
+        # is a share OF (2026-09-15). The legend used to render the
+        # CONTACT_CORRELATION_FREQUENT_CUMULATIVE_SHARE *threshold* as though
+        # it were a measured result, and call the denominator "this device's
+        # total communication volume". Two separate errors:
+        #
+        #   - grand_total sums resolved contacts only. Every counterpart that
+        #     is not in the address book becomes `unresolved` and is excluded.
+        #     On a device with 1,000 communications of which 600 are to
+        #     unsaved numbers, a group holding 320 was described as 80% of the
+        #     device's traffic; it is 32%. An examiner quoting the legend is
+        #     wrong by a factor of 2.5.
+        #   - actual_frequent_count is reduced by FREQUENT_MIN_COUNT AFTER the
+        #     cutoff index is chosen, so the printed share stopped describing
+        #     the printed group. With 30 contacts at 2 communications each the
+        #     legend read "0 of 30 contact(s) - together account for ~80%":
+        #     an empty group accounting for most of the traffic.
+        result["frequent_communication_count"] = frequent_communications
+        result["resolved_communication_count"] = grand_total
+        result["frequent_share_of_resolved"] = (
+            frequent_communications / grand_total if grand_total else 0.0)
 
         result["contacts"] = contacts
         result["contacts_indexed_count"] = len(known)
@@ -2944,7 +2974,12 @@ def detect_privacy_tools(case_folder):
     this one. Returns a correctly-shaped empty result (never None/raises) for a
     case that was never indexed, matching this module's own convention."""
     result = {
-        "user_installed": [], "system_or_preloaded": [], "onion_references": [],
+        "user_installed": [], "system_or_preloaded": [],
+        # ALEAPP/iLEAPP rows carry no system/non-system flag, so whether the
+        # user installed the app cannot be determined from them. Kept separate
+        # rather than guessed into one of the two buckets above.
+        "install_source_unknown": [],
+        "onion_references": [],
         "onion_truncated": False, "app_inventory_present": False,
         "artifacts_present": False, "apps_scanned": 0,
     }
@@ -2977,6 +3012,48 @@ def detect_privacy_tools(case_folder):
             }
             bucket = "user_installed" if _app_is_user_installed(extra) else "system_or_preloaded"
             result[bucket].append(entry)
+
+        # ALEAPP/iLEAPP inventories too (2026-09-15). This scanned only the
+        # native android_installed_app type, while the Apps list rendered
+        # directly above this panel merges leapp_installed_app as well - so a
+        # case holding an adb pull of a clean phone plus an iLEAPP-parsed
+        # iPhone with Onion Browser rendered a green "No VPN, Tor or
+        # anonymity-network client found among the 150 installed apps captured
+        # for this case" with Onion Browser listed immediately above it.
+        #
+        # A LEAPP row is a generic TSV row: extra["row"] is the module's own
+        # column->value dict, and which column holds the identifier differs
+        # per module (Bundle ID, Package Name, App Name...). Match any cell
+        # against the known-package table rather than guessing the column.
+        # These rows also carry no system/non-system flag, so install
+        # provenance genuinely cannot be determined - they go in their own
+        # bucket rather than being asserted into either of the other two.
+        for title, extra_json in conn.execute(
+                "SELECT title, extra_json FROM parsed_artifacts "
+                "WHERE artifact_type='leapp_installed_app'"):
+            result["app_inventory_present"] = True
+            result["apps_scanned"] += 1
+            try:
+                extra = json.loads(extra_json) if extra_json else {}
+            except (TypeError, ValueError):
+                extra = {}
+            row = extra.get("row") if isinstance(extra.get("row"), dict) else {}
+            candidates = [title] + [str(v).strip() for v in row.values() if v]
+            spec, package = None, None
+            for candidate in candidates:
+                spec = PRIVACY_TOOL_PACKAGES.get(candidate)
+                if spec:
+                    package = candidate
+                    break
+            if not spec:
+                continue
+            label, category = spec
+            result["install_source_unknown"].append({
+                "package": package, "label": label, "category": category,
+                "version": row.get("Version") or row.get("Version Code"),
+                "code_path": None, "last_update_timestamp": None,
+                "leapp_module": extra.get("leapp_module"),
+            })
 
         # Any .onion address, in any artifact type - a browser history row is
         # the obvious case, but one arriving by SMS or sitting in a note is
