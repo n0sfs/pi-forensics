@@ -70,7 +70,8 @@ from core.config import (
     load_runtime_config, save_runtime_config,
     get_report_defaults, get_custom_case_fields,
 )
-from core.jobs import _read_case_file, _write_case_file, current_job, job_lock, update_job, snapshot_job
+from core.jobs import (_read_case_file, _write_case_file, current_job, job_lock, update_job,
+                       snapshot_job, CaseFileUnreadable)
 from core.case_index_db import (
     _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact,
     _case_index_open_readonly, list_case_folders, correlate_contacts,
