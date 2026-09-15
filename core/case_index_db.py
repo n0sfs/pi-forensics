@@ -3006,6 +3006,21 @@ def _app_is_user_installed(extra):
     return str(extra.get("code_path") or "").startswith("/data/app/")
 
 
+# A Tor hidden-service host: the v3 form is 56 base32 characters, the legacy
+# v2 form 16, and the label alphabet is base32 (a-z and 2-7 - note '0' and '1'
+# are NOT valid, which rules out a lot of ordinary text on its own).
+#
+# The trailing guard rejects a following label character, which is what made
+# ".onionrings.html" match a bare '%.onion%' substring test and get listed
+# under a heading reading ".onion addresses in indexed artifacts". It
+# deliberately ALLOWS a trailing dot on its own - both a sentence-ending
+# period ("...visit expyuzz4wqqyqhjn.onion.") and an FQDN root dot are normal
+# - while still rejecting ".onion.com", which is a clearnet host, not a
+# hidden service. The leading guard keeps the match anchored to a whole label.
+_ONION_HOST_RE = re.compile(r'(?<![A-Za-z0-9.-])[a-z2-7]{16}(?:[a-z2-7]{40})?\.onion(?!\.?[A-Za-z0-9-])',
+                            re.IGNORECASE)
+
+
 def detect_privacy_tools(case_folder):
     """Privacy/anonymity tooling indicators for a case - see this section's
     own comment above for exactly what this does and does not claim.
@@ -3100,12 +3115,27 @@ def detect_privacy_tools(case_folder):
         # Any .onion address, in any artifact type - a browser history row is
         # the obvious case, but one arriving by SMS or sitting in a note is
         # just as real, and this app already indexes both.
+        # The SQL LIKE is a cheap PRE-FILTER only; _ONION_HOST_RE below decides.
+        # A bare '%.onion%' substring test also matched ".onionrings.html" and
+        # any other word containing the literal sequence, and those were then
+        # listed under a heading reading ".onion addresses in indexed
+        # artifacts" - a Tor hidden-service reference is a real finding, so a
+        # recipe page must not be able to manufacture one (2026-09-15).
+        #
+        # Also ORDER BY the timestamp DESCENDING with NULLs LAST. SQLite sorts
+        # NULL below every value, so under plain DESC the undated rows landed
+        # at the end and were the first to be cut by the row limit - exactly
+        # backwards, since an undated hit is not less real than a dated one.
+        # Fetch generously, then filter, so the limit applies to real matches.
         rows = conn.execute(
             "SELECT artifact_type, title, url, value, timestamp FROM parsed_artifacts "
             "WHERE url LIKE '%.onion%' OR value LIKE '%.onion%' OR title LIKE '%.onion%' "
-            "ORDER BY timestamp DESC LIMIT ?", (PRIVACY_TOOL_ONION_MAX_ROWS + 1,)).fetchall()
-        result["onion_truncated"] = len(rows) > PRIVACY_TOOL_ONION_MAX_ROWS
-        for artifact_type, title, url, value, timestamp in rows[:PRIVACY_TOOL_ONION_MAX_ROWS]:
+            "ORDER BY timestamp IS NULL, timestamp DESC LIMIT ?",
+            (PRIVACY_TOOL_ONION_MAX_ROWS * 10 + 1,)).fetchall()
+        matched = [r for r in rows
+                   if any(_ONION_HOST_RE.search(str(field or '')) for field in (r[1], r[2], r[3]))]
+        result["onion_truncated"] = len(matched) > PRIVACY_TOOL_ONION_MAX_ROWS
+        for artifact_type, title, url, value, timestamp in matched[:PRIVACY_TOOL_ONION_MAX_ROWS]:
             result["onion_references"].append({
                 "artifact_type": artifact_type, "title": title,
                 "url": url, "value": value, "timestamp": timestamp,
