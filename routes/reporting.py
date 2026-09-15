@@ -720,13 +720,27 @@ def get_chain_of_custody_log():
 # number is the folder name) with one heuristic, no directory resolution
 # needed.
 def _case_history_entries(case_number, limit=200):
-    """Same substring-match filter used by /api/coc/case_history below,
-    factored out so the report exporter's Audit Trail section can reuse it
-    without an extra HTTP round-trip."""
+    """Same match filter used by /api/coc/case_history below, factored out so
+    the report exporter's Audit Trail section can reuse it without an extra
+    HTTP round-trip.
+
+    The match is token-anchored, not a bare substring (fixed 2026-09-15). A
+    plain `case_number in str(v)` attributed one case's activity to another
+    whenever one case number was a prefix of the next: with cases CASE-1 and
+    CASE-12 on the same station, every CASE-12 entry carries
+    case_folder="/mnt/CASE-12", and "CASE-1" is a substring of that - so
+    CASE-1's exported Audit Trail contained every acquisition, note edit and
+    verification performed on CASE-12. A purely numeric case number was worse
+    still: "2026" matched the %Y%m%d timestamp embedded in bundle/report
+    filenames, absorbing dated activity from every case on the station.
+    Requiring a non-alphanumeric character (or a string boundary) on each side
+    keeps the "case number appears as a path segment or filename prefix"
+    heuristic this was always built on, while rejecting mid-token hits."""
+    pattern = re.compile(r'(?<![A-Za-z0-9])' + re.escape(case_number) + r'(?![A-Za-z0-9])')
     matched = []
     for entry in _read_coc_entries(limit=None):
         details = entry.get("details", {})
-        if any(case_number in str(v) for v in details.values()):
+        if any(pattern.search(str(v)) for v in details.values()):
             matched.append(entry)
         if len(matched) >= limit:
             break
@@ -1380,12 +1394,27 @@ def _draw_pdf_job_section(c, y, event, job_fields=None):
         y -= 15
         c.setFont("Helvetica", 10)
         drive = event.get('source_drive_telemetry', {})
-        c.drawString(50, y, f"Device: {drive.get('device_path')} ({drive.get('capacity_gb')} GB)")
-        c.drawString(300, y, f"Model: {drive.get('vendor_model')}")
-        y -= 15
-        c.drawString(50, y, f"Serial: {drive.get('serial_number')}")
-        c.drawString(300, y, f"SMART Status: {'PASSED' if drive.get('smart_healthy') else 'FAILING'}")
-        y -= 30
+        if not drive:
+            # Mobile/logical acquisitions never write source_drive_telemetry at
+            # all (only routes/acquisition.py does). Rendering the block anyway
+            # produced "Device: None (None GB)", "Serial: None" and - worst -
+            # "SMART Status: FAILING", an affirmative hardware-failure claim
+            # about something that was never a block device and was never
+            # queried. Say what is actually true instead (2026-09-15).
+            c.drawString(50, y, "No source media telemetry was recorded for this acquisition.")
+            y -= 15
+            c.setFont("Helvetica-Oblique", 8)
+            c.setFillColorRGB(0.4, 0.4, 0.4)
+            c.drawString(50, y, "Logical and mobile acquisitions do not query the source device for SMART or hardware identifiers.")
+            c.setFillColorRGB(0, 0, 0)
+            y -= 25
+        else:
+            c.drawString(50, y, f"Device: {drive.get('device_path')} ({drive.get('capacity_gb')} GB)")
+            c.drawString(300, y, f"Model: {drive.get('vendor_model')}")
+            y -= 15
+            c.drawString(50, y, f"Serial: {drive.get('serial_number')}")
+            c.drawString(300, y, f"SMART Status: {_format_smart_status(drive.get('smart_healthy'))}")
+            y -= 30
 
     if job_fields.get('params', True):
         c.setFont("Helvetica-Bold", 12)
@@ -2937,6 +2966,36 @@ def _draw_pdf_narrative_section(c, y, title, text):
     y -= 8
     return y
 
+def _format_smart_status(healthy):
+    """Renders `smart_healthy` honestly, including the "not reported" case.
+
+    Added 2026-09-15. Both report renderers used `'PASSED' if healthy else
+    'FAILING'`, a two-valued rendering of a three-valued fact. Because
+    routes/acquisition.py defaulted the value to True when smartctl returned
+    no `smart_status` - the normal case for USB sticks, SD cards, and any
+    device that does not implement SMART - a signed report could state PASSED
+    for hardware whose health was never read. Now that the acquisition side
+    records None for "not reported", say that instead of guessing either way:
+    an unknown is a gap in the record, not a pass and not a failure."""
+    if healthy is None:
+        return "Not reported (device did not return SMART data)"
+    return "PASSED" if healthy else "FAILING"
+
+def _pdf_cell(value, width):
+    """Fits a value into a fixed-width PDF table cell, MARKING it when cut.
+
+    Added 2026-09-15. Every fixed-width cell in this file was a bare
+    `str(v)[:n]`, which truncates silently - the reader has no way to tell a
+    serial number that really is "WD-WX51A" from one cut out of
+    "WD-WX51A8D9F2C". In a document whose purpose is to identify specific
+    physical evidence, a value that looks complete but isn't is worse than an
+    obviously abbreviated one. The single-character ellipsis costs one
+    character of content and removes the ambiguity entirely."""
+    text = str(value)
+    if len(text) <= width:
+        return text
+    return text[:max(1, width - 1)] + "…"
+
 _HASH_DISPLAY_PRIORITY = ('sha256', 'sha1', 'md5')
 
 def _pick_display_hash(hashes):
@@ -3031,20 +3090,23 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_
     y -= 12
     c.setFont("Helvetica", 7.5)
     for event in events:
-        if y < 60:
+        hashes = event.get('computed_verification_hashes', {}) or {}
+        # Reserve room for the full-hash continuation lines too, so a row is
+        # never split from the hashes that belong to it across a page break.
+        if y < 60 + 9 * len(hashes):
             c.showPage()
             y = 750
             c.setFont("Helvetica", 7.5)
         meta = event.get('case_metadata', {})
         drive = event.get('source_drive_telemetry', {})
-        hash_display = _pick_display_hash(event.get('computed_verification_hashes', {}))
+        hash_display = _pick_display_hash(hashes)
         row = [
-            str(meta.get('evidence_id', 'N/A'))[:14],
-            str(drive.get('device_path', 'N/A'))[:16],
-            str(drive.get('vendor_model', 'N/A'))[:13],
-            str(drive.get('serial_number', 'N/A'))[:12],
+            _pdf_cell(meta.get('evidence_id', 'N/A'), 14),
+            _pdf_cell(drive.get('device_path', 'N/A'), 16),
+            _pdf_cell(drive.get('vendor_model', 'N/A'), 13),
+            _pdf_cell(drive.get('serial_number', 'N/A'), 12),
             f"{drive.get('capacity_gb', 'N/A')} GB",
-            str(hash_display)[:24],
+            _pdf_cell(hash_display, 24),
         ]
         for val, x in zip(row, xpos[:6]):
             c.drawString(x, y, val)
@@ -3058,6 +3120,26 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_
         c.drawString(xpos[6], y, status_meta["pdf_label"])
         c.setFillColorRGB(0, 0, 0)
         y -= 11
+        # The full, untruncated digest on its own line beneath the row
+        # (2026-09-15). The Acquisition Hash column is 100pt wide and a
+        # SHA-256 digest is 64 hex characters, so the cell could only ever
+        # show a prefix - and it did so silently, with no ellipsis. A reader
+        # would copy what looked like a complete hash, run sha256sum, and get
+        # a mismatch against evidence that was actually intact. The Standard
+        # and DFIR reports carry a full "Verification Hashes" block elsewhere,
+        # but the Police and CASE-UCO templates call ONLY this function, so
+        # for those two the truncated cell was the only hash in the entire
+        # document. One line per algorithm: two full digests do not fit on
+        # one line at this size.
+        if hashes:
+            c.setFont("Helvetica", 6.5)
+            c.setFillColorRGB(0.35, 0.35, 0.35)
+            for algo, value in hashes.items():
+                c.drawString(60, y, f"{algo.upper()}: {value}")
+                y -= 9
+            c.setFillColorRGB(0, 0, 0)
+            c.setFont("Helvetica", 7.5)
+            y -= 2
     y -= 12
     return y
 
@@ -3303,8 +3385,8 @@ def _draw_pdf_timeline_table(c, y, case_notes, title="Incident Timeline"):
             c.setFont("Helvetica", 7.5)
         row = [
             str(note.get('timestamp', 'N/A'))[:19],
-            str(note.get('category', 'General'))[:14],
-            str(note.get('text', '')).replace('\n', ' ')[:62],
+            _pdf_cell(note.get('category', 'General'), 14),
+            _pdf_cell(str(note.get('text', '')).replace('\n', ' '), 62),
         ]
         for val, x in zip(row, xpos):
             c.drawString(x, y, val)
@@ -3410,9 +3492,9 @@ def _draw_pdf_timeline_block(c, y, events, title="Filesystem Timeline (MACB)", c
                 detail_text = f"{detail_text} - [{', '.join(counterpart_names)}]"
             row = [
                 format_epoch(entry.get('timestamp')) or 'N/A',
-                activity_label[:20],
-                str(entry.get('evidence_id') or 'N/A')[:14],
-                detail_text[:58],
+                _pdf_cell(activity_label, 20),
+                _pdf_cell(entry.get('evidence_id') or 'N/A', 14),
+                _pdf_cell(detail_text, 58),
             ]
             for val, x in zip(row, xpos):
                 c.drawString(x, y, val)
@@ -3804,7 +3886,7 @@ def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: C
             duration_label = f"{int(duration_s // 60)}m" if duration_s else '--'
             row = [
                 name_label[:34],
-                str(contact.get("tier", ''))[:10],
+                _pdf_cell(contact.get("tier", ''), 10),
                 str(contact.get("total_communications", 0)),
                 f"{direction.get('incoming', 0)}/{direction.get('outgoing', 0)}",
                 duration_label,
@@ -4790,8 +4872,18 @@ def _html_timeline_block(events, title="Filesystem Timeline (MACB)", anchor_id=N
 
     return ''.join(parts)
 
-_LEAFLET_CSS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'vendor', 'leaflet', 'leaflet.css')
-_LEAFLET_JS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'vendor', 'leaflet', 'leaflet.js')
+# The REPO ROOT, not this file's own directory (fixed 2026-09-15). This was
+# written before the app.py -> core/ + routes/ split moved this code into
+# routes/, and dirname(__file__) silently became <root>/routes - so both paths
+# pointed at <root>/routes/static/vendor/leaflet/, which does not exist. The
+# open() below raises OSError, the except returns '', and the exported HTML
+# then had no Leaflet at all: every map in it rendered as an empty bordered
+# box, with no error anywhere to say why. Derived from __file__ rather than
+# INSTALL_DIR for the same reason core/config.py's _REPO_ROOT is - it has to
+# resolve in a bare dev checkout that never set FORENSIC_INSTALL_DIR.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_LEAFLET_CSS_PATH = os.path.join(_REPO_ROOT, 'static', 'vendor', 'leaflet', 'leaflet.css')
+_LEAFLET_JS_PATH = os.path.join(_REPO_ROOT, 'static', 'vendor', 'leaflet', 'leaflet.js')
 
 def _html_leaflet_assets_block():
     """Inlines the vendored Leaflet library as literal <style>/<script>
@@ -4866,7 +4958,17 @@ def _html_geolocation_block(kml_data, title="Geolocation / GPS Evidence", anchor
             '<script>(function(){'
             f'var pts={points_json};'
             f'var mapDiv=document.getElementById("{map_id}");'
-            'if(!mapDiv||typeof L==="undefined"||!pts.length)return;'
+            # Say WHY the box is empty rather than leaving a blank bordered
+            # div. When the vendored library failed to inline (the repo-root
+            # path bug above went unnoticed for exactly this reason), every
+            # map in the export was a silent empty rectangle. The coordinate
+            # table above is always present and authoritative regardless, so
+            # point the reader at it.
+            'if(!mapDiv)return;'
+            'if(typeof L==="undefined"){mapDiv.style.height="auto";mapDiv.style.padding=".8em";'
+            'mapDiv.textContent="Map library unavailable in this export - the coordinate table above lists every point in full.";return;}'
+            'if(!pts.length){mapDiv.style.height="auto";mapDiv.style.padding=".8em";'
+            'mapDiv.textContent="No plottable coordinates in this file.";return;}'
             'var map=L.map(mapDiv);'
             # Plain tile.openstreetmap.org host (not the deprecated {s}. sharded
             # form) per OSM's own current tile usage policy, matching the live
@@ -5231,11 +5333,20 @@ def _html_acquisition_method(events, job_fields, anchor_id=None):
 
         if job_fields.get('telemetry', True):
             drive = event.get('source_drive_telemetry', {})
-            parts.append('<h3>Source Media Telemetry</h3><table>')
-            parts.append(f'<tr><th>Device</th><td>{esc(str(drive.get("device_path")))}</td><th>Capacity</th><td>{esc(str(drive.get("capacity_gb")))} GB</td></tr>')
-            parts.append(f'<tr><th>Model</th><td>{esc(str(drive.get("vendor_model")))}</td><th>Serial</th><td>{esc(str(drive.get("serial_number")))}</td></tr>')
-            parts.append(f'<tr><th>SMART Status</th><td colspan="3">{"PASSED" if drive.get("smart_healthy") else "FAILING"}</td></tr>')
-            parts.append('</table>')
+            parts.append('<h3>Source Media Telemetry</h3>')
+            if not drive:
+                # Mirrors the PDF branch - see its comment. A mobile/logical
+                # event has no telemetry at all, and the old table asserted
+                # "SMART Status: FAILING" for it.
+                parts.append('<p class="muted">No source media telemetry was recorded for this acquisition. '
+                             'Logical and mobile acquisitions do not query the source device for SMART or '
+                             'hardware identifiers.</p>')
+            else:
+                parts.append('<table>')
+                parts.append(f'<tr><th>Device</th><td>{esc(str(drive.get("device_path")))}</td><th>Capacity</th><td>{esc(str(drive.get("capacity_gb")))} GB</td></tr>')
+                parts.append(f'<tr><th>Model</th><td>{esc(str(drive.get("vendor_model")))}</td><th>Serial</th><td>{esc(str(drive.get("serial_number")))}</td></tr>')
+                parts.append(f'<tr><th>SMART Status</th><td colspan="3">{esc(_format_smart_status(drive.get("smart_healthy")))}</td></tr>')
+                parts.append('</table>')
 
         if job_fields.get('params', True):
             params = event.get('acquisition_parameters', {})
