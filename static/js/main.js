@@ -12324,6 +12324,10 @@ function renderContactCorrelationTable(data) {
 function _resetPatternOfLifeCaches() {
     patternOfLifeContactData = null;
     patternOfLifeGeoActivityData = null;
+    // The Highlights chips read this, so leaving it set would carry the
+    // previous case's home/most-visited chip into the next one - exactly the
+    // stale-cache class this function exists to close.
+    patternOfLifeGeoDisplayed = null;
     patternOfLifeActivityAllRows = null;
     patternOfLifeActivityRows = [];
     patternOfLifeActivityTruncated = false;
@@ -12551,16 +12555,26 @@ function updatePatternOfLifeHighlights() {
         items.push({ icon: 'bi-person-lines-fill', text });
     }
 
-    if (patternOfLifeGeoActivityData && patternOfLifeGeoActivityData.frequent_locations && patternOfLifeGeoActivityData.frequent_locations.length) {
-        const homeWork = classifyHomeWorkLocations(patternOfLifeGeoActivityData.points, patternOfLifeGeoActivityData.frequent_locations);
+    // Whatever Location Activity is CURRENTLY showing, falling back to the raw
+    // response before that section has rendered once. Reading the raw response
+    // unconditionally is what let the chip and the table below it assert two
+    // different homes on the same screen (2026-09-15).
+    const geoShown = patternOfLifeGeoDisplayed || (patternOfLifeGeoActivityData ? {
+        points: patternOfLifeGeoActivityData.points,
+        frequentLocations: patternOfLifeGeoActivityData.frequent_locations,
+        isFiltered: false,
+    } : null);
+    if (geoShown && geoShown.frequentLocations && geoShown.frequentLocations.length) {
+        const suffix = geoShown.isFiltered ? ' (selected date range)' : '';
+        const homeWork = classifyHomeWorkLocations(geoShown.points, geoShown.frequentLocations);
         const homeEntry = Object.entries(homeWork).find(([, v]) => v.type === 'home');
         if (homeEntry) {
-            items.push({ icon: 'bi-house-door-fill', text: `Likely home: ${homeEntry[0]}` });
+            items.push({ icon: 'bi-house-door-fill', text: `Likely home: ${homeEntry[0]}${suffix}` });
         } else {
-            const top = patternOfLifeGeoActivityData.frequent_locations[0];
+            const top = geoShown.frequentLocations[0];
             // No wrapping parens here - _formatVisitCount() already supplies its
             // own for the recording count, and nesting them read badly.
-            items.push({ icon: 'bi-geo-alt-fill', text: `Most visited location: ${top.lat.toFixed(3)}, ${top.lon.toFixed(3)} - ${_formatVisitCount(top)}` });
+            items.push({ icon: 'bi-geo-alt-fill', text: `Most visited location: ${top.lat.toFixed(3)}, ${top.lon.toFixed(3)} - ${_formatVisitCount(top)}${suffix}` });
         }
     }
 
@@ -12631,6 +12645,7 @@ function updatePatternOfLifeHighlights() {
 // disposing of the prior map instance first, the identical pattern
 // renderRelationshipGraph() already uses for its own vis-network instance.
 let patternOfLifeGeoMapInstance = null;
+let patternOfLifeGeoDisplayed = null;      // {points, frequentLocations, isFiltered} - what Location Activity is showing right now
 let patternOfLifeGeoActivityData = null;   // the one geo_activity response both the map and the contact<->location cross-linking below read from
 const LOCATION_CONTACT_LINK_WINDOW_SECONDS = 7200; // 2 hours - a disclosed, deliberately generous "around the same time" heuristic, never a verified link (see _pointsNearTimestamp()'s own comment)
 
@@ -12653,7 +12668,21 @@ const GEO_HOME_WORK_OVERNIGHT_START_HOUR = 22;  // 10pm
 const GEO_HOME_WORK_OVERNIGHT_END_HOUR = 6;     // 6am (exclusive)
 const GEO_HOME_WORK_WORKDAY_START_HOUR = 9;
 const GEO_HOME_WORK_WORKDAY_END_HOUR = 17;
-const GEO_HOME_WORK_MIN_VISITS = 2;  // never assert Home/Work from a single data point
+// Counted in DISTINCT DAYS, not raw GPS samples (2026-09-15).
+//
+// This used to count one entry per POINT, so "2 visits" was satisfied by two
+// fixes 45 seconds apart. A device that spent ONE night at a motel, logged
+// continuously, became the unique overnight maximum and got a green "Likely
+// Home" circle drawn on it - with a tooltip reading "2 of 2 timestamped
+// visit(s) (100%)". The constant's own comment promised never to assert
+// Home/Work from a single data point, and that is exactly what happened,
+// because a continuous track is many samples of one occasion.
+//
+// Home is a place you return to on different nights; Work is a place you
+// return to on different weekdays. Requiring separate calendar days is the
+// smallest rule that actually expresses that, and it is the same
+// sample-vs-occasion distinction already corrected in the visit counting.
+const GEO_HOME_WORK_MIN_DAYS = 2;
 
 function _geoLocationKey(lat, lon) {
     return `${lat.toFixed(3)},${lon.toFixed(3)}`;
@@ -12671,14 +12700,33 @@ function classifyHomeWorkLocations(points, frequentLocations) {
     (frequentLocations || []).forEach((loc) => {
         const key = _geoLocationKey(loc.lat, loc.lon);
         const dates = byKey[key] || [];
-        let overnight = 0, weekdayDaytime = 0;
+        // Distinct occasions, plus the raw sample counts for disclosure.
+        const overnightNights = new Set();
+        const weekdayDays = new Set();
+        let overnightSamples = 0, weekdaySamples = 0;
         dates.forEach((d) => {
             const hour = d.getHours();
             const day = d.getDay();  // 0=Sun..6=Sat
-            if (hour >= GEO_HOME_WORK_OVERNIGHT_START_HOUR || hour < GEO_HOME_WORK_OVERNIGHT_END_HOUR) overnight++;
-            if (day >= 1 && day <= 5 && hour >= GEO_HOME_WORK_WORKDAY_START_HOUR && hour < GEO_HOME_WORK_WORKDAY_END_HOUR) weekdayDaytime++;
+            if (hour >= GEO_HOME_WORK_OVERNIGHT_START_HOUR || hour < GEO_HOME_WORK_OVERNIGHT_END_HOUR) {
+                overnightSamples++;
+                // A 01:00 fix belongs to the PREVIOUS calendar day's night -
+                // otherwise one continuous night either side of midnight
+                // counts as two, which is the same over-counting in a
+                // different form.
+                const night = new Date(d.getTime());
+                if (hour < GEO_HOME_WORK_OVERNIGHT_END_HOUR) night.setDate(night.getDate() - 1);
+                overnightNights.add(`${night.getFullYear()}-${night.getMonth()}-${night.getDate()}`);
+            }
+            if (day >= 1 && day <= 5 && hour >= GEO_HOME_WORK_WORKDAY_START_HOUR && hour < GEO_HOME_WORK_WORKDAY_END_HOUR) {
+                weekdaySamples++;
+                weekdayDays.add(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`);
+            }
         });
-        stats[key] = { timestamped: dates.length, overnight, weekdayDaytime };
+        stats[key] = {
+            timestamped: dates.length,
+            overnight: overnightNights.size, weekdayDaytime: weekdayDays.size,
+            overnightSamples, weekdaySamples,
+        };
     });
 
     // Home: the single cluster with the most overnight visits, requiring
@@ -12686,7 +12734,7 @@ function classifyHomeWorkLocations(points, frequentLocations) {
     // never guessed when the signal is ambiguous.
     let homeKey = null, homeBest = 0, homeTie = false;
     Object.entries(stats).forEach(([key, s]) => {
-        if (s.overnight < GEO_HOME_WORK_MIN_VISITS) return;
+        if (s.overnight < GEO_HOME_WORK_MIN_DAYS) return;
         if (s.overnight > homeBest) { homeKey = key; homeBest = s.overnight; homeTie = false; }
         else if (s.overnight === homeBest) { homeTie = true; }
     });
@@ -12696,25 +12744,35 @@ function classifyHomeWorkLocations(points, frequentLocations) {
     // clusters (a location can't be both).
     let workKey = null, workBest = 0, workTie = false;
     Object.entries(stats).forEach(([key, s]) => {
-        if (key === homeKey || s.weekdayDaytime < GEO_HOME_WORK_MIN_VISITS) return;
+        if (key === homeKey || s.weekdayDaytime < GEO_HOME_WORK_MIN_DAYS) return;
         if (s.weekdayDaytime > workBest) { workKey = key; workBest = s.weekdayDaytime; workTie = false; }
         else if (s.weekdayDaytime === workBest) { workTie = true; }
     });
     if (workTie) workKey = null;
 
+    // Says what was actually counted. The old wording called a raw GPS sample
+    // count "timestamped visit(s)" - the same sample-vs-occasion conflation
+    // corrected in the visit counting, and the reason a single logged night
+    // could read as a 100% confident Home.
     const result = {};
     if (homeKey) {
-        const pct = Math.round((homeBest / stats[homeKey].timestamped) * 100);
+        const s = stats[homeKey];
         result[homeKey] = {
             type: 'home', label: 'Likely Home',
-            detail: `${homeBest} of ${stats[homeKey].timestamped} timestamped visit(s) (${pct}%) occurred between 10 PM and 6 AM, local time to this browser.`,
+            detail: `Recorded here overnight (10 PM - 6 AM) on ${homeBest} separate night(s), `
+                + `from ${s.overnightSamples.toLocaleString()} position recording(s) out of `
+                + `${s.timestamped.toLocaleString()} timestamped here in total. Hours are local to this `
+                + `browser, not to the device.`,
         };
     }
     if (workKey) {
-        const pct = Math.round((workBest / stats[workKey].timestamped) * 100);
+        const s = stats[workKey];
         result[workKey] = {
             type: 'work', label: 'Likely Work',
-            detail: `${workBest} of ${stats[workKey].timestamped} timestamped visit(s) (${pct}%) occurred on a weekday between 9 AM and 5 PM, local time to this browser.`,
+            detail: `Recorded here on ${workBest} separate weekday(s) between 9 AM and 5 PM, `
+                + `from ${s.weekdaySamples.toLocaleString()} position recording(s) out of `
+                + `${s.timestamped.toLocaleString()} timestamped here in total. Hours are local to this `
+                + `browser, not to the device.`,
         };
     }
     return result;
@@ -12911,6 +12969,14 @@ function _recomputeAndRenderGeoActivity() {
         })
         : allData.points;
     const frequentLocations = _clusterGeoPoints(points);
+    // What the Location Activity section is CURRENTLY showing, so the
+    // Highlights chips at the top of the pane describe the same thing the
+    // table underneath them does (2026-09-15). The chips used to always read
+    // the unfiltered cached response, so narrowing to the week of an offence
+    // could put "Likely home: <the motel>" in the table and "Likely home:
+    // <the residence>" in the chip strip on the same screen, with nothing to
+    // say one of them was unfiltered.
+    patternOfLifeGeoDisplayed = { points, frequentLocations, isFiltered };
 
     if (points.length === 0) {
         if (summaryEl) summaryEl.textContent = isFiltered
@@ -13058,6 +13124,10 @@ function _recomputeAndRenderGeoActivity() {
         wrapper.appendChild(table);
         listEl.appendChild(wrapper);
     }
+    // The chips read patternOfLifeGeoDisplayed, set above - without this call
+    // they kept describing the unfiltered data while the table below showed a
+    // narrowed window.
+    updatePatternOfLifeHighlights();
 }
 
 // Location<->Contact cross-linking (2026-09-08) - "click a contact, see

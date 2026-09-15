@@ -1526,20 +1526,37 @@ def _draw_pdf_header(c, header, title="Case Information"):
     c.drawString(50, y, title)
     y -= 20
     c.setFont("Helvetica", 10)
-    c.drawString(50, y, f"Case Number: {header['case_number']}")
-    c.drawString(300, y, f"Examiner: {header['examiner']}")
+    # Case Number and Examiner share a line, so a long case number used to run
+    # straight over the Examiner label at x=300 - and derive_examiner_display()
+    # joins ALL examiners with ", ", so a three-examiner case then overran the
+    # right edge as well. Both are trimmed to what their half of the line can
+    # actually hold, with _pdf_cell marking the cut (2026-09-15).
+    c.drawString(50, y, f"Case Number: {_pdf_cell(header['case_number'], 30)}")
+    c.drawString(300, y, f"Examiner: {_pdf_cell(header['examiner'], 32)}")
     y -= 20
-    c.drawString(50, y, f"Created: {header['created_at']}")
-    c.drawString(300, y, f"Status: {header.get('case_status', 'Open')}")
+    c.drawString(50, y, f"Created: {_pdf_cell(header['created_at'], 30)}")
+    c.drawString(300, y, f"Status: {_pdf_cell(header.get('case_status', 'Open'), 32)}")
     y -= 20
-    c.drawString(50, y, f"Notes: {header['notes'] or 'None'}")
-    y -= 20
+    # Notes is a <textarea> at case creation, so it is genuinely multi-line
+    # free text. A bare drawString emitted it as ONE line: embedded newlines
+    # vanished and everything past the right margin was clipped with no
+    # ellipsis, silently reducing a two-sentence intake note to its first ~85
+    # characters in every PDF export. _draw_pdf_wrapped_text exists for exactly
+    # this and was simply not used here.
+    c.drawString(50, y, "Notes:")
+    y -= 14
+    # _draw_pdf_wrapped_text already splits lines and paginates; it also leaves
+    # its own font set, so restore 10pt Helvetica for the fields below.
+    y = _draw_pdf_wrapped_text(c, y, str(header['notes'] or 'None'),
+                               x=60, width_chars=105, font="Helvetica", size=10)
+    y -= 6
+    c.setFont("Helvetica", 10)
     for field in header.get('custom_fields', []):
         if y < 60:
             c.showPage()
             c.setFont("Helvetica", 10)
             y = 750
-        c.drawString(50, y, f"{field['label']}: {field['value']}"[:110])
+        c.drawString(50, y, _pdf_cell(f"{field['label']}: {field['value']}", 110))
         y -= 15
     y -= 15
     return y
@@ -4108,8 +4125,19 @@ def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: C
         c.setFillColorRGB(0, 0, 0)
         y -= 14
     else:
-        loc_headers = ["Latitude", "Longitude", "Visits", "First Seen", "Last Seen"]
-        loc_xpos = [50, 130, 210, 260, 400]
+        # Visits moved OUT of the column grid onto its own line beneath each
+        # row (2026-09-15). _format_location_visits() now returns strings like
+        # "3 visits, 89 min (2,252 recordings)" - roughly 140pt at this font -
+        # into a 50pt column, drawing straight over the First Seen timestamp
+        # and into Last Seen. The overlapping glyphs could be misread as a
+        # different date, and the HTML counterpart (a real <table>) did not
+        # have the problem, so screen and PDF disagreed.
+        #
+        # Coordinates print at 3 decimals, not 5: these are grid-cell labels
+        # rounded to GEO_ACTIVITY_CLUSTER_PRECISION (~111m), and showing five
+        # implied roughly metre precision the value does not have.
+        loc_headers = ["Latitude", "Longitude", "First Seen", "Last Seen"]
+        loc_xpos = [50, 130, 220, 370]
 
         def _draw_loc_header_row(y):
             c.setFont("Helvetica-Bold", 8)
@@ -4123,19 +4151,31 @@ def _draw_pdf_pattern_of_life_block(c, y, case_folder, title="Pattern of Life: C
 
         y = _draw_loc_header_row(y)
         for loc in frequent_locations:
-            if y < 60:
+            if y < 70:
                 c.showPage()
                 y = 750
                 y = _draw_loc_header_row(y)
             row = [
-                f"{loc['lat']:.5f}", f"{loc['lon']:.5f}", _format_location_visits(loc),
+                f"{loc['lat']:.3f}", f"{loc['lon']:.3f}",
                 format_epoch(loc.get('first_seen')) or 'N/A',
                 format_epoch(loc.get('last_seen')) or 'N/A',
             ]
             for val, x in zip(row, loc_xpos):
                 c.drawString(x, y, val)
+            y -= 10
+            c.setFont("Helvetica", 7)
+            c.setFillColorRGB(0.35, 0.35, 0.35)
+            c.drawString(60, y, _format_location_visits(loc))
+            c.setFillColorRGB(0, 0, 0)
+            c.setFont("Helvetica", 7.5)
             y -= 11
         y -= 6
+        c.setFont("Helvetica-Oblique", 7)
+        c.setFillColorRGB(0.4, 0.4, 0.4)
+        c.drawString(50, y, "Coordinates are the centre of a ~111m grid cell, not a measured position. "
+                            "Times are this station's local time.")
+        c.setFillColorRGB(0, 0, 0)
+        y -= 12
 
     y -= 12
     return y
