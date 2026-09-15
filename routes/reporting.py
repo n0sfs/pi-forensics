@@ -2417,10 +2417,22 @@ def _verify_recompute_hashes(file_path, algos, chunk_size=8 * 1024 * 1024):
     compute_file_hashes() - no route module in this app imports from
     another (confirmed before writing this), so a small self-contained
     helper here is lower-risk than introducing the first cross-blueprint
-    dependency for one caller."""
+    dependency for one caller.
+
+    Returns None when the file could not be READ (2026-09-14), as distinct
+    from {} for "no usable algorithms". The caller previously could not tell
+    those apart and treated any empty result as a hash MISMATCH - so a
+    permission error, a bad sector, or an NFS drop mid-read was reported as
+    "HASH MISMATCH" in the exported report AND written to the chain of custody
+    as evidence_verification_mismatch. That is an accusation that evidence was
+    altered, raised by a file this app merely failed to open. Unreadable and
+    altered are completely different findings and must never be conflated.
+    """
     hashers = {a: hashlib.new(a) for a in algos if a in ALLOWED_HASH_ALGOS}
-    if not hashers or not os.path.exists(file_path):
+    if not hashers:
         return {}
+    if not os.path.exists(file_path):
+        return None
     try:
         with open(file_path, 'rb') as f:
             while True:
@@ -2431,7 +2443,7 @@ def _verify_recompute_hashes(file_path, algos, chunk_size=8 * 1024 * 1024):
                     h.update(chunk)
         return {a: h.hexdigest() for a, h in hashers.items()}
     except Exception:
-        return {}
+        return None
 
 def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=None, requester_user=None):
     """Background job: re-hashes every completed acquisition's own output
@@ -2507,8 +2519,15 @@ def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=No
             else:
                 algos = [a for a in recorded_hashes if a in ALLOWED_HASH_ALGOS]
                 current_hashes = _verify_recompute_hashes(image_path, algos)
-                is_match = bool(current_hashes) and all(current_hashes.get(a) == recorded_hashes.get(a) for a in algos)
-                status = "match" if is_match else "mismatch"
+                if current_hashes is None:
+                    # Could not read it. NOT a mismatch - see
+                    # _verify_recompute_hashes()'s own note.
+                    status, current_hashes = "read_error", {}
+                    append_log(f"[!] {evidence_id}: could not READ {image_path} to verify it (permissions, bad sector, or the share dropped) - this is NOT a mismatch.")
+                else:
+                    is_match = bool(current_hashes) and all(
+                        current_hashes.get(a) == recorded_hashes.get(a) for a in algos)
+                    status = "match" if is_match else "mismatch"
                 results.append({"event_id": event_id, "evidence_id": evidence_id, "status": status,
                                  "current_hashes": current_hashes})
                 if status == "mismatch":
@@ -2526,12 +2545,37 @@ def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=No
 
         # Merge-only final write - see rule 3 in the docstring above.
         fresh = _read_case_file(case_file)
+        run_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        was_stopped = snapshot_job()["status"] == "Stopped"
+        for r in results:
+            r["verified_at"] = run_at
+
+        # Carry forward any earlier result for an event THIS run did not
+        # reach (2026-09-14). This used to replace last_verification
+        # wholesale, so stopping a run part-way erased every result after
+        # the stop point - including a recorded MISMATCH, which then fell
+        # back to an amber "Not Yet Re-Verified". A detected mismatch
+        # silently downgrading itself because someone cancelled a later
+        # run is exactly the kind of quiet loss this tool must not do.
+        # Each result carries its own verified_at so a carried-forward
+        # finding is never mistaken for a fresh one.
+        checked_ids = {r.get("event_id") for r in results}
+        prior = (fresh.get('last_verification') or {})
+        carried = [r for r in (prior.get('results') or [])
+                   if r.get('event_id') not in checked_ids]
+        for r in carried:
+            r.setdefault("verified_at", prior.get("timestamp"))
+
         fresh['last_verification'] = {
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "results": results,
+            "timestamp": run_at,
+            "run_completed": not was_stopped,
+            "results": results + carried,
             "skipped": skipped,
         }
         _write_case_file(case_file, fresh)
+        if carried:
+            append_log(f"[i] Kept {len(carried)} earlier result(s) for evidence this run did "
+                       f"not re-check - each is dated by when it was actually verified.")
 
         if snapshot_job()["status"] != "Stopped":
             update_job(status="Completed Successfully", progress_percent=100.0)
@@ -2934,6 +2978,13 @@ _HASH_STATUS_META = {
         "pdf_label": "FILE MISSING", "pdf_color": (0.75, 0.0, 0.05),
         "html_label": "File Missing", "html_class": "hash-mismatch",
     },
+    # Read failure is amber, deliberately NOT the red of a mismatch: the
+    # file could not be opened, which says nothing about whether its
+    # contents changed. Colouring it like tampering is what this fixes.
+    "read_error": {
+        "pdf_label": "COULD NOT READ", "pdf_color": (0.6, 0.42, 0.0),
+        "html_label": "Could Not Read", "html_class": "hash-warn",
+    },
     "unverifiable": {
         "pdf_label": "UNVERIFIABLE", "pdf_color": (0.4, 0.4, 0.4),
         "html_label": "Unverifiable", "html_class": "hash-muted",
@@ -3139,12 +3190,72 @@ def _draw_pdf_attachments(c, y, urls, files, title="Exhibits", captions=None, ta
 # Shared by the DFIR and Police report templates below - not used by the
 # Standard template, which keeps its existing journal-style Case Notes
 # rendering (_draw_pdf_case_notes above) instead of a table.
-_METHODOLOGY_STATIC_TEXT = (
-    "This examination followed a standard write-blocked digital forensic acquisition and analysis "
-    "workflow: source media was write-protected before connection, imaged using a forensically "
-    "sound bit-for-bit acquisition tool with on-the-fly or post-acquisition cryptographic hashing, "
-    "and the resulting image verified against its recorded hash before analysis began."
+# The Methodology paragraph is now DERIVED from the case (2026-09-14). It used
+# to be this fixed sentence, printed unconditionally in every DFIR, Police and
+# CASE/UCO export:
+#
+#   "source media was write-protected before connection, imaged using a
+#    forensically sound bit-for-bit acquisition tool with on-the-fly or
+#    post-acquisition cryptographic hashing, and the resulting image verified
+#    against its recorded hash before analysis began."
+#
+# None of it was checked against the case. An examiner could image a drive with
+# the write-block toggle off, using a tool run that recorded no hashes, never
+# run Verify All - and the report they SIGN still affirmed all three. That is
+# the most serious failure mode this tool has: a signed document asserting
+# something the evidence does not support.
+#
+# What the app genuinely knows is per-event: whether acquisition hashes were
+# recorded, and what the last verification run concluded. What it does NOT know
+# is whether the source was write-protected at the moment it was connected -
+# nothing records that per acquisition (the station's udev rule forces new block
+# devices read-only by default, and Drive Management can legitimately unlock
+# one, but neither fact is written to the event). So that claim is not made at
+# all; the paragraph says plainly that it is outside what the record shows.
+_METHODOLOGY_HASHING_PREAMBLE = (
+    "This examination followed a bit-for-bit forensic acquisition and analysis workflow. "
+    "The statements below are derived from this case's own acquisition record, not asserted "
+    "as boilerplate."
 )
+_METHODOLOGY_WRITE_BLOCK_DISCLOSURE = (
+    "Write-protection of the source media at the moment of connection is not recorded per "
+    "acquisition by this application and is therefore neither asserted nor denied here. This "
+    "station applies a udev rule that forces newly connected block devices read-only by default, "
+    "and its Drive Management screen can deliberately unlock a device for writing; whether that "
+    "occurred for any given item above is outside what this record can show."
+)
+
+
+def _build_methodology_text(events):
+    """Builds the Methodology paragraph from what the case actually records.
+
+    Returns a list of paragraphs. Counts COMPLETED acquisitions only - a failed
+    or stopped job did not produce an image to hash or verify - and reports
+    hashing and verification separately, because recording a hash at
+    acquisition and later re-verifying against it are two different assurances
+    and conflating them is what the old fixed text did."""
+    completed = [e for e in (events or []) if e.get('acquisition_status') == 'COMPLETED']
+    total = len(completed)
+    hashed = sum(1 for e in completed if e.get('computed_verification_hashes'))
+
+    if total == 0:
+        return [_METHODOLOGY_HASHING_PREAMBLE,
+                "This case contains no completed acquisitions, so no acquisition or verification "
+                "statements can be made.",
+                _METHODOLOGY_WRITE_BLOCK_DISCLOSURE]
+
+    if hashed == total:
+        hashing = (f"All {total} completed acquisition(s) recorded cryptographic hashes at "
+                   f"acquisition time.")
+    elif hashed == 0:
+        hashing = (f"None of the {total} completed acquisition(s) recorded cryptographic hashes at "
+                   f"acquisition time, so no image in this case can be verified against an "
+                   f"acquisition-time hash.")
+    else:
+        hashing = (f"{hashed} of {total} completed acquisition(s) recorded cryptographic hashes at "
+                   f"acquisition time; the remaining {total - hashed} did not, and cannot be "
+                   f"verified against an acquisition-time hash.")
+    return [_METHODOLOGY_HASHING_PREAMBLE, hashing, _METHODOLOGY_WRITE_BLOCK_DISCLOSURE]
 _SIGNOFF_STATIC_TEXT = (
     "I hereby affirm that the forensic examination detailed in this report was conducted in "
     "accordance with established procedures and forensic standards. The findings presented above "
@@ -3358,7 +3469,9 @@ def _draw_pdf_methodology_tools(c, y, events):
     c.drawString(50, y, "Forensic Methodology & Tools")
     y -= 18
     c.setFont("Helvetica", 9.5)
-    y = _draw_pdf_wrapped_text(c, y, _METHODOLOGY_STATIC_TEXT, width_chars=95)
+    for _para in _build_methodology_text(events):
+        y = _draw_pdf_wrapped_text(c, y, _para, width_chars=95)
+        y -= 6
     y -= 10
 
     tools = sorted({str(e.get('tool')).upper() for e in events if e.get('tool')})
@@ -4869,8 +4982,8 @@ def _html_methodology_tools(events, anchor_id=None):
     tools_str = ', '.join(tools) if tools else 'No acquisition/recovery tool recorded.'
     return (
         f'<h2{id_attr}>Forensic Methodology &amp; Tools</h2>'
-        f'<p>{esc(_METHODOLOGY_STATIC_TEXT)}</p>'
-        f'<p><strong>Tools Used in This Case:</strong> {esc(tools_str)}</p>'
+        + ''.join(f'<p>{esc(_p)}</p>' for _p in _build_methodology_text(events))
+        + f'<p><strong>Tools Used in This Case:</strong> {esc(tools_str)}</p>'
     )
 
 def _html_signoff(examiner, anchor_id=None):

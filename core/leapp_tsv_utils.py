@@ -329,13 +329,29 @@ def _parse_leapp_datetime_str(value):
     module docstring's TIMESTAMP PARSING section for exactly how this
     format was confirmed (real source, not guessed). Returns a Unix epoch
     float, or None for an empty/absent/unparseable value - never a
-    fabricated timestamp."""
+    fabricated timestamp.
+
+    A value carrying no UTC offset is REJECTED rather than assumed
+    (2026-09-14). datetime.fromisoformat() happily parses a naive
+    "2026-02-21 16:16:31", and .timestamp() then interprets it in the
+    SERVER's local zone - measured on the real station (EDT) that is a
+    silent 5-hour error, presented in the Evidence Timeline as a genuine
+    event time. The curated columns were all confirmed tz-aware against
+    ALEAPP's own source, so this only ever bites the uncurated fallback
+    path, which accepts any column whose values merely parse. Since this
+    module cannot know what zone a naive value was recorded in, guessing
+    UTC would be just as wrong as guessing local - so nothing is claimed,
+    matching how every other unparseable value here is treated.
+    """
     if not value or not value.strip():
         return None
     try:
-        return datetime.datetime.fromisoformat(value.strip()).timestamp()
+        parsed = datetime.datetime.fromisoformat(value.strip())
     except (ValueError, TypeError):
         return None
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        return None
+    return parsed.timestamp()
 
 
 def _parse_one_tsv(path, tool_key):

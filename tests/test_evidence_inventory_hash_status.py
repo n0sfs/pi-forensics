@@ -31,6 +31,7 @@ from werkzeug.security import generate_password_hash
 
 import core.config as config
 from routes.reporting import reporting_bp
+import routes.reporting as reporting
 from tests.conftest import RemoteTestClient, login_user_session
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
@@ -254,3 +255,69 @@ def test_dfir_template_export_still_succeeds_unaffected(client, evidence_root):
     assert "<html>" in html_out
     assert "Hash Verified" not in html_out
     assert "No Hash Recorded" not in html_out
+
+
+# --- 2026-09-14 review-pass fixes. All three are evidence-integrity defects:
+# each caused the tool to STATE something the evidence did not support. ---
+def test_unreadable_file_is_not_reported_as_a_hash_mismatch(tmp_path, monkeypatch):
+    """A permission error, bad sector or dropped share made
+    _verify_recompute_hashes() return {}, which the caller read as "hashes
+    differ" - so an unreadable file was reported as HASH MISMATCH in the
+    report AND written to the chain of custody as evidence_verification_
+    mismatch. That is an accusation of tampering raised by a failed open."""
+    target = tmp_path / "image.dd"
+    target.write_bytes(b"content")
+
+    def boom(*a, **k):
+        raise PermissionError("EACCES")
+    monkeypatch.setattr("builtins.open", boom)
+    assert reporting._verify_recompute_hashes(str(target), ["sha256"]) is None
+
+
+def test_missing_file_is_distinguishable_from_no_usable_algorithms(tmp_path):
+    # None means "could not read it"; {} means "nothing to hash with". The
+    # caller has to tell these apart to avoid the bug above.
+    assert reporting._verify_recompute_hashes(str(tmp_path / "nope.dd"), ["sha256"]) is None
+    real = tmp_path / "real.dd"
+    real.write_bytes(b"x")
+    assert reporting._verify_recompute_hashes(str(real), ["not_a_real_algo"]) == {}
+
+
+def test_read_error_has_its_own_label_and_is_not_coloured_as_tampering():
+    meta = reporting._HASH_STATUS_META["read_error"]
+    assert meta["pdf_label"] == "COULD NOT READ"
+    assert meta["html_label"] == "Could Not Read"
+    # Amber like a warning, never the red used for a real mismatch.
+    assert meta["html_class"] != reporting._HASH_STATUS_META["mismatch"]["html_class"]
+    assert meta["pdf_color"] != reporting._HASH_STATUS_META["mismatch"]["pdf_color"]
+
+
+def test_methodology_text_is_derived_from_the_case_not_asserted():
+    """The old fixed paragraph affirmed, in every signed export, that source
+    media was write-protected and that images were verified against their
+    hashes - none of it checked. Write-protection at connection time is not
+    recorded per acquisition at all, so it must not be claimed."""
+    none_hashed = reporting._build_methodology_text([
+        {"acquisition_status": "COMPLETED", "computed_verification_hashes": {}},
+        {"acquisition_status": "COMPLETED", "computed_verification_hashes": {}},
+    ])
+    joined = " ".join(none_hashed)
+    assert "None of the 2" in joined
+    assert "write-protected before connection" not in joined
+    assert "neither asserted nor denied" in joined
+
+    all_hashed = " ".join(reporting._build_methodology_text([
+        {"acquisition_status": "COMPLETED", "computed_verification_hashes": {"sha256": "a"}},
+    ]))
+    assert "All 1 completed acquisition(s)" in all_hashed
+
+    partial = " ".join(reporting._build_methodology_text([
+        {"acquisition_status": "COMPLETED", "computed_verification_hashes": {"sha256": "a"}},
+        {"acquisition_status": "COMPLETED", "computed_verification_hashes": {}},
+    ]))
+    assert "1 of 2" in partial
+
+    # A FAILED job produced no image, so it must not be counted either way.
+    assert "no completed acquisitions" in " ".join(reporting._build_methodology_text([
+        {"acquisition_status": "FAILED", "computed_verification_hashes": {}},
+    ])).lower()

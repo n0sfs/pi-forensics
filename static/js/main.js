@@ -14937,6 +14937,9 @@ async function loadAnalysisCoverage() {
             mismatch: ['bg-danger', 'HASH MISMATCH'],
             unverifiable: ['bg-secondary', 'Unverifiable'],
             missing_file: ['bg-danger', 'File Missing'],
+            // Amber, not red - unreadable says nothing about whether the
+            // contents changed, and must not read as tampering.
+            read_error: ['bg-warning text-dark', 'Could Not Read'],
             not_yet_reverified: ['bg-warning text-dark', 'Not Yet Re-Verified'],
             no_hash_recorded: ['bg-secondary', 'No Hash Recorded'],
         };
@@ -15327,9 +15330,15 @@ function renderVerifyAllEvidenceLastResult() {
     const mismatches = results.filter((r) => r.status === 'mismatch').length;
     const matches = results.filter((r) => r.status === 'match').length;
     const unverifiable = results.filter((r) => r.status === 'unverifiable' || r.status === 'missing_file').length;
+    // Counted and stated separately from both match and mismatch: a file this
+    // app could not read is not evidence of alteration, and folding it into
+    // either number would misrepresent the verification run.
+    const unreadable = results.filter((r) => r.status === 'read_error').length;
     el.className = mismatches > 0 ? 'small mt-2 text-danger fw-bold' : 'small mt-2 text-subtle';
     el.textContent = `Last verified ${lv.timestamp || '--'}: ${matches} match(es), ${mismatches} mismatch(es), `
-        + `${unverifiable} unverifiable, ${skipped.length} not checkable by this tool.`; // static/derived text only
+        + `${unverifiable} unverifiable, `
+        + (unreadable ? `${unreadable} could not be read, ` : '')
+        + `${skipped.length} not checkable by this tool.`; // static/derived text only
 }
 
 async function startCaseBundleExport() {
