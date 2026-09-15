@@ -12761,7 +12761,7 @@ function updatePatternOfLifeHighlights() {
             // identical. Name every tied hour instead (2026-09-15).
             const peakHours = [];
             hourCounts.forEach((c, h) => { if (c === maxCount) peakHours.push(h); });
-            const labelFor = (h) => { const d = new Date(); d.setHours(h, 0, 0, 0); return d.toLocaleTimeString(undefined, { hour: 'numeric' }); };
+            const labelFor = (h) => _hourBucketLabel(h);   // DST-safe - see _hourBucketLabel()
             const labels = peakHours.map(labelFor).join(' and ');
             const total = patternOfLifeActivityRows.length;
             items.push({ icon: 'bi-clock-fill',
@@ -13769,10 +13769,26 @@ const PATTERN_OF_LIFE_DOW_LABELS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fr
 // Same locale-hour-label formatting the 1D "By Hour" chart already uses,
 // just computed once here since the heatmap needs it per-column rather
 // than per-render (24 real DOM header cells, not Chart.js tick labels).
-const PATTERN_OF_LIFE_HEATMAP_HOUR_LABELS = Array.from({ length: 24 }, (_, h) => {
-    const d = new Date(); d.setHours(h, 0, 0, 0);
-    return d.toLocaleTimeString(undefined, { hour: 'numeric' });
-});
+// A locale-appropriate label for hour bucket 0-23, built WITHOUT touching
+// local DST rules (2026-09-15).
+//
+// Every one of these labels used to be built as `new Date(); d.setHours(h)` -
+// i.e. hour h on TODAY'S date. On a spring-forward date that is wrong:
+// measured live in America/New_York on 8 March 2026, setHours(2) rolls
+// straight to 03:00, so the 24 buckets came out labelled
+// "12 AM, 1 AM, 3 AM, 3 AM, 4 AM, ..." - TWO "3 AM" columns, no "2 AM", and
+// only 23 distinct labels for 24 buckets. Bucket index 2 was captioned with
+// the wrong hour, on a chart whose entire purpose is reading activity by hour.
+//
+// Formatting a UTC instant in UTC removes local transition rules from the
+// question entirely, while toLocaleTimeString still gives the viewer's own
+// 12/24-hour convention.
+function _hourBucketLabel(hour) {
+    return new Date(Date.UTC(2001, 0, 1, hour))
+        .toLocaleTimeString(undefined, { hour: 'numeric', timeZone: 'UTC' });
+}
+
+const PATTERN_OF_LIFE_HEATMAP_HOUR_LABELS = Array.from({ length: 24 }, (_, h) => _hourBucketLabel(h));
 // [day][hour] -> the exact event rows in that cell, filled in by
 // renderPatternOfLifeActivityHeatmap() on every render - what a cell's own
 // click handler reads, mirroring patternOfLifeActivityBucketRows' identical
@@ -13793,12 +13809,23 @@ function _patternOfLifeHeatmapCellColor(intensity) {
 function renderPatternOfLifeActivityHeatmap(rows, container) {
     const counts = Array.from({ length: 7 }, () => new Array(24).fill(0));
     patternOfLifeHeatmapBucketRows = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => []));
+    // Distinct calendar days per weekday, for the same reason By Day of Week
+    // needs them (2026-09-15): a range covering eight days holds two Mondays
+    // and one of every other weekday, so Monday's whole ROW is twice as dark
+    // at an identical underlying rate. The button's own tooltip sells this
+    // view as showing "active every Tuesday night", which is exactly the
+    // conclusion the distortion manufactures.
+    const dayCoverage = Array.from({ length: 7 }, () => new Set());
     rows.forEach((e) => {
         const d = new Date(e.timestamp * 1000);
         const day = d.getDay(), hour = d.getHours();
         counts[day][hour] += 1;
         patternOfLifeHeatmapBucketRows[day][hour].push(e);
+        dayCoverage[day].add(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`);
     });
+    const coverage = dayCoverage.map((s) => s.size);
+    const present = coverage.filter((n) => n > 0);
+    const unevenCoverage = present.length > 1 && Math.min(...present) !== Math.max(...present);
     const maxCount = Math.max(...counts.flat(), 1);
 
     container.innerHTML = '';
@@ -13833,7 +13860,12 @@ function renderPatternOfLifeActivityHeatmap(rows, container) {
             const td = document.createElement('td');
             td.style.cssText = `background-color:${_patternOfLifeHeatmapCellColor(count / maxCount)}; `
                 + `border:1px solid #090b10; cursor:${count ? 'pointer' : 'default'};`;
+            // The per-day average is the comparable figure when coverage is
+            // uneven; the raw count is what the colour encodes.
+            const days = coverage[day] || 0;
             td.title = `${PATTERN_OF_LIFE_DOW_LABELS[day]}, ${PATTERN_OF_LIFE_HEATMAP_HOUR_LABELS[hour]}: ${count} event(s)`
+                + (days ? ` across ${days} ${PATTERN_OF_LIFE_DOW_LABELS[day]}${days === 1 ? '' : 's'}`
+                          + ` (about ${(count / days).toFixed(1)} per day)` : '')
                 + (count ? ' - click for detail' : '');
             if (count) {
                 td.onclick = () => showPatternOfLifeActivityBarPopup(
@@ -13847,6 +13879,16 @@ function renderPatternOfLifeActivityHeatmap(rows, container) {
     });
     table.appendChild(tbody);
     container.appendChild(table);
+    if (unevenCoverage) {
+        // The same warning By Day of Week shows, in the heatmap's own
+        // container - this view has no chart element to hang a banner on.
+        const note = document.createElement('div');
+        note.className = 'small text-warning mt-1';
+        note.textContent = 'Uneven coverage: this range does not contain the same number of each weekday, '
+            + 'so rows are not directly comparable - a darker row can simply mean more of that weekday '
+            + 'fell inside the range. Hover a cell for its per-day average, which is comparable.';
+        container.appendChild(note);
+    }
 }
 
 function renderPatternOfLifeActivityChart() {
@@ -13941,8 +13983,7 @@ function renderPatternOfLifeActivityChart() {
             ? dowDays.map((s) => s.size) : null;
         labels = patternOfLifeActivityGranularity === 'dow' ? PATTERN_OF_LIFE_DOW_LABELS
             : counts.map((_, h) => {
-                const d = new Date(); d.setHours(h, 0, 0, 0);
-                return d.toLocaleTimeString(undefined, { hour: 'numeric' });
+                return _hourBucketLabel(h);   // DST-safe - see _hourBucketLabel()
             });
     }
     _renderPatternOfLifeDowCoverageNote();
