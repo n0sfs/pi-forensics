@@ -114,13 +114,15 @@ def test_html_export_shows_frequent_location_cluster(client, evidence_root):
          "timestamp": 1786784200.0, "extra": {"lat": 37.774901, "lon": -122.419399}},
     ])
     html_out = _export_preview(client, case_file)
-    # GEO_ACTIVITY_CLUSTER_PRECISION=3 rounds the cluster's own lat/lon KEY
-    # to 3 decimal places (37.7749 -> 37.775) before the drawing function's
-    # :.5f formatting adds the trailing zeros back - the exact same
-    # rounded-then-reformatted value the interactive Location Activity map
-    # itself would show for this same cluster.
-    assert "37.77500" in html_out
-    assert "-122.41900" in html_out
+    # GEO_ACTIVITY_CLUSTER_PRECISION=3 rounds the cluster's own lat/lon KEY to
+    # 3 decimal places (37.7749 -> 37.775), and the renderers now PRINT 3 too.
+    # They used to print :.5f, padding the rounded value back out with trailing
+    # zeros - "37.77500" implied roughly metre precision for what is the centre
+    # of a ~111m grid cell (fixed 2026-09-15; the PDF first, then this HTML
+    # path). Asserting the exact string with no trailing zeros is what pins it.
+    assert ">37.775<" in html_out
+    assert ">-122.419<" in html_out
+    assert "37.77500" not in html_out
     # visit_count column - exactly 2 real points folded into 1 cluster.
     # Two samples 100s apart are one visit; the cell now says so and keeps the
     # raw recording count alongside rather than passing it off as visits.
@@ -198,8 +200,10 @@ def test_frequent_locations_uses_the_passed_attachment_files_not_a_stale_disk_re
     # this is the real, correct signal the parameter reached the function
     # (mirrors test_html_export_shows_frequent_location_cluster's own
     # identical assertions for the takeout-sourced equivalent).
-    assert "37.77500" in html_out
-    assert "-122.41900" in html_out
+    # 3 decimals, matching the grid cell these coordinates actually name - see
+    # test_html_export_shows_frequent_location_cluster's own note.
+    assert ">37.775<" in html_out
+    assert ">-122.419<" in html_out
     # This KML carries no <TimeStamp>, so visits genuinely cannot be derived -
     # the cell says how many positions were recorded and that they are undated,
     # rather than letting a recording count be read as a visit count.
