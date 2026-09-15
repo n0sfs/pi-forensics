@@ -12811,7 +12811,41 @@ function _recomputeAndRenderGeoActivity() {
         summaryEl.textContent = `${points.length} location point(s) across ${sourceCount} source(s)`
             + (frequentLocations.length ? `, ${frequentLocations.length} frequent location(s)` : '')
             + (isFiltered ? ', date-filtered (KML-sourced points excluded - no timestamp to filter on)' : '')
-            + (allData.truncated ? ' (list truncated - too many points to show all).' : '.');
+            + (allData.truncated ? '.' : '.');
+    }
+    // Name the sources that actually lost points, and how many (2026-09-15).
+    // The old wording - "(list truncated - too many points to show all)" -
+    // read as a display cap. What was really happening was that a long Google
+    // Takeout history could consume the entire budget and delete every point
+    // of a second source outright. The backend now shares the budget out
+    // fairly and reports per source; say which source was reduced rather than
+    // leaving the examiner to assume nothing important was dropped.
+    const geoTruncEl = document.getElementById('patternOfLifeGeoTruncationNotice');
+    if (geoTruncEl) {
+        geoTruncEl.innerHTML = '';
+        const detail = (allData && allData.truncation_detail) || [];
+        if (allData && allData.truncated) {
+            const wrap = document.createElement('div');
+            wrap.className = 'alert alert-warning py-2 px-2 mb-2 small';
+            const head = document.createElement('div');
+            head.textContent = detail.length
+                ? 'More location points exist than this view analyzes. The budget is shared between sources so no source is dropped entirely; '
+                  + 'within a reduced source the most recent points were kept, so its earliest activity is not represented here:'
+                : 'More location points exist than this view analyzes - some were not included.';
+            wrap.appendChild(head);
+            if (detail.length) {
+                const list = document.createElement('div');
+                list.className = 'font-monospace mt-1';
+                detail.forEach((d) => {
+                    const line = document.createElement('div');
+                    line.textContent = `${d.source}: ${Number(d.kept).toLocaleString()} of `
+                        + `${Number(d.available).toLocaleString()} point(s) analyzed`;
+                    list.appendChild(line);   // source name is evidence-derived - text node only
+                });
+                wrap.appendChild(list);
+            }
+            geoTruncEl.appendChild(wrap);
+        }
     }
 
     const homeWorkByKey = classifyHomeWorkLocations(points, frequentLocations);
@@ -15553,6 +15587,36 @@ async function startVerifyAllEvidence() {
 // entries, not evidence pulled off a drive/phone, and both already have their own dedicated
 // Reporting tabs - mixing them in here diluted what this view is actually for.
 let caseTimelineCache = null;
+
+// One truthful truncation sentence, shared by the on-screen note and the CSV
+// export so they can never say different things (2026-09-15).
+//
+// The CSV previously asserted "The newest were kept, so the earliest activity
+// is NOT included in this export." That is true of the recency cut, and flatly
+// FALSE of the filesystem (MACB) walk, which stops wherever depth-first
+// traversal happens to be when the per-source budget runs out. On a large
+// Windows image the budget can be spent inside /Windows/WinSxS before
+// /Users/<suspect>/Documents is reached at all - while the surviving rows
+// still span years, so nothing looks missing. A recipient told "only the
+// earliest is absent" would conclude the visible range is complete. It is
+// not. The backend now reports which mechanism fired; say exactly that.
+function _caseTimelineTruncationText(cache) {
+    const reasons = (cache && cache.truncation_reasons) || {};
+    const parts = ['This timeline does not contain every event in the case.'];
+    if (reasons.by_walk_order) {
+        parts.push('Filesystem (MACB) entries were capped during the scan, which stops at whatever point '
+            + 'the directory walk had reached - NOT at a cut-off date. Whole folders may be absent from '
+            + 'every part of the date range shown, so the visible range must not be read as complete.');
+    }
+    if (reasons.by_recency) {
+        parts.push('The case also has more events than the timeline returns, and the most recent were kept, '
+            + 'so the earliest activity is under-represented.');
+    }
+    if (!reasons.by_walk_order && !reasons.by_recency) {
+        parts.push('Not every event may be shown.');
+    }
+    return parts.join(' ');
+}
 const CASE_TIMELINE_SOURCE_BADGE = {
     macb: 'bg-info text-dark', parsed_artifact: 'bg-secondary',
 };
@@ -15884,6 +15948,46 @@ function renderCaseTimelineChart(rows) {
     });
 }
 
+// Describes the filters currently narrowing the table, for the CSV export's
+// own note (2026-09-15). The export writes caseTimelineFilteredRows - the
+// post-filter set - under the filename "<case>_evidence_timeline.csv", which
+// reads as the case's complete evidence timeline. Click one bar in the
+// density chart, export, and the recipient gets one hour of one contact in a
+// file that does not say so anywhere. Reads the DOM fresh, matching
+// renderCaseTimeline()'s own established pattern rather than adding a
+// parallel filter-state variable that could drift out of step with it.
+function _caseTimelineActiveFilterSummary() {
+    const parts = [];
+    const allOf = (sel) => [...document.querySelectorAll(sel)];
+    const described = (sel, label) => {
+        const boxes = allOf(sel);
+        const off = boxes.filter((b) => !b.checked);
+        if (boxes.length && off.length) {
+            parts.push(`${label} limited to: ${boxes.filter((b) => b.checked).map((b) => b.value).join(', ') || '(none)'}`);
+        }
+    };
+    described('.case-timeline-source-check', 'Sources');
+    described('.case-timeline-category-check', 'Categories');
+    const selects = [
+        ['caseTimelineEvidenceSelect', 'Evidence item'],
+        ['caseTimelineYearSelect', 'Year'],
+        ['caseTimelineMonthSelect', 'Month'],
+        ['caseTimelineContactSelect', 'Contact'],
+    ];
+    selects.forEach(([id, label]) => {
+        const el = document.getElementById(id);
+        if (el && !el.disabled && el.value && el.value !== '__all__') {
+            const opt = el.options[el.selectedIndex];
+            parts.push(`${label}: ${opt ? opt.textContent : el.value}`);
+        }
+    });
+    if (caseTimelineBucketFilter) {
+        parts.push(`Time bucket: ${caseTimelineBucketFilter.label}`);
+    }
+    if (!parts.length) return '';
+    return 'This export is FILTERED and is not the case\'s full timeline. Active filters - ' + parts.join('; ') + '.';
+}
+
 function clearCaseTimelineBucketFilter() {
     caseTimelineBucketFilter = null;
     renderCaseTimeline();
@@ -15957,7 +16061,7 @@ function renderCaseTimeline() {
 
     if (notesEl) {
         const noteLines = [...(caseTimelineCache.notes || [])];
-        if (caseTimelineCache.truncated) noteLines.push('This timeline was truncated - not every event may be shown.');
+        if (caseTimelineCache.truncated) noteLines.push(_caseTimelineTruncationText(caseTimelineCache));
         notesEl.textContent = noteLines.join(' ');
         notesEl.style.display = noteLines.length ? 'block' : 'none';
     }
@@ -16108,13 +16212,21 @@ function exportCaseTimelineCsv() {
         ]);
     });
     let csvText = lines.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
-    // An exported timeline looked complete even when the case has more events
-    // than the API returns - and the rows kept are the NEWEST, so the earliest
-    // activity is exactly what is missing. Disclosed in the file itself, since
-    // the file is what gets handed on.
+    // Disclosed in the file itself, since the file is what gets handed on -
+    // and worded from what the backend actually reports, not from an
+    // assumption about which rows were dropped. See
+    // _caseTimelineTruncationText() for why the old wording was worse than
+    // no note at all.
     if (caseTimelineCache && caseTimelineCache.truncated) {
-        csvText += csvCell('NOTE: this case has more events than the timeline returns. The newest '
-            + 'were kept, so the earliest activity is NOT included in this export.') + '\r\n';
+        csvText += csvCell('NOTE: ' + _caseTimelineTruncationText(caseTimelineCache)) + '\r\n';
+    }
+    // An export also silently inherited whatever filters were on screen, under
+    // a filename that reads as the case's whole evidence timeline. A recipient
+    // could receive 40 rows covering one hour of one contact with nothing in
+    // the file saying so.
+    const activeFilterNote = _caseTimelineActiveFilterSummary();
+    if (activeFilterNote) {
+        csvText += csvCell('NOTE: ' + activeFilterNote) + '\r\n';
     }
     const blob = new Blob([csvText], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
