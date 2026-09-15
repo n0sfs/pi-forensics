@@ -3297,7 +3297,14 @@ def start_imaging():
         }.get(mount_meta["kind"], "Decrypted Volume")
 
     serial = smart_data.get('serial_number', 'N/A')
-    healthy = smart_data.get('smart_status', {}).get('passed', True)
+    # Three-valued on purpose (2026-09-15). This used to default to True when
+    # `smart_status` was absent, which is the normal case for a USB stick, an
+    # SD card, any device smartctl cannot query, and every non-real_device
+    # acquisition (where smart_data is {} entirely). The exported report then
+    # printed a flat "SMART Status: PASSED" for hardware whose health had
+    # never been read - an affirmative claim with nothing behind it. None now
+    # means "not reported", and the report renderers say so.
+    healthy = smart_data.get('smart_status', {}).get('passed')
     temp = smart_data.get('temperature', {}).get('current')
     power_hours = smart_data.get('power_on_time', {}).get('hours')
     
