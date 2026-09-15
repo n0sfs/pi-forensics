@@ -1141,6 +1141,45 @@ CASE_TIMELINE_MAX_TOTAL_ENTRIES = 6000  # a bit above TSK_MAX_TIMELINE_ENTRIES (
 # tampering, unlike an audit log being cleared).
 CASE_TIMELINE_SUSPICIOUS_ARTIFACT_TYPES = {'evtx_audit_log_cleared'}
 
+
+def _apply_timeline_source_shares(combined):
+    """Caps the merged timeline with a RESERVED SHARE PER SOURCE.
+
+    Returns (kept_rows_sorted_newest_first, source_starved).
+
+    CASE_TIMELINE_MAX_TOTAL_ENTRIES's own comment says it sits above
+    TSK_MAX_TIMELINE_ENTRIES "to leave room for the parsed_artifacts
+    contribution without starving the MACB one" - but the mechanism was a
+    uniform newest-first slice, which reserves nothing in either direction
+    (fixed 2026-09-15).
+
+    An adb pull with no device-timestamp manifest stamps every copied file's
+    M/A/C with the COPY time (documented at the top of _collect_case_timeline),
+    so its 5,000 MACB rows are the newest events in the case by a wide margin.
+    After the slice they held 5,000 of 6,000 slots and only the ~1,000 most
+    recent artifacts survived. An examiner then unticks "Filesystem (MACB)" to
+    look at the phone's messages and browsing, sees about a thousand rows all
+    from the last few days, and concludes the device has almost no history -
+    and every client-side filter, including the Pattern of Life handoff, runs
+    on that already-gutted set.
+
+    The cap keeps its meaning; only the allocation changes. Each side is
+    guaranteed its share, and anything one side does not need flows to the
+    other - so a case with few artifacts loses no MACB rows at all.
+    """
+    if len(combined) <= CASE_TIMELINE_MAX_TOTAL_ENTRIES:
+        return combined, False
+    artifacts = [r for r in combined if r["source"] != "macb"]
+    macb_rows = [r for r in combined if r["source"] == "macb"]
+    artifact_share = min(len(artifacts), CASE_TIMELINE_MAX_TOTAL_ENTRIES - TSK_MAX_TIMELINE_ENTRIES)
+    macb_share = min(len(macb_rows), CASE_TIMELINE_MAX_TOTAL_ENTRIES - artifact_share)
+    # Whatever one side leaves unused goes to the other.
+    artifact_share = min(len(artifacts), CASE_TIMELINE_MAX_TOTAL_ENTRIES - macb_share)
+    starved = len(artifacts) > artifact_share and len(macb_rows) > 0
+    kept = artifacts[:artifact_share] + macb_rows[:macb_share]
+    kept.sort(key=lambda r: r["timestamp"], reverse=True)
+    return kept, starved
+
 # Evidence Timeline category filter (2026-09-01) - lets an examiner narrow a
 # phone's timeline down to just Communications/Web Activity/Social Media
 # instead of scanning every raw activity string by eye. A single shared
@@ -1366,7 +1405,10 @@ def _build_enriched_case_timeline(case_folder, events):
     truncation_reasons = {
         "by_walk_order": bool(macb.get("by_walk_order")),
         "by_recency": bool(macb.get("by_recency")) or len(combined) > CASE_TIMELINE_MAX_TOTAL_ENTRIES,
+        "source_starved": False,
     }
+
+    combined, truncation_reasons["source_starved"] = _apply_timeline_source_shares(combined)
     # A trimmed contact directory for the frontend's own "Filter by contact"
     # dropdown - deliberately NOT the full correlate_contacts() payload
     # (samples/communication_counts/direction_counts, up to

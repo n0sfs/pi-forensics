@@ -63,3 +63,66 @@ def test_every_mapped_type_is_a_real_artifact_type():
     produces is dead weight that reads as coverage it does not have."""
     dead = {k for k in CASE_TIMELINE_ACTIVITY_CATEGORY if k not in PARSED_ARTIFACT_TYPE_LABELS}
     assert not dead, f"mapped types that no parser emits: {sorted(dead)}"
+
+
+# --- 2026-09-15: the global cap was a uniform newest-first slice, despite
+# CASE_TIMELINE_MAX_TOTAL_ENTRIES' own comment claiming it leaves room for
+# parsed artifacts "without starving the MACB one". An adb pull with no
+# device-timestamp manifest stamps every copied file's M/A/C with the COPY
+# time, so its 5,000 MACB rows are the newest events in the case by a wide
+# margin and took 5,000 of 6,000 slots - leaving only the ~1,000 most recent
+# artifacts. Unticking "Filesystem (MACB)" then showed a thousand rows from
+# the last few days and read as "this phone has almost no history". ---
+def _rows(source, n, base_ts):
+    return [{"timestamp": base_ts + i, "source": source, "activity": "x", "detail": "",
+             "evidence_id": None, "deleted": False, "suspicious": False,
+             "category": "Filesystem" if source == "macb" else "Communications",
+             "counterparts": [], "content_preview": None}
+            for i in range(n)]
+
+
+# The REAL allocation, not a copy of it - a reimplementation here would test
+# itself rather than the shipped rule.
+from routes.reporting import _apply_timeline_source_shares as _apply_cap
+
+
+def test_copy_time_macb_rows_cannot_evict_almost_every_artifact():
+    """The reported scenario: 5,000 MACB rows all newer than 3,000 artifacts."""
+    from routes.reporting import CASE_TIMELINE_MAX_TOTAL_ENTRIES
+    combined = _rows("macb", 5000, 2_000_000_000) + _rows("parsed_artifact", 3000, 1_700_000_000)
+    combined.sort(key=lambda r: r["timestamp"], reverse=True)
+    kept, starved = _apply_cap(combined)
+
+    artifacts_kept = sum(1 for r in kept if r["source"] != "macb")
+    assert len(kept) == CASE_TIMELINE_MAX_TOTAL_ENTRIES
+    # Before the fix this was ~1000; the reserved share is 6000 - 5000.
+    assert artifacts_kept == 1000
+    assert starved is True
+
+
+def test_a_case_with_few_artifacts_loses_no_macb_rows():
+    """The reserve must not cost anything when the other side does not need
+    it - unused share flows across."""
+    combined = _rows("macb", 5000, 2_000_000_000) + _rows("parsed_artifact", 50, 1_700_000_000)
+    combined.sort(key=lambda r: r["timestamp"], reverse=True)
+    kept, starved = _apply_cap(combined)
+    assert sum(1 for r in kept if r["source"] == "macb") == 5000
+    assert sum(1 for r in kept if r["source"] != "macb") == 50
+    assert starved is False
+
+
+def test_an_artifact_heavy_case_can_use_more_than_its_reserve():
+    """Symmetry: with few MACB rows, artifacts take the rest of the budget."""
+    from routes.reporting import CASE_TIMELINE_MAX_TOTAL_ENTRIES
+    combined = _rows("macb", 200, 2_000_000_000) + _rows("parsed_artifact", 12000, 1_700_000_000)
+    combined.sort(key=lambda r: r["timestamp"], reverse=True)
+    kept, _starved = _apply_cap(combined)
+    assert sum(1 for r in kept if r["source"] == "macb") == 200
+    assert sum(1 for r in kept if r["source"] != "macb") == CASE_TIMELINE_MAX_TOTAL_ENTRIES - 200
+
+
+def test_a_case_under_the_cap_is_untouched():
+    combined = _rows("macb", 100, 2_000_000_000) + _rows("parsed_artifact", 100, 1_700_000_000)
+    kept, starved = _apply_cap(combined)
+    assert len(kept) == 200
+    assert starved is False

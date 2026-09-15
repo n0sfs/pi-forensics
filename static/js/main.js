@@ -15967,6 +15967,11 @@ function _caseTimelineTruncationText(cache) {
         parts.push('The case also has more events than the timeline returns, and the most recent were kept, '
             + 'so the earliest activity is under-represented.');
     }
+    if (reasons.source_starved) {
+        parts.push('Filesystem entries and parsed artifacts each hold a reserved share of the limit, so '
+            + 'neither crowds the other out - but parsed artifacts (messages, calls, browsing) exceeded '
+            + 'their share here, so the oldest of those are absent.');
+    }
     if (!reasons.by_walk_order && !reasons.by_recency) {
         parts.push('Not every event may be shown.');
     }
