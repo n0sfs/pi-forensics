@@ -5094,6 +5094,52 @@ function buildGeoSpeedNotice(points, speeds) {
         list.appendChild(more);
     }
     wrap.appendChild(list);
+    // Collapsed by default - the headline (how many, and how fast) stays on
+    // screen; the explanation and the per-pair list fold away.
+    return _makeGeoNoticeCollapsible(wrap,
+        `${n.toLocaleString()} movement${n === 1 ? '' : 's'} imply a speed no ordinary travel accounts for `
+        + `(fastest ${Math.round(speeds.maxKmh).toLocaleString()} km/h) - show details`);
+}
+
+// Collapses a geolocation notice to a single clickable summary line
+// (2026-09-15). Both notices are deliberately wordy - they have to be, since
+// each is disclosing the limits of an inference - but between them they were
+// pushing the map itself off the bottom of the screen on a real case. The
+// headline number stays visible while collapsed, so nothing is hidden that an
+// examiner needs to KNOW; only the reasoning and the per-point list fold away.
+//
+// `keepVisible`, if given, is moved out of the body and kept in the header:
+// the outlier notice's zoom checkbox is an action, not detail, and burying an
+// action behind a disclosure is a different kind of unhelpful.
+function _makeGeoNoticeCollapsible(wrap, summaryText, keepVisible) {
+    const body = document.createElement('div');
+    while (wrap.firstChild) body.appendChild(wrap.firstChild);
+    body.hidden = true;
+
+    const header = document.createElement('div');
+    header.className = 'd-flex align-items-center gap-2 flex-wrap';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'btn btn-link p-0 border-0 text-start small text-decoration-none flex-grow-1';
+    toggle.style.color = 'inherit';
+    toggle.setAttribute('aria-expanded', 'false');
+    const chevron = document.createElement('i');
+    chevron.className = 'bi bi-chevron-right me-1';
+    const label = document.createElement('span');
+    label.textContent = summaryText;   // evidence-derived figures - text node only
+    toggle.appendChild(chevron);
+    toggle.appendChild(label);
+    toggle.onclick = () => {
+        body.hidden = !body.hidden;
+        toggle.setAttribute('aria-expanded', String(!body.hidden));
+        chevron.className = body.hidden ? 'bi bi-chevron-right me-1' : 'bi bi-chevron-down me-1';
+    };
+    header.appendChild(toggle);
+    if (keepVisible) header.appendChild(keepVisible);
+
+    wrap.appendChild(header);
+    wrap.appendChild(body);
     return wrap;
 }
 
@@ -5160,9 +5206,13 @@ function buildGeoOutlierNotice(points, outliers, onToggle, speedsChecked) {
     cbText.textContent = 'Zoom the map to the main cluster only (data itself is unchanged)';
     label.appendChild(cb);
     label.appendChild(cbText);
-    wrap.appendChild(label);
+    label.classList.remove('mt-2');   // sits inline in the header now, not under a paragraph
 
-    return wrap;
+    // Collapsed by default, but the zoom checkbox stays in the header - it is
+    // an action an examiner reaches for, not part of the disclosure.
+    return _makeGeoNoticeCollapsible(wrap,
+        `${n.toLocaleString()} of ${points.length.toLocaleString()} point(s) sit far from the rest of `
+        + `their own source's points - show details`, label);
 }
 
 // Renders a Leaflet map (one marker per placemark, fit to bounds) into
@@ -15202,6 +15252,27 @@ async function loadCaseForEditing() {
 // re-derivation of the identical data just to build its own summary text.
 let coverageOutstandingCache = [];
 
+// Jumps from an Analysis Coverage card to that evidence item in File Explorer
+// (2026-09-15). A disk image opens in the image browser, since its contents
+// are only reachable through that; a mobile/folder acquisition opens at its
+// own directory. `kind` comes straight from compute_case_analysis_coverage(),
+// which already classified it - no second guess here about which it is.
+async function openEvidenceItemInFileExplorer(item) {
+    const path = item && item.target_path;
+    if (!path) return;
+    switchToTab('explorer-tab');
+    try {
+        if (item.kind === 'disk_image') {
+            await enterExplorerImageFor({ path, name: path.split('/').pop() || path });
+        } else {
+            await loadExplorer(path);
+        }
+        showToast('Right-click the item in File Explorer to run an analysis step against it.', 'info');
+    } catch (err) {
+        showToast(`Could not open ${path} in File Explorer - see console.`, 'warning');
+    }
+}
+
 async function loadAnalysisCoverage() {
     const statusEl = document.getElementById('analysisCoverageStatus');
     const container = document.getElementById('analysisCoverageContainer');
@@ -15283,12 +15354,27 @@ async function loadAnalysisCoverage() {
 
             const header = document.createElement('div');
             header.className = 'd-flex justify-content-between align-items-center flex-wrap gap-2';
-            const left = document.createElement('span');
+            // The whole item header opens it in File Explorer too, so the jump
+            // is reachable whether an examiner clicks the item or one of the
+            // outstanding-step badges below.
+            const left = document.createElement(item.target_path ? 'button' : 'span');
+            if (item.target_path) {
+                left.type = 'button';
+                left.className = 'btn btn-link p-0 border-0 text-start text-decoration-none';
+                left.style.color = 'inherit';
+                left.title = `Open in File Explorer\n\n${item.target_path}`;
+                left.onclick = () => openEvidenceItemInFileExplorer(item);
+            }
             const toolSpan = document.createElement('span');
             toolSpan.className = 'text-info fw-bold';
             toolSpan.textContent = (item.tool || '--').toUpperCase() + '  ';
             left.appendChild(toolSpan);
             left.appendChild(document.createTextNode(item.evidence_id || '--'));
+            if (item.target_path) {
+                const icon = document.createElement('i');
+                icon.className = 'bi bi-box-arrow-up-right ms-1 small text-subtle';
+                left.appendChild(icon);
+            }
             header.appendChild(left);
 
             const right = document.createElement('span');
@@ -15335,10 +15421,25 @@ async function loadAnalysisCoverage() {
                     + 'failure, and not something left to do.';
                 stepsRow.appendChild(b);
             });
+            // Each outstanding step is now a LINK to the evidence item in File
+            // Explorer, where the step is actually run (2026-09-15). This panel
+            // told an examiner exactly what was left to do and then made them
+            // find the item by hand - the one place in the app that names the
+            // next action was the one place that could not take you to it.
             outstanding.forEach(s => {
-                const b = document.createElement('span');
+                const b = document.createElement('button');
+                b.type = 'button';
                 b.className = 'badge bg-secondary bg-opacity-25 text-subtle border border-secondary me-1 mb-1';
+                b.style.cursor = item.target_path ? 'pointer' : 'default';
                 b.textContent = 'Not yet run: ' + (labels[s] || s);
+                if (item.target_path) {
+                    b.title = `Open this evidence item in File Explorer to run it - the step itself is `
+                        + `started from File Explorer's right-click menu (or Auto Analyze).\n\n${item.target_path}`;
+                    b.onclick = () => openEvidenceItemInFileExplorer(item);
+                } else {
+                    b.disabled = true;
+                    b.title = 'No path is recorded for this evidence item, so it cannot be opened directly.';
+                }
                 stepsRow.appendChild(b);
             });
             // Real analysis with no standard-step equivalent (Thumbcache, LNK,
