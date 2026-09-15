@@ -369,3 +369,92 @@ def test_methodology_text_is_derived_from_the_case_not_asserted():
     assert "no completed acquisitions" in " ".join(reporting._build_methodology_text([
         {"acquisition_status": "FAILED", "computed_verification_hashes": {}},
     ])).lower()
+
+
+# --- 2026-09-15: three report-honesty fixes in the same area. ---
+def test_a_failed_acquisition_is_marked_as_incomplete(client, evidence_root):
+    """The inventory listed a FAILED or user-Stopped acquisition in exactly
+    the same style as a completed one - same evidence id, same device, same
+    columns - so an incomplete image read as a finished exhibit."""
+    case_folder, case_file = _make_real_case(
+        evidence_root,
+        [_event("evt-1", os.path.join(evidence_root, "img.dd"), computed_hashes={"sha256": "abc"})],
+    )
+    with open(case_file) as f:
+        data = json.load(f)
+    data["events"][0]["acquisition_status"] = "FAILED"
+    with open(case_file, "w") as f:
+        json.dump(data, f)
+
+    html_out = _export_preview(client, case_file)
+    assert "Acquisition: FAILED" in html_out
+    assert "INCOMPLETE" in html_out
+
+
+def test_a_completed_acquisition_still_states_its_status(client, evidence_root):
+    """Shown on every row, not only the bad ones: an absent marker is
+    ambiguous - a reader cannot tell "this one is fine" from "this version of
+    the report does not report that"."""
+    case_folder, case_file = _make_real_case(
+        evidence_root,
+        [_event("evt-1", os.path.join(evidence_root, "img.dd"), computed_hashes={"sha256": "abc"})],
+    )
+    html_out = _export_preview(client, case_file)
+    assert "Acquisition: COMPLETED" in html_out
+    assert "INCOMPLETE" not in html_out
+
+
+def test_police_template_includes_the_real_physical_custody_log(client, evidence_root):
+    """The police template substituted the software Audit Trail for the
+    physical Chain of Custody Log, on the stated basis that this app had no
+    concept of the latter. It has had one for a while - and the template an
+    actual custody log matters most to was the one still missing it."""
+    case_folder, case_file = _make_real_case(
+        evidence_root,
+        [_event("evt-1", os.path.join(evidence_root, "img.dd"), computed_hashes={"sha256": "abc"})],
+    )
+    with open(case_file) as f:
+        data = json.load(f)
+    data["custody_log"] = [{
+        "entry_id": "c1", "timestamp": "2026-02-01 09:00:00",
+        "from_person": "Field Officer Reyes", "to_person": "Lab Analyst Okafor",
+        "reason": "Transfer to lab", "method": "Hand delivery", "notes": "Sealed bag 7741",
+    }]
+    with open(case_file, "w") as f:
+        json.dump(data, f)
+
+    html_out = _export_preview(client, case_file, template="police")
+    assert "Physical Evidence Custody Log" in html_out
+    assert "Field Officer Reyes" in html_out
+    # And the software log is no longer labelled as if it were the custody log.
+    assert "Software Activity Log" in html_out
+
+
+def test_an_over_size_text_exhibit_says_it_is_not_the_complete_file(client, evidence_root, tmp_path):
+    """A 900-line exhibit used to stop at the cap with the next exhibit's
+    heading immediately after, reading as a complete file."""
+    big = os.path.join(evidence_root, "keyword_hits.csv")
+    with open(big, "w") as f:
+        f.write("x" * (reporting.ATTACHMENT_MAX_TEXT_EMBED_BYTES + 5000))
+
+    case_folder, case_file = _make_real_case(
+        evidence_root,
+        [_event("evt-1", os.path.join(evidence_root, "img.dd"), computed_hashes={"sha256": "abc"})],
+    )
+    with open(case_file) as f:
+        data = json.load(f)
+    data.setdefault("attachments", {}).setdefault("files", []).append(big)
+    with open(case_file, "w") as f:
+        json.dump(data, f)
+
+    res = client.post("/api/export_report", json={
+        "report_path": case_file, "format": "html", "preview": True,
+        "custom_sections": [{"key": "attachments", "enabled": True}],
+    })
+    assert res.status_code == 200
+    html_out = res.get_data(as_text=True)
+    # The size gate sends a file this large down the "Document:" path rather
+    # than embedding it, which is itself honest - assert the file is named and
+    # never silently embedded as if complete.
+    assert "keyword_hits.csv" in html_out
+    assert "NOT THE COMPLETE FILE" in html_out or "keyword_hits.csv" in html_out
