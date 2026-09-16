@@ -15195,6 +15195,11 @@ async function loadCaseReportingSettings() {
         // setChecked()'s usual true, when absent.
         const geoDefEl = document.getElementById('defSecGeolocation');
         if (geoDefEl) geoDefEl.checked = Object.prototype.hasOwnProperty.call(sections, 'geolocation') ? !!sections.geolocation : false;
+        // Same "absent means false, not true" treatment as Geolocation above,
+        // and for the same reason - a case with no analysis shouldn't grow an
+        // empty section by default.
+        const analysisDefEl = document.getElementById('defSecAnalysisResults');
+        if (analysisDefEl) analysisDefEl.checked = Object.prototype.hasOwnProperty.call(sections, 'analysis_results') ? !!sections.analysis_results : false;
         setChecked('defSecAuditTrail', sections, 'audit_trail');
         setChecked('defFieldTelemetry', jobFields, 'telemetry');
         setChecked('defFieldParams', jobFields, 'params');
@@ -15350,6 +15355,7 @@ async function saveCaseReportingSettings() {
         conclusion: document.getElementById("defSecConclusion")?.checked ?? true,
         attachments: document.getElementById("defSecAttachments")?.checked ?? true,
         geolocation: document.getElementById("defSecGeolocation")?.checked ?? false,
+        analysis_results: document.getElementById("defSecAnalysisResults")?.checked ?? false,
         audit_trail: document.getElementById("defSecAuditTrail")?.checked ?? true,
     };
     const jobFields = {
@@ -18254,6 +18260,7 @@ async function prepareExportPane() {
             setIfKnown('expSecConclusion', sections, 'conclusion');
             setIfKnown('expSecAttachments', sections, 'attachments');
             setIfKnown('expSecGeolocation', sections, 'geolocation');
+            setIfKnown('expSecAnalysisResults', sections, 'analysis_results');
             setIfKnown('expSecAuditTrail', sections, 'audit_trail');
             setIfKnown('expFieldTelemetry', jobFields, 'telemetry');
             setIfKnown('expFieldParams', jobFields, 'params');
@@ -18604,6 +18611,7 @@ function gatherExportRequestBody() {
             conclusion: !!document.getElementById("expSecConclusion")?.checked,
             attachments: !!document.getElementById("expSecAttachments")?.checked,
             geolocation: !!document.getElementById("expSecGeolocation")?.checked,
+            analysis_results: !!document.getElementById("expSecAnalysisResults")?.checked,
             audit_trail: !!document.getElementById("expSecAuditTrail")?.checked,
         };
         job_fields = {
