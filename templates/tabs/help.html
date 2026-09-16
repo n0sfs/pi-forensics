@@ -66,8 +66,23 @@
                                     <button id="wfStep3Btn" class="btn btn-sm btn-outline-info fw-bold text-nowrap" onclick="switchToTab('explorer-tab')">Go to File Explorer</button>
                                 </div>
 
+                                <!-- Step 4 added 2026-09-16. The checklist used to stop at "run analysis
+                                     tools" and then say the case was ready to write up, which skipped
+                                     verification, documentation and the export itself - the second half of
+                                     an examination. For this project's stated student/hobbyist audience,
+                                     stopping there is where the guidance is needed most. -->
+                                <div class="d-flex align-items-start gap-3 mt-3">
+                                    <div class="workflow-step-badge" id="wfBadge4">4</div>
+                                    <div class="flex-grow-1">
+                                        <div class="fw-bold small">4. Verify, document and report</div>
+                                        <div class="text-subtle small">Re-check the evidence hashes, write up what you did and what you found, then export the report.</div>
+                                        <div class="small mt-1" id="wfStatus4">--</div>
+                                    </div>
+                                    <button id="wfStep4Btn" class="btn btn-sm btn-outline-info fw-bold text-nowrap" onclick="switchToTab('reports-tab')">Go to Reporting</button>
+                                </div>
+
                                 <div id="guidedWorkflowDone" class="mt-3 pt-3 small text-success" style="display:none; border-top: 1px solid var(--border-color);">
-                                    <i class="bi bi-check-circle-fill me-1"></i>All three steps have activity for this case. Ready to write it up? <a href="#" onclick="switchToTab('reports-tab'); return false;" class="text-info fw-bold">Go to Reporting</a>.
+                                    <i class="bi bi-check-circle-fill me-1"></i>All four steps have activity for this case: acquired, analysed, verified, documented and exported.
                                 </div>
                             </div>
                         </div>

@@ -313,3 +313,26 @@ def test_case_consolidated_path_returns_none_for_none_or_a_nonexistent_path(evid
     assert not paths.is_valid_block_device("/dev/sda; rm -rf /")
     assert not paths.is_valid_block_device("")
     assert not paths.is_valid_block_device(None)
+
+
+# --- Recovery-tool re-run output is pruned too (2026-09-16) ---
+
+def test_a_rerun_numbered_recovery_output_dir_is_pruned():
+    """Measured on the deployed station: nine directories named
+    "..._photorec.1" through ".9" held 4,501 of the 8,737 file entries the
+    case-list walk read on EVERY open of the Case Manager, which took 13-23
+    seconds showing only "Loading...". A re-run writes its output alongside
+    the first with a numeric suffix, and the bare endswith() check missed all
+    of them - they are the same carved output the un-suffixed name prunes."""
+    from core.paths import is_bulk_tool_output_dir
+    for name in ("RECOVERY_ITEM-01_photorec.1", "X_photorec.9", "X_foremost.2",
+                 "X_scalpel.10", "X_triagescan.3"):
+        assert is_bulk_tool_output_dir(name), name
+
+
+def test_the_numeric_suffix_strip_cannot_swallow_a_real_case_folder():
+    """Only a trailing all-digits component is stripped, and only then is the
+    tool suffix checked - a case folder is never pruned by accident."""
+    from core.paths import is_bulk_tool_output_dir
+    for name in ("2026-CASE-01", "2026-CASE-01.2", "my_photorec_notes", "X_photorec.abc"):
+        assert not is_bulk_tool_output_dir(name), name

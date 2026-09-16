@@ -1571,7 +1571,7 @@ def _draw_pdf_job_section(c, y, event, job_fields=None):
             c.setFillColorRGB(0, 0, 0)
             y -= 25
         else:
-            c.drawString(50, y, f"Device: {drive.get('device_path')} ({drive.get('capacity_gb')} GB)")
+            c.drawString(50, y, f"Device: {drive.get('device_path')} ({_format_capacity(drive.get('capacity_gb'))})")
             c.drawString(300, y, f"Model: {drive.get('vendor_model')}")
             y -= 15
             c.drawString(50, y, f"Serial: {drive.get('serial_number')}")
@@ -3487,6 +3487,16 @@ def _hash_status_entry(entry):
         return entry[0], (entry[1] if len(entry) > 1 else None)
     return entry, None
 
+def _format_capacity(capacity_gb):
+    """Capacity as a report cell. Four render sites each appended " GB" to
+    whatever was recorded, so a logical or mobile acquisition - which never
+    queries a source device for its size - printed the literal "N/A GB"
+    (2026-09-16, seen on real exported PDFs and HTML). "N/A" is the answer; the
+    unit is not part of it."""
+    if capacity_gb in (None, '', 'N/A'):
+        return 'N/A'
+    return f"{capacity_gb} GB"
+
 def _pick_display_hash(hashes):
     """Evidence Inventory's summary table shows one hash per item - picking
     silently via next(iter(hashes.values())) (the old behavior) shows a bare,
@@ -3611,7 +3621,7 @@ def _draw_pdf_evidence_inventory(c, y, events, title="Evidence Inventory", hash_
             _pdf_cell(drive.get('device_path', 'N/A'), 16),
             _pdf_cell(drive.get('vendor_model', 'N/A'), 13),
             _pdf_cell(drive.get('serial_number', 'N/A'), 12),
-            f"{drive.get('capacity_gb', 'N/A')} GB",
+            _format_capacity(drive.get('capacity_gb', 'N/A')),
             _pdf_cell(hash_display, 24),
         ]
         for val, x in zip(row, xpos[:6]):
@@ -5806,7 +5816,7 @@ def _html_evidence_inventory_table(events, title="Evidence Inventory", anchor_id
             f'<td>{esc(str(drive.get("device_path", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("vendor_model", "N/A")))}</td>'
             f'<td>{esc(str(drive.get("serial_number", "N/A")))}</td>'
-            f'<td>{esc(str(drive.get("capacity_gb", "N/A")))} GB</td>'
+            f'<td>{esc(_format_capacity(drive.get("capacity_gb", "N/A")))}</td>'
             f'<td class="mono">{esc(str(hash_display))}</td>'
             f'<td><span class="{esc(status_meta["html_class"])}">{esc(status_meta["html_label"])}</span>{when_html}</td></tr>'
         )
@@ -6108,7 +6118,7 @@ def _html_acquisition_method(events, job_fields, anchor_id=None):
                              'hardware identifiers.</p>')
             else:
                 parts.append('<table>')
-                parts.append(f'<tr><th>Device</th><td>{esc(str(drive.get("device_path")))}</td><th>Capacity</th><td>{esc(str(drive.get("capacity_gb")))} GB</td></tr>')
+                parts.append(f'<tr><th>Device</th><td>{esc(str(drive.get("device_path")))}</td><th>Capacity</th><td>{esc(_format_capacity(drive.get("capacity_gb")))}</td></tr>')
                 parts.append(f'<tr><th>Model</th><td>{esc(str(drive.get("vendor_model")))}</td><th>Serial</th><td>{esc(str(drive.get("serial_number")))}</td></tr>')
                 parts.append(f'<tr><th>SMART Status</th><td colspan="3">{esc(_format_smart_status(drive.get("smart_healthy")))}</td></tr>')
                 parts.append('</table>')

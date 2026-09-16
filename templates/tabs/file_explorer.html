@@ -258,7 +258,12 @@
                         <div id="ctxMenuImageActions" style="display:none;">
                             <button type="button" class="ctx-menu-section-toggle" data-ctx-section="ctxSecInImage" onclick="toggleCtxMenuSection('ctxSecInImage')"><span>In-Image Actions</span><i class="bi bi-chevron-down"></i></button>
                             <div id="ctxSecInImage" class="ctx-menu-section" style="display:none;">
-                            <button id="ctxMenuImageExtract" class="dropdown-item" onclick="extractExplorerImageSelected()"><i class="bi bi-download me-2"></i>Extract to Evidence Root</button>
+                            <!-- Label corrected 2026-09-16: this writes to the ACTIVE CASE folder, not
+                                 the evidence root. The behaviour is the correct one (fixed 2026-08-14);
+                                 only the label was left behind, sending an examiner to /mnt to look for
+                                 a file that landed in their case. Verified live: extracting put the file
+                                 in the case folder and nothing in /mnt. -->
+                            <button id="ctxMenuImageExtract" class="dropdown-item" onclick="extractExplorerImageSelected()"><i class="bi bi-download me-2"></i>Extract to Case Folder</button>
                             <button id="ctxMenuImageAttach" class="dropdown-item" onclick="extractAndAttachExplorerImageSelected()" data-bs-toggle="tooltip" data-bs-placement="left" title="Pulls this file out of the image into the active case folder and bookmarks it as a report exhibit in one step. Requires an active, consolidated-format case."><i class="bi bi-bookmark-plus me-2"></i>Extract &amp; Attach to Case</button>
                             <button id="ctxMenuImageTag" class="dropdown-item" onclick="openTagItemModal()" data-bs-toggle="tooltip" data-bs-placement="left" title="Flags this file with a tag (Bookmark, Follow Up, Notable Item, or a custom tag) - shows up under File Views > Tagged Files. Requires an active, consolidated-format case."><i class="bi bi-tag me-2"></i>Tag...</button>
                             <button id="ctxMenuImageBinwalk" class="dropdown-item" onclick="runImageBinwalk()"><i class="bi bi-cpu me-2"></i>Scan for Embedded Files (Binwalk)</button>

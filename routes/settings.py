@@ -1929,6 +1929,42 @@ def user_groups_detail(group_id):
     log_chain_of_custody("user_group_update", {"group_id": group_id, "name": name, "permissions": permissions})
     return jsonify({"success": True, "group": dict(record, is_builtin=False)})
 
+def _station_ipv4_addresses():
+    """Every non-loopback IPv4 this station currently answers on. Same source
+    tls_generate() below uses to build a fresh certificate's SAN, so "does the
+    installed cert cover this station" is asked and answered against exactly
+    the same set the fix would write."""
+    found = set()
+    try:
+        for addrs in psutil.net_if_addrs().values():
+            for addr in addrs:
+                if addr.family == 2 and addr.address != "127.0.0.1":  # AF_INET
+                    found.add(addr.address)
+    except Exception:
+        pass
+    return found
+
+def _certificate_san_entries(cert_path):
+    """The certificate's subjectAltName entries as openssl prints them
+    ("DNS:pi-forensics.local", "IP Address:10.0.0.5"), or [] if it has
+    none or cannot be read. Never raises - a status panel must still render
+    the fields it DID manage to read."""
+    try:
+        res = subprocess.run(
+            ["openssl", "x509", "-in", cert_path, "-noout", "-ext", "subjectAltName"],
+            capture_output=True, text=True, timeout=10)
+        if res.returncode != 0:
+            return []
+        entries = []
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if not line or line.lower().startswith("x509v3 subject alternative name"):
+                continue
+            entries.extend(part.strip() for part in line.split(',') if part.strip())
+        return entries
+    except Exception:
+        return []
+
 @settings_bp.route('/api/system/tls_status', methods=['GET'])
 @requires_auth
 def tls_status():
@@ -1953,6 +1989,25 @@ def tls_status():
             key, _, value = line.partition('=')
             fields[key.strip().lower()] = value.strip()
 
+        # The names/addresses this certificate is actually valid for, and
+        # whether they still include the addresses this station answers on
+        # (2026-09-16). Without this the panel could only print the Subject,
+        # which says nothing about a SAN - and a cert generated before a DHCP
+        # change is the single most likely reason an examiner cannot reach the
+        # station at all. Seen live on this project's own hardware: a certificate
+        # still installed after the station's address changed, so every remote
+        # browser got a hard ERR_CERT_COMMON_NAME_INVALID, while this panel
+        # showed the stale CN with no warning and offered "import it as trusted
+        # on each device" above the fix - advice that cannot work, because
+        # trusting an issuer does not fix a name mismatch.
+        san_entries = _certificate_san_entries(TLS_CERT_PATH)
+        station_ips = _station_ipv4_addresses()
+        cert_ips = {e.split(':', 1)[1] for e in san_entries if e.startswith('IP Address:')}
+        # Only claim a mismatch when we know BOTH sides. A cert with no SAN at
+        # all is reported as such rather than as a mismatch - it is a different,
+        # older problem with the same fix.
+        unmatched_ips = sorted(station_ips - cert_ips) if (station_ips and cert_ips) else []
+
         return jsonify({
             "success": True,
             "configured": True,
@@ -1961,6 +2016,10 @@ def tls_status():
             "not_before": fields.get("notbefore"),
             "not_after": fields.get("notafter"),
             "fingerprint_sha256": fields.get("sha256 fingerprint"),
+            "san_entries": san_entries,
+            "station_ips": sorted(station_ips),
+            "unmatched_station_ips": unmatched_ips,
+            "has_san": bool(san_entries),
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
