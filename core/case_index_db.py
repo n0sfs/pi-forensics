@@ -804,8 +804,20 @@ def collect_case_analysis_findings(case_folder,
             })
 
         keyword_hits = []
+        # COUNT(DISTINCT value), not COUNT(*). The samples below are DISTINCT
+        # values, so counting rows made the two disagree and produced a false
+        # truncation notice: a category with 4 rows over 2 distinct values
+        # rendered as "4 total, first 2 shown" when nothing had been trimmed -
+        # caught on the station, where re-running a scan writes the same hit
+        # again. Distinct is also what the section's own wording promises, and
+        # what an examiner means by "how many did it find".
+        #
+        # This differs from case_index_summary()'s Overview tile, which counts
+        # rows; that is pre-existing behaviour and deliberately left alone
+        # rather than changed as a side effect of adding a report section.
         for category, count in conn.execute(
-                "SELECT category, COUNT(*) FROM triage_hits GROUP BY category ORDER BY COUNT(*) DESC"):
+                "SELECT category, COUNT(DISTINCT value) FROM triage_hits "
+                "GROUP BY category ORDER BY COUNT(DISTINCT value) DESC"):
             samples = [r[0] for r in conn.execute(
                 "SELECT DISTINCT value FROM triage_hits WHERE category=? ORDER BY value LIMIT ?",
                 (category, max_samples))]
