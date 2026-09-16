@@ -319,3 +319,88 @@ def test_a_source_that_stays_under_budget_adds_no_note(evidence_root):
     folder = _folder_with_files(evidence_root, "PULLED-SMALL", 2)
     result = _collect_case_timeline([_make_event("EV-1", "android_pull", output_destination=folder)])
     assert not [n for n in result["notes"] if "budget is shared across" in n]
+
+
+# --- The case folder itself is never one evidence item's contents (2026-09-16) ---
+
+def test_a_destination_that_is_the_case_folder_is_not_walked(evidence_root):
+    """Regression from a live end-to-end walkthrough. Two completed events in
+    the real 2026-CASE-01 record the case ROOT as their destination, so the
+    exported Filesystem Timeline led with rows like
+
+        2026-09-16 09:06:58  A  USBDrive-1  /2026-CASE-01_case.html
+        2026-09-16 09:06:56  M  USBDrive-1  /2026-CASE-01_case.html.sha256
+
+    - this app's own previous report export and its hash sidecar, presented as
+    filesystem activity on a seized USB drive, with access times created by
+    the export run that was reading them."""
+    case_folder = os.path.join(evidence_root, "2026-CASE-ROOTDEST")
+    os.makedirs(case_folder, exist_ok=True)
+    _touch(os.path.join(case_folder, "2026-CASE-ROOTDEST_case.html"), 1756000000)
+    _touch(os.path.join(case_folder, "2026-CASE-ROOTDEST_case.html.sha256"), 1756000000)
+
+    result = _collect_case_timeline(
+        [_make_event("USBDrive-1", "dd", output_destination=case_folder)],
+        case_folder=case_folder,
+    )
+    assert result["events"] == []
+    assert any("case folder itself as its destination" in n for n in result["notes"]), result["notes"]
+    # And it names the item, so the omission is attributable.
+    assert any("USBDrive-1" in n for n in result["notes"])
+
+
+def test_a_real_evidence_subfolder_of_the_same_case_is_still_walked(evidence_root):
+    """The guard must be narrow: a normal acquisition writes into its OWN
+    subfolder of the case, and that is the overwhelmingly common shape."""
+    case_folder = os.path.join(evidence_root, "2026-CASE-NORMAL")
+    os.makedirs(case_folder, exist_ok=True)
+    item_folder = os.path.join(case_folder, "2026-CASE-NORMAL_ITEM-01_logical")
+    os.makedirs(item_folder, exist_ok=True)
+    _touch(os.path.join(item_folder, "notes.txt"), 1756000000)
+
+    result = _collect_case_timeline(
+        [_make_event("ITEM-01", "logical_acquisition", output_destination=item_folder)],
+        case_folder=case_folder,
+    )
+    assert result["events"], "a normal per-item folder must still produce timeline rows"
+    assert all(e["evidence_id"] == "ITEM-01" for e in result["events"])
+    assert not [n for n in result["notes"] if "case folder itself" in n]
+
+
+def test_a_destination_containing_the_case_folder_is_not_walked(evidence_root):
+    """A destination ABOVE the case folder (the evidence root itself) is the
+    same failure, one level worse - it would pull in every other case."""
+    case_folder = os.path.join(evidence_root, "2026-CASE-UNDER-ROOT")
+    os.makedirs(case_folder, exist_ok=True)
+    _touch(os.path.join(evidence_root, "unrelated.txt"), 1756000000)
+
+    result = _collect_case_timeline(
+        [_make_event("EV-1", "dd", output_destination=evidence_root)],
+        case_folder=case_folder,
+    )
+    assert result["events"] == []
+
+
+def test_a_sibling_case_folder_sharing_a_name_prefix_is_still_walked(evidence_root):
+    """The containment check is separator-anchored: "2026-CASE-1" must not
+    swallow "2026-CASE-12". Same trap that made one case's audit trail contain
+    another's (fixed 2026-09-15 in _case_history_entries)."""
+    case_folder = os.path.join(evidence_root, "2026-CASE-1")
+    os.makedirs(case_folder, exist_ok=True)
+    sibling = os.path.join(evidence_root, "2026-CASE-12_ITEM-01_pull")
+    os.makedirs(sibling, exist_ok=True)
+    _touch(os.path.join(sibling, "evidence.txt"), 1756000000)
+
+    result = _collect_case_timeline(
+        [_make_event("EV-1", "android_pull", output_destination=sibling)],
+        case_folder=case_folder,
+    )
+    assert result["events"], "a sibling that merely shares a name prefix is not the case folder"
+
+
+def test_without_a_case_folder_the_guard_does_not_fire(evidence_root):
+    """Two callers legitimately have no case_folder (the non-consolidated
+    export branches) - they must still get a timeline, not an empty one."""
+    folder = _folder_with_files(evidence_root, "PULLED-NOCASE", 2)
+    result = _collect_case_timeline([_make_event("EV-1", "android_pull", output_destination=folder)])
+    assert result["events"]

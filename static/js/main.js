@@ -15713,6 +15713,15 @@ async function loadAnalysisCoverage() {
         container.innerHTML = '';
         const HASH_STATUS_META = {
             match: ['bg-success', 'Hash Verified'],
+            // Same green as a full match - the check passed - but named for
+            // what it covered. A Logical Acquisition / Live Collection import
+            // anchors its recorded hash to its own manifest.json, so a match
+            // proves the acquisition record is unaltered without re-reading
+            // the copied files. Mirrors _HASH_STATUS_META in routes/
+            // reporting.py - both copies must gain any new status together
+            // (the "two independent copies" trap this file already documents
+            // for artifact-type labels).
+            match_manifest: ['bg-success', 'Manifest Verified'],
             mismatch: ['bg-danger', 'HASH MISMATCH'],
             unverifiable: ['bg-secondary', 'Unverifiable'],
             missing_file: ['bg-danger', 'File Missing'],

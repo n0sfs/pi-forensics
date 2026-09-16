@@ -18,7 +18,7 @@ import email.utils
 from flask import g
 
 from core.paths import (safe_path, case_consolidated_path, classify_case_role, is_bulk_tool_output_dir,
-                        acquisition_output_location)
+                        acquisition_output_location, path_is_within)
 from core.config import get_keyword_lists
 import core.config as config
 
@@ -38,7 +38,36 @@ TRIAGE_PATTERNS = {
     "urls": re.compile(rb'https?://[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]+'),
     "ip_addresses": re.compile(rb'\b(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\b'),
     "credit_card_numbers": re.compile(rb'\b(?:\d[ -]?){13,19}\b'),
-    "phone_numbers": re.compile(rb'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'),
+    # Two branches, because the old single pattern (rb'\b\d{3}[-.]?\d{3}[-.]?
+    # \d{4}\b') matched only a bare NANP number and missed every form a phone
+    # extraction actually produces - measured against the real compiled
+    # pattern on the station (2026-09-16):
+    #
+    #   '+15555550172'      -> []   E.164, what contacts/SMS/call logs store
+    #   '+1 555 555 0172'   -> []
+    #   '(555) 555-0172'    -> []   the most common US written form
+    #   '+44 20 7946 0958'  -> []
+    #   'tel:+15555550172'  -> []
+    #
+    # The leading \b could not match between two digits, so any country-code
+    # prefix defeated it outright, and \( was never accepted. In a tool whose
+    # primary evidence source is phones, that is strict in the wrong
+    # direction - the opposite of the over-flag-for-review philosophy stated
+    # above for credit cards.
+    #
+    # Branch 1 is E.164/international: a literal '+', a 1-3 digit country
+    # code, then 6-14 more digits with at most one separator between any two.
+    # A leading '+' is a strong enough phone signal to accept the breadth.
+    # Branch 2 is NANP with an optional parenthesised area code, i.e. the old
+    # pattern plus '(' / ')' and space as a separator. Digit lookarounds
+    # replace \b so a longer digit run still can't match a slice of itself.
+    # Every repetition consumes at least one character, so neither branch can
+    # backtrack pathologically.
+    "phone_numbers": re.compile(
+        rb'(?<!\d)(?:'
+        rb'\+\d{1,3}(?:[ .\-]?\d){6,14}'
+        rb'|\(?\d{3}\)?[ .\-]?\d{3}[ .\-]?\d{4}'
+        rb')(?!\d)'),
     # Same "loose pattern, over-flag for a human to review" philosophy as
     # credit_card_numbers above - neither is a strict validator. Bitcoin's
     # legacy/P2SH pattern is reasonably precise (base58 already excludes
@@ -2701,16 +2730,14 @@ COC_ACTION_OTHER_ANALYSIS_LABELS = {
 COC_ACTION_PATH_KEYS = ("directory", "path", "image_path")
 
 
-def _path_is_within(candidate, root):
-    """True when `candidate` IS `root` or sits underneath it. A right-click
-    parse is usually pointed at a subfolder of an evidence item rather than its
-    root, and analysis done on something inside an item genuinely is coverage
-    of that item - so exact equality alone would miss most real usage."""
-    if not candidate or not root:
-        return False
-    if candidate == root:
-        return True
-    return candidate.startswith(root.rstrip(os.sep) + os.sep)
+# Moved to core/paths.py as path_is_within() (2026-09-16) once the case
+# timeline needed the same containment check. Kept under its original private
+# name here because this module's own call site and comments refer to it: a
+# right-click parse is usually pointed at a subfolder of an evidence item
+# rather than its root, and analysis done on something inside an item
+# genuinely is coverage of that item - so exact equality alone would miss
+# most real usage.
+_path_is_within = path_is_within
 
 
 # The established convention for a recorded failure, already used by the
@@ -2891,6 +2918,14 @@ def compute_case_analysis_coverage(case_folder):
         hash_verified_at = None
         if lv:
             hash_status = lv.get('status', 'unverifiable')
+            # A logical acquisition / Live Collection import records its hash
+            # over its own manifest.json, not over the copied files, so a
+            # match there proves the acquisition RECORD is unaltered and does
+            # not re-read the evidence itself (2026-09-16). Reporting that as
+            # a flat "Hash Verified" alongside a re-hashed disk image would
+            # claim the same thing was checked in both cases.
+            if hash_status == 'match' and lv.get('scope') == 'manifest':
+                hash_status = 'match_manifest'
             # WHEN this result was produced (2026-09-15).
             # execution_worker_verify_all_evidence deliberately stamps every
             # result with its own verified_at and carries forward results a
