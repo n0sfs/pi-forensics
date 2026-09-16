@@ -290,7 +290,7 @@ control panel — pick a tool from the selector on the left, everything below ad
 | **extundelete** | Recovers deleted files specifically from ext2/3/4 (Linux) filesystems by reading the filesystem's own journal — unlike a signature-based carver, it *can* restore original filenames and folder paths. |
 | **foremost / scalpel** | Alternative signature-based carvers to PhotoRec — narrower file-type support, but sometimes faster or more precise for specific formats. `scalpel` ships with a curated signature list (JPEG/PNG/GIF/PDF/ZIP by default). |
 | **TestDisk Partition Analysis** | A read-only listing of every partition TestDisk can identify on a device or image. Deliberately read-only — this station never exposes TestDisk's separate write-capable repair mode. |
-| **Quick Triage Scan** | Scans a device or image for emails, URLs, IP addresses, card-like numbers, and phone numbers, using this app's own built-in pattern matcher — no external tool needed. Supports your own custom keyword/regex lists too (defined in Settings > Case & Reporting). |
+| **Quick Triage Scan** | Scans a device, an acquired image, a single file, or a **folder** of acquired files for emails, URLs, IP addresses, card-like numbers, and phone numbers, using this app's own built-in pattern matcher — no external tool needed. Supports your own custom keyword/regex lists too (defined in Settings > Case & Reporting). Pointing it at a folder is how you scan a logical acquisition, a mobile pull or a Live Collection import; the job report records how many files it actually read. Hits are written into the case's analysis index, so they show up in File Views, on the case Overview, and in the report's Analysis Results section. |
 | **ddrescue Mapfile Inspector** | Not a recovery tool itself — reads a `ddrescue` mapfile (produced by the ddrescue *format*, on the Acquisition tab) and shows a clean summary: how much was rescued, how much wasn't attempted, how many bad sectors were found. |
 
 ### Recovering data from a damaged or failing drive
@@ -740,6 +740,13 @@ a custody transfer, tag an item, or attach/caption an exhibit). You should rarel
 "+" button at all in practice; it's there mainly to add someone before they've done anything yet, or
 to remove a name added by mistake.
 
+Marking a case **Closed** or **Archived** means it stops accepting new evidence: starting an
+acquisition, a recovery job, or a mobile extraction whose destination is inside that case is
+refused, and the active-case button in the top bar shows the status so you can see why. Re-open the
+case (Case Manager, or the Status dropdown) to work on it again. Everything that is legitimately
+part of *finishing* a case still works on a closed one — verifying hashes, adding case notes,
+exporting the report, and exporting the case bundle.
+
 Most of what you do here saves immediately (Case Notes, the Physical Custody Log, tagging,
 attaching a file from File Explorer's own right-click menu, and an exhibit's caption — editable
 either right there in Files & Artifacts or directly from File Explorer's Tag/Attach modal, both
@@ -824,6 +831,25 @@ For PDF/HTML, a live preview renders right there before you commit to downloadin
 PDF or HTML report also gets a SHA-256 integrity hash — shown after export, and saved alongside the
 file — so you can prove later that the report itself hasn't been altered since it left this station.
 
+#### Including what the analysis found
+
+The Standard template has an **Analysis Results** section (off by default — tick it in *Customize
+contents*, or turn it on for every export under Settings > Case & Reporting). It carries what the
+tools actually produced, in three parts:
+
+- **Flagged Items** — anything you tagged, notable items first, with your own note against each.
+  Files this station generated for the case (report exports, hash manifests, the case index) are
+  tagged automatically and are deliberately left out of this list; it's meant to show what *you*
+  marked, not the app's own housekeeping.
+- **Keyword & Indicator Hits** — per category, with a sample of the matched values. Long lists are
+  summarised, and the section says so and gives the real total. These are pattern matches, not
+  findings: each one still needs you to look at it in context.
+- **Parsed Artifacts** — how many records each parser extracted, by type.
+
+If no analysis index exists for the case, the section says that explicitly rather than showing
+zeroes — "no tool has been run" and "a tool ran and found nothing" are different statements, and the
+report distinguishes them.
+
 ---
 
 ## 9. Settings
@@ -883,8 +909,10 @@ missing; run a fixed set of read-only diagnostic commands; reboot or power off t
 Set a station-wide default report template and export settings; build custom report templates;
 configure report branding (a header/logo shown on every export); define custom case fields your
 station wants to track; manage the tags available for tagging evidence; and, under **Analysis &
-IOC Lists**, define custom keyword/regex lists that Triage Scan can use in addition to its five
-built-in categories, plus the **Hash Sets**, **URL Lists**, and **YARA Rulesets** described in
+IOC Lists**, define custom keyword/regex lists that any of the three triage scans can use in
+addition to its seven built-in categories — the File Recovery tab's Triage Scan (tick them before
+starting), File Explorer's right-click Quick Triage Scan (offered from the result panel, so the
+quick look stays one click), and a whole-image Triage Scan (asks before it starts) — plus the **Hash Sets**, **URL Lists**, and **YARA Rulesets** described in
 [Hash Sets, URL Lists, and YARA rules](#hash-sets-url-lists-and-yara-rules) above.
 
 **Import Bundled List** (next to *New List*) copies one of the reference keyword lists shipped with

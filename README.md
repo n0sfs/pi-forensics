@@ -237,7 +237,10 @@ follows standard DFIR report structure: a timestamped, append-only Case Notes jo
 attachments and a local integrity hash per note, disclosed as tamper-evidence, not legal
 notarization) paired with an append-only physical-evidence **Custody Log** in the same tab, a
 polished Report Narrative (Executive Summary/Objectives/Findings/Limitations/Conclusion), an
-**Evidence Activity** tab (per-job acquisition detail, analysis coverage, and the case-scoped audit
+optional **Analysis Results** section carrying what the tools actually found (items you flagged with
+your own notes, keyword/IOC hits per category with a sample of the values and the real total, and
+per-type parsed-artifact counts — stating plainly when no analysis has been run rather than showing
+zeroes), a **Case Activity** tab (per-job acquisition detail, analysis coverage, and the case-scoped audit
 log together), an **Evidence Timeline** merging every acquired image's filesystem timeline (plus real file timestamps from a
 mobile pull/backup or Logical Acquisition folder — an Android pull captures each file's genuine
 on-device modification time directly from the phone via `adb shell`, since `adb pull` itself
@@ -453,7 +456,7 @@ networks the examiner doesn't fully control. It's built with that threat model i
 | **Device validation** | Acquisition/recovery source paths must match a whole-disk device pattern (`/dev/sdX`, `/dev/nvme*n*`, `/dev/mmcblk*`) - arbitrary files can't be pointed at the privileged `ddrescue`/`dc3dd` commands. |
 | **Evidence-drive-safe UI** | Filenames and file content pulled from mounted/browsed media are rendered as plain text or inside a fully sandboxed iframe (no scripts, no same-origin access), never trusted as active HTML - a maliciously named or crafted file on a suspect drive can't inject script into the examiner's session. |
 | **Acquisition tools run via scoped sudo** | dc3dd/dcfldd/plain `dd`/ewfacquire/PhotoRec/ddrescue all need raw read access to the source device, which this unprivileged service account doesn't have by default - each runs via an exact-match NOPASSWD sudoers entry (never a wildcard on the tool itself). Their output lands owned by root as a side effect; the app automatically hands ownership back to the service account (via a similarly scoped `chown`/`chgrp` grant, fixed target user - never attacker-controllable) so later actions (delete, hash verify, copy) work normally. |
-| **Chain-of-custody log** | Every significant action is logged with timestamp, source IP, and (once real accounts are in use) the acting examiner's username - viewable in Settings > Station Audit Log with search and one-click CSV export of the complete log, or filtered to one case via Reporting's own Evidence Activity tab. |
+| **Chain-of-custody log** | Every significant action is logged with timestamp, source IP, and (once real accounts are in use) the acting examiner's username - viewable in Settings > Station Audit Log with search and one-click CSV export of the complete log, or filtered to one case via Reporting's own Case Activity tab. |
 | **Network configuration safety net** | Changing the station's own IP addressing (Settings > Network Configuration) applies immediately but automatically reverts to the previous working settings after 60 seconds unless explicitly confirmed - protects against a typo locking you out of the very page you'd use to fix it. |
 | **Network share credentials** | SMB/CIFS/SFTP passwords are passed via a private, mode-0600 temporary credentials file or piped over stdin rather than on the mount command line, so they don't show up in `ps aux`. |
 | **Transport encryption** | `install.py` prompts to set up nginx with a self-signed TLS certificate (generated per-install under `/etc/ssl/pi-forensics`, with SAN entries for the station's actual LAN IP). If accepted, nginx terminates TLS on 80/443 and gunicorn moves to loopback-only; if declined, gunicorn binds directly and both the session cookie and any Basic Auth credentials travel unencrypted. Certificates can be regenerated, downloaded, or replaced with your own from Settings > Security at any time. |
