@@ -19,7 +19,8 @@ from flask import Blueprint, jsonify, request
 
 from core.auth import requires_auth, requires_permission
 from core.paths import (safe_path, log_chain_of_custody, is_valid_block_device, sanitize_case_slug,
-                        case_status_blocking_new_work, is_bulk_tool_output_dir)
+                        case_status_blocking_new_work, is_bulk_tool_output_dir,
+                        case_consolidated_path)
 from core.config import EVIDENCE_ROOT, SCALPEL_CONF_PATH
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
@@ -30,6 +31,7 @@ from core.jobs import (
 from core.case_index_db import (
     TRIAGE_PATTERNS, TRIAGE_MAX_MATCHES_PER_CATEGORY,
     build_scan_patterns, resolve_scan_category_label, scan_match_is_reportable,
+    case_index_db_path, _case_index_connect,
 )
 
 recovery_bp = Blueprint('recovery', __name__)
@@ -404,7 +406,8 @@ def execution_worker_scalpel(source, dest_dir, report_file_path, report_data):
         clear_active_proc()
 
 
-def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data, total_bytes, keyword_list_ids=None):
+def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data, total_bytes,
+                                 keyword_list_ids=None, case_folder=None):
     """
     Built-in triage scan for structured data (emails, URLs, IP addresses,
     credit-card-like numbers, phone numbers) plus any examiner-selected
@@ -584,6 +587,37 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
             total_hits += len(matches)
             note = " (capped)" if truncated[name] else ""
             append_log(f"[+] {resolve_scan_category_label(name)}: {len(matches)} unique match(es){note} -> {out_path}")
+
+        # Record the hits into the case's own analysis index (2026-09-16).
+        # File Explorer's quick scan and the in-image scan have always done
+        # this; THIS worker - the only one that can use keyword lists, and the
+        # one an examiner reaches for to scan a whole device or folder - never
+        # did. Its results lived only in the .txt files it writes, so they
+        # never reached File Views' Keyword Hits tree, the case Overview's
+        # counts, or (now) the exported report's Analysis Results section. The
+        # most thorough scan in the app was the one whose findings went
+        # nowhere. Same shape as quick_triage_scan()'s own block, best-effort:
+        # a failed index write must never turn a completed scan into a failure.
+        if case_folder and total_hits:
+            index_db_path = case_index_db_path(case_folder)
+            if index_db_path:
+                found_at = time.strftime("%Y-%m-%d %H:%M:%S")
+                hit_rows = [
+                    ('real_fs', None, None, None, source, name, val.decode('utf-8', errors='replace'), found_at)
+                    for name, matches in results.items() for val in matches
+                ]
+                try:
+                    conn = _case_index_connect(index_db_path)
+                    conn.executemany(
+                        "INSERT INTO triage_hits (source_type, image_path, fs_offset, inode, path, category, value, found_at) "
+                        "VALUES (?,?,?,?,?,?,?,?)", hit_rows)
+                    conn.commit()
+                    conn.close()
+                    append_log(f"[+] Indexed {len(hit_rows)} hit(s) into this case's analysis index - they now "
+                               f"appear in File Views, the case Overview and the exported report.")
+                except Exception as e:
+                    append_log(f"[!] Scan results were written to {dest_dir}, but could not be added to the "
+                               f"case's analysis index ({e}) - they will not appear in File Views or the report.")
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["triage_summary"] = {name: len(matches) for name, matches in results.items()}
@@ -1066,7 +1100,12 @@ def start_triage_scan():
 
     thread = threading.Thread(
         target=execution_worker_triage_scan,
-        args=(source, job_dest_dir, report_target, report_data, total_bytes, keyword_list_ids)
+        # dest_path is the case folder itself whenever a case is active (every
+        # tab prefills it that way); case_consolidated_path() is what decides
+        # whether it really is one, so a no-case scan passes None and simply
+        # doesn't index.
+        args=(source, job_dest_dir, report_target, report_data, total_bytes, keyword_list_ids,
+              dest_path if case_consolidated_path(dest_path) else None)
     )
     thread.daemon = True
     thread.start()
