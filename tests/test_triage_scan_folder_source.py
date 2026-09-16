@@ -164,3 +164,55 @@ def test_an_unreadable_file_is_counted_not_fatal(tmp_path, monkeypatch):
     assert report["triage_scan_coverage"]["files_unreadable"] == 1
     # The readable files were still scanned.
     assert "jane@example.com" in _hits(dest, "emails")
+
+
+# --- Hits reach the case's analysis index (2026-09-16) ---
+
+def test_hits_are_written_into_the_case_analysis_index(tmp_path, evidence_root):
+    """This worker is the only one that can use keyword lists, and the one an
+    examiner reaches for to scan a whole device or folder - but its results
+    lived only in the .txt files it writes. They never reached File Views'
+    Keyword Hits tree, the case Overview's counts, or the exported report's
+    Analysis Results section. The most thorough scan in the app was the one
+    whose findings went nowhere."""
+    import json as _json
+    import core.case_index_db as case_index_db
+
+    case_dir = os.path.join(evidence_root, "2026-CASE-INDEXED")
+    os.makedirs(case_dir, exist_ok=True)
+    with open(os.path.join(case_dir, "2026-CASE-INDEXED_case.json"), "w") as f:
+        _json.dump({"schema_version": 1, "case_number": "2026-CASE-INDEXED",
+                    "case_folder": case_dir, "case_status": "Open", "events": []}, f)
+
+    source = tmp_path / "evidence.txt"
+    source.write_text("reach jane@example.com or +15555550172")
+    dest = tmp_path / "out"
+
+    report = {"tool": "triage_scan", "acquisition_status": "IN_PROGRESS"}
+    with mock.patch.object(recovery, "update_job"), \
+         mock.patch.object(recovery, "clear_active_proc"), \
+         mock.patch.object(recovery, "snapshot_job", return_value={"status": "Running"}), \
+         mock.patch.object(recovery, "_write_report"):
+        recovery.execution_worker_triage_scan(
+            str(source), str(dest), str(dest / "report.json"), report, 0, None, case_dir)
+
+    findings = case_index_db.collect_case_analysis_findings(case_dir)
+    by_cat = {h["category"]: h for h in findings["keyword_hits"]}
+    assert by_cat["emails"]["samples"] == ["jane@example.com"]
+    assert by_cat["phone_numbers"]["samples"] == ["+15555550172"]
+
+
+def test_a_scan_with_no_case_still_completes_and_indexes_nothing(tmp_path):
+    """Running a job with no active case is a supported workflow - it must not
+    become an error just because there is no index to write to."""
+    source = tmp_path / "evidence.txt"
+    source.write_text("jane@example.com")
+    dest = tmp_path / "out"
+    report = {"tool": "triage_scan", "acquisition_status": "IN_PROGRESS"}
+    with mock.patch.object(recovery, "update_job"), \
+         mock.patch.object(recovery, "clear_active_proc"), \
+         mock.patch.object(recovery, "snapshot_job", return_value={"status": "Running"}), \
+         mock.patch.object(recovery, "_write_report"):
+        recovery.execution_worker_triage_scan(
+            str(source), str(dest), str(dest / "report.json"), report, 0, None, None)
+    assert report["acquisition_status"] == "COMPLETED"
