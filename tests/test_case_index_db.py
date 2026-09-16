@@ -2195,6 +2195,33 @@ def test_analysis_coverage_excludes_events_with_no_walkable_output_path(case_fol
     assert result["items"] == []
 
 
+def test_analysis_coverage_includes_a_logical_acquisition(case_folder, coc_log_file):
+    """Regression, 2026-09-16. This function read output_image_path and
+    output_destination only, so a Logical Acquisition or Live Collection
+    import - both of which record output_container_path - was dropped from
+    the grid entirely. Confirmed live on the station: a case whose only
+    acquisition was a logical one rendered "No completed evidence items with
+    a walkable output path yet - run an acquisition first" immediately after
+    that acquisition succeeded."""
+    container = os.path.join(case_folder, "2026-CASE-X_ITEM-01_logical")
+    os.makedirs(container, exist_ok=True)
+    _write_case_events(case_folder, [
+        {"event_id": "e1", "acquisition_status": "COMPLETED", "tool": "logical_acquisition",
+         "case_metadata": {"evidence_id": "ITEM-01"},
+         "acquisition_parameters": {
+             "output_container_path": container,
+             "manifest_path": os.path.join(container, "manifest.json"),
+         }},
+    ])
+    items = case_index_db.compute_case_analysis_coverage(case_folder)["items"]
+    assert len(items) == 1
+    assert items[0]["evidence_id"] == "ITEM-01"
+    assert items[0]["target_path"] == container
+    # Folder-shaped, so it must be offered the mobile/folder step set, not
+    # the disk-image one.
+    assert items[0]["kind"] == "mobile_or_folder"
+
+
 def test_analysis_coverage_disk_image_steps_completed_from_real_coc_log(case_folder, coc_log_file):
     image_path = os.path.join(case_folder, "USBDrive-1.dd")
     _write_case_events(case_folder, [

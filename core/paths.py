@@ -346,6 +346,83 @@ def classify_case_role(name):
         return 'geolocation'
     return None
 
+# --- Where an acquisition event actually wrote its output ------------------
+#
+# An event's acquisition_parameters record their output under one of THREE
+# different key names, depending on which tool wrote it:
+#
+#   output_image_path      - a raw disk image (dc3dd/dcfldd/dd/E01/AFF/
+#                            ddrescue, image_conversion)
+#   output_destination     - mobile pulls, bugreports, companion-app
+#                            extraction, recovery tools
+#   output_container_path  - Logical Acquisition, Live Collection import
+#
+# Every case-wide reader has to resolve that, and before 2026-09-16 three of
+# them did it independently and each got a DIFFERENT subset right:
+# _collect_case_timeline() handled all three, compute_case_analysis_coverage()
+# handled two (silently dropping every logical acquisition and Live Collection
+# import), and Verify All Evidence handled one (silently skipping those AND
+# every mobile acquisition - measured on the deployed station as 10 of 13
+# completed acquisitions in one case, and 3 of 3 in another, reported to the
+# examiner as "not verifiable by this tool"). These two helpers are the one
+# shared answer, so a fourth reader can't invent a fourth subset. This is
+# exactly the "two independent copies" trap CLAUDE.md documents, with three.
+def acquisition_output_location(params):
+    """Returns (path, kind) for where an acquisition event wrote its output -
+    kind is 'image' for a single acquired image file, 'directory' for anything
+    written into a destination/container folder, and (None, None) when the
+    event records no output location at all (e.g. a companion-app extraction).
+
+    Image wins over destination when both are recorded: a raw acquisition sets
+    output_destination to the PARENT folder as well, and it's the image itself
+    that is the evidence. Callers still confirm the path exists and is the
+    shape they expect - this resolves the recorded value, it does not stat it.
+    """
+    params = params or {}
+    image_path = params.get('output_image_path')
+    if image_path:
+        return image_path, 'image'
+    dest = params.get('output_destination') or params.get('output_container_path')
+    if dest:
+        return dest, 'directory'
+    return None, None
+
+def acquisition_verification_target(params):
+    """Returns (path, scope) for the single file whose hash an acquisition
+    recorded in computed_verification_hashes, so it can be re-hashed and
+    compared - or (None, None) when the event anchored its hash to nothing
+    re-checkable.
+
+    scope says WHAT a match actually proves, because that differs by tool and
+    an examiner must not be told more than was checked:
+
+      'image'    - the acquired image file itself; a match covers the evidence.
+      'manifest' - Logical Acquisition and Live Collection import both hash
+                   their own manifest.json (see execution_worker_logical's
+                   "Container-level hash" comment), which records every copied
+                   file's own hash. A match proves the RECORD is intact; it
+                   does not re-read the copied files themselves.
+      'file'     - a destination that is itself a single file rather than a
+                   folder (an android_bugreport .zip, a companion-extraction
+                   .json).
+
+    A destination that names a folder yields (None, None): there is no one
+    file to re-hash, and inventing one (hashing a directory walk) would not
+    match whatever was recorded at acquisition time anyway.
+    """
+    params = params or {}
+    image_path = params.get('output_image_path')
+    if image_path:
+        return image_path, 'image'
+    manifest_path = params.get('manifest_path')
+    if manifest_path:
+        return manifest_path, 'manifest'
+    dest = params.get('output_destination') or params.get('output_container_path')
+    if dest and os.path.isfile(dest):
+        return dest, 'file'
+    return None, None
+
+
 def classify_extension(name):
     """Returns (category, extension) for a filename - extension is the bare,
     lowercased suffix with no leading dot ('' if none); category is one of
