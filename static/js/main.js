@@ -7151,15 +7151,26 @@ async function runImageOcr() {
 // reusing the same TRIAGE_PATTERNS the background Triage Scan job in File
 // Recovery uses, without needing to leave File Explorer to configure and
 // run that job.
-async function runSelectedQuickTriageScan() {
+// keywordListIds: omitted for the one-click quick look (built-in categories
+// only, which is what "quick" means here); supplied when the examiner re-runs
+// from the result modal's own "Add keyword lists..." button below. The route
+// has always accepted keyword_list_ids - nothing ever sent it, and nothing
+// offered a way to choose, which left saved lists reachable from only one of
+// the app's three scan entry points (2026-09-16).
+async function runSelectedQuickTriageScan(keywordListIds) {
     if (!activeSelectedFile) return;
-    showToolOutputModal(`Quick Triage Scan: ${activeSelectedFile.split('/').pop()}`, 'bi-binoculars');
+    const fileName = activeSelectedFile.split('/').pop();
+    showToolOutputModal(`Quick Triage Scan: ${fileName}`, 'bi-binoculars');
 
     try {
         const res = await fetch('/api/files/quick_triage_scan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null })
+            body: JSON.stringify({
+                path: activeSelectedFile,
+                case_folder: activeCase ? activeCase.case_folder : null,
+                keyword_list_ids: keywordListIds || [],
+            })
         });
         const data = await res.json();
         const container = document.getElementById("toolOutputContainer");
@@ -7169,10 +7180,36 @@ async function runSelectedQuickTriageScan() {
         }
         setToolOutputBadge(`${data.total_hits} total match${data.total_hits === 1 ? '' : 'es'}`, data.total_hits > 0 ? 'bg-warning text-dark' : 'bg-success');
         if (container) container.textContent = data.output;
+        addQuickTriageKeywordRerun(container, keywordListIds);
     } catch (err) {
         const container = document.getElementById("toolOutputContainer");
         if (container) container.textContent = '[REQUEST FAILED]';
     }
+}
+
+// Offered AFTER the built-in result rather than as a dialog before it, so the
+// one-click "quick look" this action exists for stays one click.
+function addQuickTriageKeywordRerun(container, alreadyUsedIds) {
+    if (!container || !container.parentElement) return;
+    const existing = document.getElementById('quickTriageKeywordRerun');
+    if (existing) existing.remove();
+
+    const bar = document.createElement('div');
+    bar.id = 'quickTriageKeywordRerun';
+    bar.className = 'mt-2';
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-sm btn-outline-info';
+    btn.textContent = (alreadyUsedIds && alreadyUsedIds.length)
+        ? 'Change keyword lists and scan again...' : 'Add keyword lists and scan again...';
+    btn.onclick = async () => {
+        const ids = await promptForKeywordLists(
+            `Keyword lists: ${activeSelectedFile.split('/').pop()}`,
+            'Re-runs this scan with the 5 built-in categories plus whichever saved lists you tick.');
+        if (ids === null) return;
+        runSelectedQuickTriageScan(ids);
+    };
+    bar.appendChild(btn);
+    container.parentElement.appendChild(bar);
 }
 
 async function runSelectedHashdeep() {
@@ -10568,11 +10605,24 @@ async function materializeShadowCopy(storeIndex) {
 async function startImageTriageScan() {
     if (!explorerImagePath) return;
     const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
+    // This is a real background job over a whole image, so asking first is
+    // proportionate - and it is the only way the examiner's saved keyword
+    // lists can reach a scan launched from here. The route has always
+    // accepted keyword_list_ids; nothing ever sent it (2026-09-16).
+    const keywordListIds = await promptForKeywordLists(
+        'Triage Scan: keyword lists',
+        'Scans this image for the 5 built-in categories (emails, URLs, IP addresses, card-like '
+        + 'numbers, phone numbers). Tick any saved keyword lists to search for as well, or run '
+        + 'with the built-ins alone.');
+    if (keywordListIds === null) return;  // cancelled
     try {
         const res = await fetch('/api/image/start_triage_scan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir })
+            body: JSON.stringify({
+                image_path: explorerImagePath, destination_dir: destinationDir,
+                keyword_list_ids: keywordListIds,
+            })
         });
         const data = await res.json();
         if (!data.success) {
@@ -22259,6 +22309,108 @@ async function loadRecoveryKeywordListsChecklist() {
         row.appendChild(input);
         row.appendChild(label);
         container.appendChild(row);
+    });
+}
+
+// Shared keyword-list picker for the two scan entry points that are NOT the
+// File Recovery tab (2026-09-16). /api/files/quick_triage_scan and
+// /api/image/start_triage_scan have BOTH accepted keyword_list_ids all along -
+// neither frontend ever sent it, and neither offered a way to choose, so the
+// lists an examiner saved (including the bundled DEA/credential/OFAC sets)
+// were reachable from exactly one of the three scan entry points. Settings'
+// own help text still describes that as the only place, which is what made
+// this look intentional rather than a gap.
+//
+// Built in JS rather than added to templates/modals/shared.html: it is needed
+// from two unrelated flows, carries no state between them, and building it
+// here keeps the markup and the only code that reads it in one place.
+// Resolves to an array of selected ids, or null if the examiner cancelled.
+async function promptForKeywordLists(titleText, introText) {
+    const lists = await fetchKeywordLists();
+    return new Promise((resolve) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'modal fade';
+        wrap.tabIndex = -1;
+
+        const dialog = document.createElement('div');
+        dialog.className = 'modal-dialog modal-dialog-centered';
+        const content = document.createElement('div');
+        content.className = 'modal-content bg-dark text-light border-secondary';
+
+        const header = document.createElement('div');
+        header.className = 'modal-header border-secondary';
+        const title = document.createElement('h6');
+        title.className = 'modal-title';
+        title.textContent = titleText;
+        header.appendChild(title);
+
+        const body = document.createElement('div');
+        body.className = 'modal-body';
+        const intro = document.createElement('p');
+        intro.className = 'text-subtle small';
+        intro.textContent = introText;
+        body.appendChild(intro);
+
+        const listWrap = document.createElement('div');
+        listWrap.style.maxHeight = '40vh';
+        listWrap.style.overflowY = 'auto';
+        if (lists.length === 0) {
+            const none = document.createElement('span');
+            none.className = 'text-subtle small';
+            none.textContent = 'No saved keyword lists yet - create or import one in Settings > Case & Reporting.';
+            listWrap.appendChild(none);
+        }
+        lists.forEach((l, i) => {
+            const row = document.createElement('div');
+            row.className = 'form-check';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.className = 'form-check-input';
+            input.id = `kwPick_${i}`;
+            input.value = l.id;
+            const label = document.createElement('label');
+            label.className = 'form-check-label';
+            label.htmlFor = input.id;
+            // Examiner-entered list name - text node only, never innerHTML.
+            label.textContent = `${l.name} (${l.terms.length} term${l.terms.length === 1 ? '' : 's'}${l.is_regex ? ', regex' : ''})`;
+            row.appendChild(input);
+            row.appendChild(label);
+            listWrap.appendChild(row);
+        });
+        body.appendChild(listWrap);
+
+        const footer = document.createElement('div');
+        footer.className = 'modal-footer border-secondary';
+        const cancel = document.createElement('button');
+        cancel.className = 'btn btn-sm btn-secondary';
+        cancel.textContent = 'Cancel';
+        const run = document.createElement('button');
+        run.className = 'btn btn-sm btn-primary';
+        run.textContent = 'Scan';
+        footer.appendChild(cancel);
+        footer.appendChild(run);
+
+        content.appendChild(header);
+        content.appendChild(body);
+        content.appendChild(footer);
+        dialog.appendChild(content);
+        wrap.appendChild(dialog);
+        document.body.appendChild(wrap);
+
+        const instance = new bootstrap.Modal(wrap);
+        let answer = null;
+        run.onclick = () => {
+            answer = [...listWrap.querySelectorAll('input:checked')].map((el) => el.value);
+            instance.hide();
+        };
+        cancel.onclick = () => instance.hide();
+        // One resolve for every way out - the X, the backdrop, Escape, Cancel
+        // and Scan all land here, so a caller can never be left awaiting.
+        wrap.addEventListener('hidden.bs.modal', () => {
+            wrap.remove();
+            resolve(answer);
+        });
+        instance.show();
     });
 }
 
