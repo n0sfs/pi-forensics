@@ -340,26 +340,34 @@ def test_read_error_has_its_own_label_and_is_not_coloured_as_tampering():
     assert meta["pdf_color"] != reporting._HASH_STATUS_META["mismatch"]["pdf_color"]
 
 
-def _normalise_label(label):
-    """The PDF cell is fixed-width so its labels are upper-case and terse
-    while the HTML's are title-case - that difference is deliberate. Only the
-    WORDS have to agree."""
-    return " ".join(label.lower().split())
+def _words(label):
+    return set(label.lower().split())
 
 
-def test_every_status_uses_the_same_words_in_the_pdf_and_the_html():
+def _assert_same_vocabulary(status, meta):
+    """The PDF cell is fixed-width, so its label is allowed to be SHORTER than
+    the HTML's ("VERIFIED" for "Hash Verified", "NOT RE-VERIFIED" for "Not Yet
+    Re-Verified") - that abbreviation is deliberate and documented on the
+    registry. What is not allowed is a different phrase: every word the PDF
+    uses must appear in the HTML label, so the two formats are always saying
+    the same thing at different lengths."""
+    pdf, html_ = _words(meta["pdf_label"]), _words(meta["html_label"])
+    extra = pdf - html_
+    assert not extra, (f"{status}: PDF says {meta['pdf_label']!r} but HTML says "
+                       f"{meta['html_label']!r} - {sorted(extra)} appears in neither the other "
+                       f"label nor an abbreviation of it")
+
+
+def test_every_status_says_the_same_thing_in_the_pdf_and_the_html():
     """Regression from a live end-to-end walkthrough (2026-09-16): exporting
     one case twice showed "N/A" in the PDF's Verified column and "Not Checked"
     in the HTML's for the SAME row and the same underlying state - two
     documents from one case disagreeing about whether verification had been
-    attempted. The PDF also used "N/A" for BOTH _HASH_STATUS_UNKNOWN and
-    no_hash_recorded, collapsing two states this registry's own comments call
-    deliberately distinct, while the HTML kept them apart."""
+    attempted. "N/A" is not an abbreviation of "Not Checked", it is a
+    different statement."""
     for status, meta in reporting._HASH_STATUS_META.items():
-        assert _normalise_label(meta["pdf_label"]) == _normalise_label(meta["html_label"]), \
-            f"{status}: PDF says {meta['pdf_label']!r}, HTML says {meta['html_label']!r}"
-    unknown = reporting._HASH_STATUS_UNKNOWN
-    assert _normalise_label(unknown["pdf_label"]) == _normalise_label(unknown["html_label"])
+        _assert_same_vocabulary(status, meta)
+    _assert_same_vocabulary("<never computed>", reporting._HASH_STATUS_UNKNOWN)
 
 
 def test_no_two_states_share_a_label_in_either_format():
