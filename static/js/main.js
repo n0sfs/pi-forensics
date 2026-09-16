@@ -20098,12 +20098,17 @@ async function refreshGuidedWorkflow() {
         }
     } catch (err) {}
 
+    // Declared out here, not inside the try: step 4 below reads it too, and a
+    // `const` inside the block is not in scope there (2026-09-16 - caught in
+    // the browser, where the ReferenceError aborted the whole refresh and left
+    // step 4 showing its markup placeholder).
+    let idxData = null;
     try {
         const idxRes = await fetch('/api/case_index/summary', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ case_folder: activeCase.case_folder }),
         });
-        const idxData = await idxRes.json();
+        idxData = await idxRes.json();
         if (idxData.success) hasActivity = !!idxData.has_analysis_activity;
     } catch (err) {}
 
