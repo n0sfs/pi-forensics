@@ -81,7 +81,16 @@ from core.case_index_db import (
     _comm_content_preview, tagged_real_fs_paths_for_case, derive_examiner_display,
     compute_case_analysis_coverage, ensure_examiner_recorded,
     _build_evidence_id_resolvers, _resolve_row_evidence_id,
+    collect_case_analysis_findings,
 )
+# One of the few deliberate routes->routes imports in this app (the others:
+# acquisition->image_browser, mobile->acquisition). CLAUDE.md documents
+# PARSED_ARTIFACT_TYPE_LABELS as already having one twin that must be kept in
+# sync by hand - main.js's FILE_VIEWS_WEB_ARTIFACT_LABELS - so the exported
+# Analysis Results section importing the existing map is strictly better than
+# adding a THIRD copy here. routes/case_index.py imports nothing from this
+# module (only mentions it in comments), so there is no cycle.
+from routes.case_index import PARSED_ARTIFACT_TYPE_LABELS
 from core.tsk_utils import (_tsk_walk, _tsk_resolve_filesystems, _tsk_open_fs,
                             TSK_MAX_TIMELINE_ENTRIES, TSK_MAX_WALK_DEPTH, TSK_MAX_WALK_DIRS)
 
@@ -1725,6 +1734,94 @@ def _draw_pdf_audit_trail(c, y, entries, title="Case Activity Log (Audit Trail)"
             c.drawString(60, y, ', '.join(f'{k}={v}' for k, v in details.items())[:130])
             c.setFillColorRGB(0, 0, 0)
             y -= 11
+    return y
+
+def _draw_pdf_analysis_findings(c, y, findings, title="Analysis Results"):
+    """PDF counterpart to _html_analysis_findings_block - same three tables,
+    same caps, same disclosures. Uses the internal-pagination-guard shape of
+    _draw_pdf_audit_trail (this section's length is driven by case data and can
+    run to several pages), and _pdf_cell() for every fixed-width value so a cut
+    is always marked rather than silent."""
+    findings = findings or {}
+    if y < 150:
+        c.showPage()
+        y = 730
+    y -= 15
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, title)
+    y -= 20
+    c.setFont("Helvetica", 8)
+
+    def line(text, indent=50, grey=False, gap=11):
+        nonlocal y
+        if y < 60:
+            c.showPage()
+            y = 750
+            c.setFont("Helvetica", 8)
+        if grey:
+            c.setFillColorRGB(0.4, 0.4, 0.4)
+        c.drawString(indent, y, text)
+        if grey:
+            c.setFillColorRGB(0, 0, 0)
+        y -= gap
+
+    def heading(text):
+        nonlocal y
+        if y < 80:
+            c.showPage()
+            y = 750
+        y -= 4
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(50, y, text)
+        c.setFont("Helvetica", 8)
+        y -= 13
+
+    if not findings.get('indexed'):
+        line("No analysis index exists for this case, so no scan results, parsed artifacts or")
+        line("flagged items can be reported. This means no analysis tool has been run against")
+        line("this case - not that a tool was run and found nothing.")
+        return y
+
+    flagged = findings.get('flagged') or []
+    flagged_total = findings.get('flagged_total', len(flagged))
+    heading("Flagged Items")
+    if flagged:
+        if flagged_total > len(flagged):
+            line(f"Showing {len(flagged)} of {flagged_total} flagged item(s) - notable items first.", grey=True)
+        for item in flagged:
+            marker = "* " if item.get('notable') else "  "
+            name = item.get('name') or os.path.basename(item.get('path') or '') or '--'
+            line(f"{marker}[{_pdf_cell(item.get('tag', ''), 22)}] {_pdf_cell(name, 46)}"
+                 f"   {_pdf_cell(item.get('tagged_by') or '', 14)} {item.get('tagged_at') or ''}")
+            if item.get('comment'):
+                line(_pdf_cell(item['comment'], 150), indent=62, grey=True)
+    else:
+        line("No items were flagged by the examiner in this case.", grey=True)
+
+    hits = findings.get('keyword_hits') or []
+    heading("Keyword & Indicator Hits")
+    if hits:
+        line("Pattern matches, not confirmed findings - each still needs review in context.", grey=True)
+        for hit in hits:
+            label = hit.get('label') or hit.get('category', '')
+            line(f"{_pdf_cell(label, 44)}  {hit.get('count', 0)} match(es)")
+            samples = ', '.join(str(s) for s in (hit.get('samples') or []))
+            if samples:
+                shown = len(hit.get('samples') or [])
+                suffix = f"  ... ({hit.get('count', 0)} total, first {shown} shown)" if hit.get('samples_truncated') else ""
+                line(_pdf_cell(samples, 140) + suffix, indent=62, grey=True)
+    else:
+        line("No keyword or indicator matches were recorded for this case.", grey=True)
+
+    artifacts = findings.get('parsed_artifacts') or []
+    heading("Parsed Artifacts")
+    if artifacts:
+        for art in artifacts:
+            label = PARSED_ARTIFACT_TYPE_LABELS.get(art.get('artifact_type'), art.get('artifact_type', ''))
+            line(f"{_pdf_cell(label, 52)}  {art.get('count', 0)} record(s)")
+    else:
+        line("No artifacts have been parsed into this case's index.", grey=True)
+
     return y
 
 def _draw_pdf_custody_log_block(c, y, custody_log, title="Physical Evidence Custody Log", exhibit_numbers=None):
@@ -4676,6 +4773,20 @@ REPORT_SECTION_BLOCKS = [
     # an examiner wanting both enables them together in a custom template.
     {"key": "pattern_of_life", "default_title": "Pattern of Life: Contact Correlation & Location Activity",
      "in_legacy_default": False, "requires_events": False, "force_page_break": True, "remappable": False},
+    # What the analysis tools actually found, and what the examiner flagged
+    # (2026-09-16). Until this existed, NOTHING any analysis produced could
+    # reach an exported report: no block carried keyword/IOC hits, parsed
+    # artifacts or tagged items, so a fully analysed case exported with
+    # "Relevant Findings: (Not provided)" unless the examiner retyped it all by
+    # hand. Gets a real checkbox on the Standard template (in_legacy_default
+    # True) but starts UNCHECKED in the markup, exactly like geolocation - a
+    # case with no analysis should not grow an empty section by default, and
+    # existing exports should not silently change shape.
+    # requires_events False: this reads the case's own analysis index, not
+    # events[], so a case with zero acquisition events (a companion-app-only
+    # mobile extraction, say) can still show what was found.
+    {"key": "analysis_results", "default_title": "Analysis Results",
+     "in_legacy_default": True, "requires_events": False, "force_page_break": True, "remappable": False},
     {"key": "audit_trail", "default_title": "Case Activity Log (Audit Trail)",
      "in_legacy_default": True, "requires_events": False, "force_page_break": False, "remappable": False},
     {"key": "timeline", "default_title": "Filesystem Timeline (MACB)",
@@ -4743,6 +4854,19 @@ FEATURE_MODULES = {
     },
 }
 
+# An absent key in a caller's sections dict means "include it" for every block
+# that predates this set - the Export pane always sends all of them explicitly,
+# so the default only ever applies to a non-UI caller. A section added AFTER
+# that convention was established must not turn itself on in every existing
+# caller's exports, so new checkbox-controlled blocks are listed here and
+# default OFF when unmentioned (2026-09-16).
+#
+# Geolocation is deliberately NOT in this set: it has shipped with the
+# include-when-absent default long enough that changing it now would alter
+# existing non-UI callers' output, which is the exact thing this set exists to
+# avoid. Its own <input> starting unchecked is what keeps it off in practice.
+LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED = {"analysis_results"}
+
 def _expand_legacy_sections_dict(sections_dict):
     """Converts the plain sections:{key: bool} dict (today's Export-modal
     checkboxes / Settings station defaults, used only when no custom
@@ -4762,7 +4886,7 @@ def _expand_legacy_sections_dict(sections_dict):
         if not block["in_legacy_default"]:
             continue
         legacy_key = "executive_summary" if block["key"] == "objectives" else block["key"]
-        if sections_dict.get(legacy_key, True):
+        if sections_dict.get(legacy_key, legacy_key not in LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED):
             # source_field always the block's own default here - the plain
             # checkbox path has no per-section remapping capability, only a
             # saved custom template does (see _resolve_section_order below).
@@ -4835,7 +4959,7 @@ def _resolve_template_ref(value, cfg):
         raise ValueError(f"Selected custom template '{template_id}' no longer exists.")
     return 'standard', None
 
-def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None, hash_status_by_event=None):
+def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None, hash_status_by_event=None, analysis_findings=None):
     from reportlab.lib.pagesizes import letter
 
     c = _numbered_canvas_class()(pdf_path, pagesize=letter)
@@ -4898,6 +5022,7 @@ def _build_pdf_report_standard(pdf_path, header, events, urls, files, audit_entr
         "attachments": lambda y, title, field: _draw_pdf_attachments(c, y, urls, files, title=title, captions=captions,
                                                                        tags_by_path=tags_by_path, analysis_by_path=analysis_by_path,
                                                                        exhibit_numbers=exhibit_numbers),
+        "analysis_results": lambda y, title, field: _draw_pdf_analysis_findings(c, y, analysis_findings, title=title),
         "audit_trail": lambda y, title, field: _draw_pdf_audit_trail(c, y, audit_entries, title=title),
         "timeline": lambda y, title, field: _draw_pdf_timeline_block(c, y, events, title=title, case_folder=case_folder, include_previews=include_timeline_previews),
         "geolocation": lambda y, title, field: _draw_pdf_geolocation_block(c, y, geo_data or [], title=title),
@@ -5753,6 +5878,90 @@ def _html_audit_trail_block(audit_entries, anchor_id=None, title="Case Activity 
         parts.append('<p class="muted">No activity log entries found for this case.</p>')
     return ''.join(parts)
 
+def _html_analysis_findings_block(findings, anchor_id=None, title="Analysis Results"):
+    """What this app's own analysis tools found, and what the examiner flagged
+    (2026-09-16). See collect_case_analysis_findings() for why this had no
+    report section at all until now.
+
+    Three tables, in the order an examiner needs them: what was FLAGGED (a
+    human judgement, and the reason the rest was read), then automated keyword/
+    IOC hits, then how many records each parser extracted. Every cap is stated
+    in the document; a summary that looks complete is the failure worth
+    avoiding here."""
+    esc = html.escape
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ''
+    parts = [f'<h2{id_attr}>{esc(title)}</h2>']
+    findings = findings or {}
+
+    if not findings.get('indexed'):
+        parts.append('<p class="muted">No analysis index exists for this case, so no scan results, '
+                     'parsed artifacts or flagged items can be reported. This means no analysis tool '
+                     'has been run against this case - not that a tool was run and found nothing.</p>')
+        return ''.join(parts)
+
+    flagged = findings.get('flagged') or []
+    flagged_total = findings.get('flagged_total', len(flagged))
+    parts.append('<h3>Flagged Items</h3>')
+    if flagged:
+        if flagged_total > len(flagged):
+            parts.append(f'<p class="muted">Showing {len(flagged)} of {flagged_total} flagged item(s) - '
+                         f'items marked notable are listed first.</p>')
+        parts.append('<table><tr><th>Tag</th><th>Item</th><th>Examiner\'s Note</th>'
+                     '<th>Flagged By</th><th>When</th></tr>')
+        for item in flagged:
+            tag_cell = esc(str(item.get('tag', '')))
+            if item.get('notable'):
+                tag_cell = f'<strong class="hash-mismatch">{tag_cell}</strong>'
+            name = item.get('name') or os.path.basename(item.get('path') or '') or '--'
+            path = item.get('path') or ''
+            item_cell = esc(str(name))
+            if path:
+                item_cell += f'<br><span class="muted">{esc(path)}</span>'
+            parts.append(
+                '<tr><td>' + tag_cell + '</td>'
+                '<td>' + item_cell + '</td>'
+                '<td>' + esc(str(item.get('comment') or '')) + '</td>'
+                '<td>' + esc(str(item.get('tagged_by') or '')) + '</td>'
+                '<td>' + esc(str(item.get('tagged_at') or '')) + '</td></tr>'
+            )
+        parts.append('</table>')
+    else:
+        parts.append('<p class="muted">No items were flagged by the examiner in this case.</p>')
+
+    hits = findings.get('keyword_hits') or []
+    parts.append('<h3>Keyword &amp; Indicator Hits</h3>')
+    if hits:
+        parts.append('<p class="muted">Counts are of distinct matches recorded in this case\'s '
+                     'analysis index. These are pattern matches, not confirmed findings - each one '
+                     'still needs an examiner to look at it in context.</p>')
+        parts.append('<table><tr><th>Category</th><th>Matches</th><th>Examples</th></tr>')
+        for hit in hits:
+            samples = ', '.join(str(s) for s in (hit.get('samples') or []))
+            if hit.get('samples_truncated'):
+                samples += f" ... ({hit.get('count', 0)} total, first {len(hit.get('samples') or [])} shown)"
+            parts.append(
+                '<tr><td>' + esc(str(hit.get('label') or hit.get('category', ''))) + '</td>'
+                '<td>' + esc(str(hit.get('count', 0))) + '</td>'
+                '<td>' + esc(samples) + '</td></tr>'
+            )
+        parts.append('</table>')
+    else:
+        parts.append('<p class="muted">No keyword or indicator matches were recorded for this case.</p>')
+
+    artifacts = findings.get('parsed_artifacts') or []
+    parts.append('<h3>Parsed Artifacts</h3>')
+    if artifacts:
+        parts.append('<table><tr><th>Artifact Type</th><th>Records</th></tr>')
+        for art in artifacts:
+            label = PARSED_ARTIFACT_TYPE_LABELS.get(art.get('artifact_type'), art.get('artifact_type', ''))
+            parts.append('<tr><td>' + esc(str(label)) + '</td><td>'
+                         + esc(str(art.get('count', 0))) + '</td></tr>')
+        parts.append('</table>')
+    else:
+        parts.append('<p class="muted">No artifacts have been parsed into this case\'s index.</p>')
+
+    return ''.join(parts)
+
 def _html_custody_log_block(custody_log, anchor_id=None, title="Physical Evidence Custody Log", exhibit_numbers=None):
     """HTML counterpart to _draw_pdf_custody_log_block - see that function
     for the from/to-custodian, append-only physical-handoff shape this
@@ -5955,7 +6164,7 @@ def _html_case_notes_block(case_notes, anchor_id=None, title="Forensic Analysis 
         parts.append('</div>')
     return ''.join(parts)
 
-def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None, hash_status_by_event=None):
+def _build_html_report_standard(header, events, urls, files, audit_entries, case_notes, resolved_sections, job_fields, captions=None, tags_by_path=None, analysis_by_path=None, exhibit_numbers=None, geo_data=None, custody_log=None, case_folder=None, include_timeline_previews=False, attachment_files=None, hash_status_by_event=None, analysis_findings=None):
     """Self-contained HTML report - every value is escaped since it may
     contain examiner-entered text or evidence-derived strings (filenames,
     device paths) that this file could later be reopened/served from disk.
@@ -5997,6 +6206,7 @@ def _build_html_report_standard(header, events, urls, files, audit_entries, case
         "attachments": lambda anchor, title, field: _html_exhibits_block(urls, files, anchor_id=anchor, title=title, captions=captions,
                                                                            tags_by_path=tags_by_path, analysis_by_path=analysis_by_path,
                                                                            exhibit_numbers=exhibit_numbers),
+        "analysis_results": lambda anchor, title, field: _html_analysis_findings_block(analysis_findings, anchor_id=anchor, title=title),
         "audit_trail": lambda anchor, title, field: _html_audit_trail_block(audit_entries, anchor_id=anchor, title=title),
         "timeline": lambda anchor, title, field: _html_timeline_block(events, title=title, anchor_id=anchor, case_folder=case_folder, include_previews=include_timeline_previews),
         "geolocation": lambda anchor, title, field: _html_geolocation_block(geo_data or [], title=title, anchor_id=anchor),
@@ -6446,6 +6656,15 @@ def export_report():
     if template == 'caseuco' or (resolved_sections is not None and any(e['key'] == 'geolocation' for e in resolved_sections)):
         geo_data = _collect_case_geolocation(case_folder, attachments.get('files', []))
 
+    # Analysis Results section data (2026-09-16) - same "compute once, only
+    # when the section is actually selected" pattern as geo_data above, so a
+    # case with a large analysis index costs nothing on an export that doesn't
+    # include this section. Only the standard/custom templates have this block;
+    # the three fixed templates keep their own documented structures.
+    analysis_findings = None
+    if resolved_sections is not None and any(e['key'] == 'analysis_results' for e in resolved_sections):
+        analysis_findings = collect_case_analysis_findings(case_folder)
+
     # preview=True renders the exact same document a real export would
     # produce, but returns it inline (no Content-Disposition, so a browser
     # shows it in an iframe rather than downloading it) and skips writing
@@ -6488,12 +6707,12 @@ def export_report():
             html_content = _build_html_report_standard(header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
                                                          tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log,
                                                          case_folder=case_folder, include_timeline_previews=include_timeline_previews, attachment_files=attachments.get('files', []),
-                                                         hash_status_by_event=hash_status_by_event)
+                                                         hash_status_by_event=hash_status_by_event, analysis_findings=analysis_findings)
         else:
             _build_pdf_report_standard(pdf_buf, header, events, sel_urls, sel_files, audit_entries, case_notes, resolved_sections, job_fields, captions=captions,
                                         tags_by_path=tags_by_path, analysis_by_path=analysis_by_path, exhibit_numbers=exhibit_numbers, geo_data=geo_data, custody_log=custody_log,
                                         case_folder=case_folder, include_timeline_previews=include_timeline_previews, attachment_files=attachments.get('files', []),
-                                        hash_status_by_event=hash_status_by_event)
+                                        hash_status_by_event=hash_status_by_event, analysis_findings=analysis_findings)
 
         if fmt == 'html':
             content_bytes = html_content.encode('utf-8')

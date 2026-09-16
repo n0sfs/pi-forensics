@@ -740,6 +740,103 @@ def _parsed_artifact_counts(case_folder):
         conn.close()
 
 
+# Caps for the exported Analysis Results section. A real triage scan collects
+# up to TRIAGE_MAX_MATCHES_PER_CATEGORY (50,000) values per category, and a
+# report is a document an examiner hands to somebody - it must summarise, and
+# it must SAY it is summarising. Every cap below is reported in the section
+# itself rather than silently applied.
+ANALYSIS_FINDINGS_MAX_SAMPLES_PER_CATEGORY = 25
+ANALYSIS_FINDINGS_MAX_FLAGGED_ITEMS = 200
+
+def collect_case_analysis_findings(case_folder,
+                                   max_samples=ANALYSIS_FINDINGS_MAX_SAMPLES_PER_CATEGORY,
+                                   max_flagged=ANALYSIS_FINDINGS_MAX_FLAGGED_ITEMS):
+    """Everything this app's analysis tools found for a case, shaped for the
+    exported report's Analysis Results section (2026-09-16).
+
+    This existed nowhere before. REPORT_SECTION_BLOCKS had seventeen blocks and
+    not one of them carried keyword/IOC hits, parsed artifacts, or the items an
+    examiner flagged - the word "keyword" did not appear in the report
+    generator at all. So a case could be fully analysed, with the results
+    visible across three separate tabs, and the exported report would show none
+    of it; "Relevant Findings" was a free-text box the examiner had to retype
+    it into. The known workaround, per a comment on the exhibits code, was
+    attaching a keyword-hit CSV as an exhibit by hand.
+
+    Returns {"indexed": bool, "flagged": [...], "flagged_total": int,
+    "keyword_hits": [...], "parsed_artifacts": [...]}. Never raises - an
+    unreadable/absent index is reported as indexed=False, matching every other
+    case-wide read in this module.
+
+    Flagged items deliberately EXCLUDE the self-applied role tags
+    (CASE_ROLE_TAG_NAMES - Report Export, Analysis Log / Hash, and so on). Those
+    are applied automatically to this app's own generated files, so including
+    them would open the section of an otherwise-empty case with its own
+    case.json and SQLite index listed as flagged evidence. Same exclusion
+    has_case_analysis_activity() above already makes, for the same reason.
+    """
+    empty = {"indexed": False, "flagged": [], "flagged_total": 0,
+             "keyword_hits": [], "parsed_artifacts": []}
+    conn = _case_index_open_readonly(case_folder)
+    if not conn:
+        return empty
+    try:
+        system_tags = set(CASE_ROLE_TAG_NAMES.values())
+        placeholders = ",".join("?" for _ in system_tags) or "''"
+
+        flagged_total = conn.execute(
+            f"SELECT COUNT(*) FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id "
+            f"WHERE t.name NOT IN ({placeholders})", tuple(system_tags)).fetchone()[0]
+        flagged = []
+        for row in conn.execute(
+                f"SELECT t.name, t.notable, t.severity, ti.name, ti.path, ti.comment, "
+                f"ti.tagged_by, ti.tagged_at "
+                f"FROM tagged_items ti JOIN tags t ON t.id = ti.tag_id "
+                f"WHERE t.name NOT IN ({placeholders}) "
+                # Notable first, then the rest newest-first: if this list is
+                # capped, what survives must be what matters most.
+                f"ORDER BY t.notable DESC, ti.tagged_at DESC LIMIT ?",
+                tuple(system_tags) + (max_flagged,)):
+            flagged.append({
+                "tag": row[0], "notable": bool(row[1]), "severity": row[2],
+                "name": row[3], "path": row[4], "comment": row[5],
+                "tagged_by": row[6], "tagged_at": row[7],
+            })
+
+        keyword_hits = []
+        for category, count in conn.execute(
+                "SELECT category, COUNT(*) FROM triage_hits GROUP BY category ORDER BY COUNT(*) DESC"):
+            samples = [r[0] for r in conn.execute(
+                "SELECT DISTINCT value FROM triage_hits WHERE category=? ORDER BY value LIMIT ?",
+                (category, max_samples))]
+            keyword_hits.append({
+                "category": category,
+                "label": resolve_scan_category_label(category),
+                "count": count,
+                "samples": samples,
+                "samples_truncated": count > len(samples),
+            })
+
+        parsed_artifacts = [
+            {"artifact_type": row[0], "count": row[1]}
+            for row in conn.execute(
+                "SELECT artifact_type, COUNT(*) FROM parsed_artifacts "
+                "GROUP BY artifact_type ORDER BY COUNT(*) DESC")
+        ]
+
+        return {
+            "indexed": True,
+            "flagged": flagged,
+            "flagged_total": flagged_total,
+            "keyword_hits": keyword_hits,
+            "parsed_artifacts": parsed_artifacts,
+        }
+    except sqlite3.Error:
+        return empty
+    finally:
+        conn.close()
+
+
 def has_case_analysis_activity(analysis_results_count, total_files, keyword_hit_total, parsed_artifact_counts, tags):
     """The Home tab's Guided Workflow checklist (main.js's refreshGuidedWorkflow())
     needs one boolean answering "has any analysis tool actually been run against

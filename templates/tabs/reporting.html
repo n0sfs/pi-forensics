@@ -886,6 +886,14 @@
                                                                 <input class="form-check-input export-section-check" type="checkbox" id="expSecGeolocation">
                                                                 <label class="form-check-label small" for="expSecGeolocation">Geolocation / GPS Evidence</label>
                                                             </div>
+                                                            <!-- Starts unchecked like Geolocation above (2026-09-16): a case
+                                                                 with no analysis shouldn't grow an empty section, and adding a
+                                                                 new always-on section would silently change the shape of every
+                                                                 existing export. -->
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecAnalysisResults">
+                                                                <label class="form-check-label small" for="expSecAnalysisResults">Analysis Results (flagged items, keyword hits, parsed artifacts)</label>
+                                                            </div>
                                                             <div class="form-check mb-3">
                                                                 <input class="form-check-input export-section-check" type="checkbox" id="expSecAuditTrail" checked>
                                                                 <label class="form-check-label small" for="expSecAuditTrail">Case Activity Log</label>
