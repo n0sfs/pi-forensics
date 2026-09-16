@@ -387,6 +387,60 @@ def acquisition_output_location(params):
         return dest, 'directory'
     return None, None
 
+# A case an examiner has marked finished. New evidence landing in one is
+# almost always a mis-set destination rather than an intention: measured live
+# (2026-09-16) on this app's own station, a case could be Archived and still
+# be the ACTIVE case afterwards, with no badge anywhere, its folder pre-filled
+# as the destination on every tab - and a triage scan ran to completion and
+# wrote a second acquisition event into it with no warning at any point.
+# Nothing anywhere read case_status except the Active-Cases count tile.
+CASE_STATUSES_CLOSED_TO_NEW_WORK = ('Closed', 'Archived')
+
+def case_status_blocking_new_work(dest_path, _read_json=None):
+    """Returns the case's status string when `dest_path` is (or is inside) a
+    case folder whose status is one of CASE_STATUSES_CLOSED_TO_NEW_WORK, else
+    None. None is also the answer for a destination that isn't in a case at
+    all - a job run with no active case is a supported workflow, not something
+    to block.
+
+    Walks up from dest_path so a destination pointed at a SUBFOLDER of a
+    finished case is caught too, bounded by EVIDENCE_ROOT so it can never
+    climb past the evidence store. Any read/parse failure returns None: this
+    is a guard against a mistake, and an unreadable case file must not become
+    a second way to be unable to work (core/jobs.py's own CaseFileUnreadable
+    handling is the place that surfaces that, deliberately).
+
+    Verification, case notes, report and bundle exports are all legitimate
+    work ON a finished case and deliberately do NOT consult this - it gates
+    starting a new acquisition/recovery/extraction, nothing else.
+    """
+    reader = _read_json or _read_case_status_json
+    try:
+        current = os.path.abspath(dest_path or '')
+        root = os.path.abspath(EVIDENCE_ROOT)
+    except (TypeError, ValueError):
+        return None
+    if not current or not path_is_within(current, root):
+        return None
+    while True:
+        marker = case_consolidated_path(current)
+        if marker:
+            status = reader(marker)
+            return status if status in CASE_STATUSES_CLOSED_TO_NEW_WORK else None
+        if current == root:
+            return None
+        parent = os.path.dirname(current)
+        if parent == current:  # filesystem root, belt-and-braces against a loop
+            return None
+        current = parent
+
+def _read_case_status_json(marker_path):
+    try:
+        with open(marker_path, 'r') as f:
+            return (json.load(f) or {}).get('case_status')
+    except (OSError, ValueError):
+        return None
+
 def path_is_within(candidate, root):
     """True when `candidate` IS `root` or sits underneath it. The trailing
     separator matters: without it, a sibling that merely shares a name prefix

@@ -14307,6 +14307,20 @@ async function fetchCustomFieldDefs() {
 // Reporting's Export pane) read from this cache rather than fetching
 // independently, so they always agree on what templates currently exist.
 let customReportTemplatesCache = [];
+// Which case's report path the Export pane last applied the station's default
+// template/sections for. prepareExportPane() runs on every entry to that pane,
+// and re-applying the defaults each time silently discarded the examiner's own
+// template choice (2026-09-16) - see the comment there.
+let exportPaneDefaultsAppliedFor = null;
+// The case folder applyActiveCaseToFields() last ran for, so a genuine switch
+// between two cases can be told apart from the page-load restore and from the
+// same case being re-applied. See clearPerCaseJobFields().
+let lastAppliedCaseFolder = null;
+// Mirrors CASE_STATUSES_CLOSED_TO_NEW_WORK in core/paths.py, which is what
+// actually refuses a new acquisition into one of these. Kept in sync by hand -
+// the same "two independent copies" trap this file already documents for
+// artifact-type labels; a status added to one belongs in both.
+const CASE_STATUSES_CLOSED_TO_NEW_WORK = ['Closed', 'Archived'];
 // Mirrors routes/reporting.py's NARRATIVE_BLOCK_FIELD_MAP exactly - a
 // remappable block's own default source field, used only to pre-fill a new
 // row's dropdown (or an old, pre-remapping-feature template's row) before
@@ -15481,6 +15495,19 @@ async function loadCaseForEditing() {
         }
 
         currentLoadedReportData = data.report;
+        // The case file is the authority on status, so keep the active-case
+        // object (and therefore the case bar's finished-case badge) in step
+        // with what was just read from disk - this is what makes the badge
+        // correct after a page reload, where activeCase is restored from
+        // localStorage and may predate the status change, or predate this
+        // field being stored at all.
+        if (activeCase && currentLoadedReportData
+                && currentLoadedReportData.case_status
+                && activeCase.case_status !== currentLoadedReportData.case_status) {
+            activeCase.case_status = currentLoadedReportData.case_status;
+            persistActiveCase();
+            renderActiveCaseBar();
+        }
         if (noCaseEl) noCaseEl.style.display = 'none';
         if (loadedEl) loadedEl.style.display = 'block';
 
@@ -18131,6 +18158,21 @@ async function prepareExportPane() {
     // render from a previous visit/case should never linger.
     resetExportPreview();
 
+    // Apply the station's configured defaults ONCE per case, not on every
+    // entry to this pane (2026-09-16). This function runs on every
+    // shown.bs.tab for Export, and it used to overwrite the Report Template
+    // select and every section checkbox unconditionally - so an examiner who
+    // picked a custom template, stepped away to check a case note, and came
+    // back found "Standard" reselected with no notice, and exporting then
+    // silently produced a Standard document. Confirmed live via the app's own
+    // audit trail, which recorded `report_exported ... template=standard` for
+    // an export the operator believed was using their custom template.
+    //
+    // Keyed on the report path, so switching cases correctly re-applies the
+    // defaults for the newly-opened case - the case-switch case is the one
+    // this reset was actually written for.
+    const applyStationDefaults = exportPaneDefaultsAppliedFor !== reportPath;
+
     // Same ordering requirement as loadCaseReportingSettings() - custom
     // template options must exist before the select's value is set below.
     await fetchCustomReportTemplates();
@@ -18141,11 +18183,9 @@ async function prepareExportPane() {
     try {
         const res = await fetch('/api/settings/case_reporting');
         const data = await res.json();
-        if (data.success) {
+        if (data.success && applyStationDefaults) {
             const templateSel = document.getElementById("exportTemplateSelect");
             if (templateSel) templateSel.value = data.report_defaults?.template || 'standard';
-            onExportTemplateChange();
-            onExportFormatChange();
 
             const sections = data.report_defaults?.sections || {};
             const jobFields = data.report_defaults?.job_fields || {};
@@ -18170,6 +18210,14 @@ async function prepareExportPane() {
             setIfKnown('expFieldHashes', jobFields, 'hashes');
         }
     } catch (err) { /* non-fatal - modal just keeps its current checkbox state */ }
+
+    // Outside the try/defaults block on purpose: these only sync the pane's
+    // own show/hide state to whatever the selects currently hold, so they must
+    // run on every entry - including the ones that deliberately preserved the
+    // examiner's choice above - and must not be skipped by a failed fetch.
+    onExportTemplateChange();
+    onExportFormatChange();
+    exportPaneDefaultsAppliedFor = reportPath;
 
     renderExportItemsList();
     renderExportFilesList();
@@ -18948,8 +18996,23 @@ function onAutoAnalyzeProfileChange() {
 
 async function startAutoAnalyze() {
     const profile = document.getElementById('autoAnalyzeProfileSelect').value;
-    if (!profile) return;
     const statusEl = document.getElementById('autoAnalyzeStatus');
+    if (!profile) {
+        // Was a bare `return` (2026-09-16): pressing Run with no profile
+        // selected did nothing at all - no toast, no message, no request -
+        // while the modal's own text invites exactly that ("pick the correct
+        // profile below if you know what it is, or leave unselected"). A
+        // button that silently does nothing reads as a broken app. Detection
+        // has already failed by the time this modal shows a blank select, so
+        // say what the examiner has to do instead.
+        if (statusEl) {
+            statusEl.textContent = "Pick a profile first - this target wasn't recognized automatically, "
+                + "so Auto Analyze can't tell which set of tools applies to it.";
+            statusEl.className = 'small text-warning';
+        }
+        showToast('Select a profile before running Auto Analyze.', 'warning');
+        return;
+    }
 
     if (profile === 'memory') {
         if (autoAnalyzeModalInstance) autoAnalyzeModalInstance.hide();
@@ -19406,11 +19469,70 @@ function renderActiveCaseBar() {
     // (2026-09-10) - see renderReportHeaderCaseSummary(). This bar's own
     // job is now just the button's own label.
     const label = document.getElementById("btnCaseActionLabel");
-    if (label) label.textContent = activeCase ? `Case: ${activeCase.case_number}` : 'Create / Select Case';
+    if (!label) return;
+    if (!activeCase) {
+        label.textContent = 'Create / Select Case';
+        label.classList.remove('text-warning');
+        return;
+    }
+    // Name the status when the case is one an examiner has marked finished
+    // (2026-09-16). This bar is the only thing on screen that names the active
+    // case, and it said nothing about status - so an Archived case looked
+    // exactly like an open one from every tab, while still being pre-filled as
+    // every Destination. Only the finished states are shown: labelling the
+    // ordinary working ones ("Open", "In Progress") would be noise on the one
+    // control that is visible from everywhere.
+    const status = activeCase.case_status;
+    const finished = CASE_STATUSES_CLOSED_TO_NEW_WORK.includes(status);
+    label.textContent = finished
+        ? `Case: ${activeCase.case_number} - ${status.toUpperCase()}`
+        : `Case: ${activeCase.case_number}`;
+    label.classList.toggle('text-warning', finished);
+}
+
+// Fields that belong to ONE case's job setup and must not survive a switch to
+// a different case (2026-09-16). Measured live: switching the active case
+// updated every Destination to the new case but left File Recovery's Source
+// pointing at the PREVIOUS case's evidence file, and its Evidence ID at the
+// previous case's item -
+//
+//   recoverySource : /mnt/.../2026-CASE-WORKFLOW-01/..._logical/meeting_notes.txt
+//   evidenceId     : ITEM-01-SCAN
+//   recoveryDest   : /mnt/.../2026-CASE-01
+//
+// Pressing Start there reads case A's evidence, writes the output into case
+// B, and records it under case B with case A's evidence ID. Destination is
+// derived from the active case so it self-corrects; these are typed or picked
+// by the examiner, so nothing else would ever correct them.
+//
+// Deliberately NOT cleared: each tab's Case #/Examiner/Destination (rewritten
+// from the new case just above), and anything describing the SOURCE DEVICE
+// rather than a case (the drive select, write-blocker state) - a suspect drive
+// stays the same drive across a case switch.
+function clearPerCaseJobFields() {
+    ['evidenceId', 'recoveryEvidenceId', 'mobileEvidenceId', 'notes', 'recoverySourcePath']
+        .forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+    // The logical-acquisition folder list is an explicit per-acquisition
+    // selection; silently reusing the previous case's picks for the next
+    // Start is the same class of error as the stale source path above.
+    if (typeof logicalAcqFolders !== 'undefined' && logicalAcqFolders.length) {
+        logicalAcqFolders = [];
+        renderLogicalAcqFolders();
+    }
 }
 
 function applyActiveCaseToFields() {
     if (!activeCase) return;
+    // Only on a real switch between two different cases - not on the initial
+    // page-load restore, and not when the same case is re-applied (which
+    // several success handlers legitimately do).
+    if (lastAppliedCaseFolder !== null && lastAppliedCaseFolder !== activeCase.case_folder) {
+        clearPerCaseJobFields();
+    }
+    lastAppliedCaseFolder = activeCase.case_folder;
     const fieldGroups = [
         ['caseNum', 'examiner', 'destPath'],
         ['recoveryCaseNum', 'recoveryExaminer', 'recoveryDest'],
@@ -19665,11 +19787,23 @@ async function setCaseStatus(c, newStatus) {
         // different file (its own per-job _report.json) from the case-
         // level marker this route targets, so there's nothing to reconcile
         // there.
-        if (activeCase && activeCase.case_folder === c.case_folder
-                && currentLoadedReportData && Array.isArray(currentLoadedReportData.events)) {
-            currentLoadedReportData.case_status = newStatus;
-            const caseStatusEl = document.getElementById('editCaseStatus');
-            if (caseStatusEl) caseStatusEl.value = newStatus;
+        if (activeCase && activeCase.case_folder === c.case_folder) {
+            // The active-case object itself, not just the loaded report
+            // (2026-09-16) - it is what the case bar renders from, and a case
+            // archived while it is the active case otherwise kept showing as
+            // an ordinary open case with no indication anywhere. Confirmed
+            // live: the bar survived a full page reload still showing an
+            // Archived case with no badge, every tab still pre-filled its
+            // folder as the destination, and a scan wrote a new evidence
+            // event into it.
+            activeCase.case_status = newStatus;
+            persistActiveCase();
+            renderActiveCaseBar();
+            if (currentLoadedReportData && Array.isArray(currentLoadedReportData.events)) {
+                currentLoadedReportData.case_status = newStatus;
+                const caseStatusEl = document.getElementById('editCaseStatus');
+                if (caseStatusEl) caseStatusEl.value = newStatus;
+            }
         }
 
         loadExistingCases();
@@ -19706,6 +19840,11 @@ async function handleCaseStatusDropdownChange(selectEl) {
         }
         showToast(`Case status set to "${newStatus}".`, 'success');
         if (currentLoadedReportData) currentLoadedReportData.case_status = newStatus;
+        // Keep the active-case bar's own finished-status badge honest - this
+        // dropdown is the other way a case reaches Closed/Archived.
+        activeCase.case_status = newStatus;
+        persistActiveCase();
+        renderActiveCaseBar();
     } catch (err) {
         showToast('Could not update case status: request failed.', 'danger');
         selectEl.value = previousStatus;
@@ -19714,7 +19853,13 @@ async function handleCaseStatusDropdownChange(selectEl) {
 
 async function selectCase(c) {
     if (!confirmDiscardUnsavedReportingChanges()) return;
-    activeCase = { case_number: c.case_number, examiner: c.examiner, case_folder: c.case_folder };
+    // case_status comes straight from list_case_folders() and is what the bar
+    // renders its finished-case badge from - dropping it here is what let an
+    // Archived case be selected and then look like an ordinary open one.
+    activeCase = {
+        case_number: c.case_number, examiner: c.examiner, case_folder: c.case_folder,
+        case_status: c.case_status,
+    };
     persistActiveCase();
     renderActiveCaseBar();
     applyActiveCaseToFields();
@@ -19983,6 +20128,25 @@ function stopGuidedWorkflowAutoRefresh() {
 // (a nested Bootstrap tab/collapse keeps its own active state even while its
 // ancestor tab-pane is hidden via display:none, which fires neither
 // hidden.bs.tab nor hidden.bs.collapse on the inner element).
+// Opening Reporting re-reads the case from disk (2026-09-16). /api/report/load
+// only ever fired from loadCaseForEditing(), i.e. on a case switch or page
+// load - never on entering this tab. Measured live: page loaded at t=0, last
+// report/load at t=17s, opened Reporting at t~300s -> ZERO fetches, and the
+// Overview read "0 Evidence Items / 0 of 0 completed" for a case whose
+// acquisition had just finished. A page reload showed "1 / 1 of 1".
+//
+// It was half-stale, which is worse than uniformly stale: the Tagged Items and
+// Analysis Activity tiles come from /api/case_index/summary and WERE live, so
+// some numbers on one dashboard were current and others minutes old with
+// nothing to tell them apart.
+//
+// A listener rather than an addition to the tab's inline onclick, so this also
+// fires for a programmatic bootstrap.Tab(...).show() (viewContactInTimeline()
+// uses one). loadCaseForEditing() already declines to overwrite unsaved
+// narrative edits - see its own docstring - so this cannot cost typed work.
+document.getElementById('reports-tab')?.addEventListener('shown.bs.tab', () => {
+    if (activeCase && currentReportPath) loadCaseForEditing();
+});
 document.getElementById('helpNavWorkflow')?.addEventListener('shown.bs.tab', () => { refreshGuidedWorkflow(); startGuidedWorkflowAutoRefresh(); });
 document.getElementById('helpNavWorkflow')?.addEventListener('hidden.bs.tab', () => stopGuidedWorkflowAutoRefresh());
 document.addEventListener('shown.bs.tab', (ev) => {

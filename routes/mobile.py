@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission
-from core.paths import safe_path, log_chain_of_custody
+from core.paths import safe_path, log_chain_of_custody, case_status_blocking_new_work
 from core.config import EVIDENCE_ROOT, INSTALL_DIR
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
@@ -1362,6 +1362,18 @@ def start_ios_backup():
     req = request.get_json() or {}
     udid = req.get('udid', '')
     dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    # Refuse to land NEW evidence in a case the examiner has already
+    # marked Closed/Archived (2026-09-16). Placed here rather than after
+    # the `if not dest_path` check below so the insertion point is
+    # identical in all 13 start routes; case_status_blocking_new_work()
+    # returns None for a None path, so a genuinely bad destination still
+    # falls through to that check's own 400.
+    blocking_case_status = case_status_blocking_new_work(dest_path)
+    if blocking_case_status:
+        update_job(active=False)
+        return jsonify({"error": f"This case is marked {blocking_case_status}. Re-open it from the "
+                                  f"Case Manager before recording new evidence against it, or choose a "
+                                  f"different destination."}), 409
     encrypt_password = req.get('encrypt_password') or None
     metadata = req.get('metadata', {})
 
@@ -1431,6 +1443,18 @@ def start_android_acquisition():
     serial = req.get('serial', '')
     mode = req.get('mode', 'pull')
     dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    # Refuse to land NEW evidence in a case the examiner has already
+    # marked Closed/Archived (2026-09-16). Placed here rather than after
+    # the `if not dest_path` check below so the insertion point is
+    # identical in all 13 start routes; case_status_blocking_new_work()
+    # returns None for a None path, so a genuinely bad destination still
+    # falls through to that check's own 400.
+    blocking_case_status = case_status_blocking_new_work(dest_path)
+    if blocking_case_status:
+        update_job(active=False)
+        return jsonify({"error": f"This case is marked {blocking_case_status}. Re-open it from the "
+                                  f"Case Manager before recording new evidence against it, or choose a "
+                                  f"different destination."}), 409
     metadata = req.get('metadata', {})
 
     if not _ANDROID_SERIAL_RE.match(serial or ''):
@@ -1854,6 +1878,18 @@ def start_mtp_pull():
     bus = str(req.get('bus', '')).strip()
     devnum = str(req.get('devnum', '')).strip()
     dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    # Refuse to land NEW evidence in a case the examiner has already
+    # marked Closed/Archived (2026-09-16). Placed here rather than after
+    # the `if not dest_path` check below so the insertion point is
+    # identical in all 13 start routes; case_status_blocking_new_work()
+    # returns None for a None path, so a genuinely bad destination still
+    # falls through to that check's own 400.
+    blocking_case_status = case_status_blocking_new_work(dest_path)
+    if blocking_case_status:
+        update_job(active=False)
+        return jsonify({"error": f"This case is marked {blocking_case_status}. Re-open it from the "
+                                  f"Case Manager before recording new evidence against it, or choose a "
+                                  f"different destination."}), 409
     metadata = req.get('metadata', {})
 
     if not (_MTP_BUS_DEV_RE.match(bus) and _MTP_BUS_DEV_RE.match(devnum)):
@@ -2421,6 +2457,18 @@ def start_android_companion_extraction():
     selected_types = set(req.get('selected_types') or [])
     sms_tier = req.get('sms_tier', 'readonly')
     dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    # Refuse to land NEW evidence in a case the examiner has already
+    # marked Closed/Archived (2026-09-16). Placed here rather than after
+    # the `if not dest_path` check below so the insertion point is
+    # identical in all 13 start routes; case_status_blocking_new_work()
+    # returns None for a None path, so a genuinely bad destination still
+    # falls through to that check's own 400.
+    blocking_case_status = case_status_blocking_new_work(dest_path)
+    if blocking_case_status:
+        update_job(active=False)
+        return jsonify({"error": f"This case is marked {blocking_case_status}. Re-open it from the "
+                                  f"Case Manager before recording new evidence against it, or choose a "
+                                  f"different destination."}), 409
     metadata = req.get('metadata', {})
 
     if not _ANDROID_SERIAL_RE.match(serial or ''):

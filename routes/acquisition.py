@@ -33,7 +33,7 @@ from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.paths import (
     safe_path, log_chain_of_custody, is_valid_block_device,
     is_valid_block_device_or_partition, _DEVICE_RE, classify_usb_port,
-    describe_usb_port, sanitize_case_slug,
+    describe_usb_port, sanitize_case_slug, case_status_blocking_new_work,
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists,
@@ -1983,6 +1983,18 @@ def start_logical_acquisition():
     req = request.get_json() or {}
     selected_folders_raw = req.get('selected_folders') or []
     dest_path = safe_path((req.get('destination') or EVIDENCE_ROOT).strip())
+    # Refuse to land NEW evidence in a case the examiner has already
+    # marked Closed/Archived (2026-09-16). Placed here rather than after
+    # the `if not dest_path` check below so the insertion point is
+    # identical in all 13 start routes; case_status_blocking_new_work()
+    # returns None for a None path, so a genuinely bad destination still
+    # falls through to that check's own 400.
+    blocking_case_status = case_status_blocking_new_work(dest_path)
+    if blocking_case_status:
+        update_job(active=False)
+        return jsonify({"error": f"This case is marked {blocking_case_status}. Re-open it from the "
+                                  f"Case Manager before recording new evidence against it, or choose a "
+                                  f"different destination."}), 409
     hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
     make_zip = bool(req.get('make_zip', False))
     metadata = req.get('metadata', {})
@@ -2631,6 +2643,18 @@ def start_import_live_collection():
     device = (req.get('device') or '').strip()
     selected_relative_paths = req.get('selected_relative_paths') or []
     dest_path = safe_path((req.get('destination') or EVIDENCE_ROOT).strip())
+    # Refuse to land NEW evidence in a case the examiner has already
+    # marked Closed/Archived (2026-09-16). Placed here rather than after
+    # the `if not dest_path` check below so the insertion point is
+    # identical in all 13 start routes; case_status_blocking_new_work()
+    # returns None for a None path, so a genuinely bad destination still
+    # falls through to that check's own 400.
+    blocking_case_status = case_status_blocking_new_work(dest_path)
+    if blocking_case_status:
+        update_job(active=False)
+        return jsonify({"error": f"This case is marked {blocking_case_status}. Re-open it from the "
+                                  f"Case Manager before recording new evidence against it, or choose a "
+                                  f"different destination."}), 409
     hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
     metadata = req.get('metadata', {})
 
@@ -3162,6 +3186,18 @@ def start_imaging():
     req = request.get_json() or {}
     source = req.get('source')
     dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    # Refuse to land NEW evidence in a case the examiner has already
+    # marked Closed/Archived (2026-09-16). Placed here rather than after
+    # the `if not dest_path` check below so the insertion point is
+    # identical in all 13 start routes; case_status_blocking_new_work()
+    # returns None for a None path, so a genuinely bad destination still
+    # falls through to that check's own 400.
+    blocking_case_status = case_status_blocking_new_work(dest_path)
+    if blocking_case_status:
+        update_job(active=False)
+        return jsonify({"error": f"This case is marked {blocking_case_status}. Re-open it from the "
+                                  f"Case Manager before recording new evidence against it, or choose a "
+                                  f"different destination."}), 409
     fmt = req.get('format', 'dd')
     hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
     metadata = req.get('metadata', {})
@@ -3594,6 +3630,18 @@ def start_ddrescue():
     req = request.get_json() or {}
     source = req.get('source')
     dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    # Refuse to land NEW evidence in a case the examiner has already
+    # marked Closed/Archived (2026-09-16). Placed here rather than after
+    # the `if not dest_path` check below so the insertion point is
+    # identical in all 13 start routes; case_status_blocking_new_work()
+    # returns None for a None path, so a genuinely bad destination still
+    # falls through to that check's own 400.
+    blocking_case_status = case_status_blocking_new_work(dest_path)
+    if blocking_case_status:
+        update_job(active=False)
+        return jsonify({"error": f"This case is marked {blocking_case_status}. Re-open it from the "
+                                  f"Case Manager before recording new evidence against it, or choose a "
+                                  f"different destination."}), 409
     strategy = req.get('strategy', 'stage1_fast')
     retry_passes = str(req.get('retry_passes', '3'))
     direct_mode = req.get('direct_mode', True)
