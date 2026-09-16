@@ -64,6 +64,7 @@ from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path,
     classify_extension, classify_case_role, sanitize_case_slug, format_epoch,
     is_bulk_tool_output_dir, acquisition_output_location, acquisition_verification_target,
+    path_is_within,
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, ALLOWED_HASH_ALGOS,
@@ -826,11 +827,17 @@ FOLDER_TIMELINE_MAX_FILES_WALKED = 20000
 # _tsk_resolve_filesystems now lives in core/tsk_utils.py (imported at the
 # top of this file) - see the Step 0 core/ extraction.
 
-def _collect_case_timeline(events):
+def _collect_case_timeline(events, case_folder=None):
     """Builds a combined MACB timeline across every acquired disk image AND
     every folder-based acquisition (mobile pull/backup, Logical Acquisition)
     in a case's events, for the 'timeline' report block below. Returns
     {"events": [...], "notes": [...], "truncated": bool}.
+
+    case_folder is optional and used for exactly one thing: refusing to walk
+    the case folder itself as an evidence item's contents (see the check in
+    the folder-candidate loop). A caller that doesn't have it still gets a
+    correct timeline for every acquisition that wrote into its own subfolder,
+    which is all of them except the historical shapes that check exists for.
 
     Correctness fixes folded in here that a naive version of this would not
     have had:
@@ -919,6 +926,7 @@ def _collect_case_timeline(events):
     # at a single .ab/.zip FILE, not a directory - os.path.isdir() below
     # naturally excludes those rather than needing a per-tool allowlist.
     folder_candidates = {}  # resolved dir path -> {"event": event, "superseded_count": int}
+    skipped_case_root_ids = []  # evidence IDs whose destination WAS the case folder - see below
     for event in events:
         if event.get('acquisition_status') != 'COMPLETED':
             continue
@@ -928,6 +936,31 @@ def _collect_case_timeline(events):
         dest_path = safe_path(raw_dest)
         if not dest_path or not os.path.isdir(dest_path):
             continue
+        # Refuse to walk the case folder itself (or anything containing it) as
+        # if it were one evidence item's contents (2026-09-16). Confirmed on
+        # the deployed station: two completed events in 2026-CASE-01 record
+        # the case root as their destination, so the exported "Filesystem
+        # Timeline (MACB)" led with rows like
+        #   2026-09-16 09:06:58  A  USBDrive-1  /2026-CASE-01_case.html
+        #   2026-09-16 09:06:56  M  USBDrive-1  /2026-CASE-01_case.html.sha256
+        # - this app's OWN previous report export and its hash sidecar,
+        # presented as filesystem activity on a seized USB drive, with access
+        # times created by the export run that was reading them. Everything
+        # else in the case folder (other items' images, KML exports, the case
+        # index) was attributed to that one evidence ID too.
+        #
+        # Deliberately NOT solved by filtering filenames through
+        # classify_case_role() during the walk: that would also drop a real
+        # .log or .kml pulled off a suspect device from the timeline of the
+        # item it genuinely belongs to, which is a worse failure than the one
+        # being fixed. The case root is the only place this app writes its own
+        # per-case output, so excluding it is both sufficient and safe.
+        if case_folder:
+            case_root = os.path.normpath(case_folder)
+            if path_is_within(case_root, os.path.normpath(dest_path)):
+                skipped_case_root_ids.append(
+                    event.get('case_metadata', {}).get('evidence_id', 'N/A'))
+                continue
         existing = folder_candidates.get(dest_path)
         if existing is None:
             folder_candidates[dest_path] = {"event": event, "superseded_count": 0}
@@ -962,6 +995,15 @@ def _collect_case_timeline(events):
             pass
 
     notes = []
+    # State the exclusion rather than performing it silently - an examiner
+    # comparing the timeline against the case folder must be able to see why
+    # an item contributed nothing.
+    for evidence_id in sorted(set(skipped_case_root_ids)):
+        notes.append(f"{evidence_id}: this acquisition recorded the case folder itself as its destination, "
+                     f"so there is no folder specific to it to walk. Its timeline entries are omitted rather "
+                     f"than attributing the whole case folder - including this station's own exported reports "
+                     f"and hash files - to this evidence item.")
+
     per_image_filesystems = {}
     for image_path in candidates:
         filesystems = _tsk_resolve_filesystems(image_path)
@@ -1331,7 +1373,7 @@ def _build_enriched_case_timeline(case_folder, events):
         if contact.get("normalized_email"):
             contact_key_by_email[contact["normalized_email"]] = key
 
-    macb = _collect_case_timeline(events)
+    macb = _collect_case_timeline(events, case_folder=case_folder)
     combined = []
     for row in macb["events"]:
         combined.append({
@@ -3379,6 +3421,17 @@ _HASH_STATUS_META = {
         "pdf_label": "VERIFIED", "pdf_color": (0.0, 0.45, 0.15),
         "html_label": "Hash Verified", "html_class": "hash-ok",
     },
+    # Same green as a full match - the check did pass - but named for what it
+    # actually covered (2026-09-16). A Logical Acquisition and a Live
+    # Collection import both anchor their recorded hash to their own
+    # manifest.json, which lists every copied file's hash; re-hashing the
+    # manifest proves the record is unaltered without re-reading the copied
+    # files. Showing that as a plain "Hash Verified" next to a re-hashed disk
+    # image would tell an examiner the same thing was checked in both rows.
+    "match_manifest": {
+        "pdf_label": "MANIFEST VERIFIED", "pdf_color": (0.0, 0.45, 0.15),
+        "html_label": "Manifest Verified", "html_class": "hash-ok",
+    },
     "mismatch": {
         "pdf_label": "HASH MISMATCH", "pdf_color": (0.75, 0.0, 0.05),
         "html_label": "HASH MISMATCH", "html_class": "hash-mismatch",
@@ -3402,8 +3455,14 @@ _HASH_STATUS_META = {
         "pdf_label": "NOT RE-VERIFIED", "pdf_color": (0.6, 0.42, 0.0),
         "html_label": "Not Yet Re-Verified", "html_class": "hash-warn",
     },
+    # Was "N/A" in the PDF (2026-09-16) - which the PDF ALSO used for
+    # _HASH_STATUS_UNKNOWN below, collapsing two states this registry's own
+    # comments call deliberately distinct ("this item genuinely has no hash on
+    # file" vs "verification was never computed for this row") into one
+    # meaningless abbreviation, while the HTML kept them apart. Both formats
+    # now use the same words for the same state.
     "no_hash_recorded": {
-        "pdf_label": "N/A", "pdf_color": (0.4, 0.4, 0.4),
+        "pdf_label": "NO HASH RECORDED", "pdf_color": (0.4, 0.4, 0.4),
         "html_label": "No Hash Recorded", "html_class": "hash-muted",
     },
 }
@@ -3415,7 +3474,7 @@ _HASH_STATUS_META = {
 # has no hash on file" state) - this is "verification status was never
 # even computed for this row", an honest, separate thing to disclose.
 _HASH_STATUS_UNKNOWN = {
-    "pdf_label": "N/A", "pdf_color": (0.4, 0.4, 0.4),
+    "pdf_label": "NOT CHECKED", "pdf_color": (0.4, 0.4, 0.4),
     "html_label": "Not Checked", "html_class": "hash-muted",
 }
 

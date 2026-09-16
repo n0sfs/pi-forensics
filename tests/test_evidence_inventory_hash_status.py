@@ -340,6 +340,50 @@ def test_read_error_has_its_own_label_and_is_not_coloured_as_tampering():
     assert meta["pdf_color"] != reporting._HASH_STATUS_META["mismatch"]["pdf_color"]
 
 
+def _normalise_label(label):
+    """The PDF cell is fixed-width so its labels are upper-case and terse
+    while the HTML's are title-case - that difference is deliberate. Only the
+    WORDS have to agree."""
+    return " ".join(label.lower().split())
+
+
+def test_every_status_uses_the_same_words_in_the_pdf_and_the_html():
+    """Regression from a live end-to-end walkthrough (2026-09-16): exporting
+    one case twice showed "N/A" in the PDF's Verified column and "Not Checked"
+    in the HTML's for the SAME row and the same underlying state - two
+    documents from one case disagreeing about whether verification had been
+    attempted. The PDF also used "N/A" for BOTH _HASH_STATUS_UNKNOWN and
+    no_hash_recorded, collapsing two states this registry's own comments call
+    deliberately distinct, while the HTML kept them apart."""
+    for status, meta in reporting._HASH_STATUS_META.items():
+        assert _normalise_label(meta["pdf_label"]) == _normalise_label(meta["html_label"]), \
+            f"{status}: PDF says {meta['pdf_label']!r}, HTML says {meta['html_label']!r}"
+    unknown = reporting._HASH_STATUS_UNKNOWN
+    assert _normalise_label(unknown["pdf_label"]) == _normalise_label(unknown["html_label"])
+
+
+def test_no_two_states_share_a_label_in_either_format():
+    """Two distinct states rendering as the same word is the same failure as
+    rendering one state two ways - an examiner cannot tell them apart."""
+    for fmt in ("pdf_label", "html_label"):
+        labels = [meta[fmt] for meta in reporting._HASH_STATUS_META.values()]
+        labels.append(reporting._HASH_STATUS_UNKNOWN[fmt])
+        assert len(labels) == len(set(labels)), f"duplicate {fmt}: {sorted(labels)}"
+
+
+def test_a_manifest_anchored_match_is_not_labelled_as_a_full_hash_verification():
+    """A Logical Acquisition / Live Collection import records its hash over
+    its own manifest.json, so a match proves the acquisition RECORD is intact
+    without re-reading the copied files. It passes - same green - but it must
+    not read as the same check a re-hashed disk image got."""
+    manifest = reporting._HASH_STATUS_META["match_manifest"]
+    full = reporting._HASH_STATUS_META["match"]
+    assert manifest["pdf_color"] == full["pdf_color"]
+    assert manifest["html_class"] == full["html_class"]
+    assert manifest["html_label"] != full["html_label"]
+    assert "manifest" in manifest["html_label"].lower()
+
+
 def test_methodology_text_is_derived_from_the_case_not_asserted():
     """The old fixed paragraph affirmed, in every signed export, that source
     media was write-protected and that images were verified against their

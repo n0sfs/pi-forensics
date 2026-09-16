@@ -387,6 +387,20 @@ def acquisition_output_location(params):
         return dest, 'directory'
     return None, None
 
+def path_is_within(candidate, root):
+    """True when `candidate` IS `root` or sits underneath it. The trailing
+    separator matters: without it, a sibling that merely shares a name prefix
+    ("/mnt/CASE-12" against root "/mnt/CASE-1") would read as being inside.
+    Lives here because two unrelated readers need it - Analysis Coverage, to
+    credit a parse aimed at a subfolder of an evidence item to that item, and
+    the case timeline, to refuse to walk a destination that contains the case
+    folder itself."""
+    if not candidate or not root:
+        return False
+    if candidate == root:
+        return True
+    return candidate.startswith(root.rstrip(os.sep) + os.sep)
+
 def acquisition_verification_target(params):
     """Returns (path, scope) for the single file whose hash an acquisition
     recorded in computed_verification_hashes, so it can be re-hashed and
