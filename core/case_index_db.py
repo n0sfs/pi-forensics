@@ -17,7 +17,8 @@ import multiprocessing
 import email.utils
 from flask import g
 
-from core.paths import safe_path, case_consolidated_path, classify_case_role, is_bulk_tool_output_dir
+from core.paths import (safe_path, case_consolidated_path, classify_case_role, is_bulk_tool_output_dir,
+                        acquisition_output_location)
 from core.config import get_keyword_lists
 import core.config as config
 
@@ -2799,14 +2800,17 @@ def compute_case_analysis_coverage(case_folder):
     for event in events:
         if event.get('acquisition_status') != 'COMPLETED':
             continue
-        params = event.get('acquisition_parameters') or {}
-        image_path = params.get('output_image_path')
-        output_dest = params.get('output_destination')
-        target_path = image_path or output_dest
+        # Shared resolver (2026-09-16) - this used to read output_image_path
+        # and output_destination only, so every Logical Acquisition and Live
+        # Collection import (which record output_container_path) was dropped
+        # from the coverage grid entirely, and a case built only from those
+        # rendered "No completed evidence items with a walkable output path
+        # yet - run an acquisition first" directly after a successful one.
+        target_path, kind = acquisition_output_location(event.get('acquisition_parameters'))
         if not target_path:
             continue  # e.g. a companion-app extraction event - nothing walkable to report coverage for
 
-        is_image = bool(image_path)
+        is_image = kind == 'image'
         # Three outcomes, not one (2026-09-14). This previously kept only
         # status == 'ok' and discarded everything else, which made a step that
         # was genuinely ATTEMPTED AND FAILED indistinguishable from one never

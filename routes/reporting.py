@@ -63,7 +63,7 @@ from core.auth import requires_auth, requires_permission, get_current_user_permi
 from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path,
     classify_extension, classify_case_role, sanitize_case_slug, format_epoch,
-    is_bulk_tool_output_dir,
+    is_bulk_tool_output_dir, acquisition_output_location, acquisition_verification_target,
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, ALLOWED_HASH_ALGOS,
@@ -896,8 +896,8 @@ def _collect_case_timeline(events):
     for event in events:
         if event.get('acquisition_status') != 'COMPLETED':
             continue
-        raw_path = event.get('acquisition_parameters', {}).get('output_image_path')
-        if not raw_path:
+        raw_path, kind = acquisition_output_location(event.get('acquisition_parameters'))
+        if kind != 'image':
             continue
         image_path = safe_path(raw_path)
         if not image_path or not os.path.isfile(image_path):
@@ -922,12 +922,9 @@ def _collect_case_timeline(events):
     for event in events:
         if event.get('acquisition_status') != 'COMPLETED':
             continue
-        params = event.get('acquisition_parameters', {})
-        if params.get('output_image_path'):
-            continue  # already an image candidate above
-        raw_dest = params.get('output_destination') or params.get('output_container_path')
-        if not raw_dest:
-            continue
+        raw_dest, kind = acquisition_output_location(event.get('acquisition_parameters'))
+        if kind != 'directory':
+            continue  # no output at all, or already an image candidate above
         dest_path = safe_path(raw_dest)
         if not dest_path or not os.path.isdir(dest_path):
             continue
@@ -2780,12 +2777,20 @@ def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=No
             evidence_id = (event.get('case_metadata') or {}).get('evidence_id') or 'UNKNOWN'
             tool = event.get('tool', 'unknown')
             recorded_hashes = event.get('computed_verification_hashes') or {}
-            image_path = (event.get('acquisition_parameters') or {}).get('output_image_path')
+            # Every acquisition kind that recorded a hash anchored it to some
+            # ONE file - see acquisition_verification_target(). This used to
+            # read output_image_path alone, which skipped every logical
+            # acquisition, Live Collection import and mobile acquisition as
+            # "not verifiable by this tool" - including ones carrying both a
+            # recorded hash AND the exact file it was taken over.
+            image_path, verify_scope = acquisition_verification_target(
+                event.get('acquisition_parameters'))
 
             if not image_path:
                 skipped.append({"event_id": event_id, "evidence_id": evidence_id, "tool": tool,
-                                 "reason": "not verifiable by this tool"})
-                append_log(f"[i] {evidence_id} ({tool}): no walkable output image path recorded - skipped.")
+                                 "reason": "no single output file was recorded to re-hash"})
+                append_log(f"[i] {evidence_id} ({tool}): this acquisition wrote into a folder and recorded no "
+                           f"manifest to anchor a hash to - there is no one file to re-hash, so it is skipped.")
             elif not recorded_hashes:
                 results.append({"event_id": event_id, "evidence_id": evidence_id, "status": "unverifiable",
                                  "current_hashes": {}})
@@ -2832,14 +2837,26 @@ def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=No
                         current_hashes.get(a) == recorded_hashes.get(a) for a in algos)
                     status = "match" if is_match else "mismatch"
                 results.append({"event_id": event_id, "evidence_id": evidence_id, "status": status,
-                                 "current_hashes": current_hashes})
+                                 "current_hashes": current_hashes, "scope": verify_scope})
                 if status == "mismatch":
                     mismatch_count += 1
                     append_log(f"[!!!] MISMATCH for {evidence_id} ({image_path}) - recorded hashes no longer match computed hashes.")
                     log_chain_of_custody("evidence_verification_mismatch", {
                         "case_folder": case_folder, "event_id": event_id, "evidence_id": evidence_id,
                         "image_path": image_path, "recorded_hashes": recorded_hashes, "current_hashes": current_hashes,
+                        "verified_scope": verify_scope,
                     }, source_ip=requester_ip, user=requester_user)
+                elif verify_scope == 'manifest':
+                    # Say what a match here does and does not cover. The
+                    # recorded hash for a logical acquisition / Live
+                    # Collection import is taken over its own manifest.json,
+                    # not over the copied files - so this confirms the record
+                    # is unaltered, and the per-file hashes INSIDE that
+                    # manifest were not re-read. Reporting that plainly as
+                    # "hashes match" would claim more than was checked.
+                    append_log(f"[+] {evidence_id}: manifest hashes match - the acquisition record is unaltered. "
+                               f"The per-file hashes recorded inside it were not re-read, so this does not by "
+                               f"itself confirm every copied file.")
                 else:
                     append_log(f"[+] {evidence_id}: hashes match.")
 
