@@ -160,3 +160,19 @@ def test_notable_items_survive_the_flagged_cap(evidence_root):
     assert result["flagged_total"] == 11
     assert len(result["flagged"]) == 3
     assert result["flagged"][0]["name"] == "the_important_one.txt"
+
+
+def test_a_repeated_hit_does_not_look_like_a_truncated_sample(evidence_root):
+    """Caught on the station: re-running a scan writes the same value again,
+    so counting ROWS while sampling DISTINCT values made a category with 4 rows
+    over 2 distinct values render as "4 total, first 2 shown" - a truncation
+    notice for a sample that had not been trimmed at all."""
+    case_dir = _make_case(evidence_root, "2026-CASE-REPEATS")
+    _seed_index(case_dir, hits=[("emails", "jane@example.com"), ("emails", "dave@example.net"),
+                                ("emails", "jane@example.com"), ("emails", "dave@example.net")])
+    result = collect_case_analysis_findings(case_dir)
+
+    hit = result["keyword_hits"][0]
+    assert hit["count"] == 2, "the count must be of distinct matches, not index rows"
+    assert sorted(hit["samples"]) == ["dave@example.net", "jane@example.com"]
+    assert hit["samples_truncated"] is False
