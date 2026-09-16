@@ -2420,9 +2420,17 @@ const FILE_VIEWS_EXTENSION_LABELS = {
     images: 'Images', videos: 'Videos', audio: 'Audio', archives: 'Archives',
     documents: 'Documents', executables: 'Executables', other: 'Other',
 };
+// Mirrors TRIAGE_CATEGORY_LABELS in core/case_index_db.py - all SEVEN
+// built-in categories. btc_addresses/eth_addresses were missing (2026-09-16),
+// so File Views showed "Keyword Hits (3)" over children summing to 2: a found
+// Bitcoin address counted toward the total and was then invisible in the tree,
+// in a tool where a crypto address is usually the most interesting of the
+// seven. The same two-independent-copies trap this file already documents for
+// artifact-type labels; a category added to one belongs in both.
 const FILE_VIEWS_HIT_LABELS = {
     emails: 'Email Addresses', urls: 'URLs', ip_addresses: 'IP Addresses',
     credit_card_numbers: 'Credit Card-like Numbers', phone_numbers: 'Phone Numbers',
+    btc_addresses: 'Bitcoin Addresses (Legacy/Bech32)', eth_addresses: 'Ethereum Addresses',
 };
 // Mirrors routes/case_index.py's PARSED_ARTIFACT_TYPE_LABELS - real per-app
 // artifact parsing (core/browser_artifacts.py), Chrome/Chromium family + Firefox.
@@ -3247,6 +3255,19 @@ function _tagSeverityBadgeEl(severity) {
     return el;
 }
 
+// The tags a CASE-ROLE artifact gets automatically (CASE_ROLE_TAG_NAMES in
+// core/case_index_db.py). An examiner never applies these by hand - this app
+// applies them to its own exports and hash manifests - so they are sorted to
+// the bottom of the picker rather than interleaved alphabetically with the
+// tags that are actually for tagging. Measured live: the scroll box shows
+// about four rows, and alphabetical order put "Analysis Log / Hash", "Backup
+// Snapshot", "Bookmark" and "Case Bundle Export" in them, leaving "Notable
+// Item" - the one that matters - below the fold on every single open.
+const AUTO_APPLIED_TAG_NAMES = new Set([
+    'Report Export', 'Analysis Log / Hash', 'Geolocation Export',
+    'Backup Snapshot', 'Case Bundle Export',
+]);
+
 function renderTagItemModalList(allTags, appliedIds, appliedTags) {
     const listEl = document.getElementById('tagItemExistingList');
     listEl.innerHTML = '';
@@ -3254,6 +3275,11 @@ function renderTagItemModalList(allTags, appliedIds, appliedTags) {
         listEl.innerHTML = '<div class="text-subtle small p-2">No tags defined yet - create one below.</div>';
         return;
     }
+    // Notable first, then the rest of the examiner-facing tags, then the
+    // station's own auto-applied ones. Sorted on a copy - allTags is the
+    // shared cache several other views read.
+    const orderRank = (t) => (AUTO_APPLIED_TAG_NAMES.has(t.name) ? 2 : (t.notable ? 0 : 1));
+    allTags = [...allTags].sort((a, b) => orderRank(a) - orderRank(b));
     allTags.forEach(tag => {
         const isApplied = appliedIds.has(tag.id);
         const row = document.createElement('div');
@@ -6087,7 +6113,20 @@ function hideFileContextMenu() {
 
 document.addEventListener('click', (ev) => {
     const menu = document.getElementById('fileContextMenu');
-    if (menu && menu.style.display === 'block' && !menu.contains(ev.target)) {
+    if (!menu || menu.style.display !== 'block') return;
+    if (!menu.contains(ev.target)) {
+        hideFileContextMenu();
+        return;
+    }
+    // A click on a real ACTION inside the menu also closes it (2026-09-16).
+    // Only the outside-click case was handled, so choosing an item that opens a
+    // modal left the menu sitting on top of that modal, covering its
+    // explanatory text and controls - reproduced 3/3 on Auto Analyze, Copy
+    // To... and Quick Triage Scan. Section toggles are deliberately excluded:
+    // expanding "Analyze" to reach an item inside it must not dismiss the menu
+    // you are still navigating.
+    const action = ev.target.closest('button, a');
+    if (action && !action.classList.contains('ctx-menu-section-toggle')) {
         hideFileContextMenu();
     }
 });
@@ -10170,7 +10209,14 @@ async function runExplorerImageSearch() {
         // client-side, unlike the browse table).
         const table = document.createElement('table');
         table.className = 'table table-dark table-sm table-hover mb-0';
-        table.innerHTML = '<thead><tr><th>Name</th><th>Size</th><th>Modified</th></tr></thead>';
+        // Six headers, because renderExplorerImageEntryRow() emits six cells
+        // (2026-09-16). This declared three, so every row showed four
+        // timestamps with only the first labelled - Accessed, Changed and
+        // Created ran on unheaded, and "Modified" was correct only by luck of
+        // column order. In the one view whose entire purpose is telling M from
+        // A from C from B, that is not a cosmetic mismatch.
+        table.innerHTML = '<thead><tr><th>Name</th><th>Size</th><th>Modified</th>'
+            + '<th>Accessed</th><th>Changed</th><th>Created</th></tr></thead>';
         const tbody = document.createElement('tbody');
         table.appendChild(tbody);
         resultsEl.appendChild(table);
@@ -15594,8 +15640,23 @@ async function loadCaseForEditing() {
         let skippedForUnsavedEdits = false;
         if (!reportHasUnsavedChanges) {
             renderCustomFieldsForCase(isConsolidated ? currentLoadedReportData.custom_fields : legacyMeta.custom_fields);
+            // Fall back to the SINGULAR examiner field when no examiners[]
+            // list exists (2026-09-16). Every case predating the multiple-
+            // examiners feature stores only `examiner`, and this read only the
+            // list - so Reporting's header said "No examiners recorded for
+            // this case yet" while the Case Manager listed the examiner
+            // correctly (it goes through derive_examiner_display(), which
+            // does fall back) and the exported report printed their name.
+            // Three views of one field, two of them right.
             const examinersSrc = isConsolidated ? currentLoadedReportData.examiners : legacyMeta.examiners;
-            currentExaminersList = Array.isArray(examinersSrc) ? [...examinersSrc] : [];
+            const singleExaminer = isConsolidated ? currentLoadedReportData.examiner : legacyMeta.examiner;
+            if (Array.isArray(examinersSrc) && examinersSrc.length) {
+                currentExaminersList = [...examinersSrc];
+            } else if (typeof singleExaminer === 'string' && singleExaminer.trim()) {
+                currentExaminersList = [singleExaminer.trim()];
+            } else {
+                currentExaminersList = [];
+            }
             renderExaminersList();
             const narrativeSrc = isConsolidated ? currentLoadedReportData : legacyMeta;
             const caseStatusEl = document.getElementById("editCaseStatus");
@@ -17572,6 +17633,25 @@ async function saveCaseNoteEdit(noteId, newText) {
 // Shared row-rendering for both the station-wide Audit Log (Settings) and
 // the per-case History tab (Reporting) - same entry shape from either
 // /api/coc/log or /api/coc/case_history, just a different filter server-side.
+// A chain-of-custody entry's details can hold a nested object - the browser
+// artifact parser records `counts: {chrome_history: 5, chrome_downloads: 1}`,
+// for instance. A plain `${v}` rendered that as "[object Object]"
+// (2026-09-16), so the single most informative field of a parse record was
+// unreadable on screen. The stored entry was always correct, and the HTML
+// export printed a raw Python dict literal - readable but unformatted - so
+// only this view actually LOST the information.
+function formatCustodyDetails(details) {
+    const render = (v) => {
+        if (v === null || v === undefined) return '';
+        if (Array.isArray(v)) return v.map(render).join('; ');
+        if (typeof v === 'object') {
+            return Object.entries(v).map(([k2, v2]) => `${k2}: ${render(v2)}`).join(', ');
+        }
+        return String(v);
+    };
+    return Object.entries(details || {}).map(([k, v]) => `${k}=${render(v)}`).join(', ');
+}
+
 function renderCocEntries(container, entries) {
     container.innerHTML = '';
     if (entries.length === 0) {
@@ -17600,7 +17680,7 @@ function renderCocEntries(container, entries) {
         }
         row.appendChild(line1);
 
-        const detailsStr = Object.entries(entry.details || {}).map(([k, v]) => `${k}=${v}`).join(', ');
+        const detailsStr = formatCustodyDetails(entry.details);
         if (detailsStr) {
             const line2 = document.createElement('div');
             line2.className = 'text-light text-break';
@@ -19623,6 +19703,18 @@ function openCaseManagerModal() {
     // record always matches its real chain-of-custody attribution.
     const examinerEl = document.getElementById("newCaseExaminer");
     if (examinerEl) examinerEl.value = currentUsername || '';
+    // Default the new case's location to wherever the LAST case was created
+    // rather than the bare evidence root (2026-09-16). On a station whose real
+    // storage is a mounted share under /mnt, the markup default put a new
+    // case - and therefore every acquisition destination that follows from it -
+    // on the Pi's own SD card, which is small enough that this has already
+    // filled it once. Falls back to the markup value when there is no previous
+    // case to learn from.
+    const parentDirEl = document.getElementById("newCaseParentDir");
+    if (parentDirEl && activeCase && activeCase.case_folder) {
+        const parent = activeCase.case_folder.replace(/\/+$/, '').split('/').slice(0, -1).join('/');
+        if (parent) parentDirEl.value = parent;
+    }
     caseManagerModalInstance.show();
     loadExistingCases();
 }
@@ -19652,10 +19744,19 @@ async function createCase() {
             return;
         }
 
-        activeCase = { case_number: data.case.case_number, examiner: data.case.examiner, case_folder: data.case.case_folder };
+        activeCase = {
+            case_number: data.case.case_number, examiner: data.case.examiner,
+            case_folder: data.case.case_folder, case_status: data.case.case_status,
+        };
         persistActiveCase();
         renderActiveCaseBar();
         applyActiveCaseToFields();
+        // The station-wide counters in the header (Total Cases / Active Cases)
+        // are loaded by the Reporting tab's own onclick and nothing else, so
+        // creating a case left them a case behind until something happened to
+        // reload them - measured live: 22/21 straight after Create Case, 23/22
+        // after a page reload (2026-09-16).
+        loadReportingStats();
 
         // Reset the form for next time and close - the bar now shows the result.
         ["newCaseNumber", "newCaseExaminer", "newCaseNotes"].forEach(id => {
@@ -20025,6 +20126,7 @@ async function refreshGuidedWorkflow() {
     // - matches this function's own existing pattern of each concern fetching
     // its own current truth rather than trusting another feature's cache.
     let evidenceCandidates = [];
+    let loadedReport = null;
     try {
         const slug = activeCase.case_folder.split('/').filter(Boolean).pop();
         const reportRes = await fetch('/api/report/load', {
@@ -20032,12 +20134,47 @@ async function refreshGuidedWorkflow() {
             body: JSON.stringify({ report_path: `${activeCase.case_folder}/${slug}_case.json` }),
         });
         const reportData = await reportRes.json();
-        if (reportData.success) evidenceCandidates = guidedWorkflowEvidenceCandidates(reportData.report.events);
+        if (reportData.success) {
+            loadedReport = reportData.report;
+            evidenceCandidates = guidedWorkflowEvidenceCandidates(loadedReport.events);
+        }
     } catch (err) {}
     updateGuidedWorkflowStep3Button(evidenceCandidates);
 
+    const step4Done = updateGuidedWorkflowStep4(loadedReport, idxData);
+
     const doneEl = document.getElementById('guidedWorkflowDone');
-    if (doneEl) doneEl.style.display = (eventCount > 0 && hasActivity) ? 'block' : 'none';
+    if (doneEl) doneEl.style.display = (eventCount > 0 && hasActivity && step4Done) ? 'block' : 'none';
+}
+
+// Step 4: verify, document, report (2026-09-16). Tracked from data already in
+// hand - the case file this function just loaded, plus the case-index summary
+// it already fetched - so this costs no extra request. Names each outstanding
+// piece rather than showing a bare "not done": the whole point of the
+// checklist is telling an examiner what is left, and this is the half of an
+// examination it previously said nothing about.
+function updateGuidedWorkflowStep4(report, idxData) {
+    const outstanding = [];
+    const verified = !!(report && report.last_verification);
+    if (!verified) outstanding.push('run Verify All Evidence');
+
+    const notes = (report && report.case_notes) || [];
+    const exhibits = ((report && report.attachments) || {}).files || [];
+    if (!notes.length && !exhibits.length) outstanding.push('add a case note or attach an exhibit');
+
+    // A report export auto-tags itself "Report Export" in the case index, so
+    // that tag's count is the honest answer to "has this case been exported".
+    const tags = (idxData && idxData.tags) || [];
+    const exportTag = tags.find((t) => t.name === 'Report Export');
+    const exported = !!(exportTag && exportTag.count > 0);
+    if (!exported) outstanding.push('export the report');
+
+    if (outstanding.length === 0) {
+        setWorkflowStepDone('wfBadge4', 'wfStatus4', 'Verified, documented and exported');
+        return true;
+    }
+    setWorkflowStepPending('wfBadge4', 'wfStatus4', `Still to do: ${outstanding.join('; ')}`, '4');
+    return false;
 }
 
 // Mirrors the exact COMPLETED + output_image_path/output_destination
@@ -20259,10 +20396,25 @@ function openFolderModal(mode = 'folder', targetInputId = 'destPath') {
     }
 }
 
+// Says which of "empty", "loading" and "failed" is actually happening
+// (2026-09-16). This used to end in a bare `} catch (err) {}` and assign
+// currentBrowsePath from the response BEFORE checking it succeeded - so an
+// error payload threw inside the forEach below and was swallowed whole. All
+// three states rendered as the same blank list, which is indistinguishable
+// from a genuinely empty folder.
+function _setFolderListMessage(el, text, tone = 'text-subtle') {
+    el.innerHTML = '';
+    const msg = document.createElement('div');
+    msg.className = `list-group-item bg-dark ${tone} border-secondary py-2 small`;
+    msg.textContent = text;
+    el.appendChild(msg);
+}
+
 async function loadFolderList(path) {
     const folderListEl = document.getElementById("folderList");
     if (!folderListEl) return;
 
+    _setFolderListMessage(folderListEl, 'Loading...');
     try {
         const res = await fetch('/api/files/browse', {
             method: 'POST',
@@ -20270,7 +20422,12 @@ async function loadFolderList(path) {
             body: JSON.stringify({ path })
         });
         const data = await res.json();
-        
+        if (!res.ok || data.success === false || !Array.isArray(data.items)) {
+            _setFolderListMessage(folderListEl,
+                data.error || `Could not read ${path} (HTTP ${res.status}).`, 'text-danger');
+            return;
+        }
+
         currentBrowsePath = data.path;
         const modalPathEl = document.getElementById("modalCurrentPath");
         if (modalPathEl) modalPathEl.value = currentBrowsePath;
@@ -20341,7 +20498,18 @@ async function loadFolderList(path) {
                 folderListEl.appendChild(btn);
             }
         });
-    } catch (err) {}
+        if (!folderListEl.children.length) {
+            // Distinguish "nothing here" from "nothing you can pick here" -
+            // in a file-picker mode, a folder full of files an examiner can't
+            // select looks identical to an empty one otherwise.
+            const hadItems = data.items.length > 0;
+            _setFolderListMessage(folderListEl, hadItems
+                ? 'Nothing here can be selected in this mode - no sub-folders in this folder.'
+                : 'This folder is empty.');
+        }
+    } catch (err) {
+        _setFolderListMessage(folderListEl, `Could not read ${path}: ${err.message}`, 'text-danger');
+    }
 }
 
 function navigateFolderUp() {
@@ -23837,9 +24005,59 @@ async function loadTlsStatus() {
             row.appendChild(valueSpan);
             container.appendChild(row);
         });
+        renderTlsCoverageWarning(container, data);
     } catch (err) {
         container.innerHTML = '<span class="text-danger">Request failed.</span>';
     }
+}
+
+// Does the installed certificate actually cover the address this station
+// answers on? (2026-09-16.) This panel could previously only print the
+// Subject, which says nothing about a SAN - and a certificate generated
+// before a DHCP change is the likeliest reason an examiner cannot reach the
+// station at all. Seen live: a cert for one address still installed on a
+// station that had moved to another, so every remote browser hit a hard
+// ERR_CERT_COMMON_NAME_INVALID while this panel showed the stale CN with no
+// warning, above instructions ("import it as trusted on each device") that
+// cannot fix a name mismatch.
+function renderTlsCoverageWarning(container, data) {
+    const unmatched = data.unmatched_station_ips || [];
+    const sans = data.san_entries || [];
+    if (sans.length) {
+        const row = document.createElement('div');
+        row.className = 'd-flex justify-content-between mb-1';
+        const label = document.createElement('span');
+        label.className = 'text-subtle';
+        label.textContent = 'Valid For';
+        const value = document.createElement('span');
+        value.className = 'text-info text-break ms-2';
+        value.textContent = sans.join(', ');
+        row.appendChild(label);
+        row.appendChild(value);
+        container.appendChild(row);
+    }
+    if (!unmatched.length && data.has_san !== false) return;
+
+    const warn = document.createElement('div');
+    warn.className = 'alert alert-warning py-2 px-3 mt-2 mb-0 small';
+    const strong = document.createElement('strong');
+    strong.textContent = data.has_san === false
+        ? 'This certificate has no Subject Alternative Name.'
+        : `This certificate does not cover this station's address (${unmatched.join(', ')}).`;
+    warn.appendChild(strong);
+    warn.appendChild(document.createTextNode(
+        data.has_san === false
+            ? ' Modern browsers require one and will refuse the connection regardless of whether the'
+              + ' certificate is trusted. Importing it on each device will not help.'
+            : " Browsers will refuse the connection with a name-mismatch error. Importing this"
+              + " certificate as trusted will NOT fix that - trusting an issuer does not change which"
+              + " addresses a certificate is valid for."));
+    const fix = document.createElement('div');
+    fix.className = 'mt-1';
+    fix.textContent = 'Use "Generate & Install" below - it includes every address this station '
+        + 'currently has.';
+    warn.appendChild(fix);
+    container.appendChild(warn);
 }
 
 async function generateTlsCertificate() {

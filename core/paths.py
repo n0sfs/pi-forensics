@@ -298,14 +298,29 @@ BULK_TOOL_OUTPUT_SKIP_DIRS = {
     '#recycle', '@Recycle', '@recycle', '.@__thumb',
 }
 BULK_TOOL_OUTPUT_SKIP_SUFFIXES = ('_photorec', '_foremost', '_scalpel', '_triagescan')
+# "..._photorec.1", "..._photorec.9" - a re-run's output sitting next to the
+# first. Anchored to the end and digits-only so a real case folder whose name
+# genuinely ends in a dotted component is never stripped into a false match.
+_NUMERIC_RERUN_SUFFIX_RE = re.compile(r'\.\d+$')
 
 def is_bulk_tool_output_dir(name):
     """True for a directory name matching a known recovery-tool bulk
     carved-file output convention, or a NAS/filesystem-internal trash
     folder - safe to prune from any walk over the evidence store, since
     neither can ever be a real case folder (no case marker) or contain one
-    nested inside it."""
-    return name in BULK_TOOL_OUTPUT_SKIP_DIRS or name.endswith(BULK_TOOL_OUTPUT_SKIP_SUFFIXES)
+    nested inside it.
+
+    A trailing ".<digits>" is stripped before the suffix check (2026-09-16).
+    A re-run writes its output alongside the first as "<base>_photorec.1",
+    ".2" and so on, and the bare endswith() missed every one of them -
+    measured on the deployed station, nine such directories held 4,501 of the
+    8,737 file entries the case-list walk was reading on EVERY open of the
+    Case Manager, which took 13-23 seconds showing only "Loading...". They
+    are the same carved output the un-suffixed name already prunes."""
+    if name in BULK_TOOL_OUTPUT_SKIP_DIRS:
+        return True
+    base = _NUMERIC_RERUN_SUFFIX_RE.sub('', name)
+    return base.endswith(BULK_TOOL_OUTPUT_SKIP_SUFFIXES)
 
 def classify_case_role(name):
     """Best-effort classification of a filename (or, for the folder-shaped

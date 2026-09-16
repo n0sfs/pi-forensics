@@ -2715,7 +2715,15 @@ def list_drives():
         if res.returncode == 0:
             data = json.loads(res.stdout)
             for dev in data.get('blockdevices', []):
-                if dev.get('type') == 'disk' and not dev['name'].startswith('loop'):
+                # zram is compressed RAM used as swap, not storage - it has no
+                # `tran`, so classify_usb_port() fell through to labelling it
+                # "[USB] Generic Disk" and it was offered as an acquisition
+                # TARGET alongside real drives (seen live: "/dev/zram0 - [USB]
+                # Generic Disk (0.9 GB)"). Imaging the station's own swap is
+                # never what an examiner meant, and the label actively
+                # encourages the mistake. Excluded the same way loop devices
+                # already are (2026-09-16).
+                if dev.get('type') == 'disk' and not dev['name'].startswith(('loop', 'zram')):
                     bytes_size = int(dev.get('size', 0))
                     gb_size = round(bytes_size / (1024**3), 1)
                     dev_path = f"/dev/{dev['name']}"

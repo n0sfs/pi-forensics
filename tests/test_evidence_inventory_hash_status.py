@@ -535,3 +535,15 @@ def test_the_timezone_label_is_never_empty():
     label = reporting._report_timezone_label()
     assert label
     assert "UTC" in label
+
+
+def test_capacity_never_renders_as_the_literal_na_gb():
+    """Seen on real exported PDFs and HTML (2026-09-16): four render sites each
+    appended " GB" to whatever was recorded, so a logical or mobile
+    acquisition - which never queries a source device for its size - printed
+    "N/A GB". "N/A" is the answer; the unit is not part of it."""
+    assert reporting._format_capacity(None) == "N/A"
+    assert reporting._format_capacity("") == "N/A"
+    assert reporting._format_capacity("N/A") == "N/A"
+    assert reporting._format_capacity(3.69) == "3.69 GB"
+    assert reporting._format_capacity("3.69") == "3.69 GB"
