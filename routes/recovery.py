@@ -19,7 +19,7 @@ from flask import Blueprint, jsonify, request
 
 from core.auth import requires_auth, requires_permission
 from core.paths import (safe_path, log_chain_of_custody, is_valid_block_device, sanitize_case_slug,
-                        case_status_blocking_new_work)
+                        case_status_blocking_new_work, is_bulk_tool_output_dir)
 from core.config import EVIDENCE_ROOT, SCALPEL_CONF_PATH
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
@@ -33,6 +33,15 @@ from core.case_index_db import (
 )
 
 recovery_bp = Blueprint('recovery', __name__)
+
+# Upper bound on how many files a folder-sourced triage scan will read
+# (2026-09-16). Generous on purpose: a real Android pull on this project's own
+# station is ~3,000 files and is exactly the case folder scanning was added
+# for, so the cap has to sit well above that rather than quietly truncating the
+# common case. Hitting it is reported in the job log AND recorded in the job
+# report, because a partial scan that looks complete is the failure mode worth
+# guarding against.
+TRIAGE_FOLDER_MAX_FILES = 50000
 
 
 def _confirm_recovery_output_or_fail(dest_dir, tool_label, append_log):
@@ -439,34 +448,29 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
         update_job(status="Scanning for Structured Data...")
 
         bytes_read = 0
-        tail = b""
         last_update_time = time.time()
+        files_scanned = 0
+        files_errored = 0
+        folder_walk_capped = False
 
-        # Raw block devices need root to read directly - pipe through a
-        # privileged `dd` and read its stdout instead of opening the device
-        # file directly (which would hit the same permission wall dc3dd/
-        # ddrescue/etc. would without sudo). An already-acquired image file
-        # is owned by this account already, so a direct Python open() is
-        # simpler and faster there - no privilege elevation needed.
-        read_proc = None
-        if is_valid_block_device(source):
-            read_proc = subprocess.Popen(
-                ["sudo", "/usr/bin/dd", f"if={source}", f"bs={CHUNK_SIZE}"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-            )
-            source_stream = read_proc.stdout
-        else:
-            source_stream = open(source, 'rb')
+        def _scan_stream(stream):
+            """Runs the chunk loop over ONE open stream. Returns False if the
+            examiner pressed Stop, True otherwise.
 
-        try:
+            `tail` is local to this function on purpose (2026-09-16, when
+            folder scanning was added): the overlap buffer exists so a match
+            straddling a chunk boundary within one source isn't missed, and
+            carrying it across two unrelated FILES would manufacture matches
+            that exist in neither."""
+            nonlocal bytes_read, last_update_time
+            tail = b""
             while True:
                 if snapshot_job()["status"] == "Stopped":
-                    append_log("[!] Scan stopped by user.")
-                    break
+                    return False
 
-                chunk = source_stream.read(CHUNK_SIZE)
+                chunk = stream.read(CHUNK_SIZE)
                 if not chunk:
-                    break
+                    return True
 
                 data = tail + chunk
                 for name, pattern in patterns.items():
@@ -493,12 +497,27 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                         updates["progress_percent"] = round((bytes_read / total_bytes) * 100, 1)
                     update_job(**updates)
                     last_update_time = time.time()
-        finally:
+
+        # Raw block devices need root to read directly - pipe through a
+        # privileged `dd` and read its stdout instead of opening the device
+        # file directly (which would hit the same permission wall dc3dd/
+        # ddrescue/etc. would without sudo). An already-acquired image file
+        # is owned by this account already, so a direct Python open() is
+        # simpler and faster there - no privilege elevation needed.
+        read_proc = None
+        if is_valid_block_device(source):
+            read_proc = subprocess.Popen(
+                ["sudo", "/usr/bin/dd", f"if={source}", f"bs={CHUNK_SIZE}"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
             try:
-                source_stream.close()
-            except Exception:
-                pass
-            if read_proc is not None:
+                if not _scan_stream(read_proc.stdout):
+                    append_log("[!] Scan stopped by user.")
+            finally:
+                try:
+                    read_proc.stdout.close()
+                except Exception:
+                    pass
                 try:
                     if read_proc.poll() is None:
                         read_proc.terminate()
@@ -513,6 +532,46 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                     subprocess.run(["sudo", "pkill", "-9", "-f", f"dd if={source}"], capture_output=True)
                 except Exception:
                     pass
+        elif os.path.isdir(source):
+            # Folder scanning (2026-09-16). Before this, a triage scan accepted
+            # only a block device or a single file, which meant no keyword list
+            # could ever be run against a Logical Acquisition, a mobile pull, or
+            # a Live Collection import - i.e. against most of what this app
+            # actually produces. Settings' own help text still describes the
+            # File Recovery tab as the one place keyword lists are selectable,
+            # so this is where folder support belongs.
+            for root, dirs, fnames in os.walk(source):
+                dirs[:] = [d for d in dirs if not is_bulk_tool_output_dir(d)]
+                for fname in sorted(fnames):
+                    if files_scanned >= TRIAGE_FOLDER_MAX_FILES:
+                        folder_walk_capped = True
+                        break
+                    fpath = os.path.join(root, fname)
+                    if os.path.islink(fpath) or not os.path.isfile(fpath):
+                        continue  # never follow a symlink out of the evidence tree
+                    try:
+                        with open(fpath, 'rb') as fh:
+                            stopped = not _scan_stream(fh)
+                    except OSError as e:
+                        files_errored += 1
+                        append_log(f"[!] Could not read {fpath}: {e}")
+                        continue
+                    files_scanned += 1
+                    if stopped:
+                        append_log("[!] Scan stopped by user.")
+                        break
+                else:
+                    continue
+                break
+            append_log(f"[*] Scanned {files_scanned} file(s) under this folder"
+                       + (f", {files_errored} unreadable" if files_errored else "") + ".")
+            if folder_walk_capped:
+                append_log(f"[!] Stopped after {TRIAGE_FOLDER_MAX_FILES} files - this folder holds more "
+                           f"than this scan will read, so the result is NOT a complete view of it.")
+        else:
+            with open(source, 'rb') as source_stream:
+                if not _scan_stream(source_stream):
+                    append_log("[!] Scan stopped by user.")
 
         update_job(transferred_bytes=bytes_read)
 
@@ -528,6 +587,15 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["triage_summary"] = {name: len(matches) for name, matches in results.items()}
+        if os.path.isdir(source):
+            # Recorded, not just logged - a folder scan's coverage is part of
+            # what the result means, and an examiner reading the report later
+            # cannot see the job log.
+            report_data["triage_scan_coverage"] = {
+                "files_scanned": files_scanned,
+                "files_unreadable": files_errored,
+                "file_limit_reached": folder_walk_capped,
+            }
 
         if snapshot_job()["status"] == "Stopped":
             report_data["acquisition_status"] = "STOPPED"
@@ -918,13 +986,25 @@ def start_triage_scan():
     metadata = req.get('metadata', {})
     keyword_list_ids = req.get('keyword_list_ids') or []
 
+    # A FOLDER is a valid source too (2026-09-16). It previously was not, which
+    # meant no keyword list could be run against a Logical Acquisition, a
+    # mobile pull or a Live Collection import - most of what this app produces -
+    # since this route is the only place keyword lists are selectable at all.
+    # The old rejection also mis-stated the reason: a folder inside the evidence
+    # store was refused as "not ... in the permitted evidence directory", which
+    # reads as a sandbox/permissions problem rather than a wrong source type.
     if is_valid_block_device(source_raw) and os.path.exists(source_raw):
         source = source_raw
     else:
         source = safe_path(source_raw)
-        if not source or not os.path.isfile(source):
+        if not source:
             update_job(active=False)
-            return jsonify({"error": f"Source '{source_raw}' is not a recognized device or a valid image file in the permitted evidence directory."}), 400
+            return jsonify({"error": f"Source '{source_raw}' is not a recognized device, and is not inside "
+                                     f"the permitted evidence directory."}), 400
+        if not os.path.isfile(source) and not os.path.isdir(source):
+            update_job(active=False)
+            return jsonify({"error": f"Source '{source_raw}' does not exist - point this at a device, an "
+                                     f"acquired image, a single file, or a folder of acquired files."}), 400
 
     if not dest_path:
         update_job(active=False)
@@ -941,6 +1021,23 @@ def start_triage_scan():
             res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
             if res.returncode == 0:
                 total_bytes = int(res.stdout.strip())
+        elif os.path.isdir(source):
+            # Sized up front so the progress bar means something - bounded by
+            # the same file cap the scan itself uses, so this can't become a
+            # long walk of its own before the job even starts.
+            seen = 0
+            for root, dirs, fnames in os.walk(source):
+                dirs[:] = [d for d in dirs if not is_bulk_tool_output_dir(d)]
+                for fname in fnames:
+                    if seen >= TRIAGE_FOLDER_MAX_FILES:
+                        break
+                    fpath = os.path.join(root, fname)
+                    if os.path.islink(fpath) or not os.path.isfile(fpath):
+                        continue
+                    total_bytes += os.path.getsize(fpath)
+                    seen += 1
+                if seen >= TRIAGE_FOLDER_MAX_FILES:
+                    break
         else:
             total_bytes = os.path.getsize(source)
     except Exception:
