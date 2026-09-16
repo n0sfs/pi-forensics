@@ -21,6 +21,110 @@ file after updating to see what changed.
 
 ---
 
+## [1.91.0] - 2026-09-16
+
+Everything in this release came out of running a complete examination end to end on a real station -
+create a case, acquire, verify, analyse, tag, document, export, archive - and writing down every
+place the workflow got in the way or told you something that was not true. Forty issues were found;
+all of them are fixed here.
+
+### Added
+
+- **Reports can now include what the analysis actually found.** A new optional **Analysis Results**
+  section carries three things no report could previously contain: the items you flagged (with your
+  own note against each, notable ones first), keyword and indicator hits per category with a sample
+  of the matched values, and how many records each artifact parser extracted. Long lists are
+  summarised and the section says so, with the real total. Tick it in *Customize contents*, or turn
+  it on for every export under Settings > Case & Reporting. Until now a fully analysed case could
+  export with "Relevant Findings: (Not provided)" and no trace of any of the work - the only way to
+  get it into a document was to retype it by hand.
+- **Triage Scan now accepts a folder.** It previously took only a device, an image, or a single
+  file, which meant a logical acquisition, a mobile pull or a Live Collection import - most of what
+  this station produces - could not be scanned at all, and your keyword lists could not be applied
+  to any of them. The job report records how many files it actually read, so a partial scan never
+  looks like a complete one.
+- **Keyword lists work from all three scan entry points.** They were selectable only on the File
+  Recovery tab. File Explorer's right-click Quick Triage Scan now offers them from its result panel
+  (so the quick look stays one click), and a whole-image Triage Scan asks before it starts.
+- **The Guided Workflow checklist covers the whole examination.** It stopped after "run analysis
+  tools" and declared the case ready to write up, skipping verification, documentation and the
+  export itself. A fourth step now tracks those three and names whichever is still outstanding.
+- **The HTTPS Certificate panel warns when the certificate does not cover this station's address.**
+  It now lists the names and addresses the certificate is actually valid for, and if the station's
+  own address is not among them it says so plainly - including that importing the certificate as
+  trusted will *not* fix a name mismatch, which is the natural thing to try and the one thing that
+  cannot work. A certificate generated before the station's address changed is the likeliest reason
+  a browser refuses to load the interface at all, and nothing previously said so.
+
+### Changed
+
+- **A case marked Closed or Archived no longer accepts new evidence.** Starting an acquisition,
+  recovery job or mobile extraction into one is refused, and the active-case button names the status
+  so you can see why. Re-open the case to work on it again. Everything that is legitimately part of
+  *finishing* a case still works: verifying hashes, adding notes, exporting the report and exporting
+  the case bundle.
+- **A verification that checked an acquisition's manifest now says so.** A logical acquisition and a
+  Live Collection import record their hash over their own manifest, which lists every copied file's
+  hash. Re-checking it proves the acquisition record is intact without re-reading the copied files,
+  and the Evidence Inventory now reads "Manifest Verified" rather than presenting it as the same
+  check a re-hashed disk image received.
+- **Creating a case defaults to wherever the last case was created**, instead of the top of the
+  evidence store. On a station whose real storage is a mounted share, the old default put a case -
+  and every acquisition destination that follows from it - on the Pi's own small internal card.
+- **The tag picker puts Notable Item first.** Tags this station applies to its own output (report
+  exports, hash manifests) are sorted to the bottom instead of being interleaved alphabetically,
+  where they filled the visible rows and pushed Notable Item out of sight on every open.
+- **Compressed-RAM swap devices are no longer offered as acquisition targets.** One was being listed
+  as a USB disk.
+- **"Extract to Evidence Root" is now "Extract to Case Folder"**, which is where it has actually
+  written extracted files for some time.
+
+### Fixed
+
+- **Verify All Evidence was silently skipping most acquisitions.** It only ever re-checked raw disk
+  images; every logical acquisition, Live Collection import and mobile acquisition was reported as
+  "not verifiable by this tool". On one real case this was 10 of 13 completed acquisitions, and
+  seven of those ten had recorded both a hash and the exact file it was taken over the whole time.
+  The same underlying mistake was also dropping logical acquisitions and Live Collection imports out
+  of the Analysis Coverage grid entirely, so a case built only from those was told to "run an
+  acquisition first" immediately after one succeeded.
+- **The Filesystem Timeline was attributing this station's own files to your evidence.** An exported
+  timeline could open with rows showing the previous report export and its hash file as filesystem
+  activity on a seized drive, timestamped by the export that was reading them.
+- **Phone numbers written in the forms phones actually use were never matched.** The scanner missed
+  international numbers written with a leading plus and country code, and the common bracketed
+  "(555) 555-0172" form entirely - in a tool whose main evidence source is phones.
+- **The full Triage Scan's results never reached anything but its own text files.** Hits from the
+  File Recovery scan are now recorded in the case index like the other two scans', so they appear in
+  File Views, on the case Overview and in the report.
+- **Reporting showed a stale case until you reloaded the page.** Opening the tab after finishing an
+  acquisition could show "0 Evidence Items" for a case that had just recorded one.
+- **Choosing a report template and then leaving the Export pane silently reverted it to Standard**,
+  so an export could quietly use a different template from the one you picked.
+- **Switching cases left the File Recovery tab pointing at the previous case's evidence** while its
+  destination followed the new case.
+- **Auto Analyze's Run button did nothing, with no message,** when no profile was selected - despite
+  the dialog inviting exactly that.
+- **Opening the Case Manager took 13-23 seconds.** Output from re-run recovery jobs was not being
+  skipped while scanning for cases; it now opens in about a second.
+- **The PDF and HTML reports disagreed about the same verification result,** one saying "N/A" where
+  the other said "Not Checked", and the PDF used "N/A" for two genuinely different states.
+- **Capacity read "N/A GB"** for every logical and mobile acquisition, which never queries a source
+  device for its size.
+- **Bitcoin and Ethereum hits were counted but invisible** in File Explorer's File Views tree, so a
+  found crypto address contributed to the total and then could not be found.
+- **Search results inside an image showed four timestamps with only one column heading**, leaving
+  Accessed, Changed and Created unlabelled.
+- **Parse results in the Case Activity log rendered as unreadable placeholder text**, losing the most
+  useful part of the record.
+- **The folder picker showed an identical blank list** whether a folder was empty, still loading, or
+  the request had failed.
+- **The right-click menu stayed on top of every dialog it opened,** covering the dialog's own text
+  and controls.
+- **The case counters in the top bar did not update** when a case was created.
+
+---
+
 ## [1.90.0] - 2026-09-14
 
 ### Security
