@@ -102,7 +102,9 @@ def test_a_folder_scan_records_its_own_coverage(tmp_path):
     report = _run(root, dest)
 
     coverage = report["triage_scan_coverage"]
-    assert coverage["files_scanned"] == 4  # 3 with content + the empty one
+    # notes.txt + receipt.txt + empty.bin. The empty one counts: it was opened
+    # and read, which is what "scanned" claims.
+    assert coverage["files_scanned"] == 3
     assert coverage["files_unreadable"] == 0
     assert coverage["file_limit_reached"] is False
 
