@@ -21,6 +21,84 @@ file after updating to see what changed.
 
 ---
 
+## [2.0.0] - 2026-09-20
+
+The first release marked **stable**. A note on the version number: this project's rule is that a
+major version means a backward-incompatible change, and strictly speaking nothing here forces one -
+your cases, reports and settings all carry over untouched and no installation step has changed. 2.0
+marks maturity rather than a break. The one behaviour an integrator might notice is that a few
+endpoints now return an error where they previously returned an empty success; that is described
+under Fixed below, and it is a correction rather than a regression.
+
+Everything here came out of running Pattern of Life and the reporting section repeatedly against
+real case data on a live station, and following each problem to its cause. One of that station's own
+case index files turned out to be genuinely corrupt, which is what most of this release is really
+about.
+
+### Added
+
+- **Analysis Index Health, with in-app repair.** Every case now shows the state of its analysis
+  index - the per-case database holding your tags, keyword hits and parsed artifacts - under
+  Reporting > Case Activity. If it is ever damaged, one button sets the damaged file aside, builds a
+  fresh one, and restores your tags, notable flags and contact merges from their backup. **The
+  damaged file is renamed and kept, never deleted.** Previously there was no way to see that an
+  index was damaged and no way to rebuild one at all.
+- **Your own decisions are now backed up.** Tags, notable-item flags and contact merges are
+  judgements you made; no re-scan can reconstruct them. They used to live in exactly one database
+  file with no backup, no export and no way to rebuild. They are now mirrored to a small plain-text
+  file beside the case whenever you change one. Everything else in the index is derived from your
+  evidence and comes back by re-running the analysis that produced it - the repair screen tells you
+  which is which rather than implying a full recovery.
+- **Pattern of Life can go into a report.** The contact correlation and location activity on that
+  tab could not reach an exported report at all unless you first hand-built a custom template. It is
+  now a normal tick-box in *Customize contents*, and can be turned on for every export under
+  Settings > Case & Reporting. Off by default, so no existing export changes shape.
+
+### Changed
+
+- **Geolocation sections no longer bury the report.** A phone case with thousands of GPS points
+  produced a 53-page PDF that was almost entirely raw coordinates. The coordinate table now stops at
+  500 rows per file and says so, naming the true total and pointing at the KML evidence file, which
+  is kept with the case and holds every point. The map still plots all of them - a map missing part
+  of its track would be misleading in a way a shortened table is not. The same case now exports 19
+  pages instead of 53.
+- **Case timelines build faster, and far more predictably.** Scanning a folder acquisition was
+  measured at 14.3 seconds against network storage and is now 3.9 - but the more useful change is
+  consistency: the same scan used to take anywhere from 6 to 22 seconds, and now lands within a few
+  tenths of a second every time.
+- **Network shares wait longer before giving up.** An NFS share had roughly nine seconds of patience
+  before reporting an error. That is under half of a stall this station's own storage has been
+  measured producing, and an error arriving mid-write is a leading cause of exactly the database
+  damage described above. It now waits about 45 seconds. It still refuses to wait forever - an
+  examination must never be able to hang the appliance.
+- **Viewing a case no longer writes to it.** Opening any case view used to re-create the index's
+  structure on the spot, which meant simply looking at a case wrote to a database on a network
+  share. Reads are now reads.
+
+### Fixed
+
+- **A damaged case index no longer breaks the whole Reporting dashboard.** One unreadable index made
+  the entire statistics header fail - Total Cases, Active Cases and Evidence Items included, none of
+  which have anything to do with the affected case. Those totals now skip a case they cannot read
+  and keep working.
+- **A damaged index now says so.** Opening an affected case used to show only "Request failed", with
+  nothing to indicate the index was damaged, that the acquired evidence was untouched, or what to do
+  next. It now says all three.
+- **Unreachable storage is no longer reported as an empty result.** If the evidence share is
+  unmounted or has stalled, every case path on it becomes invalid at once. Pattern of Life would
+  then show "no contacts found" - an absence of evidence that was never actually searched, which is
+  the worst thing a forensic tool can tell you. It now reports that the storage could not be read
+  and that nothing was changed. **This is the behaviour change mentioned above:** the affected
+  screens now return an error in that situation instead of an empty success.
+- **Databases on network shares use a safer write mode.** The per-case index used a journal mode
+  that SQLite documents as unsupported on network filesystems - which is exactly where this
+  application stores cases by default. Indexes on network storage now use the supported mode;
+  indexes on local disk are unchanged.
+- **The exported map's fallback message stays truthful.** When the map library cannot be embedded,
+  the placeholder used to promise that the table below listed every point. With the new table limit
+  that could be untrue in precisely the case where you can see neither - it now states what is
+  actually there.
+
 ## [1.91.0] - 2026-09-16
 
 Everything in this release came out of running a complete examination end to end on a real station -
