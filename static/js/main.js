@@ -15810,6 +15810,171 @@ async function openEvidenceItemInFileExplorer(item) {
     }
 }
 
+// --- Analysis index health / repair (2026-09-20) ---
+// The per-case SQLite index is the only home for tags, notable flags and
+// contact merges - examiner decisions no re-scan reconstructs - and one of
+// this station's own indexes was found genuinely corrupt. Everything else it
+// holds is derived. This panel is the only place in the UI allowed to show a
+// damaged index AS damaged: every other reader gets a 503 and refuses to
+// render, precisely so a corrupt index is never mistaken for an empty case.
+
+function _caseIndexHealthRow(label, value, cls) {
+    const row = document.createElement('div');
+    row.className = 'd-flex justify-content-between small gap-3';
+    const l = document.createElement('span');
+    l.className = 'text-subtle';
+    l.textContent = label;
+    const v = document.createElement('span');
+    if (cls) v.className = cls;
+    v.textContent = value;   // text node - quarantined filenames are untrusted
+    row.appendChild(l);
+    row.appendChild(v);
+    return row;
+}
+
+async function loadCaseIndexHealth() {
+    const statusEl = document.getElementById('caseIndexHealthStatus');
+    const container = document.getElementById('caseIndexHealthContainer');
+    const btn = document.getElementById('caseIndexRepairBtn');
+    if (!container) return;
+    if (btn) btn.style.display = 'none';
+    if (!activeCase) {
+        container.innerHTML = '<span class="text-subtle small">Select or create a case above to check its analysis index.</span>';
+        if (statusEl) statusEl.textContent = '';
+        return;
+    }
+    container.innerHTML = '<span class="text-subtle small">Checking...</span>';
+    if (statusEl) statusEl.textContent = '';
+
+    let data;
+    try {
+        const res = await fetch('/api/case_index/health', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder })
+        });
+        data = await res.json();
+    } catch (err) {
+        container.innerHTML = '<span class="text-danger small">Could not check the analysis index.</span>';
+        return;
+    }
+    if (!data || !data.success) {
+        container.innerHTML = '';
+        const e = document.createElement('span');
+        e.className = 'text-danger small';
+        e.textContent = (data && data.error) || 'Could not check the analysis index.';
+        container.appendChild(e);
+        return;
+    }
+
+    const h = data.health || {};
+    container.innerHTML = '';
+
+    if (!h.exists) {
+        // Not an error, and worded so it cannot read as one: a case simply has
+        // no index until something is scanned or tagged in it.
+        container.appendChild(_caseIndexHealthRow(
+            'Status', 'No analysis index yet - nothing has been scanned or tagged in this case.', 'text-subtle'));
+    } else if (h.readable) {
+        container.appendChild(_caseIndexHealthRow('Status', 'Healthy', 'text-success fw-bold'));
+        const c = h.counts || {};
+        const examinerWork = (c.tags || 0) + (c.tagged_items || 0) + (c.contact_merges || 0);
+        container.appendChild(_caseIndexHealthRow(
+            'Examiner decisions',
+            (c.tagged_items || 0) + ' tagged items, ' + (c.tags || 0) + ' tags, ' + (c.contact_merges || 0) + ' contact merges'));
+        container.appendChild(_caseIndexHealthRow(
+            'Derived records',
+            (c.parsed_artifacts || 0) + ' parsed artifacts, ' + (c.triage_hits || 0) + ' keyword hits, ' + (c.indexed_files || 0) + ' indexed files'));
+        if (examinerWork > 0 && !h.backup) {
+            // Said out loud rather than left silent: the backup is written on
+            // the next tag action, so a case whose tagging is already finished
+            // can sit with its decisions in exactly one place.
+            container.appendChild(_caseIndexHealthRow(
+                'Decision backup', 'None yet - written the next time a tag or merge changes.', 'text-warning'));
+        }
+    } else {
+        container.appendChild(_caseIndexHealthRow(
+            'Status', 'Damaged - this analysis index cannot be read', 'text-danger fw-bold'));
+        if (h.integrity && h.integrity !== 'ok') {
+            container.appendChild(_caseIndexHealthRow('SQLite reports', h.integrity, 'font-monospace'));
+        } else if (h.error) {
+            container.appendChild(_caseIndexHealthRow('SQLite reports', h.error, 'font-monospace'));
+        }
+        container.appendChild(_caseIndexHealthRow(
+            'Acquired evidence', 'Not affected - only this derived index is damaged.', 'text-subtle'));
+        if (btn) btn.style.display = '';
+    }
+
+    if (h.backup) {
+        container.appendChild(_caseIndexHealthRow(
+            'Decision backup',
+            h.backup.tagged_items + ' tagged items, ' + h.backup.tags + ' tags, ' + h.backup.contact_merges
+            + ' merges (saved ' + (h.backup.exported_at || 'unknown') + ')', 'text-info'));
+    }
+    (h.quarantined || []).forEach(function (name) {
+        container.appendChild(_caseIndexHealthRow('Set aside earlier', name, 'font-monospace text-subtle'));
+    });
+    if (statusEl) {
+        statusEl.textContent = h.readable ? 'Index readable.'
+            : (h.exists ? 'Index unreadable.' : 'No index yet.');
+    }
+}
+
+async function repairCaseIndex() {
+    if (!activeCase) return;
+    let backup = null;
+    try {
+        const pre = await fetch('/api/case_index/health', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder })
+        }).then(function (r) { return r.json(); });
+        backup = pre && pre.health && pre.health.backup;
+    } catch (err) {
+        backup = null;
+    }
+    // State what will and will not come back BEFORE asking. An examiner
+    // approving this needs to know the derived records require re-running
+    // analysis, rather than discovering it afterwards.
+    const willRestore = backup
+        ? (backup.tagged_items + ' tagged items, ' + backup.tags + ' tags and ' + backup.contact_merges
+           + ' contact merges will be restored from the backup saved ' + (backup.exported_at || 'earlier') + '.')
+        : 'There is NO decision backup for this case, so tags, notable flags and contact merges cannot be restored.';
+    const proceed = confirm(
+        'Repair this case\'s analysis index?\n\n'
+        + 'The damaged file is renamed and kept, never deleted.\n\n'
+        + willRestore + '\n\n'
+        + 'Keyword hits, parsed artifacts and indexed files are derived data and will NOT come back '
+        + 'automatically - re-run the analysis that produced them.');
+    if (!proceed) return;
+
+    const btn = document.getElementById('caseIndexRepairBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Repairing...'; }
+    try {
+        const res = await fetch('/api/case_index/repair', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_folder: activeCase.case_folder })
+        });
+        const data = await res.json();
+        if (!data || !data.success) {
+            showToast((data && data.error) || 'Repair failed.', 'danger');
+        } else {
+            const r = data.result || {};
+            const restored = r.restored || {};
+            const parts = [];
+            if (r.quarantined_to) parts.push('damaged index kept as ' + r.quarantined_to);
+            if (r.rebuilt) parts.push('index rebuilt');
+            parts.push('restored ' + (restored.tagged_items || 0) + ' tagged items, '
+                       + (restored.tags || 0) + ' tags, ' + (restored.contact_merges || 0) + ' merges');
+            showToast('Analysis index repaired: ' + parts.join('; ') + '.', 'success');
+        }
+    } catch (err) {
+        showToast('Repair request failed.', 'danger');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-wrench-adjustable me-1"></i>Repair Analysis Index'; }
+    }
+    loadCaseIndexHealth();
+    loadAnalysisCoverage();
+}
+
 async function loadAnalysisCoverage() {
     const statusEl = document.getElementById('analysisCoverageStatus');
     const container = document.getElementById('analysisCoverageContainer');

@@ -837,6 +837,137 @@ def restore_case_tag_state(case_folder):
     return inserted
 
 
+def case_index_health(case_folder):
+    """Non-raising status of one case's analysis index, for the Repair panel.
+
+    Every other reader raises CaseIndexUnavailable so a damaged index can
+    never be mistaken for an empty one - but this function's whole job IS to
+    report damage, so it is the one place that catches and describes it
+    instead. Returns None if case_folder isn't a real consolidated case."""
+    case_folder = safe_path(case_folder) if case_folder else None
+    if not case_folder or not case_consolidated_path(case_folder):
+        return None
+    db_path = case_index_db_path(case_folder)
+    backup = read_case_tag_backup(case_folder)
+    out = {
+        "exists": bool(db_path and os.path.isfile(db_path)),
+        "readable": False,
+        "integrity": None,
+        "error": None,
+        "counts": {},
+        "backup": None,
+        "quarantined": [],
+    }
+    if backup:
+        out["backup"] = {
+            "exported_at": backup.get("exported_at"),
+            "tags": len(backup.get("tags") or []),
+            "tagged_items": len(backup.get("tagged_items") or []),
+            "contact_merges": len(backup.get("contact_merges") or []),
+        }
+    if db_path:
+        folder = os.path.dirname(db_path)
+        base = os.path.basename(db_path)
+        try:
+            out["quarantined"] = sorted(
+                f for f in os.listdir(folder) if f.startswith(base + ".corrupt-"))
+        except OSError:
+            pass
+    if not out["exists"]:
+        return out
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True, timeout=30)
+    except sqlite3.Error as e:
+        out["error"] = str(e)
+        return out
+    try:
+        # quick_check rather than integrity_check: same detection for the
+        # damage that matters here, without a full-database scan on an index
+        # that can run to tens of MB on network storage.
+        out["integrity"] = conn.execute("PRAGMA quick_check(1)").fetchone()[0]
+        out["readable"] = (out["integrity"] == "ok")
+        if out["readable"]:
+            for table in ("tags", "tagged_items", "contact_merges",
+                          "indexed_files", "triage_hits", "parsed_artifacts"):
+                try:
+                    out["counts"][table] = conn.execute(
+                        'SELECT COUNT(*) FROM "%s"' % table).fetchone()[0]
+                except sqlite3.DatabaseError:
+                    out["counts"][table] = None
+    except sqlite3.DatabaseError as e:
+        out["error"] = str(e)
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    return out
+
+
+def repair_case_index(case_folder):
+    """Quarantines an unreadable index, rebuilds an empty one, and re-seeds
+    the examiner's own tag/merge decisions from the sidecar.
+
+    **The damaged file is renamed, never deleted.** This is a forensic
+    appliance; destroying data because it looks unreadable to us is the one
+    thing it must not do. A later SQLite version, a `.recover` dump or a
+    specialist tool may still get something out of it, and its mere existence
+    is part of the case's history. It lands beside the index as
+    <name>.corrupt-<timestamp> and is reported back to the caller.
+
+    Derived tables (indexed_files, triage_hits, parsed_artifacts,
+    analysis_results) are NOT reconstructed here - they come back by
+    re-running the analysis that produced them, which this cannot do on the
+    examiner's behalf. Returns a dict describing exactly what happened, so
+    the UI can say so rather than claiming a generic success."""
+    case_folder = safe_path(case_folder) if case_folder else None
+    if not case_folder or not case_consolidated_path(case_folder):
+        return None
+    db_path = case_index_db_path(case_folder)
+    if not db_path:
+        return None
+
+    health = case_index_health(case_folder)
+    result = {
+        "quarantined_to": None,
+        "rebuilt": False,
+        "restored": None,
+        "was_readable": bool(health and health.get("readable")),
+        "backup_present": bool(health and health.get("backup")),
+    }
+
+    if health and health.get("exists") and not health.get("readable"):
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        quarantine_path = "%s.corrupt-%s" % (db_path, stamp)
+        try:
+            os.replace(db_path, quarantine_path)
+            result["quarantined_to"] = os.path.basename(quarantine_path)
+        except OSError as e:
+            result["error"] = "Could not set the damaged index aside: %s" % e
+            return result
+        # WAL/rollback siblings of a file we just moved would otherwise be
+        # applied to the NEW database and re-corrupt it immediately.
+        for suffix in ("-wal", "-shm", "-journal"):
+            try:
+                os.remove(db_path + suffix)
+            except OSError:
+                pass
+        with _schema_ready_lock:
+            _schema_ready.pop(db_path, None)
+        try:
+            _case_index_connect(db_path).close()
+            result["rebuilt"] = True
+        except (sqlite3.DatabaseError, CaseIndexUnavailable) as e:
+            result["error"] = "Rebuilt index could not be created: %s" % e
+            return result
+
+    try:
+        result["restored"] = restore_case_tag_state(case_folder)
+    except (sqlite3.DatabaseError, CaseIndexUnavailable, OSError) as e:
+        result["error"] = "Index is usable, but restoring tags failed: %s" % e
+    return result
+
+
 # --- Unified evidence-item lookups: tags and persisted analysis results for
 # a batch of real-filesystem paths at once (not one identity at a time like
 # case_index_item_tags()/nothing, respectively) - shared by the Reporting >
