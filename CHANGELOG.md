@@ -21,19 +21,23 @@ file after updating to see what changed.
 
 ---
 
-## [2.0.0] - 2026-09-20
-
-The first release marked **stable**. A note on the version number: this project's rule is that a
-major version means a backward-incompatible change, and strictly speaking nothing here forces one -
-your cases, reports and settings all carry over untouched and no installation step has changed. 2.0
-marks maturity rather than a break. The one behaviour an integrator might notice is that a few
-endpoints now return an error where they previously returned an empty success; that is described
-under Fixed below, and it is a correction rather than a regression.
+## [1.92.0] - 2026-09-20
 
 Everything here came out of running Pattern of Life and the reporting section repeatedly against
 real case data on a live station, and following each problem to its cause. One of that station's own
 case index files turned out to be genuinely corrupt, which is what most of this release is really
 about.
+
+Your cases, reports and settings all carry over untouched and no installation step has changed. One
+behaviour an integrator might notice: a few endpoints now return an error where they previously
+returned an empty success. That is described under Fixed below, and it is a correction rather than a
+regression.
+
+This was briefly tagged 2.0.0 and pulled back the same day, deliberately. Several paths through the
+application have been repaired but not yet re-exercised against real hardware - most importantly,
+refusing new work on a Closed or Archived case has only ever been proven on one of the thirteen
+places that can start a job. Calling a release stable is a claim about testing, not about how much
+changed in it, and that testing has not happened yet.
 
 ### Added
 

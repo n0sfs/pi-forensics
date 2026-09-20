@@ -838,7 +838,7 @@ above). It puts the contact correlation table and the location-activity summary 
 Life tab into the exported document - who the device communicated with most, how those identities
 were resolved to real names, and where it spent its time.
 
-Before version 2.0 this section existed but could only be reached by hand-building a custom
+Before version 1.92 this section existed but could only be reached by hand-building a custom
 template, so in practice that whole tab's analysis could not leave the screen.
 
 A note on Geolocation sections: the coordinate **table** stops at 500 rows per KML file and says so,
