@@ -4328,12 +4328,20 @@ def _draw_pdf_geo_map_image(c, x0, y0, placemarks):
 # without disclosure" - the report path just reads the KML files directly and
 # inherited none of it.
 #
-# The MAP is deliberately not capped. Plotting every point costs ~100 bytes of
-# JSON each and is the representation that actually conveys a movement pattern;
-# it is the one-row-per-coordinate table, at ~600 bytes of markup per row, that
-# makes the document unreadable and unreviewable. So the map stays complete, the
-# table is capped, and the shortfall is stated in the document with a pointer to
-# the KML itself, which is attached to the case and holds every point.
+# The MAP is deliberately not capped: it is the representation that actually
+# conveys a movement pattern, and a map missing two thirds of its track is
+# misleading in a way a shortened table is not. The table is what makes the
+# document unreadable - one row per coordinate, and in a PDF it is what turns a
+# report into a coordinate dump. So the map stays complete, the table is capped,
+# and the shortfall is stated in the document with a pointer to the KML, which
+# is retained with the case and holds every point.
+#
+# Measured after this change on the same 2,826-point case: HTML 2,049 KB ->
+# 1,262 KB and the PDF 53 -> 19 pages. The map payload is the bulk of what
+# remains (916 KB, 332 bytes per point, of which descriptions are 54%) - a
+# deliberate, disclosed cost, not an oversight. An earlier draft of this comment
+# guessed "~100 bytes of JSON each"; the real figure was measured afterwards and
+# is three times that.
 REPORT_GEO_MAX_TABLE_ROWS = 500
 
 
@@ -4343,6 +4351,21 @@ def _geo_table_truncation_note(total, shown, kml_name):
     return (f"Showing the first {shown:,} of {total:,} coordinates. The map above plots all "
             f"{total:,}. The complete coordinate list is in the KML evidence file itself "
             f"({kml_name}), which is retained with the case.")
+
+
+def _geo_map_unavailable_note(total, shown, kml_name):
+    """Shown in place of the map when Leaflet did not inline into the export.
+
+    Has to stay honest about the table alongside it: when the table is also
+    capped, this is the one case where the reader can see neither the full
+    track nor the full list, and telling them the table is complete would be
+    worse than useless."""
+    if total > shown:
+        return ("Map library unavailable in this export. The coordinate table above lists the "
+                f"first {shown:,} of {total:,} points; the complete list is in the KML evidence "
+                f"file itself ({kml_name}), which is retained with the case.")
+    return ("Map library unavailable in this export - the coordinate table above lists every "
+            "point in full.")
 
 
 def _draw_pdf_geolocation_block(c, y, kml_data, title="Geolocation / GPS Evidence"):
@@ -5690,12 +5713,17 @@ def _html_geolocation_block(kml_data, title="Geolocation / GPS Evidence", anchor
             # Say WHY the box is empty rather than leaving a blank bordered
             # div. When the vendored library failed to inline (the repo-root
             # path bug above went unnoticed for exactly this reason), every
-            # map in the export was a silent empty rectangle. The coordinate
-            # table above is always present and authoritative regardless, so
-            # point the reader at it.
+            # map in the export was a silent empty rectangle.
+            #
+            # The wording is chosen against the table's own truncation state
+            # (2026-09-20). This used to claim unconditionally that the table
+            # "lists every point in full", which capping the table turned into
+            # a false statement in exactly the case where the map ALSO failed -
+            # i.e. the one situation where the reader has nothing else to go on
+            # and most needs to be told the truth about what is missing.
             'if(!mapDiv)return;'
             'if(typeof L==="undefined"){mapDiv.style.height="auto";mapDiv.style.padding=".8em";'
-            'mapDiv.textContent="Map library unavailable in this export - the coordinate table above lists every point in full.";return;}'
+            f'mapDiv.textContent={json.dumps(_geo_map_unavailable_note(len(entry["placemarks"]), len(shown_placemarks), entry["name"]))};return;}}'
             'if(!pts.length){mapDiv.style.height="auto";mapDiv.style.padding=".8em";'
             'mapDiv.textContent="No plottable coordinates in this file.";return;}'
             'var map=L.map(mapDiv);'
