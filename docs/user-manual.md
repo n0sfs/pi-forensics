@@ -831,6 +831,47 @@ For PDF/HTML, a live preview renders right there before you commit to downloadin
 PDF or HTML report also gets a SHA-256 integrity hash — shown after export, and saved alongside the
 file — so you can prove later that the report itself hasn't been altered since it left this station.
 
+#### Including Pattern of Life
+
+The Standard template also has a **Pattern of Life** section (off by default, same two places as
+above). It puts the contact correlation table and the location-activity summary from the Pattern of
+Life tab into the exported document - who the device communicated with most, how those identities
+were resolved to real names, and where it spent its time.
+
+Before version 2.0 this section existed but could only be reached by hand-building a custom
+template, so in practice that whole tab's analysis could not leave the screen.
+
+A note on Geolocation sections: the coordinate **table** stops at 500 rows per KML file and says so,
+naming the true total and pointing at the KML evidence file, which is kept with the case and
+contains every point. The **map** still plots all of them. A single phone case can easily hold
+thousands of coordinates, and printing one row each turns a report into a coordinate dump - one real
+case produced a 53-page PDF that was almost entirely raw numbers.
+
+#### If a case's analysis index is damaged
+
+Each case has an **analysis index** - a small database beside the case holding your tags, the
+keyword hits from scans, and the records artifact parsers extracted. **Reporting > Case Activity >
+Analysis Index Health** shows its state, and can repair it.
+
+Two kinds of thing live in there, and the distinction matters:
+
+- **Your own decisions** - tags, notable flags, and contact merges. Nothing can reconstruct these
+  except you. They are automatically backed up to a separate small file beside the case every time
+  you change one.
+- **Derived records** - keyword hits, parsed artifacts, indexed files. These come back by re-running
+  the analysis that produced them.
+
+If the index is damaged, the panel says so plainly, confirms that your acquired evidence is not
+affected, and offers **Repair Analysis Index**. Repair sets the damaged file aside under a new name
+- it is never deleted, because a later tool may still recover something from it and its existence is
+part of the case's history - builds a fresh index, and restores your decisions from their backup.
+The confirmation tells you exactly how many tags and merges will come back, or warns you plainly if
+there is no backup, and reminds you that the derived records will need their analysis re-run.
+
+Damage is rare, and the usual cause is storing cases on a network share, where an interrupted write
+can leave a database inconsistent. If it happens more than once on the same station, treat that as a
+finding about the storage rather than about the case.
+
 #### Including what the analysis found
 
 The Standard template has an **Analysis Results** section (off by default — tick it in *Customize

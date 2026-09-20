@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20ARM64-red)](#-prerequisites-setup--usage)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/frontend-vanilla%20JS%2C%20no%20build%20step-8366f5)](#)
-[![Version](https://img.shields.io/badge/version-1.91.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0-brightgreen)](CHANGELOG.md)
 [![Releases](https://img.shields.io/badge/releases-GitHub-181717?logo=github)](https://github.com/n0sfs/pi-forensics/releases)
 
 > ### A field imaging station, not a full workstation replacement.
@@ -240,7 +240,10 @@ polished Report Narrative (Executive Summary/Objectives/Findings/Limitations/Con
 optional **Analysis Results** section carrying what the tools actually found (items you flagged with
 your own notes, keyword/IOC hits per category with a sample of the values and the real total, and
 per-type parsed-artifact counts — stating plainly when no analysis has been run rather than showing
-zeroes), a **Case Activity** tab (per-job acquisition detail, analysis coverage, and the case-scoped audit
+zeroes), an optional **Pattern of Life** section putting that tab's contact correlation and location
+activity into the exported document, a **Case Activity** tab (per-job acquisition detail, analysis
+coverage, an **Analysis Index Health** panel that can rebuild a damaged case index and restore your
+tags from their own backup - setting the damaged file aside rather than deleting it - and the case-scoped audit
 log together), an **Evidence Timeline** merging every acquired image's filesystem timeline (plus real file timestamps from a
 mobile pull/backup or Logical Acquisition folder — an Android pull captures each file's genuine
 on-device modification time directly from the phone via `adb shell`, since `adb pull` itself
@@ -401,7 +404,7 @@ versioned build instead (recommended for anything beyond a quick test), install 
 [release](https://github.com/n0sfs/pi-forensics/releases) by adding `--branch vX.Y.Z` to the clone
 command, e.g.:
 ```bash
-sudo git clone --branch v1.91.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
+sudo git clone --branch v2.0.0 https://github.com/n0sfs/pi-forensics.git /opt/pi-forensics && cd /opt/pi-forensics && sudo python3 install.py
 ```
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release. A station already running can
 check its exact version and pull updates from Settings > Service Controls & Diagnostics.
