@@ -4316,6 +4316,35 @@ def _draw_pdf_geo_map_image(c, x0, y0, placemarks):
     c.rect(x0, y0, GEO_MAP_PX_WIDTH, GEO_MAP_PX_HEIGHT, stroke=1, fill=0)
     return any_drawn
 
+# Per-KML-file cap on the coordinate TABLE in an exported report (2026-09-20).
+#
+# Measured on this station: the CASE/UCO export of a real phone case rendered
+# 2,826 placemark rows, and that one section was 1,875 KB of a 2,098 KB HTML
+# file - 89% of the report - while the PDF ran to 53 pages, overwhelmingly raw
+# coordinates. Nothing capped or disclosed it. That is out of step with every
+# other large section here: the timeline caps at CASE_TIMELINE_MAX_TOTAL_ENTRIES
+# and returns truncation_reasons, and the interactive geo endpoint already caps
+# at GEO_ACTIVITY_MAX_POINTS with the comment "cap, never silently truncate
+# without disclosure" - the report path just reads the KML files directly and
+# inherited none of it.
+#
+# The MAP is deliberately not capped. Plotting every point costs ~100 bytes of
+# JSON each and is the representation that actually conveys a movement pattern;
+# it is the one-row-per-coordinate table, at ~600 bytes of markup per row, that
+# makes the document unreadable and unreviewable. So the map stays complete, the
+# table is capped, and the shortfall is stated in the document with a pointer to
+# the KML itself, which is attached to the case and holds every point.
+REPORT_GEO_MAX_TABLE_ROWS = 500
+
+
+def _geo_table_truncation_note(total, shown, kml_name):
+    """The one wording both renderers use, so the PDF and HTML can never
+    disclose this differently."""
+    return (f"Showing the first {shown:,} of {total:,} coordinates. The map above plots all "
+            f"{total:,}. The complete coordinate list is in the KML evidence file itself "
+            f"({kml_name}), which is retained with the case.")
+
+
 def _draw_pdf_geolocation_block(c, y, kml_data, title="Geolocation / GPS Evidence"):
     """Renders each case KML file with >=1 valid placemark (see
     _collect_case_geolocation) as a static tile-mosaic map image with pin
@@ -4380,7 +4409,9 @@ def _draw_pdf_geolocation_block(c, y, kml_data, title="Geolocation / GPS Evidenc
             return y
 
         y = _draw_geo_header_row(y)
-        for p in entry['placemarks']:
+        all_placemarks = entry['placemarks']
+        shown_placemarks = all_placemarks[:REPORT_GEO_MAX_TABLE_ROWS]
+        for p in shown_placemarks:
             if y < 60:
                 c.showPage()
                 y = 750
@@ -4390,6 +4421,21 @@ def _draw_pdf_geolocation_block(c, y, kml_data, title="Geolocation / GPS Evidenc
             c.drawString(xpos[2], y, f"{p['lon']:.6f}")
             c.drawString(xpos[3], y, (p['description'] or '').replace('\n', ' ')[:38])
             y -= 10
+        if len(all_placemarks) > len(shown_placemarks):
+            if y < 60:
+                c.showPage()
+                y = 750
+            y -= 4
+            c.setFont("Helvetica-Oblique", 7.5)
+            c.setFillColorRGB(0.45, 0.45, 0.45)
+            # Wrapped rather than clipped: a truncation notice that is itself
+            # cut off at the page margin is worse than no notice at all.
+            for line in textwrap.wrap(
+                    _geo_table_truncation_note(len(all_placemarks), len(shown_placemarks),
+                                               entry['name']), 118):
+                c.drawString(50, y, line)
+                y -= 9
+            c.setFillColorRGB(0, 0, 0)
         y -= 14
 
     return y
@@ -4801,8 +4847,19 @@ REPORT_SECTION_BLOCKS = [
     # Home/Work inference layered on top. Does not render an actual map
     # image either - that's the existing "geolocation" section's own job;
     # an examiner wanting both enables them together in a custom template.
+    # Reachable from the Standard template's own checkboxes since 2026-09-20.
+    # It was previously custom-template-only, which made it the ONLY one of
+    # these 18 keys with no presence in reporting.html or main.js at all - so
+    # a whole top-level analysis tab (contact correlation, the relationship
+    # graph, location activity) could not reach an exported report unless the
+    # examiner first hand-built a custom template. The precedent cuts the
+    # other way: analysis_results was given a checkbox in v1.91.0 for exactly
+    # this reason. Starts UNCHECKED via LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED
+    # below, like geolocation and analysis_results - a case with no comms or
+    # GPS should not grow an empty section, and an existing caller that omits
+    # the key must keep getting its current output.
     {"key": "pattern_of_life", "default_title": "Pattern of Life: Contact Correlation & Location Activity",
-     "in_legacy_default": False, "requires_events": False, "force_page_break": True, "remappable": False},
+     "in_legacy_default": True, "requires_events": False, "force_page_break": True, "remappable": False},
     # What the analysis tools actually found, and what the examiner flagged
     # (2026-09-16). Until this existed, NOTHING any analysis produced could
     # reach an exported report: no block carried keyword/IOC hits, parsed
@@ -4895,7 +4952,7 @@ FEATURE_MODULES = {
 # include-when-absent default long enough that changing it now would alter
 # existing non-UI callers' output, which is the exact thing this set exists to
 # avoid. Its own <input> starting unchecked is what keeps it off in practice.
-LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED = {"analysis_results"}
+LEGACY_SECTIONS_OFF_WHEN_UNSPECIFIED = {"analysis_results", "pattern_of_life"}
 
 def _expand_legacy_sections_dict(sections_dict):
     """Converts the plain sections:{key: bool} dict (today's Export-modal
@@ -5606,13 +5663,18 @@ def _html_geolocation_block(kml_data, title="Geolocation / GPS Evidence", anchor
         parts.append(f'<div id="{esc(map_id)}" style="height:340px;width:100%;margin:.6em 0;border:1px solid #ccc;border-radius:6px;"></div>')
 
         parts.append('<table><tr><th>Name</th><th>Latitude</th><th>Longitude</th><th>Description</th></tr>')
-        for p in entry['placemarks']:
+        all_placemarks = entry['placemarks']
+        shown_placemarks = all_placemarks[:REPORT_GEO_MAX_TABLE_ROWS]
+        for p in shown_placemarks:
             parts.append(
                 f'<tr><td>{esc(p["name"] or "(unnamed)")}</td>'
                 f'<td class="mono">{p["lat"]:.6f}</td><td class="mono">{p["lon"]:.6f}</td>'
                 f'<td>{esc(p["description"])}</td></tr>'
             )
         parts.append('</table>')
+        if len(all_placemarks) > len(shown_placemarks):
+            parts.append('<p class="muted">%s</p>' % esc(
+                _geo_table_truncation_note(len(all_placemarks), len(shown_placemarks), entry['name'])))
 
         # Placemark data is passed to the browser as a JSON literal, not raw
         # JS interpolation - untrusted name/description text could otherwise
