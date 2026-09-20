@@ -84,3 +84,30 @@ def test_cap_is_large_enough_to_be_useful():
     """Guards against someone 'tidying' this down to a token 50 - the cap is
     meant to stop a 53-page coordinate dump, not to hide the data."""
     assert reporting.REPORT_GEO_MAX_TABLE_ROWS >= 250
+
+
+def test_map_unavailable_notice_stays_honest_when_the_table_is_also_capped():
+    """The nastiest case: Leaflet failed to inline AND the table is truncated,
+    so the reader can see neither the full track nor the full list. The
+    pre-existing message claimed unconditionally that the table "lists every
+    point in full" - capping the table turned that into a false statement in
+    precisely the situation where the reader has nothing else to go on."""
+    truncated = reporting._geo_map_unavailable_note(2826, 500, "track.kml")
+    assert "every point in full" not in truncated
+    assert "500" in truncated and "2,826" in truncated
+    assert "track.kml" in truncated
+
+    # ...and when nothing was dropped, the original reassurance is still correct.
+    complete = reporting._geo_map_unavailable_note(120, 120, "track.kml")
+    assert "every point in full" in complete
+
+
+def test_map_unavailable_notice_is_embedded_as_a_json_literal():
+    """It reaches the browser inside an inline <script>, so it goes through
+    json.dumps rather than raw interpolation - a KML filename is untrusted
+    content and could otherwise carry a quote that breaks the script."""
+    out = reporting._html_geolocation_block(
+        _kml_entry(reporting.REPORT_GEO_MAX_TABLE_ROWS + 1, name='we"ird.kml'))
+    assert '\\"' in out or 'we\\"ird' in out or "we&quot;ird" in out
+    # the script block must still be syntactically intact
+    assert out.count("<script>") == out.count("</script>")
