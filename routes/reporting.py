@@ -30,6 +30,7 @@ import io
 import csv
 import time
 import json
+import sqlite3
 import datetime
 import html
 import uuid
@@ -81,7 +82,7 @@ from core.case_index_db import (
     _comm_content_preview, tagged_real_fs_paths_for_case, derive_examiner_display,
     compute_case_analysis_coverage, ensure_examiner_recorded,
     _build_evidence_id_resolvers, _resolve_row_evidence_id,
-    collect_case_analysis_findings,
+    collect_case_analysis_findings, CaseIndexUnavailable,
 )
 # One of the few deliberate routes->routes imports in this app (the others:
 # acquisition->image_browser, mobile->acquisition). CLAUDE.md documents
@@ -293,7 +294,22 @@ def _count_notable_tagged_items_station_wide(cases):
         return _tags_flagged_cache["value"]
     total = 0
     for c in cases:
-        conn = _case_index_open_readonly(c.get("case_folder"))
+        # One unreadable index must not take out a station-wide total that
+        # spans every other case (2026-09-20). Before this guard, a single
+        # corrupt file made the ENTIRE /api/reporting/stats response a 500 -
+        # Total Cases, Active Cases and Evidence Items included, none of which
+        # even consult the index. Proven live by planting this station's own
+        # genuinely-malformed 2026-CASE-MOBILE-SWEEP index into a test case.
+        # Skipping is right here specifically because this is an at-a-glance
+        # dashboard total, not an examination result: the alternative - failing
+        # the whole tile - hides 23 readable cases to report on 1 broken one.
+        # The per-case readers deliberately do NOT skip; they raise, so an
+        # examiner looking AT that case is told its index is damaged rather
+        # than shown a confident zero.
+        try:
+            conn = _case_index_open_readonly(c.get("case_folder"))
+        except CaseIndexUnavailable:
+            continue
         if not conn:
             continue
         try:
@@ -302,6 +318,10 @@ def _count_notable_tagged_items_station_wide(cases):
                 "WHERE tags.notable = 1"
             ).fetchone()
             total += (row[0] if row else 0)
+        except sqlite3.DatabaseError:
+            # Corruption can also surface at query time rather than at open,
+            # e.g. when only one page/table is damaged.
+            continue
         finally:
             conn.close()
     _tags_flagged_cache["value"] = total
