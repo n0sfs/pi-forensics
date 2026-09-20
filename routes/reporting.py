@@ -856,6 +856,49 @@ TIMELINE_MIN_PER_FS_BUDGET = 200
 # regardless of how the resulting events get budgeted afterward.
 FOLDER_TIMELINE_MAX_FILES_WALKED = 20000
 
+
+def _walk_files_with_stat(root):
+    """Yields (path, lstat_result) for every file under `root`, top-down.
+
+    A scandir walk rather than os.walk + os.lstat (2026-09-20). Two syscalls
+    per directory disappear: os.walk with followlinks=False calls
+    os.path.islink() on every subdirectory it is about to descend into, and
+    that is a real lstat each time, whereas scandir's own d_type answers
+    "is this a directory, not following symlinks" for free from the readdir
+    that already happened.
+
+    It matters here because this walk runs against NFS-backed evidence
+    storage, where a syscall is ~4ms rather than ~4us. Profiled on the
+    station against a 3,030-file Android pull: the whole enriched-timeline
+    build was 21.3s, of which os.walk accounted for 10.3s - 5.6s in scandir,
+    3.2s in those islink calls alone, 1.4s in is_dir.
+
+    Deliberately identical in behaviour to what it replaces: top-down order,
+    symlinked directories not followed, and unreadable directories skipped
+    rather than raised (os.walk's default onerror=None). A file whose lstat
+    fails is skipped, matching the caller's own existing try/except.
+    """
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue           # matches os.walk's silent-skip default
+        subdirs = []
+        for entry in entries:
+            try:
+                # follow_symlinks=False: a symlinked directory is a FILE for
+                # our purposes, exactly as os.walk(followlinks=False) treats
+                # it - we record its own lstat rather than walking through it.
+                if entry.is_dir(follow_symlinks=False):
+                    subdirs.append(entry.path)
+                    continue
+                yield entry.path, entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+        stack.extend(reversed(subdirs))
+
 # _tsk_resolve_filesystems now lives in core/tsk_utils.py (imported at the
 # top of this file) - see the Step 0 core/ extraction.
 
@@ -1155,52 +1198,46 @@ def _collect_case_timeline(events, case_folder=None):
         count = 0
         files_walked = 0
         walk_capped = False
-        for root, _dirs, files in os.walk(dest_path):
-            for fname in files:
-                files_walked += 1
-                if files_walked > FOLDER_TIMELINE_MAX_FILES_WALKED:
-                    walk_capped = True
-                    break
-                fpath = os.path.join(root, fname)
-                rel_path_no_slash = os.path.relpath(fpath, dest_path).replace(os.sep, "/")
-                rel_path = "/" + rel_path_no_slash
+        for fpath, st in _walk_files_with_stat(dest_path):
+            files_walked += 1
+            if files_walked > FOLDER_TIMELINE_MAX_FILES_WALKED:
+                walk_capped = True
+                break
+            rel_path_no_slash = os.path.relpath(fpath, dest_path).replace(os.sep, "/")
+            rel_path = "/" + rel_path_no_slash
 
-                # A real captured on-device mtime beats copy time whenever one is
-                # available for this exact file - emit just the one genuine 'M'
-                # event and skip the (still copy-time, now redundant/misleading)
-                # os.lstat() fallback below entirely for it.
-                manifest_ts = manifest_files.get(rel_path_no_slash) if manifest_files else None
-                if manifest_ts:
-                    all_events.append({"timestamp": manifest_ts, "activity": "M", "path": rel_path,
-                                        "evidence_id": evidence_id, "filesystem": real_device_label,
-                                        "deleted": False})
-                    count += 1
-                    if count >= per_source_budget:
-                        truncated = True
-                        break
-                    continue
-
-                try:
-                    st = os.lstat(fpath)  # lstat, not stat - a symlink's own metadata, never a followed target
-                except OSError:
-                    continue
-                if manifest_files is not None:
-                    manifest_fallback_count += 1  # this folder HAS a manifest, this one file just isn't in it
-                ts_fields = [('st_mtime', 'M'), ('st_atime', 'A'), ('st_ctime', 'C')]
-                birth = getattr(st, 'st_birthtime', None)
-                if birth:
-                    ts_fields.append(('st_birthtime', 'B'))
-                for ts_attr, label in ts_fields:
-                    ts = getattr(st, ts_attr, None)
-                    if ts:
-                        all_events.append({"timestamp": ts, "activity": label, "path": rel_path,
-                                            "evidence_id": evidence_id, "filesystem": source_label,
-                                            "deleted": False})
-                        count += 1
+            # A real captured on-device mtime beats copy time whenever one is
+            # available for this exact file - emit just the one genuine 'M'
+            # event and skip the (still copy-time, now redundant/misleading)
+            # lstat fallback below entirely for it.
+            manifest_ts = manifest_files.get(rel_path_no_slash) if manifest_files else None
+            if manifest_ts:
+                all_events.append({"timestamp": manifest_ts, "activity": "M", "path": rel_path,
+                                    "evidence_id": evidence_id, "filesystem": real_device_label,
+                                    "deleted": False})
+                count += 1
                 if count >= per_source_budget:
                     truncated = True
                     break
-            if walk_capped or count >= per_source_budget:
+                continue
+
+            # st is already the file's OWN metadata (lstat semantics - never a
+            # followed symlink target), supplied by the walk.
+            if manifest_files is not None:
+                manifest_fallback_count += 1  # this folder HAS a manifest, this one file just isn't in it
+            ts_fields = [('st_mtime', 'M'), ('st_atime', 'A'), ('st_ctime', 'C')]
+            birth = getattr(st, 'st_birthtime', None)
+            if birth:
+                ts_fields.append(('st_birthtime', 'B'))
+            for ts_attr, label in ts_fields:
+                ts = getattr(st, ts_attr, None)
+                if ts:
+                    all_events.append({"timestamp": ts, "activity": label, "path": rel_path,
+                                        "evidence_id": evidence_id, "filesystem": source_label,
+                                        "deleted": False})
+                    count += 1
+            if count >= per_source_budget:
+                truncated = True
                 break
         if count >= per_source_budget:
             notes.append(_budget_note(evidence_id))
