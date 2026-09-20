@@ -894,6 +894,13 @@
                                                                 <input class="form-check-input export-section-check" type="checkbox" id="expSecAnalysisResults">
                                                                 <label class="form-check-label small" for="expSecAnalysisResults">Analysis Results (flagged items, keyword hits, parsed artifacts)</label>
                                                             </div>
+                                                            <!-- Also starts unchecked (2026-09-20). Until now this section was
+                                                                 reachable only by hand-building a custom template, so the whole
+                                                                 Pattern of Life tab's analysis could not leave the screen. -->
+                                                            <div class="form-check">
+                                                                <input class="form-check-input export-section-check" type="checkbox" id="expSecPatternOfLife">
+                                                                <label class="form-check-label small" for="expSecPatternOfLife">Pattern of Life (contact correlation, location activity)</label>
+                                                            </div>
                                                             <div class="form-check mb-3">
                                                                 <input class="form-check-input export-section-check" type="checkbox" id="expSecAuditTrail" checked>
                                                                 <label class="form-check-label small" for="expSecAuditTrail">Case Activity Log</label>

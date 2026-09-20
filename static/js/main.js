@@ -15246,6 +15246,9 @@ async function loadCaseReportingSettings() {
         // empty section by default.
         const analysisDefEl = document.getElementById('defSecAnalysisResults');
         if (analysisDefEl) analysisDefEl.checked = Object.prototype.hasOwnProperty.call(sections, 'analysis_results') ? !!sections.analysis_results : false;
+        // Pattern of Life (2026-09-20) - same absent-means-off handling, same reason.
+        const polDefEl = document.getElementById('defSecPatternOfLife');
+        if (polDefEl) polDefEl.checked = Object.prototype.hasOwnProperty.call(sections, 'pattern_of_life') ? !!sections.pattern_of_life : false;
         setChecked('defSecAuditTrail', sections, 'audit_trail');
         setChecked('defFieldTelemetry', jobFields, 'telemetry');
         setChecked('defFieldParams', jobFields, 'params');
@@ -15402,6 +15405,7 @@ async function saveCaseReportingSettings() {
         attachments: document.getElementById("defSecAttachments")?.checked ?? true,
         geolocation: document.getElementById("defSecGeolocation")?.checked ?? false,
         analysis_results: document.getElementById("defSecAnalysisResults")?.checked ?? false,
+        pattern_of_life: document.getElementById("defSecPatternOfLife")?.checked ?? false,
         audit_trail: document.getElementById("defSecAuditTrail")?.checked ?? true,
     };
     const jobFields = {
@@ -18341,6 +18345,7 @@ async function prepareExportPane() {
             setIfKnown('expSecAttachments', sections, 'attachments');
             setIfKnown('expSecGeolocation', sections, 'geolocation');
             setIfKnown('expSecAnalysisResults', sections, 'analysis_results');
+            setIfKnown('expSecPatternOfLife', sections, 'pattern_of_life');
             setIfKnown('expSecAuditTrail', sections, 'audit_trail');
             setIfKnown('expFieldTelemetry', jobFields, 'telemetry');
             setIfKnown('expFieldParams', jobFields, 'params');
@@ -18692,6 +18697,7 @@ function gatherExportRequestBody() {
             attachments: !!document.getElementById("expSecAttachments")?.checked,
             geolocation: !!document.getElementById("expSecGeolocation")?.checked,
             analysis_results: !!document.getElementById("expSecAnalysisResults")?.checked,
+            pattern_of_life: !!document.getElementById("expSecPatternOfLife")?.checked,
             audit_trail: !!document.getElementById("expSecAuditTrail")?.checked,
         };
         job_fields = {
