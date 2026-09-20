@@ -173,6 +173,18 @@ def test_frequent_locations_uses_the_passed_attachment_files_not_a_stale_disk_re
 
     case_folder = os.path.join(evidence_root, "2026-TEST-LEGACY-POL")
     os.makedirs(case_folder, exist_ok=True)
+    # The case marker is required as of 2026-09-20: a case_folder that does not
+    # resolve to a real consolidated case now raises CaseFolderUnavailable
+    # rather than quietly reading as "this case has no contacts". This fixture
+    # previously skipped the marker because the old code returned an empty
+    # result for it - which is precisely the conflation that change removed.
+    # Production always passes a real case folder here, so creating one keeps
+    # this test's own intent (the KML is reachable ONLY via attachment_files)
+    # while matching what the renderer is actually handed.
+    with open(os.path.join(case_folder, "2026-TEST-LEGACY-POL_case.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"schema_version": 1, "case_number": "2026-TEST-LEGACY-POL",
+                   "events": []}, f)
     kml_dir = os.path.join(evidence_root, "elsewhere")
     os.makedirs(kml_dir, exist_ok=True)
     kml_path = os.path.join(kml_dir, "trip.kml")
