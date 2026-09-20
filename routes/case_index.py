@@ -27,6 +27,7 @@ from core.case_index_db import (
     has_case_analysis_activity, cross_case_hash_search, correlate_contacts,
     compute_case_analysis_coverage, ensure_examiner_recorded,
     detect_privacy_tools, export_case_tag_state,
+    case_index_health, repair_case_index,
 )
 
 case_index_bp = Blueprint('case_index', __name__)
@@ -635,6 +636,59 @@ def case_index_privacy_tools():
     req = request.get_json() or {}
     result = detect_privacy_tools(req.get('case_folder'))
     return jsonify({"success": True, **result})
+
+@case_index_bp.route('/api/case_index/health', methods=['POST'])
+@requires_auth
+@requires_permission('reporting', 'file_explorer')
+def case_index_health_route():
+    """Whether this case's analysis index is readable, and what could be
+    recovered if it is not (2026-09-20).
+
+    Read-only and non-raising - it is the one endpoint that is allowed to
+    describe a damaged index rather than refusing to serve one, because
+    reporting the damage is the entire point. Every other reader raises
+    CaseIndexUnavailable so a corrupt index can never be silently mistaken
+    for an empty case."""
+    req = request.get_json() or {}
+    health = case_index_health(req.get('case_folder'))
+    if health is None:
+        return jsonify({"success": False, "error": "No active, consolidated case selected."}), 400
+    return jsonify({"success": True, "health": health})
+
+
+@case_index_bp.route('/api/case_index/repair', methods=['POST'])
+@requires_auth
+# Deliberately narrower than the tagging routes' file_explorer grant: this
+# sets a file aside and rebuilds a database. 'settings' is this app's
+# existing key for station-maintenance actions of that weight.
+@requires_permission('settings')
+def case_index_repair_route():
+    """Sets a damaged analysis index aside, rebuilds it, and restores the
+    examiner's own tag/merge decisions from the sidecar backup.
+
+    The damaged file is RENAMED, never deleted - see repair_case_index().
+    Logged to the chain of custody either way: rebuilding a case's index is
+    a material change to the case's working state, and the log is how an
+    examiner later accounts for why the derived counts changed."""
+    req = request.get_json() or {}
+    case_folder = req.get('case_folder')
+    result = repair_case_index(case_folder)
+    if result is None:
+        return jsonify({"success": False, "error": "No active, consolidated case selected."}), 400
+
+    log_chain_of_custody("case_index_repaired", {
+        "case_folder": case_folder,
+        "quarantined_to": result.get("quarantined_to"),
+        "rebuilt": result.get("rebuilt"),
+        "restored": result.get("restored"),
+        "was_readable": result.get("was_readable"),
+        "error": result.get("error"),
+    })
+
+    if result.get("error"):
+        return jsonify({"success": False, "error": result["error"], "result": result}), 500
+    return jsonify({"success": True, "result": result})
+
 
 @case_index_bp.route('/api/case_index/analysis_coverage', methods=['POST'])
 @requires_auth
