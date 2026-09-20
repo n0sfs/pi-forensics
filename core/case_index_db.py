@@ -309,6 +309,16 @@ def case_index_db_path(case_dir):
     slug = os.path.basename(case_dir.rstrip(os.sep))
     return safe_path(os.path.join(case_dir, f"{slug}_case_index.db"))
 
+
+def case_tag_backup_path(case_dir):
+    """Sidecar holding the examiner's own tag/merge decisions, e.g.
+    <case_dir>/<slug>_case_tags.json. Same slug derivation as the two
+    functions above."""
+    if not case_dir or not os.path.isdir(case_dir):
+        return None
+    slug = os.path.basename(case_dir.rstrip(os.sep))
+    return safe_path(os.path.join(case_dir, f"{slug}_case_tags.json"))
+
 _CASE_INDEX_SCHEMA = """
 CREATE TABLE IF NOT EXISTS indexed_files (
     id INTEGER PRIMARY KEY,
@@ -566,10 +576,63 @@ def _mark_schema_ensured(db_path):
         _schema_ready[db_path] = (st.st_dev, st.st_ino)
 
 
+# Filesystems where SQLite's WAL mode is not supported. SQLite's own
+# documentation is explicit that WAL requires shared memory visible to every
+# process using the database, and "does not work over a network filesystem".
+# This app routinely stores cases on exactly that (this station's evidence
+# root is an NFS mount), and was setting journal_mode=WAL on every index
+# regardless - confirmed active on the NFS-hosted index, with the -wal/-shm
+# files sitting on the share.
+_NETWORK_FS_TYPES = frozenset({
+    'nfs', 'nfs4', 'cifs', 'smbfs', 'smb2', 'smb3', 'afs', '9p',
+    'ceph', 'glusterfs', 'lustre', 'fuse.sshfs', 'fuseblk.sshfs',
+})
+
+
+def filesystem_is_network(path):
+    """True if `path` sits on a network filesystem, per /proc/mounts.
+
+    Returns False when that cannot be determined (non-Linux dev machines,
+    an unreadable /proc) - the conservative direction is to keep today's
+    behavior rather than silently change journal mode on a local disk.
+    Matching is by longest mount-point prefix, so a share mounted deeper
+    than / is found correctly."""
+    try:
+        with open('/proc/mounts', 'r') as f:
+            entries = [line.split()[:3] for line in f if len(line.split()) >= 3]
+    except OSError:
+        return False
+    try:
+        target = os.path.realpath(path)
+    except OSError:
+        target = path
+    best_len, best_type = -1, None
+    for _dev, mount_point, fstype in entries:
+        mount_point = mount_point.replace('\\040', ' ')
+        if target == mount_point or target.startswith(mount_point.rstrip('/') + '/'):
+            if len(mount_point) > best_len:
+                best_len, best_type = len(mount_point), fstype
+    return best_type in _NETWORK_FS_TYPES if best_type else False
+
+
+def _journal_mode_for(db_path):
+    """WAL on local storage, DELETE on a network share.
+
+    WAL is genuinely wanted locally - it is why a running scan job's writes
+    and a concurrent File Explorer read don't block each other. On a network
+    share it is not merely slower, it is outside what SQLite supports, and
+    this app has one index that is already corrupt. DELETE (the rollback
+    journal) gives up that concurrency but is the mode SQLite expects to
+    survive there. Switching an existing WAL database is safe: SQLite
+    checkpoints and removes the -wal/-shm files as part of the change."""
+    return "DELETE" if filesystem_is_network(db_path) else "WAL"
+
+
 def _case_index_connect(db_path):
-    """Opens (creating if absent) the per-case analysis index, in WAL mode
-    so a running scan job's writes and a concurrent File Explorer read don't
-    block each other. Caller is responsible for closing the connection.
+    """Opens (creating if absent) the per-case analysis index. Caller is
+    responsible for closing the connection.
+
+    Journal mode is chosen per storage type - see _journal_mode_for().
 
     Raises CaseIndexUnavailable (never a bare sqlite3.DatabaseError) if the
     file exists but cannot be opened - see that class for why."""
@@ -577,7 +640,9 @@ def _case_index_connect(db_path):
     if _schema_already_ensured(db_path):
         return conn
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
+        # Not parameterizable (PRAGMA takes no bound values); the value comes
+        # from this module's own two-way choice, never from a caller.
+        conn.execute("PRAGMA journal_mode=%s" % _journal_mode_for(db_path))
         conn.executescript(_CASE_INDEX_SCHEMA)
         _ensure_tags_severity_column(conn)
     except sqlite3.DatabaseError as e:
@@ -619,6 +684,158 @@ def _case_index_open_write(case_folder):
     if not db_path:
         return None
     return _case_index_connect(db_path)
+
+
+# --- Durability for the examiner's own decisions (2026-09-20) ---
+# Everything else in the case index is DERIVED and rebuildable by re-running
+# analysis: indexed_files, triage_hits, parsed_artifacts, analysis_results.
+# Three tables are not. `tags`, `tagged_items` and `contact_merges` are
+# judgements a person made - what is notable, what to follow up, which two
+# identifiers are the same human being - and no re-scan reconstructs them.
+# On this station one case alone holds 512 tagged items.
+#
+# Until now they lived in exactly one place: a single SQLite file on a
+# `soft`-mounted NFS share, with no backup, no export, and no rebuild path.
+# One of this station's 18 indexes is already corrupt, so this is a
+# demonstrated failure mode, not a hypothetical one.
+#
+# The sidecar is deliberately plain JSON written atomically (temp file +
+# os.replace): small, single-write, human-readable, and trivially recoverable
+# by hand if it ever comes to that - none of which is true of the index.
+#
+# Auto-tagging (_auto_tag_case_artifact, which labels the app's OWN generated
+# reports/exports) deliberately does NOT snapshot: those tags are
+# reconstructable, there is already a backfill sweep that restores them, and
+# they fire often enough that snapshotting each one would add steady write
+# traffic to the very share this is protecting against. The line is: back up
+# what a human decided, not what the app can regenerate.
+
+_CASE_TAG_BACKUP_VERSION = 1
+
+
+def export_case_tag_state(case_folder, conn=None):
+    """Writes the examiner-decision tables to the sidecar. Best-effort by
+    design: a failure here must never fail the tagging action the examiner
+    just took - the index write already succeeded and is the source of
+    truth. Returns the path written, or None."""
+    backup_path = case_tag_backup_path(case_folder)
+    if not backup_path:
+        return None
+    own_conn = conn is None
+    try:
+        if own_conn:
+            conn = _case_index_open_readonly(case_folder)
+            if conn is None:
+                return None
+        payload = {
+            "version": _CASE_TAG_BACKUP_VERSION,
+            "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "tags": [dict(zip(
+                ("id", "name", "color", "notable", "is_default", "created_at", "severity"), r))
+                for r in conn.execute(
+                    "SELECT id, name, color, notable, is_default, created_at, severity FROM tags")],
+            "tagged_items": [dict(zip(
+                ("id", "tag_id", "source_type", "image_path", "fs_offset", "inode", "path",
+                 "name", "comment", "tagged_by", "tagged_at"), r))
+                for r in conn.execute(
+                    "SELECT id, tag_id, source_type, image_path, fs_offset, inode, path, "
+                    "name, comment, tagged_by, tagged_at FROM tagged_items")],
+            "contact_merges": [dict(zip(
+                ("primary_key", "merged_key", "justification", "merged_by", "merged_at"), r))
+                for r in conn.execute(
+                    "SELECT primary_key, merged_key, justification, merged_by, merged_at "
+                    "FROM contact_merges")],
+        }
+    except (sqlite3.DatabaseError, CaseIndexUnavailable, OSError):
+        return None
+    finally:
+        if own_conn and conn is not None:
+            conn.close()
+
+    tmp_path = backup_path + ".tmp"
+    try:
+        with open(tmp_path, "w") as f:
+            json.dump(payload, f, indent=1)
+        os.replace(tmp_path, backup_path)
+    except OSError:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return None
+    return backup_path
+
+
+def read_case_tag_backup(case_folder):
+    """The sidecar's parsed contents, or None if absent/unreadable. Unlike
+    the index itself, an unreadable backup is not worth raising over - it is
+    a recovery aid, and the caller has nothing to recover FROM if the index
+    is fine."""
+    backup_path = case_tag_backup_path(case_folder)
+    if not backup_path or not os.path.isfile(backup_path):
+        return None
+    try:
+        with open(backup_path, "r") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("version") else None
+
+
+def restore_case_tag_state(case_folder):
+    """Re-seeds tags/tagged_items/contact_merges from the sidecar into the
+    case index, for use after a corrupt index has been rebuilt.
+
+    Additive and id-preserving where it can be: tag rows keep their original
+    ids so tagged_items' foreign keys still line up. A tag whose id is
+    already present is left alone rather than overwritten - the live index
+    wins over a backup, since the backup may predate recent work.
+
+    Returns {tags, tagged_items, contact_merges} counts actually inserted."""
+    data = read_case_tag_backup(case_folder)
+    if not data:
+        return None
+    conn = _case_index_open_write(case_folder)
+    if conn is None:
+        return None
+    inserted = {"tags": 0, "tagged_items": 0, "contact_merges": 0}
+    try:
+        existing_tag_ids = {r[0] for r in conn.execute("SELECT id FROM tags")}
+        for t in data.get("tags") or []:
+            if t.get("id") in existing_tag_ids:
+                continue
+            conn.execute(
+                "INSERT INTO tags (id, name, color, notable, is_default, created_at, severity) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (t.get("id"), t.get("name"), t.get("color"), t.get("notable", 0),
+                 t.get("is_default", 0), t.get("created_at"), t.get("severity", "none")))
+            inserted["tags"] += 1
+        existing_item_ids = {r[0] for r in conn.execute("SELECT id FROM tagged_items")}
+        for it in data.get("tagged_items") or []:
+            if it.get("id") in existing_item_ids:
+                continue
+            conn.execute(
+                "INSERT INTO tagged_items (id, tag_id, source_type, image_path, fs_offset, "
+                "inode, path, name, comment, tagged_by, tagged_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (it.get("id"), it.get("tag_id"), it.get("source_type"), it.get("image_path"),
+                 it.get("fs_offset"), it.get("inode"), it.get("path"), it.get("name"),
+                 it.get("comment"), it.get("tagged_by"), it.get("tagged_at")))
+            inserted["tagged_items"] += 1
+        existing_merges = {r[0] for r in conn.execute("SELECT merged_key FROM contact_merges")}
+        for m in data.get("contact_merges") or []:
+            if m.get("merged_key") in existing_merges:
+                continue
+            conn.execute(
+                "INSERT INTO contact_merges (primary_key, merged_key, justification, "
+                "merged_by, merged_at) VALUES (?,?,?,?,?)",
+                (m.get("primary_key"), m.get("merged_key"), m.get("justification"),
+                 m.get("merged_by"), m.get("merged_at")))
+            inserted["contact_merges"] += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return inserted
+
 
 # --- Unified evidence-item lookups: tags and persisted analysis results for
 # a batch of real-filesystem paths at once (not one identity at a time like

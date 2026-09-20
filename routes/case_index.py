@@ -13,6 +13,7 @@ import os
 import json
 import time
 import sqlite3
+from functools import wraps
 
 from flask import Blueprint, jsonify, request, g
 
@@ -25,10 +26,42 @@ from core.case_index_db import (
     _backfill_case_artifact_tags, KEYWORD_CATEGORY_PREFIX, resolve_scan_category_label,
     has_case_analysis_activity, cross_case_hash_search, correlate_contacts,
     compute_case_analysis_coverage, ensure_examiner_recorded,
-    detect_privacy_tools,
+    detect_privacy_tools, export_case_tag_state,
 )
 
 case_index_bp = Blueprint('case_index', __name__)
+
+
+def _snapshots_tag_state(f):
+    """Refreshes the case's examiner-decision sidecar after a successful
+    tag/merge change (2026-09-20).
+
+    Applied to the seven routes that mutate `tags`, `tagged_items` or
+    `contact_merges` - the only three tables in the case index that a
+    re-scan cannot reconstruct. See export_case_tag_state() for why they
+    are singled out, and why auto-tagging deliberately is not.
+
+    A decorator rather than a call before each `return` because these routes
+    have several success paths each; hooking the boundary once cannot be
+    forgotten when a new one is added. Failure to snapshot is swallowed on
+    purpose: the index write has already succeeded and is the source of
+    truth, so a full disk or a stalled share must not turn a completed
+    tagging action into a reported error."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        result = f(*args, **kwargs)
+        try:
+            resp = result[0] if isinstance(result, tuple) else result
+            status = result[1] if isinstance(result, tuple) and len(result) > 1 else 200
+            if status == 200:
+                body = resp.get_json(silent=True) if hasattr(resp, 'get_json') else None
+                if body is None or body.get('success'):
+                    req = request.get_json(silent=True) or {}
+                    export_case_tag_state(req.get('case_folder'))
+        except Exception:
+            pass
+        return result
+    return decorated
 
 # Only routes/case_index.py uses this - genuinely single-consumer, so it
 # stays a local constant rather than moving into core/.
@@ -629,6 +662,7 @@ def case_index_analysis_coverage():
 @case_index_bp.route('/api/case_index/contacts/merge', methods=['POST'])
 @requires_auth
 @requires_permission('reporting', 'file_explorer')
+@_snapshots_tag_state
 def case_index_merge_contacts():
     """Manually merges two Contact Correlation entries - the actionable
     follow-up to correlate_contacts()'s own passive possible_duplicate_keys
@@ -678,6 +712,7 @@ def case_index_merge_contacts():
 @case_index_bp.route('/api/case_index/contacts/unmerge', methods=['POST'])
 @requires_auth
 @requires_permission('reporting', 'file_explorer')
+@_snapshots_tag_state
 def case_index_unmerge_contact():
     """Undoes one manual merge - removes exactly the one contact_merges row
     for merged_key, restoring that contact as its own separate entry on the
@@ -819,6 +854,7 @@ def _resolve_tag_identity(req):
 @case_index_bp.route('/api/case_index/tag_item', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@_snapshots_tag_state
 def case_index_tag_item():
     req = request.get_json() or {}
     identity = _resolve_tag_identity(req)
@@ -897,6 +933,7 @@ def case_index_tag_item():
 @case_index_bp.route('/api/case_index/untag_item', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@_snapshots_tag_state
 def case_index_untag_item():
     req = request.get_json() or {}
     identity = _resolve_tag_identity(req)
@@ -1024,6 +1061,7 @@ def case_index_all_tagged_items():
 @case_index_bp.route('/api/case_index/tags/create', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@_snapshots_tag_state
 def case_index_create_tag():
     req = request.get_json() or {}
     conn = _case_index_open_write(req.get('case_folder'))
@@ -1052,6 +1090,7 @@ def case_index_create_tag():
 @case_index_bp.route('/api/case_index/tags/update', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@_snapshots_tag_state
 def case_index_update_tag():
     req = request.get_json() or {}
     tag_id = req.get('tag_id')
@@ -1082,6 +1121,7 @@ def case_index_update_tag():
 @case_index_bp.route('/api/case_index/tags/delete', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@_snapshots_tag_state
 def case_index_delete_tag():
     req = request.get_json() or {}
     tag_id = req.get('tag_id')

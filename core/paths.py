@@ -255,6 +255,10 @@ FILE_VIEW_EXTENSION_CATEGORIES = ('images', 'videos', 'audio', 'archives', 'docu
 _CASE_ROLE_BACKUP_SUFFIXES = ('.pre_consolidation_backup', '.pre_restore_backup')
 _CASE_ROLE_REPORT_SUFFIXES = (
     '_case.json', '_case.pdf', '_case.html', '_case_index.db',
+    # The examiner-decision backup sidecar (2026-09-20) - same role as the
+    # index it protects, so it is classified with it rather than showing up
+    # as unexplained evidence in the case's own file views.
+    '_case_tags.json',
     '_case.json.sha256', '_case.pdf.sha256', '_case.html.sha256',
     '_report.json',  # legacy per-job report (pre-consolidated-schema cases)
 )
