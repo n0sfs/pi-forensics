@@ -82,7 +82,7 @@ from core.case_index_db import (
     _comm_content_preview, tagged_real_fs_paths_for_case, derive_examiner_display,
     compute_case_analysis_coverage, ensure_examiner_recorded,
     _build_evidence_id_resolvers, _resolve_row_evidence_id,
-    collect_case_analysis_findings, CaseIndexUnavailable,
+    collect_case_analysis_findings, CaseIndexUnavailable, CaseFolderUnavailable,
 )
 # One of the few deliberate routes->routes imports in this app (the others:
 # acquisition->image_browser, mobile->acquisition). CLAUDE.md documents
@@ -308,7 +308,10 @@ def _count_notable_tagged_items_station_wide(cases):
         # than shown a confident zero.
         try:
             conn = _case_index_open_readonly(c.get("case_folder"))
-        except CaseIndexUnavailable:
+        # CaseFolderUnavailable too: a case whose folder vanished between
+        # list_case_folders() and this walk (an unmounted share, a deleted
+        # case) must not fail a station-wide total covering every other one.
+        except (CaseIndexUnavailable, CaseFolderUnavailable):
             continue
         if not conn:
             continue

@@ -535,6 +535,29 @@ class CaseIndexUnavailable(Exception):
         super().__init__(str(original) if original else "case index could not be opened")
 
 
+class CaseFolderUnavailable(Exception):
+    """A case folder was supplied but does not resolve to a real case.
+
+    Distinct from "no case selected" (2026-09-20). The readers used to return
+    an empty result for both, which meant a vanished evidence root looked
+    exactly like a genuine negative finding - with the NFS share unmounted,
+    every case path under it becomes invalid at once and Pattern of Life would
+    report "no contacts found" rather than "evidence storage is unavailable".
+    This station's NAS is documented to drop under load, so that is a real
+    scenario, not a hypothetical one.
+
+    The most likely cause by far is unreachable storage rather than a bad
+    path, so the message leads with that - but it deliberately does not
+    ASSERT which it is, because from here the two are genuinely
+    indistinguishable."""
+
+    def __init__(self, case_folder):
+        self.case_folder = case_folder
+        super().__init__(
+            "This case folder could not be read. The evidence storage may be unmounted or "
+            "unreachable, or the case may have been moved or deleted. Nothing was changed.")
+
+
 # Re-running _CASE_INDEX_SCHEMA and _ensure_tags_severity_column() is
 # idempotent, but it is not cheap where this app actually stores cases.
 # Measured on the station's real NFS-backed index (2026-09-20, median of 6,
@@ -660,13 +683,32 @@ def _case_index_connect(db_path):
 # "case selection optional, nothing breaks if none is active" convention.
 
 def _case_index_open_readonly(case_folder):
-    """Returns an open connection for read-only querying, or None if
-    case_folder isn't a real consolidated case or has never been indexed
-    (no DB file exists yet - not an error, just nothing to show)."""
-    case_folder = safe_path(case_folder) if case_folder else None
-    if not case_folder or not case_consolidated_path(case_folder):
+    """Returns an open connection for read-only querying, or None when there
+    is legitimately nothing to show.
+
+    Three outcomes, deliberately NOT collapsed into one (2026-09-20):
+
+    * No case_folder supplied at all -> None. No case is selected; every
+      reader shows its empty state. This app's "case selection is optional,
+      nothing breaks if none is active" convention.
+    * A real case that has simply never been indexed -> None. Also not an
+      error: the index is created lazily on the first scan or tag.
+    * A case_folder WAS supplied but does not resolve to a real consolidated
+      case -> CaseFolderUnavailable. This used to return None too, which made
+      a vanished evidence root indistinguishable from a genuine negative
+      finding: with the NFS share unmounted, every case path under it becomes
+      invalid at once and Pattern of Life would report "no contacts found"
+      rather than "evidence storage is unavailable". For a forensic tool that
+      is the wrong failure mode, and this station's NAS is documented to drop.
+      The same principle the privacy-tools renderer already argues for itself:
+      "544 apps checked, none found" and "no app inventory has been parsed"
+      must never collapse into the same empty box."""
+    if not case_folder:
         return None
-    db_path = case_index_db_path(case_folder)
+    resolved = safe_path(case_folder)
+    if not resolved or not case_consolidated_path(resolved):
+        raise CaseFolderUnavailable(case_folder)
+    db_path = case_index_db_path(resolved)
     if not db_path or not os.path.isfile(db_path):
         return None
     return _case_index_connect(db_path)
@@ -746,7 +788,7 @@ def export_case_tag_state(case_folder, conn=None):
                     "SELECT primary_key, merged_key, justification, merged_by, merged_at "
                     "FROM contact_merges")],
         }
-    except (sqlite3.DatabaseError, CaseIndexUnavailable, OSError):
+    except (sqlite3.DatabaseError, CaseIndexUnavailable, CaseFolderUnavailable, OSError):
         return None
     finally:
         if own_conn and conn is not None:
@@ -957,13 +999,13 @@ def repair_case_index(case_folder):
         try:
             _case_index_connect(db_path).close()
             result["rebuilt"] = True
-        except (sqlite3.DatabaseError, CaseIndexUnavailable) as e:
+        except (sqlite3.DatabaseError, CaseIndexUnavailable, CaseFolderUnavailable) as e:
             result["error"] = "Rebuilt index could not be created: %s" % e
             return result
 
     try:
         result["restored"] = restore_case_tag_state(case_folder)
-    except (sqlite3.DatabaseError, CaseIndexUnavailable, OSError) as e:
+    except (sqlite3.DatabaseError, CaseIndexUnavailable, CaseFolderUnavailable, OSError) as e:
         result["error"] = "Index is usable, but restoring tags failed: %s" % e
     return result
 

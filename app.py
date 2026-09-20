@@ -18,7 +18,7 @@ from core.config import _get_or_create_secret_key
 from core.jobs import CaseFileUnreadable
 # Same pattern, same reason - one app-wide handler instead of a try/except
 # in each of the 28 case-index reader routes. See its own docstring.
-from core.case_index_db import CaseIndexUnavailable
+from core.case_index_db import CaseIndexUnavailable, CaseFolderUnavailable
 
 app = Flask(__name__)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -94,6 +94,21 @@ def _handle_unreadable_case_file(e):
 # damaged or that the underlying evidence is untouched. 503 rather than 500:
 # the request was valid and the case data itself is fine, it is this one
 # derived file that is unavailable.
+# The storage-level counterpart (2026-09-20). Without it, a case folder that
+# cannot be read - overwhelmingly because the evidence share is unmounted or
+# stalled - produced a perfectly successful, perfectly empty result, so an
+# examiner could read "no contacts found" off a case whose data was simply
+# unreachable. 503 for the same reason as above: the request was valid, the
+# storage is not currently available.
+@app.errorhandler(CaseFolderUnavailable)
+def _handle_unavailable_case_folder(e):
+    return jsonify({
+        "success": False,
+        "error": str(e),
+        "case_folder_unavailable": True,
+    }), 503
+
+
 @app.errorhandler(CaseIndexUnavailable)
 def _handle_unavailable_case_index(e):
     return jsonify({
