@@ -13,6 +13,7 @@ import re
 import json
 import time
 import sqlite3
+import threading
 import multiprocessing
 import email.utils
 from flask import g
@@ -493,14 +494,96 @@ def _ensure_tags_severity_column(conn):
         conn.execute("ALTER TABLE tags ADD COLUMN severity TEXT NOT NULL DEFAULT 'none'")
         conn.commit()
 
+class CaseIndexUnavailable(Exception):
+    """The case's analysis index EXISTS but could not be opened or read.
+
+    Deliberately distinct from "never indexed" (2026-09-20), and the exact
+    counterpart of core/jobs.py's CaseFileUnreadable - that class fixed this
+    same bug class for the consolidated case JSON; the per-case SQLite index
+    was the remaining instance.
+
+    _case_index_open_readonly()'s contract is that a case with no index yet
+    returns None and every reader shows a graceful empty result. A file that
+    exists and is unreadable is the one path that broke that contract: the
+    raw sqlite3.DatabaseError escaped to Flask as an HTML 500 across all 28
+    reader call sites, and - because _count_notable_tagged_items_station_wide()
+    walks EVERY case index - one corrupt file took out /api/reporting/stats
+    for the whole station, including tiles with nothing to do with that case.
+    Found live: this station's own 2026-CASE-MOBILE-SWEEP index is genuinely
+    malformed, almost certainly from SQLite's exposure to a `soft` NFS mount
+    turning a NAS stall into a mid-transaction I/O error.
+
+    Returning None here instead would be worse than the 500, not better - it
+    would make a corrupt index indistinguishable from an un-indexed case, so
+    "no keyword hits" would be reported for a case whose hits are simply
+    unreadable. Raising a named exception lets app.py turn it into one honest
+    503, and lets the station-wide walk skip that case explicitly."""
+
+    def __init__(self, db_path, original=None):
+        self.db_path = db_path
+        self.original = original
+        super().__init__(str(original) if original else "case index could not be opened")
+
+
+# Re-running _CASE_INDEX_SCHEMA and _ensure_tags_severity_column() is
+# idempotent, but it is not cheap where this app actually stores cases.
+# Measured on the station's real NFS-backed index (2026-09-20, median of 6,
+# each forcing a real open with a following query):
+#     connect + WAL pragma + schema script + table_info   0.447s
+#     connect + WAL pragma                                0.208s
+#     connect only                                        0.174s
+# so the setup work is ~0.27s of every single open, paid by all 28 read-only
+# call sites; one case-timeline request alone opens the index twice.
+#
+# The stronger reason is not speed: without this, merely VIEWING a case
+# executes CREATE TABLE statements (and potentially an ALTER) against the
+# evidence index, so every read is a write to a database on a `soft`-mounted
+# network share - which is precisely how the corrupt index above is believed
+# to have happened. A read should not be able to damage the index.
+#
+# Keyed by (st_dev, st_ino) rather than the path alone so a deleted-and-
+# recreated index is correctly treated as new. Per-process, so a restart
+# always re-ensures at least once; bounded by the number of cases.
+_schema_ready_lock = threading.Lock()
+_schema_ready = {}
+
+
+def _schema_already_ensured(db_path):
+    try:
+        st = os.stat(db_path)
+    except OSError:
+        return False
+    with _schema_ready_lock:
+        return _schema_ready.get(db_path) == (st.st_dev, st.st_ino)
+
+
+def _mark_schema_ensured(db_path):
+    try:
+        st = os.stat(db_path)
+    except OSError:
+        return
+    with _schema_ready_lock:
+        _schema_ready[db_path] = (st.st_dev, st.st_ino)
+
+
 def _case_index_connect(db_path):
     """Opens (creating if absent) the per-case analysis index, in WAL mode
     so a running scan job's writes and a concurrent File Explorer read don't
-    block each other. Caller is responsible for closing the connection."""
+    block each other. Caller is responsible for closing the connection.
+
+    Raises CaseIndexUnavailable (never a bare sqlite3.DatabaseError) if the
+    file exists but cannot be opened - see that class for why."""
     conn = sqlite3.connect(db_path, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(_CASE_INDEX_SCHEMA)
-    _ensure_tags_severity_column(conn)
+    if _schema_already_ensured(db_path):
+        return conn
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(_CASE_INDEX_SCHEMA)
+        _ensure_tags_severity_column(conn)
+    except sqlite3.DatabaseError as e:
+        conn.close()
+        raise CaseIndexUnavailable(db_path, e) from e
+    _mark_schema_ensured(db_path)
     return conn
 
 # --- Case analysis index queries (read-only, File Explorer's File Views tree) ---

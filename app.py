@@ -16,6 +16,9 @@ from core.config import _get_or_create_secret_key
 # the comment there for why it is one handler rather than a try/except per
 # route.
 from core.jobs import CaseFileUnreadable
+# Same pattern, same reason - one app-wide handler instead of a try/except
+# in each of the 28 case-index reader routes. See its own docstring.
+from core.case_index_db import CaseIndexUnavailable
 
 app = Flask(__name__)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -83,6 +86,24 @@ def _handle_unreadable_case_file(e):
         "error": f"This case's file could not be read, so nothing was loaded or changed: {e}",
         "case_file_unreadable": True,
     }), 500
+
+# The analysis index's counterpart to the handler above (2026-09-20). Without
+# it, an unreadable index reached the browser as Flask's stock HTML 500 page,
+# which every fetch() in main.js then failed to parse - so the only thing an
+# examiner ever saw was "Request failed", with no hint that the index is
+# damaged or that the underlying evidence is untouched. 503 rather than 500:
+# the request was valid and the case data itself is fine, it is this one
+# derived file that is unavailable.
+@app.errorhandler(CaseIndexUnavailable)
+def _handle_unavailable_case_index(e):
+    return jsonify({
+        "success": False,
+        "error": ("This case's analysis index could not be read, so tags, keyword hits and "
+                  "parsed artifacts cannot be shown. The acquired evidence itself is not "
+                  "affected - only this derived index. Re-running the analysis for this case "
+                  "rebuilds it. Details: " + str(e)),
+        "case_index_unavailable": True,
+    }), 503
 
 # Replay saved auto-mount shares once per process start - module-level (not
 # inside the __main__ guard below) so this also runs under gunicorn, which

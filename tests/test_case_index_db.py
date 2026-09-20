@@ -44,8 +44,12 @@ def test_schema_seeds_exactly_eight_default_tags_and_is_idempotent(case_folder):
     }
     assert all(r[1] == 1 for r in rows)  # every seeded default tag is_default=1
 
-    # Re-running the schema (as every _case_index_connect() call does) must
-    # not duplicate the seed rows.
+    # Re-running the schema must not duplicate the seed rows. Since
+    # 2026-09-20 _case_index_connect() memoizes per (st_dev, st_ino) and
+    # skips the script on later opens, so the memo is cleared first - without
+    # this the assertion below would still pass, but only because the schema
+    # never ran a second time, which is not what it is meant to prove.
+    case_index_db._schema_ready.clear()
     conn2 = case_index_db._case_index_connect(db_path)
     count = conn2.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
     conn2.close()
