@@ -322,6 +322,27 @@ def list_server_shares():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+# How long an NFS operation tolerates an unresponsive server before `soft`
+# converts it into a real I/O error (2026-09-20).
+#
+# `soft` itself is deliberate and stays: this appliance must not hang forever
+# on a NAS that has gone away mid-examination, and an earlier investigation
+# (see docs/DEVELOPMENT_LOG.md) confirmed that behaviour as correct for bulk
+# evidence writes. What was wrong was how little patience it had first.
+# `timeo` is in DECISECONDS, so the previous timeo=30,retrans=2 gave up after
+# roughly 9 seconds of server silence. This station's NAS has a documented
+# history of stalls under load - measured here at 20x5MB writes with 0
+# failures but one outlier at 3.7s, i.e. comfortably within a factor of three
+# of the old limit.
+#
+# timeo=150,retrans=3 tolerates roughly 45 seconds instead, which covers the
+# observed stalls with real headroom while still refusing to block forever.
+# That matters most for the per-case SQLite index, where an I/O error lands
+# mid-transaction and is a leading cause of "database disk image is
+# malformed" - the exact state one of this station's indexes is in.
+NFS_RELIABILITY_OPTS = 'soft,timeo=150,retrans=3'
+
+
 def _do_network_mount(protocol, host, share_path, mount_point, user, password, ssh_key):
     """Actually performs the mount (NFS/SFTP/SMB), shared by the live
     /api/mount_network route and attempt_startup_auto_mounts() below - one
@@ -355,13 +376,13 @@ def _do_network_mount(protocol, host, share_path, mount_point, user, password, s
 
         if protocol == 'nfs':
             nfs_source = f"{host}:{share_path}"
-            cmd_v3 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=3', nfs_source, mount_point]
+            cmd_v3 = ['sudo', 'mount', '-t', 'nfs', '-o', f'nolock,{NFS_RELIABILITY_OPTS},vers=3', nfs_source, mount_point]
             res = subprocess.run(cmd_v3, capture_output=True, text=True)
 
             if res.returncode == 0:
                 return True, None
 
-            cmd_v4 = ['sudo', 'mount', '-t', 'nfs', '-o', 'nolock,soft,timeo=30,retrans=2,vers=4', nfs_source, mount_point]
+            cmd_v4 = ['sudo', 'mount', '-t', 'nfs', '-o', f'{NFS_RELIABILITY_OPTS},vers=4', nfs_source, mount_point]
             res_v4 = subprocess.run(cmd_v4, capture_output=True, text=True)
 
             if res_v4.returncode == 0:
