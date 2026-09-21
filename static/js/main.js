@@ -15575,26 +15575,38 @@ async function loadCaseForEditing() {
         const data = await res.json();
 
         if (!data.success) {
-            // Same reasoning as the !activeCase branch above - this fires
-            // when the active case itself changed to one that isn't
-            // migrated yet, a transition already gated by
-            // confirmDiscardUnsavedReportingChanges() before this function
-            // is ever reached with a different case active. A 403 is a
-            // distinct, newer case (added alongside /api/report/load's own
-            // permission gate) - a user whose group lacks 'reporting' still
+            // A 403 is a distinct, newer case (added alongside /api/report/load's
+            // own permission gate) - a user whose group lacks 'reporting' still
             // sees the tab and still has this function fire on every case
             // switch (it's the shared funnel every applyActiveCaseToFields()
-            // caller uses, not Reporting-tab-specific), so this needs its
-            // own message rather than the misleading "hasn't been migrated"
-            // one below.
+            // caller uses, not Reporting-tab-specific), so this needs its own
+            // message. Anything else (404) means `${slug}_case.json` itself
+            // doesn't resolve - since a case IS that file (see CLAUDE.md's "One
+            // case format only"), that's never "not yet migrated" (that legacy
+            // path was removed 2026-09-15) - the case is simply gone: its folder
+            // was moved, deleted, or sits on storage that stopped resolving.
+            // Self-heal the active-case bar here instead of leaving it naming a
+            // case nothing can open - found live during the 2026-09-21 station
+            // wipe, where the bar kept showing "Case: 2026-CASE-CORRUPT-INDEX-TEST"
+            // beside "Total Cases: 0" and every panel then failed against it.
+            const wasForbidden = res.status === 403;
+            const goneCaseNumber = activeCase.case_number;
             clearReportingDirty();
             currentReportPath = null;
             currentLoadedReportData = null;
+            if (!wasForbidden) {
+                activeCase = null;
+                persistActiveCase();
+                renderActiveCaseBar();
+                resyncExplorerRootToActiveCase(); // falls File Explorer back to /mnt
+                refreshGuidedWorkflow();
+                showToast(`"${goneCaseNumber}" could not be opened (its folder may have been moved or deleted) - active case cleared.`, 'warning');
+            }
             renderReportHeaderCaseSummary();
             if (noCaseIcon) noCaseIcon.className = 'bi bi-exclamation-triangle fs-3 d-block mb-2';
-            if (noCaseMsg) noCaseMsg.textContent = res.status === 403
+            if (noCaseMsg) noCaseMsg.textContent = wasForbidden
                 ? "Your account's user group doesn't have permission to view Reporting."
-                : `This case ("${activeCase.case_number}") hasn't been migrated to the consolidated report format yet - migrate it via the Case Manager.`;
+                : `"${goneCaseNumber}" could not be opened - its folder may have been moved or deleted. Select or create a case using the bar above.`;
             if (noCaseEl) noCaseEl.style.display = 'block';
             if (loadedEl) loadedEl.style.display = 'none';
             return;
