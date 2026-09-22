@@ -15555,6 +15555,7 @@ async function loadCaseForEditing() {
         return;
     }
 
+    const requestedCase = activeCase; // identity check below - detects a stale response
     const slug = activeCase.case_folder.split('/').filter(Boolean).pop();
     currentReportPath = `${activeCase.case_folder}/${slug}_case.json`;
 
@@ -15574,6 +15575,18 @@ async function loadCaseForEditing() {
         ]);
         const data = await res.json();
 
+        // A real race, caught live (2026-09-21): this function is the shared
+        // funnel for ~8 call sites, and two of them - the page-load restore
+        // (applyActiveCaseToFields()) and the Reporting tab's own
+        // shown.bs.tab handler - both fire within the same page load,
+        // producing two concurrent /api/report/load requests for the same
+        // case. If the self-heal branch below already cleared activeCase by
+        // the time this call's own response lands, activeCase.case_number
+        // would throw on a null activeCase. Bail here instead - whichever
+        // call resolves first wins, and a second, now-stale response has
+        // nothing useful left to apply.
+        if (activeCase !== requestedCase) return;
+
         if (!data.success) {
             // A 403 is a distinct, newer case (added alongside /api/report/load's
             // own permission gate) - a user whose group lacks 'reporting' still
@@ -15590,7 +15603,7 @@ async function loadCaseForEditing() {
             // wipe, where the bar kept showing "Case: 2026-CASE-CORRUPT-INDEX-TEST"
             // beside "Total Cases: 0" and every panel then failed against it.
             const wasForbidden = res.status === 403;
-            const goneCaseNumber = activeCase.case_number;
+            const goneCaseNumber = requestedCase.case_number;
             clearReportingDirty();
             currentReportPath = null;
             currentLoadedReportData = null;
