@@ -196,6 +196,12 @@ def test_dcfldd_argv_matches_the_apps_own():
                     "hash=md5,sha1", "md5log=/mnt/c/B_md5.log", "sha1log=/mnt/c/B_sha1.log"]
 
 
+def test_dcfldd_without_hashes_matches_the_apps_own():
+    argv, outs = pp.argv_image_dcfldd("/dev/sda", "/mnt/c/B", [])
+    assert argv == ["/usr/bin/dcfldd", "if=/dev/sda", "of=/mnt/c/B.dd", "conv=noerror,sync"]
+    assert outs == ["/mnt/c/B.dd"]
+
+
 def test_dd_argv_matches_the_apps_own():
     argv, _ = pp.argv_image_dd("/dev/sda", "/mnt/c/B", True)
     assert argv == ["/usr/bin/dd", "if=/dev/sda", "of=/mnt/c/B.dd", "bs=4M", "conv=noerror,sync",
@@ -204,7 +210,8 @@ def test_dd_argv_matches_the_apps_own():
 
 def test_hash_whitelist():
     assert pp.require_hashes(["md5", "sha256"]) == ["md5", "sha256"]
-    for bad in ([], ["crc32"], ["md5", "md5"], ["md5;id"]):
+    assert pp.require_hashes([]) == []           # in-line hashing is optional in the app
+    for bad in (["crc32"], ["md5", "md5"], ["md5;id"]):
         with pytest.raises(pp.Refused):
             pp.require_hashes(bad)
 

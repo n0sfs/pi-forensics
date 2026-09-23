@@ -1057,6 +1057,7 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 /bin/chown -R {SERVICE_USER} *, \\
 /bin/chgrp -R {SERVICE_USER} *, \\
 /sbin/reboot, /sbin/poweroff, \\
+/usr/local/sbin/pif-priv, \\
 /bin/systemctl restart pi-forensics.service, \\
 /bin/systemctl reload nginx, \\
 /bin/cp * {os.path.join(SSL_DIR, "pi-forensics.crt")}, \\
@@ -1067,9 +1068,44 @@ sudoers_content = f"""{SERVICE_USER} ALL=(ALL) NOPASSWD: \\
 {install_lines}
 """
 
-with open(sudoers_path, "w") as f:
+# The pif-priv privileged helper (2026-09-23 - see tools/pif_priv/pif_priv.py).
+# Installed as a root-owned COPY, never run from INSTALL_DIR: the repo is
+# writable by the service account, so executing it from there as root would
+# let that account edit what root runs. (Consequence: a git pull does not
+# update the installed helper - re-run install.py for that.) Its config is
+# root-owned for the same reason; the helper refuses a config it could not
+# trust. Granted ALONGSIDE the older per-tool lines above during migration;
+# those are removed once every migrated path is verified on the station.
+PIF_PRIV_SRC = os.path.join(INSTALL_DIR, "tools", "pif_priv", "pif_priv.py")
+PIF_PRIV_DEST = "/usr/local/sbin/pif-priv"
+PIF_PRIV_CONFIG_DIR = "/etc/pi-forensics"
+print("\n[*] Installing the pif-priv privileged helper...")
+shutil.copyfile(PIF_PRIV_SRC, PIF_PRIV_DEST)
+os.chown(PIF_PRIV_DEST, 0, 0)
+os.chmod(PIF_PRIV_DEST, 0o755)
+os.makedirs(PIF_PRIV_CONFIG_DIR, exist_ok=True)
+os.chown(PIF_PRIV_CONFIG_DIR, 0, 0)
+os.chmod(PIF_PRIV_CONFIG_DIR, 0o755)
+with open(os.path.join(PIF_PRIV_CONFIG_DIR, "priv.conf"), "w") as f:
+    json.dump({"service_user": SERVICE_USER, "evidence_root": "/mnt", "install_dir": INSTALL_DIR}, f, indent=2)
+os.chown(os.path.join(PIF_PRIV_CONFIG_DIR, "priv.conf"), 0, 0)
+os.chmod(os.path.join(PIF_PRIV_CONFIG_DIR, "priv.conf"), 0o644)
+
+# Validate BEFORE installing (2026-09-23). This used to write the live
+# sudoers file directly - one malformed line and sudo refuses to run at all,
+# for everything, which on this station is a lockout. Now: write a temp
+# file, `visudo -c -f` it, and only then move it into place.
+sudoers_tmp = sudoers_path + ".pif-new"
+with open(sudoers_tmp, "w") as f:
     f.write(sudoers_content)
-os.chmod(sudoers_path, 0o440)
+os.chmod(sudoers_tmp, 0o440)
+check = subprocess.run(["visudo", "-c", "-f", sudoers_tmp], capture_output=True, text=True)
+if check.returncode != 0:
+    os.remove(sudoers_tmp)
+    print(f"[!] The generated sudoers file failed validation - NOT installed, existing file left untouched:\n"
+          f"{check.stdout}{check.stderr}")
+    sys.exit(1)
+os.replace(sudoers_tmp, sudoers_path)
 
 # 5. Global Udev USB Read-Only Rule
 print("\n[*] Configuring global USB read-only udev rules...")

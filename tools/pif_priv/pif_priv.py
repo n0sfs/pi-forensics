@@ -172,8 +172,8 @@ def require_absent(*paths):
 
 
 def require_hashes(hashes):
-    if not hashes:
-        raise Refused("at least one hash algorithm is required")
+    """Zero or more distinct algorithms from the whitelist - the app lets an
+    examiner run dc3dd/dcfldd without in-line hashing, and so must this."""
     for h in hashes:
         if h not in HASHES:
             raise Refused(f"hash {h!r} is not permitted")
@@ -222,8 +222,9 @@ def argv_image_dc3dd(src, out_base, ext, hashes):
 
 
 def argv_image_dcfldd(src, out_base, hashes):
-    argv = ["/usr/bin/dcfldd", f"if={src}", f"of={out_base}.dd", "conv=noerror,sync",
-            f"hash={','.join(hashes)}"] + [f"{h}log={out_base}_{h}.log" for h in hashes]
+    argv = ["/usr/bin/dcfldd", f"if={src}", f"of={out_base}.dd", "conv=noerror,sync"]
+    if hashes:
+        argv += [f"hash={','.join(hashes)}"] + [f"{h}log={out_base}_{h}.log" for h in hashes]
     return argv, [f"{out_base}.dd"] + [f"{out_base}_{h}.log" for h in hashes]
 
 
