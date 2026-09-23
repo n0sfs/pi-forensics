@@ -220,7 +220,7 @@ def system_info():
     }
 
     target_drive = request.args.get('drive', '/dev/sda')
-    if not target_drive or not target_drive.startswith('/dev/'):
+    if not target_drive or not is_valid_block_device(target_drive):
         target_drive = '/dev/sda'
 
     wb_active = True
@@ -360,6 +360,20 @@ def _do_network_mount(protocol, host, share_path, mount_point, user, password, s
     for value, field_name in ((host, "Host"), (share_path, "Share path"), (user, "Username")):
         if value and value.startswith('-'):
             return False, f"{field_name} cannot start with '-'."
+    # 2026-09-23 privileged-call inventory: `protocol` was never whitelisted
+    # and is part of mount_point, which then went to `sudo mkdir -p`,
+    # `sudo umount -l` and `sudo mount` - "x/../../dir" escaped /mnt. Checked
+    # here so saved auto-mount entries replayed at startup are covered too.
+    if protocol not in ('nfs', 'smb', 'sftp'):
+        return False, "Protocol must be nfs, smb or sftp."
+    if not re.fullmatch(r'/mnt/network_(nfs|smb|sftp)_[^/]*', mount_point or '') or '..' in mount_point:
+        return False, "Invalid mount point."
+    # A newline in a username/password would add extra lines to the CIFS
+    # credentials file; no field here has a legitimate control character.
+    for value, field_name in ((host, "Host"), (share_path, "Share path"), (user, "Username"),
+                              (password, "Password")):
+        if value and any(ord(c) < 32 or ord(c) == 127 for c in value):
+            return False, f"{field_name} cannot contain control characters."
 
     # The service runs as an unprivileged user (see install.py), so
     # directories under /mnt must be created via sudo rather than

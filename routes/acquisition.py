@@ -134,6 +134,23 @@ def _relock_device_for_list_drives(device_path):
         return True
 
 
+def _device_partitions(device_path):
+    """Every partition device of a whole disk, from sysfs (sdb -> /dev/sdb1..,
+    nvme0n1 -> /dev/nvme0n1p1..). udev forces each partition read-only on
+    its own add event, so flipping only the whole disk (as the toggle used
+    to) left an unlocked drive's partitions read-only - and a relock left
+    any partition other than 1 writable (2026-09-23 review)."""
+    name = os.path.basename(device_path or '')
+    parts = []
+    try:
+        for entry in sorted(os.listdir(f"/sys/block/{name}")):
+            if entry.startswith(name) and os.path.exists(f"/sys/block/{name}/{entry}/partition"):
+                parts.append(f"/dev/{entry}")
+    except OSError:
+        pass
+    return parts
+
+
 def _unlock_device_for_write(device_path):
     """The one function that ever flips a whole-disk device writable -
     shared by the Live Collection USB build job and the manual Drive
@@ -171,6 +188,9 @@ def _unlock_device_for_write(device_path):
     with device_write_lock:
         active_write_unlocked_devices[device_path] = {"unlocked_at": time.time()}
         res = subprocess.run(["sudo", "/usr/sbin/blockdev", "--setrw", device_path], capture_output=True, text=True)
+        if res.returncode == 0:
+            for part in _device_partitions(device_path):
+                subprocess.run(["sudo", "/usr/sbin/blockdev", "--setrw", part], capture_output=True)
     if res.returncode != 0:
         with device_write_lock:
             active_write_unlocked_devices.pop(device_path, None)
@@ -197,7 +217,10 @@ def _relock_device_after_write(device_path):
     with device_write_lock:
         active_write_unlocked_devices.pop(device_path, None)
         subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path], capture_output=True)
-        subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path + "1"], capture_output=True)
+        # Every partition, not just "1" - plus "1" itself even if sysfs has
+        # not caught up with a partition created moments ago by a build.
+        for part in set(_device_partitions(device_path)) | {device_path + "1"}:
+            subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", part], capture_output=True)
 
 
 def _live_collection_startup_reconciliation():
@@ -2854,7 +2877,8 @@ def smart_check():
     req = request.get_json() or {}
     drive = req.get('drive', '')
     
-    if not drive or not drive.startswith('/dev/'):
+    # Whitelisted (2026-09-23) - this goes to sudo blockdev and sudo smartctl.
+    if not drive or not is_valid_block_device(drive):
         return jsonify({"success": False, "error": "Invalid drive selection"})
 
     try:
@@ -3924,8 +3948,17 @@ def stop_imaging():
                 subprocess.run(["sudo", "pkill", "-9", tool], capture_output=True)
             except Exception:
                 pass
+        # Plain dd: kill the job's OWN process group (every acquisition tool
+        # is launched with setsid - core/jobs.py), via sudo because its
+        # members are root-owned. Replaces `pkill -f "dd if="` (2026-09-23),
+        # which matched ANY root process with "dd if=" on its command line.
+        # Never our own group - that would be gunicorn itself.
         try:
-            subprocess.run(["sudo", "pkill", "-9", "-f", "dd if="], capture_output=True)
+            proc = get_active_proc()
+            if proc is not None:
+                pgid = os.getpgid(proc.pid)
+                if pgid != os.getpgrp():
+                    subprocess.run(["sudo", "pkill", "-9", "-g", str(pgid)], capture_output=True)
         except Exception:
             pass
 

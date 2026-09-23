@@ -31,6 +31,12 @@ pytest.importorskip("core.jobs", reason="routes.mobile needs core.jobs, which im
 import routes.mobile as mobile
 
 
+@pytest.fixture(autouse=True)
+def _pending_sms_role_file(tmp_path, monkeypatch):
+    # Never touch the real INSTALL_DIR record (the suite also runs on the station).
+    monkeypatch.setattr(mobile, "COMPANION_SMS_ROLE_PENDING_FILE", str(tmp_path / "pending.json"))
+
+
 def _base_report_data():
     return {"acquisition_status": "IN_PROGRESS", "acquisition_parameters": {}}
 
@@ -288,3 +294,28 @@ def test_permission_revoked_and_apk_uninstalled_on_success_only_for_selected_typ
 
         uninstall_calls = [c.args[1] for c in mocks["_adb_run"].call_args_list if c.args[1][0] == "uninstall"]
         assert len(uninstall_calls) == 1
+
+
+def test_manual_cleanup_restores_the_recorded_original_sms_app(tmp_path):
+    """2026-09-23: a run that died before its own cleanup left the phone's
+    SMS role with the collector; manual cleanup used to just remove it,
+    leaving no default SMS app. The original holder is recorded up front."""
+    mobile._sms_role_pending_set("SERIAL123", "com.google.android.apps.messaging")
+    app = __import__("flask").Flask(__name__)
+    with app.test_request_context(json={"serial": "SERIAL123"}), \
+         mock.patch.object(mobile, "_adb_run") as adb, \
+         mock.patch.object(mobile, "snapshot_job", return_value={"active": False}):
+        adb.side_effect = lambda serial, args, timeout: (
+            (0, mobile.PIF_COMPANION_PACKAGE + "\n", "") if "get-role-holders" in args else (0, "", ""))
+        # Past the auth decorators (functools.wraps) - this tests the restore logic, not auth.
+        __import__("inspect").unwrap(mobile.cleanup_android_companion_extraction)()
+        calls = [c[0][1] for c in adb.call_args_list]
+    assert ["shell", "cmd", "role", "add-role-holder", "android.app.role.SMS",
+            "com.google.android.apps.messaging"] in calls
+    assert mobile._sms_role_pending_load() == {}
+
+
+def test_a_hostile_recorded_package_name_is_never_passed_to_the_device_shell():
+    mobile._sms_role_pending_set("SERIAL123", "x; reboot")
+    assert not mobile._ANDROID_PACKAGE_RE.match("x; reboot")
+    assert mobile._ANDROID_PACKAGE_RE.match("com.google.android.apps.messaging")
