@@ -140,7 +140,10 @@ if dconf_override.exists() or dconf_lock.exists():
         dconf_override.unlink()
     if dconf_lock.exists():
         dconf_lock.unlink()
-    subprocess.run(["dconf", "update"], capture_output=True)
+    try:
+        subprocess.run(["dconf", "update"], capture_output=True)
+    except FileNotFoundError:
+        pass  # no dconf binary - nothing compiled the override in the first place
     print("[+] Removed GVFS/udisks2 automount dconf override (restores default automount behavior)")
 
 fuse_conf_path = Path("/etc/fuse.conf")
