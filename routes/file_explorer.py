@@ -1963,6 +1963,13 @@ def analyze_mft():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
 
+    # Refuse BEFORE the (possibly minutes-long) parse, not just before the
+    # write: the output lands beside the source unless destination_dir says otherwise.
+    _closed = closed_case_refusal(safe_path(req.get('destination_dir')) if req.get('destination_dir') else os.path.dirname(file_path),
+                                  safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
     result = analyze_mft_file(file_path, compute_hashes=bool(req.get('compute_hashes')))
     if not result["success"]:
         return jsonify(result), 500
@@ -2019,6 +2026,13 @@ def parse_usnjrnl():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
 
+    # Refuse BEFORE the (possibly minutes-long) parse, not just before the
+    # write: the output lands beside the source unless destination_dir says otherwise.
+    _closed = closed_case_refusal(safe_path(req.get('destination_dir')) if req.get('destination_dir') else os.path.dirname(file_path),
+                                  safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
     records = parse_usnjrnl_file(file_path)
 
     dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
@@ -2345,6 +2359,13 @@ def run_apk_analyze():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found or outside the permitted evidence directory."}), 400
 
+    # Refuse BEFORE the (possibly minutes-long) parse, not just before the
+    # write: the output lands beside the source unless destination_dir says otherwise.
+    _closed = closed_case_refusal(safe_path(req.get('destination_dir')) if req.get('destination_dir') else os.path.dirname(file_path),
+                                  safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
     result = analyze_apk(file_path)
     if not result["success"]:
         return jsonify(result), 500
