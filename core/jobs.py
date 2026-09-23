@@ -497,7 +497,7 @@ def _record_lost_case_write(report_target, phase, error):
     the job itself (possibly minutes into imaging) must not be torn down by
     a bookkeeping failure."""
     target = report_target.case_file if isinstance(report_target, CaseEventTarget) else report_target
-    msg = (f"[!] CASE RECORD NOT WRITTEN ({phase}): {target} - {error}. This job will NOT appear "
+    msg = (f"[!] CASE RECORD NOT WRITTEN ({phase}): {target} - {str(error).rstrip('.')}. This job will NOT appear "
            f"in the case until that file is readable again; note its output location from this log.")
     try:
         with job_lock:
