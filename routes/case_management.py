@@ -30,7 +30,7 @@ from flask import Blueprint, jsonify, request
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, sanitize_case_slug
 from core.config import EVIDENCE_ROOT, get_custom_case_fields
-from core.jobs import _write_case_file, _read_case_file
+from core.jobs import _write_case_file, _read_case_file, serialize_case_writes
 from core.case_index_db import list_case_folders
 
 case_management_bp = Blueprint('case_management', __name__)
@@ -139,6 +139,13 @@ def create_case():
         }
         _write_case_file(os.path.join(case_dir, f"{slug}_case.json"), case_record)
     except Exception as e:
+        # The folder was created a moment ago and is still empty - remove it,
+        # or a retry hits the 409 above for a "case" that never appears in the
+        # list (no marker) and the case number is blocked here for good.
+        try:
+            os.rmdir(case_dir)
+        except OSError:
+            pass
         return jsonify({"success": False, "error": f"Could not create case folder: {e}"}), 500
 
     log_chain_of_custody("case_create", {"case_number": case_number_raw, "examiner": examiner, "case_folder": case_dir})
@@ -179,6 +186,7 @@ def log_case_select():
 # quick lifecycle action, not a reporting-specific one; any operational
 # account should be able to do it from the Case Manager list.
 @requires_permission('acquisition', 'mobile', 'recovery', 'reporting')
+@serialize_case_writes
 def set_case_status():
     """A fast, single-field way to change a case's status (most commonly:
     archive it) directly from the Case Manager list - previously the ONLY
