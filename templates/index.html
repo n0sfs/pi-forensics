@@ -517,8 +517,20 @@
              action - the single biggest contributor to top-of-page clutter
              on a phone, and the case bar below already carries everything
              actually actionable (case switching, write-blocker status).
-             Untouched at tablet/desktop width, where it's always shown. -->
-        <div class="d-none d-md-flex flex-wrap align-items-center gap-3 text-nowrap">
+             Untouched at tablet/desktop width, where it's always shown.
+
+             order/flex-basis (not a DOM reorder, so no risk to any JS
+             selector below) forces this onto its own full-width second row
+             instead of competing with the brand/keyboard/login row for
+             horizontal space - found live (2026-09-23) staggering into an
+             ugly, unpredictable 2-or-3-way wrap in roughly the 768-1279px
+             range, which covers both common kiosk-touchscreen resolutions
+             (1024x600) and an ordinary laptop browser window: CPU/RAM/
+             Storage would fit, but Network got shoved down to share a line
+             with the Keyboard button and account menu. Forcing this row
+             to always be its own line makes the header exactly two rows
+             at every width ≥768px, not width-dependent chaos. -->
+        <div class="d-none d-md-flex flex-wrap align-items-center gap-3 text-nowrap" style="order: 2; flex-basis: 100%;">
             <div class="d-flex align-items-center gap-2">
                 <span class="telemetry-label"><i class="bi bi-cpu text-info me-1"></i>CPU:</span>
                 <span id="cpuVal" class="telemetry-val">0%</span>
@@ -549,7 +561,7 @@
             </div>
         </div>
 
-        <div class="d-flex align-items-center gap-2">
+        <div class="d-flex align-items-center gap-2" style="order: 1;">
             {% if is_local_kiosk %}
             {# Re-enabled after live debugging on the deployed station: attached
                directly to the already-running kiosk's Wayland session over SSH,
