@@ -142,8 +142,10 @@ def require_under(path, root, *, allow_root=False):
     if not path or "\x00" in path:
         raise Refused("empty or invalid path")
     real = os.path.realpath(path)
-    if real == root and allow_root:
-        return real
+    if real == root:
+        if allow_root:
+            return real
+        raise Refused(f"{path} is the evidence root itself - name a folder inside it")
     if not real.startswith(root.rstrip("/") + "/"):
         raise Refused(f"{path} is outside {root}")
     return real
@@ -258,7 +260,19 @@ def cmd_reclaim(cfg, args, *, _lchown=None, _walk=None, _lstat=None):
     root = require_under(args[0], cfg["evidence_root"])
     pw = _pw(cfg)
     top_dev = _lstat(root).st_dev
-    _lchown(root, pw.pw_uid, pw.pw_gid)
+    failed = []
+
+    def _chown(p):
+        # Keep going past a file that can't be changed - e.g. an NFS share
+        # exported with root_squash, where root may not chown at all. The old
+        # `chown -R` carried on the same way; stopping at the first one left
+        # the rest of the tree untouched (found on the station 2026-09-23).
+        try:
+            _lchown(p, pw.pw_uid, pw.pw_gid)
+        except OSError as e:
+            failed.append((p, e.strerror))
+
+    _chown(root)
     if stat.S_ISDIR(_lstat(root).st_mode):
         for dirpath, dirnames, filenames in _walk(root, followlinks=False):
             for name in dirnames + filenames:
@@ -269,8 +283,12 @@ def cmd_reclaim(cfg, args, *, _lchown=None, _walk=None, _lstat=None):
                     continue
                 if st.st_dev != top_dev:
                     continue
-                _lchown(p, pw.pw_uid, pw.pw_gid)
+                _chown(p)
             dirnames[:] = [d for d in dirnames if _lstat(os.path.join(dirpath, d)).st_dev == top_dev]
+    if failed:
+        print(f"pif-priv: reclaim: {len(failed)} path(s) could not be changed (first: {failed[0][0]}: "
+              f"{failed[0][1]})", file=sys.stderr)
+        return 1
     return 0
 
 

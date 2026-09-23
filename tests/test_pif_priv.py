@@ -275,6 +275,29 @@ def test_reclaim_stays_inside_the_tree_and_never_follows_symlinks(tmp_path, monk
         pp.cmd_reclaim(cfg, ["/etc"], _lchown=lambda *a: None)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="lstat st_dev semantics are POSIX")
+def test_reclaim_continues_past_paths_it_cannot_change(tmp_path, monkeypatch, capsys):
+    """An NFS share exported with root_squash refuses chown even to root -
+    found on the station. Every other path must still be attempted."""
+    root = tmp_path / "mnt"
+    job = root / "job"
+    job.mkdir(parents=True)
+    for n in ("a", "b", "c"):
+        (job / n).write_text(n)
+    monkeypatch.setattr(pp, "_pw", lambda c: types.SimpleNamespace(pw_uid=1, pw_gid=1))
+    tried = []
+
+    def lchown(p, u, g):
+        tried.append(p)
+        if p.endswith("a"):
+            raise PermissionError(1, "Operation not permitted")
+
+    rc = pp.cmd_reclaim(dict(CFG, evidence_root=str(root)), [str(job)], _lchown=lchown)
+    assert rc == 1
+    assert {str(job / n) for n in ("a", "b", "c")} <= set(tried)
+    assert "could not be changed" in capsys.readouterr().err
+
+
 def test_unknown_subcommand_exits_2(capsys):
     assert pp.main(["chown", "-R", "svc", "/etc"]) == 2
     assert "unknown" in capsys.readouterr().err
