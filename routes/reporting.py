@@ -68,7 +68,7 @@ from core.paths import (
     path_is_within,
 )
 from core.config import (
-    EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, ALLOWED_HASH_ALGOS,
+    EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, HISTORY_FILE, ALLOWED_HASH_ALGOS,
     load_runtime_config, save_runtime_config,
     get_report_defaults, get_custom_case_fields,
 )
@@ -623,6 +623,26 @@ def report_examiner_names():
     usernames = sorted({u.get('username') for u in (cfg.get('users') or []) if u.get('username')})
     return jsonify({"success": True, "usernames": usernames})
 
+def _known_share_mount_points(target):
+    points = set()
+    for share in load_runtime_config().get('auto_mount_shares', []) or []:
+        if share.get('mount_point'):
+            points.add(share['mount_point'])
+    try:
+        with open(HISTORY_FILE, 'r') as f:
+            for entry in json.load(f) or []:
+                if isinstance(entry, dict) and entry.get('mount_point'):
+                    points.add(entry['mount_point'])
+    except (OSError, ValueError):
+        pass  # no history yet, or unreadable - the other two sources still apply
+    root = os.path.realpath(EVIDENCE_ROOT)
+    if path_is_within(target, root) and target != root:
+        top = os.path.relpath(target, root).split(os.sep)[0]
+        if top.startswith('network_'):
+            points.add(os.path.join(root, top))
+    return points
+
+
 def _evidence_storage_unavailable(path):
     """True when a missing `path` is better explained by unreachable storage
     than by the file genuinely not existing.
@@ -635,12 +655,14 @@ def _evidence_storage_unavailable(path):
     Two checks: (1) any configured auto-mount share whose mount point is an
     ancestor of `path` but is not currently mounted; (2) any ancestor up to
     EVIDENCE_ROOT whose stat() fails with something other than not-found.
-    A share mounted by hand and never saved as auto-mount is not covered by
-    (1) - there is no record it should be mounted there."""
+    "Share" in (1) means any mount point this app is known to use: saved
+    auto-mount shares, the Settings mount history (every one-off mount is
+    recorded there too), and - for a mount older than that 10-entry history -
+    the naming convention /api/mount_network always uses,
+    <EVIDENCE_ROOT>/network_<protocol>_<share>."""
     target = os.path.realpath(path)
-    for share in load_runtime_config().get('auto_mount_shares', []) or []:
-        mp = share.get('mount_point')
-        if mp and path_is_within(target, os.path.realpath(mp)) and not os.path.ismount(mp):
+    for mp in _known_share_mount_points(target):
+        if path_is_within(target, os.path.realpath(mp)) and not os.path.ismount(mp):
             return True
     cur = os.path.dirname(target)
     root = os.path.realpath(EVIDENCE_ROOT)
