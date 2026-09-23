@@ -50,7 +50,13 @@ except KeyError:
             print(f"[*] Creating system user '{SERVICE_USER}'...")
             subprocess.run(["useradd", "-m", "-s", "/bin/bash", SERVICE_USER], check=True)
             
-            # Set account password interactively
+            # Set account password interactively. This is the LINUX login for
+            # this account (SSH, physical console) - a separate thing from
+            # the web dashboard login configured just below, which a
+            # first-timer could easily conflate since both get set in the
+            # same few minutes of setup.
+            print(f"[?] Set a LOGIN password for the Linux account '{SERVICE_USER}' (used for SSH/console - "
+                  f"this is separate from the web dashboard login you'll set up next):")
             subprocess.run(["passwd", SERVICE_USER], check=True)
             
             # Add user to standard kiosk/hardware access groups.
@@ -106,6 +112,16 @@ while True:
     pw1 = getpass.getpass("Enter dashboard password (min 8 chars, hidden) "
                            "[leave blank to keep the default 'forensics' - NOT recommended]: ")
     if not pw1:
+        # A second, typed (not just Enter-to-skip) confirmation - this
+        # station is reachable over the LAN by default (GUNICORN_BIND is
+        # 0.0.0.0:5000), so shipping with a published default password is a
+        # real compromise vector, not just a style nitpick. Matches the
+        # friction level this project already uses for other risky
+        # confirmations (Settings' config restore requires typing "RESTORE").
+        confirm_default = input("[!] Type YES to confirm you want to keep the default password 'forensics': ").strip()
+        if confirm_default != "YES":
+            print("[*] Not confirmed - please enter a password.")
+            continue
         print("[!] Keeping default password 'forensics'. Change this immediately after "
               "install via the Advanced Settings tab, or by re-running this installer.")
         break
@@ -243,7 +259,28 @@ apt_packages = [
                # apt-cache before adding here.
 ]
 subprocess.run(["apt-get", "update"], check=True)
-subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
+try:
+    subprocess.run(["apt-get", "install", "-y"] + apt_packages, check=True)
+except subprocess.CalledProcessError:
+    # Every package above was verified against Debian trixie/arm64 before
+    # being added (see this project's own "verify package existence first"
+    # rule) - but a different Debian release, a different architecture, or a
+    # derivative distro can still hit a package apt-get can't resolve, and
+    # `check=True` here means ANY single one crashes the entire installer
+    # before sudoers/systemd/anything after it in this file runs (this is
+    # exactly the bulk-extractor incident this project's own history warns
+    # about, from the other direction - a package that genuinely doesn't
+    # exist on this system, not one that was wrongly assumed to). Print
+    # something actionable instead of a bare traceback before re-raising -
+    # this MUST still fail loudly and stop the install; a partially-applied
+    # skip-and-continue here would leave a station silently missing tools.
+    print("\n[!] `apt-get install` failed - at least one package above isn't available on this "
+          "system. Common causes: this isn't Debian/Raspberry Pi OS trixie, or the architecture "
+          "isn't arm64/amd64 as expected. Scroll up for apt's own error to see which package(s) "
+          "failed, then either install a compatible OS release or remove/replace that package in "
+          "install.py's apt_packages list (and update THIRD_PARTY_NOTICES.md to match) before "
+          "re-running.")
+    raise
 
 # scalpel needs this curated config (its own stock config has every file
 # signature disabled) - it should already be at INSTALL_DIR since the
