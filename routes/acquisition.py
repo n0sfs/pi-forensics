@@ -3475,6 +3475,20 @@ def start_imaging():
     dc3dd_log_file = None
     dcfldd_hash_log_files = None
 
+    # Never overwrite an earlier acquisition (2026-09-23). The output name is
+    # {case}_{evidence} with no timestamp, and dc3dd/dcfldd/dd truncate an
+    # existing of= - so re-imaging with the same Case #/Evidence ID into the
+    # same folder silently destroyed the previous image, its log and hashes.
+    base_path = f"{dest_path}/{base_name}"
+    existing = sorted(glob.glob(glob.escape(base_path) + ".*")
+                      + [p for p in (f"{base_path}_{suffix}.log" for suffix in ("dc3dd", *ALLOWED_HASH_ALGOS))
+                         if os.path.lexists(p)])
+    if existing:
+        update_job(active=False)
+        return jsonify({"error": f"An acquisition named {base_name} already exists in this folder "
+                                  f"({os.path.basename(existing[0])}) - use a different Evidence ID, or "
+                                  f"choose another destination. Earlier evidence is never overwritten."}), 409
+
     if fmt == 'e01':
         ewf_hash_type = "sha256" if "sha256" in hashes else ("sha1" if "sha1" in hashes else "md5")
         out_file = f"{dest_path}/{base_name}.E01"
