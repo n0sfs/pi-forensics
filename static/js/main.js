@@ -6918,7 +6918,7 @@ async function loadExplorerDatabasePane() {
             const data = await res.json();
             if (activeSelectedFile !== requestedPath) return;
             if (!data.success) {
-                container.innerHTML = `<span class="text-danger small">${data.error}</span>`;
+                container.innerHTML = `<span class="text-danger small">${escapeHtmlForPopup(data.error)}</span>`;
                 return;
             }
             _renderSqliteTableList(container, data.tables, (tableName) => showRows(tableName, 0));
@@ -6939,7 +6939,7 @@ async function loadExplorerDatabasePane() {
             const data = await res.json();
             if (activeSelectedFile !== requestedPath) return;
             if (!data.success) {
-                container.innerHTML = `<span class="text-danger small">${data.error}</span>`;
+                container.innerHTML = `<span class="text-danger small">${escapeHtmlForPopup(data.error)}</span>`;
                 return;
             }
             _renderSqliteRowTable(container, data, showTables, (newOffset) => showRows(tableName, newOffset));
@@ -6974,7 +6974,7 @@ async function loadExplorerImageDatabasePane() {
             const data = await res.json();
             if (!explorerImageSelected || explorerImageSelected.inode !== requestedInode) return;
             if (!data.success) {
-                container.innerHTML = `<span class="text-danger small">${data.error}</span>`;
+                container.innerHTML = `<span class="text-danger small">${escapeHtmlForPopup(data.error)}</span>`;
                 return;
             }
             _renderSqliteTableList(container, data.tables, (tableName) => showRows(tableName, 0));
@@ -6998,7 +6998,7 @@ async function loadExplorerImageDatabasePane() {
             const data = await res.json();
             if (!explorerImageSelected || explorerImageSelected.inode !== requestedInode) return;
             if (!data.success) {
-                container.innerHTML = `<span class="text-danger small">${data.error}</span>`;
+                container.innerHTML = `<span class="text-danger small">${escapeHtmlForPopup(data.error)}</span>`;
                 return;
             }
             _renderSqliteRowTable(container, data, showTables, (newOffset) => showRows(tableName, newOffset));
@@ -15640,6 +15640,15 @@ async function loadCaseForEditing() {
             // a real case over a transient NFS hiccup.
             const isGone = res.status === 404;
             const goneCaseNumber = requestedCase.case_number;
+            // "Could not look" while the examiner has unsaved narrative edits:
+            // leave the editor, its cached data and its dirty flag exactly as
+            // they are (2026-09-23). Tearing them down here hid the editor and
+            // cleared the unsaved badge + case-switch/beforeunload guard, so a
+            // mere NFS hiccup during a background refresh could cost the edit.
+            if (!isGone && !wasForbidden && reportHasUnsavedChanges) {
+                showToast(`Could not refresh "${goneCaseNumber}" right now (${data.error || 'storage unavailable'}) - your unsaved edits are kept; save once the evidence share is reachable again.`, 'warning');
+                return;
+            }
             clearReportingDirty();
             currentReportPath = null;
             currentLoadedReportData = null;
@@ -16707,7 +16716,7 @@ async function loadCaseTimeline() {
         const res = await fetch(`/api/cases/timeline?case_folder=${encodeURIComponent(activeCase.case_folder)}`);
         const data = await res.json();
         if (!data.success) {
-            body.innerHTML = `<tr><td colspan="6" class="text-danger p-2">${data.error || 'Request failed.'}</td></tr>`;
+            body.innerHTML = `<tr><td colspan="6" class="text-danger p-2">${escapeHtmlForPopup(data.error || 'Request failed.')}</td></tr>`;
             return;
         }
         caseTimelineCache = data;
@@ -20030,7 +20039,7 @@ async function loadExistingCases() {
         const res = await fetch('/api/cases/list');
         const data = await res.json();
         if (!data.success) {
-            listEl.innerHTML = `<div class="text-danger small p-2">${data.error}</div>`;
+            listEl.innerHTML = `<div class="text-danger small p-2">${escapeHtmlForPopup(data.error)}</div>`;
             return;
         }
         caseManagerCasesCache = data.cases;
@@ -22450,7 +22459,7 @@ async function loadNetworkConfig() {
             hideNetworkRevertBanner();
         }
     } catch (err) {
-        container.innerHTML = `<span class="text-danger small">Failed to load network devices: ${err.message}</span>`;
+        container.innerHTML = `<span class="text-danger small">Failed to load network devices: ${escapeHtmlForPopup(err.message)}</span>`;
     }
 }
 

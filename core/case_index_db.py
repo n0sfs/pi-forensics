@@ -21,6 +21,7 @@ from flask import g
 from core.paths import (safe_path, case_consolidated_path, classify_case_role, is_bulk_tool_output_dir,
                         acquisition_output_location, path_is_within)
 from core.config import get_keyword_lists
+from core.case_file import CASE_WRITE_LOCK, _read_case_file, _write_case_file
 import core.config as config
 
 # --- Quick Triage Scan: pattern definitions ---
@@ -1653,18 +1654,20 @@ def ensure_examiner_recorded(case_folder, username):
         marker_path = case_consolidated_path(case_folder)
         if not marker_path:
             return
-        with open(marker_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        examiners = data.get('examiners')
-        if not isinstance(examiners, list):
-            examiners = []
-        if any(str(e).strip().lower() == username.lower() for e in examiners):
-            return  # already recorded - nothing to write
-        examiners.append(username)
-        data['examiners'] = examiners
-        data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
-        with open(marker_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        # Locked + atomic (2026-09-23): this used a truncating open() with no
+        # lock, so it could both tear the case file and erase a concurrent
+        # writer's change.
+        with CASE_WRITE_LOCK:
+            data = _read_case_file(marker_path)
+            examiners = data.get('examiners')
+            if not isinstance(examiners, list):
+                examiners = []
+            if any(str(e).strip().lower() == username.lower() for e in examiners):
+                return  # already recorded - nothing to write
+            examiners.append(username)
+            data['examiners'] = examiners
+            data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
+            _write_case_file(marker_path, data)
     except Exception:
         pass
 
@@ -1734,7 +1737,11 @@ def list_case_folders():
                 cases.append({
                     "case_number": data.get('case_number', '--'),
                     "examiner": derive_examiner_display(data.get('examiners'), data.get('examiner'), default='--'),
-                    "case_folder": data.get('case_folder', root),
+                    # Where the marker actually IS, never the path stored inside
+                    # it: a case folder copied/moved elsewhere still carries its
+                    # old case_folder, and trusting that made selecting the copy
+                    # act on the original (2026-09-23).
+                    "case_folder": root,
                     "created_at": data.get('created_at', '--'),
                     "notes": data.get('notes', ''),
                     "case_status": data.get('case_status') or 'Open',

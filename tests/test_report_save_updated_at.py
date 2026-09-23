@@ -260,3 +260,63 @@ def test_the_verify_worker_writes_updated_at_alongside_last_verification():
     import routes.reporting as reporting
     src = inspect.getsource(reporting.execution_worker_verify_all_evidence)
     assert "fresh['updated_at'] = run_at" in src
+
+
+# --- 2026-09-23 review fixes -------------------------------------------------
+
+def test_save_refuses_to_overwrite_a_non_case_file(client, evidence_root):
+    """Reproduced live: safe_path() alone let this route replace any file
+    under the evidence root - an acquired image included - with JSON."""
+    case_folder = os.path.dirname(_make_real_case(evidence_root))
+    image = os.path.join(case_folder, "evidence.dd")
+    with open(image, "wb") as f:
+        f.write(b"raw image bytes")
+    res = client.post("/api/report/save", json={"report_path": image, "report_data": {"x": 1}})
+    assert res.status_code == 400
+    with open(image, "rb") as f:
+        assert f.read() == b"raw image bytes"
+
+
+def test_save_rejects_a_non_object_payload(client, evidence_root):
+    report_path = _make_real_case(evidence_root)
+    res = client.post("/api/report/save", json={"report_path": report_path, "report_data": "x"})
+    assert res.status_code == 400
+
+
+def test_save_without_updated_at_cannot_bypass_the_conflict_check(client, evidence_root):
+    report_path = _make_real_case(evidence_root)
+    res = client.post("/api/report/save", json={"report_path": report_path, "report_data": {"notes": "stale"}})
+    assert res.status_code == 409
+
+
+def test_save_keeps_server_owned_keys_from_disk(client, evidence_root):
+    """A job event that landed after the page loaded must survive a save of
+    the page's older snapshot, even when updated_at happens to match."""
+    report_path = _make_real_case(evidence_root)
+    with open(report_path) as f:
+        snapshot = json.load(f)
+    with open(report_path) as f:
+        on_disk = json.load(f)
+    on_disk["events"] = [{"event_id": "job1", "status": "COMPLETED", "hash": "abc"}]
+    on_disk["case_notes"] = [{"note_id": "n1", "text": "real note"}]
+    with open(report_path, "w") as f:
+        json.dump(on_disk, f)  # same updated_at as the snapshot on purpose
+    snapshot["notes"] = "edited narrative"
+    res = client.post("/api/report/save", json={"report_path": report_path, "report_data": snapshot})
+    assert res.status_code == 200
+    with open(report_path) as f:
+        saved = json.load(f)
+    assert saved["notes"] == "edited narrative"
+    assert saved["events"] == on_disk["events"]
+    assert saved["case_notes"] == on_disk["case_notes"]
+
+
+def test_save_fails_closed_on_an_unreadable_case_file(client, evidence_root):
+    report_path = _make_real_case(evidence_root)
+    with open(report_path, "w") as f:
+        f.write("{not json")
+    res = client.post("/api/report/save", json={"report_path": report_path,
+                                                 "report_data": {"updated_at": "2026-01-01 00:00:00"}})
+    assert res.status_code == 500  # CaseFileUnreadable - never a silent overwrite
+    with open(report_path) as f:
+        assert f.read() == "{not json"

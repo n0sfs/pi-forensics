@@ -1737,6 +1737,15 @@ def start_image_conversion():
 
     base_name = os.path.splitext(os.path.basename(source_image_path))[0]
     dest_dir = os.path.dirname(source_image_path)
+    # Conversion writes its output (and a new case event) next to the source
+    # image, so an image sitting in a Closed/Archived case folder must be
+    # refused like every other start route - this one had been missed
+    # (2026-09-23 review).
+    blocking_case_status = case_status_blocking_new_work(dest_dir)
+    if blocking_case_status:
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"This case is marked {blocking_case_status}. Re-open it from the "
+                                                   f"Case Manager before converting evidence inside it."}), 409
 
     report_data = {
         "tool": "image_conversion",

@@ -32,6 +32,10 @@ import subprocess
 import threading
 
 from core.paths import case_consolidated_path
+from core.case_file import (  # re-exported: many modules import these from core.jobs
+    CaseFileUnreadable, _case_file_stub, _read_case_file, read_case_file_or_stub,
+    _write_case_file, CASE_WRITE_LOCK, serialize_case_writes, is_case_record_path,
+)
 
 # Guards access to the shared current_job / active_proc state, which is
 # written from the background acquisition thread and read/written from
@@ -450,102 +454,19 @@ class CaseEventTarget:
         self.case_file = case_file
         self.event_id = event_id
 
-class CaseFileUnreadable(Exception):
-    """The consolidated case file EXISTS but could not be read or parsed.
-
-    Deliberately distinct from "no case file yet" (fixed 2026-09-15).
-    _read_case_file() used to swallow every exception and return an empty
-    stub, so a corrupt file - or a transient read error on the NFS share this
-    app routinely stores cases on - looked exactly like a brand-new case with
-    no events. The caller then went on to WRITE that stub back, and a case's
-    entire events/notes/custody/examiners history was replaced by four empty
-    keys, with the operation reporting success.
-
-    Raising instead means a mutating path fails loudly and the file on disk is
-    left exactly as it was. A file that is genuinely absent, or present and
-    empty, still yields the stub - that is a real new case, not a failure."""
-
-
-def _case_file_stub():
-    return {"schema_version": 1, "events": [], "attachments": {"files": [], "reference_urls": []}}
-
-
-def _read_case_file(case_file):
-    """Returns the parsed case record. Raises CaseFileUnreadable if the file
-    exists but cannot be read or parsed - see that exception's own docstring
-    for why that must not degrade to an empty stub."""
-    try:
-        with open(case_file, 'r') as f:
-            raw = f.read()
-    except FileNotFoundError:
-        return _case_file_stub()
-    except OSError as e:
-        raise CaseFileUnreadable(f"{case_file} could not be read: {e}") from e
-    if not raw.strip():
-        # A zero-byte file is what an interrupted pre-2026-09-15 (non-atomic)
-        # write left behind. Treat it as a new case rather than an error -
-        # there is no content to lose.
-        return _case_file_stub()
-    try:
-        return json.loads(raw)
-    except ValueError as e:
-        raise CaseFileUnreadable(
-            f"{case_file} is not valid JSON and may be corrupt: {e}. "
-            f"Nothing has been modified - the file is left exactly as it is on disk.") from e
-
-
-def read_case_file_or_stub(case_file):
-    """The old, forgiving behaviour, for READ-ONLY display paths that should
-    degrade to an empty view rather than fail. Never use this anywhere the
-    result is written back - that is precisely the bug CaseFileUnreadable
-    exists to prevent."""
-    try:
-        return _read_case_file(case_file)
-    except CaseFileUnreadable:
-        return _case_file_stub()
-
-
-def _write_case_file(case_file, case_record):
-    """Atomic replace, not a truncating open (fixed 2026-09-15).
-
-    open(w) truncates the target before a single byte is written, so an
-    interrupted write - a crash, a full disk, a dropped NFS mount - left a
-    truncated or empty case file behind. Combined with _read_case_file()'s old
-    swallow-everything behaviour that was a complete, silent loss of a case's
-    history. Writing a sibling temp file and os.replace()-ing it means a
-    reader only ever sees the whole old file or the whole new one.
-
-    The temp file is created in the SAME directory on purpose: os.replace is
-    only atomic within one filesystem, and a case folder can sit on a mounted
-    share while the system temp dir does not."""
-    directory = os.path.dirname(os.path.abspath(case_file)) or '.'
-    fd, tmp_path = tempfile.mkstemp(prefix='.case_', suffix='.json.tmp', dir=directory)
-    try:
-        with os.fdopen(fd, 'w') as f:
-            json.dump(case_record, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, case_file)
-    except BaseException:
-        # Leave the real file untouched, and do not leak the temp file.
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
 def _case_upsert_event(case_file, event_id, event_data):
     """Replaces the event matching event_id if present, else appends it -
     this is what makes a job's start-write and later complete-write update
     the SAME array entry instead of appending a duplicate."""
-    case_record = _read_case_file(case_file)
-    events = case_record.setdefault("events", [])
-    events[:] = [e for e in events if e.get("event_id") != event_id]
-    payload = dict(event_data)
-    payload["event_id"] = event_id
-    events.append(payload)
-    case_record["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    _write_case_file(case_file, case_record)
+    with CASE_WRITE_LOCK:
+        case_record = _read_case_file(case_file)
+        events = case_record.setdefault("events", [])
+        events[:] = [e for e in events if e.get("event_id") != event_id]
+        payload = dict(event_data)
+        payload["event_id"] = event_id
+        events.append(payload)
+        case_record["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _write_case_file(case_file, case_record)
 
 def build_report_target(dest_path, legacy_dir, base_name):
     """Returns a CaseEventTarget if `dest_path` is an active case folder,

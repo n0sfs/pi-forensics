@@ -73,7 +73,8 @@ from core.config import (
     get_report_defaults, get_custom_case_fields,
 )
 from core.jobs import (_read_case_file, _write_case_file, current_job, job_lock, update_job,
-                       snapshot_job, CaseFileUnreadable)
+                       snapshot_job, CaseFileUnreadable, CASE_WRITE_LOCK, serialize_case_writes,
+                       is_case_record_path)
 from core.case_index_db import (
     _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact,
     _case_index_open_readonly, list_case_folders, correlate_contacts,
@@ -716,9 +717,13 @@ def load_report_json():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+_SERVER_OWNED_CASE_KEYS = ('events', 'case_notes', 'custody_log', 'last_verification',
+                           'status_before_archive', 'created_at', 'case_folder', 'schema_version')
+
 @reporting_bp.route('/api/report/save', methods=['POST'])
 @requires_auth
 @requires_permission('reporting')
+@serialize_case_writes
 def save_report_json():
     req = request.get_json() or {}
     report_file = safe_path(req.get('report_path'))
@@ -726,6 +731,13 @@ def save_report_json():
 
     if not report_file or not os.path.exists(report_file):
         return jsonify({"success": False, "error": "Report target file not found or outside the permitted evidence directory."}), 404
+    # safe_path() only confines the path to the evidence root. Without this,
+    # any account with 'reporting' could overwrite ANY file there with JSON -
+    # an acquired image included (reproduced live 2026-09-23).
+    if not is_case_record_path(report_file):
+        return jsonify({"success": False, "error": "Only a case file or job report can be saved here."}), 400
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "report_data must be an object."}), 400
 
     # Real bug, fixed 2026-09-09: this is the main "Save Report Changes"
     # round trip (Report Narrative/Case Details/exhibit captions/reference
@@ -755,26 +767,39 @@ def save_report_json():
     # updated_at this route returns back into its cached copy, so a second
     # save from the SAME tab always compares against the value it itself
     # just wrote.
-    if isinstance(data, dict) and 'updated_at' in data:
-        try:
-            with open(report_file, 'r') as f:
-                on_disk = json.load(f)
-        except Exception:
-            on_disk = None
-        if isinstance(on_disk, dict) and 'updated_at' in on_disk and on_disk['updated_at'] != data['updated_at']:
-            return jsonify({
-                "success": False,
-                "error": f"This case was edited elsewhere since it was loaded here (last updated "
-                         f"{on_disk['updated_at']}). Reload the case to see the latest version, then "
-                         f"reapply your changes.",
-                "conflict": True,
-                "server_updated_at": on_disk['updated_at'],
-            }), 409
+    # Fail CLOSED (2026-09-23): an unreadable file used to become
+    # on_disk=None, which skipped the check and wrote the stale payload over
+    # whatever was there. _read_case_file raises CaseFileUnreadable instead
+    # (app-wide 500 handler). And a payload with no updated_at no longer
+    # bypasses the guard when the file on disk has one.
+    on_disk = _read_case_file(report_file)
+    if isinstance(on_disk, dict) and 'updated_at' in on_disk:
+        if on_disk['updated_at'] != data.get('updated_at'):
+                return jsonify({
+                    "success": False,
+                    "error": f"This case was edited elsewhere since it was loaded here (last updated "
+                             f"{on_disk['updated_at']}). Reload the case to see the latest version, then "
+                             f"reapply your changes.",
+                    "conflict": True,
+                    "server_updated_at": on_disk['updated_at'],
+                }), 409
+    # Keys only the server ever writes (job workers, the notes/custody/
+    # verification routes) always come from disk, never from the browser's
+    # snapshot (2026-09-23). The updated_at check above only has one-second
+    # resolution and a background refresh can hand the browser a current
+    # updated_at over otherwise-stale data, so relying on it alone let a
+    # "Save Report Changes" wipe a job event or its recorded hashes that
+    # landed after the page loaded. The page edits none of these keys.
+    for key in _SERVER_OWNED_CASE_KEYS:
+        if key in on_disk:
+            data[key] = on_disk[key]
+        else:
+            data.pop(key, None)
+    if 'updated_at' in data or 'updated_at' in on_disk:
         data['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     try:
-        with open(report_file, 'w') as f:
-            json.dump(data, f, indent=2)
+        _write_case_file(report_file, data)
         log_chain_of_custody("report_edit", {"report_path": report_file})
         return jsonify({
             "success": True,
@@ -2508,6 +2533,7 @@ def discover_case_files():
 @reporting_bp.route('/api/cases/attach_file', methods=['POST'])
 @requires_auth
 @requires_permission('reporting', 'file_explorer')
+@serialize_case_writes
 def attach_file_to_case():
     """Lets File Explorer's "Attach to Case" context-menu action bookmark a
     file the moment an examiner is looking at it, rather than requiring a
@@ -2562,6 +2588,7 @@ def attach_file_to_case():
 @reporting_bp.route('/api/cases/set_file_caption', methods=['POST'])
 @requires_auth
 @requires_permission('reporting', 'file_explorer')
+@serialize_case_writes
 def set_file_caption():
     """Sets or clears an exhibit's caption immediately - commits straight to
     the case JSON on disk, the same "tag it where you find it" immediacy
@@ -2645,10 +2672,13 @@ CASE_NOTE_ATTACHMENT_MAX_BYTES = 25_000_000
 @reporting_bp.route('/api/cases/notes/add', methods=['POST'])
 @requires_auth
 @requires_permission('reporting')
+@serialize_case_writes
 def add_case_note():
     report_file = safe_path(request.form.get('report_path', ''))
     if not report_file or not os.path.exists(report_file):
         return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
+    if not is_case_record_path(report_file):
+        return jsonify({"success": False, "error": "Only a case file or job report can be modified here."}), 400
 
     text = request.form.get('text', '').strip()
     category = request.form.get('category', 'General').strip() or 'General'
@@ -2755,8 +2785,7 @@ def add_case_note():
         data['updated_at'] = now
 
     try:
-        with open(report_file, 'w') as f:
-            json.dump(data, f, indent=2)
+        _write_case_file(report_file, data)
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not save note: {e}"}), 500
 
@@ -2771,6 +2800,7 @@ def add_case_note():
 @reporting_bp.route('/api/cases/notes/edit', methods=['POST'])
 @requires_auth
 @requires_permission('reporting')
+@serialize_case_writes
 def edit_case_note():
     req = request.get_json() or {}
     report_file = safe_path(req.get('report_path'))
@@ -2779,6 +2809,8 @@ def edit_case_note():
 
     if not report_file or not os.path.exists(report_file):
         return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
+    if not is_case_record_path(report_file):
+        return jsonify({"success": False, "error": "Only a case file or job report can be modified here."}), 400
     if not new_text:
         return jsonify({"success": False, "error": "Note text cannot be empty."}), 400
 
@@ -2810,8 +2842,7 @@ def edit_case_note():
         data['updated_at'] = now
 
     try:
-        with open(report_file, 'w') as f:
-            json.dump(data, f, indent=2)
+        _write_case_file(report_file, data)
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not save note edit: {e}"}), 500
 
@@ -2827,6 +2858,7 @@ CASE_NOTE_STATUS_VALUES = ('open', 'resolved')
 @reporting_bp.route('/api/cases/notes/set_status', methods=['POST'])
 @requires_auth
 @requires_permission('reporting')
+@serialize_case_writes
 def set_case_note_status():
     """Follow-up/task flag on notes (2026-09-09) - deliberately a SEPARATE
     route from edit_case_note() above, not a new optional field on it: that
@@ -2846,6 +2878,8 @@ def set_case_note_status():
 
     if not report_file or not os.path.exists(report_file):
         return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
+    if not is_case_record_path(report_file):
+        return jsonify({"success": False, "error": "Only a case file or job report can be modified here."}), 400
     if 'status' in req and req['status'] not in CASE_NOTE_STATUS_VALUES:
         return jsonify({"success": False, "error": f"Invalid status - must be one of: {', '.join(CASE_NOTE_STATUS_VALUES)}"}), 400
     if 'status' not in req and 'assigned_to' not in req:
@@ -2873,8 +2907,7 @@ def set_case_note_status():
         data['updated_at'] = now
 
     try:
-        with open(report_file, 'w') as f:
-            json.dump(data, f, indent=2)
+        _write_case_file(report_file, data)
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not save note status: {e}"}), 500
 
@@ -2891,6 +2924,7 @@ def set_case_note_status():
 @reporting_bp.route('/api/cases/custody/add', methods=['POST'])
 @requires_auth
 @requires_permission('reporting')
+@serialize_case_writes
 def add_custody_entry():
     """Appends one physical evidence custody-transfer entry (from-person ->
     to-person, e.g. 'field examiner' -> 'evidence locker') - a genuinely
@@ -2904,6 +2938,8 @@ def add_custody_entry():
     report_file = safe_path(req.get('report_path'))
     if not report_file or not os.path.exists(report_file):
         return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
+    if not is_case_record_path(report_file):
+        return jsonify({"success": False, "error": "Only a case file or job report can be modified here."}), 400
 
     from_custodian = (req.get('from_custodian') or '').strip()
     to_custodian = (req.get('to_custodian') or '').strip()
@@ -2950,8 +2986,7 @@ def add_custody_entry():
         data['updated_at'] = now
 
     try:
-        with open(report_file, 'w') as f:
-            json.dump(data, f, indent=2)
+        _write_case_file(report_file, data)
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not save custody entry: {e}"}), 500
 
@@ -3139,50 +3174,53 @@ def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=No
                        progress_percent=round(((i + 1) / len(candidates)) * 100, 1) if candidates else 100.0)
 
         # Merge-only final write - see rule 3 in the docstring above.
-        fresh = _read_case_file(case_file)
-        run_at = time.strftime("%Y-%m-%d %H:%M:%S")
-        was_stopped = snapshot_job()["status"] == "Stopped"
-        for r in results:
-            r["verified_at"] = run_at
+        # Held across read->merge->write so a concurrent note/status/job
+        # write can't land in between and be erased (2026-09-23).
+        with CASE_WRITE_LOCK:
+            fresh = _read_case_file(case_file)
+            run_at = time.strftime("%Y-%m-%d %H:%M:%S")
+            was_stopped = snapshot_job()["status"] == "Stopped"
+            for r in results:
+                r["verified_at"] = run_at
 
-        # Carry forward any earlier result for an event THIS run did not
-        # reach (2026-09-14). This used to replace last_verification
-        # wholesale, so stopping a run part-way erased every result after
-        # the stop point - including a recorded MISMATCH, which then fell
-        # back to an amber "Not Yet Re-Verified". A detected mismatch
-        # silently downgrading itself because someone cancelled a later
-        # run is exactly the kind of quiet loss this tool must not do.
-        # Each result carries its own verified_at so a carried-forward
-        # finding is never mistaken for a fresh one.
-        checked_ids = {r.get("event_id") for r in results}
-        prior = (fresh.get('last_verification') or {})
-        carried = [r for r in (prior.get('results') or [])
-                   if r.get('event_id') not in checked_ids]
-        for r in carried:
-            r.setdefault("verified_at", prior.get("timestamp"))
+            # Carry forward any earlier result for an event THIS run did not
+            # reach (2026-09-14). This used to replace last_verification
+            # wholesale, so stopping a run part-way erased every result after
+            # the stop point - including a recorded MISMATCH, which then fell
+            # back to an amber "Not Yet Re-Verified". A detected mismatch
+            # silently downgrading itself because someone cancelled a later
+            # run is exactly the kind of quiet loss this tool must not do.
+            # Each result carries its own verified_at so a carried-forward
+            # finding is never mistaken for a fresh one.
+            checked_ids = {r.get("event_id") for r in results}
+            prior = (fresh.get('last_verification') or {})
+            carried = [r for r in (prior.get('results') or [])
+                       if r.get('event_id') not in checked_ids]
+            for r in carried:
+                r.setdefault("verified_at", prior.get("timestamp"))
 
-        fresh['last_verification'] = {
-            "timestamp": run_at,
-            "run_completed": not was_stopped,
-            "results": results + carried,
-            "skipped": skipped,
-        }
-        # Bump updated_at like every other case-mutating path does
-        # (_case_upsert_event, set_case_status, attach_file_to_case,
-        # add_case_note, ensure_examiner_recorded). Added 2026-09-15.
-        #
-        # save_report_json()'s optimistic-concurrency check compares ONLY
-        # updated_at, so leaving it untouched here meant a "Save Report
-        # Changes" from a tab whose snapshot predates this verification passed
-        # the conflict check and wrote back the stale (or absent)
-        # last_verification - silently erasing a recorded MISMATCH, which then
-        # falls back to an amber "Not Yet Re-Verified" in the next export.
-        # That is the same quiet downgrade of a detected mismatch the
-        # carry-forward above exists to prevent, arriving by a different door,
-        # and the guard written to stop it could not fire because this write
-        # was invisible to it.
-        fresh['updated_at'] = run_at
-        _write_case_file(case_file, fresh)
+            fresh['last_verification'] = {
+                "timestamp": run_at,
+                "run_completed": not was_stopped,
+                "results": results + carried,
+                "skipped": skipped,
+            }
+            # Bump updated_at like every other case-mutating path does
+            # (_case_upsert_event, set_case_status, attach_file_to_case,
+            # add_case_note, ensure_examiner_recorded). Added 2026-09-15.
+            #
+            # save_report_json()'s optimistic-concurrency check compares ONLY
+            # updated_at, so leaving it untouched here meant a "Save Report
+            # Changes" from a tab whose snapshot predates this verification passed
+            # the conflict check and wrote back the stale (or absent)
+            # last_verification - silently erasing a recorded MISMATCH, which then
+            # falls back to an amber "Not Yet Re-Verified" in the next export.
+            # That is the same quiet downgrade of a detected mismatch the
+            # carry-forward above exists to prevent, arriving by a different door,
+            # and the guard written to stop it could not fire because this write
+            # was invisible to it.
+            fresh['updated_at'] = run_at
+            _write_case_file(case_file, fresh)
         if carried:
             append_log(f"[i] Kept {len(carried)} earlier result(s) for evidence this run did "
                        f"not re-check - each is dated by when it was actually verified.")
