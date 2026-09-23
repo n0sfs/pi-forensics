@@ -287,3 +287,21 @@ class TestEvidenceStorageUnavailable:
              mock.patch.object(reporting, "EVIDENCE_ROOT", str(tmp_path)), \
              mock.patch.object(reporting.os, "stat", eio_stat):
             assert reporting._evidence_storage_unavailable(str(missing)) is True
+
+    def test_one_off_mount_recorded_only_in_mount_history_is_covered(self, tmp_path):
+        mp = tmp_path / "custom_share_name"
+        mp.mkdir()
+        hist = tmp_path / "mount_history.json"
+        hist.write_text('[{"mount_point": "%s"}]' % mp)
+        with mock.patch.object(reporting, "load_runtime_config", return_value={}), \
+             mock.patch.object(reporting, "HISTORY_FILE", str(hist)), \
+             mock.patch.object(reporting, "EVIDENCE_ROOT", str(tmp_path)):
+            assert reporting._evidence_storage_unavailable(str(mp / "CASE" / "CASE_case.json")) is True
+
+    def test_unrecorded_share_found_by_mount_naming_convention(self, tmp_path):
+        mp = tmp_path / "network_smb_evidence"
+        mp.mkdir()
+        with mock.patch.object(reporting, "load_runtime_config", return_value={}), \
+             mock.patch.object(reporting, "HISTORY_FILE", str(tmp_path / "absent.json")), \
+             mock.patch.object(reporting, "EVIDENCE_ROOT", str(tmp_path)):
+            assert reporting._evidence_storage_unavailable(str(mp / "CASE" / "CASE_case.json")) is True
