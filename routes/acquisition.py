@@ -29,6 +29,7 @@ import signal
 
 from flask import Blueprint, jsonify, request, g
 
+from core.priv import priv_argv, priv_available
 from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.paths import (
     safe_path, log_chain_of_custody, is_valid_block_device,
@@ -128,7 +129,7 @@ def _relock_device_for_list_drives(device_path):
         if device_path in active_write_unlocked_devices:
             return False
         try:
-            subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path], capture_output=True)
+            subprocess.run(priv_argv("blockdev-setro", device_path, legacy=["sudo", "/usr/sbin/blockdev", "--setro", device_path]), capture_output=True)
         except Exception:
             pass
         return True
@@ -187,10 +188,10 @@ def _unlock_device_for_write(device_path):
         )
     with device_write_lock:
         active_write_unlocked_devices[device_path] = {"unlocked_at": time.time()}
-        res = subprocess.run(["sudo", "/usr/sbin/blockdev", "--setrw", device_path], capture_output=True, text=True)
+        res = subprocess.run(priv_argv("blockdev-setrw", device_path, legacy=["sudo", "/usr/sbin/blockdev", "--setrw", device_path]), capture_output=True, text=True)
         if res.returncode == 0:
             for part in _device_partitions(device_path):
-                subprocess.run(["sudo", "/usr/sbin/blockdev", "--setrw", part], capture_output=True)
+                subprocess.run(priv_argv("blockdev-setrw", part, legacy=["sudo", "/usr/sbin/blockdev", "--setrw", part]), capture_output=True)
     if res.returncode != 0:
         with device_write_lock:
             active_write_unlocked_devices.pop(device_path, None)
@@ -216,11 +217,11 @@ def _relock_device_after_write(device_path):
     here too, alongside the whole disk, closes that gap."""
     with device_write_lock:
         active_write_unlocked_devices.pop(device_path, None)
-        subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", device_path], capture_output=True)
+        subprocess.run(priv_argv("blockdev-setro", device_path, legacy=["sudo", "/usr/sbin/blockdev", "--setro", device_path]), capture_output=True)
         # Every partition, not just "1" - plus "1" itself even if sysfs has
         # not caught up with a partition created moments ago by a build.
         for part in set(_device_partitions(device_path)) | {device_path + "1"}:
-            subprocess.run(["sudo", "/usr/sbin/blockdev", "--setro", part], capture_output=True)
+            subprocess.run(priv_argv("blockdev-setro", part, legacy=["sudo", "/usr/sbin/blockdev", "--setro", part]), capture_output=True)
 
 
 def _live_collection_startup_reconciliation():
@@ -246,7 +247,7 @@ def _live_collection_startup_reconciliation():
         if not is_valid_block_device(device_path):
             continue
         try:
-            chk = subprocess.run(["sudo", "/usr/sbin/blockdev", "--getro", device_path],
+            chk = subprocess.run(priv_argv("blockdev-getro", device_path, legacy=["sudo", "/usr/sbin/blockdev", "--getro", device_path]),
                                   capture_output=True, text=True, timeout=10)
         except Exception:
             continue
@@ -1407,6 +1408,7 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
         cmd1 = ["sudo", "/usr/bin/dc3dd", f"if={source}", f"of={raw_file}", f"log={dc3dd_log_file}"]
         for h in hashes:
             cmd1.append(f"hash={h}")
+        cmd1 = priv_argv("image-dc3dd", source, os.path.join(dest_path, base_name), "raw", *hashes, legacy=cmd1)
         append_log(f"[*] Command: {' '.join(cmd1)}")
 
         def on_line_phase1(clean_line):
@@ -2884,7 +2886,7 @@ def smart_check():
     try:
         total_bytes = 0
         try:
-            res_sz = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', drive], capture_output=True, text=True)
+            res_sz = subprocess.run(priv_argv("blockdev-getsize", drive, legacy=["sudo", "/usr/sbin/blockdev", "--getsize64", drive]), capture_output=True, text=True)
             if res_sz.returncode == 0:
                 total_bytes = int(res_sz.stdout.strip())
         except Exception:
@@ -2892,7 +2894,7 @@ def smart_check():
 
         capacity_str = f"{round(total_bytes / (1024**3), 2)} GB" if total_bytes > 0 else "N/A"
 
-        res = subprocess.run(['sudo', '/usr/sbin/smartctl', '-a', '-j', drive], capture_output=True, text=True, timeout=15)
+        res = subprocess.run(priv_argv("smart", drive, legacy=["sudo", "/usr/sbin/smartctl", "-a", "-j", drive]), capture_output=True, text=True, timeout=15)
         data = json.loads(res.stdout) if res.stdout else {}
         
         healthy = data.get('smart_status', {}).get('passed', True)
@@ -2994,11 +2996,11 @@ def toggle_write_block():
             # use, then actually flip the flag.
             with device_write_lock:
                 active_write_unlocked_devices.pop(drive, None)
-                res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--setro', drive], capture_output=True, text=True)
+                res = subprocess.run(priv_argv("blockdev-setro", drive, legacy=["sudo", "/usr/sbin/blockdev", "--setro", drive]), capture_output=True, text=True)
             if res.returncode != 0:
                 return jsonify({"success": False, "error": res.stderr.strip() or "blockdev execution failed"}), 500
 
-        chk = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getro', drive], capture_output=True, text=True)
+        chk = subprocess.run(priv_argv("blockdev-getro", drive, legacy=["sudo", "/usr/sbin/blockdev", "--getro", drive]), capture_output=True, text=True)
         is_ro = (chk.returncode == 0 and chk.stdout.strip() == '1')
 
         return jsonify({"success": True, "write_blocker_active": is_ro, "device": drive})
@@ -3369,7 +3371,7 @@ def start_imaging():
         # A LUKS mapper device is block-device-shaped (dm-crypt), so
         # blockdev works on it exactly like a real device - confirmed live.
         try:
-            res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
+            res = subprocess.run(priv_argv("blockdev-getsize", source, legacy=["sudo", "/usr/sbin/blockdev", "--getsize64", source]), capture_output=True, text=True)
             if res.returncode == 0:
                 total_bytes = int(res.stdout.strip())
         except Exception:
@@ -3408,7 +3410,7 @@ def start_imaging():
             # a service restart. The existing except Exception below already
             # absorbs a TimeoutExpired the same as any other smartctl
             # failure, falling back to no SMART data.
-            res_smart = subprocess.run(['sudo', '/usr/sbin/smartctl', '-a', '-j', source], capture_output=True, text=True, timeout=15)
+            res_smart = subprocess.run(priv_argv("smart", source, legacy=["sudo", "/usr/sbin/smartctl", "-a", "-j", source]), capture_output=True, text=True, timeout=15)
             if res_smart.stdout:
                 smart_data = json.loads(res_smart.stdout)
         except Exception:
@@ -3588,6 +3590,17 @@ def start_imaging():
         ]
         for h in hashes:
             cmd.append(f"hash={h}")
+
+    # Via pif-priv once installed (core/priv.py): the helper rebuilds exactly
+    # these argvs itself after validating source, destination and hashes -
+    # the unpinned `sudo dc3dd/dcfldd/dd` grants let of= write anywhere.
+    out_base = f"{dest_path}/{base_name}"
+    if fmt == 'dcfldd':
+        cmd = priv_argv("image-dcfldd", source, out_base, *hashes, legacy=cmd)
+    elif fmt == 'plain_dd':
+        cmd = priv_argv("image-dd", source, out_base, "direct" if "iflag=direct" in cmd else "nodirect", legacy=cmd)
+    elif fmt in ('dd', 'raw'):
+        cmd = priv_argv("image-dc3dd", source, out_base, "dd", *hashes, legacy=cmd)
 
     update_job(
         format=fmt,
@@ -3844,7 +3857,7 @@ def start_ddrescue():
 
     total_bytes = 0
     try:
-        res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
+        res = subprocess.run(priv_argv("blockdev-getsize", source, legacy=["sudo", "/usr/sbin/blockdev", "--getsize64", source]), capture_output=True, text=True)
         if res.returncode == 0:
             total_bytes = int(res.stdout.strip())
     except Exception:
@@ -3956,12 +3969,16 @@ def stop_imaging():
         # ewfexport (image conversion) and affconvert (AFF phase 2) added
         # 2026-09-23 - Stop during either left the converter running after
         # the slot was released.
-        for tool in ["dc3dd", "dcfldd", "ewfacquire", "ewfexport", "affconvert", "ddrescue", "photorec",
-                     "extundelete", "foremost", "scalpel"]:
-            try:
-                subprocess.run(["sudo", "pkill", "-9", tool], capture_output=True)
-            except Exception:
-                pass
+        try:
+            if priv_available():
+                # The helper holds the same fixed list and matches exact names.
+                subprocess.run(priv_argv("kill-tools", legacy=[]), capture_output=True)
+            else:
+                for tool in ["dc3dd", "dcfldd", "ewfacquire", "ewfexport", "affconvert", "ddrescue", "photorec",
+                             "extundelete", "foremost", "scalpel"]:
+                    subprocess.run(["sudo", "pkill", "-9", tool], capture_output=True)
+        except Exception:
+            pass
         # Plain dd: kill the job's OWN process group (every acquisition tool
         # is launched with setsid - core/jobs.py), via sudo because its
         # members are root-owned. Replaces `pkill -f "dd if="` (2026-09-23),
@@ -3972,7 +3989,8 @@ def stop_imaging():
             if proc is not None:
                 pgid = os.getpgid(proc.pid)
                 if pgid != os.getpgrp():
-                    subprocess.run(["sudo", "pkill", "-9", "-g", str(pgid)], capture_output=True)
+                    subprocess.run(priv_argv("kill-pgroup", pgid, legacy=["sudo", "pkill", "-9", "-g", str(pgid)]),
+                                   capture_output=True)
         except Exception:
             pass
 

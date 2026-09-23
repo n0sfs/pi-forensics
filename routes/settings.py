@@ -40,6 +40,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+from core.priv import priv_argv
 from core.auth import (
     PERMISSION_KEYS, KIOSK_AUTH_BYPASS_ENABLED,
     requires_auth, requires_permission, check_auth,
@@ -226,7 +227,7 @@ def system_info():
     wb_active = True
     if os.path.exists(target_drive):
         try:
-            res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getro', target_drive], capture_output=True, text=True)
+            res = subprocess.run(priv_argv("blockdev-getro", target_drive, legacy=["sudo", "/usr/sbin/blockdev", "--getro", target_drive]), capture_output=True, text=True)
             if res.returncode == 0 and res.stdout.strip() == '0':
                 wb_active = False
         except Exception:
@@ -2684,7 +2685,7 @@ def eject_usb_drive():
         for part in sorted(glob.glob(f"{drive}*")):
             subprocess.run(['sudo', 'udevil', 'unmount', '-b', part], capture_output=True)
             subprocess.run(['sudo', 'umount', part], capture_output=True)
-        subprocess.run(['sudo', '/usr/sbin/blockdev', '--flushbufs', drive], capture_output=True)
+        subprocess.run(priv_argv("blockdev-flush", drive, legacy=["sudo", "/usr/sbin/blockdev", "--flushbufs", drive]), capture_output=True)
 
         return jsonify({"success": True, "message": f"Drive {drive} safely unmounted and flushed. You can now disconnect it."})
     except Exception as e:

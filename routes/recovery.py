@@ -17,6 +17,7 @@ import threading
 
 from flask import Blueprint, jsonify, request
 
+from core.priv import priv_argv
 from core.auth import requires_auth, requires_permission
 from core.paths import (safe_path, log_chain_of_custody, is_valid_block_device, sanitize_case_slug,
                         case_status_blocking_new_work, is_bulk_tool_output_dir,
@@ -510,7 +511,7 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
         read_proc = None
         if is_valid_block_device(source):
             read_proc = subprocess.Popen(
-                ["sudo", "/usr/bin/dd", f"if={source}", f"bs={CHUNK_SIZE}"],
+                priv_argv("read-device", source, legacy=["sudo", "/usr/bin/dd", f"if={source}", f"bs={CHUNK_SIZE}"]),
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
             )
             try:
@@ -535,7 +536,9 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                 # command-line pattern that could match another dd reading
                 # the same device (2026-09-23).
                 try:
-                    subprocess.run(["sudo", "pkill", "-9", "-P", str(read_proc.pid)], capture_output=True)
+                    subprocess.run(priv_argv("kill-children", read_proc.pid,
+                                             legacy=["sudo", "pkill", "-9", "-P", str(read_proc.pid)]),
+                                   capture_output=True)
                 except Exception:
                     pass
         elif os.path.isdir(source):
@@ -1060,7 +1063,7 @@ def start_triage_scan():
     total_bytes = 0
     try:
         if is_valid_block_device(source):
-            res = subprocess.run(['sudo', '/usr/sbin/blockdev', '--getsize64', source], capture_output=True, text=True)
+            res = subprocess.run(priv_argv("blockdev-getsize", source, legacy=["sudo", "/usr/sbin/blockdev", "--getsize64", source]), capture_output=True, text=True)
             if res.returncode == 0:
                 total_bytes = int(res.stdout.strip())
         elif os.path.isdir(source):

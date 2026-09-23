@@ -86,6 +86,17 @@ def evidence_root(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _pif_priv_not_installed(monkeypatch):
+    """core/priv.py switches every privileged call to the pif-priv helper as
+    soon as /usr/local/sbin/pif-priv exists - which, once install.py has run
+    on the station, it does. The suite runs there too, so pin it to the
+    legacy argvs by default; tests of the helper path opt in explicitly
+    (tests/test_priv_migration.py)."""
+    import core.priv
+    monkeypatch.setattr(core.priv, "PIF_PRIV", "/nonexistent/pif-priv")
+
+
+@pytest.fixture(autouse=True)
 def _clear_auth_lockout_state():
     """core.auth's brute-force lockout tracker (auth_fail_tracker) and
     last-login-persist throttle are plain module-level dicts, keyed by

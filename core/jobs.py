@@ -32,6 +32,7 @@ import subprocess
 import threading
 
 from core.paths import case_consolidated_path
+from core.priv import priv_argv, priv_available
 from core.case_file import (  # re-exported: many modules import these from core.jobs
     CaseFileUnreadable, _case_file_stub, _read_case_file, read_case_file_or_stub,
     _write_case_file, CASE_WRITE_LOCK, serialize_case_writes, is_case_record_path,
@@ -610,14 +611,21 @@ def reclaim_ownership(path):
     owned by root as a side effect. Without handing ownership back, every
     later operation on those files (delete, hash verify, copy, ExifTool,
     etc.) run as this unprivileged service account would fail with
-    permission denied. Safe to grant broadly in sudoers: the target
-    user:group is fixed at install time, not attacker-controllable, so this
-    can only ever hand a file back to the unprivileged account, never
-    escalate ownership to root or anyone else.
+    permission denied.
+
+    Via pif-priv's `reclaim` once installed (core/priv.py). The legacy
+    `chown/chgrp -R <svc> *` grants were NOT safe as this docstring used to
+    claim: the fixed target user doesn't help when the PATH is arbitrary -
+    `chown -R <svc> /etc` hands the system's config to the service account
+    (2026-09-23 review). The helper only accepts a path inside the evidence
+    root, never the root itself, never follows symlinks.
     """
     if not path or not os.path.exists(path):
         return
     try:
+        if priv_available():
+            subprocess.run(priv_argv("reclaim", path, legacy=[]), capture_output=True, timeout=120)
+            return
         subprocess.run(['sudo', '/bin/chown', '-R', _SERVICE_ACCOUNT_NAME, path], capture_output=True, timeout=30)
         subprocess.run(['sudo', '/bin/chgrp', '-R', _SERVICE_ACCOUNT_NAME, path], capture_output=True, timeout=30)
     except Exception as e:

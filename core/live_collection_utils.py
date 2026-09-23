@@ -43,6 +43,8 @@ import json
 import subprocess
 import time
 
+from core.priv import priv_argv
+
 PIF_COLLECT_LABEL = "PIF_COLLECT"
 UAC_DEFAULT_PROFILE = "ir_triage"
 
@@ -158,7 +160,7 @@ def wipe_and_format_device(device, append_log=None):
     # run, regardless of whether rereadpt/settle themselves finished
     # cleanly within their own timeout window.
     try:
-        subprocess.run(["sudo", BLOCKDEV_BIN, "--rereadpt", device], capture_output=True, timeout=_SETTLE_TIMEOUT_SECONDS)
+        subprocess.run(priv_argv("blockdev-rereadpt", device, legacy=["sudo", BLOCKDEV_BIN, "--rereadpt", device]), capture_output=True, timeout=_SETTLE_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         pass
     try:
@@ -186,7 +188,7 @@ def wipe_and_format_device(device, append_log=None):
     # whole disk - this fires once, right after the partition's own "add"
     # event already happened (rereadpt+settle above), so there's no race
     # with the udev rule re-locking it a second time afterward.
-    subprocess.run(["sudo", BLOCKDEV_BIN, "--setrw", partition], capture_output=True, timeout=15)
+    subprocess.run(priv_argv("blockdev-setrw", partition, legacy=["sudo", BLOCKDEV_BIN, "--setrw", partition]), capture_output=True, timeout=15)
 
     log(f"[*] Formatting {partition} exFAT, volume label {PIF_COLLECT_LABEL}...")
     res = subprocess.run(
