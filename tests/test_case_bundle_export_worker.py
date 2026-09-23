@@ -305,3 +305,17 @@ class TestEvidenceStorageUnavailable:
              mock.patch.object(reporting, "HISTORY_FILE", str(tmp_path / "absent.json")), \
              mock.patch.object(reporting, "EVIDENCE_ROOT", str(tmp_path)):
             assert reporting._evidence_storage_unavailable(str(mp / "CASE" / "CASE_case.json")) is True
+
+    def test_share_mounted_outside_the_app_via_fstab_is_covered(self, tmp_path):
+        mp = tmp_path / "evidence share"
+        mp.mkdir()
+        fstab = tmp_path / "fstab"
+        fstab.write_text("# comment\nUUID=abc / ext4 defaults 0 1\nnas:/vol %s nfs soft 0 0\n"
+                         % str(mp).replace(" ", "\\040"))
+        with mock.patch.object(reporting, "load_runtime_config", return_value={}), \
+             mock.patch.object(reporting, "HISTORY_FILE", str(tmp_path / "absent.json")), \
+             mock.patch.object(reporting, "FSTAB_PATH", str(fstab)), \
+             mock.patch.object(reporting, "EVIDENCE_ROOT", str(tmp_path)):
+            assert reporting._evidence_storage_unavailable(str(mp / "CASE" / "CASE_case.json")) is True
+            # a deleted case elsewhere is still a plain 404 - the "/" line must not match everything
+            assert reporting._evidence_storage_unavailable(str(tmp_path / "GONE" / "GONE_case.json")) is False
