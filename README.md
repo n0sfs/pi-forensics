@@ -634,7 +634,7 @@ Contributions welcome! Submit pull requests or open issues for improvements or b
 ---
 
 ## Disclaimer and License
-Provided as-is, without any warranty and distributed under the GNU General Public License v3 or later. You can redistribute and/or modify it under the terms of this license. Its methodology has been vetted to be forensically sound, but always verify the integrity of your images using appropriate forensic tools and procedures.
+Provided as-is, without any warranty and distributed under the MIT License. You can redistribute and/or modify it under the terms of this license. Its methodology has been vetted to be forensically sound, but always verify the integrity of your images using appropriate forensic tools and procedures.
 See prior research here: "Low Budget Forensics using ARM Based Single Board Computers" - https://commons.erau.edu/jdfsl/vol11/iss1/3/
 
 This project's own MIT license covers its own original code only. To do its job, the station installs, imports, vendors, or loads a large number of pre-existing third-party forensic tools, Python libraries, and frontend assets (`dc3dd`, The Sleuth Kit, ClamAV, Volatility 3, MVT, Bootstrap, Leaflet, and dozens more) — each keeps its own separate license, none of which are covered by this project's MIT license. See **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)** for the full list, including a few (MVT, Volatility 3, SQLite Dissect) that carry non-standard terms worth reading directly rather than assuming they behave like a typical open-source license. It's also viewable from inside the app itself under Help > Third-Party Notices.

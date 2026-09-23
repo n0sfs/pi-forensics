@@ -289,9 +289,9 @@ function toggleFormatControls() {
     if (chainRow) chainRow.style.display = (fmt === 'ddrescue' || fmt === 'aff' || fmt === 'logical') ? 'none' : '';
 
     const FORMAT_HELP = {
-        dd: "Raw bit-for-bit copy using dc3dd, with hashing built in. A solid default for most acquisitions.",
-        dcfldd: "Same idea as dc3dd (raw copy + hashing), from a different tool - useful if you specifically need dcfldd's output style.",
-        plain_dd: "Plain GNU dd, no built-in hashing (computed separately after). Supports true direct disk access, bypassing the cache on read.",
+        dd: "Raw bit-for-bit copy using dc3dd, with hashing built in. Not sure which format to pick? Start here - it's the right default for most acquisitions.",
+        dcfldd: "Functionally the same as dc3dd above (raw copy + hashing) - pick this only if you specifically need dcfldd's own progress/output style or a report already relies on it. Otherwise dc3dd is the more common choice.",
+        plain_dd: "Plain GNU dd, no built-in hashing (computed separately after). The only raw format here with genuine direct I/O (bypasses the page cache on read) - dc3dd/dcfldd accept no equivalent flag, so pick this specifically when you need that.",
         e01: "EnCase-compatible format (.E01) - widely used in law enforcement/EnCase workflows, supports compression and splitting into segments.",
         aff: "Advanced Forensic Format - acquires a raw image first, then converts it to .aff. You'll be asked whether to keep the intermediate raw file.",
         ddrescue: "For damaged, clicking, or failing drives - works around bad sectors instead of stopping, with configurable retry strategy below. No built-in hashing; verify the result separately once you have a usable copy.",
@@ -701,7 +701,7 @@ const FAQ_GROUPS = [
         items: [
             {
                 q: "What's an Active Case, and do I have to use one?",
-                a: "The \"Case\" button at the top of every page creates or selects a case, which then auto-fills Case #, Examiner, and Destination on every tool below - including Reporting, which loads that case's data automatically with no manual file browsing. A case is a real folder on disk, with all of its metadata/notes/job telemetry consolidated into one JSON file rather than scattered per-job files. Using a case is entirely optional; every tool works the same with none selected, you'll just fill those fields in by hand. An older case created before consolidated case files existed can be migrated to the current format from the Case Manager, non-destructively - the original files are kept, renamed with a backup suffix, never deleted."
+                a: "The \"Case Manager\" button at the top of every page creates or selects a case, which then auto-fills Case #, Examiner, and Destination on every tool below - including Reporting, which loads that case's data automatically with no manual file browsing. A case is a real folder on disk, with all of its metadata/notes/job telemetry consolidated into one JSON file rather than scattered per-job files. Using a case is entirely optional; every tool works the same with none selected, you'll just fill those fields in by hand."
             },
             {
                 q: "Case Notes vs. Report Narrative - what's the difference?",
@@ -16242,7 +16242,7 @@ function renderCaseJobs() {
     }
     const events = currentLoadedReportData.events;
     if (!Array.isArray(events)) {
-        container.innerHTML = '<span class="text-subtle">This is a single-job legacy report with no separate job history - migrate it via the Case Manager to see jobs listed individually.</span>';
+        container.innerHTML = '<span class="text-subtle">This case predates the current format and has no separate job history to list here.</span>';
         return;
     }
     if (events.length === 0) {
@@ -22811,7 +22811,7 @@ function updateRecoveryToolControls() {
 
     if (sourceRow) sourceRow.style.display = isMapfile ? 'none' : '';
     if (mapfileRow) mapfileRow.style.display = isMapfile ? '' : 'none';
-    if (destCol) destCol.style.display = isTestdisk ? 'none' : '';
+    if (destCol) destCol.style.display = isSyncTool ? 'none' : ''; // mapfile inspect never writes anywhere either, same as testdisk
     if (metadataRow) metadataRow.style.display = isSyncTool ? 'none' : '';
     if (keywordListsRow) {
         keywordListsRow.style.display = isTriageScan ? '' : 'none';
@@ -22866,7 +22866,7 @@ async function startRecoveryTool() {
             const data = await res.json();
             if (outEl) outEl.textContent = data.success ? data.output : `[ERROR] ${data.error}`;
         } catch (err) {
-            if (outEl) outEl.textContent = '[REQUEST FAILED]';
+            if (outEl) outEl.textContent = '[REQUEST FAILED - check the appliance is still running, then retry]';
         }
         return;
     }
@@ -23103,11 +23103,15 @@ function updateMobileDeviceMode() {
     const androidControls = document.getElementById("mobileAndroidControls");
     const simControls = document.getElementById("mobileSimControls");
     const startLabel = document.getElementById("btnMobileStartLabel");
+    const modeIntro = document.getElementById("mobileDeviceModeIntro");
 
     if (iosControls) iosControls.style.display = mode === 'ios' ? '' : 'none';
     if (androidControls) androidControls.style.display = mode === 'android' ? '' : 'none';
     if (simControls) simControls.style.display = mode === 'sim' ? '' : 'none';
     if (startLabel) startLabel.textContent = mode === 'ios' ? 'Start iOS Backup' : mode === 'android' ? 'Start Android Acquisition' : 'Use Read Card Above';
+    // The trust/pairing blurb below only applies to iOS/Android USB devices -
+    // a SIM/UICC card is read through a card reader, nothing to trust/pair.
+    if (modeIntro) modeIntro.style.display = mode === 'sim' ? 'none' : '';
 
     refreshMobileStartButtonState();
 }
@@ -24577,6 +24581,11 @@ async function loadToolVersions() {
 // <pkg>` already upgrades an existing package to the latest candidate when
 // one is available, so there's no separate "update" command/endpoint needed.
 async function installTool(pkg, btnEl) {
+    // Every other privileged Settings action confirms first (TLS generation,
+    // config restore) - this one didn't, despite doing the same class of
+    // thing (a real `sudo apt-get install` on the station) with only the
+    // diagnostics caption explaining what "Install"/"Update" means.
+    if (!confirm(`Run "sudo apt-get install -y ${pkg}" on this station now?`)) return;
     if (btnEl) {
         btnEl.disabled = true;
         btnEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Working...';
@@ -25177,6 +25186,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadAutoMountShares();
     toggleFormatControls();
     refreshMobileDevices();
+    updateMobileDeviceMode(); // syncs the start button label/intro text/control visibility to whatever the select's initial value actually is, not just its HTML default
     updateDdrescueStrategyHelp();
     updateRecoveryToolControls();
     loadReportingStats();
