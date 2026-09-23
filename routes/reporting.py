@@ -623,6 +623,39 @@ def report_examiner_names():
     usernames = sorted({u.get('username') for u in (cfg.get('users') or []) if u.get('username')})
     return jsonify({"success": True, "usernames": usernames})
 
+def _evidence_storage_unavailable(path):
+    """True when a missing `path` is better explained by unreachable storage
+    than by the file genuinely not existing.
+
+    os.path.exists() alone cannot tell these apart - it answers False both for
+    a deleted case and for one on an unmounted share (the mount point is left
+    behind as an empty directory) or a soft-mounted NFS share that timed out
+    (the OSError is swallowed). The frontend clears the active case on a 404,
+    so conflating them silently drops a real case over a storage outage.
+    Two checks: (1) any configured auto-mount share whose mount point is an
+    ancestor of `path` but is not currently mounted; (2) any ancestor up to
+    EVIDENCE_ROOT whose stat() fails with something other than not-found.
+    A share mounted by hand and never saved as auto-mount is not covered by
+    (1) - there is no record it should be mounted there."""
+    target = os.path.realpath(path)
+    for share in load_runtime_config().get('auto_mount_shares', []) or []:
+        mp = share.get('mount_point')
+        if mp and path_is_within(target, os.path.realpath(mp)) and not os.path.ismount(mp):
+            return True
+    cur = os.path.dirname(target)
+    root = os.path.realpath(EVIDENCE_ROOT)
+    while path_is_within(cur, root):
+        try:
+            os.stat(cur)
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError:
+            return True
+        if cur == root:
+            break
+        cur = os.path.dirname(cur)
+    return False
+
 @reporting_bp.route('/api/report/load', methods=['POST'])
 @requires_auth
 @requires_permission('reporting')
@@ -630,6 +663,9 @@ def load_report_json():
     req = request.get_json() or {}
     report_file = safe_path(req.get('report_path'))
 
+    if report_file and not os.path.exists(report_file) and _evidence_storage_unavailable(report_file):
+        # 503 via the app-wide handler - "could not look", never "not there".
+        raise CaseFolderUnavailable(os.path.dirname(report_file))
     if not report_file or not os.path.exists(report_file):
         return jsonify({"success": False, "error": "Report file not found or outside the permitted evidence directory."}), 404
 
@@ -3161,6 +3197,16 @@ def start_verify_all_evidence():
     log_chain_of_custody("verify_all_evidence_start", {"case_folder": case_folder})
     return jsonify({"success": True, "message": "Case-wide evidence verification started."})
 
+# Module-level (not local to the worker) so tests can shrink them to exercise
+# the chunked large-file path without writing a 256 MB fixture.
+BUNDLE_LARGE_FILE_PROGRESS_THRESHOLD = 256 * 1024 * 1024  # 256 MB
+BUNDLE_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
+
+
+class _BundleStoppedMidFile(Exception):
+    """Raised inside the chunked large-file copy when the user presses Stop."""
+
+
 def execution_worker_case_bundle_export(case_folder, include_images, requester_ip=None, requester_user=None):
     """Background job: zips the entire case folder (minus raw acquisition
     images, unless include_images is set, and this bundle mechanism's own
@@ -3245,6 +3291,7 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
 
         written = 0
         errored = 0
+        truncated = []
         bytes_done = 0
         last_update = time.time()
         # Raw acquisition images are the one candidate type never worth
@@ -3275,8 +3322,6 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
         # between files. Below the threshold, plain zf.write() is simpler
         # and no less accurate, since a small file's whole write already
         # completes within one 0.5s progress-update tick.
-        LARGE_FILE_PROGRESS_THRESHOLD = 256 * 1024 * 1024  # 256 MB
-        CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             for fpath, arcname, size, is_raw_image in candidates:
                 if snapshot_job()["status"] == "Stopped":
@@ -3292,7 +3337,7 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
                 # added the full size on top.
                 file_bytes_counted = 0
                 try:
-                    if size >= LARGE_FILE_PROGRESS_THRESHOLD:
+                    if size >= BUNDLE_LARGE_FILE_PROGRESS_THRESHOLD:
                         zinfo = zipfile.ZipInfo.from_file(fpath, arcname)
                         zinfo.compress_type = compress_type
                         with open(fpath, 'rb') as src, zf.open(zinfo, 'w') as dst:
@@ -3302,8 +3347,8 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
                                     # runtime - honour Stop mid-file, not only
                                     # between files. The partial entry is named
                                     # in the log so nobody mistakes it for whole.
-                                    raise InterruptedError("stopped mid-file - this entry in the bundle is TRUNCATED")
-                                chunk = src.read(CHUNK_SIZE)
+                                    raise _BundleStoppedMidFile()
+                                chunk = src.read(BUNDLE_CHUNK_SIZE)
                                 if not chunk:
                                     break
                                 dst.write(chunk)
@@ -3318,12 +3363,21 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
                         bytes_done += size
                         file_bytes_counted = size
                     written += 1
+                except _BundleStoppedMidFile:
+                    # A user Stop, not an error: not counted in `errored`, and
+                    # bytes_done keeps only what was really written so the
+                    # stopped progress figure stays honest. zf.open('w') still
+                    # closes the entry, so the partial copy remains in the zip
+                    # under its real name with a valid CRC - record it durably.
+                    truncated.append({"arcname": arcname, "bytes_written": file_bytes_counted, "size": size})
+                    append_log(f"[!] Stopped mid-file: {arcname} is in the bundle but TRUNCATED "
+                               f"({file_bytes_counted:,} of {size:,} bytes) - do not use that copy.")
+                    break
                 except Exception as e:
                     errored += 1
                     append_log(f"[!] Could not add {arcname}: {e}")
                     if file_bytes_counted:
-                        # zf.open('w') still closes out the entry on error, so a
-                        # partial copy stays in the zip under its real name.
+                        truncated.append({"arcname": arcname, "bytes_written": file_bytes_counted, "size": size})
                         append_log(f"[!] {arcname} is present in the bundle but TRUNCATED "
                                    f"({file_bytes_counted:,} of {size:,} bytes) - do not use that copy.")
                     bytes_done += (size - file_bytes_counted)
@@ -3354,10 +3408,16 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
 
         if not stopped:
             update_job(status="Completed Successfully")
-        append_log(f"[+] Bundle export complete: {written} file(s) added, {errored} error(s) -> {zip_path}")
-        log_chain_of_custody("case_bundle_export_complete", {
+        if stopped:
+            append_log(f"[-] Bundle export STOPPED by user: {written} file(s) added, {errored} error(s) -> {zip_path}")
+        else:
+            append_log(f"[+] Bundle export complete: {written} file(s) added, {errored} error(s) -> {zip_path}")
+        log_chain_of_custody("case_bundle_export_stopped" if stopped else "case_bundle_export_complete", {
             "case_folder": case_folder, "zip_path": zip_path, "files_added": written,
             "files_errored": errored, "include_images": include_images,
+            # Entries left in the zip under their real names but incomplete -
+            # the job log is overwritten by the next job, this record is not.
+            "files_truncated": truncated,
         }, source_ip=requester_ip, user=requester_user)
     except Exception as e:
         update_job(status="Failed")

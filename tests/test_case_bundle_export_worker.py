@@ -219,3 +219,71 @@ class TestExecutionWorkerCaseBundleExport:
                     reporting.execution_worker_case_bundle_export(
                         str(case_folder), False, requester_ip="127.0.0.1", requester_user="test-user")
             assert snapshot_job()["active"] is False
+
+
+class TestBundleStopMidLargeFile:
+    """A Stop pressed partway through the chunked large-file copy (2026-09-23)
+    is a user stop, not an error: not counted as errored, progress keeps only
+    the bytes really written, and the truncated entry is named in the
+    chain-of-custody record, not just the overwritable job log."""
+
+    def test_stop_mid_file_records_truncation_and_honest_progress(self, tmp_path):
+        case_folder = tmp_path / "2026-TEST-STOPMID"
+        case_folder.mkdir()
+        (case_folder / "big.bin").write_bytes(b"x" * 1000)
+
+        calls = {"n": 0}
+
+        def stop_after_first_chunk(*a, **kw):
+            # Loop-top check (1), first chunk check (2) run; stop on the second chunk.
+            calls["n"] += 1
+            return {"status": "Stopped" if calls["n"] >= 3 else "Running"}
+
+        with mock.patch.object(reporting, "BUNDLE_LARGE_FILE_PROGRESS_THRESHOLD", 10), \
+             mock.patch.object(reporting, "BUNDLE_CHUNK_SIZE", 100), \
+             mock.patch.object(reporting, "_auto_tag_case_artifact"), \
+             mock.patch.object(reporting, "log_chain_of_custody") as mock_coc, \
+             mock.patch.object(reporting, "snapshot_job", side_effect=stop_after_first_chunk):
+            reporting.execution_worker_case_bundle_export(
+                str(case_folder), False, requester_ip="127.0.0.1", requester_user="test-user")
+
+        job = snapshot_job()
+        assert job["transferred_bytes"] == 100
+        event, details = mock_coc.call_args[0][0], mock_coc.call_args[0][1]
+        assert event == "case_bundle_export_stopped"
+        assert details["files_errored"] == 0
+        assert details["files_truncated"] == [{"arcname": "big.bin", "bytes_written": 100, "size": 1000}]
+
+
+class TestEvidenceStorageUnavailable:
+    """/api/report/load must not answer 404 ("case gone" - the frontend then
+    clears the active case) when the real explanation is an unmounted share."""
+
+    def test_unmounted_configured_share_is_storage_unavailable(self, tmp_path):
+        mp = tmp_path / "share"
+        mp.mkdir()  # left behind as an empty dir, like a real unmounted mount point
+        missing = mp / "CASE" / "CASE_case.json"
+        cfg = {"auto_mount_shares": [{"mount_point": str(mp)}]}
+        with mock.patch.object(reporting, "load_runtime_config", return_value=cfg), \
+             mock.patch.object(reporting, "EVIDENCE_ROOT", str(tmp_path)):
+            assert reporting._evidence_storage_unavailable(str(missing)) is True
+
+    def test_genuinely_deleted_case_on_available_storage_is_not(self, tmp_path):
+        missing = tmp_path / "CASE" / "CASE_case.json"
+        with mock.patch.object(reporting, "load_runtime_config", return_value={}), \
+             mock.patch.object(reporting, "EVIDENCE_ROOT", str(tmp_path)):
+            assert reporting._evidence_storage_unavailable(str(missing)) is False
+
+    def test_stat_io_error_on_an_ancestor_is_storage_unavailable(self, tmp_path):
+        missing = tmp_path / "share" / "CASE" / "CASE_case.json"
+        real_stat = os.stat
+
+        def eio_stat(p, *a, **kw):
+            if str(p) == str(tmp_path / "share"):
+                raise OSError(5, "Input/output error")
+            return real_stat(p, *a, **kw)
+
+        with mock.patch.object(reporting, "load_runtime_config", return_value={}), \
+             mock.patch.object(reporting, "EVIDENCE_ROOT", str(tmp_path)), \
+             mock.patch.object(reporting.os, "stat", eio_stat):
+            assert reporting._evidence_storage_unavailable(str(missing)) is True
