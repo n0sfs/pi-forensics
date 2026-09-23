@@ -902,6 +902,9 @@ INSTALLABLE_TOOL_PACKAGES = [
     "sleuthkit", "libimage-exiftool-perl", "binwalk",
     "clamav", "hashdeep", "adb", "libimobiledevice-utils", "smartmontools", "wvkbd",
     "extundelete", "foremost", "scalpel",
+    # Were in the app's TOOL_INSTALLABLE_PACKAGES but not here, so their
+    # Install button always failed at sudo (2026-09-23 inventory).
+    "ffmpeg", "tesseract-ocr",
 ]
 install_lines = ", \\\n".join(f"/usr/bin/apt-get install -y {pkg}" for pkg in INSTALLABLE_TOOL_PACKAGES)
 
@@ -1071,9 +1074,34 @@ os.chmod(sudoers_path, 0o440)
 # 5. Global Udev USB Read-Only Rule
 print("\n[*] Configuring global USB read-only udev rules...")
 udev_path = "/etc/udev/rules.d/99-usb-read-only.rules"
+# NVMe and SD/eMMC media are forced read-only too (2026-09-23 review - the
+# rule used to match sd* only, while the acquisition routes accept
+# nvme*/mmcblk* sources). Those two classes can also be the station's OWN
+# boot disk (mmcblk0 on an SD-booted Pi; NVMe on a Pi 5 booting from it),
+# and setro on the running root disk must never happen - so they go through
+# a helper that skips whichever disk holds /, /boot or /boot/firmware.
+udev_setro_helper = "/usr/local/sbin/pif-udev-setro"
+with open(udev_setro_helper, "w") as f:
+    f.write('''#!/bin/sh
+# Installed by pi-forensics install.py. Called by udev with a kernel device
+# name (sdb, nvme0n1, mmcblk1p1...). Forces it read-only unless it is, or is
+# a partition of, the disk holding this system's /, /boot or /boot/firmware.
+dev="$1"
+case "$dev" in ""|*/*) exit 0 ;; esac
+for mp in / /boot /boot/firmware; do
+    src=$(/usr/bin/findmnt -n -o SOURCE "$mp" 2>/dev/null) || continue
+    disk=$(/usr/bin/lsblk -no PKNAME "$src" 2>/dev/null | head -n1)
+    [ -n "$disk" ] || disk=$(basename "$src")
+    case "$dev" in "$disk"|"$disk"[0-9]*|"$disk"p[0-9]*) exit 0 ;; esac
+done
+exec /usr/sbin/blockdev --setro "/dev/$dev"
+''')
+os.chmod(udev_setro_helper, 0o755)
 udev_content = (
     'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z]", RUN+="/usr/sbin/blockdev --setro /dev/%k"\n'
     'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", RUN+="/usr/sbin/blockdev --setro /dev/%k"\n'
+    f'ACTION=="add", SUBSYSTEM=="block", KERNEL=="nvme[0-9]*n[0-9]*", RUN+="{udev_setro_helper} %k"\n'
+    f'ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk[0-9]*", RUN+="{udev_setro_helper} %k"\n'
 )
 with open(udev_path, "w") as f:
     f.write(udev_content)

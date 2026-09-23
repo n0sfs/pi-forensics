@@ -531,8 +531,11 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                 # from this process can't touch it, so also sweep it via
                 # the same sudo pkill pattern used to stop other privileged
                 # acquisition tools.
+                # Children of THIS read's own sudo process only (-P), not a
+                # command-line pattern that could match another dd reading
+                # the same device (2026-09-23).
                 try:
-                    subprocess.run(["sudo", "pkill", "-9", "-f", f"dd if={source}"], capture_output=True)
+                    subprocess.run(["sudo", "pkill", "-9", "-P", str(read_proc.pid)], capture_output=True)
                 except Exception:
                     pass
         elif os.path.isdir(source):

@@ -2018,6 +2018,37 @@ def start_mtp_pull():
 # data type - only the ORCHESTRATION (what installs/grants/queries/
 # cleans up, and in what order) is consolidated here.
 ANDROID_COMPANION_APK_DIR = os.path.join(INSTALL_DIR, "android_companion_tools")
+
+# Pending default-SMS-app restores (2026-09-23). The worker restores the
+# original SMS app in its own cleanup - but if the run dies before that
+# (power loss, service restart), the manual cleanup route below used to
+# only REMOVE the collector's role, leaving the suspect phone with no
+# default SMS app at all. Recorded here before the role is taken, cleared
+# once it is given back.
+COMPANION_SMS_ROLE_PENDING_FILE = os.path.join(INSTALL_DIR, ".companion_sms_role_pending.json")
+_ANDROID_PACKAGE_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$')
+
+
+def _sms_role_pending_load():
+    try:
+        with open(COMPANION_SMS_ROLE_PENDING_FILE, 'r') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _sms_role_pending_set(serial, original_holder):
+    data = _sms_role_pending_load()
+    if original_holder is None:
+        data.pop(serial, None)
+    else:
+        data[serial] = original_holder
+    try:
+        with open(COMPANION_SMS_ROLE_PENDING_FILE, 'w') as f:
+            json.dump(data, f)
+    except OSError:
+        pass
 # All five providers (SMS/Contacts/Call Log/Calendar/Photos+Video) ship in
 # this one app - see android_companion/README.md for its full provenance.
 PIF_COMPANION_APK = os.path.join(ANDROID_COMPANION_APK_DIR, "pif-companion.apk")
@@ -2174,6 +2205,8 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                     append_log("[*] Temporarily assuming the default-SMS-app role for full SMS access - the "
                                "phone's own SMS app will not receive/send normal messages until this is "
                                "restored below.")
+                    # "" = there was no default SMS app; restore means remove ours.
+                    _sms_role_pending_set(serial, original_sms_role_holder or "")
                     rc, out, err = _adb_run(
                         serial, ["shell", "cmd", "role", "add-role-holder", "android.app.role.SMS",
                                  PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
@@ -2448,6 +2481,8 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                     serial, ["shell", "cmd", "role", "remove-role-holder", "android.app.role.SMS",
                              PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
                 record_step("remove-role-holder", rc, "no prior default SMS app - role removed entirely")
+            if rc == 0:
+                _sms_role_pending_set(serial, None)
             if rc != 0:
                 append_log("[!!] Could not automatically restore the device's default SMS app - a manual "
                            "fix may be needed on the device itself (Settings > Apps > Default apps > "
@@ -2673,9 +2708,22 @@ def cleanup_android_companion_extraction():
                              ANDROID_COMPANION_ADB_TIMEOUT)
     current_holder = out.strip().splitlines()[0].strip() if (rc == 0 and out.strip()) else None
     if current_holder == PIF_COMPANION_PACKAGE:
-        rc, out, err = _adb_run(serial, ["shell", "cmd", "role", "remove-role-holder", "android.app.role.SMS",
-                                          PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
-        results["sms_role_removed"] = (rc == 0)
+        original = _sms_role_pending_load().get(serial)
+        if original and _ANDROID_PACKAGE_RE.match(original) and original != PIF_COMPANION_PACKAGE:
+            # Hand the role back to the app that had it before (recorded when
+            # the run took it) instead of leaving the phone with none.
+            rc, out, err = _adb_run(serial, ["shell", "cmd", "role", "add-role-holder", "android.app.role.SMS",
+                                              original], ANDROID_COMPANION_ADB_TIMEOUT)
+            results["sms_role_restored_to"] = original if rc == 0 else None
+        else:
+            rc, out, err = _adb_run(serial, ["shell", "cmd", "role", "remove-role-holder", "android.app.role.SMS",
+                                              PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+            results["sms_role_removed"] = (rc == 0)
+            if original is None:
+                results["sms_role_note"] = ("No record of the phone's previous default SMS app - it now has "
+                                            "none; set one on the device (Settings > Apps > Default apps).")
+        if rc == 0:
+            _sms_role_pending_set(serial, None)
 
     for perm in ("android.permission.READ_SMS", "android.permission.READ_CONTACTS",
                  "android.permission.READ_CALL_LOG", "android.permission.READ_CALENDAR",

@@ -52,7 +52,7 @@ class TestExecutionWorkerTriageScan:
              mock.patch.object(recovery, "is_valid_block_device", return_value=block_device):
             if block_device:
                 default_stdout = types.SimpleNamespace(read=mock.Mock(side_effect=[source_content, b""]))
-                mock_proc = types.SimpleNamespace(stdout=default_stdout, poll=mock.Mock(return_value=0), terminate=mock.Mock(), wait=mock.Mock())
+                mock_proc = types.SimpleNamespace(pid=4242, stdout=default_stdout, poll=mock.Mock(return_value=0), terminate=mock.Mock(), wait=mock.Mock())
                 with mock.patch("subprocess.Popen", side_effect=popen_side_effect if popen_side_effect else (lambda *a, **kw: mock_proc)) as mock_popen, \
                      mock.patch("subprocess.run") as mock_run:
                     if snapshot_side_effect is not None:
@@ -136,7 +136,9 @@ class TestExecutionWorkerTriageScan:
         # then a sudo pkill sweep as the real cleanup for a root-owned
         # process an unprivileged terminate() can't touch) still ran.
         mock_run.assert_called_once()
-        assert mock_run.call_args[0][0][:3] == ["sudo", "pkill", "-9"]
+        # Only the children of THIS read's own sudo process (2026-09-23) -
+        # never a command-line pattern that could hit another dd.
+        assert mock_run.call_args[0][0] == ["sudo", "pkill", "-9", "-P", "4242"]
 
     def test_a_file_that_cannot_be_read_is_caught_and_reported_as_failed(self, tmp_path):
         # A source path that doesn't exist at all - open() raises before the

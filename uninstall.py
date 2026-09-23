@@ -111,6 +111,10 @@ print("\n[*] Removing sudoers and udev rules...")
 if SUDOERS.exists():
     SUDOERS.unlink()
     print(f"[+] Removed {SUDOERS}")
+udev_setro_helper = Path("/usr/local/sbin/pif-udev-setro")
+if udev_setro_helper.exists():
+    udev_setro_helper.unlink()
+    print(f"[+] Removed {udev_setro_helper}")
 if UDEV_RULE.exists():
     UDEV_RULE.unlink()
     print(f"[+] Removed {UDEV_RULE}")
