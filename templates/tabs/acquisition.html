@@ -108,7 +108,8 @@
                                                 <input type="text" id="destPath" class="form-control" value="/mnt">
                                                 <button class="btn btn-outline-info fw-bold" type="button" onclick="openFolderModal('folder', 'destPath')"><i class="bi bi-folder2-open me-1"></i>Browse</button>
                                             </div>
-                                            <div class="small text-subtle mb-3">Mounting a network share is now under Settings &gt; Network - once mounted, Browse into it like any local path.</div>
+                                            <div class="small text-subtle mb-1">Mounting a network share is now under Settings &gt; Network - once mounted, Browse into it like any local path.</div>
+                                            <div class="small text-warning mb-3"><i class="bi bi-exclamation-triangle me-1"></i>Don't image straight into <code>/mnt</code> - use Case Manager above to create a case folder first, or Browse to one, so this image lands in its own case folder rather than the shared evidence root.</div>
 
                                             <div class="telemetry-grid-label mb-1"><i class="bi bi-folder-symlink me-1"></i>Case & Evidence Metadata</div>
                                             <div class="row g-2 mb-2">
