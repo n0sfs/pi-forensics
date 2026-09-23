@@ -3096,3 +3096,42 @@ def test_undated_onion_hits_are_not_the_first_to_be_cut(case_folder):
           "extra": {}}])
     result = case_index_db.detect_privacy_tools(case_folder)
     assert len(result["onion_references"]) == 2
+
+
+def test_list_case_folders_reports_an_unreadable_case_instead_of_dropping_it(evidence_root, monkeypatch):
+    """2026-09-23: a corrupt case file used to vanish from the list, so the
+    Case Manager said "No cases found yet" about a case it never read."""
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    slug = "2026-CASE-CORRUPT"
+    case_dir = os.path.join(evidence_root, slug)
+    os.makedirs(case_dir)
+    with open(os.path.join(case_dir, f"{slug}_case.json"), "w") as f:
+        f.write("{not json")
+    unreadable = []
+    cases = case_index_db.list_case_folders(unreadable_out=unreadable)
+    assert slug not in {c["case_number"] for c in cases}
+    assert [u["case_folder"] for u in unreadable] == [case_dir]
+    # the default call keeps the old skip-and-continue behaviour for aggregate counters
+    assert case_index_db.list_case_folders() == cases
+
+
+def test_list_case_folders_uses_the_real_location_not_the_stored_case_folder(evidence_root, monkeypatch):
+    _redirect_evidence_root(monkeypatch, evidence_root)
+    slug = "2026-CASE-COPIED"
+    case_dir = os.path.join(evidence_root, slug)
+    os.makedirs(case_dir)
+    with open(os.path.join(case_dir, f"{slug}_case.json"), "w") as f:
+        json.dump({"case_number": slug, "case_folder": "/mnt/somewhere/else/original", "events": []}, f)
+    cases = case_index_db.list_case_folders()
+    assert {c["case_folder"] for c in cases if c["case_number"] == slug} == {case_dir}
+
+
+def test_ensure_examiner_recorded_leaves_a_corrupt_case_file_untouched(tmp_path, evidence_root):
+    case_dir = os.path.join(evidence_root, "2026-CASE-BADJSON")
+    os.makedirs(case_dir)
+    marker = os.path.join(case_dir, "2026-CASE-BADJSON_case.json")
+    with open(marker, "w") as f:
+        f.write("{not json")
+    case_index_db.ensure_examiner_recorded(case_dir, "alice")
+    with open(marker) as f:
+        assert f.read() == "{not json"

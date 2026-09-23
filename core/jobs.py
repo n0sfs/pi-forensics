@@ -63,7 +63,15 @@ def update_job(**kwargs):
     with job_lock:
         if _suppress_active_false and kwargs.get('active') is False:
             kwargs = {k: v for k, v in kwargs.items() if k != 'active'}
+        # Lost-case-record warnings stay pinned to the top of the log for the
+        # rest of the job: every worker rebuilds 'log' wholesale from its own
+        # buffer, which would otherwise erase them on the next line.
+        warnings = current_job.get('_case_record_warnings')
+        if warnings and 'log' in kwargs:
+            kwargs['log'] = "\n".join(warnings) + "\n" + (kwargs['log'] or '')
         current_job.update(kwargs)
+        if kwargs.get('active') is False:
+            current_job.pop('_case_record_warnings', None)
 
 def begin_suppress_active_false():
     global _suppress_active_false
@@ -478,6 +486,35 @@ def build_report_target(dest_path, legacy_dir, base_name):
         return CaseEventTarget(case_file, uuid.uuid4().hex)
     return os.path.join(legacy_dir, f"{base_name}_report.json")
 
+def _record_lost_case_write(report_target, phase, error):
+    """A job's case record could not be written (2026-09-23). This used to be
+    a bare print() to stdout, so an acquisition into a case whose JSON was
+    corrupt or unreachable ran to completion and then simply never appeared
+    in that case - a silent absence, the failure mode this app treats as the
+    worst it has. Now: a loud line in the live job log the examiner is
+    watching, and a durable chain-of-custody entry naming the job and the
+    file, which survives the next job overwriting the log. Never raises -
+    the job itself (possibly minutes into imaging) must not be torn down by
+    a bookkeeping failure."""
+    target = report_target.case_file if isinstance(report_target, CaseEventTarget) else report_target
+    msg = (f"[!] CASE RECORD NOT WRITTEN ({phase}): {target} - {error}. This job will NOT appear "
+           f"in the case until that file is readable again; note its output location from this log.")
+    try:
+        with job_lock:
+            current_job.setdefault('_case_record_warnings', []).append(msg)
+            current_job['log'] = msg + "\n" + (current_job.get('log') or '')
+    except Exception:
+        pass
+    try:
+        from core.paths import log_chain_of_custody
+        log_chain_of_custody("case_record_write_failed", {
+            "case_file": target, "phase": phase, "error": str(error),
+            "job_format": current_job.get('format'),
+        }, source_ip="-", user="system")
+    except Exception as e:
+        print(f"Warning: could not record the failed case write either: {e}")
+
+
 def write_initial_report(report_target, report_data):
     """First write at job start (status IN_PROGRESS) - mirrors what every
     route used to do with a bare open()/json.dump() against its own file."""
@@ -488,7 +525,7 @@ def write_initial_report(report_target, report_data):
             with open(report_target, 'w') as f:
                 json.dump(report_data, f, indent=2)
     except Exception as e:
-        print(f"Warning: Could not write report JSON: {e}")
+        _record_lost_case_write(report_target, "job start", e)
 
 def _write_report(report_target, report_data, append_log):
     """Second write at job completion (status COMPLETED/FAILED/etc) - called
@@ -504,6 +541,7 @@ def _write_report(report_target, report_data, append_log):
             append_log(f"[+] Forensic case report updated: {report_target}")
     except Exception as e:
         append_log(f"[-] Warning: Failed updating report JSON: {e}")
+        _record_lost_case_write(report_target, "job completion", e)
 
 _SERVICE_ACCOUNT_NAME = pwd.getpwuid(os.getuid()).pw_name
 

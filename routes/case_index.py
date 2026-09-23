@@ -130,8 +130,9 @@ def cases_cross_search():
     hash_value = (req.get('hash') or '').strip()
     if not hash_value:
         return jsonify({"success": False, "error": "No hash value provided."}), 400
-    results, truncated = cross_case_hash_search(hash_value)
-    return jsonify({"success": True, "results": results, "truncated": truncated})
+    unsearched = []
+    results, truncated = cross_case_hash_search(hash_value, unsearched_out=unsearched)
+    return jsonify({"success": True, "results": results, "truncated": truncated, "unsearched": unsearched})
 
 @case_index_bp.route('/api/case_index/summary', methods=['POST'])
 @requires_auth

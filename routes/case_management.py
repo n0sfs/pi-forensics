@@ -161,7 +161,9 @@ def list_cases():
     2nd caller (2026-08-26, gap-closing round). Pure code motion, verified
     zero behavior change - same response shape, same sort order."""
     try:
-        return jsonify({"success": True, "cases": list_case_folders()})
+        unreadable = []
+        cases = list_case_folders(unreadable_out=unreadable)
+        return jsonify({"success": True, "cases": cases, "unreadable": unreadable})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

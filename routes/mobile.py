@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission
-from core.paths import safe_path, log_chain_of_custody, case_status_blocking_new_work
+from core.paths import closed_case_refusal, safe_path, log_chain_of_custody, case_status_blocking_new_work
 from core.config import EVIDENCE_ROOT, INSTALL_DIR
 from core.jobs import (
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
@@ -899,6 +899,12 @@ def pull_ios_crash_reports_route():
     dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
     if not dest_dir or not os.path.isdir(dest_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(dest_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
 
     output_dir = os.path.join(dest_dir, f"{udid}_ios_crash_reports")
     result = pull_ios_crash_reports(udid, output_dir)
@@ -933,6 +939,12 @@ def sim_read():
     dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
     if not dest_dir or not os.path.isdir(dest_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(dest_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
 
     result = read_sim_card(reader_index)
     if not result["success"]:

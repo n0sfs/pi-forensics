@@ -28,7 +28,7 @@ import uuid
 from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission, _effective_client_ip
-from core.paths import safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role, format_epoch
+from core.paths import closed_case_refusal, safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role, format_epoch
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, INSTALL_DIR, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets, ALEAPP_DIR, ALEAPP_VENV_PYTHON, ILEAPP_DIR, ILEAPP_VENV_PYTHON
 import yara
 from core.case_index_db import (
@@ -1700,6 +1700,12 @@ def parse_thumbcache():
     dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), target_dir)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(dest_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
 
     case_folder = safe_path(req.get('case_folder')) if req.get('case_folder') else None
     if case_folder and not case_consolidated_path(case_folder):
@@ -1900,6 +1906,12 @@ def extract_android_backup():
     dest_parent = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_parent:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(dest_parent, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
 
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     output_dir = os.path.join(dest_parent, f"{base_name}_android_backup_extracted")
@@ -1958,6 +1970,12 @@ def analyze_mft():
     dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(dest_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
 
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     output_path = os.path.join(dest_dir, f"{base_name}_mft_analysis.json")
@@ -2006,6 +2024,12 @@ def parse_usnjrnl():
     dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(dest_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
 
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     output_path = os.path.join(dest_dir, f"{base_name}_usnjrnl_parsed.json")
@@ -2286,6 +2310,12 @@ def run_sqlite_dissect_route():
     dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(dest_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
 
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     output_dir = os.path.join(dest_dir, f"{base_name}_sqlite_dissect_recovery")
@@ -2334,6 +2364,12 @@ def run_apk_analyze():
     if case_folder and not case_consolidated_path(case_folder):
         case_folder = None
     dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(dest_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
     if dest_dir:
         base_name = os.path.splitext(os.path.basename(file_path))[0]
         output_path = os.path.join(dest_dir, f"{base_name}_apk_analysis.json")
@@ -2367,6 +2403,12 @@ def run_whatsapp_decrypt():
     dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(crypt_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(dest_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
 
     base_name = os.path.splitext(os.path.basename(crypt_path))[0]
     output_path = os.path.join(dest_dir, f"{base_name}_decrypted.db")
@@ -2615,6 +2657,12 @@ def run_video_contact_sheet():
     dest_dir = _resolve_analysis_output_dir(req.get('destination_dir'), os.path.dirname(file_path), allow_same_as_source=True)
     if not dest_dir:
         return jsonify({"success": False, "error": "Destination directory not found, outside the permitted evidence directory, or the same folder being analyzed - evidence must never be modified."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(dest_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
 
     case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
 
