@@ -3297,6 +3297,12 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
                         zinfo.compress_type = compress_type
                         with open(fpath, 'rb') as src, zf.open(zinfo, 'w') as dst:
                             while True:
+                                if snapshot_job()["status"] == "Stopped":
+                                    # A multi-GB image can take most of the job's
+                                    # runtime - honour Stop mid-file, not only
+                                    # between files. The partial entry is named
+                                    # in the log so nobody mistakes it for whole.
+                                    raise InterruptedError("stopped mid-file - this entry in the bundle is TRUNCATED")
                                 chunk = src.read(CHUNK_SIZE)
                                 if not chunk:
                                     break
@@ -3315,6 +3321,11 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
                 except Exception as e:
                     errored += 1
                     append_log(f"[!] Could not add {arcname}: {e}")
+                    if file_bytes_counted:
+                        # zf.open('w') still closes out the entry on error, so a
+                        # partial copy stays in the zip under its real name.
+                        append_log(f"[!] {arcname} is present in the bundle but TRUNCATED "
+                                   f"({file_bytes_counted:,} of {size:,} bytes) - do not use that copy.")
                     bytes_done += (size - file_bytes_counted)
                 if time.time() - last_update > 0.5:
                     update_job(transferred_bytes=bytes_done,

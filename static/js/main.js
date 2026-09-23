@@ -15634,11 +15634,16 @@ async function loadCaseForEditing() {
             // wipe, where the bar kept showing "Case: 2026-CASE-CORRUPT-INDEX-TEST"
             // beside "Total Cases: 0" and every panel then failed against it.
             const wasForbidden = res.status === 403;
+            // Only a 404 means the case file is actually gone. A 500 (unreadable
+            // JSON) or 503 (share stalled/unmounted) means "could not look", not
+            // "not there" - clearing the active case on those would silently drop
+            // a real case over a transient NFS hiccup.
+            const isGone = res.status === 404;
             const goneCaseNumber = requestedCase.case_number;
             clearReportingDirty();
             currentReportPath = null;
             currentLoadedReportData = null;
-            if (!wasForbidden) {
+            if (isGone) {
                 activeCase = null;
                 persistActiveCase();
                 renderActiveCaseBar();
@@ -15650,7 +15655,9 @@ async function loadCaseForEditing() {
             if (noCaseIcon) noCaseIcon.className = 'bi bi-exclamation-triangle fs-3 d-block mb-2';
             if (noCaseMsg) noCaseMsg.textContent = wasForbidden
                 ? "Your account's user group doesn't have permission to view Reporting."
-                : `"${goneCaseNumber}" could not be opened - its folder may have been moved or deleted. Select or create a case using the bar above.`;
+                : isGone
+                    ? `"${goneCaseNumber}" could not be opened - its folder may have been moved or deleted. Select or create a case using the bar above.`
+                    : `"${goneCaseNumber}" could not be read right now (${data.error || 'storage unavailable'}) - it is still the active case; check the evidence share and reopen Reporting.`;
             if (noCaseEl) noCaseEl.style.display = 'block';
             if (loadedEl) loadedEl.style.display = 'none';
             return;
