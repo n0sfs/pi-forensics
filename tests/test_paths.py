@@ -257,7 +257,10 @@ def test_classify_usb_port_returns_none_for_an_invalid_device_path():
     assert paths.classify_usb_port(None) is None
 
 
-def test_is_valid_block_device_whitelist():
+def test_is_valid_block_device_whitelist(monkeypatch):
+    # The regex whitelist only - on the station itself /dev/mmcblk0 IS the
+    # system disk and is refused (see test_acquisition_guards.py).
+    monkeypatch.setattr(paths, "system_disk_names", lambda: set())
     assert paths.is_valid_block_device("/dev/sda")
     assert paths.is_valid_block_device("/dev/nvme0n1")
     assert paths.is_valid_block_device("/dev/mmcblk0")

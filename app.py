@@ -71,6 +71,27 @@ from routes.auto_analyze import auto_analyze_bp
 app.register_blueprint(auto_analyze_bp)
 
 
+# Job-slot safety net (2026-09-23). Every start route claims the one shared
+# job slot and then validates input; 4xx refusals release it themselves, but
+# anything that RAISED after the claim (a null field, a non-dict metadata, a
+# storage error from a case lookup) became a 500 with the slot still held -
+# the whole station then answered "already running" to everything until a
+# restart. Reproduced live with one POST of "destination": null. Only a
+# request that itself claimed the slot (core.jobs.mark_job_slot_claimed) is
+# ever released here, so a concurrent request can never free another's job.
+from flask import g as _g
+from core.jobs import update_job as _update_job, current_job as _current_job
+
+
+@app.after_request
+def release_leaked_job_slot(response):
+    if getattr(_g, '_job_slot_claimed', False) and response.status_code >= 500 and _current_job.get('active'):
+        _update_job(active=False, status="Failed to start",
+                    log="[-] The job could not be started (server error while preparing it) - "
+                        "the job slot has been released. Nothing was acquired.")
+    return response
+
+
 # A corrupt/unreadable consolidated case file surfaces as a clear message on
 # EVERY route at once, rather than each one growing its own try/except
 # (2026-09-15). Before CaseFileUnreadable existed, _read_case_file() swallowed

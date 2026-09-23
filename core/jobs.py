@@ -44,6 +44,41 @@ job_lock = threading.Lock()
 
 _suppress_active_false = False  # see begin/end_suppress_active_false() below
 
+# Stale-worker guard (2026-09-23 review). stop_imaging() releases the slot
+# at once, but the stopped job's worker thread keeps running for a while
+# (killing its process, hashing a partial output, fsync, writing its report)
+# and then ends with update_job(active=False) + clear_active_proc(). If a new
+# job had been started in the meantime, that released the NEW job's slot -
+# letting a third job start alongside it - dropped its process handle so
+# Stop could no longer kill it, and overwrote its live log/progress. Each
+# claim bumps _slot_generation (mark_job_slot_claimed); a background thread
+# remembers the generation current when it first touched the job, and once
+# that generation is superseded its job-state writes are ignored. Request
+# threads (pooled, reused across requests) are never gated.
+_worker_generation = threading.local()
+
+
+def _is_stale_worker_thread():
+    """Caller must hold job_lock. Only gates background threads: every job
+    worker is a fresh threading.Thread (no pools anywhere in this app), so a
+    thread's first job-state write binds it to the job it belongs to. The
+    main thread (tests, startup) and request threads are never gated."""
+    if threading.current_thread() is threading.main_thread():
+        return False
+    try:
+        from flask import has_request_context
+        if has_request_context():
+            return False
+    except ImportError:
+        pass
+    current = current_job.get('_slot_generation', 0)
+    mine = getattr(_worker_generation, 'gen', None)
+    if mine is None:
+        _worker_generation.gen = current
+        return False
+    return mine != current
+
+
 def update_job(**kwargs):
     """Atomically update one or more fields of the shared current_job dict.
 
@@ -61,6 +96,8 @@ def update_job(**kwargs):
     serializes the entire app down to one active job at a time - there is
     never a second thread that could race this flag."""
     with job_lock:
+        if _is_stale_worker_thread():
+            return
         if _suppress_active_false and kwargs.get('active') is False:
             kwargs = {k: v for k, v in kwargs.items() if k != 'active'}
         # Lost-case-record warnings stay pinned to the top of the log for the
@@ -72,6 +109,24 @@ def update_job(**kwargs):
         current_job.update(kwargs)
         if kwargs.get('active') is False:
             current_job.pop('_case_record_warnings', None)
+
+def mark_job_slot_claimed():
+    """Called by every start route right after it claims the job slot
+    (current_job["active"] = True) - records that THIS request owns the claim,
+    so app.py's release_leaked_job_slot() can hand the slot back if the
+    request then dies with a 5xx before its worker starts (2026-09-23: one
+    POST with "destination": null crashed after the claim and wedged the
+    whole station until restart - reproduced live). Outside a request (a
+    worker thread, a test calling a function directly) this is a no-op."""
+    # Always called while the caller holds job_lock (right after it set
+    # current_job["active"] = True), so this plain dict update is safe.
+    current_job['_slot_generation'] = current_job.get('_slot_generation', 0) + 1
+    try:
+        from flask import g
+        g._job_slot_claimed = True
+    except RuntimeError:
+        pass
+
 
 def begin_suppress_active_false():
     global _suppress_active_false
@@ -257,6 +312,9 @@ def set_active_proc(proc):
 
 def clear_active_proc():
     global active_proc
+    with job_lock:
+        if _is_stale_worker_thread():
+            return  # a stopped job's worker must not drop the NEW job's process handle
     active_proc = None
 
 # A second tracked-process slot, added 2026-08-30 for physical/raw Android

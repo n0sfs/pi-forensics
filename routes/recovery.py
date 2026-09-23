@@ -22,7 +22,7 @@ from core.paths import (safe_path, log_chain_of_custody, is_valid_block_device, 
                         case_status_blocking_new_work, is_bulk_tool_output_dir,
                         case_consolidated_path)
 from core.config import EVIDENCE_ROOT, SCALPEL_CONF_PATH
-from core.jobs import (
+from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
     _stream_subprocess, clear_active_proc, reclaim_ownership,
     build_report_target, write_initial_report, _write_report,
@@ -658,10 +658,11 @@ def start_photorec():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     source_raw = req.get('source', '')
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is
@@ -747,10 +748,11 @@ def start_extundelete():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     source_raw = req.get('source', '')
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is
@@ -831,10 +833,11 @@ def start_foremost():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     source_raw = req.get('source', '')
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is
@@ -920,10 +923,11 @@ def start_scalpel():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     source_raw = req.get('source', '')
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is
@@ -1001,10 +1005,11 @@ def start_triage_scan():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     source_raw = req.get('source', '')
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is

@@ -161,7 +161,7 @@ class TestExecutionWorkerAndroidPhysical:
             tmp_path, downstream_returncode=1,
             snapshot_side_effect=[{"status": "Stopped"}],
         )
-        assert report_data["acquisition_status"] == "IN_PROGRESS"
+        assert report_data["acquisition_status"] == "STOPPED"
         # _write_report still gets called unconditionally, right after the
         # if/elif - a Stopped run's report isn't silently left unwritten.
         mock_write_report.assert_called_once()

@@ -126,7 +126,7 @@ class TestExecutionWorkerImageConversion:
             tmp_path, stream_returncode=1, create_output=False,
             snapshot_return={"status": "Stopped", "log": ""},
         )
-        assert report_data["acquisition_status"] == "IN_PROGRESS"
+        assert report_data["acquisition_status"] == "STOPPED"
         mock_write_report.assert_called_once()
 
     # --- E01 -> raw ---

@@ -21625,7 +21625,13 @@ function usbPortLabel(portClass) {
 async function refreshDrives() {
     try {
         const res = await fetch('/api/drives');
-        currentDrivesList = await res.json();
+        const drivesData = await res.json();
+        // A failed listing must not look like "no drives attached" (2026-09-23).
+        if (!res.ok || !Array.isArray(drivesData)) {
+            showToast(`Drive list unavailable: ${(drivesData && drivesData.error) || 'request failed'}`, 'danger');
+            return;
+        }
+        currentDrivesList = drivesData;
 
         const driveSelects = document.querySelectorAll(".drive-select");
         driveSelects.forEach(selectEl => {
@@ -21658,7 +21664,9 @@ async function refreshDrives() {
         checkSmartTelemetry();
         refreshDriveManagementStatus();
         populateLiveCollectionDriveSelects();
-    } catch (err) {}
+    } catch (err) {
+        showToast(`Drive list unavailable: ${err.message}`, 'danger');
+    }
 }
 
 // --- Live Collection USB (Build + Import) ---
@@ -23517,9 +23525,16 @@ async function listMtpDevices() {
         if (mtpDevicesCache.length === 0) {
             select.innerHTML = '<option value="">No MTP device found - check the phone is set to "File Transfer" (MTP) USB mode</option>';
         } else {
-            select.innerHTML = mtpDevicesCache.map((d, i) =>
-                `<option value="${i}">${d.product} (${d.vendor}) - bus ${d.bus}, dev ${d.devnum}</option>`
-            ).join('');
+            // Text nodes, not innerHTML (2026-09-23): product/vendor are the
+            // device's own USB descriptor strings - a hostile phone or USB
+            // gadget controls them, and they reached the page unescaped.
+            select.textContent = '';
+            mtpDevicesCache.forEach((d, i) => {
+                const opt = document.createElement('option');
+                opt.value = String(i);
+                opt.textContent = `${d.product} (${d.vendor}) - bus ${d.bus}, dev ${d.devnum}`;
+                select.appendChild(opt);
+            });
         }
         refreshMtpPullButtonState();
     } catch (err) {

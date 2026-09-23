@@ -25,9 +25,74 @@ coc_log_lock = threading.Lock()
 _DEVICE_RE = re.compile(r'^/dev/(sd[a-z]|nvme\d+n\d+|mmcblk\d+)$')
 _PARTITION_RE = re.compile(r'^/dev/(sd[a-z]\d+|nvme\d+n\d+p\d+|mmcblk\d+p\d+)$')
 
+_SYSTEM_MOUNTPOINTS = ('/', '/boot', '/boot/firmware')
+
+
+def system_disk_names():
+    """Kernel names of the whole disk(s) holding this station's own running
+    system (root, /boot, /boot/firmware) - e.g. {'mmcblk0'} on a Pi booted
+    from SD. Resolved from the mounted filesystems' device numbers via
+    /sys/dev/block, so it is right however the root is named in /proc/mounts
+    (/dev/root, PARTUUID=...). Empty set where /sys is absent (a dev machine)."""
+    names = set()
+    for mp in _SYSTEM_MOUNTPOINTS:
+        name = disk_name_for_path(mp)
+        if name:
+            names.add(name)
+    return names
+
+
+def disk_name_for_path(path):
+    """Kernel name of the whole disk a path's filesystem lives on (e.g. 'sdb'
+    for a file on /dev/sdb1), or None for anything not backed by a local
+    block device (NFS/SMB/sshfs, tmpfs, a missing path, a dev machine)."""
+    # A destination folder may not exist yet - its nearest existing ancestor
+    # is where it will be created.
+    while path and not os.path.exists(path) and os.path.dirname(path) != path:
+        path = os.path.dirname(path)
+    try:
+        dev = os.stat(path).st_dev
+        sys_path = os.path.realpath(f"/sys/dev/block/{os.major(dev)}:{os.minor(dev)}")
+    except (OSError, AttributeError):
+        return None
+    if not os.path.isdir(sys_path):
+        return None
+    # A partition's sysfs dir sits inside its parent disk's dir.
+    if os.path.exists(os.path.join(sys_path, 'partition')):
+        sys_path = os.path.dirname(sys_path)
+    return os.path.basename(sys_path)
+
+
+def destination_is_on_source_device(dest_path, source_device):
+    """True when an image of `source_device` would be written onto that same
+    device (2026-09-23 review): e.g. a black-port drive, write-unlocked and
+    mounted under /mnt, picked as both source and destination - dc3dd would
+    write the image into the filesystem it is reading, corrupting the
+    evidence and growing without end."""
+    name = disk_name_for_path(dest_path)
+    return bool(name) and name == os.path.basename(source_device or '')
+
+
+def is_system_disk(path_str):
+    """True if path_str is the station's own system disk or one of its
+    partitions (2026-09-23). Found live: /api/start_imaging and
+    /api/start_ddrescue accepted /dev/mmcblk0 - the Pi's own boot SD card -
+    because it matches the whole-disk whitelist. Imaging it only reads, but
+    a Live Collection USB build WRITES to its target device, and nothing on
+    this station ever has a legitimate reason to target its own system disk."""
+    if not path_str:
+        return False
+    base = os.path.basename(path_str)
+    for disk in system_disk_names():
+        if base == disk or (base.startswith(disk) and _PARTITION_RE.match(path_str)):
+            return True
+    return False
+
+
 def is_valid_block_device(path_str):
-    """Whitelist check for whole-disk device paths (no partitions, no shell metacharacters)."""
-    return bool(path_str) and bool(_DEVICE_RE.match(path_str))
+    """Whitelist check for whole-disk device paths (no partitions, no shell
+    metacharacters) - never the station's own system disk."""
+    return bool(path_str) and bool(_DEVICE_RE.match(path_str)) and not is_system_disk(path_str)
 
 def is_valid_block_device_or_partition(path_str):
     """Whole-disk OR one-partition device path - originally BitLocker-unlock-
@@ -38,7 +103,8 @@ def is_valid_block_device_or_partition(path_str):
     check. Moved out of routes/acquisition.py rather than kept as a second,
     independent copy of the same regex - see is_valid_bitlocker_source()
     there, now a thin alias onto this function."""
-    return bool(path_str) and (bool(_DEVICE_RE.match(path_str)) or bool(_PARTITION_RE.match(path_str)))
+    return (bool(path_str) and (bool(_DEVICE_RE.match(path_str)) or bool(_PARTITION_RE.match(path_str)))
+            and not is_system_disk(path_str))
 
 # --- USB physical port classification (Raspberry Pi 4B hardware, 2026-09-05) ---
 # Real finding: this station's write-blocker toggle and the Live Collection

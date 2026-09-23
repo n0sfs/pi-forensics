@@ -283,3 +283,14 @@ def test_orchestrator_suppresses_active_false_for_real_so_the_shared_job_slot_su
         jobs.current_job.clear()
         jobs.current_job.update({"active": False, "status": "IDLE"})
         jobs._suppress_active_false = False
+
+
+def test_find_whatsapp_key_file_prefers_the_newest_timestamped_pull(tmp_path):
+    """Pulls are timestamped since 2026-09-23 so a second pull no longer
+    overwrites the first - the lookup must pick the most recent."""
+    old = tmp_path / "R58M12345_20260101-000000_whatsapp_key"
+    new = tmp_path / "R58M12345_20260923-120000_whatsapp_key"
+    old.write_bytes(b"old")
+    new.write_bytes(b"new")
+    os.utime(old, (1_000_000, 1_000_000))
+    assert file_explorer._find_whatsapp_key_file(str(tmp_path)) == str(new)

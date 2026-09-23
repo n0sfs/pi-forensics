@@ -39,7 +39,7 @@ from core.paths import (closed_case_refusal,
 )
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists, load_yara_ruleset_sources, get_yara_rulesets, get_url_lists, load_url_list_sets
 import yara
-from core.jobs import (
+from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job, _SERVICE_ACCOUNT_NAME,
     begin_suppress_active_false, end_suppress_active_false,
 )
@@ -444,7 +444,7 @@ def image_extract():
     offset = req.get('offset', 0)
     inode = req.get('inode', '')
     out_name = req.get('output_name', '')
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
 
     if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
@@ -831,10 +831,11 @@ def start_image_geolocation_kml():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     image_path = _resolve_browsable_source(req.get('image_path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
 
     if not image_path:
         update_job(active=False)
@@ -982,7 +983,7 @@ def image_hash_manifest():
     _run_hash_manifest_body() above."""
     req = request.get_json() or {}
     image_path = _resolve_browsable_source(req.get('image_path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     algo = req.get('algorithm', 'sha256').lower()
     hash_list_ids = req.get('hash_list_ids') or []
 
@@ -1143,7 +1144,7 @@ def image_yara_sweep():
     here, real work in _run_yara_sweep_body() above."""
     req = request.get_json() or {}
     image_path = _resolve_browsable_source(req.get('image_path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     ruleset_ids = req.get('ruleset_ids') or []
     case_folder = req.get('case_folder')
 
@@ -2146,7 +2147,7 @@ def image_parse_thumbcache():
     real, persistent extracted thumbnail files, not just metadata rows."""
     req = request.get_json() or {}
     image_path = _resolve_browsable_source(req.get('image_path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     if not dest_dir or not os.path.isdir(dest_dir):
@@ -3578,10 +3579,11 @@ def start_image_triage_scan():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     image_path = _resolve_browsable_source(req.get('image_path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     keyword_list_ids = req.get('keyword_list_ids') or []
 
     if not image_path:
@@ -3673,10 +3675,11 @@ def start_materialize_shadow_copy():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     image_path = _resolve_browsable_source(req.get('image_path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     try:
         offset = int(req.get('offset', 0))
         store_index = int(req.get('store_index'))
@@ -3948,7 +3951,7 @@ def image_video_contact_sheet():
     offset = req.get('offset', 0)
     inode = req.get('inode', '')
     name_hint = req.get('name', '') or 'selected_file'
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
 
     if not image_path:
@@ -4227,7 +4230,7 @@ def image_recover_deleted():
     """Request-parsing here, real work in _run_recover_deleted_body() above."""
     req = request.get_json() or {}
     image_path = _resolve_browsable_source(req.get('image_path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
 
     if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
@@ -4786,6 +4789,7 @@ def start_auto_analyze_image():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     image_path = _resolve_browsable_source(req.get('image_path'))
