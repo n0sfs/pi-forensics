@@ -101,3 +101,17 @@ def test_a_case_file_with_no_status_does_not_block(evidence_root):
 @pytest.mark.parametrize("bad", [None, "", 123])
 def test_a_missing_or_nonsense_destination_is_not_an_error(bad):
     assert case_status_blocking_new_work(bad) is None
+
+
+def test_closed_case_refusal_checks_every_path_given(evidence_root):
+    from core.paths import closed_case_refusal
+    closed = _make_case(evidence_root, "2026-CASE-CLOSED-MULTI", "Closed")
+    open_out = os.path.join(evidence_root, "loose_output")
+    os.makedirs(open_out)
+    assert closed_case_refusal(open_out, None) is None
+    # output folder outside any case, but the request names a Closed case
+    assert closed_case_refusal(open_out, closed) == "Closed"
+    # output folder is a SUBFOLDER of the closed case
+    sub = os.path.join(closed, "analysis")
+    os.makedirs(sub)
+    assert closed_case_refusal(sub) == "Closed"

@@ -1672,7 +1672,7 @@ def ensure_examiner_recorded(case_folder, username):
         pass
 
 
-def list_case_folders():
+def list_case_folders(unreadable_out=None):
     """Walks EVIDENCE_ROOT for every real case folder, identified by its
     consolidated {slug}_case.json marker.
 
@@ -1705,7 +1705,19 @@ def list_case_folders():
     suite able to genuinely redirect EVIDENCE_ROOT via monkeypatch."""
     root_dir = config.EVIDENCE_ROOT
     cases = []
-    for root, dirs, files in os.walk(root_dir):
+
+    # unreadable_out (2026-09-23): a case whose marker cannot be read or
+    # parsed, or a directory the walk could not enter (a stalled share), used
+    # to vanish from the list without trace - the Case Manager then said "No
+    # cases found yet" about cases it never managed to look at. Callers that
+    # show the list pass a list here and surface what landed in it; the
+    # aggregate counters keep the old skip-and-continue behaviour.
+    def _walk_error(err):
+        if unreadable_out is not None:
+            unreadable_out.append({"case_folder": getattr(err, 'filename', None) or '?',
+                                   "error": f"folder could not be read: {err.strerror or err}"})
+
+    for root, dirs, files in os.walk(root_dir, onerror=_walk_error):
         # Bound the scan depth so this can't turn into a very slow crawl of
         # a huge or deeply-mounted evidence tree.
         depth = root[len(root_dir):].count(os.sep)
@@ -1749,15 +1761,16 @@ def list_case_folders():
                     "event_count": len(data.get('events', [])),
                     "schema": "consolidated",
                 })
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                if unreadable_out is not None:
+                    unreadable_out.append({"case_folder": root, "error": f"case file could not be read: {e}"})
             dirs[:] = []  # a case folder never contains another case folder
 
     cases.sort(key=lambda c: c.get('created_at', ''), reverse=True)
     return cases
 
 
-def cross_case_hash_search(hash_value):
+def cross_case_hash_search(hash_value, unsearched_out=None):
     """Searches every case's own case JSON for an event whose
     computed_verification_hashes contains hash_value (case-insensitive
     exact match against any recorded algorithm's value). One corrupt/
@@ -1771,7 +1784,7 @@ def cross_case_hash_search(hash_value):
         return [], False
     results = []
     truncated = False
-    cases = list_case_folders()
+    cases = list_case_folders(unreadable_out=unsearched_out)
     if len(cases) > CROSS_CASE_SEARCH_MAX_CASES:
         cases = cases[:CROSS_CASE_SEARCH_MAX_CASES]
         truncated = True
@@ -1784,7 +1797,10 @@ def cross_case_hash_search(hash_value):
         try:
             with open(case_file, 'r') as f:
                 data = json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as e:
+            # "No match" must not quietly include cases never searched.
+            if unsearched_out is not None:
+                unsearched_out.append({"case_folder": case['case_folder'], "error": f"case file could not be read: {e}"})
             continue
         for event in data.get('events', []):
             hashes = event.get('computed_verification_hashes') or {}

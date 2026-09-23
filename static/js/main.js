@@ -4467,8 +4467,23 @@ async function runCrossCaseSearch() {
             resultsEl.appendChild(document.createTextNode(`Search failed: ${data.error}`));
             return;
         }
+        // Cases the search could not read (2026-09-23) - "no match" must never
+        // silently include cases that were not actually searched.
+        const unsearched = data.unsearched || [];
+        const appendUnsearchedNote = () => {
+            if (!unsearched.length) return;
+            const note = document.createElement('div');
+            note.className = 'small text-warning mt-1';
+            note.appendChild(document.createTextNode(
+                `${unsearched.length} case folder(s) could not be read and were NOT searched: ` +
+                unsearched.map(u => u.case_folder).join(', ')));
+            resultsEl.appendChild(note);
+        };
         if (data.results.length === 0) {
-            resultsEl.appendChild(document.createTextNode('No matches found in any case on this station.'));
+            resultsEl.appendChild(document.createTextNode(unsearched.length
+                ? 'No matches found in the cases that could be read.'
+                : 'No matches found in any case on this station.'));
+            appendUnsearchedNote();
             return;
         }
         const table = document.createElement('table');
@@ -4494,6 +4509,7 @@ async function runCrossCaseSearch() {
             note.appendChild(document.createTextNode('Results capped - narrow your search or check individual cases directly.'));
             resultsEl.appendChild(note);
         }
+        appendUnsearchedNote();
     } catch (err) {
         resultsEl.textContent = '';
         resultsEl.appendChild(document.createTextNode('Search failed: request error.'));
@@ -15530,6 +15546,24 @@ async function clearReportLogo() {
 // state. Toggles #reportsNoCaseState / #reportsLoadedState depending on
 // whether there's an active case at all vs. an active case whose
 // consolidated report file doesn't exist yet (not-yet-migrated legacy case).
+// The editable values this page last painted from disk (2026-09-23) - sent
+// with every save as base_fields so /api/report/save can three-way merge:
+// keep what someone else changed since, apply this examiner's edits, and
+// refuse only a field both sides changed differently. Captured only on a
+// CLEAN repaint (never while unsaved edits are protected from a background
+// refresh) and after a successful save.
+const REPORT_EDITABLE_KEYS_CONSOLIDATED = ['case_status', 'executive_summary', 'objectives', 'findings_summary',
+    'limitations', 'conclusion', 'iocs', 'recommendations_next_steps', 'custom_fields', 'examiners', 'attachments'];
+const REPORT_EDITABLE_KEYS_LEGACY = ['case_metadata', 'attachments'];
+let reportEditBase = null;
+function snapshotReportEditBase() {
+    if (!currentLoadedReportData) { reportEditBase = null; return; }
+    const keys = Array.isArray(currentLoadedReportData.events) ? REPORT_EDITABLE_KEYS_CONSOLIDATED : REPORT_EDITABLE_KEYS_LEGACY;
+    const base = {};
+    keys.forEach(k => { base[k] = currentLoadedReportData[k] === undefined ? null : JSON.parse(JSON.stringify(currentLoadedReportData[k])); });
+    reportEditBase = base;
+}
+
 async function loadCaseForEditing() {
     // Real bug found live 2026-09-09 (a 3rd Case/Reporting review pass):
     // this function is called from ~8 places, most of them a narrow "I just
@@ -15778,6 +15812,7 @@ async function loadCaseForEditing() {
             }
             currentAttachmentCaptions = attach.file_captions || {};
             currentReferenceUrlsList = attach.reference_urls || [];
+            snapshotReportEditBase();
             renderReportFilesGallery();
         } else {
             skippedForUnsavedEdits = true;
@@ -18339,7 +18374,7 @@ async function saveReportMetadata() {
         const res = await fetch('/api/report/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ report_path: reportPath, report_data: currentLoadedReportData })
+            body: JSON.stringify({ report_path: reportPath, report_data: currentLoadedReportData, base_fields: reportEditBase || undefined })
         });
         const data = await res.json();
 
@@ -18350,6 +18385,11 @@ async function saveReportMetadata() {
             // correctly against the conflict check below, instead of
             // false-positive rejecting itself against its own prior save.
             if (data.updated_at) currentLoadedReportData.updated_at = data.updated_at;
+            // Base = what THIS page now shows and just sent, not the server's
+            // merged record: the page's examiner/attachment arrays are not
+            // repainted here, so basing on the merged record would make items
+            // kept from elsewhere look deliberately removed on the next save.
+            snapshotReportEditBase();
             const previewEl = document.getElementById("jsonPreview");
             if (previewEl) {
                 previewEl.innerText = JSON.stringify(currentLoadedReportData, null, 2);
@@ -20029,6 +20069,24 @@ const CASE_STATUS_BADGE_CLASS = {
 // (routes/case_management.py's /api/cases/list has no pagination/query-param support at all), so
 // re-fetching per keystroke would be pure waste. null until the first successful fetch.
 let caseManagerCasesCache = null;
+// Cases/folders the server could not read (2026-09-23) - shown, never
+// silently dropped: "no cases" must not mean "could not look".
+let caseManagerUnreadableCache = [];
+function appendUnreadableCasesWarning(listEl) {
+    if (!caseManagerUnreadableCache.length) return;
+    const box = document.createElement('div');
+    box.className = 'small text-warning p-2 border-top border-secondary';
+    const head = document.createElement('div');
+    head.className = 'fw-bold';
+    head.textContent = `${caseManagerUnreadableCache.length} case folder(s) could not be read and are not listed above:`;
+    box.appendChild(head);
+    caseManagerUnreadableCache.forEach(u => {
+        const line = document.createElement('div');
+        line.textContent = `${u.case_folder} - ${u.error}`;
+        box.appendChild(line);
+    });
+    listEl.appendChild(box);
+}
 
 async function loadExistingCases() {
     const listEl = document.getElementById("caseList");
@@ -20043,6 +20101,7 @@ async function loadExistingCases() {
             return;
         }
         caseManagerCasesCache = data.cases;
+        caseManagerUnreadableCache = data.unreadable || [];
         renderCaseList();
     } catch (err) {
         listEl.innerHTML = '<div class="text-danger small p-2">Request failed.</div>';
@@ -20072,8 +20131,11 @@ function renderCaseList() {
 
     if (cases.length === 0) {
         listEl.innerHTML = caseManagerCasesCache.length === 0
-            ? '<div class="text-subtle small p-2">No cases found yet - create one above.</div>'
+            ? (caseManagerUnreadableCache.length
+                ? '<div class="text-subtle small p-2">No readable cases found.</div>'
+                : '<div class="text-subtle small p-2">No cases found yet - create one above.</div>')
             : '<div class="text-subtle small p-2">No cases match this filter.</div>';
+        appendUnreadableCasesWarning(listEl);
         return;
     }
 
@@ -20154,6 +20216,7 @@ function renderCaseList() {
         btn.appendChild(actionsRow);
         listEl.appendChild(btn);
     });
+    appendUnreadableCasesWarning(listEl);
 }
 
 // Writes directly to the case's own marker file (routes/case_management.py

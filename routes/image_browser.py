@@ -33,7 +33,7 @@ import pytsk3
 from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission, _effective_client_ip
-from core.paths import (
+from core.paths import (closed_case_refusal, 
     safe_path, log_chain_of_custody, case_consolidated_path, classify_extension,
     is_valid_block_device_or_partition,
 )
@@ -2893,6 +2893,12 @@ def image_analyze_mft():
     destination_dir = safe_path(req.get('destination_dir')) or case_folder
     if not destination_dir or not os.path.isdir(destination_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(destination_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
     compute_hashes = bool(req.get('compute_hashes'))
 
     if not image_path:
@@ -2975,6 +2981,12 @@ def image_parse_usnjrnl():
     destination_dir = safe_path(req.get('destination_dir')) or case_folder
     if not destination_dir or not os.path.isdir(destination_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    # Closed/Archived cases take no new work (2026-09-23 review - these
+    # analysis/extraction routes write into the case but were never gated).
+    _closed = closed_case_refusal(destination_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
 
     if not image_path:
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400

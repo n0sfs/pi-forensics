@@ -537,3 +537,15 @@ def format_epoch(ts):
         return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
     except (OSError, OverflowError, ValueError):
         return None
+
+
+def closed_case_refusal(*paths):
+    """First Closed/Archived status found for any of `paths` (an output folder,
+    a case folder...), else None - one call for routes that take both a
+    destination and a separate case_folder (2026-09-23). Same semantics as
+    case_status_blocking_new_work(), which it simply applies to each path."""
+    for path in paths:
+        status = case_status_blocking_new_work(path) if path else None
+        if status:
+            return status
+    return None

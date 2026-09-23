@@ -320,3 +320,61 @@ def test_save_fails_closed_on_an_unreadable_case_file(client, evidence_root):
     assert res.status_code == 500  # CaseFileUnreadable - never a silent overwrite
     with open(report_path) as f:
         assert f.read() == "{not json"
+
+
+# --- three-way merge (base_fields) -------------------------------------------
+
+def _load(p):
+    with open(p) as f:
+        return json.load(f)
+
+
+def _write(p, d):
+    with open(p, "w") as f:
+        json.dump(d, f)
+
+
+def test_merge_keeps_another_examiners_field_and_applies_mine(client, evidence_root):
+    report_path = _make_real_case(evidence_root)
+    base_rec = _load(report_path)
+    base = {"executive_summary": None, "conclusion": None, "examiners": []}
+    other = dict(base_rec, conclusion="B's conclusion", updated_at="2026-01-01 00:00:09")
+    _write(report_path, other)
+    mine = dict(base_rec, executive_summary="A's summary")  # stale updated_at on purpose
+    res = client.post("/api/report/save", json={"report_path": report_path, "report_data": mine, "base_fields": base})
+    assert res.status_code == 200
+    saved = _load(report_path)
+    assert saved["executive_summary"] == "A's summary"
+    assert saved["conclusion"] == "B's conclusion"
+
+
+def test_merge_conflicts_only_when_both_changed_the_same_field(client, evidence_root):
+    report_path = _make_real_case(evidence_root)
+    base_rec = _load(report_path)
+    _write(report_path, dict(base_rec, conclusion="B"))
+    res = client.post("/api/report/save", json={"report_path": report_path,
+                                                 "report_data": dict(base_rec, conclusion="A"),
+                                                 "base_fields": {"conclusion": None}})
+    assert res.status_code == 409
+    assert res.get_json()["conflict_fields"] == ["conclusion"]
+    assert _load(report_path)["conclusion"] == "B"
+
+
+def test_merge_lists_keep_additions_from_both_sides(client, evidence_root):
+    """An examiner auto-recorded by a note (or a file attached elsewhere) must
+    survive a save of an older snapshot, with no false conflict."""
+    report_path = _make_real_case(evidence_root)
+    base_rec = dict(_load(report_path), examiners=["alice"],
+                    attachments={"files": ["/a"], "reference_urls": [], "file_captions": {}})
+    _write(report_path, base_rec)
+    base = {"examiners": ["alice"], "attachments": base_rec["attachments"]}
+    _write(report_path, dict(base_rec, examiners=["alice", "bob"],
+                             attachments={"files": ["/a", "/b"], "reference_urls": [], "file_captions": {}}))
+    mine = dict(base_rec, examiners=["alice", "carol"],
+                attachments={"files": [], "reference_urls": [], "file_captions": {"/a": "x"}})
+    res = client.post("/api/report/save", json={"report_path": report_path, "report_data": mine, "base_fields": base})
+    assert res.status_code == 200
+    saved = _load(report_path)
+    assert saved["examiners"] == ["alice", "carol", "bob"]
+    assert saved["attachments"]["files"] == ["/b"]  # I removed /a, they added /b
+    assert saved["attachments"]["file_captions"] == {"/a": "x"}

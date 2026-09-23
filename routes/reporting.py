@@ -720,6 +720,39 @@ def load_report_json():
 _SERVER_OWNED_CASE_KEYS = ('events', 'case_notes', 'custody_log', 'last_verification',
                            'status_before_archive', 'created_at', 'case_folder', 'schema_version')
 
+
+def _three_way_merge(base, disk, mine, path):
+    """Merge one editable value. Returns (merged_value, [conflicting paths]).
+
+    Unchanged on one side -> take the other. Dicts merge per key. Lists merge
+    as sets that keep order: an item either side removed is removed, an item
+    either side added is added - so an examiner auto-recorded by a note, or a
+    file attached from File Explorer, survives a save of an older snapshot
+    without being reported as a conflict. Only a scalar both sides changed to
+    different values is a conflict."""
+    if mine == disk or mine == base:
+        return disk, []
+    # A container that did not exist yet when the page loaded merges as empty.
+    if base is None and isinstance(disk, dict) and isinstance(mine, dict):
+        base = {}
+    elif base is None and isinstance(disk, list) and isinstance(mine, list):
+        base = []
+    if disk == base:
+        return mine, []
+    if isinstance(base, dict) and isinstance(disk, dict) and isinstance(mine, dict):
+        out, conflicts = {}, []
+        for k in list(dict.fromkeys(list(disk) + list(mine) + list(base))):
+            v, c = _three_way_merge(base.get(k), disk.get(k), mine.get(k), f"{path}.{k}")
+            conflicts.extend(c)
+            if v is not None or k in disk or k in mine:
+                out[k] = v
+        return out, conflicts
+    if isinstance(base, list) and isinstance(disk, list) and isinstance(mine, list):
+        kept = [x for x in mine if x in disk or x not in base]
+        added_elsewhere = [x for x in disk if x not in base and x not in mine]
+        return kept + added_elsewhere, []
+    return disk, [path]
+
 @reporting_bp.route('/api/report/save', methods=['POST'])
 @requires_auth
 @requires_permission('reporting')
@@ -773,7 +806,35 @@ def save_report_json():
     # (app-wide 500 handler). And a payload with no updated_at no longer
     # bypasses the guard when the file on disk has one.
     on_disk = _read_case_file(report_file)
-    if isinstance(on_disk, dict) and 'updated_at' in on_disk:
+    base_fields = req.get('base_fields')
+    if isinstance(base_fields, dict) and isinstance(on_disk, dict):
+        # Three-way merge (2026-09-23): the page sends the editable values it
+        # originally loaded. Whatever someone else changed since is kept, the
+        # examiner's own edits are applied, and only a field BOTH sides changed
+        # differently is a conflict. Replaces the whole-file updated_at
+        # comparison for this page, which a background refresh could defeat
+        # (it hands the page a current updated_at over its stale edit state)
+        # and which also false-conflicted on the examiner's own note or an
+        # auto-recorded examiner.
+        conflicts = []
+        for key, base_val in base_fields.items():
+            if key in _SERVER_OWNED_CASE_KEYS or key == 'updated_at':
+                continue
+            merged, key_conflicts = _three_way_merge(base_val, on_disk.get(key), data.get(key), key)
+            conflicts.extend(key_conflicts)
+            if merged is None and key not in on_disk and key not in data:
+                continue
+            data[key] = merged
+        if conflicts:
+            return jsonify({
+                "success": False,
+                "error": "Someone else changed the same field(s) since this case was loaded here: "
+                         + ", ".join(conflicts) + ". Reload the case to see their version, then reapply your changes.",
+                "conflict": True,
+                "conflict_fields": conflicts,
+                "server_updated_at": on_disk.get('updated_at'),
+            }), 409
+    elif isinstance(on_disk, dict) and 'updated_at' in on_disk:
         if on_disk['updated_at'] != data.get('updated_at'):
                 return jsonify({
                     "success": False,
