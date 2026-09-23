@@ -109,7 +109,7 @@ from core.whatsapp_utils import (
 )
 from core.ipa_utils import analyze_ipa
 from core.bugreport_utils import parse_bugreport
-from core.jobs import (
+from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job, _stream_subprocess,
     begin_suppress_active_false, end_suppress_active_false, _SERVICE_ACCOUNT_NAME,
 )
@@ -927,6 +927,7 @@ def start_takeout_import():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     selected_path = safe_path(req.get('path'))
@@ -1051,6 +1052,7 @@ def start_apple_export_import():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     export_root = safe_path(req.get('path'))
@@ -3084,10 +3086,11 @@ def start_memory_forensics_scan():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     image_path = safe_path(req.get('path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     plugin_keys = [k for k in (req.get('plugins') or []) if k in MEMORY_FORENSICS_PLUGINS]
 
     if not image_path or not os.path.isfile(image_path):
@@ -3283,11 +3286,12 @@ def start_leapp_scan():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     tool_key = req.get('tool')
     input_path = safe_path(req.get('path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
 
     if tool_key not in LEAPP_TOOLS:
         update_job(active=False)
@@ -3405,7 +3409,8 @@ def _find_whatsapp_crypt_file(root_dir):
 def _find_whatsapp_key_file(root_dir):
     """Best-effort search for a previously-pulled WhatsApp key file,
     matching pull_whatsapp_key()'s own real naming convention
-    (routes/mobile.py: f"{serial}_whatsapp_key"). See the module comment
+    (routes/mobile.py: f"{serial}_{timestamp}_whatsapp_key"; older pulls
+    are plain f"{serial}_whatsapp_key" - both end the same way). See the module comment
     above AUTO_ANALYZE_MOBILE_PULL_FOLDER_EXTRA_STEPS for why this is a
     disclosed best-effort heuristic, not a guaranteed-correct lookup - no
     case-event or other reliable signal exists for "was a key pulled for
@@ -3414,14 +3419,24 @@ def _find_whatsapp_key_file(root_dir):
     if not root_dir or not os.path.isdir(root_dir):
         return None
     walked = 0
+    found = []
     for root, _dirs, files in os.walk(root_dir):
         for fname in files:
             walked += 1
             if walked > 40_000:
-                return None
+                break
             if fname.endswith('_whatsapp_key'):
-                return os.path.join(root, fname)
-    return None
+                found.append(os.path.join(root, fname))
+        if walked > 40_000:
+            break
+    if not found:
+        return None
+    # Pulls are timestamped since 2026-09-23 ({serial}_{stamp}_whatsapp_key),
+    # so a case can hold several - the most recent is the one to try.
+    try:
+        return max(found, key=os.path.getmtime)
+    except OSError:
+        return found[-1]
 
 def _auto_analyze_mobile_step_hash_manifest(path, dest_dir, source_ip=None, user=None):
     if not os.path.isdir(path):
@@ -3727,6 +3742,7 @@ def start_auto_analyze_mobile():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     path = safe_path(req.get('path'))
@@ -3921,10 +3937,11 @@ def start_mquire_scan():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     image_path = safe_path(req.get('path'))
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     table_keys = [k for k in (req.get('tables') or []) if k in MQUIRE_TABLES]
 
     if not image_path or not os.path.isfile(image_path):

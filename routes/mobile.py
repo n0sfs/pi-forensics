@@ -26,7 +26,7 @@ from flask import Blueprint, jsonify, request, g
 from core.auth import requires_auth, requires_permission
 from core.paths import closed_case_refusal, safe_path, log_chain_of_custody, case_status_blocking_new_work
 from core.config import EVIDENCE_ROOT, INSTALL_DIR
-from core.jobs import (
+from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
     _stream_subprocess, _stream_piped_subprocess, clear_active_proc, clear_upstream_proc,
     build_report_target, write_initial_report, _write_report, reclaim_ownership,
@@ -302,6 +302,16 @@ def execution_worker_ios_backup(udid, dest_dir, encrypt_password, report_file_pa
                 report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
                 _write_report(report_file_path, report_data, append_log)
                 return
+            # A lasting change to the evidence device, recorded as one
+            # (2026-09-23): iOS keeps the backup-encryption setting (and this
+            # password) after the backup finishes. It was never mentioned in
+            # the report.
+            report_data.setdefault("acquisition_parameters", {})["device_modification"] = (
+                "Backup encryption was switched ON on the device for this acquisition and remains on "
+                "afterwards (an on-device setting). Turn it off with 'idevicebackup2 -u <udid> encryption "
+                "off <password>' or from the device, and record that change if you do.")
+            append_log("[!] Note: backup encryption now stays ON on the device after this backup - recorded "
+                       "in the report as a device modification.")
 
         cmd = ["idevicebackup2", "-u", udid, "backup", "--full", dest_dir]
         append_log(f"[*] Command: {' '.join(cmd)}")
@@ -330,6 +340,9 @@ def execution_worker_ios_backup(udid, dest_dir, encrypt_password, report_file_pa
             update_job(status="Failed")
             append_log(f"[-] idevicebackup2 exited with code {proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
+        else:
+            # Stopped by the examiner - recorded as such, never left IN_PROGRESS (2026-09-23).
+            report_data["acquisition_status"] = "STOPPED"
 
         _write_report(report_file_path, report_data, append_log)
 
@@ -874,11 +887,19 @@ def pull_whatsapp_key(serial):
         return jsonify({"success": False, "error": "Invalid device serial."}), 400
 
     req = request.get_json() or {}
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     if not dest_dir or not os.path.isdir(dest_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
 
-    dest_path = os.path.join(dest_dir, f"{serial}_whatsapp_key")
+    # Missed by the 2026-09-23 Closed-case sweep; this writes into the case.
+    _closed = closed_case_refusal(dest_dir, safe_path(req.get('case_folder')) if req.get('case_folder') else None)
+    if _closed:
+        return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
+                                                   f"Case Manager before adding new work to it."}), 409
+    # Timestamped: a second pull used to silently overwrite the first key file.
+    dest_path = os.path.join(dest_dir, f"{serial}_{time.strftime('%Y%m%d-%H%M%S')}_whatsapp_key")
+    if os.path.exists(dest_path):
+        return jsonify({"success": False, "error": f"{dest_path} already exists - wait a second and retry."}), 409
     result = pull_whatsapp_key_file(serial, dest_path)
     if not result["success"]:
         return jsonify(result), 500
@@ -896,7 +917,7 @@ def pull_ios_crash_reports_route():
     if not _UDID_RE.match(udid or ''):
         return jsonify({"success": False, "error": "Invalid or missing device UDID. Refresh the device list and select a connected, trusted iOS device."}), 400
 
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     if not dest_dir or not os.path.isdir(dest_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
     # Closed/Archived cases take no new work (2026-09-23 review - these
@@ -936,7 +957,7 @@ def sim_read():
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "Invalid reader index."}), 400
 
-    dest_dir = safe_path(req.get('destination_dir', EVIDENCE_ROOT))
+    dest_dir = safe_path((req.get('destination_dir') or EVIDENCE_ROOT))
     if not dest_dir or not os.path.isdir(dest_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
     # Closed/Archived cases take no new work (2026-09-23 review - these
@@ -1203,6 +1224,9 @@ def execution_worker_android(mode, serial, output_path, report_file_path, report
             update_job(status="Failed")
             append_log(f"[-] adb {mode} exited with code {proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
+        else:
+            # Stopped by the examiner - recorded as such, never left IN_PROGRESS (2026-09-23).
+            report_data["acquisition_status"] = "STOPPED"
 
         _write_report(report_file_path, report_data, append_log)
 
@@ -1317,6 +1341,9 @@ def execution_worker_android_physical(serial, target, engine, hashes, total_byte
             else:
                 append_log(f"[-] {engine} exited with code {downstream_proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
+        else:
+            # Stopped by the examiner - recorded as such, never left IN_PROGRESS (2026-09-23).
+            report_data["acquisition_status"] = "STOPPED"
 
         _write_report(report_file_path, report_data, append_log)
 
@@ -1370,10 +1397,11 @@ def start_ios_backup():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     udid = req.get('udid', '')
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is
@@ -1450,11 +1478,12 @@ def start_android_acquisition():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     serial = req.get('serial', '')
     mode = req.get('mode', 'pull')
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is
@@ -1773,15 +1802,22 @@ def execution_worker_mtp_pull(bus, devnum, output_path, report_file_path, report
 
         if snapshot_job()["status"] == "Stopped":
             append_log("[*] Stopped before the copy started.")
+            report_data["acquisition_status"] = "STOPPED"
+            _write_report(report_file_path, report_data, append_log)
             return
 
         update_job(status="Enumerating files on device...")
         os.makedirs(output_path, exist_ok=True)
 
         all_files = []
-        for root, _dirs, names in os.walk(staging_dir):
+        walk_errors = []
+        # onerror: a folder the MTP mount would not list (a locked phone
+        # hides its storage) used to be skipped silently (2026-09-23).
+        for root, _dirs, names in os.walk(staging_dir, onerror=walk_errors.append):
             for name in names:
                 all_files.append(os.path.join(root, name))
+        for err in walk_errors[:20]:
+            append_log(f"[!] Could not list {getattr(err, 'filename', '?')} on the device: {err.strerror or err}")
         append_log(f"[*] Found {len(all_files)} file(s) on the device. Beginning copy...")
         update_job(status="Copying files (MTP)...")
 
@@ -1818,6 +1854,7 @@ def execution_worker_mtp_pull(bus, devnum, output_path, report_file_path, report
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["acquisition_parameters"]["files_copied"] = files_copied
         report_data["acquisition_parameters"]["files_errored"] = files_errored
+        report_data["acquisition_parameters"]["folders_unlistable"] = len(walk_errors)
 
         if snapshot_job()["status"] == "Stopped":
             report_data["acquisition_status"] = "STOPPED"
@@ -1826,6 +1863,13 @@ def execution_worker_mtp_pull(bus, devnum, output_path, report_file_path, report
             update_job(status="Failed")
             report_data["acquisition_status"] = "FAILED"
             append_log("[-] Every file failed to copy - nothing was captured.")
+        elif not all_files and walk_errors:
+            # Nothing listed AND listing failed: "could not look", not an empty phone.
+            update_job(status="Failed")
+            report_data["acquisition_status"] = "FAILED"
+            report_data["error"] = "The device's storage could not be listed - is it unlocked and in File Transfer mode?"
+            append_log("[-] The device's storage could not be listed - this is NOT an empty device. Unlock the "
+                       "phone, confirm File Transfer (MTP) mode, and retry.")
         else:
             update_job(status="Completed Successfully", progress_percent=100.0, transferred_bytes=transferred_bytes)
             report_data["acquisition_status"] = "COMPLETED"
@@ -1885,11 +1929,12 @@ def start_mtp_pull():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     bus = str(req.get('bus', '')).strip()
     devnum = str(req.get('devnum', '')).strip()
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is
@@ -2002,7 +2047,20 @@ def _adb_run(serial, args, timeout):
         return -1, "", str(e)
 
 
-def execution_worker_android_companion_extraction(serial, selected_types, sms_tier, output_path,
+def execution_worker_android_companion_extraction(*args, **kwargs):
+    """Slot-release guarantee (2026-09-23): the worker's cleanup `finally` does
+    a lot (role restore, revokes, uninstall, manifest, tagging, report,
+    custody) before its closing update_job(active=False), and anything that
+    raised in there left the station's job slot held. Released here no
+    matter what; a no-op if the worker already did, and ignored by
+    update_job's stale-worker guard if a newer job owns the slot by then."""
+    try:
+        _execution_worker_android_companion_extraction(*args, **kwargs)
+    finally:
+        update_job(active=False)
+
+
+def _execution_worker_android_companion_extraction(serial, selected_types, sms_tier, output_path,
                                                      report_file_path, report_data, case_folder,
                                                      requester_ip=None, requester_user=None):
     """Installs the vendored pif-companion collector ONCE, grants exactly
@@ -2068,6 +2126,7 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
                                      "at": time.strftime("%Y-%m-%d %H:%M:%S")})
 
     apk_installed = False
+    install_attempted = False
     original_sms_role_holder = None
     sms_role_assumed = False
     sms_permission_granted = False
@@ -2076,6 +2135,8 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
     calendar_granted = False
     media_granted_any = False
     query_ran_at_least_once = False
+    queries_attempted = 0
+    queries_failed = 0
 
     try:
         update_job(format="android_companion_extraction", status="Initializing...", progress_percent=0.0,
@@ -2088,6 +2149,7 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
             )
 
         append_log(f"[*] Installing companion collector ({PIF_COMPANION_PACKAGE})...")
+        install_attempted = True
         rc, out, err = _adb_run(serial, ["install", "-r", PIF_COMPANION_APK], ANDROID_COMPANION_ADB_TIMEOUT)
         record_step("install", rc, (out + err).strip()[:500])
         if rc != 0:
@@ -2203,7 +2265,9 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
                              "--projection", projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_sms", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                queries_attempted += 1
                 if rc != 0:
+                    queries_failed += 1
                     append_log(f"[!] SMS query failed: {(err or out).strip()[:300]}")
                 else:
                     rows = parse_content_query_output(out)
@@ -2221,7 +2285,9 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
                              "--projection", projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_contacts", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                queries_attempted += 1
                 if rc != 0:
+                    queries_failed += 1
                     append_log(f"[!] Contacts query failed: {(err or out).strip()[:300]}")
                 else:
                     rows = parse_content_query_output(out, columns=CONTACTS_QUERY_COLUMNS)
@@ -2239,7 +2305,9 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
                              "--projection", projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_calllog", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                queries_attempted += 1
                 if rc != 0:
+                    queries_failed += 1
                     append_log(f"[!] Call Log query failed: {(err or out).strip()[:300]}")
                 else:
                     rows = parse_content_query_output(out, columns=CALLLOG_QUERY_COLUMNS)
@@ -2257,8 +2325,10 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
                              "--projection", events_projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_events", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                queries_attempted += 1
                 event_rows = []
                 if rc != 0:
+                    queries_failed += 1
                     append_log(f"[!] Calendar Events query failed: {(err or out).strip()[:300]}")
                 else:
                     event_rows = parse_content_query_output(out, columns=CALENDAR_EVENTS_QUERY_COLUMNS)
@@ -2293,7 +2363,9 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
                              "--projection", projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_images", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                queries_attempted += 1
                 if rc != 0:
+                    queries_failed += 1
                     append_log(f"[!] Photos query failed: {(err or out).strip()[:300]}")
                 else:
                     rows = parse_content_query_output(out, columns=MEDIA_QUERY_COLUMNS)
@@ -2312,7 +2384,9 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
                              "--projection", projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_video", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                queries_attempted += 1
                 if rc != 0:
+                    queries_failed += 1
                     append_log(f"[!] Video query failed: {(err or out).strip()[:300]}")
                 else:
                     rows = parse_content_query_output(out, columns=MEDIA_QUERY_COLUMNS)
@@ -2337,7 +2411,19 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
                 report_data["acquisition_parameters"]["attendee_records_captured"] = device_log["attendee_count"]
                 report_data["acquisition_parameters"]["image_records_captured"] = device_log["image_count"]
                 report_data["acquisition_parameters"]["video_records_captured"] = device_log["video_count"]
-                report_data["acquisition_status"] = "COMPLETED"
+                report_data["acquisition_parameters"]["queries_failed"] = queries_failed
+                # Every selected query failing (locked/disconnected phone, a
+                # denied provider) is a failed collection, not an empty one -
+                # it used to be COMPLETED with 0 of everything (2026-09-23).
+                if queries_attempted and queries_failed == queries_attempted:
+                    report_data["acquisition_status"] = "FAILED"
+                    report_data["error"] = "Every selected data query failed - nothing could be read from the device."
+                    append_log("[-] Every selected data query failed - this is NOT an empty device; nothing could be read.")
+                else:
+                    report_data["acquisition_status"] = "COMPLETED"
+                    if queries_failed:
+                        append_log(f"[!] {queries_failed} of {queries_attempted} data queries failed - see above; "
+                                   f"those categories were not collected.")
 
     except Exception as e:
         error_message = str(e)
@@ -2408,6 +2494,16 @@ def execution_worker_android_companion_extraction(serial, selected_types, sms_ti
                            f"'adb uninstall {PIF_COMPANION_PACKAGE}' against the device to remove it.")
             else:
                 append_log("[+] Collector uninstalled.")
+        elif install_attempted:
+            # The install step reported failure, but a timeout (rc -1) can
+            # land AFTER the package was actually installed - leaving the
+            # collector on the suspect device with nothing saying so
+            # (2026-09-23). Uninstalling an absent package is harmless.
+            rc, out, err = _adb_run(serial, ["uninstall", PIF_COMPANION_PACKAGE], ANDROID_COMPANION_ADB_TIMEOUT)
+            record_step("uninstall_after_failed_install", rc)
+            if rc == 0:
+                append_log("[!] The install step reported failure but the collector WAS on the device - it has "
+                           "now been uninstalled.")
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["acquisition_parameters"]["device_modification_log"] = device_log
@@ -2463,12 +2559,13 @@ def start_android_companion_extraction():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     serial = req.get('serial', '')
     selected_types = set(req.get('selected_types') or [])
     sms_tier = req.get('sms_tier', 'readonly')
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is
@@ -2564,6 +2661,12 @@ def cleanup_android_companion_extraction():
     serial = req.get('serial', '')
     if not _ANDROID_SERIAL_RE.match(serial or ''):
         return jsonify({"error": "Invalid or missing device serial."}), 400
+    # Never mid-extraction (2026-09-23): this uninstalls the collector and
+    # revokes its permissions out from under a running companion job.
+    job = snapshot_job()
+    if job.get('active') and job.get('format') == 'android_companion_extraction':
+        return jsonify({"error": "A companion extraction is running - stop it first; its own cleanup runs "
+                                 "automatically when it ends."}), 409
 
     results = {}
     rc, out, err = _adb_run(serial, ["shell", "cmd", "role", "get-role-holders", "android.app.role.SMS"],

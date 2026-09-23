@@ -94,7 +94,7 @@ class TestExecutionWorkerMtpPull:
         if walk_files is None:
             walk_files = ["file1.jpg", "file2.jpg"]
 
-        def fake_walk(path):
+        def fake_walk(path, **kwargs):
             # One flat directory containing walk_files - enough to exercise
             # the real relpath/dest-path construction without needing a
             # genuine nested tree.
@@ -166,14 +166,14 @@ class TestExecutionWorkerMtpPull:
         assert job["status"] == "Failed"
         mock_copy.assert_not_called()
 
-    def test_a_stop_request_right_after_mounting_never_attempts_a_copy_and_stays_in_progress(self, tmp_path):
+    def test_a_stop_request_right_after_mounting_never_attempts_a_copy_and_is_recorded_stopped(self, tmp_path):
         job, report_data, mock_run, mock_copy, mock_write_report = self._run(
             tmp_path, snapshot_side_effect=[{"status": "Stopped"}]
         )
         # Never falsely marked either Completed or Failed for a genuinely
-        # stopped run - matches execution_worker_android()'s own identical
-        # "stays IN_PROGRESS, not Failed" convention for a Stopped job.
-        assert report_data["acquisition_status"] == "IN_PROGRESS"
+        # stopped run - recorded as STOPPED (2026-09-23; it used to stay
+        # IN_PROGRESS forever, with no report written at all).
+        assert report_data["acquisition_status"] == "STOPPED"
         mock_copy.assert_not_called()
         # The mount is still unmounted even though the copy never ran -
         # cleanup must never depend on how far the run got.

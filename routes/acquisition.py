@@ -33,14 +33,14 @@ from core.auth import requires_auth, requires_permission, _effective_client_ip
 from core.paths import (
     safe_path, log_chain_of_custody, is_valid_block_device,
     is_valid_block_device_or_partition, _DEVICE_RE, classify_usb_port,
-    describe_usb_port, sanitize_case_slug, case_status_blocking_new_work,
+    describe_usb_port, sanitize_case_slug, case_status_blocking_new_work, system_disk_names, destination_is_on_source_device,
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, ALLOWED_HASH_ALGOS, load_hash_list_sets, get_hash_lists,
     detect_pi_model, usb_port_diagram_supported,
 )
 from core.usb_port_health import diagnose_usb_port_health
-from core.jobs import (
+from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job,
     get_active_proc, clear_active_proc,
     get_upstream_proc, clear_upstream_proc,
@@ -1195,7 +1195,10 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
         time.sleep(1.0)
         computed_hashes = {}
         if fmt == 'e01':
-            computed_hashes = parse_ewf_hashes(snapshot_job()["log"])
+            # The FULL history, not the live log: append_log() trims the live
+            # log to its last 100 lines, so ewfacquire's hash lines could be
+            # cut and the run reported complete with no hash (2026-09-23).
+            computed_hashes = parse_ewf_hashes("\n".join(log_history))
         elif fmt in ['raw', 'dd']:
             # Prefers the exact path start_imaging() already built and
             # passed in over re-deriving it here via out_file.replace('.dd',
@@ -1213,11 +1216,25 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
                 if val:
                     computed_hashes[h] = val
         elif fmt == 'plain_dd':
-            append_log("[*] Computing hash(es) of output file (plain dd has no built-in hashing)...")
-            computed_hashes = compute_file_hashes(out_file, hashes)
+            # Only a complete image gets a hash (2026-09-23). Hashing a failed
+            # or stopped partial output recorded that partial file's hash as
+            # the acquisition hash, and a later verify would then "match" it.
+            if proc.returncode in [0, 2] and snapshot_job()["status"] != "Stopped":
+                append_log("[*] Computing hash(es) of output file (plain dd has no built-in hashing)...")
+                computed_hashes = compute_file_hashes(out_file, hashes)
+            else:
+                append_log("[-] Not hashing the output - dd did not complete, so it is not a full image.")
 
         report_data["execution_time_seconds"] = round(time.time() - start_time, 2)
         report_data["computed_verification_hashes"] = computed_hashes
+        # Name any requested algorithm the tool did not actually produce
+        # (2026-09-23) - e.g. ewfacquire computes MD5 plus ONE extra digest,
+        # so asking for both SHA-1 and SHA-256 yields only one of them. The
+        # report must not read as if every requested hash was taken.
+        missing_hashes = [h for h in (hashes or []) if h not in computed_hashes]
+        if missing_hashes and fmt != 'ddrescue':
+            report_data["requested_hashes_not_computed"] = missing_hashes
+            append_log(f"[!] Requested hash(es) not produced by this run: {', '.join(missing_hashes)}")
 
         # A real, live-caught gap (2026-09-06, found via Android bugreport/
         # backup - see _fsync_confirm_write()'s own docstring): a tool's
@@ -1259,6 +1276,9 @@ def execution_worker(cmd, fmt, total_bytes, out_file, report_file_path, report_d
             else:
                 append_log(f"[-] Process exited with code {proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
+        else:
+            # Stopped by the examiner - recorded as such, never left IN_PROGRESS (2026-09-23).
+            report_data["acquisition_status"] = "STOPPED"
 
         _write_report(report_file_path, report_data, append_log)
 
@@ -1470,6 +1490,9 @@ def execution_worker_aff(source, dest_path, base_name, hashes, keep_raw, report_
             else:
                 append_log(f"[-] Phase 2 (AFF conversion) failed with exit code {proc2.returncode}")
             report_data["acquisition_status"] = "FAILED"
+        else:
+            # Stopped by the examiner - recorded as such, never left IN_PROGRESS (2026-09-23).
+            report_data["acquisition_status"] = "STOPPED"
 
         _write_report(report_file_path, report_data, append_log)
 
@@ -1662,6 +1685,9 @@ def execution_worker_image_conversion(source_image_path, target_format, requeste
             update_job(status="Failed")
             append_log(f"[-] Conversion failed with exit code {proc.returncode}")
             report_data["acquisition_status"] = "FAILED"
+        else:
+            # Stopped by the examiner - recorded as such, never left IN_PROGRESS (2026-09-23).
+            report_data["acquisition_status"] = "STOPPED"
 
         _write_report(report_file_path, report_data, append_log)
 
@@ -1686,6 +1712,7 @@ def start_image_conversion():
         if current_job["active"]:
             return jsonify({"success": False, "error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     source_image_path = safe_path(req.get('source_image_path'))
@@ -1988,6 +2015,7 @@ def start_logical_acquisition():
         if current_job["active"]:
             return jsonify({"success": False, "error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     selected_folders_raw = req.get('selected_folders') or []
@@ -2290,6 +2318,7 @@ def start_build_collection_usb():
         if current_job["active"]:
             return jsonify({"success": False, "error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     device = (req.get('device') or '').strip()
@@ -2647,6 +2676,7 @@ def start_import_live_collection():
         if current_job["active"]:
             return jsonify({"success": False, "error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     device = (req.get('device') or '').strip()
@@ -2716,68 +2746,77 @@ def start_import_live_collection():
 @requires_auth
 def list_drives():
     drives = []
+    # The station's own system disk is never an acquisition candidate
+    # (2026-09-23): it was listed - and accepted by the start routes - as
+    # /dev/mmcblk0, and was blockdev --setro'd on every poll. Hidden here,
+    # refused server-side by is_valid_block_device().
+    system_disks = system_disk_names()
     try:
         res = subprocess.run(
             ['lsblk', '-J', '-b', '-o', 'NAME,SIZE,MODEL,TRAN,TYPE,SERIAL,RO'],
             capture_output=True, text=True
         )
-        if res.returncode == 0:
-            data = json.loads(res.stdout)
-            for dev in data.get('blockdevices', []):
-                # zram is compressed RAM used as swap, not storage - it has no
-                # `tran`, so classify_usb_port() fell through to labelling it
-                # "[USB] Generic Disk" and it was offered as an acquisition
-                # TARGET alongside real drives (seen live: "/dev/zram0 - [USB]
-                # Generic Disk (0.9 GB)"). Imaging the station's own swap is
-                # never what an examiner meant, and the label actively
-                # encourages the mistake. Excluded the same way loop devices
-                # already are (2026-09-16).
-                if dev.get('type') == 'disk' and not dev['name'].startswith(('loop', 'zram')):
-                    bytes_size = int(dev.get('size', 0))
-                    gb_size = round(bytes_size / (1024**3), 1)
-                    dev_path = f"/dev/{dev['name']}"
+        # A failed listing is an error, not "no drives attached" (2026-09-23).
+        if res.returncode != 0:
+            return jsonify({"error": f"Could not list drives (lsblk exit {res.returncode}): {res.stderr.strip()[:200]}"}), 500
+        data = json.loads(res.stdout)
+        for dev in data.get('blockdevices', []):
+            if dev.get('name') in system_disks:
+                continue
+            # zram is compressed RAM used as swap, not storage - it has no
+            # `tran`, so classify_usb_port() fell through to labelling it
+            # "[USB] Generic Disk" and it was offered as an acquisition
+            # TARGET alongside real drives (seen live: "/dev/zram0 - [USB]
+            # Generic Disk (0.9 GB)"). Imaging the station's own swap is
+            # never what an examiner meant, and the label actively
+            # encourages the mistake. Excluded the same way loop devices
+            # already are (2026-09-16).
+            if dev.get('type') == 'disk' and not dev['name'].startswith(('loop', 'zram')):
+                bytes_size = int(dev.get('size', 0))
+                gb_size = round(bytes_size / (1024**3), 1)
+                dev_path = f"/dev/{dev['name']}"
 
-                    # Force read-only lock upon discovery - race-safe
-                    # against a concurrent Live Collection USB build job
-                    # (or, since 2026-09-05, a manually toggled-unlocked
-                    # drive) via _relock_device_for_list_drives() (skips
-                    # this exact device, under device_write_lock, while
-                    # it's legitimately unlocked and tracked in
-                    # active_write_unlocked_devices).
-                    _relock_device_for_list_drives(dev_path)
+                # Force read-only lock upon discovery - race-safe
+                # against a concurrent Live Collection USB build job
+                # (or, since 2026-09-05, a manually toggled-unlocked
+                # drive) via _relock_device_for_list_drives() (skips
+                # this exact device, under device_write_lock, while
+                # it's legitimately unlocked and tracked in
+                # active_write_unlocked_devices).
+                _relock_device_for_list_drives(dev_path)
 
-                    # read_only now reflects real, current state (a plain
-                    # dict-membership read is fine here - this is a display
-                    # field, not a security decision; the actual gate is
-                    # _unlock_device_for_write()'s own port check, done
-                    # under device_write_lock, not this) - previously
-                    # hardcoded True unconditionally, which would have
-                    # misreported a drive as locked while it was still
-                    # legitimately, deliberately unlocked via the toggle.
-                    # port_class ('blue'/'black'/'unknown') lets the
-                    # frontend show which of the 2 evidence-only vs 2
-                    # utility ports a drive is actually in - see
-                    # classify_usb_port()'s own docstring in core/paths.py.
-                    port_info = describe_usb_port(dev_path) or {"color": None, "port_index": None}
-                    drives.append({
-                        "name": dev['name'],
-                        "device": dev_path,
-                        "model": dev.get('model') or 'Generic Disk',
-                        "size": f"{gb_size} GB",
-                        "bytes": bytes_size,
-                        "transport": dev.get('tran') or 'usb',
-                        "serial": dev.get('serial') or 'N/A',
-                        "read_only": dev_path not in active_write_unlocked_devices,
-                        "port_class": port_info["color"],
-                        # 1-4, or None if only the color (not the specific
-                        # physical port) could be confirmed - see
-                        # describe_usb_port()'s own docstring. Used by the
-                        # Drive Management port diagram to highlight the
-                        # exact slot a drive is in, not just its color.
-                        "port_index": port_info["port_index"],
-                    })
+                # read_only now reflects real, current state (a plain
+                # dict-membership read is fine here - this is a display
+                # field, not a security decision; the actual gate is
+                # _unlock_device_for_write()'s own port check, done
+                # under device_write_lock, not this) - previously
+                # hardcoded True unconditionally, which would have
+                # misreported a drive as locked while it was still
+                # legitimately, deliberately unlocked via the toggle.
+                # port_class ('blue'/'black'/'unknown') lets the
+                # frontend show which of the 2 evidence-only vs 2
+                # utility ports a drive is actually in - see
+                # classify_usb_port()'s own docstring in core/paths.py.
+                port_info = describe_usb_port(dev_path) or {"color": None, "port_index": None}
+                drives.append({
+                    "name": dev['name'],
+                    "device": dev_path,
+                    "model": dev.get('model') or 'Generic Disk',
+                    "size": f"{gb_size} GB",
+                    "bytes": bytes_size,
+                    "transport": dev.get('tran') or 'usb',
+                    "serial": dev.get('serial') or 'N/A',
+                    "read_only": dev_path not in active_write_unlocked_devices,
+                    "port_class": port_info["color"],
+                    # 1-4, or None if only the color (not the specific
+                    # physical port) could be confirmed - see
+                    # describe_usb_port()'s own docstring. Used by the
+                    # Drive Management port diagram to highlight the
+                    # exact slot a drive is in, not just its color.
+                    "port_index": port_info["port_index"],
+                })
     except Exception as e:
-        print(f"Error executing lsblk: {e}")
+        return jsonify({"error": f"Could not list drives: {e}"}), 500
 
     return jsonify(drives)
 
@@ -3199,10 +3238,11 @@ def start_imaging():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     source = req.get('source')
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is
@@ -3233,8 +3273,8 @@ def start_imaging():
     luks_passphrase_doc = (req.get('luks_passphrase') or '').strip()
     veracrypt_password_doc = (req.get('veracrypt_password') or '').strip()
 
-    compression = req.get('compression', 'fast')
-    split_size = req.get('split_size', '2000M')
+    compression = str(req.get('compression') or 'fast')
+    split_size = str(req.get('split_size') or '2000M')
 
     # Guided Workflow automation Tier 2 (2026-08-27) - opt-in, examiner-
     # confirmed-once-up-front chain into Auto Analyze on a genuine COMPLETED
@@ -3277,10 +3317,21 @@ def start_imaging():
     if invalid_hashes:
         update_job(active=False)
         return jsonify({"error": f"Unsupported hash algorithm(s): {sorted(invalid_hashes)}. Use any of {sorted(ALLOWED_HASH_ALGOS)}."}), 400
+    # Passed straight into ewfacquire's argv - whitelist rather than trust.
+    if compression not in ('none', 'empty-block', 'fast', 'best'):
+        update_job(active=False)
+        return jsonify({"error": "compression must be one of: none, empty-block, fast, best."}), 400
+    if not re.fullmatch(r'[1-9][0-9]{0,6}[KMGT]?B?', split_size):
+        update_job(active=False)
+        return jsonify({"error": "split_size must be a size like 2000M or 4G."}), 400
 
     if not dest_path:
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    if source_kind == 'real_device' and destination_is_on_source_device(dest_path, source):
+        update_job(active=False)
+        return jsonify({"error": f"The destination {dest_path} is on {source} itself - an image can never be written "
+                                  f"onto the device being imaged. Choose a destination on different storage."}), 400
 
     if not os.path.exists(dest_path):
         try:
@@ -3643,10 +3694,11 @@ def start_ddrescue():
         if current_job["active"]:
             return jsonify({"error": "An acquisition job is already running."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     source = req.get('source')
-    dest_path = safe_path(req.get('destination', EVIDENCE_ROOT).strip())
+    dest_path = safe_path(str(req.get('destination') or EVIDENCE_ROOT).strip())
     # Refuse to land NEW evidence in a case the examiner has already
     # marked Closed/Archived (2026-09-16). Placed here rather than after
     # the `if not dest_path` check below so the insertion point is
@@ -3661,7 +3713,8 @@ def start_ddrescue():
                                   f"different destination."}), 409
     strategy = req.get('strategy', 'stage1_fast')
     retry_passes = str(req.get('retry_passes', '3'))
-    direct_mode = req.get('direct_mode', True)
+    # Strict: the string "false" is truthy, and silently enabled O_DIRECT.
+    direct_mode = req.get('direct_mode', True) is True
     input_pos = req.get('input_position', '')
     max_size = req.get('max_size', '')
     metadata = req.get('metadata', {})
@@ -3693,14 +3746,18 @@ def start_ddrescue():
     if not dest_path:
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    if destination_is_on_source_device(dest_path, source):
+        update_job(active=False)
+        return jsonify({"error": f"The destination {dest_path} is on {source} itself - an image can never be written "
+                                  f"onto the device being imaged. Choose a destination on different storage."}), 400
 
     if strategy not in ('stage1_fast', 'stage2_trim', 'stage3_intensive', 'reverse'):
         update_job(active=False)
         return jsonify({"error": f"Unrecognized strategy '{strategy}'."}), 400
 
-    if not retry_passes.isdigit():
+    if not retry_passes.isdigit() or int(retry_passes) > 50:
         update_job(active=False)
-        return jsonify({"error": "retry_passes must be a positive integer."}), 400
+        return jsonify({"error": "retry_passes must be a whole number from 0 to 50."}), 400
 
     if not os.path.exists(dest_path):
         try:
@@ -3858,7 +3915,11 @@ def stop_imaging():
         # than a bare name match - "dd" is too generic a process name to
         # pkill by bare name without risking killing an unrelated process
         # elsewhere on the system.
-        for tool in ["dc3dd", "dcfldd", "ewfacquire", "ddrescue", "photorec", "extundelete", "foremost", "scalpel"]:
+        # ewfexport (image conversion) and affconvert (AFF phase 2) added
+        # 2026-09-23 - Stop during either left the converter running after
+        # the slot was released.
+        for tool in ["dc3dd", "dcfldd", "ewfacquire", "ewfexport", "affconvert", "ddrescue", "photorec",
+                     "extundelete", "foremost", "scalpel"]:
             try:
                 subprocess.run(["sudo", "pkill", "-9", tool], capture_output=True)
             except Exception:

@@ -112,12 +112,12 @@ class TestExecutionWorkerIosBackup:
             tmp_path, backup_returncode=1, create_backup_dir=False,
             snapshot_side_effect=[{"status": "Stopped"}],
         )
-        assert report_data["acquisition_status"] == "IN_PROGRESS"
+        assert report_data["acquisition_status"] == "STOPPED"
         # _write_report still runs unconditionally right after the if/elif -
         # a Stopped run's report isn't silently left unwritten.
         with open(report_path, "r", encoding="utf-8") as f:
             written = json.load(f)
-        assert written["acquisition_status"] == "IN_PROGRESS"
+        assert written["acquisition_status"] == "STOPPED"
 
     def test_encryption_enabled_successfully_proceeds_to_the_normal_backup(self, tmp_path):
         job, report_data, mock_stream, mock_clear, mock_enc, report_path = self._run(

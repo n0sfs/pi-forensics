@@ -72,7 +72,7 @@ from core.config import (
     load_runtime_config, save_runtime_config,
     get_report_defaults, get_custom_case_fields,
 )
-from core.jobs import (_read_case_file, _write_case_file, current_job, job_lock, update_job,
+from core.jobs import (mark_job_slot_claimed, _read_case_file, _write_case_file, current_job, job_lock, update_job,
                        snapshot_job, CaseFileUnreadable, CASE_WRITE_LOCK, serialize_case_writes,
                        is_case_record_path)
 from core.case_index_db import (
@@ -3307,6 +3307,7 @@ def start_verify_all_evidence():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     case_folder = safe_path(req.get('case_folder'))
@@ -3573,6 +3574,7 @@ def start_case_bundle_export():
         if current_job["active"]:
             return jsonify({"success": False, "error": "Another job is already running station-wide - wait for it to finish or stop it first."}), 400
         current_job["active"] = True
+        mark_job_slot_claimed()
 
     req = request.get_json() or {}
     case_folder = safe_path(req.get('case_folder'))

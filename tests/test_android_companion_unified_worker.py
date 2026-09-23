@@ -115,8 +115,13 @@ def test_cleanup_skips_permission_revoke_when_install_never_succeeded():
 
         _run({"contacts"})
 
-        assert mocks["_adb_run"].call_count == 1
-        assert mocks["_adb_run"].call_args[0][1] == ["install", "-r", mobile.PIF_COMPANION_APK]
+        calls = [c[0][1] for c in mocks["_adb_run"].call_args_list]
+        assert calls[0] == ["install", "-r", mobile.PIF_COMPANION_APK]
+        # No permission revokes for an install that never succeeded...
+        assert not any(len(c) > 2 and c[:3] == ["shell", "pm", "revoke"] for c in calls)
+        # ...but always one uninstall attempt (2026-09-23): a timed-out
+        # install (rc -1) can still have landed the collector on the device.
+        assert calls[1:] == [["uninstall", mobile.PIF_COMPANION_PACKAGE]]
 
 
 def test_stop_requested_before_any_permission_grant_skips_everything_but_still_cleans_up():
