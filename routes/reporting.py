@@ -623,6 +623,9 @@ def report_examiner_names():
     usernames = sorted({u.get('username') for u in (cfg.get('users') or []) if u.get('username')})
     return jsonify({"success": True, "usernames": usernames})
 
+FSTAB_PATH = '/etc/fstab'
+
+
 def _known_share_mount_points(target):
     points = set()
     for share in load_runtime_config().get('auto_mount_shares', []) or []:
@@ -635,6 +638,17 @@ def _known_share_mount_points(target):
                     points.add(entry['mount_point'])
     except (OSError, ValueError):
         pass  # no history yet, or unreadable - the other two sources still apply
+    # A share mounted outside this app entirely is normally made permanent
+    # with an /etc/fstab line - read it too (the mount point is field 2;
+    # fstab escapes a space as a literal backslash-040).
+    try:
+        with open(FSTAB_PATH, 'r') as f:
+            for line in f:
+                fields = line.split()
+                if len(fields) >= 2 and not fields[0].startswith('#') and fields[1].startswith('/'):
+                    points.add(fields[1].replace('\\040', ' '))
+    except OSError:
+        pass
     root = os.path.realpath(EVIDENCE_ROOT)
     if path_is_within(target, root) and target != root:
         top = os.path.relpath(target, root).split(os.sep)[0]
@@ -659,7 +673,11 @@ def _evidence_storage_unavailable(path):
     auto-mount shares, the Settings mount history (every one-off mount is
     recorded there too), and - for a mount older than that 10-entry history -
     the naming convention /api/mount_network always uses,
-    <EVIDENCE_ROOT>/network_<protocol>_<share>."""
+    <EVIDENCE_ROOT>/network_<protocol>_<share>, and /etc/fstab for shares
+    mounted outside this app. A mount made by hand, at a non-convention path,
+    with no fstab line, is still undetectable - nothing records it should
+    be there. Root-filesystem entries ("/") never match: path_is_within("/")
+    is true for everything but "/" itself is always mounted."""
     target = os.path.realpath(path)
     for mp in _known_share_mount_points(target):
         if path_is_within(target, os.path.realpath(mp)) and not os.path.ismount(mp):
