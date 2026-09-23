@@ -14656,10 +14656,18 @@ function renderReportTemplateBuilderRows() {
         // every other block's content is structured data a dropdown can't
         // meaningfully rewire, so it gets no source-field control at all.
         if (block && block.remappable) {
+            // A visible "Src:" label, not just the select's own title=
+            // tooltip - a hover-only hint is undiscoverable on this app's
+            // primary target device, a touchscreen kiosk with no hover state.
+            const fieldWrap = document.createElement('div');
+            fieldWrap.className = 'd-flex align-items-center gap-1';
+            fieldWrap.style.flex = '0 0 auto';
+            fieldWrap.style.width = '200px';
+            const fieldLabel = document.createElement('span');
+            fieldLabel.className = 'text-subtle small flex-shrink-0';
+            fieldLabel.textContent = 'Src:';
             const fieldSelect = document.createElement('select');
             fieldSelect.className = 'form-select form-select-sm';
-            fieldSelect.style.flex = '0 0 auto';
-            fieldSelect.style.width = '200px';
             fieldSelect.title = 'Which narrative field fills this section';
             reportFieldOptionsCache.forEach(opt => {
                 const optEl = document.createElement('option');
@@ -14669,7 +14677,9 @@ function renderReportTemplateBuilderRows() {
             });
             fieldSelect.value = row.source_field || defaultSourceFieldFor(row.key);
             fieldSelect.onchange = () => { reportTemplateBuilderEditing[idx].source_field = fieldSelect.value; };
-            wrap.appendChild(fieldSelect);
+            fieldWrap.appendChild(fieldLabel);
+            fieldWrap.appendChild(fieldSelect);
+            wrap.appendChild(fieldWrap);
         } else {
             // Empty same-width spacer so non-remappable rows' title inputs
             // still line up with remappable ones' shorter title inputs.
@@ -15346,30 +15356,51 @@ function renderCustomFieldDefsEditor() {
         moveWrap.appendChild(downBtn);
         row.appendChild(moveWrap);
 
+        // Bootstrap's form-floating, not a bare placeholder - a placeholder
+        // vanishes once text is entered, so a returning user with several
+        // fields already filled in couldn't tell which column was which.
+        const labelWrap = document.createElement('div');
+        labelWrap.className = 'form-floating flex-grow-1';
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'form-control form-control-sm';
+        input.id = `customFieldLabelInput_${idx}`;
         input.placeholder = 'Field label (e.g. Agency)';
         input.value = def.label || '';
         input.oninput = () => { caseReportingFieldsEditing[idx].label = input.value; };
+        const inputLabel = document.createElement('label');
+        inputLabel.setAttribute('for', input.id);
+        inputLabel.className = 'small';
+        inputLabel.textContent = 'Field Label';
+        labelWrap.appendChild(input);
+        labelWrap.appendChild(inputLabel);
         // Free-text default, prefilled into this field's value on every
         // NEW case going forward (create_case() in routes/case_management.py)
         // - e.g. a station that's always the same agency can set that once
         // here instead of retyping it per case. Never touches an existing
         // case's already-saved value.
+        const defaultWrap = document.createElement('div');
+        defaultWrap.className = 'form-floating flex-grow-1';
         const defaultInput = document.createElement('input');
         defaultInput.type = 'text';
         defaultInput.className = 'form-control form-control-sm';
+        defaultInput.id = `customFieldDefaultInput_${idx}`;
         defaultInput.placeholder = 'Default value for new cases (optional)';
         defaultInput.value = def.default_value || '';
         defaultInput.oninput = () => { caseReportingFieldsEditing[idx].default_value = defaultInput.value; };
+        const defaultLabel = document.createElement('label');
+        defaultLabel.setAttribute('for', defaultInput.id);
+        defaultLabel.className = 'small';
+        defaultLabel.textContent = 'Default Value (optional)';
+        defaultWrap.appendChild(defaultInput);
+        defaultWrap.appendChild(defaultLabel);
         const delBtn = document.createElement('button');
         delBtn.className = 'btn btn-sm btn-outline-danger';
         delBtn.type = 'button';
         delBtn.innerHTML = '<i class="bi bi-trash3"></i>';
         delBtn.onclick = () => { caseReportingFieldsEditing.splice(idx, 1); renderCustomFieldDefsEditor(); markCaseReportingSettingsDirty(); };
-        row.appendChild(input);
-        row.appendChild(defaultInput);
+        row.appendChild(labelWrap);
+        row.appendChild(defaultWrap);
         row.appendChild(delBtn);
         container.appendChild(row);
     });
@@ -20702,11 +20733,16 @@ async function loadFolderList(path) {
         if (!folderListEl.children.length) {
             // Distinguish "nothing here" from "nothing you can pick here" -
             // in a file-picker mode, a folder full of files an examiner can't
-            // select looks identical to an empty one otherwise.
+            // select looks identical to an empty one otherwise. In a
+            // folder-picking mode (Select button visible), the folder shown
+            // above is itself still selectable via that button even with no
+            // sub-folders listed - don't imply a dead end when it isn't one.
             const hadItems = data.items.length > 0;
-            _setFolderListMessage(folderListEl, hadItems
-                ? 'Nothing here can be selected in this mode - no sub-folders in this folder.'
-                : 'This folder is empty.');
+            const selectBtnVisible = document.getElementById("modalSelectBtn")?.style.display !== 'none';
+            const noSubfoldersMsg = selectBtnVisible
+                ? 'No sub-folders here - you can still select the folder shown above.'
+                : 'Nothing here can be selected in this mode - no sub-folders in this folder.';
+            _setFolderListMessage(folderListEl, hadItems ? noSubfoldersMsg : 'This folder is empty.');
         }
     } catch (err) {
         _setFolderListMessage(folderListEl, `Could not read ${path}: ${err.message}`, 'text-danger');

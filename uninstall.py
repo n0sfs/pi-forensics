@@ -118,6 +118,46 @@ if UDEV_RULE.exists():
     subprocess.run(["udevadm", "trigger"], capture_output=True)
 
 # ---------------------------------------------------------------------------
+# 4b. PC/SC polkit rule, GVFS/udisks2 dconf override, FUSE user_allow_other
+# ---------------------------------------------------------------------------
+# Three more pieces of system-level config install.py writes outside
+# INSTALL_DIR that a previous version of this uninstaller didn't know about -
+# a "starting fresh" uninstall left them behind with nothing in this
+# summary even mentioning it. Removing the dconf override/lock restores the
+# desktop's default automount behavior; the polkit rule and the fuse.conf
+# line are left as harmless no-ops if this app is gone, but are cleaned up
+# anyway for a genuinely clean uninstall.
+print("\n[*] Removing PC/SC polkit rule and GVFS/udisks2 dconf override...")
+polkit_rule = Path("/etc/polkit-1/rules.d/49-pi-forensics-pcsc.rules")
+if polkit_rule.exists():
+    polkit_rule.unlink()
+    print(f"[+] Removed {polkit_rule}")
+
+dconf_override = Path("/etc/dconf/db/local.d/00_media-handling")
+dconf_lock = Path("/etc/dconf/db/local.d/locks/media-handling")
+if dconf_override.exists() or dconf_lock.exists():
+    if dconf_override.exists():
+        dconf_override.unlink()
+    if dconf_lock.exists():
+        dconf_lock.unlink()
+    subprocess.run(["dconf", "update"], capture_output=True)
+    print("[+] Removed GVFS/udisks2 automount dconf override (restores default automount behavior)")
+
+fuse_conf_path = Path("/etc/fuse.conf")
+if fuse_conf_path.exists():
+    lines = fuse_conf_path.read_text().splitlines(keepends=True)
+    kept = [ln for ln in lines if ln.strip() != "user_allow_other"]
+    if len(kept) != len(lines):
+        fuse_conf_path.write_text("".join(kept))
+        print(f"[+] Removed 'user_allow_other' line from {fuse_conf_path}")
+
+reenable_udisks = input("    Re-enable the udisks2 automount service install.py disabled? [y/N]: ").strip().lower()
+if reenable_udisks in ("y", "yes"):
+    subprocess.run(["systemctl", "enable", "udisks2.service"], capture_output=True)
+    subprocess.run(["systemctl", "start", "udisks2.service"], capture_output=True)
+    print("[+] Re-enabled udisks2.service")
+
+# ---------------------------------------------------------------------------
 # 5. Application directory
 # ---------------------------------------------------------------------------
 print(f"\n[*] Application directory {INSTALL_DIR}")
@@ -187,11 +227,13 @@ print("  UNINSTALL COMPLETE")
 print("=" * 56)
 print("  Notes:")
 print("  - Evidence images under /mnt or network mounts were not deleted.")
-print("  - System packages (dc3dd, dcfldd, ewf-tools, gddrescue, afflib-tools,")
-print("    smartmontools, libimobiledevice-utils, usbmuxd, adb, nginx, …) were left")
-print("    installed. Remove them with apt if desired, e.g.:")
-print("      sudo apt remove dc3dd dcfldd ewf-tools gddrescue afflib-tools \\")
-print("        smartmontools libimobiledevice-utils usbmuxd adb \\")
-print("        android-sdk-platform-tools-common nginx")
+print("  - System packages install.py installed were left installed (this list is not")
+print("    exhaustive - see install.py's own apt_packages list for the full, current one):")
+print("    sudo apt remove dc3dd dcfldd ewf-tools gddrescue afflib-tools \\")
+print("      smartmontools libimobiledevice-utils usbmuxd adb \\")
+print("      android-sdk-platform-tools-common nginx openssl wvkbd testdisk \\")
+print("      libimage-exiftool-perl sleuthkit libewf-dev binwalk clamav \\")
+print("      clamav-freshclam hashdeep extundelete foremost scalpel dislocker \\")
+print("      cryptsetup-bin pcscd pcsc-tools sshfs cifs-utils nfs-common udevil")
 print("  - Reboot if you removed a graphical kiosk autostart.")
 print("=" * 56)

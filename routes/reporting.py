@@ -3257,18 +3257,65 @@ def execution_worker_case_bundle_export(case_folder, include_images, requester_i
         # ZipFile-level default) still applies normally to everything else
         # (notes, exports, small text/images), which DOES compress
         # meaningfully.
+        # zf.write() below the size threshold is left alone - it already
+        # copies in 8KB chunks internally (see CPython's zipfile.write(),
+        # which is exactly ZipInfo.from_file() + self.open(zinfo,'w') +
+        # shutil.copyfileobj()), just with no progress hook between chunks.
+        # For a raw acquisition image - by far the largest candidate, and
+        # the case this bundle export was built to include - that one
+        # zf.write() call can run for most of the job's total duration with
+        # this loop's own progress update only firing before and after it,
+        # so the bar sits frozen mid-export then jumps to ~100% the instant
+        # the file finishes. A user watching during this project's own
+        # documented real NFS stalls has no way to tell "almost done" from
+        # "hung". Above the threshold, replicate zf.write()'s own internal
+        # pattern by hand (same ZipInfo.from_file() + zf.open(zinfo,'w')
+        # shape CPython uses) so bytes_done - and therefore the progress
+        # bar - advances continuously within one large file, not just
+        # between files. Below the threshold, plain zf.write() is simpler
+        # and no less accurate, since a small file's whole write already
+        # completes within one 0.5s progress-update tick.
+        LARGE_FILE_PROGRESS_THRESHOLD = 256 * 1024 * 1024  # 256 MB
+        CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             for fpath, arcname, size, is_raw_image in candidates:
                 if snapshot_job()["status"] == "Stopped":
                     append_log("[-] Stopped by user - bundle contains only what was added before the stop.")
                     break
+                compress_type = zipfile.ZIP_STORED if is_raw_image else zipfile.ZIP_DEFLATED
+                # Tracks how much of THIS file's size has already been added
+                # to bytes_done, so bytes_done still advances by exactly
+                # `size` per candidate whether it succeeds, fails outright,
+                # or fails partway through a chunked large-file copy -
+                # without this, an exception mid-copy would double-count the
+                # chunks already added when the except block below also
+                # added the full size on top.
+                file_bytes_counted = 0
                 try:
-                    zf.write(fpath, arcname=arcname, compress_type=zipfile.ZIP_STORED if is_raw_image else zipfile.ZIP_DEFLATED)
+                    if size >= LARGE_FILE_PROGRESS_THRESHOLD:
+                        zinfo = zipfile.ZipInfo.from_file(fpath, arcname)
+                        zinfo.compress_type = compress_type
+                        with open(fpath, 'rb') as src, zf.open(zinfo, 'w') as dst:
+                            while True:
+                                chunk = src.read(CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                dst.write(chunk)
+                                bytes_done += len(chunk)
+                                file_bytes_counted += len(chunk)
+                                if time.time() - last_update > 0.5:
+                                    update_job(transferred_bytes=bytes_done,
+                                               progress_percent=round((bytes_done / total_size) * 100, 1) if total_size else 100.0)
+                                    last_update = time.time()
+                    else:
+                        zf.write(fpath, arcname=arcname, compress_type=compress_type)
+                        bytes_done += size
+                        file_bytes_counted = size
                     written += 1
                 except Exception as e:
                     errored += 1
                     append_log(f"[!] Could not add {arcname}: {e}")
-                bytes_done += size
+                    bytes_done += (size - file_bytes_counted)
                 if time.time() - last_update > 0.5:
                     update_job(transferred_bytes=bytes_done,
                                progress_percent=round((bytes_done / total_size) * 100, 1) if total_size else 100.0)

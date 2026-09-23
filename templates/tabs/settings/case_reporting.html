@@ -39,7 +39,7 @@
 
                                             <hr class="border-secondary">
                                             <div class="small text-info fw-bold mb-1">Export Defaults</div>
-                                            <div class="small text-subtle mb-2">Pre-checks these sections/fields when opening the Export Report modal from Reporting - still adjustable per-export there. Applies to the Standard template only.</div>
+                                            <div class="small text-subtle mb-2">Pre-checks these when opening the Export Report modal from Reporting - still adjustable per-export there. Applies to the Standard template only. Left column: whole report sections. Right column: extra sub-details shown per evidence item inside the Acquisition Method section when it's included.</div>
                                             <div class="row g-2 mb-2">
                                                 <div class="col-md-6">
                                                     <div class="form-check"><input class="form-check-input" type="checkbox" id="defSecCaseInfo" checked><label class="form-check-label small" for="defSecCaseInfo">Case Information</label></div>
@@ -140,7 +140,7 @@
                                     <div id="secAnalysisLists" class="accordion-collapse collapse">
                                         <div class="accordion-body">
                                             <div class="small text-info fw-bold mb-1">Keyword Lists</div>
-                                            <div class="small text-subtle mb-2">Saved search terms selectable when running Triage Scan (File Recovery tab), additive to the 5 built-in categories (emails/URLs/IPs/card-like numbers/phone numbers). Plain terms match as case-insensitive substrings; a list can instead be marked Regex to use each term as a full regular expression.</div>
+                                            <div class="small text-subtle mb-2">Saved search terms selectable when running Triage Scan (File Recovery tab), additive to the 5 built-in categories (emails/URLs/IPs/card-like numbers/phone numbers). Plain terms match as case-insensitive substrings anywhere in the text - a short or common word will also match inside other words (e.g. "ice" inside "device"). For a short/common term, mark the list Regex and write it with word boundaries instead, e.g. <code>\bice\b</code>.</div>
                                             <div id="keywordListsListContainer" class="mb-2">
                                                 <div class="text-subtle small p-2">Loading keyword lists...</div>
                                             </div>

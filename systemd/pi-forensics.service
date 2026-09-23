@@ -19,14 +19,21 @@ Group=pi
 WorkingDirectory=/opt/pi-forensics
 
 # Set interactively above. If you need to change these later, either edit
-# this file directly or use the Advanced Settings tab in the dashboard
-# (password only - the username isn't changeable from the UI).
+# this file directly or use the Settings tab in the dashboard (which manages
+# runtime_config.json's real account store, not these env vars, once at
+# least one user exists there).
 Environment="FORENSIC_USER=admin"
 Environment="FORENSIC_PASS=CHANGE_ME_DURING_INSTALL"
 
 # Restricts the file-explorer/report/attachment/imaging-destination API
 # to this directory tree. Defaults to /mnt if unset.
 Environment="FORENSIC_ROOT=/mnt"
+
+# Skips login for the physical kiosk touchscreen only - remote/LAN/WiFi
+# access always still requires authentication regardless of this setting.
+# Defaults to bypassing (this line is informational; app.py's default is
+# already "on" even without it). Uncomment to require login locally too:
+# Environment="FORENSIC_KIOSK_AUTH_BYPASS=0"
 
 # Bind address depends on whether nginx+TLS was set up above:
 #   - With TLS: gunicorn stays on loopback (127.0.0.1) and nginx is the
