@@ -407,6 +407,11 @@ def execution_worker_scalpel(source, dest_dir, report_file_path, report_data):
         clear_active_proc()
 
 
+# Bytes that end a token for every built-in pattern (whitespace, NUL, quotes,
+# angle brackets, commas...) - the carried-over chunk tail starts after one.
+_TOKEN_BREAK_BYTES = frozenset(b' \t\r\n\x00"\'<>(),;[]{}|')
+
+
 def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data, total_bytes,
                                  keyword_list_ids=None, case_folder=None):
     """
@@ -442,8 +447,13 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
     OVERLAP = 256  # bytes carried over between chunks so a match spanning a
                    # chunk boundary isn't missed
 
-    patterns = build_scan_patterns(keyword_list_ids)
+    skipped_keyword_lists = []
+    patterns = build_scan_patterns(keyword_list_ids, skipped_out=skipped_keyword_lists)
     results = {name: set() for name in patterns}
+    for sk in skipped_keyword_lists:
+        append_log(f"[!] Keyword list '{sk.get('name') or sk['id']}' was NOT searched: {sk['reason']}.")
+    if skipped_keyword_lists:
+        report_data["keyword_lists_not_searched"] = skipped_keyword_lists
     truncated = {name: False for name in patterns}
 
     try:
@@ -455,7 +465,9 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
         last_update_time = time.time()
         files_scanned = 0
         files_errored = 0
+        dirs_unreadable = []
         folder_walk_capped = False
+        source_read_problem = None
 
         def _scan_stream(stream):
             """Runs the chunk loop over ONE open stream. Returns False if the
@@ -492,6 +504,13 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                                 break
 
                 tail = data[-OVERLAP:] if len(data) >= OVERLAP else data
+                # Start the carried-over tail at a token boundary (2026-09-27):
+                # cut mid-token, it re-matched the SUFFIX of a value found in
+                # full in the previous chunk - "mith@example.com" out of
+                # "joe.smith@example.com" - and recorded a hit that does not
+                # exist in the evidence.
+                cut = next((i for i, b in enumerate(tail) if b in _TOKEN_BREAK_BYTES), None)
+                tail = tail[cut + 1:] if cut is not None else b""
                 bytes_read += len(chunk)
 
                 # Throttle UI updates rather than pushing on every chunk.
@@ -517,6 +536,16 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
             try:
                 if not _scan_stream(read_proc.stdout):
                     append_log("[!] Scan stopped by user.")
+                else:
+                    # "0 hits" must mean the whole device was read (2026-09-27):
+                    # a failed or short read used to end "Completed, 0 matches".
+                    try:
+                        rc = read_proc.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        rc = None
+                    if rc not in (0, None) or (total_bytes and bytes_read < total_bytes):
+                        source_read_problem = (f"the device read ended early - {bytes_read:,} of "
+                                               f"{total_bytes:,} bytes were scanned (reader exit {rc})")
             finally:
                 try:
                     read_proc.stdout.close()
@@ -549,7 +578,9 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
             # actually produces. Settings' own help text still describes the
             # File Recovery tab as the one place keyword lists are selectable,
             # so this is where folder support belongs.
-            for root, dirs, fnames in os.walk(source):
+            # onerror: an unreadable subfolder used to be skipped without a
+            # trace, so the recorded coverage claimed a complete scan.
+            for root, dirs, fnames in os.walk(source, onerror=dirs_unreadable.append):
                 dirs[:] = [d for d in dirs if not is_bulk_tool_output_dir(d)]
                 for fname in sorted(fnames):
                     if files_scanned >= TRIAGE_FOLDER_MAX_FILES:
@@ -573,7 +604,10 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
                     continue
                 break
             append_log(f"[*] Scanned {files_scanned} file(s) under this folder"
-                       + (f", {files_errored} unreadable" if files_errored else "") + ".")
+                       + (f", {files_errored} unreadable" if files_errored else "")
+                       + (f", {len(dirs_unreadable)} subfolder(s) could not be listed" if dirs_unreadable else "") + ".")
+            for err in dirs_unreadable[:10]:
+                append_log(f"[!] Could not list {getattr(err, 'filename', '?')}: {getattr(err, 'strerror', err)}")
             if folder_walk_capped:
                 append_log(f"[!] Stopped after {TRIAGE_FOLDER_MAX_FILES} files - this folder holds more "
                            f"than this scan will read, so the result is NOT a complete view of it.")
@@ -634,11 +668,18 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
             report_data["triage_scan_coverage"] = {
                 "files_scanned": files_scanned,
                 "files_unreadable": files_errored,
+                "folders_unreadable": len(dirs_unreadable),
                 "file_limit_reached": folder_walk_capped,
             }
 
         if snapshot_job()["status"] == "Stopped":
             report_data["acquisition_status"] = "STOPPED"
+        elif source_read_problem:
+            update_job(status="Failed")
+            append_log(f"[-] Incomplete scan: {source_read_problem}. The {total_hits} match(es) found are real, "
+                       f"but the rest of the device was never searched.")
+            report_data["acquisition_status"] = "FAILED"
+            report_data["error"] = f"Incomplete scan: {source_read_problem}"
         else:
             update_job(status="Completed Successfully", progress_percent=100.0)
             append_log(f"[+] Triage scan completed. {total_hits} total unique matches across all categories.")
@@ -649,6 +690,10 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
     except Exception as e:
         update_job(status="Failed")
         append_log(f"[-] Execution Exception: {str(e)}")
+        # Never leave the report at IN_PROGRESS after a crash (2026-09-27).
+        report_data["acquisition_status"] = "FAILED"
+        report_data["error"] = str(e)
+        _write_report(report_file_path, report_data, append_log)
 
     finally:
         update_job(active=False)
@@ -1059,6 +1104,13 @@ def start_triage_scan():
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_triagescan"
     job_dest_dir = os.path.join(dest_path, base_name)
+    # A second scan with the same IDs rewrote emails.txt etc. over the first
+    # run's results while the case index kept the first run's rows
+    # (2026-09-27) - the same never-overwrite rule as acquisitions.
+    if os.path.lexists(job_dest_dir):
+        update_job(active=False)
+        return jsonify({"error": f"{base_name} already exists in this folder - use a different Evidence ID, or "
+                                  f"choose another destination. Earlier results are never overwritten."}), 409
 
     total_bytes = 0
     try:

@@ -39,7 +39,7 @@ from core.jobs import snapshot_job
 class TestExecutionWorkerTriageScan:
     def _run(self, tmp_path, source_content=b"contact test@example.com for details\n",
               keyword_list_ids=None, snapshot_side_effect=None, block_device=False,
-              popen_side_effect=None):
+              popen_side_effect=None, device_size_override=None):
         source_path = str(tmp_path / "source.txt")
         with open(source_path, "wb") as f:
             f.write(source_content)
@@ -52,14 +52,17 @@ class TestExecutionWorkerTriageScan:
              mock.patch.object(recovery, "is_valid_block_device", return_value=block_device):
             if block_device:
                 default_stdout = types.SimpleNamespace(read=mock.Mock(side_effect=[source_content, b""]))
-                mock_proc = types.SimpleNamespace(pid=4242, stdout=default_stdout, poll=mock.Mock(return_value=0), terminate=mock.Mock(), wait=mock.Mock())
+                mock_proc = types.SimpleNamespace(pid=4242, stdout=default_stdout, poll=mock.Mock(return_value=0), terminate=mock.Mock(), wait=mock.Mock(return_value=0))
+                # The device's size is what the fake reader actually serves -
+                # a claimed size larger than that IS a short read (2026-09-27).
+                device_size = device_size_override if device_size_override is not None else len(source_content)
                 with mock.patch("subprocess.Popen", side_effect=popen_side_effect if popen_side_effect else (lambda *a, **kw: mock_proc)) as mock_popen, \
                      mock.patch("subprocess.run") as mock_run:
                     if snapshot_side_effect is not None:
                         with mock.patch.object(recovery, "snapshot_job", side_effect=snapshot_side_effect):
-                            recovery.execution_worker_triage_scan(source_path, dest_dir, report_path, report_data, 100, keyword_list_ids)
+                            recovery.execution_worker_triage_scan(source_path, dest_dir, report_path, report_data, device_size, keyword_list_ids)
                     else:
-                        recovery.execution_worker_triage_scan(source_path, dest_dir, report_path, report_data, 100, keyword_list_ids)
+                        recovery.execution_worker_triage_scan(source_path, dest_dir, report_path, report_data, device_size, keyword_list_ids)
                     return snapshot_job(), report_data, mock_write_report, dest_dir, mock_popen, mock_run
             else:
                 if snapshot_side_effect is not None:
@@ -126,6 +129,14 @@ class TestExecutionWorkerTriageScan:
         mock_popen.assert_called_once()
         cmd = mock_popen.call_args[0][0]
         assert cmd[:3] == ["sudo", "/usr/bin/dd", "if=" + str(tmp_path / "source.txt")]
+
+    def test_a_short_device_read_is_failed_not_a_clean_zero_hit_scan(self, tmp_path):
+        """2026-09-27: a reader that stopped early ended "Completed, N matches"
+        - the rest of the device was never searched."""
+        job, report_data, *_ = self._run(tmp_path, block_device=True, device_size_override=10_000_000)
+        assert job["status"] == "Failed"
+        assert report_data["acquisition_status"] == "FAILED"
+        assert "Incomplete scan" in report_data["error"]
 
     def test_a_stop_while_reading_a_block_device_still_terminates_the_dd_subprocess(self, tmp_path):
         job, report_data, mock_write_report, dest_dir, mock_popen, mock_run = self._run(
