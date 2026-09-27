@@ -442,6 +442,30 @@ def get_current_user_role():
     group = find_group(get_user_group_id(user))
     return group['name'] if group else 'Unknown'
 
+# Identities this app itself uses in g.forensic_user / the custody log. A real
+# account with one of these names would inherit the physical kiosk's full
+# Admin access remotely (get_current_user_permissions() string-matches
+# 'local-kiosk') and its custody entries would look like kiosk/system actions
+# (2026-09-27 review) - so no account may be created with one.
+RESERVED_USERNAMES = {'local-kiosk', 'system-startup', 'system'}
+
+
+def caller_is_admin():
+    """True for the physical kiosk, the pre-multi-user single-account mode,
+    or a user in the built-in Admin group. The manage_users permission alone
+    is NOT admin: it must never be able to mint, reset or remove an Admin, or
+    grant permissions its holder doesn't have (2026-09-27 review - it could
+    create a user in the admin group and so escalate to full access)."""
+    username = getattr(g, 'forensic_user', None)
+    if username == 'local-kiosk':
+        return True
+    users = load_runtime_config().get('users')
+    if not users:
+        return True
+    user = find_user(username, users)
+    return bool(user) and get_user_group_id(user) == 'admin'
+
+
 def caller_reauth_ok(current_password):
     """
     Re-verifies the CALLER's own password for the delete/reset-another-user

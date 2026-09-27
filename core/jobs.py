@@ -125,6 +125,7 @@ def mark_job_slot_claimed():
     try:
         from flask import g
         g._job_slot_claimed = True
+        g._job_slot_generation = current_job['_slot_generation']
     except RuntimeError:
         pass
 

@@ -47,6 +47,7 @@ from core.auth import (
     find_user, find_group, get_user_groups, get_user_group_id,
     get_current_user_permissions, get_current_user_role,
     caller_reauth_ok, _normalize_permissions, _effective_client_ip,
+    caller_is_admin, RESERVED_USERNAMES,
 )
 from core.paths import safe_path, log_chain_of_custody, is_valid_block_device
 import core.config as config
@@ -1776,13 +1777,23 @@ def users_create():
 
     if not username:
         return jsonify({"success": False, "error": "Username is required."}), 400
+    if username.lower() in RESERVED_USERNAMES or any(ord(c) < 33 or ord(c) == 127 for c in username):
+        return jsonify({"success": False, "error": "That username is reserved or contains spaces/control characters."}), 400
     if not password or len(password) < 8:
         return jsonify({"success": False, "error": "Password must be at least 8 characters long."}), 400
     if not find_group(group_id):
         return jsonify({"success": False, "error": f"'{group_id}' is not a recognized user group."}), 400
+    if group_id == 'admin' and not caller_is_admin():
+        return jsonify({"success": False, "error": "Only an Admin can create an Admin-group account."}), 403
 
     cfg = load_runtime_config()
     users = cfg.setdefault('users', [])
+    # The very first account ends the shared-login fallback for good, so it
+    # must be an Admin - an Analyst-only first account would leave no remote
+    # account able to manage the station (2026-09-27 review).
+    if not users and group_id != 'admin':
+        return jsonify({"success": False, "error": "The first account on this station must be in the Admin group - "
+                                                   "it replaces the shared installer login."}), 400
     if find_user(username, users):
         return jsonify({"success": False, "error": f"A user named '{username}' already exists."}), 409
 
@@ -1818,6 +1829,8 @@ def users_delete():
     if not target:
         return jsonify({"success": False, "error": f"No user named '{username}' exists."}), 404
 
+    if get_user_group_id(target) == 'admin' and not caller_is_admin():
+        return jsonify({"success": False, "error": "Only an Admin can delete an Admin-group account."}), 403
     admin_count = sum(1 for u in users if get_user_group_id(u) == 'admin')
     if get_user_group_id(target) == 'admin' and admin_count <= 1:
         return jsonify({"success": False, "error": "Cannot delete the last remaining Admin-group account."}), 409
@@ -1849,11 +1862,25 @@ def users_reset_password():
     target = find_user(username, users)
     if not target:
         return jsonify({"success": False, "error": f"No user named '{username}' exists."}), 404
+    # Resetting an Admin's password is taking over that Admin.
+    if get_user_group_id(target) == 'admin' and not caller_is_admin():
+        return jsonify({"success": False, "error": "Only an Admin can reset an Admin-group account's password."}), 403
 
     target['password_hash'] = generate_password_hash(new_password)
     save_runtime_config(cfg)
     log_chain_of_custody("user_reset_password", {"username": username})
     return jsonify({"success": True, "message": f"Password for '{username}' reset."})
+
+
+def _permissions_caller_cannot_grant(requested):
+    """Permission keys in `requested` that the caller does not hold
+    themselves. A non-Admin with manage_users must not be able to hand out
+    (to a group, and so to themselves) access they don't have."""
+    if caller_is_admin():
+        return []
+    mine = get_current_user_permissions()
+    return [k for k, v in (requested or {}).items() if v and not mine.get(k)]
+
 
 @settings_bp.route('/api/user_groups', methods=['GET', 'POST'])
 @requires_auth
@@ -1888,6 +1915,10 @@ def user_groups_collection():
     while group_id in existing_ids:
         group_id = f"{base_id}_{n}"
         n += 1
+
+    denied = _permissions_caller_cannot_grant(_normalize_permissions(req.get('permissions')))
+    if denied:
+        return jsonify({"success": False, "error": f"You can't grant permissions you don't have yourself: {', '.join(denied)}."}), 403
 
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     record = {
@@ -1935,6 +1966,9 @@ def user_groups_detail(group_id):
     # a custom group's name and permissions are both fully editable.
     req = request.get_json() or {}
     permissions = _normalize_permissions(req.get('permissions'))
+    denied = _permissions_caller_cannot_grant(permissions)
+    if denied:
+        return jsonify({"success": False, "error": f"You can't grant permissions you don't have yourself: {', '.join(denied)}."}), 403
 
     if group_id == 'analyst':
         idx = next((i for i, g_ in enumerate(groups) if g_.get('id') == 'analyst'), None)
@@ -2363,6 +2397,21 @@ def config_restore():
         return jsonify({"success": False, "error": "Backup file contents are corrupted."}), 400
     if manifest.get("version") != 1 or "runtime_config" not in manifest:
         return jsonify({"success": False, "error": "Unrecognized backup file format."}), 400
+    # A restore replaces every account and group - Admin only (2026-09-27).
+    if not caller_is_admin():
+        return jsonify({"success": False, "error": "Only an Admin can restore a configuration backup."}), 403
+    # Validate everything that becomes a PATH before writing anything. The
+    # logo name only went through basename(), so "app.py" overwrote the
+    # application itself; list ids were joined into paths unchecked.
+    logo_name = (manifest.get("report_logo") or {}).get("filename")
+    if logo_name and not re.fullmatch(r'report_logo\.(png|jpe?g)', logo_name, re.I):
+        return jsonify({"success": False, "error": "Backup rejected: unexpected branding-logo file name."}), 400
+    for key in ("hash_lists_data", "url_lists_data"):
+        data = manifest.get(key) or {}
+        if not isinstance(data, dict) or any(not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', str(k)) for k in data):
+            return jsonify({"success": False, "error": f"Backup rejected: invalid list id in {key}."}), 400
+    if not isinstance(manifest["runtime_config"], dict):
+        return jsonify({"success": False, "error": "Backup rejected: configuration is not an object."}), 400
 
     # Never overwrite silently and irreversibly - the pre-restore state is
     # kept under a .pre_restore_backup suffix, matching this app's own

@@ -85,7 +85,13 @@ from core.jobs import update_job as _update_job, current_job as _current_job
 
 @app.after_request
 def release_leaked_job_slot(response):
-    if getattr(_g, '_job_slot_claimed', False) and response.status_code >= 500 and _current_job.get('active'):
+    # Any error response (4xx included - 2026-09-27: malformed JSON raised a
+    # 400 from request.get_json() AFTER the claim), but only while the slot
+    # still carries THIS request's claim generation: a normal refusal path
+    # already released it, and a different request may have claimed it since.
+    if (getattr(_g, '_job_slot_claimed', False) and response.status_code >= 400
+            and _current_job.get('active')
+            and _current_job.get('_slot_generation') == getattr(_g, '_job_slot_generation', None)):
         _update_job(active=False, status="Failed to start",
                     log="[-] The job could not be started (server error while preparing it) - "
                         "the job slot has been released. Nothing was acquired.")
