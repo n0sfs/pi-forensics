@@ -235,17 +235,58 @@ def copy_file():
 
     if not src or not os.path.exists(src) or not dest_dir or not os.path.exists(dest_dir):
         return jsonify({"success": False, "error": "Invalid source or destination path"}), 400
+    # 2026-09-27 review: copy used to overwrite a same-named file (copy2) or
+    # silently MERGE into an existing folder (dirs_exist_ok=True), into
+    # Closed cases too, and copytree followed symlinks - a suspect drive's
+    # link to /etc or ~/.ssh copied those files into the evidence share.
+    _closed = closed_case_refusal(dest_dir)
+    if _closed:
+        return jsonify({"success": False, "error": f"The destination is in a case marked {_closed}. "
+                                                   f"Re-open it from the Case Manager first."}), 409
+    dest_path = os.path.join(dest_dir, os.path.basename(src))
+    if os.path.lexists(dest_path):
+        return jsonify({"success": False, "error": f"{os.path.basename(src)} already exists in that folder - "
+                                                   f"nothing was copied, nothing was overwritten."}), 409
+    if os.path.isdir(src) and (dest_path == src or dest_path.startswith(src.rstrip(os.sep) + os.sep)):
+        return jsonify({"success": False, "error": "A folder can't be copied into itself."}), 400
 
     try:
-        dest_path = os.path.join(dest_dir, os.path.basename(src))
         if os.path.isdir(src):
-            shutil.copytree(src, dest_path, dirs_exist_ok=True)
+            shutil.copytree(src, dest_path, symlinks=True)   # links copied AS links, never followed
         else:
-            shutil.copy2(src, dest_path)
+            shutil.copy2(src, dest_path, follow_symlinks=False)
         log_chain_of_custody("file_copy", {"source": src, "destination": dest_path})
         return jsonify({"success": True, "message": f"Copied {os.path.basename(src)} to {dest_dir}"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+def _delete_refusal(path):
+    """Why `path` must not be deleted from the File Explorer, or None.
+
+    2026-09-27 review: delete was one confirm() away from rmtree on the
+    evidence root, a mounted share, or a whole case - images, notes, custody
+    log and case JSON - including a Closed case. Deleting a case is not a
+    file operation; nothing here offers it."""
+    if path == EVIDENCE_ROOT:
+        return "The evidence root itself can't be deleted."
+    if os.path.ismount(path):
+        return "This is a mounted share - unmount it from Settings > Network instead."
+    try:
+        with open('/proc/mounts', 'r') as f:
+            mount_points = [line.split()[1].replace('\\040', ' ') for line in f if len(line.split()) > 1]
+    except OSError:
+        mount_points = []
+    if any(mp.startswith(path.rstrip(os.sep) + os.sep) for mp in mount_points):
+        return "This folder contains a mounted share - deleting it would delete files on that share."
+    if os.path.isdir(path) and case_consolidated_path(path):
+        return "This is a case folder. Cases aren't deleted from the File Explorer."
+    if os.path.isfile(path) and path.endswith('_case.json') and case_consolidated_path(os.path.dirname(path)) == path:
+        return "This is the case's own record file and can't be deleted here."
+    _closed = closed_case_refusal(path)
+    if _closed:
+        return f"This is inside a case marked {_closed}. Re-open it from the Case Manager first."
+    return None
+
 
 @file_explorer_bp.route('/api/files/delete', methods=['POST'])
 @requires_auth
@@ -256,6 +297,9 @@ def delete_file():
 
     if not path or not os.path.exists(path):
         return jsonify({"success": False, "error": "Path does not exist or is outside the permitted evidence directory."}), 400
+    refusal = _delete_refusal(path)
+    if refusal:
+        return jsonify({"success": False, "error": refusal}), 409
 
     try:
         if os.path.isdir(path):

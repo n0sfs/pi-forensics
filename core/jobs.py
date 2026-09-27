@@ -575,6 +575,37 @@ def _record_lost_case_write(report_target, phase, error):
         print(f"Warning: could not record the failed case write either: {e}")
 
 
+_FLAT_REPORT_EXAMINER_KEYS = (
+    'case_notes', 'custody_log', 'attachments', 'examiners', 'custom_fields', 'case_status', 'updated_at',
+    'last_verification', 'executive_summary', 'objectives', 'findings_summary', 'limitations', 'conclusion',
+    'iocs', 'recommendations_next_steps',
+)
+
+
+def _write_flat_report(path, report_data):
+    """The no-case job report ({base}_report.json). It is editable in
+    Reporting (notes, custody log, narrative), so the worker's writes MERGE
+    into whatever is on disk rather than replacing it - a note added while
+    the job ran used to be erased by the completion write - and go through
+    the same lock and atomic replace as a case file (2026-09-27 review).
+    Keys the job produces win; everything else on disk is kept. A legacy
+    case_metadata block keeps the examiner's edits over the job's copy."""
+    with CASE_WRITE_LOCK:
+        existing = _read_case_file(path) if os.path.exists(path) else {}
+        if not isinstance(existing, dict):
+            existing = {}
+        # Only what a person adds in Reporting survives from disk - not stale
+        # job keys (an old error, old hashes) from an earlier run of the same
+        # name.
+        merged = dict(report_data)
+        for k in _FLAT_REPORT_EXAMINER_KEYS:
+            if k in existing and k not in report_data:
+                merged[k] = existing[k]
+        if isinstance(existing.get('case_metadata'), dict) and isinstance(report_data.get('case_metadata'), dict):
+            merged['case_metadata'] = {**report_data['case_metadata'], **existing['case_metadata']}
+        _write_case_file(path, merged)
+
+
 def write_initial_report(report_target, report_data):
     """First write at job start (status IN_PROGRESS) - mirrors what every
     route used to do with a bare open()/json.dump() against its own file."""
@@ -582,8 +613,7 @@ def write_initial_report(report_target, report_data):
         if isinstance(report_target, CaseEventTarget):
             _case_upsert_event(report_target.case_file, report_target.event_id, report_data)
         else:
-            with open(report_target, 'w') as f:
-                json.dump(report_data, f, indent=2)
+            _write_flat_report(report_target, report_data)
     except Exception as e:
         _record_lost_case_write(report_target, "job start", e)
 
@@ -596,8 +626,7 @@ def _write_report(report_target, report_data, append_log):
             _case_upsert_event(report_target.case_file, report_target.event_id, report_data)
             append_log(f"[+] Forensic case report updated: {report_target.case_file} (event {report_target.event_id[:8]})")
         else:
-            with open(report_target, 'w') as f:
-                json.dump(report_data, f, indent=2)
+            _write_flat_report(report_target, report_data)
             append_log(f"[+] Forensic case report updated: {report_target}")
     except Exception as e:
         append_log(f"[-] Warning: Failed updating report JSON: {e}")
