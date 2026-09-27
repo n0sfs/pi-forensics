@@ -235,7 +235,8 @@ def test_image_subcommand_end_to_end_validation(tmp_path, devices, monkeypatch):
 
 # --- kill -----------------------------------------------------------------
 
-def test_kill_pgroup_refuses_the_callers_own_group():
+def test_kill_pgroup_refuses_the_callers_own_group(monkeypatch):
+    monkeypatch.setattr(pp, "_process_group_members", lambda pgid: {pgid: "dc3dd", pgid + 1: "sudo"})
     runs = []
     kw = dict(_run=runs.append, _getpgrp=lambda: 500, _getppid=lambda: 77, _getpgid=lambda pid: 100)
     for pgid in ("100", "500", "1", "0", "-5", "12x"):
@@ -243,6 +244,82 @@ def test_kill_pgroup_refuses_the_callers_own_group():
             pp.cmd_kill(CFG, "kill-pgroup", [pgid], **kw)
     pp.cmd_kill(CFG, "kill-pgroup", ["4242"], **kw)
     assert runs == [["/usr/bin/pkill", "-9", "-g", "4242"]]
+
+
+def test_kill_pgroup_refuses_a_group_with_non_job_processes(monkeypatch):
+    """2026-09-27: kill-pgroup would otherwise kill sshd's or nginx's group as root."""
+    kw = dict(_run=lambda a: 0, _getpgrp=lambda: 500, _getppid=lambda: 77, _getpgid=lambda pid: 100)
+    monkeypatch.setattr(pp, "_process_group_members", lambda pgid: {pgid: "sshd"})
+    with pytest.raises(pp.Refused, match="non-job"):
+        pp.cmd_kill(CFG, "kill-pgroup", ["4242"], **kw)
+    monkeypatch.setattr(pp, "_process_group_members", lambda pgid: {})
+    with pytest.raises(pp.Refused, match="no such"):
+        pp.cmd_kill(CFG, "kill-pgroup", ["4242"], **kw)
+
+
+def test_process_group_members_parses_proc_stat(tmp_path):
+    for pid, comm, pgrp in ((10, "dc3dd", 99), (11, "a (weird) name", 99), (12, "sshd", 7)):
+        d = tmp_path / str(pid)
+        d.mkdir()
+        (d / "stat").write_text(f"{pid} ({comm}) S 1 {pgrp} {pgrp} 0 -1 4194560 0 0")
+    (tmp_path / "self").mkdir()
+    assert pp._process_group_members(99, _proc=str(tmp_path)) == {10: "dc3dd", 11: "a (weird) name"}
+
+
+def test_kill_children_only_for_the_device_read_sudo(tmp_path, monkeypatch):
+    """2026-09-27: `kill-children 1` would otherwise kill every daemon (children of init)."""
+    for pid, argv in ((1, [b"/sbin/init"]), (50, [b"sudo", b"-n", b"/usr/local/sbin/pif-priv", b"read-device", b"/dev/sda"]),
+                      (51, [b"sudo", b"/usr/bin/dd", b"if=/dev/sda", b"bs=8388608"]), (52, [b"sudo", b"-n", b"/usr/local/sbin/pif-priv", b"reclaim", b"/mnt/x"])):
+        d = tmp_path / str(pid)
+        d.mkdir()
+        (d / "cmdline").write_bytes(b"\0".join(argv) + b"\0")
+    assert pp._is_device_read_sudo(1, _proc=str(tmp_path)) is False
+    assert pp._is_device_read_sudo(50, _proc=str(tmp_path)) is True
+    assert pp._is_device_read_sudo(51, _proc=str(tmp_path)) is True
+    assert pp._is_device_read_sudo(52, _proc=str(tmp_path)) is False
+    monkeypatch.setattr(pp, "_is_device_read_sudo", lambda pid: False)
+    with pytest.raises(pp.Refused):
+        pp.cmd_kill(CFG, "kill-children", ["1"], _run=lambda a: 0)
+
+
+def test_outputs_are_handed_to_the_tool_as_open_descriptors():
+    argv, outs = pp.argv_image_dc3dd("/dev/sda", "/mnt/c/B", "dd", ["sha256"])
+    fds = {outs[0]: 3, outs[1]: 4}
+    assert pp.substitute_outputs(argv, fds) == [
+        "/usr/bin/dc3dd", "if=/dev/sda", "of=/dev/fd/3", "log=/dev/fd/4", "hash=sha256"]
+    argv, outs = pp.argv_image_dcfldd("/dev/sda", "/mnt/c/B", ["md5"])
+    got = pp.substitute_outputs(argv, {outs[0]: 5, outs[1]: 6})
+    assert "of=/dev/fd/5" in got and "md5log=/dev/fd/6" in got and "if=/dev/sda" in got
+
+
+@pytest.mark.skipif(os.name == "nt", reason="O_NOFOLLOW/dir_fd/proc are Linux")
+def test_open_outputs_refuses_a_planted_symlink_and_creates_exclusively(tmp_path):
+    root = tmp_path / "mnt"
+    case = root / "case"
+    case.mkdir(parents=True)
+    target = tmp_path / "victim"
+    target.write_text("do not touch")
+    (case / "B.dd").symlink_to(target)
+    with pytest.raises(pp.Refused, match="already exists"):
+        pp.open_outputs([str(case / "B.dd")], str(root))
+    assert target.read_text() == "do not touch"
+    fds = pp.open_outputs([str(case / "C.dd"), str(case / "C_dc3dd.log")], str(root))
+    assert set(fds) == {str(case / "C.dd"), str(case / "C_dc3dd.log")}
+    for fd in fds.values():
+        os.close(fd)
+    assert (case / "C.dd").exists() and not (case / "C.dd").is_symlink()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="O_NOFOLLOW/dir_fd/proc are Linux")
+def test_open_outputs_refuses_a_parent_folder_swapped_for_a_symlink(tmp_path):
+    root = tmp_path / "mnt"
+    root.mkdir()
+    outside = tmp_path / "etc"
+    outside.mkdir()
+    (root / "case").symlink_to(outside)
+    with pytest.raises((pp.Refused, OSError)):
+        pp.open_outputs([str(root / "case" / "B.dd")], str(root))
+    assert not (outside / "B.dd").exists()
 
 
 def test_kill_tools_matches_exact_names_only():
@@ -298,6 +375,8 @@ def test_reclaim_continues_past_paths_it_cannot_change(tmp_path, monkeypatch, ca
     assert "could not be changed" in capsys.readouterr().err
 
 
-def test_unknown_subcommand_exits_2(capsys):
-    assert pp.main(["chown", "-R", "svc", "/etc"]) == 2
+def test_unknown_subcommand_is_refused_with_a_code_no_tool_uses(capsys):
+    # 2 is dc3dd's "completed with warnings", which the app treats as success.
+    assert pp.EXIT_REFUSED not in (0, 1, 2)
+    assert pp.main(["chown", "-R", "svc", "/etc"]) == pp.EXIT_REFUSED
     assert "unknown" in capsys.readouterr().err

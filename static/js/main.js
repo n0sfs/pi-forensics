@@ -21497,8 +21497,9 @@ async function fetchDriveManagementSmartInfo(drive) {
             setTxt('dmLblPending', data.pending_sectors !== undefined ? data.pending_sectors : '0');
             setTxt('dmLblPowerHours', data.power_on_hours ? `${data.power_on_hours} hrs` : 'N/A');
             if (healthBadge) {
-                healthBadge.className = (data.healthy ? 'badge bg-success' : 'badge bg-danger') + ' d-inline-block mt-1';
-                healthBadge.textContent = data.healthy ? 'PASSED' : 'FAILING';
+                // null = SMART unavailable for this drive/bridge - never shown as a pass.
+                healthBadge.className = (data.healthy === true ? 'badge bg-success' : data.healthy === false ? 'badge bg-danger' : 'badge bg-secondary') + ' d-inline-block mt-1';
+                healthBadge.textContent = data.healthy === true ? 'PASSED' : data.healthy === false ? 'FAILING' : 'UNAVAILABLE';
             }
         } else {
             ['dmLblMediaType', 'dmLblCapacity', 'dmLblModel', 'dmLblSerial'].forEach((id) => setTxt(id, '--'));
@@ -21967,8 +21968,9 @@ async function checkSmartTelemetry() {
             if (document.getElementById("lblSerial")) document.getElementById("lblSerial").innerText = data.serial || "--";
             
             if (healthBadge) {
-                healthBadge.className = data.healthy ? "badge bg-success" : "badge bg-danger";
-                healthBadge.innerHTML = data.healthy ? 'PASSED (GOOD DRIVE)' : 'FAILING';
+                healthBadge.className = data.healthy === true ? "badge bg-success" : data.healthy === false ? "badge bg-danger" : "badge bg-secondary";
+                healthBadge.textContent = data.healthy === true ? 'PASSED (GOOD DRIVE)' : data.healthy === false ? 'FAILING'
+                    : 'UNAVAILABLE (drive or USB adapter does not report SMART)';
             }
             if (document.getElementById("lblTemp")) document.getElementById("lblTemp").innerText = data.temperature ? `${data.temperature} °C` : "N/A";
             if (document.getElementById("lblReallocated")) document.getElementById("lblReallocated").innerText = data.reallocated_sectors !== undefined ? data.reallocated_sectors : "0";

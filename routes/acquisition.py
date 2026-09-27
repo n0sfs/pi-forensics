@@ -1742,7 +1742,7 @@ def start_image_conversion():
     req = request.get_json() or {}
     source_image_path = safe_path(req.get('source_image_path'))
     target_format = (req.get('target_format') or '').lower()
-    hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
+    hashes = list(dict.fromkeys(str(h).lower() for h in (req.get('hashes') or ['sha256'])))
     metadata = req.get('metadata', {})
 
     if not source_image_path or not os.path.isfile(source_image_path):
@@ -2057,7 +2057,7 @@ def start_logical_acquisition():
         return jsonify({"error": f"This case is marked {blocking_case_status}. Re-open it from the "
                                   f"Case Manager before recording new evidence against it, or choose a "
                                   f"different destination."}), 409
-    hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
+    hashes = list(dict.fromkeys(str(h).lower() for h in (req.get('hashes') or ['sha256'])))
     make_zip = bool(req.get('make_zip', False))
     metadata = req.get('metadata', {})
 
@@ -2719,7 +2719,7 @@ def start_import_live_collection():
         return jsonify({"error": f"This case is marked {blocking_case_status}. Re-open it from the "
                                   f"Case Manager before recording new evidence against it, or choose a "
                                   f"different destination."}), 409
-    hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
+    hashes = list(dict.fromkeys(str(h).lower() for h in (req.get('hashes') or ['sha256'])))
     metadata = req.get('metadata', {})
 
     if not is_valid_block_device(device):
@@ -2897,7 +2897,10 @@ def smart_check():
         res = subprocess.run(priv_argv("smart", drive, legacy=["sudo", "/usr/sbin/smartctl", "-a", "-j", drive]), capture_output=True, text=True, timeout=15)
         data = json.loads(res.stdout) if res.stdout else {}
         
-        healthy = data.get('smart_status', {}).get('passed', True)
+        # No smart_status (USB bridge without SAT passthrough, SD card, a refused
+        # request) means UNKNOWN - it used to default to True and show a green
+        # "PASSED (GOOD DRIVE)" for drives nothing was learned about (2026-09-27).
+        healthy = (data.get('smart_status') or {}).get('passed')
         family = data.get('model_family') or data.get('family_name')
         model = data.get('model_name') or data.get('device', {}).get('name')
         
@@ -3282,7 +3285,7 @@ def start_imaging():
                                   f"Case Manager before recording new evidence against it, or choose a "
                                   f"different destination."}), 409
     fmt = req.get('format', 'dd')
-    hashes = [h.lower() for h in req.get('hashes', ['sha256'])]
+    hashes = list(dict.fromkeys(str(h).lower() for h in (req.get('hashes') or ['sha256'])))
     metadata = req.get('metadata', {})
     keep_raw = bool(req.get('keep_raw', True))  # only relevant when fmt == 'aff'
     # Documentation only, never used to decrypt anything - imaging still
@@ -3354,6 +3357,14 @@ def start_imaging():
     if not dest_path:
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
+    # The bare evidence root is the station's own SD card when no share is
+    # mounted there, and the privileged helper refuses it as an image
+    # destination - so refuse it here, before claiming any work, with a
+    # message that says what to do (2026-09-27 review).
+    if dest_path == EVIDENCE_ROOT:
+        update_job(active=False)
+        return jsonify({"error": f"Choose a case folder (or another folder) inside {EVIDENCE_ROOT} as the "
+                                  f"destination - images are never written straight into {EVIDENCE_ROOT}."}), 400
     if source_kind == 'real_device' and destination_is_on_source_device(dest_path, source):
         update_job(active=False)
         return jsonify({"error": f"The destination {dest_path} is on {source} itself - an image can never be written "
@@ -4015,6 +4026,14 @@ def stop_imaging():
         # call while `status`/`log` still update normally.
         current_log = snapshot_job()["log"]
         update_job(status="Stopped", active=False, log=current_log + "\n[!] Acquisition manually terminated by user.")
+        # Supersede the stopped worker (2026-09-27 review): it keeps running
+        # for a while (hash, fsync, reclaim, report) and its closing
+        # update_job() calls used to overwrite "Stopped" with "Completed
+        # Successfully" - or a NEW job's status - because it still held the
+        # current slot generation. Bumping it makes the old worker's
+        # job-state writes stale (core/jobs.py _is_stale_worker_thread).
+        with job_lock:
+            current_job['_slot_generation'] = current_job.get('_slot_generation', 0) + 1
         return jsonify({"success": True, "message": "Acquisition stopped."})
         
     return jsonify({"error": "No active job running."}), 400
