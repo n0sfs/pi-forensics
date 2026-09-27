@@ -20792,7 +20792,7 @@ async function loadFolderList(path) {
                         addFileAttachment(item.path);
                         if (folderModalInstance) folderModalInstance.hide();
                     } else if (modalPickerMode === 'mapfile') {
-                        const mapPathEl = document.getElementById("tabMapfilePath");
+                        const mapPathEl = document.getElementById("recoveryMapfilePath");
                         if (mapPathEl) mapPathEl.value = item.path;
                         if (folderModalInstance) folderModalInstance.hide();
                         inspectDdrescueMapfile();

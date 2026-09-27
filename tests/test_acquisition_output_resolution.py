@@ -145,3 +145,12 @@ def test_the_two_helpers_agree_on_which_events_have_output_at_all():
         # covered directly by its own test above.
     assert acquisition_output_location(ANDROID_PULL)[0] is not None
     assert acquisition_verification_target(ANDROID_PULL) == (None, None)
+
+
+def test_e01_and_aff_containers_are_not_verifiable_by_rehashing_the_file():
+    """2026-09-27: their recorded hash is of the source media, never of the
+    container file, so re-hashing the .E01/.aff was a guaranteed false
+    MISMATCH written into the chain of custody."""
+    for p in ("/mnt/c/B.E01", "/mnt/c/B.e01", "/mnt/c/B.Ex01", "/mnt/c/B.aff"):
+        assert acquisition_verification_target({"output_image_path": p}) == (None, None)
+    assert acquisition_verification_target({"output_image_path": "/mnt/c/B.dd"}) == ("/mnt/c/B.dd", "image")

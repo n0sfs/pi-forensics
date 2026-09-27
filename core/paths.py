@@ -565,6 +565,15 @@ def acquisition_verification_target(params):
     """
     params = params or {}
     image_path = params.get('output_image_path')
+    # E01 and AFF record the hash of the SOURCE MEDIA (ewfacquire's own
+    # digest; AFF's phase-1 dc3dd raw hash), never of the container file -
+    # compression, segment headers and metadata make the container's bytes
+    # differ by construction. Re-hashing the .E01/.aff therefore produced a
+    # guaranteed false MISMATCH on every such acquisition, written into the
+    # chain of custody and the PDF (2026-09-27 review). They are not
+    # verifiable by re-hashing a file; ewfverify/affverify would be the tool.
+    if image_path and image_path.lower().endswith(('.e01', '.ex01', '.aff')):
+        return None, None
     if image_path:
         return image_path, 'image'
     manifest_path = params.get('manifest_path')

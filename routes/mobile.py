@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission
-from core.paths import closed_case_refusal, safe_path, log_chain_of_custody, case_status_blocking_new_work
+from core.paths import closed_case_refusal, sanitize_case_slug, safe_path, log_chain_of_custody, case_status_blocking_new_work
 from core.config import EVIDENCE_ROOT, INSTALL_DIR
 from core.jobs import (mark_job_slot_claimed, 
     job_lock, current_job, update_job, snapshot_job, poll_directory_size,
@@ -1425,8 +1425,11 @@ def start_ios_backup():
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    # Slugged like every acquisition/recovery route (2026-09-27 review): these
+    # go straight into output file names, and a raw "../../x" Case # put
+    # Android pull output outside the evidence root.
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_ios_backup"
     job_dest_dir = os.path.join(dest_path, base_name)
 
@@ -1510,8 +1513,11 @@ def start_android_acquisition():
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    # Slugged like every acquisition/recovery route (2026-09-27 review): these
+    # go straight into output file names, and a raw "../../x" Case # put
+    # Android pull output outside the evidence root.
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_android_{mode}"
 
     if mode == 'physical':
@@ -1956,8 +1962,11 @@ def start_mtp_pull():
         update_job(active=False)
         return jsonify({"error": "Destination path is outside the permitted evidence directory."}), 400
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    # Slugged like every acquisition/recovery route (2026-09-27 review): these
+    # go straight into output file names, and a raw "../../x" Case # put
+    # Android pull output outside the evidence root.
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_mtp_pull"
     output_path = os.path.join(dest_path, base_name)
     try:
@@ -2634,8 +2643,11 @@ def start_android_companion_extraction():
         update_job(active=False)
         return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
 
-    case_num = metadata.get('case_number', 'UNASSIGNED')
-    evidence_id = metadata.get('evidence_id', 'ITEM-01')
+    # Slugged like every acquisition/recovery route (2026-09-27 review): these
+    # go straight into output file names, and a raw "../../x" Case # put
+    # Android pull output outside the evidence root.
+    case_num = sanitize_case_slug(metadata.get('case_number')) or 'UNASSIGNED'
+    evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_android_companion_extraction"
     output_path = os.path.join(dest_path, f"{base_name}_extraction.json")
 
