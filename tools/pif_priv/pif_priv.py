@@ -39,7 +39,7 @@ DEV_RE = re.compile(r'^/dev/(sd[a-z]|nvme\d+n\d+|mmcblk\d+)$')
 PART_RE = re.compile(r'^/dev/(sd[a-z]\d+|nvme\d+n\d+p\d+|mmcblk\d+p\d+)$')
 MAPPER_RE = re.compile(r'^/dev/mapper/pif_(luks|veracrypt)_[0-9a-f]{32}$')
 HASHES = ("md5", "sha1", "sha256")
-OUT_BASENAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,160}$')
+OUT_BASENAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,200}$')  # two 80-char slugs + suffixes fit
 SYSTEM_MOUNTPOINTS = ("/", "/boot", "/boot/firmware")
 
 # The Pi 4B USB port map (core/paths.py, verified live 2026-09-05): a disk on
@@ -55,8 +55,14 @@ STOPPABLE_TOOLS = ("dc3dd", "dcfldd", "ewfacquire", "ewfexport", "affconvert", "
 CLEAN_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
 
 
+# Exit status for a refusal. Deliberately NOT 2: dc3dd exits 2 on a run that
+# completed with warnings, and the app treats 0/2 from it as success - a
+# refusal must never be mistaken for a finished image (2026-09-27 review).
+EXIT_REFUSED = 64
+
+
 class Refused(Exception):
-    """An argument failed validation. main() turns this into exit 2."""
+    """An argument failed validation. main() turns this into EXIT_REFUSED."""
 
 
 # --------------------------------------------------------------------------
@@ -284,7 +290,12 @@ def cmd_reclaim(cfg, args, *, _lchown=None, _walk=None, _lstat=None):
                 if st.st_dev != top_dev:
                     continue
                 _chown(p)
-            dirnames[:] = [d for d in dirnames if _lstat(os.path.join(dirpath, d)).st_dev == top_dev]
+            def _same_fs(d):
+                try:
+                    return _lstat(os.path.join(dirpath, d)).st_dev == top_dev
+                except OSError:
+                    return False   # vanished mid-walk - nothing left to chown
+            dirnames[:] = [d for d in dirnames if _same_fs(d)]
     if failed:
         print(f"pif-priv: reclaim: {len(failed)} path(s) could not be changed (first: {failed[0][0]}: "
               f"{failed[0][1]})", file=sys.stderr)
@@ -350,7 +361,49 @@ def cmd_image(cfg, sub, args, *, _exec=None, _system_disks=None):
     else:
         raise Refused(f"unknown subcommand {sub}")
     require_absent(*outputs)
-    return (_exec or _execv)(argv)
+    # Create every output HERE, as root, and give the tool the open file
+    # (of=/dev/fd/N), never a path it would open itself. The output folder
+    # belongs to the service account, so between the checks above and the
+    # tool's own open() it could have swapped <name>.dd for a symlink to
+    # /etc/sudoers.d/x and had root write there (2026-09-27 review). The
+    # directory is opened by descriptor and re-checked, so a swapped parent
+    # folder is caught too; O_EXCL|O_NOFOLLOW refuses any planted entry.
+    fds = open_outputs(outputs, cfg["evidence_root"])
+    return (_exec or _execv)(substitute_outputs(argv, fds))
+
+
+def open_outputs(paths, root):
+    """{path: fd} for new, empty output files - created exclusively, never
+    through a symlink, in a directory that really is under `root`."""
+    parent = os.path.dirname(paths[0])
+    if any(os.path.dirname(q) != parent for q in paths):
+        raise Refused("outputs must share one directory")
+    dfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        real = os.readlink(f"/proc/self/fd/{dfd}")
+        if not real.startswith(root.rstrip("/") + "/"):
+            raise Refused(f"output directory resolved outside {root}")
+        fds = {}
+        for q in paths:
+            try:
+                fd = os.open(os.path.basename(q), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o644, dir_fd=dfd)
+            except FileExistsError:
+                raise Refused(f"{q} already exists - refusing to overwrite")
+            os.set_inheritable(fd, True)
+            fds[q] = fd
+        return fds
+    finally:
+        os.close(dfd)
+
+
+def substitute_outputs(argv, fds):
+    """Replace each `key=<output path>` argument with `key=/dev/fd/N`."""
+    out = []
+    for a in argv:
+        key, sep, value = a.partition("=")
+        out.append(f"{key}=/dev/fd/{fds[value]}" if sep and value in fds else a)
+    return out
 
 
 def cmd_read_device(cfg, args, *, _exec=None, _system_disks=None):
@@ -373,6 +426,15 @@ def cmd_kill(cfg, sub, args, *, _run=None, _getpgrp=None, _getppid=None, _getpgi
     if sub == "kill-pgroup":
         if len(args) != 1 or not re.fullmatch(r'[1-9][0-9]{0,9}', args[0]):
             raise Refused("usage: kill-pgroup PGID")
+        # Only a group made up entirely of this app's own job processes -
+        # otherwise this is "kill any process group on the station as root"
+        # (sshd's, nginx's...) (2026-09-27 review).
+        members = _process_group_members(int(args[0]))
+        if not members:
+            raise Refused("no such process group")
+        strangers = sorted({comm for comm in members.values() if comm not in _JOB_PROCESS_NAMES})
+        if strangers:
+            raise Refused(f"process group contains non-job processes ({', '.join(strangers)})")
         pgid = int(args[0])
         _getpgrp = _getpgrp or os.getpgrp
         _getppid = _getppid or os.getppid
@@ -389,8 +451,45 @@ def cmd_kill(cfg, sub, args, *, _run=None, _getpgrp=None, _getppid=None, _getpgi
     if sub == "kill-children":
         if len(args) != 1 or not re.fullmatch(r'[1-9][0-9]{0,9}', args[0]):
             raise Refused("usage: kill-children PID")
+        # Only the sudo process of the triage scanner's own device read -
+        # `kill-children 1` would otherwise kill every daemon on the station.
+        if not _is_device_read_sudo(int(args[0])):
+            raise Refused("PID is not a pi-forensics device-read process")
         return run(["/usr/bin/pkill", "-9", "-P", args[0]])
     raise Refused(f"unknown subcommand {sub}")
+
+
+_JOB_PROCESS_NAMES = set(STOPPABLE_TOOLS) | {"sudo", "dd", "pif-priv"}
+
+
+def _process_group_members(pgid, _proc="/proc"):
+    """{pid: comm} for every process whose process group is `pgid`."""
+    members = {}
+    for entry in os.listdir(_proc):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"{_proc}/{entry}/stat", "r") as f:
+                stat_line = f.read()
+        except OSError:
+            continue
+        # "pid (comm) state ppid pgrp ..." - comm may contain spaces/parens.
+        comm = stat_line[stat_line.index("(") + 1:stat_line.rindex(")")]
+        fields = stat_line[stat_line.rindex(")") + 2:].split()
+        if len(fields) > 2 and fields[2] == str(pgid):
+            members[int(entry)] = comm
+    return members
+
+
+def _is_device_read_sudo(pid, _proc="/proc"):
+    try:
+        with open(f"{_proc}/{pid}/cmdline", "rb") as f:
+            argv = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        return False
+    if not argv or os.path.basename(argv[0]) != "sudo":
+        return False
+    return ("read-device" in argv and any(a.endswith("pif-priv") for a in argv)) or "/usr/bin/dd" in argv
 
 
 def _execv(argv):
@@ -413,14 +512,14 @@ def main(argv=None):
     if not argv or argv[0] not in SUBCOMMANDS:
         print(f"pif-priv: unknown or missing subcommand; one of: {', '.join(sorted(SUBCOMMANDS))}",
               file=sys.stderr)
-        return 2
+        return EXIT_REFUSED
     try:
         cfg = load_config()
         rc = SUBCOMMANDS[argv[0]](cfg, argv[0], argv[1:])
         return rc if isinstance(rc, int) else 0
     except Refused as e:
         print(f"pif-priv: {argv[0]}: {e}", file=sys.stderr)
-        return 2
+        return EXIT_REFUSED
 
 
 if __name__ == "__main__":
