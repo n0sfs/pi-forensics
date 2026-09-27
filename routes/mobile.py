@@ -927,7 +927,11 @@ def pull_ios_crash_reports_route():
         return jsonify({"success": False, "error": f"This case is marked {_closed}. Re-open it from the "
                                                    f"Case Manager before adding new work to it."}), 409
 
-    output_dir = os.path.join(dest_dir, f"{udid}_ios_crash_reports")
+    # Timestamped (2026-09-27): a second pull merged into - and overwrote
+    # same-named files in - the first pull's folder.
+    output_dir = os.path.join(dest_dir, f"{udid}_{time.strftime('%Y%m%d-%H%M%S')}_ios_crash_reports")
+    if os.path.lexists(output_dir):
+        return jsonify({"success": False, "error": f"{output_dir} already exists - wait a second and retry."}), 409
     result = pull_ios_crash_reports(udid, output_dir)
     if not result["success"]:
         return jsonify(result), 500
@@ -1432,6 +1436,9 @@ def start_ios_backup():
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_ios_backup"
     job_dest_dir = os.path.join(dest_path, base_name)
+    if os.path.lexists(job_dest_dir):
+        update_job(active=False)
+        return _existing_output_refusal(job_dest_dir)
 
     try:
         os.makedirs(job_dest_dir, exist_ok=True)
@@ -1609,6 +1616,9 @@ def start_android_acquisition():
 
     if mode == 'backup':
         output_path = os.path.join(dest_path, f"{base_name}.ab")
+        if os.path.lexists(output_path):
+            update_job(active=False)
+            return _existing_output_refusal(output_path)
         try:
             os.makedirs(dest_path, exist_ok=True)
         except Exception as e:
@@ -1616,6 +1626,9 @@ def start_android_acquisition():
             return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
     elif mode == 'bugreport':
         output_path = os.path.join(dest_path, f"{base_name}.zip")
+        if os.path.lexists(output_path):
+            update_job(active=False)
+            return _existing_output_refusal(output_path)
         try:
             os.makedirs(dest_path, exist_ok=True)
         except Exception as e:
@@ -1623,6 +1636,9 @@ def start_android_acquisition():
             return jsonify({"error": f"Destination path {dest_path} is inaccessible: {str(e)}"}), 400
     else:
         output_path = os.path.join(dest_path, base_name)
+        if os.path.lexists(output_path):
+            update_job(active=False)
+            return _existing_output_refusal(output_path)
         try:
             os.makedirs(output_path, exist_ok=True)
         except Exception as e:
@@ -1969,6 +1985,9 @@ def start_mtp_pull():
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_mtp_pull"
     output_path = os.path.join(dest_path, base_name)
+    if os.path.lexists(output_path):
+        update_job(active=False)
+        return _existing_output_refusal(output_path)
     try:
         os.makedirs(output_path, exist_ok=True)
     except Exception as e:
@@ -2027,6 +2046,17 @@ def start_mtp_pull():
 # data type - only the ORCHESTRATION (what installs/grants/queries/
 # cleans up, and in what order) is consolidated here.
 ANDROID_COMPANION_APK_DIR = os.path.join(INSTALL_DIR, "android_companion_tools")
+
+def _existing_output_refusal(path):
+    """409 for an output that already exists (2026-09-27 review). Only
+    Android physical refused this before; backup/bugreport/pull/MTP/iOS/
+    companion re-runs with the same Case #/Evidence ID truncated or merged
+    into the earlier acquisition - and the companion JSON is also the record
+    of what was changed on the phone."""
+    return jsonify({"error": f"{os.path.basename(path)} already exists in this folder - use a different "
+                             f"Evidence ID, or choose another destination. Earlier acquisitions are never "
+                             f"overwritten."}), 409
+
 
 # Pending default-SMS-app restores (2026-09-23). The worker restores the
 # original SMS app in its own cleanup - but if the run dies before that
@@ -2650,6 +2680,9 @@ def start_android_companion_extraction():
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_android_companion_extraction"
     output_path = os.path.join(dest_path, f"{base_name}_extraction.json")
+    if os.path.lexists(output_path):
+        update_job(active=False)
+        return _existing_output_refusal(output_path)
 
     report_data = {
         "tool": "android_companion_extraction",

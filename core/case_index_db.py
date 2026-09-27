@@ -36,7 +36,14 @@ import core.config as config
 # routes/image_browser.py's execution_worker_image_triage_scan, and
 # routes/case_index.py's summary/hits routes.
 TRIAGE_PATTERNS = {
-    "emails": re.compile(rb'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'),
+    # Anchored and length-bounded (2026-09-27). The unbounded form
+    # rb'[A-Za-z0-9._%+-]+@...' re-scanned the whole run from EVERY start
+    # position looking for an '@': quadratic, measured on the station at 0.4s
+    # for 10 KB of letters, 6.3s for 40 KB, 100s for 160 KB - a single 8 MB
+    # scan chunk of base64/hex/minified text would take days. The lookbehind
+    # makes every mid-run start fail at once; the bounds are RFC 5321's
+    # (local part <= 64, domain <= 253).
+    "emails": re.compile(rb'(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,24}'),
     "urls": re.compile(rb'https?://[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]+'),
     "ip_addresses": re.compile(rb'\b(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\b'),
     "credit_card_numbers": re.compile(rb'\b(?:\d[ -]?){13,19}\b'),
@@ -107,7 +114,7 @@ TRIAGE_CATEGORY_LABELS = {
 # slug-shaped from _custom_report_template_from_payload()'s own precedent.
 KEYWORD_CATEGORY_PREFIX = "kw_"
 
-def build_scan_patterns(keyword_list_ids=None):
+def build_scan_patterns(keyword_list_ids=None, skipped_out=None):
     """Returns {name: compiled_regex} - always the 5 built-in TRIAGE_PATTERNS,
     plus one compiled pattern per selected keyword list (get_keyword_lists()
     in core/config.py), keyed 'kw_<list_id>'. A list with no usable terms,
@@ -137,11 +144,20 @@ def build_scan_patterns(keyword_list_ids=None):
     if not keyword_list_ids:
         return patterns
     wanted = set(keyword_list_ids)
+    # skipped_out (2026-09-27 review): a selected list that is dropped used to
+    # vanish without trace, so "searched, nothing found" and "never searched"
+    # read the same in the report. Callers that record a scan pass a list.
+    def _skip(kw_list_id, name, reason):
+        if skipped_out is not None:
+            skipped_out.append({"id": kw_list_id, "name": name, "reason": reason})
+    found_ids = set()
     for kw_list in get_keyword_lists():
         if kw_list.get('id') not in wanted:
             continue
+        found_ids.add(kw_list.get('id'))
         terms = [t for t in (kw_list.get('terms') or []) if t and t.strip()]
         if not terms:
+            _skip(kw_list.get('id'), kw_list.get('name'), "the list has no terms")
             continue
         try:
             if kw_list.get('is_regex'):
@@ -149,11 +165,15 @@ def build_scan_patterns(keyword_list_ids=None):
             else:
                 combined = '|'.join(re.escape(t) for t in terms)
             compiled = re.compile(combined.encode('utf-8'), re.IGNORECASE)
-        except re.error:
+        except re.error as e:
+            _skip(kw_list.get('id'), kw_list.get('name'), f"a term is not a valid regex ({e})")
             continue
         if kw_list.get('is_regex') and check_regex_pattern_for_redos(compiled) is not None:
+            _skip(kw_list.get('id'), kw_list.get('name'), "a regex failed the catastrophic-backtracking safety check")
             continue
         patterns[f"{KEYWORD_CATEGORY_PREFIX}{kw_list['id']}"] = compiled
+    for missing in sorted(wanted - found_ids, key=str):
+        _skip(missing, None, "the list no longer exists")
     return patterns
 
 # --- ReDoS defense for examiner-defined regex keyword-list patterns ---
