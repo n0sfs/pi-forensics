@@ -319,6 +319,9 @@ EXTENSION_CATEGORY_MAP = {
 FILE_VIEW_EXTENSION_CATEGORIES = ('images', 'videos', 'audio', 'archives', 'documents', 'executables', 'other')
 
 _CASE_ROLE_BACKUP_SUFFIXES = ('.pre_consolidation_backup', '.pre_restore_backup')
+# Report exports are versioned since 2026-09-27 ({slug}_case_{stamp}.pdf and
+# its .sha256) - an earlier issued report is never overwritten.
+_CASE_ROLE_VERSIONED_REPORT_RE = re.compile(r'_case_\d{8}-\d{6}(_\d+)?\.(pdf|html)(\.sha256)?$', re.IGNORECASE)
 _CASE_ROLE_REPORT_SUFFIXES = (
     '_case.json', '_case.pdf', '_case.html', '_case_index.db',
     # The examiner-decision backup sidecar (2026-09-20) - same role as the
@@ -421,6 +424,8 @@ def classify_case_role(name):
     lower = name.lower()
     if _CASE_ROLE_BUNDLE_RE.search(name):
         return 'case_bundle'
+    if _CASE_ROLE_VERSIONED_REPORT_RE.search(name):
+        return 'report'
     if lower.endswith(_CASE_ROLE_BACKUP_SUFFIXES):
         return 'backup'
     if name == 'case_info.json' or lower.endswith(tuple(s.lower() for s in _CASE_ROLE_REPORT_SUFFIXES)):

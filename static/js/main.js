@@ -21769,6 +21769,8 @@ async function startBuildCollectionUsb() {
             body: JSON.stringify({
                 device: opt.value,
                 device_info: { model: opt.dataset.model, serial: opt.dataset.serial, size: opt.dataset.size },
+                // Re-checked server-side, together with the drive's serial.
+                confirm_text: document.getElementById('liveCollectionBuildConfirmText')?.value || '',
             }),
         });
         const data = await res.json();

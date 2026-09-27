@@ -101,9 +101,12 @@ def test_start_build_accepts_a_valid_device_and_claims_the_job_slot(client, no_o
     # port classification, so the port check is mocked to "black" here;
     # test_usb_port_write_block.py covers the port-refusal path itself.
     monkeypatch.setattr(acq, "classify_usb_port", lambda device: "black")
+    monkeypatch.setattr(acq, "_drive_identity", lambda device: "serial ABC123")
+    monkeypatch.setattr(acq, "_device_hosts_mounted_storage", lambda device: None)
     res = client.post("/api/live_collection/start_build", json={
         "device": "/dev/sdb",
         "device_info": {"model": "Test USB", "serial": "ABC123", "size": "16 GB"},
+        "confirm_text": "WIPE /dev/sdb",
     })
     assert res.status_code == 200
     assert res.get_json()["success"] is True
@@ -404,3 +407,45 @@ class TestBuildWorkerChainOfCustodyLoggingFromBackgroundThread:
         assert "live_collection_usb_built" in log_contents
         assert "203.0.113.5" in log_contents
         assert "test_examiner" in log_contents
+
+
+
+# --- 2026-09-27: the wipe confirmation is enforced server-side, tied to the drive ---
+
+def _build(client, **overrides):
+    body = {"device": "/dev/sdb", "device_info": {"model": "Test USB", "serial": "ABC123", "size": "16 GB"},
+            "confirm_text": "WIPE /dev/sdb"}
+    body.update(overrides)
+    return client.post("/api/live_collection/start_build", json=body)
+
+
+def test_build_refuses_without_the_typed_confirmation(client, no_op_thread, monkeypatch):
+    monkeypatch.setattr(acq, "classify_usb_port", lambda device: "black")
+    for text in (None, "", "WIPE /dev/sda", "wipe /dev/sdb"):
+        res = _build(client, confirm_text=text)
+        assert res.status_code == 400
+        assert jobs.current_job["active"] is False
+
+
+def test_build_refuses_when_a_different_drive_is_now_at_that_path(client, no_op_thread, monkeypatch):
+    monkeypatch.setattr(acq, "classify_usb_port", lambda device: "black")
+    monkeypatch.setattr(acq, "_drive_identity", lambda device: "serial SOMEONE-ELSES")
+    res = _build(client)
+    assert res.status_code == 409
+    assert "not the one you confirmed" in res.get_json()["error"]
+    assert jobs.current_job["active"] is False
+
+
+def test_serial_less_sticks_match_on_model_and_size():
+    assert acq._drive_identity_from_listing({"serial": "N/A", "model": "USB DISK", "size": "14.5 GB"}) == "USB DISK, 14.5 GB"
+    assert acq._drive_identity_from_listing({"serial": "ABC", "model": "x", "size": "1 GB"}) == "serial ABC"
+    assert acq._drive_identity_from_listing({"serial": "N/A", "model": "", "size": ""}) is None
+
+
+def test_build_refuses_a_drive_holding_evidence_storage(client, no_op_thread, monkeypatch):
+    monkeypatch.setattr(acq, "classify_usb_port", lambda device: "black")
+    monkeypatch.setattr(acq, "_drive_identity", lambda device: "serial ABC123")
+    monkeypatch.setattr(acq, "_device_hosts_mounted_storage", lambda device: "/mnt/usb_evidence")
+    res = _build(client)
+    assert res.status_code == 409
+    assert jobs.current_job["active"] is False

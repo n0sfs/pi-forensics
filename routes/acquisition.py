@@ -2335,6 +2335,47 @@ def execution_worker_build_collection_usb(device, device_info, source_ip=None, u
         update_job(active=False)
 
 
+def _drive_identity(device):
+    """What identifies the physical drive at `device` right now: its serial
+    number, or - for the many cheap USB sticks that report none - its model
+    and size, formatted exactly as /api/drives lists them. None if unreadable."""
+    try:
+        res = subprocess.run(['lsblk', '-J', '-b', '-d', '-o', 'SERIAL,MODEL,SIZE', device],
+                             capture_output=True, text=True, timeout=10)
+        dev = (json.loads(res.stdout).get('blockdevices') or [None])[0] if res.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if not dev:
+        return None
+    return _drive_identity_from_listing({
+        "serial": dev.get('serial') or 'N/A',
+        "model": dev.get('model') or 'Generic Disk',
+        "size": f"{round(int(dev.get('size') or 0) / (1024**3), 1)} GB",
+    })
+
+
+def _drive_identity_from_listing(info):
+    serial = (info.get('serial') or '').strip()
+    if serial and serial != 'N/A':
+        return f"serial {serial}"
+    model, size = (info.get('model') or '').strip(), (info.get('size') or '').strip()
+    return f"{model}, {size}" if model and size else None
+
+
+def _device_hosts_mounted_storage(device):
+    """A mount point on `device` that is (or holds) evidence storage - the
+    evidence root, or anything under it - else None."""
+    try:
+        res = subprocess.run(['lsblk', '-nro', 'MOUNTPOINTS', device], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for mp in res.stdout.split():
+        if mp == EVIDENCE_ROOT or mp.startswith(EVIDENCE_ROOT.rstrip('/') + '/') or \
+                EVIDENCE_ROOT.startswith(mp.rstrip('/') + '/'):
+            return mp
+    return None
+
+
 @acquisition_bp.route('/api/live_collection/start_build', methods=['POST'])
 @requires_auth
 @requires_permission('acquisition')
@@ -2368,6 +2409,28 @@ def start_build_collection_usb():
             f"write-blocked. {device} is not confirmed to be in one of those ports (detected: "
             f"{port_class or 'unrecognized'}). Move the drive to a black port and try again."
         )}), 400
+
+    # The wipe confirmation, checked HERE (2026-09-27 review). It only ever
+    # existed in the browser, so a direct API call wiped with no confirmation
+    # at all - and it named a device PATH, so a drive swapped after typing
+    # (another stick taking /dev/sda) was wiped instead. Now the typed text
+    # and the drive's own serial number must both match what is attached.
+    if (req.get('confirm_text') or '') != f"WIPE {device}":
+        update_job(active=False)
+        return jsonify({"success": False, "error": f'Type "WIPE {device}" to confirm - this erases the whole drive.'}), 400
+    live_identity = _drive_identity(device)
+    posted_identity = _drive_identity_from_listing(device_info)
+    if not live_identity or live_identity != posted_identity:
+        update_job(active=False)
+        return jsonify({"success": False, "error": (
+            f"The drive now at {device} is not the one you confirmed ({live_identity or 'unreadable'} vs "
+            f"{posted_identity or 'unknown'}). Refresh the drive list, check which drive is plugged in, and confirm again."
+        )}), 409
+    # Never the drive this station keeps its evidence on.
+    hosted = _device_hosts_mounted_storage(device)
+    if hosted:
+        update_job(active=False)
+        return jsonify({"success": False, "error": f"{device} holds mounted storage ({hosted}) - it will not be wiped."}), 409
 
     # Real bug found live (2026-09-03): the worker's own completion
     # log_chain_of_custody() call runs from inside this background thread,

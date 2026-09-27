@@ -2146,7 +2146,8 @@ def _discover_case_files(case_folder):
     for root, dirs, files in os.walk(case_folder):
         dirs[:] = [d for d in dirs if not is_bulk_tool_output_dir(d)]
         for fname in files:
-            if fname in own_artifact_names or fname.endswith(('.pre_consolidation_backup', '_report.json')):
+            if fname in own_artifact_names or fname.endswith(('.pre_consolidation_backup', '_report.json')) \
+                    or classify_case_role(fname) == 'report':
                 continue
             ext = os.path.splitext(fname)[1].lower()
             if ext in ATTACHMENT_EXCLUDE_EXT:
@@ -7143,9 +7144,26 @@ def export_report():
         if preview:
             return Response(content_bytes, mimetype=mimetype)
 
-        out_path = report_file.rsplit('.json', 1)[0] + ('.html' if fmt == 'html' else '.pdf')
-        with open(out_path, 'wb') as f:
+        # Versioned, never overwritten (2026-09-27 review): every export used
+        # to replace <case>.pdf and its .sha256, so a report already handed
+        # to a reviewer - and the hash they were given - vanished from the
+        # station on the next export. Created exclusively (O_EXCL); the
+        # download is served from the same in-memory bytes that were hashed,
+        # so two overlapping exports can't hand one request the other's file.
+        stem = report_file.rsplit('.json', 1)[0] + '_' + time.strftime('%Y%m%d-%H%M%S')
+        ext = '.html' if fmt == 'html' else '.pdf'
+        out_path, n = stem + ext, 1
+        while True:
+            try:
+                fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                break
+            except FileExistsError:
+                n += 1
+                out_path = f"{stem}_{n}{ext}"
+        with os.fdopen(fd, 'wb') as f:
             f.write(content_bytes)
+            f.flush()
+            os.fsync(f.fileno())
 
         # A report-level integrity hash - computed over the exported file's
         # actual bytes (already in memory, the same bytes just written to
@@ -7160,9 +7178,13 @@ def export_report():
             f.write(f"{digest}  {os.path.basename(out_path)}\n")
         _auto_tag_case_artifact(case_folder, out_path)
         _auto_tag_case_artifact(case_folder, out_path + '.sha256')
-        log_chain_of_custody("report_exported", {"case_folder": case_folder, "format": fmt, "template": template_value})
+        # The file and the digest that was issued, so the custody log alone can
+        # say which report (and which hash) went out when.
+        log_chain_of_custody("report_exported", {"case_folder": case_folder, "format": fmt,
+                                                 "template": template_value, "file": out_path, "sha256": digest})
 
-        resp = send_file(out_path, as_attachment=True)
+        resp = send_file(io.BytesIO(content_bytes), as_attachment=True,
+                         download_name=os.path.basename(out_path), mimetype=mimetype)
         resp.headers['X-Report-Sha256'] = digest
         return resp
     except Exception as e:
