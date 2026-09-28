@@ -176,9 +176,9 @@ window.addEventListener('beforeunload', (ev) => {
 // would otherwise silently overwrite unsaved Reporting edits with the
 // new/cleared case's own data. Returns true (safe to proceed) when there's
 // nothing to lose.
-function confirmDiscardUnsavedReportingChanges() {
+async function confirmDiscardUnsavedReportingChanges() {
     if (!reportHasUnsavedChanges) return true;
-    return confirm('You have unsaved changes in this case\'s Report Narrative, Case Details, or Files & Artifacts. Switching cases will discard them. Continue without saving?');
+    return await appConfirm('You have unsaved changes in this case\'s Report Narrative, Case Details, or Files & Artifacts. Switching cases will discard them. Continue without saving?');
 }
 
 // activeCase shape: {case_number, examiner, case_folder} | null
@@ -189,9 +189,53 @@ const ACTIVE_CASE_STORAGE_KEY = 'pi_forensics_active_case';
 // Shared non-blocking status notification, replacing this app's old habit of plain alert()
 // popups for action results. alert() blocks the entire tab (including this app's own 2s telemetry
 // poll) until dismissed, doesn't match the dark Bootstrap theme, and isn't touch-friendly on the
-// kiosk - a real usability complaint, not a cosmetic one. Genuine yes/no gates before a destructive
-// action still use native confirm() elsewhere in this file (deliberately unchanged here) - a toast
-// can't block execution or return a boolean, so it was never a fit for those.
+// kiosk - a real usability complaint, not a cosmetic one. Yes/no gates before a destructive
+// action use appConfirm() below (a toast can't return a boolean).
+// Themed replacement for native confirm() (2026-09-27). Resolves true/false.
+// Native dialogs ignored the dark theme, had tiny touch targets on the kiosk,
+// and blocked the whole tab. opts: {title, confirmText, danger}. The first
+// line of a multi-line message becomes the title when none is given.
+// Falls back to confirm() only if the modal markup is missing.
+function appConfirm(message, opts) {
+    opts = opts || {};
+    const modalEl = document.getElementById('appConfirmModal');
+    if (!modalEl || !window.bootstrap) return Promise.resolve(confirm(message));
+    const text = String(message == null ? '' : message);
+    let title = opts.title, body = text;
+    if (!title) {
+        const nl = text.indexOf('\n');
+        if (nl > 0 && nl <= 120) { title = text.slice(0, nl); body = text.slice(nl).replace(/^\n+/, ''); }
+        else title = 'Please confirm';
+    }
+    document.getElementById('appConfirmTitleText').textContent = title;
+    document.getElementById('appConfirmMessage').textContent = body;
+    const ok = document.getElementById('appConfirmOkBtn');
+    const cancel = document.getElementById('appConfirmCancelBtn');
+    const lead = text.replace(/^[^A-Za-z]+/, '');
+    const destructive = opts.danger !== undefined ? opts.danger
+        : /^(delete|remove|stop|erase|wipe|restor|repair|safely unmount|shut ?down|reboot|restart|turn off|pull|run|are you sure|you have unsaved|physical|this revokes)/i.test(lead) || /overwrite/i.test(text);
+    ok.textContent = opts.confirmText || (/^delete/i.test(lead) ? 'Delete' : /overwrite it\?/i.test(text) ? 'Overwrite' : 'Continue');
+    ok.className = 'btn fw-bold px-4 py-2 ' + (destructive ? 'btn-danger' : 'btn-primary');
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    return new Promise(resolve => {
+        let result = false;
+        const onOk = () => { result = true; modal.hide(); };
+        const onCancel = () => modal.hide();
+        const onKey = e => { if (e.key === 'Escape') modal.hide(); };
+        ok.addEventListener('click', onOk);
+        cancel.addEventListener('click', onCancel);
+        modalEl.addEventListener('keydown', onKey);
+        modalEl.addEventListener('shown.bs.modal', () => cancel.focus(), { once: true });
+        modalEl.addEventListener('hidden.bs.modal', () => {
+            ok.removeEventListener('click', onOk);
+            cancel.removeEventListener('click', onCancel);
+            modalEl.removeEventListener('keydown', onKey);
+            resolve(result);
+        }, { once: true });
+        modal.show();
+    });
+}
+
 function showToast(message, type) {
     const container = document.getElementById('toastContainer');
     if (!container) { alert(message); return; } // defensive fallback only - should never happen
@@ -3558,7 +3602,7 @@ async function saveManageTagModal() {
 }
 
 async function deleteManageTag(tagId, name) {
-    if (!confirm(`Delete tag "${name}"? It will be removed from every file it's currently applied to.`)) return;
+    if (!await appConfirm(`Delete tag "${name}"? It will be removed from every file it's currently applied to.`)) return;
     try {
         const res = await fetch('/api/case_index/tags/delete', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3848,7 +3892,7 @@ async function saveKeywordListModal() {
 }
 
 async function deleteKeywordList(listId, name) {
-    if (!confirm(`Delete keyword list "${name}"? Any past scan results already recorded under it are kept, just no longer selectable for a new scan.`)) return;
+    if (!await appConfirm(`Delete keyword list "${name}"? Any past scan results already recorded under it are kept, just no longer selectable for a new scan.`)) return;
     try {
         const res = await fetch(`/api/settings/keyword_lists/${listId}`, { method: 'DELETE' });
         const data = await res.json();
@@ -4041,7 +4085,7 @@ async function saveHashListModal() {
 }
 
 async function deleteHashList(listId, name) {
-    if (!confirm(`Delete hash set "${name}"? This cannot be undone.`)) return;
+    if (!await appConfirm(`Delete hash set "${name}"? This cannot be undone.`)) return;
     try {
         const res = await fetch(`/api/settings/hash_lists/${listId}`, { method: 'DELETE' });
         const data = await res.json();
@@ -4265,7 +4309,7 @@ async function saveUrlListModal() {
 }
 
 async function deleteUrlList(listId, name) {
-    if (!confirm(`Delete URL list "${name}"? This cannot be undone.`)) return;
+    if (!await appConfirm(`Delete URL list "${name}"? This cannot be undone.`)) return;
     try {
         const res = await fetch(`/api/settings/url_lists/${listId}`, { method: 'DELETE' });
         const data = await res.json();
@@ -4424,7 +4468,7 @@ async function saveYaraRulesetModal() {
 }
 
 async function deleteYaraRuleset(rulesetId, name) {
-    if (!confirm(`Delete YARA ruleset "${name}"? This cannot be undone.`)) return;
+    if (!await appConfirm(`Delete YARA ruleset "${name}"? This cannot be undone.`)) return;
     try {
         const res = await fetch(`/api/settings/yara_rules/${rulesetId}`, { method: 'DELETE' });
         const data = await res.json();
@@ -6455,7 +6499,7 @@ async function confirmAndCopyTo(sourcePath, destDir) {
         });
         const data = await res.json();
         const collision = data.success && (data.items || []).some(i => i.name === fileName);
-        if (collision && !confirm(`"${fileName}" already exists in ${destDir}.\n\nOverwrite it?`)) return;
+        if (collision && !await appConfirm(`"${fileName}" already exists in ${destDir}.\n\nOverwrite it?`)) return;
     } catch (err) {
         // Collision check itself failed (network blip) - fall through to
         // the real copy rather than blocking the whole action over a
@@ -6506,7 +6550,7 @@ async function deleteSelectedFile() {
     const confirmMsg = activeSelectedIsDir
         ? `Delete "${activeSelectedFile}"?\n\nThis will permanently delete the FOLDER AND EVERYTHING INSIDE IT. This cannot be undone.`
         : `Are you sure you want to delete ${activeSelectedFile}?`;
-    if (!confirm(confirmMsg)) return;
+    if (!await appConfirm(confirmMsg)) return;
 
     try {
         const res = await fetch('/api/files/delete', {
@@ -7679,7 +7723,7 @@ async function runSelectedGeolocationExport() {
 
 async function runTakeoutImport() {
     if (!activeSelectedFile) return;
-    if (!confirm("Import this folder as a Google Takeout export?\n\nThis only reads an archive you already downloaded through Google's own official export tool - it never accesses a live Google account.\n\nSearch/YouTube History use a stable format; Location History, Maps Places, and Photo metadata are best-effort (Google's own export formats for these vary).")) return;
+    if (!await appConfirm("Import this folder as a Google Takeout export?\n\nThis only reads an archive you already downloaded through Google's own official export tool - it never accesses a live Google account.\n\nSearch/YouTube History use a stable format; Location History, Maps Places, and Photo metadata are best-effort (Google's own export formats for these vary).")) return;
     const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile;
     try {
         const res = await fetch('/api/files/import_takeout_archive', {
@@ -7699,7 +7743,7 @@ async function runTakeoutImport() {
 
 async function runAppleExportImport() {
     if (!activeSelectedFile) return;
-    if (!confirm("Import this folder as an already-extracted Apple Data & Privacy export?\n\nApple delivers this as an encrypted zip with a separately-emailed password - this folder must already be extracted (using that password) before importing.\n\nThis only reads an archive you already obtained yourself through Apple's own official export tool - it never accesses a live Apple account.\n\nContacts/Calendars use stable formats; Safari Bookmarks and Photo metadata are best-effort.")) return;
+    if (!await appConfirm("Import this folder as an already-extracted Apple Data & Privacy export?\n\nApple delivers this as an encrypted zip with a separately-emailed password - this folder must already be extracted (using that password) before importing.\n\nThis only reads an archive you already obtained yourself through Apple's own official export tool - it never accesses a live Apple account.\n\nContacts/Calendars use stable formats; Safari Bookmarks and Photo metadata are best-effort.")) return;
     const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile;
     try {
         const res = await fetch('/api/files/import_apple_export', {
@@ -9397,7 +9441,7 @@ async function startDevicePreview() {
     // convenience.
     const devicePath = document.getElementById("driveSelect")?.value || "";
     if (!devicePath) return showToast('Select a target source drive first.', 'warning');
-    if (!confirm(`Preview ${devicePath} read-only?\n\nThis browses the live drive directly - not yet an acquired image. The drive's existing write-blocking protection still applies; only read access is granted, and it's revoked again when you exit the preview.`)) return;
+    if (!await appConfirm(`Preview ${devicePath} read-only?\n\nThis browses the live drive directly - not yet an acquired image. The drive's existing write-blocking protection still applies; only read access is granted, and it's revoked again when you exit the preview.`)) return;
 
     try {
         const res = await fetch('/api/image/preview/enter', {
@@ -10640,7 +10684,7 @@ async function listImageShadowCopies() {
 
 async function materializeShadowCopy(storeIndex) {
     if (!explorerImagePath) return;
-    if (!confirm(`Copy the full contents of shadow copy #${storeIndex} out to a new image file? This can be as large as the original volume and may take a while - it runs as a background job you can stop from the progress bar.`)) return;
+    if (!await appConfirm(`Copy the full contents of shadow copy #${storeIndex} out to a new image file? This can be as large as the original volume and may take a while - it runs as a background job you can stop from the progress bar.`)) return;
     const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
     try {
         const res = await fetch('/api/image/start_materialize_shadow_copy', {
@@ -10696,7 +10740,7 @@ async function startImageTriageScan() {
 
 async function runImageRecoverDeleted() {
     if (!explorerImagePath) return;
-    if (!confirm('Recover deleted files from this image? Recovery odds vary by filesystem type - NTFS/FAT usually work well, ext filesystems often do not, since data is frequently already gone by the time a file shows as deleted. A recovered file may also be partially overwritten if its space was reused - verify hashes where it matters.')) return;
+    if (!await appConfirm('Recover deleted files from this image? Recovery odds vary by filesystem type - NTFS/FAT usually work well, ext filesystems often do not, since data is frequently already gone by the time a file shows as deleted. A recovered file may also be partially overwritten if its space was reused - verify hashes where it matters.')) return;
 
     const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
     try {
@@ -14850,7 +14894,7 @@ async function duplicateCustomReportTemplate(id) {
 async function deleteCustomReportTemplate(id) {
     const record = customReportTemplatesCache.find(t => t.id === id);
     if (!record) return;
-    if (!confirm(`Delete the custom report template "${record.name}"? Any station default or per-export selection pointing at it will fall back to Standard.`)) return;
+    if (!await appConfirm(`Delete the custom report template "${record.name}"? Any station default or per-export selection pointing at it will fall back to Standard.`)) return;
     try {
         const res = await fetch(`/api/report_templates/custom/${id}`, { method: 'DELETE' });
         const data = await res.json();
@@ -16064,7 +16108,7 @@ async function repairCaseIndex() {
         ? (backup.tagged_items + ' tagged items, ' + backup.tags + ' tags and ' + backup.contact_merges
            + ' contact merges will be restored from the backup saved ' + (backup.exported_at || 'earlier') + '.')
         : 'There is NO decision backup for this case, so tags, notable flags and contact merges cannot be restored.';
-    const proceed = confirm(
+    const proceed = await appConfirm(
         'Repair this case\'s analysis index?\n\n'
         + 'The damaged file is renamed and kept, never deleted.\n\n'
         + willRestore + '\n\n'
@@ -16617,7 +16661,7 @@ async function startCaseBundleExport() {
     const warnExtra = includeImages
         ? '\n\nRaw acquisition images are INCLUDED - this bundle may be very large and will block new acquisition/recovery jobs for a while.'
         : '\n\nRaw acquisition images are excluded from this bundle (check the box above to include them).';
-    if (!confirm(`Zip the entire case folder for archival/handoff?\n\nThis runs as a background job and uses the one station-wide job slot.${warnExtra}`)) {
+    if (!await appConfirm(`Zip the entire case folder for archival/handoff?\n\nThis runs as a background job and uses the one station-wide job slot.${warnExtra}`)) {
         return;
     }
     try {
@@ -16641,7 +16685,7 @@ async function startVerifyAllEvidence() {
         showToast('Select an active case first.', 'warning');
         return;
     }
-    if (!confirm('Re-hash every completed acquisition in this case and compare against the hashes recorded at acquisition time?\n\nThis runs as a background job and uses the one station-wide job slot - it will block a new acquisition/recovery/mobile job from starting until it finishes. This may take a while on a case with large images.')) {
+    if (!await appConfirm('Re-hash every completed acquisition in this case and compare against the hashes recorded at acquisition time?\n\nThis runs as a background job and uses the one station-wide job slot - it will block a new acquisition/recovery/mobile job from starting until it finishes. This may take a while on a case with large images.')) {
         return;
     }
     const btn = document.getElementById('btnVerifyAllEvidence');
@@ -18424,7 +18468,7 @@ async function saveReportMetadata() {
             // reloads on their behalf) - Reload Case explicitly re-fetches
             // and repaints, discarding those edits, only if they choose it.
             showToast(data.error, 'danger');
-            if (confirm(`${data.error}\n\nReload this case now? (Any unsaved edits in this tab will be lost - reapply them after reloading.)`)) {
+            if (await appConfirm(`${data.error}\n\nReload this case now? (Any unsaved edits in this tab will be lost - reapply them after reloading.)`)) {
                 // The examiner just explicitly confirmed discarding their
                 // own in-tab edits - clear the dirty flag BEFORE reloading,
                 // or loadCaseForEditing()'s own live reportHasUnsavedChanges
@@ -20022,7 +20066,7 @@ function openCaseManagerModal() {
 }
 
 async function createCase() {
-    if (!confirmDiscardUnsavedReportingChanges()) return;
+    if (!(await confirmDiscardUnsavedReportingChanges())) return;
     const caseNumber = document.getElementById("newCaseNumber")?.value.trim();
     const examiner = document.getElementById("newCaseExaminer")?.value.trim();
     const parentDir = document.getElementById("newCaseParentDir")?.value.trim() || '/mnt';
@@ -20336,7 +20380,7 @@ async function handleCaseStatusDropdownChange(selectEl) {
 }
 
 async function selectCase(c) {
-    if (!confirmDiscardUnsavedReportingChanges()) return;
+    if (!(await confirmDiscardUnsavedReportingChanges())) return;
     // case_status comes straight from list_case_folders() and is what the bar
     // renders its finished-case badge from - dropping it here is what let an
     // Archived case be selected and then look like an ordinary open one.
@@ -20365,8 +20409,8 @@ async function selectCase(c) {
     }
 }
 
-function clearActiveCase() {
-    if (!confirmDiscardUnsavedReportingChanges()) return;
+async function clearActiveCase() {
+    if (!(await confirmDiscardUnsavedReportingChanges())) return;
     activeCase = null;
     persistActiveCase();
     renderActiveCaseBar();
@@ -22418,7 +22462,7 @@ async function loadAutoMountShares() {
 }
 
 async function removeAutoMountShare(id) {
-    if (!confirm('Stop auto-connecting this share on future reboots? The current mount (if any) is left untouched.')) return;
+    if (!await appConfirm('Stop auto-connecting this share on future reboots? The current mount (if any) is left untouched.')) return;
     try {
         const res = await fetch(`/api/network/auto_mounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
         const data = await res.json();
@@ -22571,7 +22615,7 @@ async function applyNetworkConfig(device) {
     const warning = method === 'manual'
         ? `Apply a static IP to ${device}? If any value is wrong, this may disconnect your session immediately. The station will automatically revert to its current settings in ${networkRevertWindowSeconds}s unless you confirm afterward.`
         : `Switch ${device} back to DHCP? This may change its IP address and disconnect your session. The station will automatically revert to its current settings in ${networkRevertWindowSeconds}s unless you confirm afterward.`;
-    if (!confirm(warning)) return;
+    if (!await appConfirm(warning)) return;
 
     try {
         const res = await fetch('/api/network/apply', {
@@ -23120,7 +23164,7 @@ async function inspectDdrescueMapfile() {
 }
 
 async function stopAcquisition() {
-    if (!confirm(`Stop the running job?
+    if (!await appConfirm(`Stop the running job?
 
 The tool is killed immediately. Any partial output is kept but is INCOMPLETE and must not be used as a verified image.`)) return;
     try {
@@ -23476,7 +23520,7 @@ async function startCompanionUnifiedExtraction() {
           + 'The phone\'s own real SMS app will NOT receive or send normal messages until this finishes '
           + 'and the original default is restored.'
         : '';
-    if (!confirm(
+    if (!await appConfirm(
         `This installs a small companion app (hand-built for this project) on the device to read: `
         + `${selectedLabel}.\n\nIt actively modifies the device (installs an app, grants exactly the `
         + `permissions needed for what's selected), then removes the app and reverses every change when `
@@ -23511,7 +23555,7 @@ async function startCompanionUnifiedExtraction() {
 async function cleanupCompanionUnifiedExtraction() {
     const dev = _currentlySelectedAndroidDevice();
     if (!dev) return showToast('Select a connected Android device first.', 'warning');
-    if (!confirm('This revokes every permission this feature could have granted (SMS/Contacts/Call Log/'
+    if (!await appConfirm('This revokes every permission this feature could have granted (SMS/Contacts/Call Log/'
         + 'Calendar/Photos/Video), restores the default SMS app if currently reassigned, and uninstalls '
         + 'the companion collector from the selected device. Use this only if a previous extraction was '
         + 'interrupted and never cleaned up on its own. Continue?')) return;
@@ -23671,7 +23715,7 @@ async function startAndroidAcquisition() {
         if (!hashes.length) {
             return showToast("Select at least one verification hash algorithm.", 'warning');
         }
-        if (!confirm("Physical/raw acquisition requires the device to already be rooted. Rooting a device is "
+        if (!await appConfirm("Physical/raw acquisition requires the device to already be rooted. Rooting a device is "
             + "itself an evidence-altering action - only continue if that's already true, or rooting is a "
             + "deliberate, documented, examiner-authorized step. Whether this specific device/root method "
             + "actually permits reading raw block devices is unknown until attempted (SELinux enforcing mode "
@@ -24193,7 +24237,7 @@ async function saveUserGroup() {
 async function deleteUserGroupFromModal() {
     const groupId = document.getElementById("userGroupEditingId").value;
     if (!groupId) return;
-    if (!confirm('Delete this group? Any users currently in it will be moved to the Analyst group.')) return;
+    if (!await appConfirm('Delete this group? Any users currently in it will be moved to the Analyst group.')) return;
 
     const statusEl = document.getElementById("userGroupModalStatus");
     try {
@@ -24424,7 +24468,7 @@ async function generateTlsCertificate() {
     const extraHostname = document.getElementById("tlsGenExtraHostname")?.value.trim() || '';
     const statusEl = document.getElementById("tlsGenerateStatus");
 
-    if (!confirm("Generate a new self-signed certificate and install it now? This replaces the current certificate immediately.")) return;
+    if (!await appConfirm("Generate a new self-signed certificate and install it now? This replaces the current certificate immediately.")) return;
 
     if (statusEl) { statusEl.className = 'small mb-2 text-subtle'; statusEl.innerText = 'Generating and installing...'; }
 
@@ -24552,7 +24596,7 @@ async function submitConfigRestore() {
         if (statusEl) { statusEl.className = 'small text-danger'; statusEl.textContent = 'Enter the passphrase this backup was created with.'; }
         return;
     }
-    if (!confirm('Restoring will replace every current user account, group, and setting on this station with the backup\'s contents. Continue?')) {
+    if (!await appConfirm('Restoring will replace every current user account, group, and setting on this station with the backup\'s contents. Continue?')) {
         return;
     }
 
@@ -24740,7 +24784,7 @@ async function installTool(pkg, btnEl) {
     // config restore) - this one didn't, despite doing the same class of
     // thing (a real `sudo apt-get install` on the station) with only the
     // diagnostics caption explaining what "Install"/"Update" means.
-    if (!confirm(`Run "sudo apt-get install -y ${pkg}" on this station now?`)) return;
+    if (!await appConfirm(`Run "sudo apt-get install -y ${pkg}" on this station now?`)) return;
     if (btnEl) {
         btnEl.disabled = true;
         btnEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Working...';
@@ -24764,7 +24808,7 @@ async function installTool(pkg, btnEl) {
 async function ejectTargetDrive() {
     const drive = document.getElementById("ejectDriveSelect")?.value;
     if (!drive) return showToast("Select a drive to detach first.", 'warning');
-    if (!confirm(`Safely unmount and flush ${drive}? Only do this once any acquisition using it has finished.`)) return;
+    if (!await appConfirm(`Safely unmount and flush ${drive}? Only do this once any acquisition using it has finished.`)) return;
 
     try {
         const res = await fetch('/api/system/eject_drive', {
@@ -24794,7 +24838,7 @@ async function purgeConsoleLogs() {
 }
 
 async function restartForensicService() {
-    if (!confirm("Restart the forensic web service now? Any running acquisition job state will be lost, and this page will disconnect briefly.")) return;
+    if (!await appConfirm("Restart the forensic web service now? Any running acquisition job state will be lost, and this page will disconnect briefly.")) return;
     diagRunning("Restart Service");
     try {
         const res = await fetch('/api/system/restart_service', { method: 'POST' });
@@ -24840,7 +24884,7 @@ async function setKioskModeEnabled(checked) {
     // own hardware, matching this app's established pattern of confirm-
     // gating a consequential-but-reversible action (e.g. TLS cert
     // generation). Re-enabling is benign - no gate.
-    if (!checked && !confirm("Turn off the touchscreen kiosk display now? The physical screen will close immediately. This station's own web UI stays fully reachable over the network - turn it back on here anytime, no reboot needed.")) {
+    if (!checked && !await appConfirm("Turn off the touchscreen kiosk display now? The physical screen will close immediately. This station's own web UI stays fully reachable over the network - turn it back on here anytime, no reboot needed.")) {
         _setKioskModeToggleUi(true);  // revert the checkbox - the change was declined
         return;
     }
@@ -24865,7 +24909,7 @@ async function setKioskModeEnabled(checked) {
 }
 
 async function gitUpdateApp() {
-    if (!confirm("Pull the latest code from the configured git remote and restart the service? Only do this if you trust that remote.")) return;
+    if (!await appConfirm("Pull the latest code from the configured git remote and restart the service? Only do this if you trust that remote.")) return;
     switchToTab('settings-tab'); // so the Diagnostics output console below is visible if this was triggered from the update-available toast on a different tab
     diagRunning("Update App (Git Pull)");
     try {
@@ -24985,7 +25029,7 @@ function showUpdateAvailableNotification(verText, commitsBehind) {
 }
 
 async function updateOperatingSystem() {
-    if (!confirm("Run apt-get update && upgrade -y in the background? This can take a while and should not be interrupted.")) return;
+    if (!await appConfirm("Run apt-get update && upgrade -y in the background? This can take a while and should not be interrupted.")) return;
     diagRunning("Update OS Packages");
     try {
         const res = await fetch('/api/system/os_update', { method: 'POST' });
@@ -24999,7 +25043,7 @@ async function updateOperatingSystem() {
 async function triggerSystemPower(action) {
     const label = action === 'poweroff' ? 'Power Off Station' : 'Reboot Appliance';
     const confirmLabel = action === 'poweroff' ? 'power off' : 'reboot';
-    if (!confirm(`Are you sure you want to ${confirmLabel} the station now? Any running acquisition will be interrupted.`)) return;
+    if (!await appConfirm(`Are you sure you want to ${confirmLabel} the station now? Any running acquisition will be interrupted.`)) return;
     diagRunning(label);
     try {
         const res = await fetch('/api/system/power', {
