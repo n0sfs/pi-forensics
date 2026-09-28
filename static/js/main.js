@@ -6163,11 +6163,7 @@ document.addEventListener('keydown', (ev) => {
 }, true);
 
 document.addEventListener('DOMContentLoaded', () => {
-    const copyBtn = document.getElementById('contextMenuCopyBtn');
-    const deleteBtn = document.getElementById('contextMenuDeleteBtn');
     const extractBtn = document.getElementById('ctxMenuImageExtract');
-    if (copyBtn) copyBtn.onclick = () => { hideFileContextMenu(); promptCopySelected(); };
-    if (deleteBtn) deleteBtn.onclick = () => { hideFileContextMenu(); deleteSelectedFile(); };
     if (extractBtn) extractBtn.onclick = () => { hideFileContextMenu(); extractExplorerImageSelected(); };
 
     // Export mismatch warning (see updateExportMismatchWarning() above) -
@@ -10174,7 +10170,7 @@ function explorerImageToggleSearch() {
     formDiv.className = 'p-2';
     formDiv.innerHTML = '<div class="input-group input-group-sm mb-1">' +
         '<input type="text" id="explorerImageSearchQuery" class="form-control" placeholder="Filename contains...">' +
-        '<button class="btn btn-outline-info fw-bold" id="explorerImageSearchBtn"><i class="bi bi-search"></i></button>' +
+        '<button class="btn btn-outline-info fw-bold" id="explorerImageSearchBtn" aria-label="Search this image" title="Search this image"><i class="bi bi-search"></i></button>' +
         '</div><div class="text-subtle small">Searches recursively from this partition\'s root. Capped at 500 results.</div>';
     container.appendChild(formDiv);
 
@@ -15556,6 +15552,28 @@ const REPORT_EDITABLE_KEYS_CONSOLIDATED = ['case_status', 'executive_summary', '
     'limitations', 'conclusion', 'iocs', 'recommendations_next_steps', 'custom_fields', 'examiners', 'attachments'];
 const REPORT_EDITABLE_KEYS_LEGACY = ['case_metadata', 'attachments'];
 let reportEditBase = null;
+// Closed/Archived cases are read-only in Reporting (2026-09-27): the server
+// refuses narrative/notes/exhibit writes with 409, and this mirrors it so the
+// examiner sees why instead of discovering it on Save. Custody Log inputs,
+// exports and verification stay live - returning evidence after closure is
+// legitimate work.
+const REPORT_CLOSED_LOCK_IDS = ['btnSaveReportChanges', 'btnAddCaseNote', 'newCaseNoteCategory', 'newCaseNoteFiles',
+    'newCaseNoteText', 'newCaseNoteAssignedTo', 'editExecSummary', 'editObjectives', 'editFindingsSummary',
+    'editLimitations', 'editConclusion', 'editIocs', 'editRecommendations'];
+function applyReportClosedLock() {
+    const status = currentLoadedReportData && currentLoadedReportData.case_status;
+    const locked = CASE_STATUSES_CLOSED_TO_NEW_WORK.includes(status);
+    REPORT_CLOSED_LOCK_IDS.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = locked;
+    });
+    const banner = document.getElementById('reportClosedBanner');
+    if (banner) {
+        banner.style.display = locked ? '' : 'none';
+        const st = document.getElementById('reportClosedBannerStatus');
+        if (st) st.textContent = locked ? status : '';
+    }
+}
 function snapshotReportEditBase() {
     if (!currentLoadedReportData) { reportEditBase = null; return; }
     const keys = Array.isArray(currentLoadedReportData.events) ? REPORT_EDITABLE_KEYS_CONSOLIDATED : REPORT_EDITABLE_KEYS_LEGACY;
@@ -15707,6 +15725,7 @@ async function loadCaseForEditing() {
         }
 
         currentLoadedReportData = data.report;
+        applyReportClosedLock();
         // The case file is the authority on status, so keep the active-case
         // object (and therefore the case bar's finished-case badge) in step
         // with what was just read from disk - this is what makes the badge
@@ -21652,7 +21671,7 @@ async function refreshDrives() {
             // recovery.html/drive_management.html), falling back to the
             // original text for any select that doesn't set one.
             const placeholderText = selectEl.dataset.placeholder || '-- Choose Target Source Drive --';
-            selectEl.innerHTML = `<option value="">${placeholderText}</option>`;
+            selectEl.replaceChildren(new Option(placeholderText, ''));
             currentDrivesList.forEach(dev => {
                 const opt = document.createElement("option");
                 opt.value = dev.device;
@@ -23101,7 +23120,9 @@ async function inspectDdrescueMapfile() {
 }
 
 async function stopAcquisition() {
-    if (!confirm("Terminate current process?")) return;
+    if (!confirm(`Stop the running job?
+
+The tool is killed immediately. Any partial output is kept but is INCOMPLETE and must not be used as a verified image.`)) return;
     try {
         const res = await fetch('/api/stop_imaging', { method: 'POST' });
         const data = await res.json();

@@ -65,7 +65,7 @@ from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path,
     classify_extension, classify_case_role, sanitize_case_slug, format_epoch,
     is_bulk_tool_output_dir, acquisition_output_location, acquisition_verification_target,
-    path_is_within,
+    path_is_within, closed_case_refusal,
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, HISTORY_FILE, ALLOWED_HASH_ALGOS,
@@ -658,6 +658,26 @@ def _known_share_mount_points(target):
     return points
 
 
+def _closed_case_edit_refusal(path):
+    """409 response when `path` (a case file, a job report inside a case, or
+    a case folder) belongs to a Closed/Archived case, else None.
+
+    A finished case's narrative, notes and exhibits are what was reported -
+    they must not change underneath a report already handed over (2026-09-27).
+    The Custody Log is deliberately NOT gated: returning or transferring
+    evidence after a case closes is legitimate and has to be recordable.
+    Reopen the case from Case Manager to edit it."""
+    if not path:
+        return None
+    folder = path if os.path.isdir(path) else os.path.dirname(path)
+    status = closed_case_refusal(folder)
+    if not status:
+        return None
+    return jsonify({"success": False, "closed_case": status,
+                    "error": f"This case is {status} - its report, notes and exhibits are read-only. "
+                             f"Reopen it from Case Manager to make changes (the Custody Log stays writable)."}), 409
+
+
 def _evidence_storage_unavailable(path):
     """True when a missing `path` is better explained by unreachable storage
     than by the file genuinely not existing.
@@ -771,6 +791,9 @@ def save_report_json():
         return jsonify({"success": False, "error": "Only a case file or job report can be saved here."}), 400
     if not isinstance(data, dict):
         return jsonify({"success": False, "error": "report_data must be an object."}), 400
+    refusal = _closed_case_edit_refusal(report_file)
+    if refusal:
+        return refusal
 
     # Real bug, fixed 2026-09-09: this is the main "Save Report Changes"
     # round trip (Report Narrative/Case Details/exhibit captions/reference
@@ -2626,6 +2649,9 @@ def attach_file_to_case():
     case_file = case_consolidated_path(case_folder)
     if not case_file:
         return jsonify({"success": False, "error": "This case hasn't been migrated to the consolidated report format yet - attach files from the Reporting tab instead."}), 400
+    refusal = _closed_case_edit_refusal(case_folder)
+    if refusal:
+        return refusal
 
     data = _read_case_file(case_file)
     attachments = data.setdefault('attachments', {})
@@ -2686,6 +2712,9 @@ def set_file_caption():
     case_file = case_consolidated_path(case_folder)
     if not case_file:
         return jsonify({"success": False, "error": "This case hasn't been migrated to the consolidated report format yet - edit captions from the Reporting tab instead."}), 400
+    refusal = _closed_case_edit_refusal(case_folder)
+    if refusal:
+        return refusal
 
     data = _read_case_file(case_file)
     attachments = data.setdefault('attachments', {})
@@ -2741,6 +2770,9 @@ def add_case_note():
         return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
     if not is_case_record_path(report_file):
         return jsonify({"success": False, "error": "Only a case file or job report can be modified here."}), 400
+    refusal = _closed_case_edit_refusal(report_file)
+    if refusal:
+        return refusal
 
     text = request.form.get('text', '').strip()
     category = request.form.get('category', 'General').strip() or 'General'
@@ -2873,6 +2905,9 @@ def edit_case_note():
         return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
     if not is_case_record_path(report_file):
         return jsonify({"success": False, "error": "Only a case file or job report can be modified here."}), 400
+    refusal = _closed_case_edit_refusal(report_file)
+    if refusal:
+        return refusal
     if not new_text:
         return jsonify({"success": False, "error": "Note text cannot be empty."}), 400
 
@@ -2942,6 +2977,9 @@ def set_case_note_status():
         return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
     if not is_case_record_path(report_file):
         return jsonify({"success": False, "error": "Only a case file or job report can be modified here."}), 400
+    refusal = _closed_case_edit_refusal(report_file)
+    if refusal:
+        return refusal
     if 'status' in req and req['status'] not in CASE_NOTE_STATUS_VALUES:
         return jsonify({"success": False, "error": f"Invalid status - must be one of: {', '.join(CASE_NOTE_STATUS_VALUES)}"}), 400
     if 'status' not in req and 'assigned_to' not in req:
