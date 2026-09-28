@@ -174,3 +174,22 @@
             </div>
         </div>
     </div>
+
+    <!-- Shared yes/no gate for destructive or consequential actions (2026-09-27),
+         replacing native confirm(): themed, touch-sized buttons, and it doesn't
+         block the telemetry poll. Driven only by appConfirm() in main.js; the
+         message is set with textContent, never innerHTML. -->
+    <div class="modal fade" id="appConfirmModal" tabindex="-1" aria-labelledby="appConfirmTitle" aria-hidden="true" data-bs-backdrop="static" style="z-index: 1080;">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h5 class="modal-title fs-6 fw-bold" id="appConfirmTitle"><i class="bi bi-exclamation-triangle-fill text-warning me-2"></i><span id="appConfirmTitleText">Please confirm</span></h5>
+                </div>
+                <div class="modal-body small" id="appConfirmMessage" style="white-space: pre-line;"></div>
+                <div class="modal-footer border-secondary py-2">
+                    <button type="button" class="btn btn-outline-secondary px-4 py-2" id="appConfirmCancelBtn">Cancel</button>
+                    <button type="button" class="btn btn-danger fw-bold px-4 py-2" id="appConfirmOkBtn">Continue</button>
+                </div>
+            </div>
+        </div>
+    </div>
