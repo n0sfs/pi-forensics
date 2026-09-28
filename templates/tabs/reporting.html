@@ -101,6 +101,10 @@
                                         <span id="reportsNoCaseMsg">Select or create a case using the bar above to view its report.</span>
                                     </div>
                                     <div id="reportsLoadedState" style="display:none;">
+                                        <div id="reportClosedBanner" class="alert alert-secondary py-2 px-3 small mb-3" role="status" style="display:none;">
+                                            <i class="bi bi-lock-fill me-1"></i>This case is <strong id="reportClosedBannerStatus"></strong> - the report, notes and exhibits are read-only.
+                                            Reopen it from Case Manager to edit. The Custody Log, exports and evidence verification still work.
+                                        </div>
                                         <div id="repLegacyNotice" class="alert alert-warning small py-2 px-3 mb-3" style="display:none;">
                                             <i class="bi bi-exclamation-triangle-fill me-1"></i>
                                             This is a single-job report, not a consolidated case file. Migrate this case from the Case Manager to combine all of its evidence items into one file.
@@ -414,7 +418,7 @@
                                                             <span class="text-subtle small italic">No exhibits attached yet - see the Files &amp; Artifacts tab.</span>
                                                         </div>
                                                     </div>
-                                                    <button class="btn btn-sm btn-success fw-bold" onclick="addCaseNote()"><i class="bi bi-plus-lg me-1"></i>Add Note</button>
+                                                    <button id="btnAddCaseNote" class="btn btn-sm btn-success fw-bold" onclick="addCaseNote()"><i class="bi bi-plus-lg me-1"></i>Add Note</button>
                                                     <div id="caseNoteAddStatus" class="small mt-1"></div>
                                                     <hr class="border-secondary my-3">
                                                     <div id="caseNotesContainer" class="mb-3 bg-app-dark border border-secondary p-2 rounded-2" style="max-height: 320px; overflow-y: auto;">
