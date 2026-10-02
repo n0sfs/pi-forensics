@@ -19,6 +19,7 @@ from flask import Blueprint, jsonify, request, g
 
 from core.auth import requires_auth, requires_permission
 from core.paths import safe_path, log_chain_of_custody, classify_extension, case_consolidated_path, FILE_VIEW_EXTENSION_CATEGORIES
+from core.case_file import refuses_read_only_case
 from core.case_index_db import (
     case_index_db_path, _case_index_connect,
     _case_index_open_readonly, _case_index_open_write,
@@ -717,6 +718,7 @@ def case_index_analysis_coverage():
 @case_index_bp.route('/api/case_index/contacts/merge', methods=['POST'])
 @requires_auth
 @requires_permission('reporting', 'file_explorer')
+@refuses_read_only_case('case_folder')
 @_snapshots_tag_state
 def case_index_merge_contacts():
     """Manually merges two Contact Correlation entries - the actionable
@@ -767,6 +769,7 @@ def case_index_merge_contacts():
 @case_index_bp.route('/api/case_index/contacts/unmerge', methods=['POST'])
 @requires_auth
 @requires_permission('reporting', 'file_explorer')
+@refuses_read_only_case('case_folder')
 @_snapshots_tag_state
 def case_index_unmerge_contact():
     """Undoes one manual merge - removes exactly the one contact_merges row
@@ -909,6 +912,7 @@ def _resolve_tag_identity(req):
 @case_index_bp.route('/api/case_index/tag_item', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_read_only_case('case_folder')
 @_snapshots_tag_state
 def case_index_tag_item():
     req = request.get_json() or {}
@@ -988,6 +992,7 @@ def case_index_tag_item():
 @case_index_bp.route('/api/case_index/untag_item', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_read_only_case('case_folder')
 @_snapshots_tag_state
 def case_index_untag_item():
     req = request.get_json() or {}
@@ -1116,6 +1121,7 @@ def case_index_all_tagged_items():
 @case_index_bp.route('/api/case_index/tags/create', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_read_only_case('case_folder')
 @_snapshots_tag_state
 def case_index_create_tag():
     req = request.get_json() or {}
@@ -1145,6 +1151,7 @@ def case_index_create_tag():
 @case_index_bp.route('/api/case_index/tags/update', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_read_only_case('case_folder')
 @_snapshots_tag_state
 def case_index_update_tag():
     req = request.get_json() or {}
@@ -1176,6 +1183,7 @@ def case_index_update_tag():
 @case_index_bp.route('/api/case_index/tags/delete', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_read_only_case('case_folder')
 @_snapshots_tag_state
 def case_index_delete_tag():
     req = request.get_json() or {}

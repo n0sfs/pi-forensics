@@ -189,6 +189,8 @@ def log_case_select():
 # account should be able to do it from the Case Manager list.
 @requires_permission('acquisition', 'mobile', 'recovery', 'reporting')
 @serialize_case_writes
+# Deliberately NOT @refuses_read_only_case (core/case_file.py): this is the one
+# way a Closed/Archived case is re-opened.
 def set_case_status():
     """A fast, single-field way to change a case's status (most commonly:
     archive it) directly from the Case Manager list - previously the ONLY

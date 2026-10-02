@@ -205,6 +205,12 @@
         }
         .form-control::placeholder { color: #94a3b8 !important; }
         .form-control:disabled, .form-select:disabled { opacity: 0.45 !important; color: #64748b !important; cursor: not-allowed; }
+        /* A read-only case's report (2026-10-02): its text fields are readonly,
+           not disabled, so they keep full contrast and can be selected and
+           quoted - body sets user-select: none, which a readonly field would
+           otherwise inherit. The dashed border is the only "locked" cue. */
+        #reportsLoadedState .form-control[readonly] { user-select: text; -webkit-user-select: text; cursor: text; }
+        #reportsLoadedState.report-locked .form-control[readonly] { border-style: dashed !important; }
         .btn-sm { min-height: 38px; font-size: 0.88rem; }
         .form-check-label { color: var(--text-bright) !important; font-weight: 600; }
         .form-check-input { background-color: var(--bg-dark); border-color: #64748b; }

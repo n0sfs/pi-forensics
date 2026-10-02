@@ -19,7 +19,7 @@ import email.utils
 from flask import g
 
 from core.paths import (safe_path, case_consolidated_path, classify_case_role, is_bulk_tool_output_dir,
-                        acquisition_output_location, path_is_within)
+                        acquisition_output_location, path_is_within, CASE_STATUSES_READ_ONLY)
 from core.config import get_keyword_lists
 from core.case_file import CASE_WRITE_LOCK, _read_case_file, _write_case_file
 import core.config as config
@@ -1679,6 +1679,12 @@ def ensure_examiner_recorded(case_folder, username):
         # writer's change.
         with CASE_WRITE_LOCK:
             data = _read_case_file(marker_path)
+            # A Closed/Archived case's examiner list is part of the record that
+            # was handed over (2026-10-02 review): a custody entry logged after
+            # closure - which is allowed - used to add its author here and
+            # rewrite the exported report's Examiner line.
+            if data.get('case_status') in CASE_STATUSES_READ_ONLY:
+                return
             examiners = data.get('examiners')
             if not isinstance(examiners, list):
                 examiners = []

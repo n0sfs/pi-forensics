@@ -98,7 +98,21 @@ def update_job(**kwargs):
     never a second thread that could race this flag."""
     with job_lock:
         if _is_stale_worker_thread():
-            return
+            # Superseded by Stop rather than by a newer job (2026-10-02
+            # review): the stopped worker may still append to the log - a
+            # phone extraction's device restore, a partial-output hash - and
+            # release the slot when it really ends. Auto Analyze holds the
+            # slot through Stop (suppression below) and its closing
+            # active=False was being dropped here, so the station stayed
+            # "busy" until Stop was pressed a second time. Its status and
+            # progress writes are still dropped, so "Stopped" can't be
+            # overwritten by "Completed Successfully".
+            if not _superseded_by_stop_only():
+                return
+            kwargs = {k: v for k, v in kwargs.items()
+                      if k == 'log' or (k == 'active' and v is False)}
+            if not kwargs:
+                return
         if _suppress_active_false and kwargs.get('active') is False:
             kwargs = {k: v for k, v in kwargs.items() if k != 'active'}
         # Lost-case-record warnings stay pinned to the top of the log for the
@@ -128,6 +142,31 @@ def mark_job_slot_claimed():
         g._job_slot_generation = current_job['_slot_generation']
     except RuntimeError:
         pass
+
+
+def supersede_stopped_job():
+    """Called by stop_imaging() once it has marked the job Stopped: bumps the
+    slot generation so the stopped worker's later status/progress writes are
+    ignored (2026-09-27 review), while remembering that it was Stop - not a
+    newer job - that superseded it (see _superseded_by_stop_only()). A second
+    Stop on the same job leaves that record alone."""
+    with job_lock:
+        gen = current_job.get('_slot_generation', 0)
+        if current_job.get('_stop_superseded_generation') == gen:
+            return
+        current_job['_stopped_generation'] = gen
+        current_job['_slot_generation'] = gen + 1
+        current_job['_stop_superseded_generation'] = gen + 1
+
+
+def _superseded_by_stop_only():
+    """Caller holds job_lock and has established this thread is stale. True
+    when its job was superseded by Stop and no newer job has claimed the slot
+    since - so it still owns the slot it holds."""
+    mine = getattr(_worker_generation, 'gen', None)
+    return (mine is not None
+            and mine == current_job.get('_stopped_generation')
+            and current_job.get('_slot_generation') == current_job.get('_stop_superseded_generation'))
 
 
 def begin_suppress_active_false():

@@ -101,9 +101,17 @@
                                         <span id="reportsNoCaseMsg">Select or create a case using the bar above to view its report.</span>
                                     </div>
                                     <div id="reportsLoadedState" style="display:none;">
+                                        <!-- Shown/hidden via style.display by applyReportClosedLock(), so the
+                                             flex layout lives on an inner div: .d-flex is !important and would
+                                             override display:none on this element. -->
                                         <div id="reportClosedBanner" class="alert alert-secondary py-2 px-3 small mb-3" role="status" style="display:none;">
-                                            <i class="bi bi-lock-fill me-1"></i>This case is <strong id="reportClosedBannerStatus"></strong> - the report, notes and exhibits are read-only.
-                                            Reopen it from Case Manager to edit. The Custody Log, exports and evidence verification still work.
+                                            <div class="d-flex flex-wrap align-items-center gap-2">
+                                                <span class="flex-grow-1">
+                                                    <i class="bi bi-lock-fill me-1"></i>This case is <strong id="reportClosedBannerStatus"></strong> - its report, notes, exhibits and tags are read-only.
+                                                    The Custody Log, exports and evidence verification still work.
+                                                </span>
+                                                <button type="button" id="btnReopenLockedCase" class="btn btn-sm btn-outline-info fw-bold" onclick="reopenLockedCase()"><i class="bi bi-box-arrow-up me-1"></i>Re-open case</button>
+                                            </div>
                                         </div>
                                         <div id="repLegacyNotice" class="alert alert-warning small py-2 px-3 mb-3" style="display:none;">
                                             <i class="bi bi-exclamation-triangle-fill me-1"></i>
@@ -523,7 +531,7 @@
                                                                 <i class="bi bi-info-circle text-subtle ms-1" style="font-size:0.8rem; cursor:help;" data-bs-toggle="tooltip" data-bs-placement="right" tabindex="0" role="button"
                                                                    title="Organized by kind - check a file to attach it as a report exhibit; files already found in this case's folder are listed automatically. Right-click a file in File Explorer and choose &quot;Attach to Case&quot; to add it from there instead."></i>
                                                             </h6>
-                                                            <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-folder2-open me-1"></i>Browse Elsewhere...</button>
+                                                            <button id="btnReportBrowseElsewhere" class="btn btn-sm btn-outline-secondary fw-bold" onclick="openFilePickerModal('attachment')"><i class="bi bi-folder2-open me-1"></i>Browse Elsewhere...</button>
                                                         </div>
 
                                                         <div class="mb-3">
@@ -723,7 +731,7 @@
                                                     <div class="small text-subtle mb-2">Which analysis tools have actually been run against each completed evidence item, and which haven't yet - a case-wide view of the same "already run" checkmark File Explorer's own right-click menu shows one file at a time. A gray "Not yet run" badge doesn't mean a tool found nothing; it means it's never been tried against this item at all. A red "Failed" badge means the opposite - it WAS tried and reported an error, so re-running it will likely fail the same way until the cause is addressed; hover it for the recorded error. "N/A" means the step was reached but doesn't apply to this item.</div>
                                                     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
                                                         <div id="analysisCoverageStatus" class="small text-subtle mb-0"></div>
-                                                        <button type="button" class="btn btn-xs btn-outline-info py-0 px-2" onclick="insertCoverageGapsIntoLimitations()"><i class="bi bi-arrow-right-circle me-1"></i>Insert Outstanding Analysis into Limitations</button>
+                                                        <button type="button" id="btnInsertCoverageGaps" class="btn btn-xs btn-outline-info py-0 px-2" onclick="insertCoverageGapsIntoLimitations()"><i class="bi bi-arrow-right-circle me-1"></i>Insert Outstanding Analysis into Limitations</button>
                                                     </div>
                                                     <div id="analysisCoverageContainer" class="border border-secondary rounded-2 p-2" style="max-height: 500px; overflow-y: auto; background-color:#090b10;">
                                                         <span class="text-subtle small">Open this tab to see this case's analysis coverage.</span>

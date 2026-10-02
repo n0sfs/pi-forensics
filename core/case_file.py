@@ -12,7 +12,9 @@ import tempfile
 import threading
 import functools
 
-from core.paths import case_consolidated_path
+from flask import request, jsonify
+
+from core.paths import case_consolidated_path, safe_path, case_record_read_only_status
 
 
 class CaseFileUnreadable(Exception):
@@ -119,6 +121,52 @@ def serialize_case_writes(fn):
         with CASE_WRITE_LOCK:
             return fn(*args, **kwargs)
     return wrapper
+
+
+def read_only_case_refusal(raw_path):
+    """(response, 409) when the client-supplied `raw_path` - a case folder,
+    its case file, or a job report inside it - belongs to a case whose record
+    is read-only (core/paths.py CASE_STATUSES_READ_ONLY), else None. An
+    invalid or out-of-root path answers None: the route's own validation
+    reports that."""
+    path = safe_path(raw_path) if raw_path else None
+    status = case_record_read_only_status(path) if path else None
+    if not status:
+        return None
+    return jsonify({
+        "success": False,
+        "closed_case": status,
+        "error": f"This case is {status} - its report, case notes, exhibits and tags are read-only. "
+                 f"Re-open it (Case Manager, or Re-open case in Reporting) to make changes. "
+                 f"The Custody Log, exports and evidence verification still work.",
+    }), 409
+
+
+def refuses_read_only_case(field):
+    """Route decorator: refuse with 409 when the request's `field` (read from
+    the JSON body, else the form) names a read-only case - see
+    read_only_case_refusal(). Stack it UNDER @serialize_case_writes, where a
+    route has one, so the check and the write happen under the same lock as
+    /api/cases/set_status.
+
+    Applied per route on purpose (2026-10-02 review): a write that IS legitimate
+    on a finished case - the Custody Log, evidence verification, set_status
+    itself (the only way to re-open one) - simply doesn't carry it, and each of
+    those routes says so where the decorator would otherwise be."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            body = request.get_json(silent=True)
+            if isinstance(body, dict) and field in body:
+                raw = body.get(field)
+            else:
+                raw = request.form.get(field)
+            refusal = read_only_case_refusal(raw if isinstance(raw, str) else None)
+            if refusal:
+                return refusal
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
 
 
 def is_case_record_path(path):

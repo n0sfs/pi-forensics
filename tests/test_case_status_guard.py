@@ -115,3 +115,47 @@ def test_closed_case_refusal_checks_every_path_given(evidence_root):
     sub = os.path.join(closed, "analysis")
     os.makedirs(sub)
     assert closed_case_refusal(sub) == "Closed"
+
+
+# --- The read-only-record rule (2026-10-02 review) ---------------------------
+# A case's RECORD (narrative, notes, exhibits, tags) has its own status list,
+# separate from the new-work list above even though both hold the same values
+# today: pausing new acquisitions must not silently lock the report too.
+
+from core.paths import CASE_STATUSES_READ_ONLY, case_record_read_only_status, nearest_case_status
+
+
+@pytest.mark.parametrize("status", CASE_STATUSES_READ_ONLY)
+def test_a_finished_case_record_is_read_only_from_its_folder_file_or_a_report_inside(evidence_root, status):
+    case_dir = _make_case(evidence_root, f"2026-RO-{status.upper()}", status)
+    case_file = os.path.join(case_dir, f"2026-RO-{status.upper()}_case.json")
+    job_dir = os.path.join(case_dir, "ITEM-01_logical")
+    os.makedirs(job_dir, exist_ok=True)
+    job_report = os.path.join(job_dir, "ITEM-01_report.json")
+    open(job_report, "w").write("{}")
+    for path in (case_dir, case_file, job_report):
+        assert case_record_read_only_status(path) == status
+
+
+@pytest.mark.parametrize("status", ["Open", "In Progress", "In Review", "On Hold"])
+def test_an_unfinished_case_record_is_editable(evidence_root, status):
+    case_dir = _make_case(evidence_root, f"2026-RO-{status.replace(' ', '')}", status)
+    assert case_record_read_only_status(case_dir) is None
+
+
+def test_pausing_new_work_does_not_lock_the_record(evidence_root, monkeypatch):
+    """Adding a status to the new-work list (to pause acquisitions) must not
+    make that status's cases read-only in Reporting."""
+    import core.paths as paths
+    monkeypatch.setattr(paths, "CASE_STATUSES_CLOSED_TO_NEW_WORK", ("Closed", "Archived", "On Hold"))
+    case_dir = _make_case(evidence_root, "2026-RO-ONHOLD", "On Hold")
+    assert paths.case_status_blocking_new_work(case_dir) == "On Hold"
+    assert paths.case_record_read_only_status(case_dir) is None
+
+
+def test_nearest_case_status_reports_any_status_and_none_outside_a_case(evidence_root):
+    case_dir = _make_case(evidence_root, "2026-RO-ANY", "In Review")
+    assert nearest_case_status(case_dir) == "In Review"
+    loose = os.path.join(evidence_root, "loose_output")
+    os.makedirs(loose, exist_ok=True)
+    assert nearest_case_status(loose) is None

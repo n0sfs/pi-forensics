@@ -140,22 +140,24 @@ def test_stop_requested_before_any_permission_grant_skips_everything_but_still_c
         called_verbs = [c.args[1][2] for c in mocks["_adb_run"].call_args_list
                          if len(c.args[1]) > 2 and c.args[1][1] == "pm"]
         assert "grant" not in called_verbs
-        assert report_data["acquisition_status"] == "IN_PROGRESS"
+        # STOPPED, never left IN_PROGRESS (2026-10-02 review), and every
+        # selected type is listed as not collected.
+        assert report_data["acquisition_status"] == "STOPPED"
+        assert report_data["acquisition_parameters"]["categories_not_collected"] == [
+            "calendar", "calllog", "contacts", "images", "sms", "video"]
 
         last_call = mocks["update_job"].call_args_list[-1]
         assert last_call.kwargs.get("active") is False
         assert "status" not in last_call.kwargs
 
 
-def test_stop_after_one_query_still_reports_completed_not_in_progress():
-    """The same asymmetry the Contacts/Call Log worker's own docstring
-    already established: a Stop landing AFTER at least one query already
-    ran must still report COMPLETED, since real data was already captured,
-    never falsely regress to IN_PROGRESS."""
+def test_stop_after_every_selected_query_ran_still_reports_completed():
+    """A Stop that lands only after every selected type was already read
+    leaves a complete collection - COMPLETED, nothing listed as missing."""
     status_calls = {"n": 0}
 
     def fake_snapshot():
-        # Running for install/grant/first-query, Stopped from then on.
+        # Running through both selected queries, Stopped from then on.
         status_calls["n"] += 1
         return {"status": "Running" if status_calls["n"] <= 3 else "Stopped"}
 
@@ -167,6 +169,54 @@ def test_stop_after_one_query_still_reports_completed_not_in_progress():
         report_data = _run({"sms", "contacts"})
 
         assert report_data["acquisition_status"] == "COMPLETED"
+        assert report_data["acquisition_parameters"]["categories_not_collected"] == []
+
+
+def test_stop_part_way_is_stopped_not_completed_and_names_what_was_missed():
+    """2026-10-02 review: a Stop after the SMS query but before Contacts used
+    to be saved as COMPLETED - a partial collection presented as a whole one."""
+    status_calls = {"n": 0}
+
+    def fake_snapshot():
+        # Running before the grants and before the first query, Stopped from
+        # the Contacts check on.
+        status_calls["n"] += 1
+        return {"status": "Running" if status_calls["n"] <= 2 else "Stopped"}
+
+    with _patched_worker() as mocks:
+        mocks["_adb_run"].return_value = (0, "", "")
+        mocks["snapshot_job"].side_effect = fake_snapshot
+        mocks["_record_parsed_artifacts"].return_value = 1
+
+        report_data = _run({"sms", "contacts"})
+
+        assert report_data["acquisition_status"] == "STOPPED"
+        assert report_data["acquisition_parameters"]["categories_not_collected"] == ["contacts"]
+        assert "contacts" in report_data["error"]
+        queried = [c.args[1] for c in mocks["_adb_run"].call_args_list if c.args[1][:2] == ["shell", "content"]]
+        assert len(queried) == 1  # SMS only
+
+
+def test_a_stop_once_seen_stays_seen():
+    """Stop releases the job slot at once, so a NEW job's status can replace
+    "Stopped" while this worker is still running. It used to re-read the
+    status and resume querying the phone."""
+    statuses = iter(["Running", "Running", "Stopped"])
+
+    def fake_snapshot():
+        return {"status": next(statuses, "A newer job is running")}
+
+    with _patched_worker() as mocks:
+        mocks["_adb_run"].return_value = (0, "", "")
+        mocks["snapshot_job"].side_effect = fake_snapshot
+        mocks["_record_parsed_artifacts"].return_value = 1
+
+        report_data = _run({"sms", "contacts", "calllog"})
+
+        queried = [c.args[1] for c in mocks["_adb_run"].call_args_list if c.args[1][:2] == ["shell", "content"]]
+        assert len(queried) == 1  # SMS only - nothing after the Stop
+        assert report_data["acquisition_status"] == "STOPPED"
+        assert report_data["acquisition_parameters"]["categories_not_collected"] == ["calllog", "contacts"]
 
 
 def test_only_selected_types_permissions_granted_others_untouched():

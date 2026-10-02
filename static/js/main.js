@@ -94,6 +94,10 @@ let examinerUsernamesCache = null;
 let reportHasUnsavedChanges = false;
 
 function markReportingDirty() {
+    // A read-only case can't be saved, so it never becomes "dirty" - the badge,
+    // the leave-page warning and the case-switch prompt would otherwise nag
+    // forever about edits that can never be kept (2026-10-02 review).
+    if (isReportLocked()) return;
     if (reportHasUnsavedChanges) return;
     reportHasUnsavedChanges = true;
     const indicator = document.getElementById('reportUnsavedIndicator');
@@ -174,11 +178,16 @@ window.addEventListener('beforeunload', (ev) => {
 // Called at the top of selectCase()/createCase()/clearActiveCase(), all of
 // which flow into applyActiveCaseToFields() -> loadCaseForEditing(), which
 // would otherwise silently overwrite unsaved Reporting edits with the
-// new/cleared case's own data. Returns true (safe to proceed) when there's
-// nothing to lose.
+// new/cleared case's own data. Resolves true (safe to proceed) when there's
+// nothing to lose. A true answer means the caller MUST then really discard -
+// see discardReportingEdits().
 async function confirmDiscardUnsavedReportingChanges() {
     if (!reportHasUnsavedChanges) return true;
-    return await appConfirm('You have unsaved changes in this case\'s Report Narrative, Case Details, or Files & Artifacts. Switching cases will discard them. Continue without saving?');
+    return await appConfirm({
+        title: 'Discard unsaved report changes?',
+        message: "This case's Report Narrative, Case Details or Files & Artifacts have changes that haven't been saved. Leaving the case discards them.",
+        confirmText: 'Discard changes', cancelText: 'Keep editing',
+    });
 }
 
 // activeCase shape: {case_number, examiner, case_folder} | null
@@ -186,56 +195,85 @@ let activeCase = null;
 let caseManagerModalInstance = null;
 const ACTIVE_CASE_STORAGE_KEY = 'pi_forensics_active_case';
 
-// Shared non-blocking status notification, replacing this app's old habit of plain alert()
-// popups for action results. alert() blocks the entire tab (including this app's own 2s telemetry
-// poll) until dismissed, doesn't match the dark Bootstrap theme, and isn't touch-friendly on the
-// kiosk - a real usability complaint, not a cosmetic one. Yes/no gates before a destructive
-// action use appConfirm() below (a toast can't return a boolean).
-// Themed replacement for native confirm() (2026-09-27). Resolves true/false.
-// Native dialogs ignored the dark theme, had tiny touch targets on the kiosk,
-// and blocked the whole tab. opts: {title, confirmText, danger}. The first
-// line of a multi-line message becomes the title when none is given.
-// Falls back to confirm() only if the modal markup is missing.
-function appConfirm(message, opts) {
-    opts = opts || {};
+// Themed replacement for native confirm() (2026-09-27, hardened 2026-10-02).
+// Resolves true only for an explicit click on the confirm button:
+//   appConfirm({ title, message, confirmText = 'Continue', cancelText = 'Cancel', danger = true })
+// Every call site names its own title, button text and colour - guessing them
+// from the message wording gave an evidence-altering phone action a "safe"
+// blue button and labelled Stop's kill button "Continue".
+//
+// Calls are queued: one shared modal serves them all, and a second call made
+// while one was open (the update-available toast stays clickable above it)
+// used to swap the question text and resolve BOTH with the one answer.
+//
+// A click only counts once the dialog has finished appearing, and the first
+// decision is final: Bootstrap ignores hide() while the modal is animating, so
+// a tap on the confirm button mid-fade used to be remembered as "yes" even
+// after the examiner then pressed Cancel. Cancel and Escape are Bootstrap's own
+// dismiss (data-bs-dismiss / keyboard), which can't fire mid-animation either.
+// Falls back to native confirm() only if the modal markup is missing.
+let appConfirmQueue = Promise.resolve();
+function appConfirm(opts) {
+    if (typeof opts === 'string') opts = { message: opts };
+    const run = () => showAppConfirmDialog(opts || {});
+    const result = appConfirmQueue.then(run, run);
+    appConfirmQueue = result.catch(() => false);
+    return result;
+}
+
+function showAppConfirmDialog(opts) {
+    const title = opts.title || 'Please confirm';
+    const message = opts.message || '';
     const modalEl = document.getElementById('appConfirmModal');
-    if (!modalEl || !window.bootstrap) return Promise.resolve(confirm(message));
-    const text = String(message == null ? '' : message);
-    let title = opts.title, body = text;
-    if (!title) {
-        const nl = text.indexOf('\n');
-        if (nl > 0 && nl <= 120) { title = text.slice(0, nl); body = text.slice(nl).replace(/^\n+/, ''); }
-        else title = 'Please confirm';
-    }
+    if (!modalEl || !window.bootstrap) return Promise.resolve(confirm(message ? `${title}\n\n${message}` : title));
     document.getElementById('appConfirmTitleText').textContent = title;
-    document.getElementById('appConfirmMessage').textContent = body;
+    document.getElementById('appConfirmMessage').textContent = message;
     const ok = document.getElementById('appConfirmOkBtn');
     const cancel = document.getElementById('appConfirmCancelBtn');
-    const lead = text.replace(/^[^A-Za-z]+/, '');
-    const destructive = opts.danger !== undefined ? opts.danger
-        : /^(delete|remove|stop|erase|wipe|restor|repair|safely unmount|shut ?down|reboot|restart|turn off|pull|run|are you sure|you have unsaved|physical|this revokes)/i.test(lead) || /overwrite/i.test(text);
-    ok.textContent = opts.confirmText || (/^delete/i.test(lead) ? 'Delete' : /overwrite it\?/i.test(text) ? 'Overwrite' : 'Continue');
-    ok.className = 'btn fw-bold px-4 py-2 ' + (destructive ? 'btn-danger' : 'btn-primary');
+    const danger = opts.danger !== false;
+    ok.textContent = opts.confirmText || 'Continue';
+    ok.classList.toggle('btn-danger', danger);
+    ok.classList.toggle('btn-primary', !danger);
+    cancel.textContent = opts.cancelText || 'Cancel';
+    // Native confirm() left focus where it was; Bootstrap only restores it for
+    // a data-api trigger, so a keyboard user landed back on <body>.
+    const returnFocusTo = document.activeElement;
     const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
     return new Promise(resolve => {
-        let result = false;
-        const onOk = () => { result = true; modal.hide(); };
-        const onCancel = () => modal.hide();
-        const onKey = e => { if (e.key === 'Escape') modal.hide(); };
-        ok.addEventListener('click', onOk);
-        cancel.addEventListener('click', onCancel);
-        modalEl.addEventListener('keydown', onKey);
-        modalEl.addEventListener('shown.bs.modal', () => cancel.focus(), { once: true });
-        modalEl.addEventListener('hidden.bs.modal', () => {
+        let ready = false;
+        let closing = false;
+        let confirmed = false;
+        const onShown = () => { ready = true; cancel.focus(); };
+        const onHide = () => { closing = true; };
+        const onOk = () => {
+            if (!ready || closing) return;
+            confirmed = true;
+            modal.hide();
+        };
+        const onHidden = () => {
             ok.removeEventListener('click', onOk);
-            cancel.removeEventListener('click', onCancel);
-            modalEl.removeEventListener('keydown', onKey);
-            resolve(result);
-        }, { once: true });
+            modalEl.removeEventListener('shown.bs.modal', onShown);
+            modalEl.removeEventListener('hide.bs.modal', onHide);
+            modalEl.removeEventListener('hidden.bs.modal', onHidden);
+            if (returnFocusTo && returnFocusTo !== document.body && document.contains(returnFocusTo)
+                    && typeof returnFocusTo.focus === 'function') {
+                try { returnFocusTo.focus(); } catch (e) { /* element no longer focusable - nothing to restore */ }
+            }
+            resolve(confirmed);
+        };
+        ok.addEventListener('click', onOk);
+        modalEl.addEventListener('shown.bs.modal', onShown);
+        modalEl.addEventListener('hide.bs.modal', onHide);
+        modalEl.addEventListener('hidden.bs.modal', onHidden);
         modal.show();
     });
 }
 
+// Shared non-blocking status notification, replacing this app's old habit of plain alert()
+// popups for action results. alert() blocks the entire tab (including this app's own 2s telemetry
+// poll) until dismissed, doesn't match the dark Bootstrap theme, and isn't touch-friendly on the
+// kiosk - a real usability complaint, not a cosmetic one. Yes/no gates before a destructive
+// action use appConfirm() above (a toast can't return a boolean).
 function showToast(message, type) {
     const container = document.getElementById('toastContainer');
     if (!container) { alert(message); return; } // defensive fallback only - should never happen
@@ -1502,8 +1540,13 @@ async function batchAttachSelectedFilesToCase() {
         showToast('Select or create a case before attaching files.', 'warning');
         return;
     }
+    // A hint only - the case bar's status can be stale; the server decides.
+    if (activeCaseIsReadOnly()) {
+        showToast(`This case is ${activeCase.case_status} - its exhibits are read-only. Re-open it to attach files.`, 'warning');
+        return;
+    }
     const paths = Array.from(explorerSelectedFiles.keys());
-    let attached = 0, alreadyAttached = 0, failed = 0;
+    let attached = 0, alreadyAttached = 0, failed = 0, firstError = null;
     for (const path of paths) {
         try {
             const res = await fetch('/api/cases/attach_file', {
@@ -1513,19 +1556,26 @@ async function batchAttachSelectedFilesToCase() {
             const data = await res.json();
             if (data.success) {
                 if (data.already_attached) alreadyAttached++; else attached++;
+            } else if (data.closed_case) {
+                // Every remaining file would be refused the same way.
+                showToast(data.error, 'warning');
+                if (attached && currentReportPath) loadCaseForEditing();
+                return;
             } else {
                 failed++;
+                if (!firstError) firstError = data.error || `HTTP ${res.status}`;
             }
         } catch (err) {
             failed++;
+            if (!firstError) firstError = 'request failed';
         }
     }
     let msg = `${attached} file(s) attached`;
     if (alreadyAttached) msg += `, ${alreadyAttached} already attached`;
-    if (failed) msg += `, ${failed} failed`;
-    msg += `. Edit captions or reorder exhibits in Reporting > Files & Artifacts.`;
+    if (failed) msg += `, ${failed} failed (${firstError})`;
+    if (attached) msg += `. Edit captions or reorder exhibits in Reporting > Files & Artifacts.`;
     showToast(msg, failed > 0 ? 'warning' : 'success');
-    if (currentReportPath) loadCaseForEditing();
+    if (attached && currentReportPath) loadCaseForEditing();
 }
 
 // --- Batch Tag modal ---
@@ -3602,7 +3652,7 @@ async function saveManageTagModal() {
 }
 
 async function deleteManageTag(tagId, name) {
-    if (!await appConfirm(`Delete tag "${name}"? It will be removed from every file it's currently applied to.`)) return;
+    if (!await appConfirm({ title: `Delete tag "${name}"?`, message: "It will be removed from every file it's currently applied to.", confirmText: 'Delete tag' })) return;
     try {
         const res = await fetch('/api/case_index/tags/delete', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3892,7 +3942,7 @@ async function saveKeywordListModal() {
 }
 
 async function deleteKeywordList(listId, name) {
-    if (!await appConfirm(`Delete keyword list "${name}"? Any past scan results already recorded under it are kept, just no longer selectable for a new scan.`)) return;
+    if (!await appConfirm({ title: `Delete keyword list "${name}"?`, message: 'Past scan results recorded under it are kept, but it can no longer be selected for a new scan.', confirmText: 'Delete list' })) return;
     try {
         const res = await fetch(`/api/settings/keyword_lists/${listId}`, { method: 'DELETE' });
         const data = await res.json();
@@ -4085,7 +4135,7 @@ async function saveHashListModal() {
 }
 
 async function deleteHashList(listId, name) {
-    if (!await appConfirm(`Delete hash set "${name}"? This cannot be undone.`)) return;
+    if (!await appConfirm({ title: `Delete hash set "${name}"?`, message: 'This cannot be undone.', confirmText: 'Delete hash set' })) return;
     try {
         const res = await fetch(`/api/settings/hash_lists/${listId}`, { method: 'DELETE' });
         const data = await res.json();
@@ -4309,7 +4359,7 @@ async function saveUrlListModal() {
 }
 
 async function deleteUrlList(listId, name) {
-    if (!await appConfirm(`Delete URL list "${name}"? This cannot be undone.`)) return;
+    if (!await appConfirm({ title: `Delete URL list "${name}"?`, message: 'This cannot be undone.', confirmText: 'Delete list' })) return;
     try {
         const res = await fetch(`/api/settings/url_lists/${listId}`, { method: 'DELETE' });
         const data = await res.json();
@@ -4468,7 +4518,7 @@ async function saveYaraRulesetModal() {
 }
 
 async function deleteYaraRuleset(rulesetId, name) {
-    if (!await appConfirm(`Delete YARA ruleset "${name}"? This cannot be undone.`)) return;
+    if (!await appConfirm({ title: `Delete YARA ruleset "${name}"?`, message: 'This cannot be undone.', confirmText: 'Delete ruleset' })) return;
     try {
         const res = await fetch(`/api/settings/yara_rules/${rulesetId}`, { method: 'DELETE' });
         const data = await res.json();
@@ -6131,9 +6181,11 @@ function showFileContextMenu(ev, item) {
 // specific extracted stream" case the way $MFT/$UsnJrnl have for real-fs,
 // since those two are gated purely by name like everything else below).
 const CTX_MENU_IMAGE_ITEMS = [
-    { id: 'ctxMenuImageExtract', visible: entry => !entry.is_dir },
-    { id: 'ctxMenuImageAttach', visible: entry => !entry.is_dir, disabledWhen: () => !activeCase },
-    { id: 'ctxMenuImageTag', visible: entry => !entry.is_dir, disabledWhen: () => !activeCase },
+    // Extract lands in the active case's folder, so a finished case can't take it.
+    { id: 'ctxMenuImageExtract', visible: entry => !entry.is_dir,
+      disabledWhen: () => !!(activeCase && CASE_STATUSES_CLOSED_TO_NEW_WORK.includes(activeCase.case_status)) },
+    { id: 'ctxMenuImageAttach', visible: entry => !entry.is_dir, disabledWhen: () => !activeCase || activeCaseIsReadOnly() },
+    { id: 'ctxMenuImageTag', visible: entry => !entry.is_dir, disabledWhen: () => !activeCase || activeCaseIsReadOnly() },
     { id: 'ctxMenuImageBinwalk', visible: entry => !entry.is_dir },
     { id: 'ctxMenuImageStrings', visible: entry => !entry.is_dir },
     { id: 'ctxMenuImageOcr', visible: entry => !entry.is_dir && isOcrCandidateImage(entry.name) },
@@ -6247,8 +6299,8 @@ const CTX_MENU_REAL_FS_ITEMS = [
     { id: 'btnMountF2fs', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
     { id: 'btnVerifyHash', section: 'ctxSecImageCase', visible: item => !item.is_dir },
     { id: 'btnConvertImageFormat', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
-    { id: 'btnAttachToCase', section: 'ctxSecImageCase', visible: item => !item.is_dir, disabledWhen: () => !activeCase },
-    { id: 'btnTagFile', section: 'ctxSecImageCase', visible: item => !item.is_dir, disabledWhen: () => !activeCase },
+    { id: 'btnAttachToCase', section: 'ctxSecImageCase', visible: item => !item.is_dir, disabledWhen: () => !activeCase || activeCaseIsReadOnly() },
+    { id: 'btnTagFile', section: 'ctxSecImageCase', visible: item => !item.is_dir, disabledWhen: () => !activeCase || activeCaseIsReadOnly() },
     { id: 'btnRecoverFromImage', section: 'ctxSecImageCase', visible: item => !item.is_dir && isImageFile(item.name) },
     // Analyze
     { id: 'btnRunBinwalk', section: 'ctxSecAnalyze', visible: item => !item.is_dir },
@@ -6480,15 +6532,12 @@ function promptCopySelected() {
     openFolderModal('copyDestination');
 }
 
-// Copy silently overwrote a same-named destination entry with zero warning
-// (found in a review pass) - shutil.copy2()/copytree(dirs_exist_ok=True)
-// on the backend, and neither side ever checked for a collision first. A
-// fresh listing of destDir (not the folder modal's own already-rendered
-// DOM, which could be a stale render if the destination was navigated to a
-// moment ago) decides whether to interpose a confirm() before the real
-// copy call - in a forensics tool, silently clobbering an existing
-// evidence copy or manifest is a real integrity risk worth one extra
-// network round trip to avoid.
+// Copy never overwrites: /api/files/copy refuses any existing destination
+// with 409 (since 2026-09-27 - it used to copy2()/copytree(dirs_exist_ok=True)
+// over it). This pre-check only says so up front from a fresh listing of
+// destDir. It used to read data.success, which /api/files/browse never
+// returns, so it never fired - and it offered an "Overwrite" the backend
+// would refuse anyway (2026-10-02 review).
 async function confirmAndCopyTo(sourcePath, destDir) {
     const fileName = sourcePath.split('/').pop();
     try {
@@ -6498,13 +6547,13 @@ async function confirmAndCopyTo(sourcePath, destDir) {
             body: JSON.stringify({ path: destDir })
         });
         const data = await res.json();
-        const collision = data.success && (data.items || []).some(i => i.name === fileName);
-        if (collision && !await appConfirm(`"${fileName}" already exists in ${destDir}.\n\nOverwrite it?`)) return;
+        if (Array.isArray(data.items) && data.items.some(i => i.name === fileName)) {
+            showToast(`"${fileName}" already exists in ${destDir} - nothing was copied. Rename or move the existing copy first.`, 'warning');
+            return;
+        }
     } catch (err) {
-        // Collision check itself failed (network blip) - fall through to
-        // the real copy rather than blocking the whole action over a
-        // failed pre-check; performCopyTo() has its own error handling for
-        // the copy call itself.
+        // Pre-check failed (network blip) - the copy route makes the same
+        // refusal itself, so carry on rather than block the action.
     }
     performCopyTo(sourcePath, destDir);
 }
@@ -6542,38 +6591,44 @@ async function performCopyTo(sourcePath, destDir) {
 
 async function deleteSelectedFile() {
     if (!activeSelectedFile) return;
+    // The target is captured BEFORE the dialog (2026-10-02 review): the
+    // dialog is asynchronous, and a tree selection still loading in the
+    // background could change activeSelectedFile while it was open - the
+    // request re-read it, so the file deleted could differ from the one named.
+    const targetPath = activeSelectedFile;
+    const targetName = targetPath.split('/').pop();
     // Folders get a materially stronger warning than a single file (found
     // in a review pass) - the backend does a recursive shutil.rmtree() for
-    // a directory, but this used to show the identical one-line confirm()
-    // regardless, understating what "delete" actually does to a folder
-    // full of evidence.
-    const confirmMsg = activeSelectedIsDir
-        ? `Delete "${activeSelectedFile}"?\n\nThis will permanently delete the FOLDER AND EVERYTHING INSIDE IT. This cannot be undone.`
-        : `Are you sure you want to delete ${activeSelectedFile}?`;
-    if (!await appConfirm(confirmMsg)) return;
+    // a directory.
+    const confirmOpts = activeSelectedIsDir
+        ? { title: `Delete folder "${targetName}"?`, message: `${targetPath}\n\nThis permanently deletes the FOLDER AND EVERYTHING INSIDE IT. This cannot be undone.`, confirmText: 'Delete folder' }
+        : { title: `Delete "${targetName}"?`, message: `${targetPath}\n\nThis permanently deletes the file. This cannot be undone.`, confirmText: 'Delete file' };
+    if (!await appConfirm(confirmOpts)) return;
 
     try {
         const res = await fetch('/api/files/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile })
+            body: JSON.stringify({ path: targetPath })
         });
         const data = await res.json();
         if (data.success) {
-            showToast(`Deleted ${activeSelectedFile.split('/').pop()}.`, 'success');
-            activeSelectedFile = null;
-            const preview = document.getElementById('explorerPreview');
-            if (preview) {
-                preview.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
-                preview.innerHTML = '<i class="bi bi-cursor fs-1 text-subtle mb-2"></i><span class="text-subtle small">Select a file on the left to preview it here.</span>';
+            showToast(`Deleted ${targetName}.`, 'success');
+            if (activeSelectedFile === targetPath) {
+                activeSelectedFile = null;
+                const preview = document.getElementById('explorerPreview');
+                if (preview) {
+                    preview.className = 'file-pane d-flex flex-column align-items-center justify-content-center text-center p-3';
+                    preview.innerHTML = '<i class="bi bi-cursor fs-1 text-subtle mb-2"></i><span class="text-subtle small">Select a file on the left to preview it here.</span>';
+                }
+                switchExplorerRightView('preview');
             }
-            switchExplorerRightView('preview');
             loadExplorer(explorerPath);
             // Tree pane didn't refresh alongside the listing (found in a
             // review pass) - a deleted file's own tree entry, or a group
             // count like "Files (18)", could keep showing pre-delete state
             // until the node was manually collapsed and re-expanded.
-            refreshExplorerTreeNodeAt(explorerPath);
+            refreshExplorerTreeNodeAt(targetPath.replace(/\/[^/]*$/, '') || '/');
         } else {
             showToast(`Delete failed: ${data.error}`, 'danger');
         }
@@ -7723,12 +7778,14 @@ async function runSelectedGeolocationExport() {
 
 async function runTakeoutImport() {
     if (!activeSelectedFile) return;
-    if (!await appConfirm("Import this folder as a Google Takeout export?\n\nThis only reads an archive you already downloaded through Google's own official export tool - it never accesses a live Google account.\n\nSearch/YouTube History use a stable format; Location History, Maps Places, and Photo metadata are best-effort (Google's own export formats for these vary).")) return;
-    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile;
+    const folder = activeSelectedFile;
+    const caseFolder = activeCase ? activeCase.case_folder : null;
+    if (!await appConfirm({ title: 'Import this folder as a Google Takeout export?', message: "This only reads an archive you already downloaded through Google's own official export tool - it never accesses a live Google account.\n\nSearch/YouTube History use a stable format; Location History, Maps Places and Photo metadata are best-effort (Google's own export formats for these vary).", confirmText: 'Import', danger: false })) return;
+    const destinationDir = caseFolder || folder;
     try {
         const res = await fetch('/api/files/import_takeout_archive', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null, destination_dir: destinationDir })
+            body: JSON.stringify({ path: folder, case_folder: caseFolder, destination_dir: destinationDir })
         });
         const data = await res.json();
         if (data.success) {
@@ -7743,12 +7800,14 @@ async function runTakeoutImport() {
 
 async function runAppleExportImport() {
     if (!activeSelectedFile) return;
-    if (!await appConfirm("Import this folder as an already-extracted Apple Data & Privacy export?\n\nApple delivers this as an encrypted zip with a separately-emailed password - this folder must already be extracted (using that password) before importing.\n\nThis only reads an archive you already obtained yourself through Apple's own official export tool - it never accesses a live Apple account.\n\nContacts/Calendars use stable formats; Safari Bookmarks and Photo metadata are best-effort.")) return;
-    const destinationDir = activeCase ? activeCase.case_folder : activeSelectedFile;
+    const folder = activeSelectedFile;
+    const caseFolder = activeCase ? activeCase.case_folder : null;
+    if (!await appConfirm({ title: 'Import this folder as an Apple Data & Privacy export?', message: "Apple delivers this as an encrypted zip with a separately-emailed password - this folder must already be extracted (using that password) before importing.\n\nThis only reads an archive you already obtained yourself through Apple's own official export tool - it never accesses a live Apple account.\n\nContacts/Calendars use stable formats; Safari Bookmarks and Photo metadata are best-effort.", confirmText: 'Import', danger: false })) return;
+    const destinationDir = caseFolder || folder;
     try {
         const res = await fetch('/api/files/import_apple_export', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: activeSelectedFile, case_folder: activeCase ? activeCase.case_folder : null, destination_dir: destinationDir })
+            body: JSON.stringify({ path: folder, case_folder: caseFolder, destination_dir: destinationDir })
         });
         const data = await res.json();
         if (data.success) {
@@ -9441,7 +9500,7 @@ async function startDevicePreview() {
     // convenience.
     const devicePath = document.getElementById("driveSelect")?.value || "";
     if (!devicePath) return showToast('Select a target source drive first.', 'warning');
-    if (!await appConfirm(`Preview ${devicePath} read-only?\n\nThis browses the live drive directly - not yet an acquired image. The drive's existing write-blocking protection still applies; only read access is granted, and it's revoked again when you exit the preview.`)) return;
+    if (!await appConfirm({ title: `Preview ${devicePath} read-only?`, message: "This browses the live drive directly - not yet an acquired image. The drive's existing write-blocking protection still applies; only read access is granted, and it's revoked again when you exit the preview.", confirmText: 'Start preview', danger: false })) return;
 
     try {
         const res = await fetch('/api/image/preview/enter', {
@@ -10684,13 +10743,14 @@ async function listImageShadowCopies() {
 
 async function materializeShadowCopy(storeIndex) {
     if (!explorerImagePath) return;
-    if (!await appConfirm(`Copy the full contents of shadow copy #${storeIndex} out to a new image file? This can be as large as the original volume and may take a while - it runs as a background job you can stop from the progress bar.`)) return;
+    const imagePath = explorerImagePath, imageOffset = explorerImageOffset;
+    if (!await appConfirm({ title: `Copy out shadow copy #${storeIndex}?`, message: 'Its full contents are written to a new image file, which can be as large as the original volume and may take a while. It runs as a background job you can stop from the progress bar.', confirmText: 'Copy out', danger: false })) return;
     const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
     try {
         const res = await fetch('/api/image/start_materialize_shadow_copy', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                image_path: explorerImagePath, offset: explorerImageOffset,
+                image_path: imagePath, offset: imageOffset,
                 store_index: storeIndex, destination_dir: destinationDir,
             })
         });
@@ -10740,14 +10800,15 @@ async function startImageTriageScan() {
 
 async function runImageRecoverDeleted() {
     if (!explorerImagePath) return;
-    if (!await appConfirm('Recover deleted files from this image? Recovery odds vary by filesystem type - NTFS/FAT usually work well, ext filesystems often do not, since data is frequently already gone by the time a file shows as deleted. A recovered file may also be partially overwritten if its space was reused - verify hashes where it matters.')) return;
+    const imagePath = explorerImagePath;
+    if (!await appConfirm({ title: 'Recover deleted files from this image?', message: 'Recovery odds vary by filesystem type - NTFS/FAT usually work well, ext filesystems often do not, since data is frequently already gone by the time a file shows as deleted. A recovered file may also be partially overwritten if its space was reused - verify hashes where it matters.', confirmText: 'Recover files', danger: false })) return;
 
     const destinationDir = activeCase ? activeCase.case_folder : '/mnt';
     try {
         const res = await fetch('/api/image/recover_deleted', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image_path: explorerImagePath, destination_dir: destinationDir })
+            body: JSON.stringify({ image_path: imagePath, destination_dir: destinationDir })
         });
         const data = await res.json();
         if (!data.success) {
@@ -10908,6 +10969,7 @@ async function renderReportFilesGallery() {
 
     const attachedSet = new Set(currentAttachedFilesList);
     const extraFiles = discovered.filter(f => !attachedSet.has(f.path));
+    const locked = isReportLocked();
     // case_role (classify_case_role() in core/paths.py, passed through by
     // /api/cases/discover_files) splits this app's own generated files
     // (reports, logs, KML exports, backups) away from real evidence found
@@ -10953,6 +11015,7 @@ async function renderReportFilesGallery() {
         cb.type = 'checkbox';
         cb.className = 'form-check-input mt-1 flex-shrink-0';
         cb.checked = checked;
+        cb.disabled = locked;
         cb.addEventListener('change', () => toggleAttachmentFile(filePath, cb.checked));
         row.appendChild(cb);
 
@@ -11039,7 +11102,9 @@ async function renderReportFilesGallery() {
             capInput.className = 'form-control form-control-sm mt-1';
             capInput.placeholder = 'Optional caption for the exported report...';
             capInput.value = currentAttachmentCaptions[filePath] || '';
+            capInput.readOnly = locked;
             capInput.addEventListener('blur', async () => {
+                if (capInput.readOnly) return;
                 const caption = capInput.value.trim();
                 if (caption === (currentAttachmentCaptions[filePath] || '')) return; // unchanged - nothing to persist
                 const result = await persistFileCaption(activeCase.case_folder, filePath, caption);
@@ -11176,6 +11241,7 @@ function renderReportUrlRows() {
     if (reportUrlsGroupCountBadgeEl) reportUrlsGroupCountBadgeEl.textContent = String(currentReferenceUrlsList.length);
     const body = reportUrlsGroupBodyEl;
     body.innerHTML = '';
+    const locked = isReportLocked();
 
     const addRow = document.createElement('div');
     addRow.className = 'd-flex gap-2 mb-2';
@@ -11199,7 +11265,7 @@ function renderReportUrlRows() {
     addBtn.innerHTML = '<i class="bi bi-plus-lg"></i>';
     addBtn.onclick = doAdd;
     addRow.appendChild(addBtn);
-    body.appendChild(addRow);
+    if (!locked) body.appendChild(addRow);
 
     if (currentReferenceUrlsList.length === 0) {
         const empty = document.createElement('div');
@@ -11240,7 +11306,7 @@ function renderReportUrlRows() {
             markReportingDirty();
             renderReportUrlRows();
         };
-        row.appendChild(delBtn);
+        if (!locked) row.appendChild(delBtn);
 
         body.appendChild(row);
     });
@@ -14413,6 +14479,7 @@ async function loadPatternOfLifeAppsAccounts() {
 }
 
 function toggleAttachmentFile(filePath, checked) {
+    if (refuseIfReportLocked()) { renderReportFilesGallery(); return; }
     if (checked) {
         if (!currentAttachedFilesList.includes(filePath)) currentAttachedFilesList.push(filePath);
     } else {
@@ -14424,6 +14491,7 @@ function toggleAttachmentFile(filePath, checked) {
 }
 
 function addFileAttachment(filePath) {
+    if (refuseIfReportLocked()) return;
     if (filePath && !currentAttachedFilesList.includes(filePath)) {
         currentAttachedFilesList.push(filePath);
         markReportingDirty();
@@ -14473,6 +14541,11 @@ let lastAppliedCaseFolder = null;
 // the same "two independent copies" trap this file already documents for
 // artifact-type labels; a status added to one belongs in both.
 const CASE_STATUSES_CLOSED_TO_NEW_WORK = ['Closed', 'Archived'];
+// Mirrors CASE_STATUSES_READ_ONLY in core/paths.py: the statuses whose case
+// RECORD - report narrative, notes, exhibits, tags - is read-only. Its own list
+// since 2026-10-02: the same two values today, but pausing new work must not
+// also lock the report. Kept in sync by hand, like the list above.
+const CASE_STATUSES_READ_ONLY = ['Closed', 'Archived'];
 // Mirrors routes/reporting.py's NARRATIVE_BLOCK_FIELD_MAP exactly - a
 // remappable block's own default source field, used only to pre-fill a new
 // row's dropdown (or an old, pre-remapping-feature template's row) before
@@ -14894,7 +14967,7 @@ async function duplicateCustomReportTemplate(id) {
 async function deleteCustomReportTemplate(id) {
     const record = customReportTemplatesCache.find(t => t.id === id);
     if (!record) return;
-    if (!await appConfirm(`Delete the custom report template "${record.name}"? Any station default or per-export selection pointing at it will fall back to Standard.`)) return;
+    if (!await appConfirm({ title: `Delete report template "${record.name}"?`, message: 'Any station default or per-export selection pointing at it falls back to Standard.', confirmText: 'Delete template' })) return;
     try {
         const res = await fetch(`/api/report_templates/custom/${id}`, { method: 'DELETE' });
         const data = await res.json();
@@ -14918,6 +14991,7 @@ function renderCustomFieldsForCase(values) {
     if (!container) return;
     container.innerHTML = '';
     values = values || {};
+    const locked = isReportLocked();
     if (!customFieldDefsCache.length) {
         const empty = document.createElement('div');
         empty.className = 'col-12 text-subtle small';
@@ -14938,6 +15012,7 @@ function renderCustomFieldsForCase(values) {
         input.className = 'form-control custom-field-input';
         input.dataset.fieldKey = def.key;
         input.value = values[def.key] || '';
+        input.readOnly = locked;
         // Optional convenience filler - set this field's value from one of
         // the case's own attached exhibits or tagged items instead of
         // always typing it by hand (e.g. "Evidence Source" -> pick the
@@ -14948,6 +15023,7 @@ function renderCustomFieldsForCase(values) {
         pickBtn.title = 'Set from a case item (attached exhibit or tagged file)';
         pickBtn.innerHTML = '<i class="bi bi-link-45deg"></i>';
         pickBtn.onclick = () => openCustomFieldItemPicker(def.label, input);
+        pickBtn.disabled = locked;
         group.appendChild(input);
         group.appendChild(pickBtn);
         col.appendChild(label);
@@ -15043,8 +15119,11 @@ function renderExaminersList() {
     const knownUsernames = examinerUsernamesCache || [];
     const alreadyAdded = new Set(currentExaminersList.map(e => e.toLowerCase()));
     const available = knownUsernames.filter(u => !alreadyAdded.has(u.toLowerCase()));
+    const locked = isReportLocked();
 
-    if (knownUsernames.length === 0) {
+    if (locked) {
+        // Read-only case: the list is shown, not edited.
+    } else if (knownUsernames.length === 0) {
         // No registered accounts on this station at all - the original
         // free-text fallback, unchanged from before this fix.
         const addInput = document.createElement('input');
@@ -15161,7 +15240,7 @@ function renderExaminersList() {
             markReportingDirty();
             renderExaminersList();
         };
-        chip.appendChild(delBtn);
+        if (!locked) chip.appendChild(delBtn);
 
         container.appendChild(chip);
     });
@@ -15174,6 +15253,7 @@ let cfPickerItems = [];
 let cfPickerTargetInput = null;
 
 async function openCustomFieldItemPicker(fieldLabel, inputEl) {
+    if (refuseIfReportLocked()) return;
     cfPickerTargetInput = inputEl;
     const labelEl = document.getElementById("cfPickerFieldLabel");
     if (labelEl) labelEl.textContent = fieldLabel;
@@ -15596,29 +15676,103 @@ const REPORT_EDITABLE_KEYS_CONSOLIDATED = ['case_status', 'executive_summary', '
     'limitations', 'conclusion', 'iocs', 'recommendations_next_steps', 'custom_fields', 'examiners', 'attachments'];
 const REPORT_EDITABLE_KEYS_LEGACY = ['case_metadata', 'attachments'];
 let reportEditBase = null;
-// Closed/Archived cases are read-only in Reporting (2026-09-27): the server
-// refuses narrative/notes/exhibit writes with 409, and this mirrors it so the
-// examiner sees why instead of discovering it on Save. Custody Log inputs,
-// exports and verification stay live - returning evidence after closure is
-// legitimate work.
-const REPORT_CLOSED_LOCK_IDS = ['btnSaveReportChanges', 'btnAddCaseNote', 'newCaseNoteCategory', 'newCaseNoteFiles',
-    'newCaseNoteText', 'newCaseNoteAssignedTo', 'editExecSummary', 'editObjectives', 'editFindingsSummary',
+// The report path reportEditBase was captured from (2026-10-02 review) - sent
+// with every save, which the server refuses if it names a different case.
+let reportEditBasePath = null;
+
+// Closed/Archived cases are read-only in Reporting (2026-09-27, reworked
+// 2026-10-02). The server refuses those writes with 409; this mirrors it so
+// the examiner sees why instead of discovering it on Save.
+//  - Text the examiner still needs to read or quote (the narrative) is made
+//    readOnly, not disabled: the app's .form-control:disabled rule dims
+//    disabled fields to near-unreadable, and their text can't be selected.
+//  - Editors that are rendered on the fly (custom fields, examiners, exhibits,
+//    reference URLs, per-note actions) check isReportLocked() as they render,
+//    and are re-rendered when a status change flips the lock.
+//  - The Custody Log, exports and verification stay live.
+const REPORT_LOCK_DISABLE_IDS = ['btnSaveReportChanges', 'btnAddCaseNote', 'newCaseNoteCategory', 'newCaseNoteFiles',
+    'newCaseNoteText', 'newCaseNoteAssignedTo', 'btnReportBrowseElsewhere', 'btnInsertCoverageGaps'];
+const REPORT_LOCK_READONLY_IDS = ['editExecSummary', 'editObjectives', 'editFindingsSummary',
     'editLimitations', 'editConclusion', 'editIocs', 'editRecommendations'];
+
+function isReportLocked() {
+    return !!(currentLoadedReportData && CASE_STATUSES_READ_ONLY.includes(currentLoadedReportData.case_status));
+}
+
+function activeCaseIsReadOnly() {
+    return !!(activeCase && CASE_STATUSES_READ_ONLY.includes(activeCase.case_status));
+}
+
+// For the staged-edit actions: true (after saying why) when the loaded case is
+// read-only, so the caller stops before touching its in-memory lists.
+function refuseIfReportLocked() {
+    if (!isReportLocked()) return false;
+    showToast(`This case is ${currentLoadedReportData.case_status} - its report is read-only. Re-open it to make changes.`, 'warning');
+    return true;
+}
+
+// Applies the lock to the fixed controls and the banner. Returns true when the
+// lock state changed since the last call - the caller then re-renders the
+// dynamic editors (rerenderReportEditors()).
+let reportLockApplied = null;
 function applyReportClosedLock() {
-    const status = currentLoadedReportData && currentLoadedReportData.case_status;
-    const locked = CASE_STATUSES_CLOSED_TO_NEW_WORK.includes(status);
-    REPORT_CLOSED_LOCK_IDS.forEach(id => {
+    const locked = isReportLocked();
+    REPORT_LOCK_DISABLE_IDS.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = locked;
     });
+    REPORT_LOCK_READONLY_IDS.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.readOnly = locked;
+    });
+    const loadedEl = document.getElementById('reportsLoadedState');
+    if (loadedEl) loadedEl.classList.toggle('report-locked', locked);
     const banner = document.getElementById('reportClosedBanner');
     if (banner) {
         banner.style.display = locked ? '' : 'none';
         const st = document.getElementById('reportClosedBannerStatus');
-        if (st) st.textContent = locked ? status : '';
+        if (st) st.textContent = locked ? currentLoadedReportData.case_status : '';
     }
+    const changed = reportLockApplied !== null && reportLockApplied !== locked;
+    reportLockApplied = locked;
+    return changed;
 }
+
+// Rebuilds the editors that read isReportLocked() while rendering. Only ever
+// called with no unsaved edits (a status change into a read-only status saves
+// or refuses first - see saveReportEditsBeforeLocking()), so repainting from
+// the loaded record loses nothing.
+function rerenderReportEditors() {
+    if (!currentLoadedReportData) return;
+    renderCustomFieldsForCase(currentLoadedReportData.custom_fields);
+    renderExaminersList();
+    renderCaseNotesList();
+    renderReportFilesGallery();
+}
+
+// Really discards Reporting's unsaved edits (2026-10-02 review). The discard
+// prompt used to only return true: the dirty flag, the edit base and the
+// staged exhibit/examiner/URL lists all survived a case switch, the next
+// case's load then kept them on screen ("your edits were preserved"), and one
+// Save three-way-merged case A's narrative and exhibits into case B with no
+// conflict. Clearing the loaded record too means nothing can be saved until
+// the next case has actually loaded.
+function discardReportingEdits() {
+    clearReportingDirty();
+    currentReportPath = null;
+    currentLoadedReportData = null;
+    reportEditBase = null;
+    reportEditBasePath = null;
+    currentAttachedFilesList = [];
+    currentAttachmentCaptions = {};
+    currentReferenceUrlsList = [];
+    currentExaminersList = [];
+    editingCaseNoteId = null;
+    assigningCaseNoteId = null;
+}
+
 function snapshotReportEditBase() {
+    reportEditBasePath = currentLoadedReportData ? currentReportPath : null;
     if (!currentLoadedReportData) { reportEditBase = null; return; }
     const keys = Array.isArray(currentLoadedReportData.events) ? REPORT_EDITABLE_KEYS_CONSOLIDATED : REPORT_EDITABLE_KEYS_LEGACY;
     const base = {};
@@ -16108,12 +16262,14 @@ async function repairCaseIndex() {
         ? (backup.tagged_items + ' tagged items, ' + backup.tags + ' tags and ' + backup.contact_merges
            + ' contact merges will be restored from the backup saved ' + (backup.exported_at || 'earlier') + '.')
         : 'There is NO decision backup for this case, so tags, notable flags and contact merges cannot be restored.';
-    const proceed = await appConfirm(
-        'Repair this case\'s analysis index?\n\n'
-        + 'The damaged file is renamed and kept, never deleted.\n\n'
-        + willRestore + '\n\n'
-        + 'Keyword hits, parsed artifacts and indexed files are derived data and will NOT come back '
-        + 'automatically - re-run the analysis that produced them.');
+    const proceed = await appConfirm({
+        title: "Repair this case's analysis index?",
+        message: 'The damaged file is renamed and kept, never deleted.\n\n'
+            + willRestore + '\n\n'
+            + 'Keyword hits, parsed artifacts and indexed files are derived data and will NOT come back '
+            + 'automatically - re-run the analysis that produced them.',
+        confirmText: 'Repair index',
+    });
     if (!proceed) return;
 
     const btn = document.getElementById('caseIndexRepairBtn');
@@ -16360,6 +16516,7 @@ async function loadAnalysisCoverage() {
 // examiner. Appends (never overwrites) whatever's already typed there, so a
 // hand-written Limitations paragraph is never silently clobbered.
 function insertCoverageGapsIntoLimitations() {
+    if (refuseIfReportLocked()) return;
     const itemsWithGaps = coverageOutstandingCache.filter(i => i.outstanding_labels.length > 0);
     if (itemsWithGaps.length === 0) {
         return showToast("Every evidence item shown on this tab has no outstanding steps - nothing to insert.", 'info');
@@ -16661,7 +16818,7 @@ async function startCaseBundleExport() {
     const warnExtra = includeImages
         ? '\n\nRaw acquisition images are INCLUDED - this bundle may be very large and will block new acquisition/recovery jobs for a while.'
         : '\n\nRaw acquisition images are excluded from this bundle (check the box above to include them).';
-    if (!await appConfirm(`Zip the entire case folder for archival/handoff?\n\nThis runs as a background job and uses the one station-wide job slot.${warnExtra}`)) {
+    if (!await appConfirm({ title: 'Zip the entire case folder?', message: `For archival or hand-off. This runs as a background job and uses the one station-wide job slot.${warnExtra}`, confirmText: 'Start export', danger: false })) {
         return;
     }
     try {
@@ -16685,7 +16842,7 @@ async function startVerifyAllEvidence() {
         showToast('Select an active case first.', 'warning');
         return;
     }
-    if (!await appConfirm('Re-hash every completed acquisition in this case and compare against the hashes recorded at acquisition time?\n\nThis runs as a background job and uses the one station-wide job slot - it will block a new acquisition/recovery/mobile job from starting until it finishes. This may take a while on a case with large images.')) {
+    if (!await appConfirm({ title: 'Verify all evidence in this case?', message: 'Every completed acquisition is re-hashed and compared against the hashes recorded at acquisition time.\n\nThis runs as a background job and uses the one station-wide job slot - it will block a new acquisition/recovery/mobile job from starting until it finishes. This may take a while on a case with large images.', confirmText: 'Start verification', danger: false })) {
         return;
     }
     const btn = document.getElementById('btnVerifyAllEvidence');
@@ -17578,8 +17735,11 @@ async function renderLinkedFilesChecklist(containerId, checkboxClass) {
     } catch (err) { /* non-fatal - the checklist just shows exhibits only */ }
 }
 
-function renderNewCaseNoteLinkedFilesChecklist() {
-    return renderLinkedFilesChecklist('newCaseNoteLinkedFiles', 'new-case-note-link-cb');
+async function renderNewCaseNoteLinkedFilesChecklist() {
+    await renderLinkedFilesChecklist('newCaseNoteLinkedFiles', 'new-case-note-link-cb');
+    // A read-only case takes no new notes, so there's nothing to link.
+    const locked = isReportLocked();
+    document.querySelectorAll('#newCaseNoteLinkedFiles input').forEach(cb => { cb.disabled = locked; });
 }
 
 function renderNewCustodyLinkedFilesChecklist() {
@@ -17622,6 +17782,7 @@ function renderCaseNotesList() {
     }
 
     container.innerHTML = '';
+    const locked = isReportLocked();
     const sorted = [...notes].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
     sorted.forEach(note => {
         const card = document.createElement('div');
@@ -17652,6 +17813,7 @@ function renderCaseNotesList() {
         editBtn.className = 'btn btn-xs btn-outline-info py-0 px-2 flex-shrink-0';
         editBtn.textContent = 'Edit';
         editBtn.onclick = () => { editingCaseNoteId = note.note_id; renderCaseNotesList(); };
+        editBtn.disabled = locked;
 
         const btnGroup = document.createElement('div');
         btnGroup.className = 'd-flex gap-1 flex-shrink-0';
@@ -17661,10 +17823,12 @@ function renderCaseNotesList() {
         statusBtn.textContent = status === 'resolved' ? '✓ Resolved' : '○ Open';
         statusBtn.title = status === 'resolved' ? 'Click to reopen' : 'Click to mark resolved';
         statusBtn.onclick = () => setCaseNoteStatus(note.note_id, { status: status === 'resolved' ? 'open' : 'resolved' });
+        statusBtn.disabled = locked;
         const assignBtn = document.createElement('button');
         assignBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
         assignBtn.textContent = note.assigned_to ? 'Reassign' : 'Assign...';
         assignBtn.onclick = () => { assigningCaseNoteId = note.note_id; renderCaseNotesList(); };
+        assignBtn.disabled = locked;
         btnGroup.appendChild(statusBtn);
         btnGroup.appendChild(assignBtn);
         btnGroup.appendChild(editBtn);
@@ -17679,7 +17843,7 @@ function renderCaseNotesList() {
             assignedLine.appendChild(document.createTextNode(`→ Assigned to: ${note.assigned_to}`)); // examiner-entered, text node only
             card.appendChild(assignedLine);
         }
-        if (assigningCaseNoteId === note.note_id) {
+        if (!locked && assigningCaseNoteId === note.note_id) {
             const assignRow = document.createElement('div');
             assignRow.className = 'd-flex gap-1 mb-1';
             const assignInput = document.createElement('input');
@@ -17701,7 +17865,7 @@ function renderCaseNotesList() {
             card.appendChild(assignRow);
         }
 
-        if (editingCaseNoteId === note.note_id) {
+        if (!locked && editingCaseNoteId === note.note_id) {
             const textarea = document.createElement('textarea');
             textarea.className = 'form-control form-control-sm mb-1';
             textarea.rows = 3;
@@ -18373,26 +18537,32 @@ async function runCaseSearch() {
     }
 }
 
+// Resolves true when the report was saved.
 async function saveReportMetadata() {
     const reportPath = currentReportPath;
 
     if (!reportPath || !currentLoadedReportData) {
         showToast("Select or create a case using the bar above first.", 'warning');
-        return;
+        return false;
+    }
+    if (refuseIfReportLocked()) return false;
+    // The edit base must belong to THIS case (2026-10-02 review) - see
+    // discardReportingEdits(). The server makes the same check.
+    if (reportEditBase && reportEditBasePath && reportEditBasePath !== reportPath) {
+        showToast('These edits were started on a different case - reload this case and reapply them.', 'danger');
+        return false;
     }
 
     const customFieldValues = gatherCustomFieldValues();
 
     const narrativeFields = {
-        // Redundant-but-harmless as of 2026-09-11 - #editCaseStatus now saves
-        // itself immediately on change (handleCaseStatusDropdownChange()),
-        // so by the time this full-report save round-trips, it's just
-        // re-writing the same value already persisted. Left in rather than
-        // stripped out - a no-op read is simpler and safer than reasoning
-        // through whether every other narrativeFields consumer downstream
-        // (the PDF/HTML export path in particular) still expects this key
-        // present in the saved JSON.
-        case_status: document.getElementById("editCaseStatus")?.value || "Open",
+        // Status is NOT this save's to change (2026-10-02 review): #editCaseStatus
+        // saves itself through /api/cases/set_status, which also keeps
+        // status_before_archive. Reading the dropdown here let a "save before
+        // closing" carry the NEW status ahead of set_status and skip that
+        // bookkeeping. The loaded value keeps the key present for every
+        // downstream reader while never changing it.
+        case_status: currentLoadedReportData.case_status || "Open",
         executive_summary: document.getElementById("editExecSummary")?.value || "",
         objectives: document.getElementById("editObjectives")?.value || "",
         findings_summary: document.getElementById("editFindingsSummary")?.value || "",
@@ -18437,7 +18607,8 @@ async function saveReportMetadata() {
         const res = await fetch('/api/report/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ report_path: reportPath, report_data: currentLoadedReportData, base_fields: reportEditBase || undefined })
+            body: JSON.stringify({ report_path: reportPath, report_data: currentLoadedReportData,
+                                   base_fields: reportEditBase || undefined, base_report_path: reportEditBasePath })
         });
         const data = await res.json();
 
@@ -18459,6 +18630,7 @@ async function saveReportMetadata() {
             }
             clearReportingDirty();
             showToast("Report JSON saved successfully!", 'success');
+            return true;
         } else if (res.status === 409 && data.conflict) {
             // Another analyst (or another tab) saved this case after this
             // tab last loaded it - reject rather than silently overwrite,
@@ -18468,7 +18640,7 @@ async function saveReportMetadata() {
             // reloads on their behalf) - Reload Case explicitly re-fetches
             // and repaints, discarding those edits, only if they choose it.
             showToast(data.error, 'danger');
-            if (await appConfirm(`${data.error}\n\nReload this case now? (Any unsaved edits in this tab will be lost - reapply them after reloading.)`)) {
+            if (await appConfirm({ title: 'Reload this case?', message: `${data.error}\n\nReloading discards the unsaved edits in this tab - reapply them afterwards.`, confirmText: 'Reload case', cancelText: 'Keep my edits' })) {
                 // The examiner just explicitly confirmed discarding their
                 // own in-tab edits - clear the dirty flag BEFORE reloading,
                 // or loadCaseForEditing()'s own live reportHasUnsavedChanges
@@ -18485,6 +18657,7 @@ async function saveReportMetadata() {
     } catch (err) {
         showToast(`Save failed: ${err.message}`, 'danger');
     }
+    return false;
 }
 
 // --- Export pane (inline, part of Reporting's left-nav/right-pane) ---
@@ -20090,6 +20263,9 @@ async function createCase() {
             return;
         }
 
+        // The case exists now - only here are the previous case's unsaved
+        // edits really thrown away (a failed create keeps them on screen).
+        discardReportingEdits();
         activeCase = {
             case_number: data.case.case_number, examiner: data.case.examiner,
             case_folder: data.case.case_folder, case_status: data.case.case_status,
@@ -20259,27 +20435,85 @@ function renderCaseList() {
         // default view.
         const archiveBtn = document.createElement('button');
         archiveBtn.type = 'button';
-        if ((c.case_status || 'Open') === 'Archived') {
+        const rowStatus = c.case_status || 'Open';
+        if (rowStatus === 'Archived') {
             archiveBtn.className = 'btn btn-xs btn-outline-info py-0 px-2';
             archiveBtn.innerHTML = '<i class="bi bi-box-arrow-up me-1"></i>Re-open';
             // Restore whatever status the case actually held right before
             // being archived (routes/case_management.py's set_case_status()
-            // now remembers it) rather than always landing back on the
-            // generic "Open" default - falls back to "Open" for a case
-            // archived before this existed, or one archived by hand-
-            // editing the case file directly (2026-09-09 fix).
-            archiveBtn.onclick = (ev) => { ev.stopPropagation(); setCaseStatus(c, c.status_before_archive || 'Open'); };
+            // remembers it) - unless that was itself read-only: a case
+            // archived from Closed used to "re-open" straight back to Closed,
+            // still locked, while the toast said re-opened (2026-10-02 review).
+            const restored = c.status_before_archive && !CASE_STATUSES_READ_ONLY.includes(c.status_before_archive)
+                ? c.status_before_archive : 'Open';
+            archiveBtn.onclick = (ev) => { ev.stopPropagation(); setCaseStatus(c, restored); };
         } else {
             archiveBtn.className = 'btn btn-xs btn-outline-secondary py-0 px-2';
             archiveBtn.innerHTML = '<i class="bi bi-archive me-1"></i>Archive';
             archiveBtn.onclick = (ev) => { ev.stopPropagation(); setCaseStatus(c, 'Archived'); };
         }
         actionsRow.appendChild(archiveBtn);
+        // Every "re-open it from the Case Manager" message in this app assumed
+        // a Closed case had a way back here; only Archived ones did.
+        if (rowStatus === 'Closed') {
+            const reopenBtn = document.createElement('button');
+            reopenBtn.type = 'button';
+            reopenBtn.className = 'btn btn-xs btn-outline-info py-0 px-2 ms-1';
+            reopenBtn.innerHTML = '<i class="bi bi-box-arrow-up me-1"></i>Re-open';
+            reopenBtn.onclick = (ev) => { ev.stopPropagation(); setCaseStatus(c, 'Open'); };
+            actionsRow.appendChild(reopenBtn);
+        }
 
         btn.appendChild(actionsRow);
         listEl.appendChild(btn);
     });
     appendUnreadableCasesWarning(listEl);
+}
+
+// One place a status change lands on the page (2026-10-02 review). Both the
+// Reporting header dropdown and Case Manager's Archive/Re-open used to update
+// the case bar but not the read-only lock: a case closed in place stayed
+// editable until Save hit a 409, and a re-opened one stayed locked with a
+// stale "This case is Closed" banner until the tab was re-entered.
+function applyCaseStatusChangeLocally(caseFolder, newStatus) {
+    if (!activeCase || activeCase.case_folder !== caseFolder) return;
+    activeCase.case_status = newStatus;
+    persistActiveCase();
+    renderActiveCaseBar();
+    if (currentLoadedReportData && Array.isArray(currentLoadedReportData.events)) {
+        currentLoadedReportData.case_status = newStatus;
+        const caseStatusEl = document.getElementById('editCaseStatus');
+        if (caseStatusEl) caseStatusEl.value = newStatus;
+        if (applyReportClosedLock()) rerenderReportEditors();
+    }
+}
+
+// Closing or archiving the loaded case makes its record read-only, so unsaved
+// Reporting edits would be stranded (2026-10-02 review). Offer to save them
+// first; resolves false when the status change should not go ahead.
+async function saveReportEditsBeforeLocking(caseFolder, newStatus) {
+    if (!CASE_STATUSES_READ_ONLY.includes(newStatus)) return true;
+    if (!reportHasUnsavedChanges || !activeCase || activeCase.case_folder !== caseFolder) return true;
+    const verb = newStatus === 'Archived' ? 'archive' : 'close';
+    const ok = await appConfirm({
+        title: `Save your report changes before you ${verb} this case?`,
+        message: `A ${newStatus} case is read-only, so unsaved Report Narrative, Case Details and Files & Artifacts edits can't be saved afterwards.`,
+        confirmText: `Save and ${verb}`, danger: false,
+    });
+    if (!ok) return false;
+    return await saveReportMetadata();
+}
+
+// The read-only banner's own button.
+async function reopenLockedCase() {
+    if (!activeCase || !currentLoadedReportData) return;
+    const ok = await appConfirm({
+        title: 'Re-open this case for editing?',
+        message: 'Its status changes to Open, so its report, notes and exhibits can be edited and new work can be added. Close it again when you are done.',
+        confirmText: 'Re-open case', danger: false,
+    });
+    if (!ok) return;
+    await setCaseStatus({ case_folder: activeCase.case_folder, case_number: activeCase.case_number }, 'Open');
 }
 
 // Writes directly to the case's own marker file (routes/case_management.py
@@ -20289,6 +20523,7 @@ function renderCaseList() {
 // exact case first.
 async function setCaseStatus(c, newStatus) {
     const archiving = newStatus === 'Archived';
+    if (!(await saveReportEditsBeforeLocking(c.case_folder, newStatus))) return;
     // No confirm() dialog here (removed 2026-09-11, was on both directions) -
     // both directions are fully reversible one-click actions (Archive never
     // deletes or touches case data, just hides it from the default "Active"
@@ -20306,7 +20541,7 @@ async function setCaseStatus(c, newStatus) {
         const data = await res.json();
         if (!data.success) return showToast(`Could not update case status: ${data.error}`, 'danger');
 
-        showToast(`"${c.case_number}" ${archiving ? 'archived' : 're-opened'}.`, 'success');
+        showToast(archiving ? `"${c.case_number}" archived.` : `"${c.case_number}" re-opened (status: ${newStatus}).`, 'success');
 
         // If this exact case is the one currently loaded in Reporting,
         // keep it in sync too - only for the consolidated schema, whose
@@ -20315,24 +20550,15 @@ async function setCaseStatus(c, newStatus) {
         // different file (its own per-job _report.json) from the case-
         // level marker this route targets, so there's nothing to reconcile
         // there.
-        if (activeCase && activeCase.case_folder === c.case_folder) {
-            // The active-case object itself, not just the loaded report
-            // (2026-09-16) - it is what the case bar renders from, and a case
-            // archived while it is the active case otherwise kept showing as
-            // an ordinary open case with no indication anywhere. Confirmed
-            // live: the bar survived a full page reload still showing an
-            // Archived case with no badge, every tab still pre-filled its
-            // folder as the destination, and a scan wrote a new evidence
-            // event into it.
-            activeCase.case_status = newStatus;
-            persistActiveCase();
-            renderActiveCaseBar();
-            if (currentLoadedReportData && Array.isArray(currentLoadedReportData.events)) {
-                currentLoadedReportData.case_status = newStatus;
-                const caseStatusEl = document.getElementById('editCaseStatus');
-                if (caseStatusEl) caseStatusEl.value = newStatus;
-            }
-        }
+        // The active-case object itself, not just the loaded report
+        // (2026-09-16) - it is what the case bar renders from, and a case
+        // archived while it is the active case otherwise kept showing as
+        // an ordinary open case with no indication anywhere. Confirmed
+        // live: the bar survived a full page reload still showing an
+        // Archived case with no badge, every tab still pre-filled its
+        // folder as the destination, and a scan wrote a new evidence
+        // event into it.
+        applyCaseStatusChangeLocally(c.case_folder, newStatus);
 
         loadExistingCases();
     } catch (err) {
@@ -20354,6 +20580,10 @@ async function handleCaseStatusDropdownChange(selectEl) {
     if (!activeCase) return;
     const newStatus = selectEl.value;
     const previousStatus = (currentLoadedReportData && currentLoadedReportData.case_status) || 'Open';
+    if (!(await saveReportEditsBeforeLocking(activeCase.case_folder, newStatus))) {
+        selectEl.value = previousStatus;
+        return;
+    }
     try {
         const res = await fetch('/api/cases/set_status', {
             method: 'POST',
@@ -20367,12 +20597,10 @@ async function handleCaseStatusDropdownChange(selectEl) {
             return;
         }
         showToast(`Case status set to "${newStatus}".`, 'success');
-        if (currentLoadedReportData) currentLoadedReportData.case_status = newStatus;
-        // Keep the active-case bar's own finished-status badge honest - this
-        // dropdown is the other way a case reaches Closed/Archived.
-        activeCase.case_status = newStatus;
-        persistActiveCase();
-        renderActiveCaseBar();
+        // Keeps the case bar's finished-status badge, the loaded record and
+        // the read-only lock in step - this dropdown is the other way a case
+        // reaches (or leaves) Closed/Archived.
+        applyCaseStatusChangeLocally(activeCase.case_folder, newStatus);
     } catch (err) {
         showToast('Could not update case status: request failed.', 'danger');
         selectEl.value = previousStatus;
@@ -20380,7 +20608,12 @@ async function handleCaseStatusDropdownChange(selectEl) {
 }
 
 async function selectCase(c) {
-    if (!(await confirmDiscardUnsavedReportingChanges())) return;
+    // Re-selecting the case that is already active is a refresh, not a
+    // switch: its unsaved edits are kept (loadCaseForEditing() protects them).
+    if (!activeCase || activeCase.case_folder !== c.case_folder) {
+        if (!(await confirmDiscardUnsavedReportingChanges())) return;
+        discardReportingEdits();
+    }
     // case_status comes straight from list_case_folders() and is what the bar
     // renders its finished-case badge from - dropping it here is what let an
     // Archived case be selected and then look like an ordinary open one.
@@ -20411,6 +20644,7 @@ async function selectCase(c) {
 
 async function clearActiveCase() {
     if (!(await confirmDiscardUnsavedReportingChanges())) return;
+    discardReportingEdits();
     activeCase = null;
     persistActiveCase();
     renderActiveCaseBar();
@@ -21800,7 +22034,7 @@ function onLiveCollectionBuildDriveSelect() {
 // A materially stronger confirm gate than anything else in this app (see
 // core/live_collection_utils.py's own docstring for why) - the examiner
 // must type the exact device path before this is even clickable, not
-// just click through a native confirm() dialog.
+// just click through a confirmation dialog.
 function checkLiveCollectionBuildConfirmText() {
     const sel = document.getElementById('liveCollectionBuildDriveSelect');
     const input = document.getElementById('liveCollectionBuildConfirmText');
@@ -22462,7 +22696,7 @@ async function loadAutoMountShares() {
 }
 
 async function removeAutoMountShare(id) {
-    if (!await appConfirm('Stop auto-connecting this share on future reboots? The current mount (if any) is left untouched.')) return;
+    if (!await appConfirm({ title: 'Stop auto-connecting this share?', message: 'It will no longer be mounted automatically on future reboots. The current mount (if any) is left untouched.', confirmText: 'Stop auto-connecting', danger: false })) return;
     try {
         const res = await fetch(`/api/network/auto_mounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
         const data = await res.json();
@@ -22612,10 +22846,10 @@ async function applyNetworkConfig(device) {
         body.dns = document.getElementById(networkDeviceFieldId(device, 'dns'))?.value.trim() || '';
     }
 
-    const warning = method === 'manual'
-        ? `Apply a static IP to ${device}? If any value is wrong, this may disconnect your session immediately. The station will automatically revert to its current settings in ${networkRevertWindowSeconds}s unless you confirm afterward.`
-        : `Switch ${device} back to DHCP? This may change its IP address and disconnect your session. The station will automatically revert to its current settings in ${networkRevertWindowSeconds}s unless you confirm afterward.`;
-    if (!await appConfirm(warning)) return;
+    const confirmOpts = method === 'manual'
+        ? { title: `Apply a static IP to ${device}?`, message: `If any value is wrong, this may disconnect your session immediately. The station automatically reverts to its current settings in ${networkRevertWindowSeconds}s unless you confirm afterward.`, confirmText: 'Apply static IP' }
+        : { title: `Switch ${device} back to DHCP?`, message: `This may change its IP address and disconnect your session. The station automatically reverts to its current settings in ${networkRevertWindowSeconds}s unless you confirm afterward.`, confirmText: 'Switch to DHCP' };
+    if (!await appConfirm(confirmOpts)) return;
 
     try {
         const res = await fetch('/api/network/apply', {
@@ -23164,9 +23398,13 @@ async function inspectDdrescueMapfile() {
 }
 
 async function stopAcquisition() {
-    if (!await appConfirm(`Stop the running job?
-
-The tool is killed immediately. Any partial output is kept but is INCOMPLETE and must not be used as a verified image.`)) return;
+    if (!await appConfirm({
+        title: 'Stop the running job?',
+        message: 'The running tool is stopped now. Anything it already wrote is kept but is INCOMPLETE - it is not a verified result.\n\n'
+            + 'A phone extraction still restores the device afterwards (default SMS app, permissions, collector app): '
+            + 'leave the phone connected until the log shows the restore has finished.',
+        confirmText: 'Stop job', cancelText: 'Keep running',
+    })) return;
     try {
         const res = await fetch('/api/stop_imaging', { method: 'POST' });
         const data = await res.json();
@@ -23520,14 +23758,14 @@ async function startCompanionUnifiedExtraction() {
           + 'The phone\'s own real SMS app will NOT receive or send normal messages until this finishes '
           + 'and the original default is restored.'
         : '';
-    if (!await appConfirm(
-        `This installs a small companion app (hand-built for this project) on the device to read: `
-        + `${selectedLabel}.\n\nIt actively modifies the device (installs an app, grants exactly the `
-        + `permissions needed for what's selected), then removes the app and reverses every change when `
-        + `finished.` + smsWarning
-        + '\n\nEvery step (install, permission/role changes, queries, cleanup) is recorded in the case '
-        + 'report. Continue?'
-    )) return;
+    if (!await appConfirm({
+        title: 'Install the companion app on this device?',
+        message: `It reads: ${selectedLabel}.\n\nThis actively modifies the device (installs an app, grants exactly the `
+            + `permissions needed for what's selected), then removes the app and reverses every change when `
+            + `finished.` + smsWarning
+            + '\n\nEvery step (install, permission/role changes, queries, cleanup) is recorded in the case report.',
+        confirmText: 'Install and extract',
+    })) return;
 
     const destinationDir = activeCase ? activeCase.case_folder : (document.getElementById("mobileDest")?.value || '/mnt');
     const metadata = {
@@ -23555,10 +23793,14 @@ async function startCompanionUnifiedExtraction() {
 async function cleanupCompanionUnifiedExtraction() {
     const dev = _currentlySelectedAndroidDevice();
     if (!dev) return showToast('Select a connected Android device first.', 'warning');
-    if (!await appConfirm('This revokes every permission this feature could have granted (SMS/Contacts/Call Log/'
-        + 'Calendar/Photos/Video), restores the default SMS app if currently reassigned, and uninstalls '
-        + 'the companion collector from the selected device. Use this only if a previous extraction was '
-        + 'interrupted and never cleaned up on its own. Continue?')) return;
+    if (!await appConfirm({
+        title: 'Clean up the companion app on this device?',
+        message: 'This revokes every permission this feature could have granted (SMS/Contacts/Call Log/'
+            + 'Calendar/Photos/Video), restores the default SMS app if currently reassigned, and uninstalls '
+            + 'the companion collector from the selected device. Use this only if a previous extraction was '
+            + 'interrupted and never cleaned up on its own.',
+        confirmText: 'Clean up device',
+    })) return;
     try {
         const res = await fetch('/api/mobile/android/companion_extraction/cleanup', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -23715,11 +23957,14 @@ async function startAndroidAcquisition() {
         if (!hashes.length) {
             return showToast("Select at least one verification hash algorithm.", 'warning');
         }
-        if (!await appConfirm("Physical/raw acquisition requires the device to already be rooted. Rooting a device is "
-            + "itself an evidence-altering action - only continue if that's already true, or rooting is a "
-            + "deliberate, documented, examiner-authorized step. Whether this specific device/root method "
-            + "actually permits reading raw block devices is unknown until attempted (SELinux enforcing mode "
-            + "can block even root). Continue?")) {
+        if (!await appConfirm({
+            title: 'Start a physical (raw) acquisition?',
+            message: "It requires the device to already be rooted. Rooting a device is itself an evidence-altering "
+                + "action - only continue if that's already true, or rooting is a deliberate, documented, "
+                + "examiner-authorized step. Whether this specific device/root method actually permits reading "
+                + "raw block devices is unknown until attempted (SELinux enforcing mode can block even root).",
+            confirmText: 'Start acquisition',
+        })) {
             return;
         }
         body.target = target;
@@ -24237,7 +24482,7 @@ async function saveUserGroup() {
 async function deleteUserGroupFromModal() {
     const groupId = document.getElementById("userGroupEditingId").value;
     if (!groupId) return;
-    if (!await appConfirm('Delete this group? Any users currently in it will be moved to the Analyst group.')) return;
+    if (!await appConfirm({ title: 'Delete this group?', message: 'Any users currently in it are moved to the Analyst group.', confirmText: 'Delete group' })) return;
 
     const statusEl = document.getElementById("userGroupModalStatus");
     try {
@@ -24468,7 +24713,7 @@ async function generateTlsCertificate() {
     const extraHostname = document.getElementById("tlsGenExtraHostname")?.value.trim() || '';
     const statusEl = document.getElementById("tlsGenerateStatus");
 
-    if (!await appConfirm("Generate a new self-signed certificate and install it now? This replaces the current certificate immediately.")) return;
+    if (!await appConfirm({ title: 'Replace the TLS certificate?', message: 'A new self-signed certificate is generated and installed now, replacing the current one immediately.', confirmText: 'Replace certificate' })) return;
 
     if (statusEl) { statusEl.className = 'small mb-2 text-subtle'; statusEl.innerText = 'Generating and installing...'; }
 
@@ -24568,12 +24813,12 @@ async function downloadConfigBackup() {
 
 // Real UI-audit finding (2026-09-02): Restore replaces every user account,
 // group, and setting on this station behind just a passphrase field + one
-// confirm() dialog - a much lower bar than Live Collection USB's own
+// confirmation dialog - a much lower bar than Live Collection USB's own
 // drive-wipe, which requires typing the exact device path before its own
 // button even enables. This reuses that same typed-confirmation pattern
 // (checkLiveCollectionBuildConfirmText() is the template) as a second,
-// stronger layer on top of the existing confirm() below, which stays
-// exactly as it was - this only adds friction, it doesn't remove anything.
+// stronger layer on top of the confirmation dialog below - this only adds
+// friction, it doesn't remove anything.
 function checkConfigRestoreConfirmText() {
     const input = document.getElementById('configRestoreConfirmText');
     const btn = document.getElementById('btnConfigRestore');
@@ -24596,7 +24841,7 @@ async function submitConfigRestore() {
         if (statusEl) { statusEl.className = 'small text-danger'; statusEl.textContent = 'Enter the passphrase this backup was created with.'; }
         return;
     }
-    if (!await appConfirm('Restoring will replace every current user account, group, and setting on this station with the backup\'s contents. Continue?')) {
+    if (!await appConfirm({ title: 'Restore this backup?', message: "Every current user account, group and setting on this station is replaced with the backup's contents.", confirmText: 'Restore backup' })) {
         return;
     }
 
@@ -24784,7 +25029,7 @@ async function installTool(pkg, btnEl) {
     // config restore) - this one didn't, despite doing the same class of
     // thing (a real `sudo apt-get install` on the station) with only the
     // diagnostics caption explaining what "Install"/"Update" means.
-    if (!await appConfirm(`Run "sudo apt-get install -y ${pkg}" on this station now?`)) return;
+    if (!await appConfirm({ title: `Install ${pkg}?`, message: `Runs "sudo apt-get install -y ${pkg}" on this station now.`, confirmText: 'Install', danger: false })) return;
     if (btnEl) {
         btnEl.disabled = true;
         btnEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Working...';
@@ -24808,7 +25053,7 @@ async function installTool(pkg, btnEl) {
 async function ejectTargetDrive() {
     const drive = document.getElementById("ejectDriveSelect")?.value;
     if (!drive) return showToast("Select a drive to detach first.", 'warning');
-    if (!await appConfirm(`Safely unmount and flush ${drive}? Only do this once any acquisition using it has finished.`)) return;
+    if (!await appConfirm({ title: `Safely unmount ${drive}?`, message: 'Its writes are flushed and it is unmounted. Only do this once any acquisition using it has finished.', confirmText: 'Unmount', danger: false })) return;
 
     try {
         const res = await fetch('/api/system/eject_drive', {
@@ -24838,7 +25083,7 @@ async function purgeConsoleLogs() {
 }
 
 async function restartForensicService() {
-    if (!await appConfirm("Restart the forensic web service now? Any running acquisition job state will be lost, and this page will disconnect briefly.")) return;
+    if (!await appConfirm({ title: 'Restart the forensic web service?', message: 'Any running acquisition job state is lost, and this page disconnects briefly.', confirmText: 'Restart service' })) return;
     diagRunning("Restart Service");
     try {
         const res = await fetch('/api/system/restart_service', { method: 'POST' });
@@ -24879,12 +25124,12 @@ async function loadKioskModeState() {
 }
 
 async function setKioskModeEnabled(checked) {
-    // Only disabling gets a confirm() gate - a real, immediate, physically
+    // Only disabling gets a confirmation - a real, immediate, physically
     // observable action (the touchscreen goes dark) on top of a station's
     // own hardware, matching this app's established pattern of confirm-
     // gating a consequential-but-reversible action (e.g. TLS cert
     // generation). Re-enabling is benign - no gate.
-    if (!checked && !await appConfirm("Turn off the touchscreen kiosk display now? The physical screen will close immediately. This station's own web UI stays fully reachable over the network - turn it back on here anytime, no reboot needed.")) {
+    if (!checked && !await appConfirm({ title: 'Turn off the touchscreen display?', message: "The physical screen closes immediately. This station's web UI stays reachable over the network - turn the display back on here anytime, no reboot needed.", confirmText: 'Turn off display', danger: false })) {
         _setKioskModeToggleUi(true);  // revert the checkbox - the change was declined
         return;
     }
@@ -24909,7 +25154,7 @@ async function setKioskModeEnabled(checked) {
 }
 
 async function gitUpdateApp() {
-    if (!await appConfirm("Pull the latest code from the configured git remote and restart the service? Only do this if you trust that remote.")) return;
+    if (!await appConfirm({ title: 'Update the app from git?', message: 'Pulls the latest code from the configured git remote and restarts the service. Only do this if you trust that remote.', confirmText: 'Update and restart' })) return;
     switchToTab('settings-tab'); // so the Diagnostics output console below is visible if this was triggered from the update-available toast on a different tab
     diagRunning("Update App (Git Pull)");
     try {
@@ -25029,7 +25274,7 @@ function showUpdateAvailableNotification(verText, commitsBehind) {
 }
 
 async function updateOperatingSystem() {
-    if (!await appConfirm("Run apt-get update && upgrade -y in the background? This can take a while and should not be interrupted.")) return;
+    if (!await appConfirm({ title: 'Update OS packages?', message: 'Runs apt-get update && upgrade -y in the background. This can take a while and should not be interrupted.', confirmText: 'Run update' })) return;
     diagRunning("Update OS Packages");
     try {
         const res = await fetch('/api/system/os_update', { method: 'POST' });
@@ -25042,8 +25287,7 @@ async function updateOperatingSystem() {
 
 async function triggerSystemPower(action) {
     const label = action === 'poweroff' ? 'Power Off Station' : 'Reboot Appliance';
-    const confirmLabel = action === 'poweroff' ? 'power off' : 'reboot';
-    if (!await appConfirm(`Are you sure you want to ${confirmLabel} the station now? Any running acquisition will be interrupted.`)) return;
+    if (!await appConfirm({ title: `${action === 'poweroff' ? 'Power off' : 'Reboot'} the station now?`, message: 'Any running acquisition is interrupted.', confirmText: action === 'poweroff' ? 'Power off' : 'Reboot' })) return;
     diagRunning(label);
     try {
         const res = await fetch('/api/system/power', {
