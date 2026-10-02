@@ -48,7 +48,7 @@ from core.jobs import (mark_job_slot_claimed,
     _stream_subprocess, reclaim_ownership,
     build_report_target, write_initial_report, _write_report,
     _SERVICE_ACCOUNT_NAME,
-    begin_suppress_active_false, end_suppress_active_false,
+    begin_suppress_active_false, end_suppress_active_false, supersede_stopped_job,
     _fsync_confirm_write, fsync_confirm_directory_tree,
 )
 from core.decrypted_sources import register_decrypted_source, unregister_decrypted_source
@@ -4093,10 +4093,11 @@ def stop_imaging():
         # for a while (hash, fsync, reclaim, report) and its closing
         # update_job() calls used to overwrite "Stopped" with "Completed
         # Successfully" - or a NEW job's status - because it still held the
-        # current slot generation. Bumping it makes the old worker's
-        # job-state writes stale (core/jobs.py _is_stale_worker_thread).
-        with job_lock:
-            current_job['_slot_generation'] = current_job.get('_slot_generation', 0) + 1
+        # current slot generation. Its log lines and its final slot release
+        # still go through until a newer job claims the slot (2026-10-02 -
+        # Auto Analyze holds the slot through Stop and was never releasing
+        # it). See core/jobs.py supersede_stopped_job().
+        supersede_stopped_job()
         return jsonify({"success": True, "message": "Acquisition stopped."})
         
     return jsonify({"error": "No active job running."}), 400

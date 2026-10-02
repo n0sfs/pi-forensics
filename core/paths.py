@@ -486,27 +486,31 @@ def acquisition_output_location(params):
 # Nothing anywhere read case_status except the Active-Cases count tile.
 CASE_STATUSES_CLOSED_TO_NEW_WORK = ('Closed', 'Archived')
 
-def case_status_blocking_new_work(dest_path, _read_json=None):
-    """Returns the case's status string when `dest_path` is (or is inside) a
-    case folder whose status is one of CASE_STATUSES_CLOSED_TO_NEW_WORK, else
-    None. None is also the answer for a destination that isn't in a case at
-    all - a job run with no active case is a supported workflow, not something
-    to block.
+# A case whose RECORD is read-only (2026-09-27; its own tuple since the
+# 2026-10-02 review): the report narrative, case notes, exhibits and the
+# examiner's tags/contact merges are what was handed over, so they must not
+# change underneath it. Deliberately separate from
+# CASE_STATUSES_CLOSED_TO_NEW_WORK even though both hold the same two values
+# today - pausing new acquisitions (an 'On Hold' added there, say) must not
+# also lock the report. The Custody Log, evidence verification and exports
+# stay available on a read-only case. Paired with the same list in
+# static/js/main.js - a status added to one belongs in both.
+CASE_STATUSES_READ_ONLY = ('Closed', 'Archived')
 
-    Walks up from dest_path so a destination pointed at a SUBFOLDER of a
-    finished case is caught too, bounded by EVIDENCE_ROOT so it can never
-    climb past the evidence store. Any read/parse failure returns None: this
-    is a guard against a mistake, and an unreadable case file must not become
-    a second way to be unable to work (core/jobs.py's own CaseFileUnreadable
-    handling is the place that surfaces that, deliberately).
+def nearest_case_status(path, _read_json=None):
+    """The case_status of the case that `path` is (or is inside), else None -
+    including for a path in no case at all, or one whose case file can't be
+    read.
 
-    Verification, case notes, report and bundle exports are all legitimate
-    work ON a finished case and deliberately do NOT consult this - it gates
-    starting a new acquisition/recovery/extraction, nothing else.
-    """
+    Walks up from `path` so a SUBFOLDER of a case (or a file in it) is caught
+    too, bounded by EVIDENCE_ROOT so it can never climb past the evidence
+    store. A read/parse failure answers None on purpose: these status checks
+    guard against a mistake, and an unreadable case file must not become a
+    second way to be unable to work. The callers' own read of the case file is
+    what fails closed (core/case_file.py's CaseFileUnreadable)."""
     reader = _read_json or _read_case_status_json
     try:
-        current = os.path.abspath(dest_path or '')
+        current = os.path.abspath(path or '')
         root = os.path.abspath(EVIDENCE_ROOT)
     except (TypeError, ValueError):
         return None
@@ -515,14 +519,35 @@ def case_status_blocking_new_work(dest_path, _read_json=None):
     while True:
         marker = case_consolidated_path(current)
         if marker:
-            status = reader(marker)
-            return status if status in CASE_STATUSES_CLOSED_TO_NEW_WORK else None
+            return reader(marker)
         if current == root:
             return None
         parent = os.path.dirname(current)
         if parent == current:  # filesystem root, belt-and-braces against a loop
             return None
         current = parent
+
+def case_status_blocking_new_work(dest_path, _read_json=None):
+    """Returns the case's status string when `dest_path` is (or is inside) a
+    case folder whose status is one of CASE_STATUSES_CLOSED_TO_NEW_WORK, else
+    None. None is also the answer for a destination that isn't in a case at
+    all - a job run with no active case is a supported workflow, not something
+    to block. See nearest_case_status() for the walk and the fail-open rule.
+
+    This gates starting NEW work in a finished case (an acquisition, recovery,
+    extraction, analysis). Editing the case's own record - narrative, notes,
+    exhibits, tags - is governed separately by case_record_read_only_status();
+    verification, the Custody Log and exports consult neither.
+    """
+    status = nearest_case_status(dest_path, _read_json)
+    return status if status in CASE_STATUSES_CLOSED_TO_NEW_WORK else None
+
+def case_record_read_only_status(path, _read_json=None):
+    """Returns the case's status string when `path` (a case folder, its case
+    file, or a job report inside it) belongs to a case whose record is
+    read-only - see CASE_STATUSES_READ_ONLY - else None."""
+    status = nearest_case_status(path, _read_json)
+    return status if status in CASE_STATUSES_READ_ONLY else None
 
 def _read_case_status_json(marker_path):
     try:

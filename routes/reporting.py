@@ -65,7 +65,7 @@ from core.paths import (
     safe_path, log_chain_of_custody, case_consolidated_path,
     classify_extension, classify_case_role, sanitize_case_slug, format_epoch,
     is_bulk_tool_output_dir, acquisition_output_location, acquisition_verification_target,
-    path_is_within, closed_case_refusal,
+    path_is_within,
 )
 from core.config import (
     EVIDENCE_ROOT, INSTALL_DIR, COC_LOG_FILE, HISTORY_FILE, ALLOWED_HASH_ALGOS,
@@ -75,6 +75,7 @@ from core.config import (
 from core.jobs import (mark_job_slot_claimed, _read_case_file, _write_case_file, current_job, job_lock, update_job,
                        snapshot_job, CaseFileUnreadable, CASE_WRITE_LOCK, serialize_case_writes,
                        is_case_record_path)
+from core.case_file import refuses_read_only_case
 from core.case_index_db import (
     _tags_for_paths, _analysis_results_for_paths, _auto_tag_case_artifact,
     _case_index_open_readonly, list_case_folders, correlate_contacts,
@@ -658,26 +659,6 @@ def _known_share_mount_points(target):
     return points
 
 
-def _closed_case_edit_refusal(path):
-    """409 response when `path` (a case file, a job report inside a case, or
-    a case folder) belongs to a Closed/Archived case, else None.
-
-    A finished case's narrative, notes and exhibits are what was reported -
-    they must not change underneath a report already handed over (2026-09-27).
-    The Custody Log is deliberately NOT gated: returning or transferring
-    evidence after a case closes is legitimate and has to be recordable.
-    Reopen the case from Case Manager to edit it."""
-    if not path:
-        return None
-    folder = path if os.path.isdir(path) else os.path.dirname(path)
-    status = closed_case_refusal(folder)
-    if not status:
-        return None
-    return jsonify({"success": False, "closed_case": status,
-                    "error": f"This case is {status} - its report, notes and exhibits are read-only. "
-                             f"Reopen it from Case Manager to make changes (the Custody Log stays writable)."}), 409
-
-
 def _evidence_storage_unavailable(path):
     """True when a missing `path` is better explained by unreachable storage
     than by the file genuinely not existing.
@@ -777,6 +758,7 @@ def _three_way_merge(base, disk, mine, path):
 @requires_auth
 @requires_permission('reporting')
 @serialize_case_writes
+@refuses_read_only_case('report_path')
 def save_report_json():
     req = request.get_json() or {}
     report_file = safe_path(req.get('report_path'))
@@ -791,9 +773,6 @@ def save_report_json():
         return jsonify({"success": False, "error": "Only a case file or job report can be saved here."}), 400
     if not isinstance(data, dict):
         return jsonify({"success": False, "error": "report_data must be an object."}), 400
-    refusal = _closed_case_edit_refusal(report_file)
-    if refusal:
-        return refusal
 
     # Real bug, fixed 2026-09-09: this is the main "Save Report Changes"
     # round trip (Report Narrative/Case Details/exhibit captions/reference
@@ -829,6 +808,27 @@ def save_report_json():
     # (app-wide 500 handler). And a payload with no updated_at no longer
     # bypasses the guard when the file on disk has one.
     on_disk = _read_case_file(report_file)
+    # Never merge one case's edits into another (2026-10-02 review). The page
+    # used to keep case A's unsaved edits and edit-base across a switch to
+    # case B, and its next save three-way-merged A's narrative and exhibits
+    # into B with no conflict reported. The page now sends the path its edit
+    # base was captured from, and the record's own case number must match.
+    base_report_path = req.get('base_report_path')
+    if base_report_path is not None and safe_path(base_report_path) != report_file:
+        return jsonify({
+            "success": False,
+            "conflict": True,
+            "error": "These edits were started on a different case than the one being saved. "
+                     "Reload this case and reapply them.",
+        }), 409
+    if (isinstance(on_disk, dict) and on_disk.get('case_number') and data.get('case_number')
+            and on_disk['case_number'] != data['case_number']):
+        return jsonify({
+            "success": False,
+            "conflict": True,
+            "error": f"These edits belong to case {data['case_number']}, but this file is case "
+                     f"{on_disk['case_number']}. Nothing was saved - reload the case and reapply them.",
+        }), 409
     base_fields = req.get('base_fields')
     if isinstance(base_fields, dict) and isinstance(on_disk, dict):
         # Three-way merge (2026-09-23): the page sends the editable values it
@@ -2619,6 +2619,7 @@ def discover_case_files():
 @requires_auth
 @requires_permission('reporting', 'file_explorer')
 @serialize_case_writes
+@refuses_read_only_case('case_folder')
 def attach_file_to_case():
     """Lets File Explorer's "Attach to Case" context-menu action bookmark a
     file the moment an examiner is looking at it, rather than requiring a
@@ -2649,9 +2650,6 @@ def attach_file_to_case():
     case_file = case_consolidated_path(case_folder)
     if not case_file:
         return jsonify({"success": False, "error": "This case hasn't been migrated to the consolidated report format yet - attach files from the Reporting tab instead."}), 400
-    refusal = _closed_case_edit_refusal(case_folder)
-    if refusal:
-        return refusal
 
     data = _read_case_file(case_file)
     attachments = data.setdefault('attachments', {})
@@ -2677,6 +2675,7 @@ def attach_file_to_case():
 @requires_auth
 @requires_permission('reporting', 'file_explorer')
 @serialize_case_writes
+@refuses_read_only_case('case_folder')
 def set_file_caption():
     """Sets or clears an exhibit's caption immediately - commits straight to
     the case JSON on disk, the same "tag it where you find it" immediacy
@@ -2712,9 +2711,6 @@ def set_file_caption():
     case_file = case_consolidated_path(case_folder)
     if not case_file:
         return jsonify({"success": False, "error": "This case hasn't been migrated to the consolidated report format yet - edit captions from the Reporting tab instead."}), 400
-    refusal = _closed_case_edit_refusal(case_folder)
-    if refusal:
-        return refusal
 
     data = _read_case_file(case_file)
     attachments = data.setdefault('attachments', {})
@@ -2764,15 +2760,13 @@ CASE_NOTE_ATTACHMENT_MAX_BYTES = 25_000_000
 @requires_auth
 @requires_permission('reporting')
 @serialize_case_writes
+@refuses_read_only_case('report_path')
 def add_case_note():
     report_file = safe_path(request.form.get('report_path', ''))
     if not report_file or not os.path.exists(report_file):
         return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
     if not is_case_record_path(report_file):
         return jsonify({"success": False, "error": "Only a case file or job report can be modified here."}), 400
-    refusal = _closed_case_edit_refusal(report_file)
-    if refusal:
-        return refusal
 
     text = request.form.get('text', '').strip()
     category = request.form.get('category', 'General').strip() or 'General'
@@ -2895,6 +2889,7 @@ def add_case_note():
 @requires_auth
 @requires_permission('reporting')
 @serialize_case_writes
+@refuses_read_only_case('report_path')
 def edit_case_note():
     req = request.get_json() or {}
     report_file = safe_path(req.get('report_path'))
@@ -2905,9 +2900,6 @@ def edit_case_note():
         return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
     if not is_case_record_path(report_file):
         return jsonify({"success": False, "error": "Only a case file or job report can be modified here."}), 400
-    refusal = _closed_case_edit_refusal(report_file)
-    if refusal:
-        return refusal
     if not new_text:
         return jsonify({"success": False, "error": "Note text cannot be empty."}), 400
 
@@ -2956,6 +2948,7 @@ CASE_NOTE_STATUS_VALUES = ('open', 'resolved')
 @requires_auth
 @requires_permission('reporting')
 @serialize_case_writes
+@refuses_read_only_case('report_path')
 def set_case_note_status():
     """Follow-up/task flag on notes (2026-09-09) - deliberately a SEPARATE
     route from edit_case_note() above, not a new optional field on it: that
@@ -2977,9 +2970,6 @@ def set_case_note_status():
         return jsonify({"success": False, "error": "Report/case file not found or outside the permitted evidence directory."}), 404
     if not is_case_record_path(report_file):
         return jsonify({"success": False, "error": "Only a case file or job report can be modified here."}), 400
-    refusal = _closed_case_edit_refusal(report_file)
-    if refusal:
-        return refusal
     if 'status' in req and req['status'] not in CASE_NOTE_STATUS_VALUES:
         return jsonify({"success": False, "error": f"Invalid status - must be one of: {', '.join(CASE_NOTE_STATUS_VALUES)}"}), 400
     if 'status' not in req and 'assigned_to' not in req:
@@ -3025,6 +3015,8 @@ def set_case_note_status():
 @requires_auth
 @requires_permission('reporting')
 @serialize_case_writes
+# Deliberately NOT @refuses_read_only_case: returning or transferring physical
+# evidence after a case closes is legitimate and must stay recordable.
 def add_custody_entry():
     """Appends one physical evidence custody-transfer entry (from-person ->
     to-person, e.g. 'field examiner' -> 'evidence locker') - a genuinely
@@ -3340,6 +3332,8 @@ def execution_worker_verify_all_evidence(case_folder, case_file, requester_ip=No
 @reporting_bp.route('/api/cases/verify_all_evidence', methods=['POST'])
 @requires_auth
 @requires_permission('reporting')
+# Deliberately NOT @refuses_read_only_case: re-verifying evidence is legitimate
+# work on a finished case - its result is recorded, nothing is edited.
 def start_verify_all_evidence():
     global current_job
     with job_lock:

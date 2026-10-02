@@ -450,6 +450,14 @@ def image_extract():
         return jsonify({"success": False, "error": "Image file not found or outside the permitted evidence directory."}), 400
     if not dest_dir or not os.path.isdir(dest_dir):
         return jsonify({"success": False, "error": "Destination directory not found or outside the permitted evidence directory."}), 400
+    # Closed/Archived cases take no new work (2026-10-02 review) - the one
+    # extraction route left ungated, so "Extract & Attach" on a finished case
+    # wrote the file into it and only the attach step was then refused.
+    _closed = closed_case_refusal(dest_dir)
+    if _closed:
+        return jsonify({"success": False, "closed_case": _closed,
+                        "error": f"The destination is in a case marked {_closed}. Re-open it from the "
+                                 f"Case Manager before adding new work to it."}), 409
     try:
         offset = int(offset)
     except (TypeError, ValueError):
@@ -468,16 +476,33 @@ def image_extract():
     if not safe_path(dest_file):
         return jsonify({"success": False, "error": "Resulting destination path is outside the permitted evidence directory."}), 400
 
+    # Never overwrite, never delete what this call didn't create (2026-10-02
+    # review). A truncating open() silently replaced a same-named file - an
+    # attached exhibit whose recorded hash then no longer matched - and the
+    # error path removed dest_file even when the failure came before anything
+    # was written, deleting a pre-existing file of that name. O_EXCL makes the
+    # no-overwrite rule race-free; the lexists() check just gives the clear
+    # message first, the same wording /api/files/copy uses.
+    exists_msg = (f"{safe_name} already exists in {dest_dir} - nothing was extracted, nothing was "
+                  f"overwritten. Rename or move the existing file first.")
+    if os.path.lexists(dest_file):
+        return jsonify({"success": False, "error": exists_msg}), 409
+    created = False
     try:
         fs = _tsk_open_fs(image_path, offset)
         tsk_file = fs.open_meta(inode=inode_num)
-        with open(dest_file, 'wb') as out:
+        fd = os.open(dest_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o666)
+        created = True
+        with os.fdopen(fd, 'wb') as out:
             _tsk_stream_file(tsk_file, out.write)
+    except FileExistsError:
+        return jsonify({"success": False, "error": exists_msg}), 409
     except Exception as e:
-        try:
-            os.remove(dest_file)
-        except OSError:
-            pass
+        if created:
+            try:
+                os.remove(dest_file)
+            except OSError:
+                pass
         return jsonify({"success": False, "error": f"Extraction failed: {e}"}), 500
 
     log_chain_of_custody("image_file_extract", {"image_path": image_path, "inode": str(inode), "extracted_to": dest_file})

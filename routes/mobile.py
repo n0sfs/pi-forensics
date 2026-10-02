@@ -2164,13 +2164,12 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
     checked once before permission-granting even begins (a Stop that
     lands there skips both granting and querying entirely, restoring
     nothing since nothing was ever changed beyond the install itself) and
-    again between each selected type's own query (a Stop landing there
-    still reports COMPLETED with whatever was already captured - the
-    exact asymmetry the Contacts/Call Log worker's own docstring already
-    documented, generalized: a genuinely stopped run is only ever reported
-    IN_PROGRESS if it stopped before EVERY query ran, never after at least
-    one succeeded, since real data was already captured and indexed by
-    that point).
+    again between each selected type's own query. A run stopped before
+    every selected type was read is reported STOPPED, with the types never
+    read listed in categories_not_collected (2026-10-02 review - it used to
+    be COMPLETED once any one query had run, presenting a partial
+    collection as a complete one, or left IN_PROGRESS if none had). What was
+    captured before the Stop is still kept and indexed.
 
     device_log (written into both the manifest JSON and the case report
     event's own acquisition_parameters) is the actual chain-of-custody-
@@ -2207,6 +2206,18 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
     query_ran_at_least_once = False
     queries_attempted = 0
     queries_failed = 0
+    categories_queried = set()
+    stop_seen = False
+
+    def stop_requested():
+        # Latched (2026-10-02 review): Stop releases the job slot at once, so
+        # a NEW job's status can replace "Stopped" while this worker is still
+        # running - and re-reading it, this worker used to resume querying the
+        # phone. Once Stop has been seen it stays seen.
+        nonlocal stop_seen
+        if not stop_seen and snapshot_job()["status"] == "Stopped":
+            stop_seen = True
+        return stop_seen
 
     try:
         update_job(format="android_companion_extraction", status="Initializing...", progress_percent=0.0,
@@ -2227,7 +2238,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
         apk_installed = True
         append_log("[+] Collector installed.")
 
-        if snapshot_job()["status"] == "Stopped":
+        if stop_requested():
             append_log("[!] Stop requested before granting any permission - skipping everything below, "
                        "still uninstalling the collector.")
         else:
@@ -2322,7 +2333,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                     append_log("[!] Could not grant any media permission - the Photos/Video query below will "
                                "likely fail, but continuing (other selected types may still succeed).")
 
-        if snapshot_job()["status"] == "Stopped":
+        if stop_requested():
             append_log("[!] Stop requested before any query ran - skipping every query, still restoring "
                        "device state below.")
         else:
@@ -2337,6 +2348,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                              "--projection", projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_sms", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                categories_queried.add("sms")
                 queries_attempted += 1
                 if rc != 0:
                     queries_failed += 1
@@ -2348,7 +2360,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                     device_log["sms_count"] = len(records)
                     append_log(f"[+] Parsed {len(records)} SMS record(s).")
 
-            if snapshot_job()["status"] != "Stopped" and "contacts" in selected_types and contacts_granted:
+            if not stop_requested() and "contacts" in selected_types and contacts_granted:
                 update_job(status="Querying Contacts...")
                 append_log("[*] Querying Contacts via the collector's relay ContentProvider...")
                 projection = ":".join(CONTACTS_QUERY_COLUMNS)
@@ -2357,6 +2369,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                              "--projection", projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_contacts", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                categories_queried.add("contacts")
                 queries_attempted += 1
                 if rc != 0:
                     queries_failed += 1
@@ -2368,7 +2381,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                     device_log["contact_count"] = len(records)
                     append_log(f"[+] Parsed {len(records)} contact detail record(s).")
 
-            if snapshot_job()["status"] != "Stopped" and "calllog" in selected_types and calllog_granted:
+            if not stop_requested() and "calllog" in selected_types and calllog_granted:
                 update_job(status="Querying Call Log...")
                 append_log("[*] Querying Call Log via the collector's relay ContentProvider...")
                 projection = ":".join(CALLLOG_QUERY_COLUMNS)
@@ -2377,6 +2390,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                              "--projection", projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_calllog", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                categories_queried.add("calllog")
                 queries_attempted += 1
                 if rc != 0:
                     queries_failed += 1
@@ -2388,7 +2402,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                     device_log["call_log_count"] = len(records)
                     append_log(f"[+] Parsed {len(records)} call log record(s).")
 
-            if snapshot_job()["status"] != "Stopped" and "calendar" in selected_types and calendar_granted:
+            if not stop_requested() and "calendar" in selected_types and calendar_granted:
                 update_job(status="Querying Calendar Events...")
                 append_log("[*] Querying Calendar Events via the collector's relay ContentProvider...")
                 events_projection = ":".join(CALENDAR_EVENTS_QUERY_COLUMNS)
@@ -2397,6 +2411,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                              "--projection", events_projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_events", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                categories_queried.add("calendar")
                 queries_attempted += 1
                 event_rows = []
                 if rc != 0:
@@ -2425,7 +2440,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                 device_log["event_count"] = len(event_records)
                 device_log["attendee_count"] = len(attendee_rows)
 
-            if snapshot_job()["status"] != "Stopped" and "images" in selected_types and media_granted_any:
+            if not stop_requested() and "images" in selected_types and media_granted_any:
                 update_job(status="Querying Photos (images)...")
                 append_log("[*] Querying Photos via the collector's relay ContentProvider...")
                 projection = ":".join(MEDIA_QUERY_COLUMNS)
@@ -2435,6 +2450,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                              "--projection", projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_images", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                categories_queried.add("images")
                 queries_attempted += 1
                 if rc != 0:
                     queries_failed += 1
@@ -2446,7 +2462,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                     device_log["image_count"] = len(records)
                     append_log(f"[+] Parsed {len(records)} photo metadata record(s).")
 
-            if snapshot_job()["status"] != "Stopped" and "video" in selected_types and media_granted_any:
+            if not stop_requested() and "video" in selected_types and media_granted_any:
                 update_job(status="Querying Video...")
                 append_log("[*] Querying Video via the collector's relay ContentProvider...")
                 projection = ":".join(MEDIA_QUERY_COLUMNS)
@@ -2456,6 +2472,7 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                              "--projection", projection], ANDROID_COMPANION_QUERY_TIMEOUT)
                 record_step("content_query_video", rc, f"{len((out or '').splitlines())} line(s) returned")
                 query_ran_at_least_once = True
+                categories_queried.add("video")
                 queries_attempted += 1
                 if rc != 0:
                     queries_failed += 1
@@ -2496,6 +2513,19 @@ def _execution_worker_android_companion_extraction(serial, selected_types, sms_t
                     if queries_failed:
                         append_log(f"[!] {queries_failed} of {queries_attempted} data queries failed - see above; "
                                    f"those categories were not collected.")
+
+        # What was selected but never read - a permission that couldn't be
+        # granted, or a Stop - is recorded either way, never left implied.
+        not_collected = sorted(set(selected_types) - categories_queried)
+        report_data["acquisition_parameters"]["categories_not_collected"] = not_collected
+        if stop_requested() and (not_collected or not query_ran_at_least_once):
+            report_data["acquisition_status"] = "STOPPED"
+            report_data["error"] = ("Stopped by the examiner before collection finished"
+                                    + (f" - not collected: {', '.join(not_collected)}" if not_collected else "")
+                                    + ". What was read before the Stop is kept.")
+            append_log("[!] Stopped - this is a PARTIAL collection"
+                       + (f" (not collected: {', '.join(not_collected)})" if not_collected else "")
+                       + ". The device is still restored below - leave it connected until that finishes.")
 
     except Exception as e:
         error_message = str(e)

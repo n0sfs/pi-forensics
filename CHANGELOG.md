@@ -21,6 +21,34 @@ file after updating to see what changed.
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **A Closed or Archived case is now read-only.** Its report narrative, case notes, exhibits and
+  tags can no longer be changed, so they can't drift from a report you have already handed over.
+  Reporting shows a banner saying why, and the editing controls are locked but stay readable.
+  This reverses a promise in 1.91.0: you can no longer add notes to a finished case. The Custody Log
+  still works, so you can record evidence being returned after a case closes. Verifying hashes and
+  exporting the report or the case bundle also still work. To edit a finished case, re-open it, either
+  with **Re-open case** in Reporting or with **Re-open** in the Case Manager. That button now appears
+  for Closed cases too, not just Archived ones.
+- **Confirmation prompts use the app's own dialog instead of the browser's.** Each one says what it is
+  about to do on its button ("Delete tag", "Stop job", "Restore backup"). Dangerous actions are red. A
+  tap before the dialog has finished appearing doesn't count. Stopping a job now asks "Stop job" or
+  "Keep running".
+
+### Fixed
+
+- **Switching cases with unsaved report edits really discards them.** If you saved after the switch,
+  the previous case's narrative and exhibits used to be written into the new case.
+- **Stopping Auto Analyze frees the station straight away.** It used to stay "busy" until Stop was
+  pressed a second time.
+- **A phone extraction you stop part-way is recorded as STOPPED.** The record lists which data types
+  were never collected. It used to be marked COMPLETED once any one of them had been read.
+- **Extracting a file from inside a disk image never overwrites a file of the same name.** On a
+  failed extraction it no longer deletes one either.
+
 ## [1.92.0] - 2026-09-20
 
 Everything here came out of running Pattern of Life and the reporting section repeatedly against
