@@ -239,7 +239,9 @@ def system_info():
     wb_active = True
     if os.path.exists(target_drive):
         try:
-            res = subprocess.run(priv_argv("blockdev-getro", target_drive, legacy=["sudo", "/usr/sbin/blockdev", "--getro", target_drive]), capture_output=True, text=True)
+            # Bounded (2026-10-02): this runs every 2 s from every open page; a
+            # hung device used to stall the request - and the poll - forever.
+            res = subprocess.run(priv_argv("blockdev-getro", target_drive, legacy=["sudo", "/usr/sbin/blockdev", "--getro", target_drive]), capture_output=True, text=True, timeout=5)
             if res.returncode == 0 and res.stdout.strip() == '0':
                 wb_active = False
         except Exception:

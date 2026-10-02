@@ -60,6 +60,18 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
   exporting the report or the case bundle also still work. To edit a finished case, re-open it, either
   with **Re-open case** in Reporting or with **Re-open** in the Case Manager. That button now appears
   for Closed cases too, not just Archived ones.
+- **Bigger touch targets on the touchscreen.** On a touch device, buttons and form fields are at least 44
+  pixels tall (they were 38, and the smallest about 26). A mouse keeps the compact layout.
+- **A greyed-out button tells you why when you tap it** - for example Save on a Closed case, or Start
+  before an iPhone has trusted the station.
+- **Export asks to save first** when the report has unsaved changes (an export only contains what is
+  saved), and its button shows it is working, so a second tap no longer starts a second export.
+- **Clearing the active case clears its number and folder from every tab's job fields**, so the next
+  acquisition isn't filed under the case you just left. A field you changed yourself is left alone.
+- **Background status checks don't pile up.** A new check waits for the last one to answer and pauses
+  while the page is hidden.
+- **Tagging many files in a Closed case stops at the first refusal** and says why, instead of failing
+  every file.
 - **Confirmation prompts use the app's own dialog instead of the browser's.** Each one says what it is
   about to do on its button ("Delete tag", "Stop job", "Restore backup"). Dangerous actions are red. A
   tap before the dialog has finished appearing doesn't count. Stopping a job now asks "Stop job" or
