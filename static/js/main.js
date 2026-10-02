@@ -1659,16 +1659,19 @@ async function runBatchTagCreateAndApply() {
 async function _runBatchTagApply(tagId, newTagFields, comment) {
     const statusEl = document.getElementById('batchTagModalStatus');
     const items = Array.from(explorerSelectedFiles.values());
+    // Captured once: a case switch mid-run must not send the rest elsewhere.
+    const caseFolder = activeCase.case_folder;
     let effectiveTagId = tagId;
     let tagName = null;
     let successCount = 0, failCount = 0;
+    let closedStatus = null;
     for (let i = 0; i < items.length; i++) {
         statusEl.textContent = `Tagging... (${i + 1}/${items.length})`;
         const item = items[i];
         const identity = { source_type: 'real_fs', path: item.path, name: item.name };
         const body = effectiveTagId
-            ? { case_folder: activeCase.case_folder, tag_id: effectiveTagId, comment, ...identity }
-            : { case_folder: activeCase.case_folder, ...newTagFields, comment, ...identity };
+            ? { case_folder: caseFolder, tag_id: effectiveTagId, comment, ...identity }
+            : { case_folder: caseFolder, ...newTagFields, comment, ...identity };
         try {
             const res = await fetch('/api/case_index/tag_item', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1679,12 +1682,22 @@ async function _runBatchTagApply(tagId, newTagFields, comment) {
                 successCount++;
                 tagName = data.tag.name;
                 if (!effectiveTagId) effectiveTagId = data.tag.id;
+            } else if (data.closed_case) {
+                // A finished case refuses every one of them - stop at the
+                // first and say why, instead of N identical failures.
+                closedStatus = data.closed_case;
+                break;
             } else {
                 failCount++;
             }
         } catch (err) {
             failCount++;
         }
+    }
+    if (closedStatus) {
+        statusEl.textContent = `This case is ${closedStatus} - its tags are read-only, so nothing was tagged`
+            + `${successCount ? ` after the first ${successCount}` : ''}. Re-open it to tag files.`;
+        return;
     }
     statusEl.textContent = tagName
         ? `Tagged ${successCount} of ${items.length} file(s) with "${tagName}"${failCount ? ` - ${failCount} failed` : ''}.`
@@ -15830,9 +15843,16 @@ function refuseIfReportLocked() {
 let reportLockApplied = null;
 function applyReportClosedLock() {
     const locked = isReportLocked();
+    const reason = locked
+        ? `This case is ${currentLoadedReportData.case_status} - its report is read-only. Re-open it to make changes.`
+        : null;
     REPORT_LOCK_DISABLE_IDS.forEach(id => {
         const el = document.getElementById(id);
-        if (el) el.disabled = locked;
+        if (!el) return;
+        el.disabled = locked;
+        // Tappable reason on the touchscreen - see the pointerup handler.
+        if (reason) el.dataset.disabledReason = reason;
+        else delete el.dataset.disabledReason;
     });
     REPORT_LOCK_READONLY_IDS.forEach(id => {
         const el = document.getElementById(id);
@@ -18360,7 +18380,7 @@ let cocAutoRefreshTimer = null;
 
 function startCocAutoRefresh() {
     if (cocAutoRefreshTimer) return;
-    cocAutoRefreshTimer = setInterval(() => loadChainOfCustodyLog(false), 20000);
+    cocAutoRefreshTimer = startPoll(() => loadChainOfCustodyLog(false), 20000);
 }
 
 function stopCocAutoRefresh() {
@@ -19176,9 +19196,47 @@ async function _fetchReportJsonFromDisk(reportPath, statusEl) {
     }
 }
 
+// Export runs once at a time, with its button showing it (2026-10-02): a PDF
+// of a big case takes a while on a Pi, and a second tap used to start a second
+// export of the same report.
+let exportReportRunning = false;
+
 async function runExportReport() {
+    if (exportReportRunning) return;
+    const button = document.getElementById('btnRunExport');
+    const label = button ? button.innerHTML : null;
+    exportReportRunning = true;
+    if (button) {
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Exporting...';
+    }
+    try {
+        await runExportReportInner();
+    } finally {
+        exportReportRunning = false;
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = label;
+        }
+    }
+}
+
+async function runExportReportInner() {
     const reportPath = currentReportPath;
     if (!reportPath) return showToast("Select an active case first.", 'warning');
+
+    // An export is built from what is saved on disk - so unsaved edits would
+    // be silently missing from it (2026-10-02). Offer to save them first.
+    if (reportHasUnsavedChanges && !isReportLocked()) {
+        const save = await appConfirm({
+            title: 'Save your changes first?',
+            message: 'This report has unsaved changes, and an export only contains what is saved. Save them now, then export?',
+            confirmText: 'Save, then export', cancelText: 'Cancel', danger: false,
+        });
+        if (!save) return;
+        if (!(await saveReportMetadata())) return; // the save said why it failed
+        if (currentReportPath !== reportPath) return;
+    }
 
     const format = document.getElementById("exportFormatSelect")?.value || 'pdf';
 
@@ -20294,6 +20352,13 @@ function clearPerCaseJobFields() {
     }
 }
 
+// The job-launch fields every tab prefills from the active case.
+const ACTIVE_CASE_FIELD_GROUPS = [
+    ['caseNum', 'examiner', 'destPath'],
+    ['recoveryCaseNum', 'recoveryExaminer', 'recoveryDest'],
+    ['mobileCaseNum', 'mobileExaminer', 'mobileDest'],
+];
+
 function applyActiveCaseToFields() {
     if (!activeCase) return;
     // Only on a real switch between two different cases - not on the initial
@@ -20303,12 +20368,7 @@ function applyActiveCaseToFields() {
         clearPerCaseJobFields();
     }
     lastAppliedCaseFolder = activeCase.case_folder;
-    const fieldGroups = [
-        ['caseNum', 'examiner', 'destPath'],
-        ['recoveryCaseNum', 'recoveryExaminer', 'recoveryDest'],
-        ['mobileCaseNum', 'mobileExaminer', 'mobileDest'],
-    ];
-    fieldGroups.forEach(([caseNumId, examinerId, destId]) => {
+    ACTIVE_CASE_FIELD_GROUPS.forEach(([caseNumId, examinerId, destId]) => {
         const caseNumEl = document.getElementById(caseNumId);
         const examinerEl = document.getElementById(examinerId);
         const destEl = document.getElementById(destId);
@@ -20758,6 +20818,19 @@ async function selectCase(c) {
 async function clearActiveCase() {
     if (!(await confirmDiscardUnsavedReportingChanges())) return;
     discardReportingEdits();
+    // Clearing the case used to leave its number and folder in every tab's
+    // job fields, so the next acquisition was still filed under the case just
+    // closed (2026-10-02). A field the examiner has since changed is left alone.
+    if (activeCase) {
+        ACTIVE_CASE_FIELD_GROUPS.forEach(([caseNumId, , destId]) => {
+            const caseNumEl = document.getElementById(caseNumId);
+            const destEl = document.getElementById(destId);
+            if (caseNumEl && caseNumEl.value === activeCase.case_number) caseNumEl.value = '';
+            if (destEl && destEl.value === activeCase.case_folder) destEl.value = '/mnt';
+        });
+        clearPerCaseJobFields();
+    }
+    lastAppliedCaseFolder = null;
     activeCase = null;
     persistActiveCase();
     renderActiveCaseBar();
@@ -21028,7 +21101,7 @@ function setWorkflowStepPending(badgeId, statusId, statusText, num) {
 let guidedWorkflowAutoRefreshTimer = null;
 function startGuidedWorkflowAutoRefresh() {
     if (guidedWorkflowAutoRefreshTimer) return;
-    guidedWorkflowAutoRefreshTimer = setInterval(refreshGuidedWorkflow, 20000);
+    guidedWorkflowAutoRefreshTimer = startPoll(refreshGuidedWorkflow, 20000);
 }
 function stopGuidedWorkflowAutoRefresh() {
     if (guidedWorkflowAutoRefreshTimer) {
@@ -21397,6 +21470,35 @@ function setTelemetryWidth(baseId, percent) {
     if (el) el.style.width = `${percent}%`;
     const mobileEl = document.getElementById(baseId + "Settings");
     if (mobileEl) mobileEl.style.width = `${percent}%`;
+}
+
+// Every recurring poll goes through here (2026-10-02). A bare setInterval
+// fired a new request every 1-2 s whether or not the last one had answered -
+// on a busy Pi or a slow link they piled up - and kept polling in background
+// tabs nobody was looking at. A tick is skipped while the previous call is
+// still running, or while the page is hidden. Returns an ordinary interval id.
+// Tapping a disabled button that carries a reason (data-disabled-reason) shows the
+// reason (2026-10-02). Browsers do not deliver clicks to disabled controls,
+// so this listens for the pointer itself; see the matching CSS in index.html.
+document.addEventListener('pointerup', (ev) => {
+    const btn = ev.target instanceof Element
+        ? ev.target.closest('button:disabled[data-disabled-reason], .btn.disabled[data-disabled-reason]') : null;
+    if (btn && btn.dataset.disabledReason) showToast(btn.dataset.disabledReason, 'info');
+}, true);
+
+function startPoll(fn, intervalMs) {
+    let inFlight = false;
+    return setInterval(async () => {
+        if (inFlight || document.hidden) return;
+        inFlight = true;
+        try {
+            await fn();
+        } catch (err) {
+            console.error('Poll failed:', err);
+        } finally {
+            inFlight = false;
+        }
+    }, intervalMs);
 }
 
 async function fetchSystemInfo() {
@@ -21869,7 +21971,7 @@ let driveMgmtAutoRefreshTimer = null;
 
 function startDriveMgmtAutoRefresh() {
     if (driveMgmtAutoRefreshTimer) return;
-    driveMgmtAutoRefreshTimer = setInterval(refreshDrives, 5000);
+    driveMgmtAutoRefreshTimer = startPoll(refreshDrives, 5000);
 }
 
 function stopDriveMgmtAutoRefresh() {
@@ -23607,11 +23709,15 @@ function refreshMobileStartButtonState() {
     const mode = document.getElementById("mobileDeviceMode")?.value || 'ios';
     const startBtn = document.getElementById("btnMobileStart");
     if (!startBtn) return;
+    delete startBtn.dataset.disabledReason; // set again below where a mode knows why
 
     if (mode === 'ios') {
         const udid = document.getElementById("mobileIosSelect")?.value;
         const dev = mobileIosDevices.find(d => d.udid === udid);
         startBtn.disabled = !dev || !dev.trusted;
+        // A tap on the greyed-out Start says what is missing.
+        if (!dev) startBtn.dataset.disabledReason = 'Connect an iPhone/iPad and select it above first.';
+        else if (!dev.trusted) startBtn.dataset.disabledReason = 'This device has not trusted the station yet - tap "Trust This Computer?" on the device (or use Pair), then Refresh.';
     } else if (mode === 'sim') {
         // SIM/UICC reading has no acquisition job at all (its own "Read
         // Card" button handles it) - the shared Start button is never
@@ -25787,9 +25893,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     fetchNetworkInterfaces();
 
-    setInterval(fetchSystemInfo, 2000);
-    setInterval(fetchProgress, 1000);
-    setInterval(fetchNetworkInterfaces, 15000);
+    startPoll(fetchSystemInfo, 2000);
+    startPoll(fetchProgress, 1000);
+    startPoll(fetchNetworkInterfaces, 15000);
+    // A tab coming back into view catches up at once rather than at its next tick.
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) { fetchProgress(); fetchSystemInfo(); }
+    });
     // Deliberately delayed a few seconds past every other startup fetch above rather
     // than fired immediately - this one hits an external git remote (git fetch), which
     // on a station with no internet access (a real, common deployment state for this

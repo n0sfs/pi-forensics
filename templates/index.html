@@ -216,6 +216,22 @@
         #reportsLoadedState .form-control[readonly] { user-select: text; -webkit-user-select: text; cursor: text; }
         #reportsLoadedState.report-locked .form-control[readonly] { border-style: dashed !important; }
         .btn-sm { min-height: 38px; font-size: 0.88rem; }
+        /* .btn-xs is used all over (~90 buttons) but was never defined -
+           Bootstrap has no such size, so those buttons got whatever .btn
+           gave them (2026-10-02). */
+        .btn-xs { padding: 0.15rem 0.45rem; font-size: 0.78rem; line-height: 1.2; }
+        /* Touchscreens - the kiosk: 44px targets, the usual minimum for a
+           finger (was 38px, and ~26px for .btn-xs). A mouse keeps the dense
+           layout. */
+        @media (pointer: coarse) {
+            .btn, .btn-sm, .btn-xs { min-height: 44px; min-width: 44px; }
+            .form-control, .form-select { min-height: 44px; }
+            .form-check-input { width: 1.35em; height: 1.35em; }
+        }
+        /* A disabled button that says WHY (data-disabled-reason) still receives the tap,
+           so the reason can be shown - Bootstrap sets pointer-events: none,
+           and a touchscreen has no hover for a tooltip anyway. */
+        .btn:disabled[data-disabled-reason], .btn.disabled[data-disabled-reason] { pointer-events: auto; cursor: not-allowed; }
         .form-check-label { color: var(--text-bright) !important; font-weight: 600; }
         .form-check-input { background-color: var(--bg-dark); border-color: #64748b; }
         .form-check-input:checked { background-color: var(--accent-blue); border-color: var(--accent-cyan); }
