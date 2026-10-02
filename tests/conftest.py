@@ -194,9 +194,16 @@ def login_user_session(client, username):
     real POST /login round trip - used by tests that only care about what
     happens once a session already exists (permission checks, backup/
     restore), not login itself (see tests/test_login_flow.py for that)."""
+    # The session is bound to the account's current password since 2026-10-02
+    # (core/auth.py session_still_valid), exactly as a real POST /login stamps it.
+    from core.auth import _password_fingerprint
+    raw = getattr(client, '_raw', client)   # a RemoteTestClient wraps the Flask client
+    with raw.application.test_request_context():
+        fingerprint = _password_fingerprint(username)
     with client.session_transaction() as sess:
         sess["username"] = username
         sess["last_activity"] = time.time()
+        sess["pw_fp"] = fingerprint or ""
 
 
 # --- Real-data fixtures kept off GitHub (2026-09-14) ---

@@ -353,10 +353,27 @@ else:
         try:
             with open(runtime_config_path, "r") as f:
                 runtime_cfg = json.load(f)
-        except Exception:
+            if not isinstance(runtime_cfg, dict):
+                raise ValueError("not a settings object")
+        except Exception as e:
+            # Keep the unreadable file for repair rather than silently writing
+            # a fresh one over every account and list it held (2026-10-02).
+            kept = f"{runtime_config_path}.unreadable-{time.strftime('%Y%m%d-%H%M%S')}"
+            os.replace(runtime_config_path, kept)
+            print(f"[!] The existing runtime_config.json could not be read ({e}). It was kept as {kept}; "
+                  f"a new one is being created. Restore a configuration backup afterwards if you have one.")
             runtime_cfg = {}
     runtime_cfg.setdefault("users", [])
-    if not any(u.get("username") == FORENSIC_USER for u in runtime_cfg["users"]):
+    if any(u.get("username") == FORENSIC_USER for u in runtime_cfg["users"]):
+        # Re-running the installer: the account already exists and is NOT
+        # changed here. Counts as seeded, so the password just typed is never
+        # written into the systemd unit as a fallback (2026-10-02 review - that
+        # copy was readable through `systemctl show`, and wasn't even the
+        # account's real password).
+        admin_seeded = True
+        print(f"[*] Admin account '{FORENSIC_USER}' already exists - its password was NOT changed. "
+              f"Change it from Settings > User Accounts if needed.")
+    else:
         runtime_cfg["users"].append({
             "username": FORENSIC_USER,
             "password_hash": hash_res.stdout.strip(),
@@ -368,9 +385,15 @@ else:
             "role": "admin",
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         })
-        with open(runtime_config_path, "w") as f:
+        # Atomic, created 0600: the running service may be reading this file
+        # right now (2026-10-02 review - it was a truncating rewrite).
+        tmp_path = runtime_config_path + ".installer-tmp"
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(runtime_cfg, f, indent=2)
-        os.chmod(runtime_config_path, 0o600)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, runtime_config_path)
         admin_seeded = True
         print(f"[+] Initial admin account '{FORENSIC_USER}' created.")
 
@@ -1248,11 +1271,14 @@ server {
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options SAMEORIGIN always;
-    add_header Referrer-Policy no-referrer always;
+    add_header Referrer-Policy same-origin always;
     add_header X-XSS-Protection "1; mode=block" always;
 
-    # Local forensic appliance: allow large evidence attachments / JSON reports
-    client_max_body_size 0;
+    # Request bodies: just above the largest per-endpoint limit the app enforces
+    # itself (core/config.py REQUEST_BODY_ENDPOINT_MAX_BYTES - a config restore,
+    # 256 MiB). It used to be 0 (unlimited): nginx buffers a body to disk before
+    # the app sees it, so one endless unauthenticated POST could fill the SD card.
+    client_max_body_size 260m;
 
     location / {
         proxy_pass http://127.0.0.1:5000;

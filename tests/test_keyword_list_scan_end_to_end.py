@@ -27,7 +27,7 @@ from werkzeug.security import generate_password_hash
 
 import core.config as config
 from routes.file_explorer import file_explorer_bp
-from tests.conftest import RemoteTestClient
+from tests.conftest import RemoteTestClient, login_user_session
 
 
 # Deliberately contains one hit for each list plus one built-in-category hit,
@@ -81,9 +81,7 @@ def client(app, runtime_config_file):
     cfg["keyword_lists"] = [dict(PLAIN_LIST), dict(REGEX_LIST)]
     config.save_runtime_config(cfg)
     c = RemoteTestClient(app.test_client())
-    with c.session_transaction() as sess:
-        sess["username"] = "admin_user"
-        sess["last_activity"] = time.time()
+    login_user_session(c, "admin_user")
     return c
 
 

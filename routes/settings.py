@@ -30,11 +30,12 @@ import tempfile
 import subprocess
 import threading
 import ipaddress
+import sys
 
 import base64
 
 import psutil
-from flask import Blueprint, jsonify, request, g, send_file, Response
+from flask import Blueprint, jsonify, request, g, send_file, Response, session
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -47,7 +48,7 @@ from core.auth import (
     find_user, find_group, get_user_groups, get_user_group_id,
     get_current_user_permissions, get_current_user_role,
     caller_reauth_ok, _normalize_permissions, _effective_client_ip,
-    caller_is_admin, RESERVED_USERNAMES,
+    caller_is_admin, RESERVED_USERNAMES, stamp_session_password,
 )
 from core.paths import safe_path, log_chain_of_custody, is_valid_block_device
 import core.config as config
@@ -56,7 +57,8 @@ from core.config import (
     TLS_CERT_PATH, TLS_KEY_PATH, MVT_BIN_DIR, MVT_IOS_BIN, MVT_ANDROID_BIN,
     VOL3_PIP_BIN, MQUIRE_BIN,
     EVIDENCE_ROOT, ALLOWED_HASH_ALGOS,
-    load_runtime_config, save_runtime_config, get_active_admin_pass,
+    load_runtime_config, save_runtime_config, legacy_password_ok,
+    serializes_config_writes, config_write_lock, get_last_logins, CONFIG_RESTORE_MAX_BYTES,
     _get_or_create_mount_key, _encrypt_secret, _decrypt_secret,
     get_app_version, BUNDLED_KEYWORD_LISTS_DIR,
 )
@@ -85,6 +87,15 @@ last_pernic_check = {}
 network_config_lock = threading.Lock()
 pending_network_revert = None  # dict or None, see apply_network_config()
 REVERT_WINDOW_SECONDS = 60
+# The pending revert is also kept on disk (2026-10-02 review): it lived only
+# in this process, so a service restart, crash or reboot inside the window -
+# the natural reaction to losing a station after a bad static IP - made the
+# untested settings permanent. See resume_pending_network_revert().
+NETWORK_PENDING_REVERT_FILE = os.path.join(INSTALL_DIR, ".network_pending_revert.json")
+# A revert resumed after a restart waits at least this long; after a reboot it
+# waits a little for NetworkManager to come up, then reverts.
+REVERT_RESUME_MIN_SECONDS = 15
+REVERT_AFTER_REBOOT_DELAY_SECONDS = 20
 
 # --- Persistence Helpers ---
 def load_mount_history():
@@ -267,6 +278,11 @@ def get_mount_history():
 
 @settings_bp.route('/api/list_server_shares', methods=['POST'])
 @requires_auth
+# 'settings' like its sibling mount_network (2026-10-02 review): ungated, any
+# account - even a group with no permissions - could make the station probe
+# any reachable host with supplied credentials and read back the raw
+# NT_STATUS replies, an unthrottled credential oracle.
+@requires_permission('settings')
 def list_server_shares():
     req = request.get_json() or {}
     protocol = req.get('protocol', 'smb').lower()
@@ -274,6 +290,12 @@ def list_server_shares():
 
     if not host:
         return jsonify({"success": False, "error": "Server IP required."}), 400
+    # The same argument hygiene _do_network_mount() applies: a leading '-' is
+    # read as a flag by showmount/smbclient, and no field here has a
+    # legitimate control character or space.
+    for value, field_name in ((host, "Server"), (req.get('user', '') or '', "Username")):
+        if value.startswith('-') or any(ord(c) < 33 or ord(c) == 127 for c in value):
+            return jsonify({"success": False, "error": f"{field_name} cannot start with '-' or contain spaces/control characters."}), 400
 
     shares = []
     try:
@@ -296,13 +318,28 @@ def list_server_shares():
         else:
             user = req.get('user', '')
             pass_val = req.get('pass', '')
+            if any(ord(c) < 32 or ord(c) == 127 for c in pass_val):
+                return jsonify({"success": False, "error": "Password cannot contain control characters."}), 400
 
-            if user:
-                cmd = ['smbclient', '-L', host, '-I', host, '-U', f"{user}%{pass_val}", '-g']
-            else:
-                cmd = ['smbclient', '-L', host, '-I', host, '-N', '-g']
-
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+            cred_path = None
+            try:
+                if user:
+                    # A 0600 authentication file, not -U user%password: the
+                    # password used to sit on the command line, readable by
+                    # any local account through ps or /proc (2026-10-02).
+                    fd, cred_path = tempfile.mkstemp(prefix='.smbls_')  # created 0600
+                    with os.fdopen(fd, 'w') as f:
+                        f.write(f"username = {user}\npassword = {pass_val}\n")
+                    cmd = ['smbclient', '-L', host, '-I', host, '-A', cred_path, '-g']
+                else:
+                    cmd = ['smbclient', '-L', host, '-I', host, '-N', '-g']
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+            finally:
+                if cred_path:
+                    try:
+                        os.remove(cred_path)
+                    except OSError:
+                        pass
 
             if res.returncode != 0 and not user:
                 cmd_guest = ['smbclient', '-L', host, '-I', host, '-U', 'guest%', '-g']
@@ -483,6 +520,7 @@ def _do_network_mount(protocol, host, share_path, mount_point, user, password, s
         return False, str(e)
 
 
+@serializes_config_writes
 def _save_auto_mount_share(protocol, host, share_path, mount_point, user, password, ssh_key):
     """Persists a share for automatic reconnection on every future app
     startup (see attempt_startup_auto_mounts()). Only ever called after a
@@ -644,6 +682,7 @@ def _keyword_list_from_payload(req):
 
 @settings_bp.route('/api/settings/keyword_lists', methods=['GET', 'POST'])
 @requires_auth
+@serializes_config_writes
 def keyword_lists():
     cfg = load_runtime_config()
     if request.method == 'GET':
@@ -740,6 +779,7 @@ def bundled_keyword_lists():
 @settings_bp.route('/api/settings/keyword_lists/bundled/<path:file_name>', methods=['POST'])
 @requires_auth
 @requires_permission('settings')
+@serializes_config_writes
 def import_bundled_keyword_list(file_name):
     """Copies one bundled list into this station's own keyword lists.
 
@@ -817,6 +857,7 @@ def import_bundled_keyword_list(file_name):
 @settings_bp.route('/api/settings/keyword_lists/<list_id>', methods=['PUT', 'DELETE'])
 @requires_auth
 @requires_permission('settings')
+@serializes_config_writes
 def keyword_list_detail(list_id):
     cfg = load_runtime_config()
     lists = cfg.get('keyword_lists', [])
@@ -891,6 +932,7 @@ def _parse_hash_list_text(text, algorithm):
 
 @settings_bp.route('/api/settings/hash_lists', methods=['GET', 'POST'])
 @requires_auth
+@serializes_config_writes
 def hash_lists():
     cfg = load_runtime_config()
     if request.method == 'GET':
@@ -942,6 +984,7 @@ def hash_lists():
 @settings_bp.route('/api/settings/hash_lists/<list_id>', methods=['PUT', 'DELETE'])
 @requires_auth
 @requires_permission('settings')
+@serializes_config_writes
 def hash_list_detail(list_id):
     cfg = load_runtime_config()
     lists = cfg.get('hash_lists', [])
@@ -1011,6 +1054,7 @@ MALWAREBAZAAR_FETCH_TIMEOUT_SECONDS = 30
 
 @settings_bp.route('/api/settings/malwarebazaar_key', methods=['GET', 'POST'])
 @requires_auth
+@serializes_config_writes
 def malwarebazaar_key():
     cfg = load_runtime_config()
     if request.method == 'GET':
@@ -1072,20 +1116,25 @@ def refresh_malwarebazaar_hash_list():
     with open(config.hash_list_file_path(MALWAREBAZAAR_LIST_ID), 'w') as f:
         f.write('\n'.join(hashes) + '\n')
 
-    lists = cfg.setdefault('hash_lists', [])
-    idx = next((i for i, r in enumerate(lists) if r.get('id') == MALWAREBAZAAR_LIST_ID), None)
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    record = {"id": MALWAREBAZAAR_LIST_ID, "name": "MalwareBazaar Recent Hashes", "algorithm": "sha256",
-              "label": "known_bad", "source": "malwarebazaar_recent", "hash_count": len(hashes),
-              "updated_at": now, "created_at": lists[idx]['created_at'] if idx is not None else now}
-    if idx is not None:
-        lists[idx] = record
-    else:
-        if len(lists) >= HASH_LIST_MAX_LISTS:
-            return jsonify({"success": False, "error": f"Station already has the maximum of {HASH_LIST_MAX_LISTS} hash sets - delete one first."}), 400
-        lists.append(record)
-    cfg['hash_lists'] = lists
-    save_runtime_config(cfg)
+    # Fresh copy under the lock - the one loaded above for the Auth-Key is up
+    # to 30 s old by now (2026-10-02 review: saving it undid any settings
+    # change made during the fetch).
+    with config_write_lock:
+        cfg = load_runtime_config()
+        lists = cfg.setdefault('hash_lists', [])
+        idx = next((i for i, r in enumerate(lists) if r.get('id') == MALWAREBAZAAR_LIST_ID), None)
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        record = {"id": MALWAREBAZAAR_LIST_ID, "name": "MalwareBazaar Recent Hashes", "algorithm": "sha256",
+                  "label": "known_bad", "source": "malwarebazaar_recent", "hash_count": len(hashes),
+                  "updated_at": now, "created_at": lists[idx]['created_at'] if idx is not None else now}
+        if idx is not None:
+            lists[idx] = record
+        else:
+            if len(lists) >= HASH_LIST_MAX_LISTS:
+                return jsonify({"success": False, "error": f"Station already has the maximum of {HASH_LIST_MAX_LISTS} hash sets - delete one first."}), 400
+            lists.append(record)
+        cfg['hash_lists'] = lists
+        save_runtime_config(cfg)
     log_chain_of_custody("hash_list_refreshed_from_malwarebazaar", {"hash_count": len(hashes)})
     return jsonify({"success": True, "list": record})
 
@@ -1126,6 +1175,7 @@ def _parse_url_list_text(text):
 
 @settings_bp.route('/api/settings/url_lists', methods=['GET', 'POST'])
 @requires_auth
+@serializes_config_writes
 def url_lists():
     cfg = load_runtime_config()
     if request.method == 'GET':
@@ -1170,6 +1220,7 @@ def url_lists():
 @settings_bp.route('/api/settings/url_lists/<list_id>', methods=['PUT', 'DELETE'])
 @requires_auth
 @requires_permission('settings')
+@serializes_config_writes
 def url_list_detail(list_id):
     cfg = load_runtime_config()
     lists = cfg.get('url_lists', [])
@@ -1264,20 +1315,21 @@ def refresh_urlhaus_url_list():
     with open(config.url_list_file_path(URLHAUS_LIST_ID), 'w', encoding='utf-8') as f:
         f.write('\n'.join(urls) + '\n')
 
-    cfg = load_runtime_config()
-    lists = cfg.setdefault('url_lists', [])
-    idx = next((i for i, r in enumerate(lists) if r.get('id') == URLHAUS_LIST_ID), None)
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    record = {"id": URLHAUS_LIST_ID, "name": "URLhaus Recent Malicious URLs", "source": "urlhaus_recent",
-              "url_count": len(urls), "updated_at": now, "created_at": lists[idx]['created_at'] if idx is not None else now}
-    if idx is not None:
-        lists[idx] = record
-    else:
-        if len(lists) >= URL_LIST_MAX_LISTS:
-            return jsonify({"success": False, "error": f"Station already has the maximum of {URL_LIST_MAX_LISTS} URL lists - delete one first."}), 400
-        lists.append(record)
-    cfg['url_lists'] = lists
-    save_runtime_config(cfg)
+    with config_write_lock:
+        cfg = load_runtime_config()
+        lists = cfg.setdefault('url_lists', [])
+        idx = next((i for i, r in enumerate(lists) if r.get('id') == URLHAUS_LIST_ID), None)
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        record = {"id": URLHAUS_LIST_ID, "name": "URLhaus Recent Malicious URLs", "source": "urlhaus_recent",
+                  "url_count": len(urls), "updated_at": now, "created_at": lists[idx]['created_at'] if idx is not None else now}
+        if idx is not None:
+            lists[idx] = record
+        else:
+            if len(lists) >= URL_LIST_MAX_LISTS:
+                return jsonify({"success": False, "error": f"Station already has the maximum of {URL_LIST_MAX_LISTS} URL lists - delete one first."}), 400
+            lists.append(record)
+        cfg['url_lists'] = lists
+        save_runtime_config(cfg)
     log_chain_of_custody("url_list_refreshed_from_urlhaus", {"url_count": len(urls)})
     return jsonify({"success": True, "list": record})
 
@@ -1323,6 +1375,7 @@ def _yara_ruleset_from_payload(req):
 
 @settings_bp.route('/api/settings/yara_rules', methods=['GET', 'POST'])
 @requires_auth
+@serializes_config_writes
 def yara_rules():
     cfg = load_runtime_config()
     if request.method == 'GET':
@@ -1362,6 +1415,7 @@ def yara_rules():
 @settings_bp.route('/api/settings/yara_rules/<ruleset_id>', methods=['PUT', 'DELETE'])
 @requires_auth
 @requires_permission('settings')
+@serializes_config_writes
 def yara_rule_detail(ruleset_id):
     cfg = load_runtime_config()
     rulesets = cfg.get('yara_rulesets', [])
@@ -1408,6 +1462,7 @@ def list_auto_mount_shares():
 @settings_bp.route('/api/network/auto_mounts/<entry_id>', methods=['DELETE'])
 @requires_auth
 @requires_permission('settings')
+@serializes_config_writes
 def remove_auto_mount_share(entry_id):
     cfg = load_runtime_config()
     shares = cfg.get('auto_mount_shares', [])
@@ -1715,6 +1770,7 @@ def install_tool():
 
 @settings_bp.route('/api/system/change_password', methods=['POST'])
 @requires_auth
+@serializes_config_writes
 def change_password():
     req = request.get_json() or {}
     curr_pass = req.get('current_password', '')
@@ -1738,14 +1794,28 @@ def change_password():
             return jsonify({"success": False, "error": "Current password is incorrect."}), 400
         user['password_hash'] = generate_password_hash(new_pass)
         save_runtime_config(cfg)
-        return jsonify({"success": True, "message": "Password changed successfully. This takes effect immediately."})
+        _restamp_own_session(username)
+        return jsonify({"success": True, "message": "Password changed successfully. This takes effect immediately - "
+                                                    "every other session signed in as you has been signed out."})
 
-    # Legacy single-shared-account path - unchanged.
-    if not hmac.compare_digest(curr_pass, get_active_admin_pass()):
+    # Legacy single-shared-account path. Stored as a hash since 2026-10-02 -
+    # it used to be written to runtime_config.json (and so to every config
+    # backup) in plaintext.
+    if not legacy_password_ok(curr_pass, cfg):
         return jsonify({"success": False, "error": "Current password is incorrect."}), 400
-    cfg['pass'] = new_pass
+    cfg['pass_hash'] = generate_password_hash(new_pass)
+    cfg.pop('pass', None)
     save_runtime_config(cfg)
+    _restamp_own_session(ADMIN_USER)
     return jsonify({"success": True, "message": "Password changed successfully. This takes effect immediately."})
+
+
+def _restamp_own_session(username):
+    """After the caller changes their own password, keep the session they're
+    using signed in - every OTHER session for the account ends (see
+    core/auth.py session_still_valid)."""
+    if session.get('username') == username:
+        stamp_session_password(username)
 
 @settings_bp.route('/api/users/list', methods=['GET'])
 @requires_auth
@@ -1753,6 +1823,9 @@ def change_password():
 def users_list():
     users = load_runtime_config().get('users') or []
     groups_by_id = {grp['id']: grp for grp in get_user_groups()}
+    # Last-login times have their own file since 2026-10-02; an older value
+    # still stored on the user record is the fallback.
+    last_logins = get_last_logins()
     out = []
     for u in users:
         gid = get_user_group_id(u)
@@ -1762,13 +1835,14 @@ def users_list():
             "group_id": gid,
             "group_name": grp['name'] if grp else gid,
             "created_at": u.get('created_at'),
-            "last_login": u.get('last_login'),
+            "last_login": last_logins.get(u.get('username')) or u.get('last_login'),
         })
     return jsonify({"success": True, "users": out})
 
 @settings_bp.route('/api/users/create', methods=['POST'])
 @requires_auth
 @requires_permission('manage_users')
+@serializes_config_writes
 def users_create():
     req = request.get_json() or {}
     username = (req.get('username') or '').strip()
@@ -1796,6 +1870,11 @@ def users_create():
                                                    "it replaces the shared installer login."}), 400
     if find_user(username, users):
         return jsonify({"success": False, "error": f"A user named '{username}' already exists."}), 409
+    if not users:
+        # The first real account ends the shared-login mode for good, so its
+        # password must not linger in the file or in backups.
+        cfg.pop('pass', None)
+        cfg.pop('pass_hash', None)
 
     users.append({
         "username": username,
@@ -1814,6 +1893,7 @@ def users_create():
 @settings_bp.route('/api/users/delete', methods=['POST'])
 @requires_auth
 @requires_permission('manage_users')
+@serializes_config_writes
 def users_delete():
     req = request.get_json() or {}
     username = (req.get('username') or '').strip()
@@ -1835,7 +1915,7 @@ def users_delete():
     if get_user_group_id(target) == 'admin' and admin_count <= 1:
         return jsonify({"success": False, "error": "Cannot delete the last remaining Admin-group account."}), 409
 
-    cfg['users'] = [u for u in users if not hmac.compare_digest(u.get('username', ''), username)]
+    cfg['users'] = [u for u in users if u is not target]
     save_runtime_config(cfg)
     log_chain_of_custody("user_delete", {"username": username})
     return jsonify({"success": True, "message": f"User '{username}' deleted."})
@@ -1843,6 +1923,7 @@ def users_delete():
 @settings_bp.route('/api/users/reset_password', methods=['POST'])
 @requires_auth
 @requires_permission('manage_users')
+@serializes_config_writes
 def users_reset_password():
     # Deliberately does NOT require the caller's own password (unlike
     # users_delete(), which still does) - the manage_users permission check
@@ -1868,6 +1949,9 @@ def users_reset_password():
 
     target['password_hash'] = generate_password_hash(new_password)
     save_runtime_config(cfg)
+    # Every session the account had is now invalid (core/auth.py
+    # session_still_valid) - except the caller's own, if they reset themselves.
+    _restamp_own_session(target.get('username'))
     log_chain_of_custody("user_reset_password", {"username": username})
     return jsonify({"success": True, "message": f"Password for '{username}' reset."})
 
@@ -1885,6 +1969,7 @@ def _permissions_caller_cannot_grant(requested):
 @settings_bp.route('/api/user_groups', methods=['GET', 'POST'])
 @requires_auth
 @requires_permission('manage_users')
+@serializes_config_writes
 def user_groups_collection():
     if request.method == 'GET':
         return jsonify({
@@ -1934,6 +2019,7 @@ def user_groups_collection():
 @settings_bp.route('/api/user_groups/<group_id>', methods=['PUT', 'DELETE'])
 @requires_auth
 @requires_permission('manage_users')
+@serializes_config_writes
 def user_groups_detail(group_id):
     if group_id == 'admin':
         return jsonify({"success": False, "error": "The Admin group always has full access and can't be modified or deleted."}), 400
@@ -2313,6 +2399,11 @@ def config_backup():
         return jsonify({"success": False, "error": "Choose a backup passphrase of at least 8 characters - you'll need it again to restore this file."}), 400
 
     runtime_config = load_runtime_config()
+    if runtime_config.get('users'):
+        # A leftover shared-login password (plaintext before 2026-10-02) has
+        # no use once real accounts exist - never carry it into a backup.
+        runtime_config.pop('pass', None)
+        runtime_config.pop('pass_hash', None)
     manifest = {
         "version": 1,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2363,6 +2454,12 @@ def config_backup():
     key = _derive_backup_key(passphrase, salt)
     token = Fernet(key).encrypt(json.dumps(manifest).encode('utf-8'))
     body = _BACKUP_MAGIC + salt + token
+    # Never hand out a backup that this station would then refuse to restore
+    # (app.py's request-size limit for config_restore).
+    if len(body) > CONFIG_RESTORE_MAX_BYTES:
+        return jsonify({"success": False, "error": f"This backup would be {len(body) // (1024 * 1024)} MB - larger than the "
+                        f"{CONFIG_RESTORE_MAX_BYTES // (1024 * 1024)} MB a restore accepts (large hash/URL lists are the usual "
+                        f"cause). Delete or trim a list and try again."}), 413
 
     log_chain_of_custody("config_backup_exported", {})
     filename = f"pi-forensics-backup-{time.strftime('%Y%m%d-%H%M%S')}.pfback"
@@ -2371,6 +2468,7 @@ def config_backup():
 @settings_bp.route('/api/settings/config_restore', methods=['POST'])
 @requires_auth
 @requires_permission('manage_users')
+@serializes_config_writes
 def config_restore():
     backup_file = request.files.get('backup_file')
     passphrase = request.form.get('passphrase') or ''
@@ -2465,6 +2563,22 @@ def config_restore():
 # routes/reporting.py, even though it's reached from the Settings tab -
 # see the dated CLAUDE.md entry for this refactor.
 
+def _station_busy_refusal(action):
+    """409 while a job is running or a network change is waiting for
+    confirmation (2026-10-02 review): restarting the service mid-acquisition
+    killed the tool with it, and a restart inside the network revert window
+    made an untested static IP permanent."""
+    if snapshot_job()["active"]:
+        return jsonify({"success": False, "error": f"An acquisition/recovery job is currently running - stop it or wait "
+                                                   f"for it to finish before {action}."}), 409
+    with network_config_lock:
+        pending = pending_network_revert
+        if pending and not pending.get("confirmed"):
+            return jsonify({"success": False, "error": f"A network change to {pending['device']} is waiting for "
+                                                       f"confirmation - confirm it or let it revert before {action}."}), 409
+    return None
+
+
 @settings_bp.route('/api/system/power', methods=['POST'])
 @requires_auth
 @requires_permission('settings')
@@ -2479,8 +2593,9 @@ def system_power_control():
     # unrecoverable interruption of whatever's using the one shared job
     # slot - matches this app's own "forensic integrity first" posture to
     # refuse outright rather than merely warn.
-    if snapshot_job()["active"]:
-        return jsonify({"success": False, "error": "An acquisition/recovery job is currently running - stop it or wait for it to finish before rebooting or powering off."}), 409
+    busy = _station_busy_refusal("rebooting or powering off")
+    if busy:
+        return busy
 
     if action == 'reboot':
         subprocess.Popen(['sudo', '/sbin/reboot'])
@@ -2495,6 +2610,10 @@ def system_power_control():
 @requires_auth
 @requires_permission('settings')
 def restart_forensic_service():
+    busy = _station_busy_refusal("restarting the service")
+    if busy:
+        return busy
+
     def delayed_restart():
         time.sleep(1)
         subprocess.run(['sudo', '/bin/systemctl', 'restart', 'pi-forensics.service'])
@@ -2573,6 +2692,7 @@ def get_kiosk_mode():
 @settings_bp.route('/api/system/kiosk_mode', methods=['POST'])
 @requires_auth
 @requires_permission('settings')
+@serializes_config_writes
 def set_kiosk_mode():
     req = request.get_json() or {}
     enabled = bool(req.get('enabled', True))
@@ -2676,20 +2796,74 @@ def check_for_update():
 @requires_auth
 @requires_permission('settings')
 def git_update_application():
-    try:
-        res = subprocess.run(['git', 'pull', 'origin', 'main'], cwd=INSTALL_DIR, capture_output=True, text=True, timeout=60)
-        output = res.stdout.strip() or res.stderr.strip()
+    """Fast-forward to origin/main, prove the new code still starts, then
+    restart (2026-10-02 review). A plain `git pull` followed by an
+    unconditional restart could merge diverged history, leave conflict
+    markers in tracked .py files, or ship code that can't import - and with
+    Restart=always the service then crash-looped while the page had already
+    said "successful". Now:
+      - refused while a job runs or a network change awaits confirmation;
+      - fast-forward only: a diverged checkout is refused, not merged;
+      - an update that changes requirements.txt or install.py is refused - it
+        needs the installer, which this button never runs;
+      - the updated code is imported in a child process first (with the
+        app's startup side effects off); if that fails the checkout is put
+        back on the previous commit and nothing restarts."""
+    busy = _station_busy_refusal("updating the app")
+    if busy:
+        return busy
 
-        if res.returncode == 0:
-            def delayed_restart():
-                time.sleep(2)
-                subprocess.run(['sudo', '/bin/systemctl', 'restart', 'pi-forensics.service'])
-            threading.Thread(target=delayed_restart, daemon=True).start()
-            return jsonify({"success": True, "message": f"Git update successful:\n{output}\n\nRestarting service..."})
-        else:
-            return jsonify({"success": False, "error": f"git pull failed: {output}"}), 500
+    def git(*args, timeout=60):
+        return subprocess.run(['git', *args], cwd=INSTALL_DIR, capture_output=True, text=True, timeout=timeout)
+
+    def out_of(res):
+        return (res.stdout.strip() or res.stderr.strip())[-2000:]
+
+    try:
+        head = git('rev-parse', 'HEAD')
+        if head.returncode != 0:
+            return jsonify({"success": False, "error": f"Could not read the installed version: {out_of(head)}"}), 500
+        old_head = head.stdout.strip()
+        fetched = git('fetch', 'origin', 'main', timeout=120)
+        if fetched.returncode != 0:
+            return jsonify({"success": False, "error": f"git fetch failed - nothing was changed: {out_of(fetched)}"}), 502
+        new_head = git('rev-parse', 'FETCH_HEAD').stdout.strip()
+        if not new_head or new_head == old_head:
+            return jsonify({"success": True, "message": "Already up to date - nothing to install.", "restarting": False})
+        if git('merge-base', '--is-ancestor', 'HEAD', 'FETCH_HEAD').returncode != 0:
+            return jsonify({"success": False, "error": "This station's checkout has diverged from origin/main, so the update "
+                                                       "can't be applied as a fast-forward. Nothing was changed."}), 409
+        changed = git('diff', '--name-only', 'HEAD', 'FETCH_HEAD').stdout.split()
+        needs_installer = sorted({f for f in changed if f in ('requirements.txt', 'install.py')})
+        if needs_installer:
+            return jsonify({"success": False, "error": f"This update changes {', '.join(needs_installer)}, so it has to be "
+                                                       f"installed by re-running the installer on the station "
+                                                       f"(sudo python3 install.py) - not by this button. Nothing was changed."}), 409
+        merged = git('merge', '--ff-only', 'FETCH_HEAD')
+        if merged.returncode != 0:
+            return jsonify({"success": False, "error": f"git merge --ff-only failed - nothing was changed: {out_of(merged)}"}), 500
+        smoke = subprocess.run([sys.executable, '-c', 'import app'], cwd=INSTALL_DIR,
+                               env={**os.environ, 'PIF_IMPORT_CHECK': '1'},
+                               capture_output=True, text=True, timeout=180)
+        if smoke.returncode != 0:
+            rolled_back = git('reset', '--keep', old_head)
+            log_chain_of_custody("app_update_rolled_back", {"from": old_head, "to": new_head,
+                                                            "rolled_back": rolled_back.returncode == 0})
+            note = ("The station is back on the previous version." if rolled_back.returncode == 0
+                    else f"Rolling back ALSO failed - fix it from a shell: git reset --keep {old_head}")
+            return jsonify({"success": False, "error": f"The update was not applied: the new code failed to start. {note}\n\n"
+                                                       f"{(smoke.stderr or smoke.stdout).strip()[-1500:]}"}), 500
+        summary = git('log', '--oneline', f'{old_head}..{new_head}').stdout.strip()
+        log_chain_of_custody("app_updated", {"from": old_head, "to": new_head})
+
+        def delayed_restart():
+            time.sleep(2)
+            subprocess.run(['sudo', '/bin/systemctl', 'restart', 'pi-forensics.service'])
+        threading.Thread(target=delayed_restart, daemon=True).start()
+        return jsonify({"success": True, "restarting": True,
+                        "message": f"Updated {old_head[:7]} -> {new_head[:7]}:\n{summary}\n\nRestarting service..."})
     except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "git pull timed out."}), 500
+        return jsonify({"success": False, "error": "The update timed out (no network access?)."}), 504
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -2697,6 +2871,10 @@ def git_update_application():
 @requires_auth
 @requires_permission('settings')
 def update_operating_system():
+    busy = _station_busy_refusal("updating the operating system")
+    if busy:
+        return busy
+
     def run_update():
         try:
             subprocess.run(['sudo', '/usr/bin/apt-get', 'update'], capture_output=True, timeout=300)
@@ -2850,7 +3028,10 @@ def _nmcli_resolve_connection(device):
 
 def _nmcli_get_ipv4(conn_name):
     rc, out, _ = _nmcli_terse(['-t', '-f', 'ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns', 'connection', 'show', conn_name])
-    result = {"method": "auto", "address": "", "prefix": "", "gateway": "", "dns": []}
+    # read_ok: a failed read must not look like DHCP (2026-10-02 review) - the
+    # apply route used it as the revert snapshot, so a static-IP station whose
+    # read failed would have been "reverted" onto DHCP.
+    result = {"method": "auto", "address": "", "prefix": "", "gateway": "", "dns": [], "read_ok": rc == 0}
     if rc != 0:
         return result
     for line in out.strip().splitlines():
@@ -2891,6 +3072,130 @@ def _apply_network_ipv4(conn_name, method, address=None, prefix=None, gateway=No
     res_modify = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
     res_up = subprocess.run(['sudo', 'nmcli', 'connection', 'up', conn_name], capture_output=True, text=True, timeout=30)
     return res_modify, res_up
+
+def _current_boot_id():
+    try:
+        with open('/proc/sys/kernel/random/boot_id') as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _persist_pending_revert(state):
+    """Write (or, for None, remove) the pending-revert record. 0600 and atomic;
+    a failure is reported to the caller, since a revert nobody can resume is
+    exactly what this file exists to prevent."""
+    if state is None:
+        try:
+            os.remove(NETWORK_PENDING_REVERT_FILE)
+        except FileNotFoundError:
+            pass
+        return
+    record = {k: state[k] for k in ("token", "device", "connection", "snapshot", "revert_at", "confirmed")}
+    record["boot_id"] = _current_boot_id()
+    fd, tmp_path = tempfile.mkstemp(prefix='.network_revert_', dir=os.path.dirname(NETWORK_PENDING_REVERT_FILE) or '.')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(record, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, NETWORK_PENDING_REVERT_FILE)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _run_network_revert(token, requester_ip, requester_user, reason):
+    """Restore the snapshot for `token` if it is still pending and unconfirmed,
+    and record what really happened (2026-10-02 review: the result was
+    discarded and "network_config_reverted" logged regardless). The on-disk
+    record is removed only once the revert has been attempted, so a crash in
+    between retries it at the next start."""
+    global pending_network_revert
+    with network_config_lock:
+        current = pending_network_revert
+        if not current or current["token"] != token:
+            return
+        if current["confirmed"]:
+            pending_network_revert = None
+            try:
+                _persist_pending_revert(None)
+            except OSError:
+                pass
+            return
+        snap, conn_name, device = current["snapshot"], current["connection"], current["device"]
+        pending_network_revert = None
+    try:
+        res_modify, res_up = _apply_network_ipv4(conn_name, snap["method"], snap["address"], snap["prefix"],
+                                                 snap["gateway"], snap["dns"])
+        ok = res_modify.returncode == 0 and res_up.returncode == 0
+        error_text = None if ok else ((res_modify.stderr or res_up.stderr or '').strip()
+                                      or "nmcli reported a failure with no error output.")
+    except Exception as e:  # a timeout or a missing nmcli - say so, never fail silently
+        ok, error_text = False, str(e)
+    try:
+        _persist_pending_revert(None)
+    except OSError:
+        pass
+    details = {"device": device, "connection": conn_name, "reason": reason}
+    if ok:
+        log_chain_of_custody("network_config_reverted", details, source_ip=requester_ip, user=requester_user)
+    else:
+        log_chain_of_custody("network_config_revert_failed", {**details, "error": error_text},
+                             source_ip=requester_ip, user=requester_user)
+
+
+def resume_pending_network_revert():
+    """Startup half of the network safety net (called once from app.py). A
+    record left on disk means a change was applied and never confirmed before
+    the service stopped. Same boot: put the pending state back (the page's
+    banner and Confirm keep working) and re-arm the remaining time. A new boot:
+    the station has no real-time clock to trust across a power cycle, and an
+    unconfirmed change after a reboot is exactly the lost-station case - revert
+    it shortly after NetworkManager is up."""
+    global pending_network_revert
+    try:
+        with open(NETWORK_PENDING_REVERT_FILE) as f:
+            record = json.load(f)
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:
+        log_chain_of_custody("network_pending_revert_unreadable", {"error": str(e)}, source_ip=None, user="system-startup")
+        return
+    try:
+        token = str(record["token"])
+        state = {"token": token, "device": str(record["device"]), "connection": str(record["connection"]),
+                 "snapshot": dict(record["snapshot"]), "revert_at": float(record["revert_at"]),
+                 "confirmed": bool(record.get("confirmed"))}
+    except (KeyError, TypeError, ValueError) as e:
+        log_chain_of_custody("network_pending_revert_unreadable", {"error": f"malformed record: {e}"},
+                             source_ip=None, user="system-startup")
+        return
+    if state["confirmed"]:
+        try:
+            _persist_pending_revert(None)
+        except OSError:
+            pass
+        return
+    same_boot = bool(record.get("boot_id")) and record.get("boot_id") == _current_boot_id()
+    delay = (max(state["revert_at"] - time.time(), REVERT_RESUME_MIN_SECONDS) if same_boot
+             else REVERT_AFTER_REBOOT_DELAY_SECONDS)
+    state["revert_at"] = time.time() + delay
+    with network_config_lock:
+        pending_network_revert = state
+    log_chain_of_custody("network_pending_revert_resumed", {"device": state["device"], "same_boot": same_boot,
+                                                            "revert_in_seconds": round(delay)},
+                         source_ip=None, user="system-startup")
+
+    def later():
+        time.sleep(delay)
+        _run_network_revert(token, None, "system-startup",
+                            "unconfirmed before a restart" if same_boot else "unconfirmed before a reboot")
+    threading.Thread(target=later, daemon=True).start()
+
 
 @settings_bp.route('/api/network/config', methods=['GET'])
 @requires_auth
@@ -2952,14 +3257,32 @@ def apply_network_config():
         return jsonify({"success": False, "error": f"No connection profile found for {device}."}), 404
 
     snapshot = _nmcli_get_ipv4(conn_name)
+    if not snapshot.pop("read_ok", False):
+        return jsonify({"success": False, "error": f"Couldn't read {device}'s current settings, so there would be "
+                                                   f"nothing safe to revert to. Nothing was changed."}), 503
     token = uuid.uuid4().hex
     revert_at = time.time() + REVERT_WINDOW_SECONDS
 
     with network_config_lock:
-        pending_network_revert = {
+        # One unconfirmed change at a time (2026-10-02 review): a second apply
+        # replaced the first's pending state, so the first device was never
+        # reverted - and on the same device the "snapshot" became the first
+        # apply's own untested settings.
+        if pending_network_revert and not pending_network_revert.get("confirmed"):
+            left = max(int(pending_network_revert["revert_at"] - time.time()), 0)
+            return jsonify({"success": False, "error": f"A change to {pending_network_revert['device']} is still waiting "
+                                                       f"for confirmation ({left}s left). Confirm it or let it revert "
+                                                       f"first."}), 409
+        state = {
             "token": token, "device": device, "connection": conn_name,
             "snapshot": snapshot, "revert_at": revert_at, "confirmed": False,
         }
+        try:
+            _persist_pending_revert(state)
+        except OSError as e:
+            return jsonify({"success": False, "error": f"Couldn't record the automatic revert ({e}), so the change was "
+                                                       f"not applied."}), 500
+        pending_network_revert = state
 
     log_chain_of_custody("network_config_changed", {
         "device": device, "connection": conn_name, "method": method,
@@ -2973,6 +3296,17 @@ def apply_network_config():
     requester_user = getattr(g, 'forensic_user', None)
 
     def delayed_apply():
+        try:
+            _delayed_apply_body()
+        except Exception as e:  # nmcli timeout etc. - the revert timer still runs
+            with network_config_lock:
+                if pending_network_revert and pending_network_revert["token"] == token:
+                    pending_network_revert["apply_error"] = str(e)
+            log_chain_of_custody("network_config_apply_failed", {"device": device, "connection": conn_name,
+                                                                 "error": str(e)},
+                                 source_ip=requester_ip, user=requester_user)
+
+    def _delayed_apply_body():
         # Return codes were previously discarded entirely (found in a
         # review pass) - if nmcli modify/up failed outright (bad gateway,
         # busy interface, etc.), the examiner saw only "Applying new
@@ -2996,22 +3330,10 @@ def apply_network_config():
     threading.Thread(target=delayed_apply, daemon=True).start()
 
     def delayed_revert():
-        global pending_network_revert
         time.sleep(max(revert_at - time.time(), 0))
-        with network_config_lock:
-            current = pending_network_revert
-            if not current or current["token"] != token:
-                return
-            if current["confirmed"]:
-                # Confirmed - no revert needed, but still clear the pending
-                # state now that its window has passed, so GET /api/network/config
-                # stops reporting a stale "confirmed: true" entry forever.
-                pending_network_revert = None
-                return
-            snap = current["snapshot"]
-            pending_network_revert = None
-        _apply_network_ipv4(conn_name, snap["method"], snap["address"], snap["prefix"], snap["gateway"], snap["dns"])
-        log_chain_of_custody("network_config_reverted", {"device": device, "connection": conn_name}, source_ip=requester_ip, user=requester_user)
+        # Confirmed -> just clears the pending state; otherwise reverts and
+        # logs the real outcome.
+        _run_network_revert(token, requester_ip, requester_user, "not confirmed in time")
     threading.Thread(target=delayed_revert, daemon=True).start()
 
     return jsonify({
@@ -3031,6 +3353,11 @@ def confirm_network_config():
             return jsonify({"success": False, "error": "This confirmation has expired or no longer matches the current pending change."}), 404
         pending_network_revert["confirmed"] = True
         device = pending_network_revert["device"]
+        # Confirmed means never revert, even after a restart.
+        try:
+            _persist_pending_revert(None)
+        except OSError:
+            pass
 
     log_chain_of_custody("network_config_confirmed", {"device": device})
     return jsonify({"success": True, "message": "Network settings confirmed - the automatic revert has been cancelled."})
