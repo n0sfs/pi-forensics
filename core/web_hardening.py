@@ -16,6 +16,7 @@ from flask import jsonify, request
 
 from core.config import (RuntimeConfigUnreadable, RuntimeConfigWriteFailed,
                          REQUEST_BODY_DEFAULT_MAX_BYTES, REQUEST_BODY_ENDPOINT_MAX_BYTES)
+from core.case_file import CaseWriteBusy
 
 
 def install_web_hardening(app):
@@ -49,6 +50,12 @@ def install_web_hardening(app):
                       "touchscreen, or repair the file from a shell. Details: " + str(e)),
             "runtime_config_unreadable": True,
         }), 503
+
+    # A case whose write lock is held too long (core/case_file.py) - one
+    # answer for every case-writing route rather than a hang.
+    @app.errorhandler(CaseWriteBusy)
+    def _handle_case_write_busy(e):
+        return jsonify({"success": False, "error": str(e), "case_busy": True}), 503
 
     @app.errorhandler(RuntimeConfigWriteFailed)
     def _handle_runtime_config_write_failed(e):
