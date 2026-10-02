@@ -28,10 +28,12 @@ import uuid
 from flask import Blueprint, jsonify, request, send_file, g
 
 from core.auth import requires_auth, requires_permission, _effective_client_ip
+from core.case_file import refuses_closed_case_work
+from core.strings_utils import strings_first_lines, format_strings_output
 from core.paths import closed_case_refusal, safe_path, log_chain_of_custody, case_consolidated_path, classify_case_role, format_epoch
 from core.config import EVIDENCE_ROOT, ALLOWED_HASH_ALGOS, MVT_IOS_BIN, MVT_ANDROID_BIN, VOL3_BIN, MQUIRE_BIN, INSTALL_DIR, load_hash_list_sets, load_yara_ruleset_sources, get_url_lists, load_url_list_sets, ALEAPP_DIR, ALEAPP_VENV_PYTHON, ILEAPP_DIR, ILEAPP_VENV_PYTHON
 import yara
-from core.case_index_db import (
+from core.case_index_db import (scan_chunk_matches, 
     build_scan_patterns, resolve_scan_category_label, scan_match_is_reportable,
     case_index_db_path, _case_index_connect, _case_index_open_readonly, _record_analysis_result,
     _auto_tag_case_artifact, _record_parsed_artifacts,
@@ -175,6 +177,10 @@ def _resolve_analysis_output_dir(requested_dest, source_dir, allow_same_as_sourc
 # --- File Explorer Endpoints ---
 @file_explorer_bp.route('/api/files/browse', methods=['POST'])
 @requires_auth
+# Every tab's folder picker browses through here, so any of their permissions
+# will do - but it needed one (2026-10-02): any logged-in account, a
+# reporting-only one included, could list the whole evidence tree.
+@requires_permission('file_explorer', 'acquisition', 'mobile', 'recovery', 'reporting')
 def browse_files():
     req = request.get_json() or {}
     path = safe_path(req.get('path', EVIDENCE_ROOT))
@@ -184,11 +190,29 @@ def browse_files():
         return jsonify({"error": f"Path '{path}' does not exist"}), 404
 
     items = []
+    unreadable = []
     try:
         for entry in os.scandir(path):
+            # A link whose target is gone, or an entry that cannot be stat'ed,
+            # used to vanish from the listing (2026-10-02) - on evidence media
+            # a broken link is itself worth seeing. It is listed with its own
+            # (lstat) details; anything else unreadable is named in
+            # `unreadable` rather than silently left out.
+            broken_link = False
             try:
-                st = entry.stat()
-                is_dir = entry.is_dir()
+                try:
+                    st = entry.stat()
+                except FileNotFoundError:
+                    if not entry.is_symlink():
+                        raise
+                    st = entry.stat(follow_symlinks=False)
+                    broken_link = True
+                is_dir = False if broken_link else entry.is_dir()
+                is_link = entry.is_symlink()
+                try:
+                    link_target = os.readlink(entry.path) if is_link else None
+                except OSError:
+                    link_target = None
                 # Full MACB timestamp set per entry (Modified/Accessed/Changed/Born), matching what
                 # the Sleuth Kit image-mode listing already exposes - "Created" stays honestly
                 # best-effort (see format_epoch/_human_size above: st_ctime is inode-change time on
@@ -218,10 +242,14 @@ def browse_files():
                     # collapse click), so classifying a directory here
                     # would be inert for that purpose anyway.
                     "case_role": None if is_dir else classify_case_role(entry.name),
+                    "is_symlink": is_link,
+                    "link_target": link_target,
+                    "broken_link": broken_link,
                 })
-            except Exception:
-                pass
-        return jsonify({"path": path, "items": sorted(items, key=lambda x: (not x['is_dir'], x['name'].lower()))})
+            except Exception as e:
+                unreadable.append({"name": entry.name, "error": str(e)[:200]})
+        return jsonify({"path": path, "items": sorted(items, key=lambda x: (not x['is_dir'], x['name'].lower())),
+                        "unreadable": unreadable})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -326,6 +354,7 @@ _HEX_PREVIEW_MAX_BYTES = 64 * 1024  # 64 KB - rendered client-side as a classic 
 
 @file_explorer_bp.route('/api/files/raw', methods=['GET'])
 @requires_auth
+@requires_permission('file_explorer', 'reporting')
 def get_raw_file():
     # Deliberately excludes HTML: serving a suspect-drive HTML file at a directly-navigable,
     # same-origin URL with a real text/html Content-Type would let it execute script with this
@@ -696,6 +725,7 @@ def run_binwalk():
 @file_explorer_bp.route('/api/files/clamscan', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def run_clamscan():
     req = request.get_json() or {}
     target_path = safe_path(req.get('path'))
@@ -749,6 +779,7 @@ def _hashdeep_directory_body(target_dir, dest_dir, algo='sha256'):
 @file_explorer_bp.route('/api/files/hashdeep', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'path')
 def run_hashdeep():
     req = request.get_json() or {}
     target_dir = safe_path(req.get('path'))
@@ -821,6 +852,7 @@ def _geolocation_kml_directory_body(target_dir, dest_dir):
 @file_explorer_bp.route('/api/files/geolocation_kml', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'path')
 def extract_geolocation_kml():
     req = request.get_json() or {}
     target_dir = safe_path(req.get('path'))
@@ -842,6 +874,7 @@ def extract_geolocation_kml():
 @file_explorer_bp.route('/api/files/export_leapp_geolocation', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'case_folder')
 def export_leapp_geolocation():
     """Location-history map visualization (Android forensics expansion,
     Phase C) - unlike extract_geolocation_kml() above, this doesn't scan a
@@ -923,7 +956,11 @@ def execution_worker_import_takeout(paths, case_folder, dest_dir, source_ip=None
     try:
         update_job(format="takeout_import", status="Preparing archive...", progress_percent=10.0)
         append_log(f"[*] Preparing Takeout input from {len(paths)} source path(s)...")
-        work_dir = os.path.join(dest_dir, "takeout_import_work")
+        # Its own working folder per import (2026-10-02): a fixed name meant a
+        # second import merged into the first's files, and its re-index then
+        # replaced the first import's records (same source path).
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        work_dir = os.path.join(dest_dir, f"takeout_import_work_{stamp}")
         takeout_root, extracted, skipped = prepare_takeout_root(paths, work_dir)
         if extracted or skipped:
             append_log(f"[*] Extracted {extracted} file(s) from archive part(s){f', skipped {skipped} unsafe entrie(s)' if skipped else ''}.")
@@ -937,13 +974,17 @@ def execution_worker_import_takeout(paths, case_folder, dest_dir, source_ip=None
         case_folder_valid = case_folder if case_folder and case_consolidated_path(case_folder) else None
         if case_folder_valid and result["records"]:
             identity = {"source_type": "real_fs", "path": takeout_root, "name": "Google Takeout Import"}
-            _record_parsed_artifacts(case_folder_valid, identity, result["records"])
-            append_log(f"[+] Recorded {len(result['records'])} record(s) - see File Views > Parsed Artifacts.")
+            written = _record_parsed_artifacts(case_folder_valid, identity, result["records"])
+            # The index keeps at most PARSED_ARTIFACTS_MAX_PER_SOURCE rows per
+            # source - say what was really recorded, not what was parsed.
+            append_log(f"[+] Recorded {written} of {len(result['records'])} parsed record(s) - see File Views > "
+                       f"Parsed Artifacts." + ("" if written == len(result['records']) else
+                                               " Not all were recorded (index limit, or an index error)."))
 
         kml_path = None
         kml_doc = _build_geo_kml(result["location_points"], "Google Takeout - Location Data")
         if kml_doc:
-            kml_path = os.path.join(dest_dir, "takeout_location_history.kml")
+            kml_path = os.path.join(dest_dir, f"takeout_location_history_{stamp}.kml")
             with open(kml_path, 'w', encoding='utf-8') as f:
                 f.write(kml_doc)
             _auto_tag_case_artifact(dest_dir, kml_path)
@@ -965,6 +1006,7 @@ def execution_worker_import_takeout(paths, case_folder, dest_dir, source_ip=None
 @file_explorer_bp.route('/api/files/import_takeout_archive', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'case_folder')
 def start_takeout_import():
     global current_job
     with job_lock:
@@ -1090,6 +1132,7 @@ def execution_worker_import_apple_export(export_root, case_folder, dest_dir, sou
 @file_explorer_bp.route('/api/files/import_apple_export', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'case_folder')
 def start_apple_export_import():
     global current_job
     with job_lock:
@@ -1140,6 +1183,7 @@ def start_apple_export_import():
 @file_explorer_bp.route('/api/files/parse_browser_artifacts', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_browser_artifacts():
     req = request.get_json() or {}
     target_dir = safe_path(req.get('path'))
@@ -1183,6 +1227,7 @@ def parse_browser_artifacts():
 @file_explorer_bp.route('/api/files/parse_registry', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_registry():
     """Whole-directory scan for Windows Registry hives (NTUSER.DAT/SYSTEM/
     SOFTWARE) - same shape as parse_browser_artifacts() above, just a
@@ -1222,6 +1267,7 @@ def parse_registry():
 @file_explorer_bp.route('/api/files/parse_crypto_wallets', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_crypto_wallets():
     """Whole-directory scan for cryptocurrency wallet FILES (wallet.dat,
     geth/Ethereum keystores, Electrum) - detection only, not internal
@@ -1262,6 +1308,7 @@ def parse_crypto_wallets():
 @file_explorer_bp.route('/api/files/parse_evtx', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_evtx():
     """Whole-directory scan for Windows Event Log (.evtx) files - same
     shape as parse_browser_artifacts()/parse_registry() above."""
@@ -1299,6 +1346,7 @@ def parse_evtx():
 @file_explorer_bp.route('/api/files/parse_prefetch', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_prefetch():
     """Whole-directory scan for Windows Prefetch (.pf) files - same shape
     as parse_registry()/parse_evtx() above, just a different candidate-file
@@ -1337,6 +1385,7 @@ def parse_prefetch():
 @file_explorer_bp.route('/api/files/parse_windows_activity', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_windows_activity():
     """Whole-directory scan for the Windows Notification database
     (wpndatabase.db) and Windows Timeline / Activity History
@@ -1377,6 +1426,7 @@ def parse_windows_activity():
 @file_explorer_bp.route('/api/files/parse_srum', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_srum():
     """Whole-directory scan for SRUM (SRUDB.dat) - same shape as
     parse_prefetch()/parse_windows_activity() above, just a different
@@ -1415,6 +1465,7 @@ def parse_srum():
 @file_explorer_bp.route('/api/files/parse_powershell_history', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_powershell_history():
     """Whole-directory scan for PowerShell/PSReadLine console command
     history (*_history.txt under a PSReadLine folder) - same shape as
@@ -1454,6 +1505,7 @@ def parse_powershell_history():
 @file_explorer_bp.route('/api/files/parse_firewall_log', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_firewall_log():
     """Whole-directory scan for the Windows Defender Firewall connection
     log (pfirewall.log(.old)) - same shape as parse_srum()/parse_prefetch()
@@ -1493,6 +1545,7 @@ def parse_firewall_log():
 @file_explorer_bp.route('/api/files/parse_macos_launchd', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_macos_launchd():
     """Whole-directory scan for macOS LaunchAgents/LaunchDaemons .plist
     persistence items - same shape as parse_srum()/parse_prefetch() above,
@@ -1535,6 +1588,7 @@ def parse_macos_launchd():
 @file_explorer_bp.route('/api/files/parse_winsearch', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_winsearch():
     """Whole-directory scan for the Windows Search Index (Windows.edb,
     Vista-10) - same shape as parse_srum() above, just a different
@@ -1573,6 +1627,7 @@ def parse_winsearch():
 @file_explorer_bp.route('/api/files/parse_webcache', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_webcache():
     """Whole-directory scan for legacy IE10/11 and pre-Chromium EdgeHTML
     Edge history/cookies (WebCacheV01.dat/WebCacheV24.dat) - same shape as
@@ -1612,6 +1667,7 @@ def parse_webcache():
 @file_explorer_bp.route('/api/files/parse_bits', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_bits():
     """Whole-directory scan for the Windows 10+ BITS queue database
     (qmgr.db) - same shape as parse_srum() above, just a different
@@ -1650,6 +1706,7 @@ def parse_bits():
 @file_explorer_bp.route('/api/files/parse_rdp_bitmap_cache', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_rdp_bitmap_cache():
     """Whole-directory scan for RDP Bitmap Cache containers (Cache####.bin/
     bcache##.bmc under a Terminal Server Client folder) - same shape as
@@ -1796,6 +1853,7 @@ def parse_thumbcache():
 @file_explorer_bp.route('/api/files/parse_sticky_notes', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_sticky_notes():
     """Whole-directory scan for Windows Sticky Notes (plum.sqlite) - real
     user-generated note content, a genuinely different artifact family
@@ -1838,6 +1896,7 @@ def parse_sticky_notes():
 @file_explorer_bp.route('/api/files/parse_recyclebin', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_recyclebin():
     """Whole-directory scan for Recycle Bin $I metadata files - same shape
     as the other whole-directory scanners above (core/recyclebin_utils.py)."""
@@ -1875,6 +1934,7 @@ def parse_recyclebin():
 @file_explorer_bp.route('/api/files/parse_android_backup', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_android_backup():
     """Parses a real .ab file - this app's own Mobile Forensics "Backup"
     acquisition mode's output (routes/mobile.py execution_worker_android(),
@@ -2116,6 +2176,7 @@ def parse_usnjrnl():
 @file_explorer_bp.route('/api/files/parse_linux_artifacts', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_linux_artifacts():
     """Whole-directory scan for Linux forensic artifacts (shell history,
     /etc/passwd, cron jobs, auth.log, and - only if explicitly requested -
@@ -2164,6 +2225,7 @@ def parse_linux_artifacts():
 @file_explorer_bp.route('/api/files/parse_mobile_artifacts', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_mobile_artifacts():
     """Whole-directory scan for an already-pulled, unencrypted iOS backup
     (idevicebackup2 --full output) - SMS/iMessage, Contacts, and Call
@@ -2221,6 +2283,7 @@ def parse_mobile_artifacts():
 @file_explorer_bp.route('/api/files/parse_email', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_email():
     """Whole-directory scan for email containers (.eml/.mbox/.pst/.ost) -
     same shape as parse_prefetch()/parse_recyclebin() above
@@ -2510,6 +2573,7 @@ def run_whatsapp_decrypt():
 @file_explorer_bp.route('/api/files/parse_whatsapp', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def parse_whatsapp():
     """Whole-directory scan for a real (decrypted) msgstore.db and/or
     wa.db - same shape as parse_browser_artifacts()/parse_registry()
@@ -2568,6 +2632,7 @@ def parse_whatsapp():
 @file_explorer_bp.route('/api/files/ipa_analyze', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def run_ipa_analyze():
     req = request.get_json() or {}
     file_path = safe_path(req.get('path'))
@@ -2665,6 +2730,7 @@ def _bugreport_parse_body(file_path, dest_dir, case_folder, run_by=None):
 @file_explorer_bp.route('/api/files/bugreport_parse', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'case_folder', 'path')
 def run_bugreport_parse():
     req = request.get_json() or {}
     file_path = safe_path(req.get('path'))
@@ -2698,19 +2764,12 @@ def run_strings():
     case_folder = req.get('case_folder')  # optional, best-effort - see quick_triage_scan()
 
     try:
-        res = subprocess.run(['strings', '-n', '6', file_path], capture_output=True, text=True, timeout=60)
-        lines = res.stdout.splitlines()
-        truncated = len(lines) > 1000
-        output = "\n".join(lines[:1000])
-        if truncated:
-            output += f"\n\n[... truncated, {len(lines) - 1000} more lines not shown ...]"
-        output = output or "[no printable strings found]"
-        summary = f"{min(len(lines), 1000)} line(s) extracted" + (" (capped)" if truncated else "")
+        lines, more, timed_out = strings_first_lines(file_path)
+        output = format_strings_output(lines, more, timed_out)
+        summary = f"{len(lines)} line(s) extracted" + (" (capped)" if more or timed_out else "")
         _record_analysis_result(case_folder, {"source_type": "real_fs", "path": file_path,
                                                "name": os.path.basename(file_path)}, "Strings", summary, output)
         return jsonify({"success": True, "file_name": os.path.basename(file_path), "output": output})
-    except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "strings timed out."}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -2796,6 +2855,7 @@ QUICK_TRIAGE_MAX_MATCHES_PER_CATEGORY = 500  # smaller than the background job's
 @file_explorer_bp.route('/api/files/quick_triage_scan', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def quick_triage_scan():
     req = request.get_json() or {}
     file_path = safe_path(req.get('path'))
@@ -2823,26 +2883,35 @@ def quick_triage_scan():
         total_size = os.path.getsize(file_path)
         bytes_read = 0
         tail = b""
+        def record(data, at_eof):
+            # Same boundary handling as the Recovery tab's Triage Scan: no
+            # prefix fragment (a match touching the buffer end is held back)
+            # and no suffix fragment (the carry starts at a token boundary) -
+            # this scan had neither (2026-10-02).
+            found, carry_from = scan_chunk_matches(patterns, data, at_eof, OVERLAP,
+                                                   skip={n for n, t in truncated.items() if t})
+            for name, val in found:
+                # Per-category: a keyword-list term is deliberate, so a short
+                # one is reportable. See scan_match_is_reportable().
+                if truncated[name] or not scan_match_is_reportable(name, val):
+                    continue
+                results[name].add(val)
+                if len(results[name]) >= QUICK_TRIAGE_MAX_MATCHES_PER_CATEGORY:
+                    truncated[name] = True
+            return data[carry_from:]
+
         with open(file_path, 'rb') as f:
             while bytes_read < QUICK_TRIAGE_MAX_BYTES:
                 chunk = f.read(min(CHUNK_SIZE, QUICK_TRIAGE_MAX_BYTES - bytes_read))
                 if not chunk:
+                    if tail:
+                        record(tail, at_eof=True)  # the real end of the file
                     break
-                data = tail + chunk
-                for name, pattern in patterns.items():
-                    if truncated[name]:
-                        continue
-                    for m in pattern.finditer(data):
-                        val = m.group(0)
-                        # Per-category: a keyword-list term is deliberate, so a
-                        # short one is reportable. See scan_match_is_reportable().
-                        if scan_match_is_reportable(name, val):
-                            results[name].add(val)
-                            if len(results[name]) >= QUICK_TRIAGE_MAX_MATCHES_PER_CATEGORY:
-                                truncated[name] = True
-                                break
-                tail = data[-OVERLAP:] if len(data) >= OVERLAP else data
+                tail = record(tail + chunk, at_eof=False)
                 bytes_read += len(chunk)
+            else:
+                if tail and bytes_read >= total_size:
+                    record(tail, at_eof=True)  # the scan cap and the file ended together
     except Exception as e:
         return jsonify({"success": False, "error": f"Scan failed: {e}"}), 500
 
@@ -2955,6 +3024,7 @@ def _run_mvt_scan_body(target_path, dest_dir, platform, backup_password=None):
 @file_explorer_bp.route('/api/files/mvt_scan', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'path')
 def run_mvt_scan():
     """Request-parsing here, real work in _run_mvt_scan_body() above.
 
@@ -3132,6 +3202,7 @@ def execution_worker_memory_forensics_scan(image_path, dest_dir, plugin_keys, so
 @file_explorer_bp.route('/api/files/memory/start_scan', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'path')
 def start_memory_forensics_scan():
     global current_job
     with job_lock:
@@ -3332,6 +3403,7 @@ def execution_worker_leapp_scan(tool_key, input_path, dest_dir, source_ip=None, 
 @file_explorer_bp.route('/api/files/leapp/start_scan', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'path')
 def start_leapp_scan():
     global current_job
     with job_lock:
@@ -3788,6 +3860,7 @@ def auto_analyze_mobile_steps():
 @file_explorer_bp.route('/api/files/auto_analyze/mobile/start', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('case_folder')
 def start_auto_analyze_mobile():
     global current_job
     with job_lock:
@@ -3983,6 +4056,7 @@ def execution_worker_mquire_scan(image_path, dest_dir, table_keys, source_ip=Non
 @file_explorer_bp.route('/api/files/memory/start_mquire_scan', methods=['POST'])
 @requires_auth
 @requires_permission('file_explorer')
+@refuses_closed_case_work('destination_dir', 'path')
 def start_mquire_scan():
     global current_job
     with job_lock:

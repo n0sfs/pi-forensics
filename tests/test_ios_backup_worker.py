@@ -126,7 +126,11 @@ class TestExecutionWorkerIosBackup:
         assert job["status"] == "Completed Successfully"
         mock_enc.assert_called_once()
         enc_cmd = mock_enc.call_args[0][0]
-        assert enc_cmd == ["idevicebackup2", "-u", mock.ANY, "encryption", "on", "hunter2"]
+        # The password travels in the environment, never on the command line
+        # (2026-10-02) - argv is readable by every process on the station.
+        assert enc_cmd == ["idevicebackup2", "-u", mock.ANY, "encryption", "on"]
+        assert "hunter2" not in enc_cmd
+        assert mock_enc.call_args[1]["env"]["BACKUP_PASSWORD"] == "hunter2"
         mock_stream.assert_called_once()  # the real backup itself still ran
 
     def test_encryption_already_enabled_is_not_treated_as_a_failure(self, tmp_path):

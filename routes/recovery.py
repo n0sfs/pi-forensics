@@ -10,6 +10,7 @@ for two similar clusters reporting.py will need in a later step.
 Part of the app.py -> core/ + routes/ split. See the dated CLAUDE.md
 entry for this refactor.
 """
+import glob
 import os
 import time
 import subprocess
@@ -29,7 +30,7 @@ from core.jobs import (mark_job_slot_claimed,
     build_report_target, write_initial_report, _write_report,
     fsync_confirm_directory_tree,
 )
-from core.case_index_db import (
+from core.case_index_db import (scan_chunk_matches, 
     TRIAGE_PATTERNS, TRIAGE_MAX_MATCHES_PER_CATEGORY,
     build_scan_patterns, resolve_scan_category_label, scan_match_is_reportable,
     case_index_db_path, _case_index_connect,
@@ -119,8 +120,13 @@ def execution_worker_photorec(source, dest_dir, report_file_path, report_data):
                speed_mbps=0.0, transferred_bytes=0, total_bytes=0)
 
     try:
+        # PhotoRec treats /d as a name PREFIX, not a folder: given dest_dir it
+        # created dest_dir.1, dest_dir.2 ... BESIDE the job folder, which
+        # stayed empty - so the output check below saw nothing, and a re-run
+        # added dest_dir.N+1 next to the last one (2026-10-02). A prefix
+        # inside the job folder keeps every recup_dir.N in it.
         cmd = [
-            "sudo", "/usr/bin/photorec", "/log", "/d", dest_dir,
+            "sudo", "/usr/bin/photorec", "/log", "/d", os.path.join(dest_dir, "recup_dir"),
             "/cmd", source, "partition_none,options,fileopt,everything,enable,search"
         ]
         append_log(f"[*] Command: {' '.join(cmd)}")
@@ -407,9 +413,6 @@ def execution_worker_scalpel(source, dest_dir, report_file_path, report_data):
         clear_active_proc()
 
 
-# Bytes that end a token for every built-in pattern (whitespace, NUL, quotes,
-# angle brackets, commas...) - the carried-over chunk tail starts after one.
-_TOKEN_BREAK_BYTES = frozenset(b' \t\r\n\x00"\'<>(),;[]{}|')
 
 
 def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data, total_bytes,
@@ -480,37 +483,34 @@ def execution_worker_triage_scan(source, dest_dir, report_file_path, report_data
             that exist in neither."""
             nonlocal bytes_read, last_update_time
             tail = b""
+
+            def record(data, at_eof):
+                # scan_chunk_matches() holds back a match touching the buffer
+                # end (it may continue in the next chunk) and starts the carry
+                # at a token boundary, so neither a prefix nor a suffix
+                # fragment of a real value is recorded (2026-09-27, 2026-10-02).
+                found, carry_from = scan_chunk_matches(patterns, data, at_eof, OVERLAP,
+                                                       skip={n for n, t in truncated.items() if t})
+                for name, val in found:
+                    if truncated[name] or not scan_match_is_reportable(name, val):
+                        continue
+                    results[name].add(val)
+                    if len(results[name]) >= TRIAGE_MAX_MATCHES_PER_CATEGORY:
+                        truncated[name] = True
+                        append_log(f"[!] {resolve_scan_category_label(name)}: hit the {TRIAGE_MAX_MATCHES_PER_CATEGORY}-match cap, no longer collecting new ones.")
+                return data[carry_from:]
+
             while True:
                 if snapshot_job()["status"] == "Stopped":
                     return False
 
                 chunk = stream.read(CHUNK_SIZE)
                 if not chunk:
+                    if tail:
+                        record(tail, at_eof=True)
                     return True
 
-                data = tail + chunk
-                for name, pattern in patterns.items():
-                    if truncated[name]:
-                        continue
-                    for m in pattern.finditer(data):
-                        val = m.group(0)
-                        # Per-category: a keyword-list term is deliberate, so a
-                        # short one is reportable. See scan_match_is_reportable().
-                        if scan_match_is_reportable(name, val):
-                            results[name].add(val)
-                            if len(results[name]) >= TRIAGE_MAX_MATCHES_PER_CATEGORY:
-                                truncated[name] = True
-                                append_log(f"[!] {resolve_scan_category_label(name)}: hit the {TRIAGE_MAX_MATCHES_PER_CATEGORY}-match cap, no longer collecting new ones.")
-                                break
-
-                tail = data[-OVERLAP:] if len(data) >= OVERLAP else data
-                # Start the carried-over tail at a token boundary (2026-09-27):
-                # cut mid-token, it re-matched the SUFFIX of a value found in
-                # full in the previous chunk - "mith@example.com" out of
-                # "joe.smith@example.com" - and recorded a hit that does not
-                # exist in the evidence.
-                cut = next((i for i, b in enumerate(tail) if b in _TOKEN_BREAK_BYTES), None)
-                tail = tail[cut + 1:] if cut is not None else b""
+                tail = record(tail + chunk, at_eof=False)
                 bytes_read += len(chunk)
 
                 # Throttle UI updates rather than pushing on every chunk.
@@ -752,9 +752,16 @@ def start_photorec():
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_photorec"
     job_dest_dir = os.path.join(dest_path, base_name)
+    # Never run into an earlier run's output (2026-10-02) - including the
+    # job_dest_dir.N folders PhotoRec used to create beside it.
+    if os.path.lexists(job_dest_dir) or glob.glob(glob.escape(job_dest_dir) + ".[0-9]*"):
+        update_job(active=False)
+        return jsonify({"error": f"{job_dest_dir} (or an earlier run's {base_name}.N folder) already exists - "
+                                 f"rename or move it, or change the Evidence ID, before starting. Nothing was "
+                                 f"overwritten."}), 409
 
     try:
-        os.makedirs(job_dest_dir, exist_ok=True)
+        os.makedirs(job_dest_dir)
     except Exception as e:
         update_job(active=False)
         return jsonify({"error": f"Destination path {job_dest_dir} is inaccessible: {str(e)}"}), 400
@@ -834,12 +841,18 @@ def start_extundelete():
     evidence_id = sanitize_case_slug(metadata.get('evidence_id')) or 'ITEM-01'
     base_name = f"{case_num}_{evidence_id}_extundelete"
     job_dest_dir = os.path.join(dest_path, base_name)
+    # extundelete writes RECOVERED_FILES/ inside it, merging into (and
+    # overwriting same-named files of) an earlier run's output (2026-10-02).
+    if os.path.lexists(job_dest_dir):
+        update_job(active=False)
+        return jsonify({"error": f"{job_dest_dir} already exists - rename or move it, or change the Evidence "
+                                 f"ID, before starting. Nothing was overwritten."}), 409
 
     try:
         # Must pre-create (unlike foremost/scalpel below) - extundelete is
         # launched with cwd=job_dest_dir, which requires the directory to
         # already exist.
-        os.makedirs(job_dest_dir, exist_ok=True)
+        os.makedirs(job_dest_dir)
     except Exception as e:
         update_job(active=False)
         return jsonify({"error": f"Destination path {job_dest_dir} is inaccessible: {str(e)}"}), 400
@@ -1184,6 +1197,11 @@ def start_triage_scan():
 def testdisk_analyze():
     req = request.get_json() or {}
     source_raw = req.get('source', '')
+    # Not while another job runs (2026-10-02): it reads the same devices an
+    # acquisition may be imaging, outside the one-job-at-a-time slot.
+    if snapshot_job().get("active"):
+        return jsonify({"success": False, "error": "Another job is running station-wide - wait for it to finish "
+                                                   "or stop it first."}), 409
 
     if is_valid_block_device(source_raw) and os.path.exists(source_raw):
         source = source_raw
@@ -1199,9 +1217,19 @@ def testdisk_analyze():
         # Using -l specifically, rather than /cmd with a hand-picked
         # read-only subset of keywords, means this can never accidentally
         # grow a write action later - the flag itself is incapable of one.
-        res = subprocess.run(['sudo', '/usr/bin/testdisk', '-l', source], capture_output=True, text=True, timeout=60)
+        # Root only for a raw device; an image file is this account's own and
+        # is read without it (2026-10-02).
+        cmd = (['sudo', '/usr/bin/testdisk', '-l', source] if is_valid_block_device(source_raw)
+               else ['/usr/bin/testdisk', '-l', source])
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         output = res.stdout.strip() or res.stderr.strip() or "[no output]"
-        log_chain_of_custody("testdisk_analyze", {"source": source})
+        log_chain_of_custody("testdisk_analyze", {"source": source, "exit_code": res.returncode})
+        if res.returncode != 0:
+            # A failed listing used to come back as success with whatever it
+            # printed - read as "this is the partition table".
+            return jsonify({"success": False, "source": source, "output": output,
+                            "error": f"testdisk failed (exit {res.returncode}) - its output is shown, but it is "
+                                     f"not a partition listing."}), 500
         return jsonify({"success": True, "source": source, "output": output})
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": "testdisk timed out."}), 500

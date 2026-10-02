@@ -122,6 +122,30 @@ sudo sed -i 's/client_max_body_size 0;/client_max_body_size 260m;/; s/add_header
   case within 30 seconds says the case is busy instead of hanging.
 - **Custody log entries record the station's UTC offset**, and the CSV export includes it, along with
   the user who performed each action.
+- **Closed and Archived cases take no new File Explorer work either**: every artifact parser, hash
+  manifests, geolocation export, MVT, memory and ALEAPP/iLEAPP scans, mobile Auto Analyze and the Takeout
+  and Apple imports now refuse.
+- **The file browser needs a permission**, and shows broken links (with their target) instead of
+  hiding them.
+- **Strings reads only what it shows.** It used to hold a whole file's output in memory before keeping
+  the first 1,000 lines - enough to exhaust the Pi's memory on a large file.
+- **Google Takeout:** a corrupt or incomplete archive is reported as damaged instead of importing as an
+  empty export, large members are streamed instead of read into memory, and each import gets its own
+  working folder and KML file instead of merging into (and re-indexing over) the last one.
+- **PhotoRec's output lands inside its job folder.** It used to create numbered folders beside it,
+  leaving the job folder empty. PhotoRec and extundelete refuse to reuse an earlier run's folder.
+- **Triage scans no longer record a fragment of a value that was split across two reads** (e.g.
+  "joe@example.co" out of "joe@example.com").
+- **Keyword-list patterns that slow down sharply on long text are caught when you save them** - before,
+  only the exponential kind was.
+- **TestDisk** waits for a running job, and a failed run is reported as a failure instead of shown
+  as the partition table. Image files are read without root.
+- **Recovery source:** if both a drive and an image path are set, you are asked to pick one. Before,
+  the path silently won.
+- **Live Collection scan** waits for a running build or import, and a USB that didn't really mount is
+  reported instead of listed as having no results.
+- **The iOS backup encryption password no longer appears on the command line**, where other
+  processes could see it.
 - **Live Device Preview cleans up after itself.** A read permission left on a device by a crash is
   removed when the app starts (it used to be logged only), and leaving a preview says so if the
   permission could not be removed.

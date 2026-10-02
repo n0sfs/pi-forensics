@@ -64,7 +64,9 @@ import io
 import json
 import os
 import re
+import shutil
 import zipfile
+import zlib
 
 from core.email_utils import parse_mbox_file
 from core.apple_export_utils import parse_vcard_file, parse_icalendar_file
@@ -93,6 +95,12 @@ _PRODUCT_FOLDER_PATTERNS = {
 }
 
 
+class TakeoutArchiveUnreadable(Exception):
+    """A Takeout .zip part (or one of its members) could not be read. It used
+    to come back as "0 files extracted", so a corrupt or truncated download
+    imported as an empty export (2026-10-02)."""
+
+
 def _safe_extract_zip(zip_path, dest_dir):
     """Extracts a real Takeout .zip part into dest_dir, with a genuine
     zip-slip guard (no precedent for this existed elsewhere in this
@@ -105,21 +113,29 @@ def _safe_extract_zip(zip_path, dest_dir):
     real_dest = os.path.realpath(dest_dir)
     skipped = 0
     extracted = 0
+    name = os.path.basename(zip_path)
     try:
-        with zipfile.ZipFile(zip_path) as zf:
-            for member in zf.infolist():
-                if member.is_dir():
-                    continue
-                target = os.path.realpath(os.path.join(dest_dir, member.filename))
-                if target != real_dest and not target.startswith(real_dest + os.sep):
-                    skipped += 1
-                    continue
-                os.makedirs(os.path.dirname(target), exist_ok=True)
+        zf = zipfile.ZipFile(zip_path)
+    except (zipfile.BadZipFile, OSError) as e:
+        raise TakeoutArchiveUnreadable(f"{name} could not be opened as a zip archive: {e}") from e
+    with zf:
+        for member in zf.infolist():
+            if member.is_dir():
+                continue
+            target = os.path.realpath(os.path.join(dest_dir, member.filename))
+            if target != real_dest and not target.startswith(real_dest + os.sep):
+                skipped += 1
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            try:
+                # Streamed - a member is often a multi-GB video, and read()
+                # held the whole of it in memory on a 1 GB Pi.
                 with zf.open(member) as src, open(target, 'wb') as dst:
-                    dst.write(src.read())
-                extracted += 1
-    except (zipfile.BadZipFile, OSError):
-        return 0, 0
+                    shutil.copyfileobj(src, dst, 1024 * 1024)
+            except (zipfile.BadZipFile, OSError, EOFError, zlib.error) as e:
+                raise TakeoutArchiveUnreadable(f"{name}: {member.filename} could not be read ({e}) - the "
+                                               f"archive is damaged or incomplete") from e
+            extracted += 1
     return extracted, skipped
 
 

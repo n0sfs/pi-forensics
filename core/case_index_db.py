@@ -115,6 +115,49 @@ TRIAGE_CATEGORY_LABELS = {
 # slug-shaped from _custom_report_template_from_payload()'s own precedent.
 KEYWORD_CATEGORY_PREFIX = "kw_"
 
+# Chunked scanning (2026-10-02). Both chunk-reading scanners (the Recovery
+# tab's Triage Scan and File Explorer's quick scan) recorded a match that
+# touched the END of the current buffer - but the token may continue in the
+# next chunk, so "joe@example.co" was recorded out of "joe@example.com" split
+# across two reads. A match touching the buffer end is now held back and the
+# next buffer starts at it, so it is matched once, whole.
+SCAN_TOKEN_BREAK_BYTES = frozenset(b' \t\r\n\x00"\'<>(),;[]{}|')
+SCAN_MAX_CARRY_BYTES = 64 * 1024  # a "token" longer than this is cut, not carried forever
+
+
+def scan_chunk_matches(patterns, data, at_eof, overlap, skip=()):
+    """Matches in one buffer of a chunked scan. Returns (found, carry_from):
+    found is [(category, value)] for every complete match; carry_from is where
+    the next buffer should start (data[carry_from:] + next chunk). A match
+    touching the end of `data` is held back unless at_eof. The carried part
+    otherwise starts after the last token break, so a value found whole is not
+    re-matched as a suffix fragment; `overlap` bytes are carried only for a
+    run with no break in the last SCAN_MAX_CARRY_BYTES."""
+    found = []
+    held = None
+    for name, pattern in patterns.items():
+        if name in skip:
+            continue
+        for m in pattern.finditer(data):
+            if not at_eof and m.end() >= len(data):
+                held = m.start() if held is None else min(held, m.start())
+                continue
+            found.append((name, m.group(0)))
+    if at_eof:
+        return found, len(data)
+    # Carry the trailing, possibly unfinished token: everything after the LAST
+    # token break. (Carrying from a break near the start of the overlap, or
+    # nothing when the overlap held no break at all, dropped a token that had
+    # not matched anything yet - its first half was never seen again.)
+    window_start = max(0, len(data) - SCAN_MAX_CARRY_BYTES)
+    last_break = next((i for i in range(len(data) - 1, window_start - 1, -1)
+                       if data[i] in SCAN_TOKEN_BREAK_BYTES), None)
+    carry_from = last_break + 1 if last_break is not None else max(0, len(data) - overlap)
+    if held is not None:
+        carry_from = min(carry_from, held)
+    return found, max(carry_from, window_start)
+
+
 def build_scan_patterns(keyword_list_ids=None, skipped_out=None):
     """Returns {name: compiled_regex} - always the 5 built-in TRIAGE_PATTERNS,
     plus one compiled pattern per selected keyword list (get_keyword_lists()
@@ -236,6 +279,22 @@ except ValueError:
     _mp_ctx = multiprocessing.get_context()
     REGEX_VALIDATION_TIMEOUT_SECONDS = 10.0  # per probe string - Windows spawn() overhead only
 
+# Growth probes (2026-10-02). The fixed 33-byte probes only catch
+# EXPONENTIAL backtracking; a pattern that is merely quadratic finishes them
+# in microseconds and then takes minutes over a multi-MB chunk of evidence -
+# this app's own old email pattern was one. Each unit is repeated to two
+# lengths, 4x apart: a linear pattern takes ~4x as long on the longer one, a
+# quadratic one ~16x. Timed inside the child.
+REDOS_GROWTH_UNITS = (b"a", b"0", b" ", b"a.", b"a-", b"<a")
+REDOS_GROWTH_LENGTHS = (500, 2000)
+# The growth child gets its own, generous limit: a big combined keyword list can
+# be linear but slow (the bundled credentials list takes ~0.5 s per 2 KB), and
+# that is a speed question, not the runaway this check exists to catch.
+REDOS_GROWTH_TIMEOUT_SECONDS = 20.0
+REDOS_GROWTH_MIN_SECONDS = 0.02   # below this the longer run is fast enough not to matter
+REDOS_GROWTH_MAX_RATIO = 9.0      # linear ~4, quadratic ~16
+
+
 def _redos_probe_worker(pattern_bytes, flags, probe, out_queue):
     # Runs in the child process - re-compiles from the pattern's own source/
     # flags rather than trying to pass a compiled re.Pattern across the
@@ -247,6 +306,60 @@ def _redos_probe_worker(pattern_bytes, flags, probe, out_queue):
         out_queue.put(True)
     except Exception:
         out_queue.put(True)  # a compile/match error here isn't this check's concern
+
+
+def _redos_growth_worker(pattern_bytes, flags, out_queue):
+    """Child process: [(unit, t_short, t_long)] for every growth unit."""
+    import time as _time
+    results = []
+    try:
+        compiled = re.compile(pattern_bytes, flags)
+    except Exception:
+        out_queue.put(results)
+        return
+    for unit in REDOS_GROWTH_UNITS:
+        timings = []
+        for length in REDOS_GROWTH_LENGTHS:
+            data = unit * (length // len(unit)) + b"!"
+            start = _time.perf_counter()
+            try:
+                list(compiled.finditer(data))
+            except Exception:
+                pass
+            timings.append(_time.perf_counter() - start)
+        results.append((unit, timings[0], timings[1]))
+    out_queue.put(results)
+
+
+def _redos_growth_problem(compiled_pattern):
+    """None, or the error string for a pattern whose run time grows faster
+    than linearly (or that runs past the time limit on the growth probes)."""
+    out_queue = _mp_ctx.Queue()
+    proc = _mp_ctx.Process(target=_redos_growth_worker,
+                           args=(compiled_pattern.pattern, compiled_pattern.flags, out_queue))
+    proc.start()
+    proc.join(REDOS_GROWTH_TIMEOUT_SECONDS)
+    timed_out = proc.is_alive()
+    if timed_out:
+        proc.terminate()
+        proc.join(1.0)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+    try:
+        results = [] if timed_out else out_queue.get(timeout=2)
+    except Exception:
+        results = []
+    out_queue.close()
+    if timed_out:
+        return ("This pattern slows down sharply as the text it searches gets longer and risks stalling a "
+                "real scan - try anchoring it, or bounding repeats like + and * (e.g. {1,64}).")
+    for unit, t_short, t_long in results:
+        if t_long >= REDOS_GROWTH_MIN_SECONDS and t_long / max(t_short, 1e-4) > REDOS_GROWTH_MAX_RATIO:
+            return ("This pattern's matching time grows much faster than the text it searches (it took "
+                    f"{t_long / max(t_short, 1e-4):.0f}x as long on 4x the text) - over a real disk it could take "
+                    "hours. Try anchoring it, or bounding repeats like + and * (e.g. {1,64}).")
+    return None
 
 def check_regex_pattern_for_redos(compiled_pattern):
     """Runs compiled_pattern against REDOS_PROBE_STRINGS, each in its own
@@ -275,7 +388,7 @@ def check_regex_pattern_for_redos(compiled_pattern):
                     "(catastrophic backtracking) - try simplifying it, e.g. avoiding nested repetition "
                     "like (x+)+ or overlapping alternation like (x|xx)+.")
         out_queue.close()
-    return None
+    return _redos_growth_problem(compiled_pattern)
 
 def scan_match_is_reportable(category, value):
     """Whether a raw scan match is worth reporting, by category.

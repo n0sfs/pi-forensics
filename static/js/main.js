@@ -23374,6 +23374,17 @@ function updateRecoveryToolControls() {
     if (helpText) helpText.textContent = HELP[tool] || '';
 }
 
+// Picking one kind of source clears the other, so the two can't disagree.
+function onRecoverySourceDriveChange() {
+    const pathEl = document.getElementById("recoverySourcePath");
+    if (pathEl && document.getElementById("recoverySourceDrive")?.value) pathEl.value = '';
+}
+
+function onRecoverySourcePathInput() {
+    const driveEl = document.getElementById("recoverySourceDrive");
+    if (driveEl && document.getElementById("recoverySourcePath")?.value.trim()) driveEl.value = '';
+}
+
 async function startRecoveryTool() {
     const tool = document.getElementById("recoveryToolSelect")?.value;
 
@@ -23384,6 +23395,12 @@ async function startRecoveryTool() {
 
     const sourcePath = document.getElementById("recoverySourcePath")?.value.trim();
     const sourceDrive = document.getElementById("recoverySourceDrive")?.value;
+    // Both set used to mean "the path wins" - a path left over from an earlier
+    // run silently beat the drive the examiner had just picked (2026-10-02).
+    if (sourcePath && sourceDrive) {
+        showToast(`Both a source drive (${sourceDrive}) and an image path are set - clear the one you don't mean before starting.`, 'warning');
+        return;
+    }
     const source = sourcePath || sourceDrive;
 
     if (!source) {
@@ -23401,7 +23418,9 @@ async function startRecoveryTool() {
                 body: JSON.stringify({ source })
             });
             const data = await res.json();
-            if (outEl) outEl.textContent = data.success ? data.output : `[ERROR] ${data.error}`;
+            // A failed run's own output is shown too, under the error - it says why.
+            if (outEl) outEl.textContent = data.success ? data.output
+                : `[ERROR] ${data.error}` + (data.output ? `\n\n${data.output}` : '');
         } catch (err) {
             if (outEl) outEl.textContent = '[REQUEST FAILED - check the appliance is still running, then retry]';
         }

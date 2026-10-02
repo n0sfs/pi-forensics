@@ -2462,6 +2462,9 @@ def start_build_collection_usb():
 
 
 # --- Live Collection USB (Phase B: import results) ---
+_live_collection_scan_lock = threading.Lock()
+
+
 @acquisition_bp.route('/api/live_collection/scan', methods=['POST'])
 @requires_auth
 @requires_permission('acquisition')
@@ -2481,15 +2484,33 @@ def scan_live_collection_results():
     if not os.path.exists(partition):
         return jsonify({"success": False, "error": f"No partition found on {device}. Has a Live Collection USB been built and used on this drive?"}), 400
 
-    uid, gid = os.getuid(), os.getgid()
-    mount_result = mount_collection_partition(partition, LIVE_COLLECTION_SCAN_MOUNTPOINT, uid, gid, read_only=True)
-    if not mount_result["success"]:
-        return jsonify({"success": False, "error": f"Could not mount {partition}: {mount_result['error']}"}), 500
-
+    # Not while a job runs (2026-10-02): a USB build formats and writes this
+    # same partition and an import has it mounted - a scan mounting it at the
+    # same moment raced both. Two scans share one mountpoint, so they queue
+    # on a lock instead of unmounting each other.
+    if snapshot_job().get("active"):
+        return jsonify({"success": False, "error": "A job is running station-wide (possibly a Live Collection build "
+                                                   "or import using this drive) - wait for it to finish first."}), 409
+    if not _live_collection_scan_lock.acquire(blocking=False):
+        return jsonify({"success": False, "error": "Another scan of a collection USB is in progress - try again "
+                                                   "in a moment."}), 409
     try:
-        runs = discover_collection_runs(LIVE_COLLECTION_SCAN_MOUNTPOINT)
+        uid, gid = os.getuid(), os.getgid()
+        mount_result = mount_collection_partition(partition, LIVE_COLLECTION_SCAN_MOUNTPOINT, uid, gid, read_only=True)
+        if not mount_result["success"]:
+            return jsonify({"success": False, "error": f"Could not mount {partition}: {mount_result['error']}"}), 500
+
+        try:
+            # An empty mountpoint lists no runs too - only a real mount may
+            # answer "no results on this USB".
+            if not os.path.ismount(LIVE_COLLECTION_SCAN_MOUNTPOINT):
+                return jsonify({"success": False, "error": f"{partition} did not stay mounted, so it could not be "
+                                                           f"read - nothing was scanned."}), 500
+            runs = discover_collection_runs(LIVE_COLLECTION_SCAN_MOUNTPOINT)
+        finally:
+            unmount_collection_partition(LIVE_COLLECTION_SCAN_MOUNTPOINT)
     finally:
-        unmount_collection_partition(LIVE_COLLECTION_SCAN_MOUNTPOINT)
+        _live_collection_scan_lock.release()
 
     return jsonify({"success": True, "runs": runs})
 

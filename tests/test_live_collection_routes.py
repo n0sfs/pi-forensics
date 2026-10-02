@@ -160,6 +160,7 @@ def test_scan_returns_discovered_runs_on_success(client, monkeypatch):
     monkeypatch.setattr(acq.os.path, "exists", lambda p: True if p == "/dev/sdz1" else real_exists(p))
     monkeypatch.setattr(acq, "mount_collection_partition", lambda *a, **k: {"success": True, "error": None})
     monkeypatch.setattr(acq, "unmount_collection_partition", lambda *a, **k: None)
+    monkeypatch.setattr(acq.os.path, "ismount", lambda p: p == acq.LIVE_COLLECTION_SCAN_MOUNTPOINT)
     monkeypatch.setattr(acq, "discover_collection_runs", lambda mount_path: [
         {"platform": "unix", "run_name": "uac-host-linux-20260901T120000Z", "relative_path": "uac/output/uac-host-linux-20260901T120000Z",
          "hostname": "host", "timestamp": "20260901T120000Z", "file_count": 5, "total_bytes": 12345},
@@ -170,6 +171,34 @@ def test_scan_returns_discovered_runs_on_success(client, monkeypatch):
     assert data["success"] is True
     assert len(data["runs"]) == 1
     assert data["runs"][0]["hostname"] == "host"
+
+
+def test_scan_that_did_not_really_mount_is_not_an_empty_usb(client, monkeypatch):
+    """An empty mountpoint lists no runs either - "no results" must come from
+    a real mount (2026-10-02)."""
+    real_exists = os.path.exists
+    monkeypatch.setattr(acq.os.path, "exists", lambda p: True if p == "/dev/sdz1" else real_exists(p))
+    monkeypatch.setattr(acq, "mount_collection_partition", lambda *a, **k: {"success": True, "error": None})
+    monkeypatch.setattr(acq, "unmount_collection_partition", lambda *a, **k: None)
+    monkeypatch.setattr(acq.os.path, "ismount", lambda p: False)
+    monkeypatch.setattr(acq, "discover_collection_runs", lambda mount_path: [])
+    res = client.post("/api/live_collection/scan", json={"device": "/dev/sdz"})
+    assert res.status_code == 500
+    assert "nothing was scanned" in res.get_json()["error"]
+
+
+def test_scan_waits_for_a_running_job(client, monkeypatch):
+    real_exists = os.path.exists
+    monkeypatch.setattr(acq.os.path, "exists", lambda p: True if p == "/dev/sdz1" else real_exists(p))
+    monkeypatch.setattr(acq, "mount_collection_partition", lambda *a, **k: pytest.fail("must not mount"))
+    with jobs.job_lock:
+        jobs.current_job["active"] = True
+    try:
+        res = client.post("/api/live_collection/scan", json={"device": "/dev/sdz"})
+    finally:
+        with jobs.job_lock:
+            jobs.current_job["active"] = False
+    assert res.status_code == 409
 
 
 def test_start_import_rejects_missing_selected_runs(client, no_op_thread):

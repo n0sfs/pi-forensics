@@ -51,6 +51,7 @@ from core.tsk_utils import (
 from core.geo_utils import GEO_IMAGE_EXTENSIONS, _geo_points_from_exiftool_entries, _build_geo_kml
 from core.decrypted_sources import get_decrypted_source_kind
 from core.case_file import refuses_closed_case_work
+from core.strings_utils import strings_first_lines, format_strings_output
 from core.case_index_db import (
     build_scan_patterns, resolve_scan_category_label, scan_match_is_reportable,
     case_index_db_path, _case_index_connect, _record_analysis_result, _auto_tag_case_artifact,
@@ -4257,14 +4258,8 @@ def image_strings():
     try:
         fs = _tsk_open_fs(image_path, offset)
         tmp_path = _tsk_extract_to_temp(fs, inode_num, suffix=os.path.splitext(name_hint)[1])
-        res = subprocess.run(['strings', '-n', '6', tmp_path], capture_output=True, text=True, timeout=60)
-        lines = res.stdout.splitlines()
-        truncated = len(lines) > 1000
-        output = "\n".join(lines[:1000])
-        if truncated:
-            output += f"\n\n[... truncated, {len(lines) - 1000} more lines not shown ...]"
-    except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "strings timed out."}), 500
+        lines, more, timed_out = strings_first_lines(tmp_path)
+        output = format_strings_output(lines, more, timed_out)
     except Exception as e:
         return jsonify({"success": False, "error": f"Could not scan file: {e}"}), 500
     finally:
@@ -4274,12 +4269,12 @@ def image_strings():
             except OSError:
                 pass
 
-    summary = f"{min(len(lines), 1000)} line(s) extracted" + (" (capped)" if truncated else "")
+    summary = f"{len(lines)} line(s) extracted" + (" (capped)" if more or timed_out else "")
     _record_analysis_result(case_folder, {"source_type": "image", "image_path": image_path, "fs_offset": offset,
                                            "inode": str(inode), "path": req.get('path'), "name": name_hint},
                              "Strings", summary, output)
     log_chain_of_custody("strings_scan_image", {"image_path": image_path, "inode": str(inode), "name": name_hint})
-    return jsonify({"success": True, "file_name": name_hint, "output": output or "[no printable strings found]"})
+    return jsonify({"success": True, "file_name": name_hint, "output": output})
 
 @image_browser_bp.route('/api/image/ocr', methods=['POST'])
 @requires_auth
